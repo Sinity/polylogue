@@ -1088,6 +1088,94 @@ class TestReaderInformability:
         assert "'<span class=\"chip q-canonical\">' + esc(c.provider)" in body
 
 
+class TestReaderSavedViewsUI:
+    """Saved-view UI surface (#1118): toolbar entry, save/recall/delete UX,
+    naming-conflict guard, and an explicit empty state for the inspector list.
+
+    The substrate (``/api/user/saved-views`` POST/GET/DELETE) is covered by
+    ``TestReaderUserState``; these tests assert that the web shell exposes the
+    capability end-to-end so the operator can manage saved views without
+    leaving the reader.
+    """
+
+    def test_workspace_toolbar_exposes_saved_view_entry(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            _, _, body = _get_text(base_url, "/")
+        # Dedicated toolbar entry-point so saved views are reachable without
+        # opening the Notes inspector tab (mirrors the Restore workspace
+        # pattern).
+        assert 'id="workspace-saved-view-select"' in body
+        assert 'id="workspace-save-view-btn"' in body
+        # Wired to applySavedView via restoreSavedView; both must be present.
+        assert "function restoreSavedView(" in body
+        assert "function applySavedView(" in body
+        # Toolbar populator must update the select on each render so newly
+        # saved views appear without a full reload.
+        assert "workspace-saved-view-select" in body
+        assert "Saved views (" in body
+
+    def test_save_current_view_handles_naming_conflict(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            _, _, body = _get_text(base_url, "/")
+        # Naming conflict UX: detect locally against state.savedViews, prompt
+        # for overwrite confirmation, replace via DELETE+POST. Empty/whitespace
+        # names are rejected before hitting the wire.
+        assert "Saved view name cannot be empty" in body
+        assert "already exists. Overwrite it?" in body
+        assert "Failed to replace existing view" in body
+
+    def test_saved_view_list_exposes_delete_action(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            _, _, body = _get_text(base_url, "/")
+        # The inspector list must render a Delete button per saved view; the
+        # JS handler is reachable so the operator can prune stale views.
+        assert "function deleteSavedView(" in body
+        assert "Delete saved view" in body
+        assert 'onclick="deleteSavedView(' in body
+
+    def test_saved_view_empty_state_is_actionable(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            _, _, body = _get_text(base_url, "/")
+        # Empty state must point the operator at the action that resolves it
+        # (per MK3 state matrix: each empty state names the next step).
+        assert 'No saved views. Click "Save current view"' in body
+
+    def test_saved_views_endpoint_roundtrip_supports_ui_flow(self, workspace_env: dict[str, Path]) -> None:
+        # End-to-end roundtrip the UI relies on: save, list, then delete via
+        # the inspector Delete button. Catches API regressions that would
+        # silently break the new toolbar surface.
+        with _running_server(workspace_env) as (_, base_url):
+            save_status, saved = _request_json(
+                base_url,
+                "POST",
+                "/api/user/saved-views",
+                payload={
+                    "view_id": "view-ui",
+                    "name": "Reader UI flow",
+                    "query": {"query": "auth", "limit": 25},
+                },
+            )
+            listed = _get_json(base_url, "/api/user/saved-views")
+            delete_status, deleted = _request_json(
+                base_url,
+                "DELETE",
+                "/api/user/saved-views/view-ui",
+            )
+            empty_listing = _get_json(base_url, "/api/user/saved-views")
+
+        saved_payload = cast(dict[str, object], saved)
+        listed_payload = cast(dict[str, object], listed)
+        empty_payload = cast(dict[str, object], empty_listing)
+        items = cast(list[dict[str, object]], listed_payload["items"])
+        assert save_status == 201
+        assert saved_payload["name"] == "Reader UI flow"
+        assert listed_payload["total"] == 1
+        assert items[0]["view_id"] == "view-ui"
+        assert delete_status == 200
+        assert deleted == {"view_id": "view-ui", "deleted": True}
+        assert empty_payload == {"items": [], "total": 0}
+
+
 @pytest.mark.parametrize("path", ["/", "/api/conversations", "/api/facets", "/api/status", "/api/health"])
 def test_each_reader_route_responds_within_a_reasonable_budget(workspace_env: dict[str, Path], path: str) -> None:
     """Each reader-facing route returns within 10 s on a synthetic

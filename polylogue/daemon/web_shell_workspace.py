@@ -50,6 +50,10 @@ WORKSPACE_HTML = r"""
       <span class="workspace-stat" id="workspace-route-status">single</span>
       <span class="workspace-stat warn" id="workspace-degraded-count"></span>
       <span class="workspace-spacer"></span>
+      <select id="workspace-saved-view-select" title="Saved views" onchange="restoreSavedView(this.value)">
+        <option value="">Saved views</option>
+      </select>
+      <button class="workspace-action" id="workspace-save-view-btn" onclick="saveCurrentView()">Save view</button>
       <select id="workspace-restore-select" title="Restore workspace" onchange="restoreWorkspace(this.value)">
         <option value="">Restore workspace</option>
       </select>
@@ -150,6 +154,20 @@ function renderWorkspaceToolbar() {
     return '<option value="' + escAttr(w.workspace_id) + '">' + esc(w.name || w.workspace_id) + '</option>';
   }).join('');
   select.value = current;
+  // Mirror the same restore-pattern for saved views so they are reachable from
+  // the workspace toolbar (not only via the Notes inspector tab).
+  var viewSelect = document.getElementById('workspace-saved-view-select');
+  if (viewSelect) {
+    var currentView = viewSelect.value;
+    var views = state.savedViews || [];
+    var label = views.length ? 'Saved views (' + views.length + ')' : 'No saved views';
+    viewSelect.innerHTML = '<option value="">' + label + '</option>' + views.map(function(v) {
+      return '<option value="' + escAttr(v.view_id) + '">' + esc(v.name || v.view_id) + '</option>';
+    }).join('');
+    viewSelect.value = currentView;
+    if (!views.length) viewSelect.setAttribute('disabled', 'true');
+    else viewSelect.removeAttribute('disabled');
+  }
   // Disabled-action tooltips per MK3 "disabled actions are part of the design"
   // (docs/design/mk3/docs/11-little-details.md). Stack/Compare need 2+
   // selectable conversations; recall pack and save need at least one target.
@@ -305,6 +323,69 @@ async function saveWorkspace() {
     state.userStateError = 'Failed to save workspace';
     renderInspector();
   }
+}
+
+async function saveCurrentView() {
+  var query = {limit: state.limit, offset: 0};
+  if (state.query) query.query = state.query;
+  if (state.provider) query.provider = state.provider;
+  var defaultName = state.query || state.provider || 'All conversations';
+  var name = window.prompt('Saved view name', defaultName);
+  if (!name) return;
+  name = name.trim();
+  if (!name) {
+    state.userStateError = 'Saved view name cannot be empty';
+    renderInspector();
+    return;
+  }
+  // Naming conflict UX: storage enforces UNIQUE(name). Detect a clash
+  // locally against the loaded list so the operator can choose to overwrite
+  // or pick a new name before the request fires (which would otherwise hit
+  // the SQLite unique constraint with a generic error).
+  var existing = (state.savedViews || []).find(function(v) { return (v.name || '') === name; });
+  if (existing) {
+    if (!window.confirm('A saved view named "' + name + '" already exists. Overwrite it?')) return;
+    try {
+      await sendJSON('/api/user/saved-views/' + encodeURIComponent(existing.view_id), 'DELETE');
+    } catch(e) {
+      state.userStateError = 'Failed to replace existing view';
+      renderInspector();
+      return;
+    }
+  }
+  try {
+    await sendJSON('/api/user/saved-views', 'POST', {name: name, query: query});
+    state.userStateError = '';
+    await loadUserState();
+  } catch(e) {
+    state.userStateError = 'Failed to save view';
+    renderInspector();
+  }
+}
+
+async function deleteSavedView(viewId) {
+  if (!viewId) return;
+  var view = (state.savedViews || []).find(function(v) { return v.view_id === viewId; });
+  var label = view ? (view.name || viewId) : viewId;
+  if (!window.confirm('Delete saved view "' + label + '"?')) return;
+  try {
+    await sendJSON('/api/user/saved-views/' + encodeURIComponent(viewId), 'DELETE');
+    state.userStateError = '';
+    await loadUserState();
+  } catch(e) {
+    state.userStateError = 'Failed to delete saved view';
+    renderInspector();
+  }
+}
+
+function restoreSavedView(viewId) {
+  if (!viewId) return;
+  // Recall the saved query into the active filter chain. applySavedView lives
+  // in the main shell script and reloads conversations + facets, then resets
+  // the select so reselecting the same view re-applies it.
+  applySavedView(viewId);
+  var select = document.getElementById('workspace-saved-view-select');
+  if (select) select.value = '';
 }
 
 async function restoreWorkspace(workspaceId) {
