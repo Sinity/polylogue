@@ -13,6 +13,8 @@ from polylogue.archive.conversation.models import ConversationSummary
 from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec, project_message_content
 from polylogue.archive.semantic.pricing import (
+    CostBasisPayload,
+    CostModelBreakdown,
     CostUsagePayload,
     _normalize_model,
     estimate_conversation_cost,
@@ -889,10 +891,13 @@ class ArchiveInsightAggregateMixin:
             key=lambda item: (item[0][0], item[0][1] or ""),
         ):
             usage = CostUsagePayload()
+            basis = CostBasisPayload()
             status_counts: Counter[str] = Counter()
+            unavailable_reason_counts: Counter[str] = Counter()
             total_usd = 0.0
             priced_count = 0
             confidence_total = 0.0
+            per_model_acc: dict[tuple[str | None, str | None], CostModelBreakdown] = {}
             source_updated_at = max(
                 (
                     insight.provenance.source_updated_at
@@ -913,11 +918,52 @@ class ArchiveInsightAggregateMixin:
             for insight in insights:
                 estimate = insight.estimate
                 usage = usage.plus(estimate.usage)
+                basis = basis.plus(estimate.basis)
                 status_counts[estimate.status] += 1
                 total_usd += estimate.total_usd
+                if estimate.unavailable_reason is not None:
+                    unavailable_reason_counts[estimate.unavailable_reason] += 1
                 if estimate.priced:
                     priced_count += 1
                     confidence_total += estimate.confidence
+                # Per-model breakdown: prefer the session-level breakdown when
+                # populated (mixed-model sessions). Fall back to a single-row
+                # synthesized entry from the dominant model so rollups for
+                # provider-reported-only sessions still expose per-model rows.
+                breakdown_entries = estimate.per_model_breakdown
+                if not breakdown_entries and (estimate.model_name or estimate.normalized_model):
+                    breakdown_entries = (
+                        CostModelBreakdown(
+                            model_name=estimate.model_name,
+                            normalized_model=estimate.normalized_model,
+                            usage=estimate.usage,
+                            basis=estimate.basis,
+                            total_usd=estimate.total_usd,
+                            session_count=1,
+                        ),
+                    )
+                for entry in breakdown_entries:
+                    key = (entry.model_name, entry.normalized_model)
+                    existing = per_model_acc.get(key)
+                    if existing is None:
+                        per_model_acc[key] = CostModelBreakdown(
+                            model_name=entry.model_name,
+                            normalized_model=entry.normalized_model,
+                            usage=entry.usage,
+                            basis=entry.basis,
+                            total_usd=entry.total_usd,
+                            session_count=1,
+                        )
+                    else:
+                        per_model_acc[key] = CostModelBreakdown(
+                            model_name=existing.model_name,
+                            normalized_model=existing.normalized_model,
+                            usage=existing.usage.plus(entry.usage),
+                            basis=existing.basis.plus(entry.basis),
+                            total_usd=existing.total_usd + entry.total_usd,
+                            session_count=existing.session_count + 1,
+                        )
+            per_model_breakdown = tuple(sorted(per_model_acc.values(), key=lambda entry: entry.total_usd, reverse=True))
             rollups.append(
                 CostRollupInsight(
                     provider_name=provider_name,
@@ -928,6 +974,9 @@ class ArchiveInsightAggregateMixin:
                     unavailable_session_count=status_counts["unavailable"],
                     status_counts=dict(sorted(status_counts.items())),
                     total_usd=total_usd,
+                    basis=basis,
+                    unavailable_reason_counts=dict(sorted(unavailable_reason_counts.items())),
+                    per_model_breakdown=per_model_breakdown,
                     usage=usage,
                     confidence=(confidence_total / priced_count if priced_count else 0.0),
                     provenance=ArchiveInsightProvenance(

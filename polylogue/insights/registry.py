@@ -618,6 +618,10 @@ register(
             InsightField("priced", _attr("priced_session_count", "0"), group=1),
             InsightField("unavailable", _attr("unavailable_session_count", "0"), group=1),
             InsightField("usd", _attr("total_usd", "0"), group=1),
+            InsightField("provider_usd", _nested("basis", "provider_reported_usd", "0"), group=1),
+            InsightField("api_usd", _nested("basis", "api_equivalent_usd", "0"), group=1),
+            InsightField("sub_usd", _nested("basis", "subscription_equivalent_usd", "0"), group=1),
+            InsightField("catalog_usd", _nested("basis", "catalog_priced_usd", "0"), group=1),
             InsightField("confidence", _attr("confidence", "0"), group=1),
         ),
     )
