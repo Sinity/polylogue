@@ -9,8 +9,9 @@ import click
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.logging import configure_logging
-from polylogue.maintenance.planner import execute_backfill, preview_backfill
+from polylogue.maintenance.planner import preview_backfill
 from polylogue.maintenance.preview import ALL_SCOPES, staleness_inventory
+from polylogue.maintenance.replay import ReplayProgress, execute_replay
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES, build_maintenance_target_catalog
 from polylogue.paths import archive_root, render_root
 
@@ -80,12 +81,38 @@ def plan_command(env: AppEnv, targets: tuple[str, ...]) -> None:
     is_flag=True,
     help="Preview what would happen without executing",
 )
+@click.option(
+    "--operation-id",
+    "operation_id",
+    type=str,
+    default=None,
+    help=("Reuse a previous operation id to resume an interrupted run; omit to mint a fresh uuid for a new operation."),
+)
+@click.option(
+    "--resume",
+    "resume_cursor",
+    type=str,
+    default=None,
+    help=(
+        "Explicit resume cursor (e.g. 'target:2'). When omitted and "
+        "--operation-id matches a persisted state file, the cursor is "
+        "loaded automatically."
+    ),
+)
 @click.pass_obj
-def run_command(env: AppEnv, targets: tuple[str, ...], dry_run: bool) -> None:
+def run_command(
+    env: AppEnv,
+    targets: tuple[str, ...],
+    dry_run: bool,
+    operation_id: str | None,
+    resume_cursor: str | None,
+) -> None:
     """Run (or dry-run) maintenance backfill operations.
 
     Executes targeted rebuilds using existing repair infrastructure.
-    Use --dry-run to preview without mutations.
+    Per-target failures are isolated: one failing target does not abort
+    the remaining work. Use --operation-id together with --resume to
+    pick up an interrupted operation from its last checkpoint.
     """
     configure_logging()
     config = Config(
@@ -93,12 +120,28 @@ def run_command(env: AppEnv, targets: tuple[str, ...], dry_run: bool) -> None:
         render_root=render_root(),
         sources=[],
     )
-    result = execute_backfill(config, targets=targets, dry_run=dry_run)
+
+    def _emit_progress(snapshot: ReplayProgress) -> None:
+        click.echo(
+            f"  [{snapshot.processed}/{snapshot.total}] {snapshot.target} "
+            f"cursor={snapshot.cursor} failures={snapshot.in_flight_failures}",
+            err=True,
+        )
+
+    result = execute_replay(
+        config,
+        targets=targets,
+        operation_id=operation_id,
+        resume_cursor=resume_cursor,
+        dry_run=dry_run,
+        progress_callback=_emit_progress,
+    )
 
     action = "Would affect" if dry_run else "Processed"
     click.echo(f"Operation: {result.operation_id}")
     click.echo(f"Targets:  {', '.join(result.targets) if result.targets else 'all'}")
     click.echo(f"Status:   {result.status.value}")
+    click.echo(f"Cursor:   {result.resume_cursor}")
     click.echo(f"{action}:  {result.affected_rows:,} rows")
 
     if result.results:
@@ -115,6 +158,13 @@ def run_command(env: AppEnv, targets: tuple[str, ...], dry_run: bool) -> None:
 
     if result.error:
         click.echo(f"\nError: {result.error}", err=True)
+
+    if result.failure_samples.samples:
+        click.echo("\nFailures:", err=True)
+        for sample in result.failure_samples.samples:
+            click.echo(f"  {sample.kind} @ {sample.locator}: {sample.message}", err=True)
+        if result.failure_samples.truncated:
+            click.echo("  (failure samples truncated)", err=True)
 
     if result.completed_at:
         from datetime import datetime
