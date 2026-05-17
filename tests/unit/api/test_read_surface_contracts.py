@@ -37,8 +37,10 @@ from polylogue.api.contracts import (
 from polylogue.api.contracts.api_surface import APIReadSurface
 from polylogue.api.contracts.cli_surface import CLIReadSurface
 from polylogue.api.contracts.mcp_surface import MCPReadSurface
+from polylogue.api.contracts.tui_surface import TUIReadSurface
 from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.core.json import JSONValue
+from polylogue.operations import ArchiveOperations
 from polylogue.services import build_runtime_services
 from polylogue.surfaces.payloads import ConversationListResponse
 from polylogue.types import Provider
@@ -61,6 +63,7 @@ _ADAPTER_CLASSES: tuple[type, ...] = (
     APIReadSurface,
     CLIReadSurface,
     MCPReadSurface,
+    TUIReadSurface,
 )
 
 
@@ -121,12 +124,14 @@ async def test_all_adapters_return_equivalent_envelope(
         api_surface = APIReadSurface(polylogue)
         cli_surface = CLIReadSurface(services)
         mcp_surface = MCPReadSurface(services)
+        tui_surface = TUIReadSurface(ArchiveOperations.from_services(services))
 
         spec = ConversationQuerySpec(limit=10)
         envelopes: dict[str, ConversationListResponse] = {
             "api": await api_surface.list_conversations(spec),
             "cli": await cli_surface.list_conversations(spec),
             "mcp": await mcp_surface.list_conversations(spec),
+            "tui": await tui_surface.list_conversations(spec),
         }
 
         # The shared envelope is a Pydantic model; equality compares fields.
@@ -138,13 +143,13 @@ async def test_all_adapters_return_equivalent_envelope(
             assert len(envelope.items) == 2, f"{surface_name} returned {len(envelope.items)} items"
 
         ids_by_surface = {name: tuple(sorted(row.id for row in env.items)) for name, env in envelopes.items()}
-        assert ids_by_surface["api"] == ids_by_surface["cli"] == ids_by_surface["mcp"], (
+        assert ids_by_surface["api"] == ids_by_surface["cli"] == ids_by_surface["mcp"] == ids_by_surface["tui"], (
             f"id sets diverge: {ids_by_surface!r}"
         )
 
         record_contract_evidence.record(
             "read-surface-envelope-parity",
-            surface="api+cli+mcp",
+            surface="api+cli+mcp+tui",
             facts={
                 "id_set": list(ids_by_surface["api"]),
                 "total": envelopes["api"].total,
@@ -173,12 +178,14 @@ async def test_provider_filter_envelope_parity(
         api_envelope = await APIReadSurface(polylogue).list_conversations(spec)
         cli_envelope = await CLIReadSurface(services).list_conversations(spec)
         mcp_envelope = await MCPReadSurface(services).list_conversations(spec)
+        tui_envelope = await TUIReadSurface(ArchiveOperations.from_services(services)).list_conversations(spec)
 
         api_ids = {row.id for row in api_envelope.items}
         cli_ids = {row.id for row in cli_envelope.items}
         mcp_ids = {row.id for row in mcp_envelope.items}
-        assert api_ids == cli_ids == mcp_ids
-        assert api_envelope.total == cli_envelope.total == mcp_envelope.total == 1
+        tui_ids = {row.id for row in tui_envelope.items}
+        assert api_ids == cli_ids == mcp_ids == tui_ids
+        assert api_envelope.total == cli_envelope.total == mcp_envelope.total == tui_envelope.total == 1
 
         matched_ids: list[JSONValue] = [str(item) for item in sorted(api_ids)]
         facts: dict[str, JSONValue] = {
@@ -188,7 +195,7 @@ async def test_provider_filter_envelope_parity(
         }
         record_contract_evidence.record(
             "read-surface-provider-filter-parity",
-            surface="api+cli+mcp",
+            surface="api+cli+mcp+tui",
             facts=facts,
         )
     finally:
@@ -212,6 +219,7 @@ async def test_empty_archive_returns_canonical_empty_envelope(
             "api": await APIReadSurface(polylogue).list_conversations(spec),
             "cli": await CLIReadSurface(services).list_conversations(spec),
             "mcp": await MCPReadSurface(services).list_conversations(spec),
+            "tui": await TUIReadSurface(ArchiveOperations.from_services(services)).list_conversations(spec),
         }
         for surface_name, envelope in envelopes.items():
             assert envelope.total == 0, f"{surface_name} total != 0"
@@ -220,7 +228,7 @@ async def test_empty_archive_returns_canonical_empty_envelope(
 
         record_contract_evidence.record(
             "read-surface-empty-envelope-parity",
-            surface="api+cli+mcp",
+            surface="api+cli+mcp+tui",
             facts={"total": 0, "items_len": 0},
         )
     finally:
@@ -243,13 +251,19 @@ async def test_stats_envelope_parity(
         api_stats = await APIReadSurface(polylogue).archive_stats()
         cli_stats = await CLIReadSurface(services).archive_stats()
         mcp_stats = await MCPReadSurface(services).archive_stats()
+        tui_stats = await TUIReadSurface(ArchiveOperations.from_services(services)).archive_stats()
 
-        assert api_stats.conversation_count == cli_stats.conversation_count == mcp_stats.conversation_count
-        assert api_stats.message_count == cli_stats.message_count == mcp_stats.message_count
+        assert (
+            api_stats.conversation_count
+            == cli_stats.conversation_count
+            == mcp_stats.conversation_count
+            == tui_stats.conversation_count
+        )
+        assert api_stats.message_count == cli_stats.message_count == mcp_stats.message_count == tui_stats.message_count
 
         record_contract_evidence.record(
             "read-surface-stats-parity",
-            surface="api+cli+mcp",
+            surface="api+cli+mcp+tui",
             facts={
                 "conversation_count": api_stats.conversation_count,
                 "message_count": api_stats.message_count,

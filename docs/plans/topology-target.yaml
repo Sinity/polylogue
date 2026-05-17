@@ -66,6 +66,11 @@ files:
     target: polylogue/api/contracts/read_surface.py
     owner: stable
     cross_cut: { api: async }
+  - path: polylogue/api/contracts/tui_surface.py
+    loc: 104
+    target: polylogue/api/contracts/tui_surface.py
+    owner: stable
+    cross_cut: { api: async }
   - path: polylogue/api/contracts/write_surface.py
     loc: 165
     target: polylogue/api/contracts/write_surface.py
@@ -3189,7 +3194,7 @@ files:
     target: polylogue/ui/tui/screens/base.py
     owner: stable
   - path: polylogue/ui/tui/screens/browser.py
-    loc: 70
+    loc: 81
     target: polylogue/ui/tui/screens/browser.py
     owner: stable
   - path: polylogue/ui/tui/screens/dashboard.py
@@ -3197,7 +3202,7 @@ files:
     target: polylogue/ui/tui/screens/dashboard.py
     owner: stable
   - path: polylogue/ui/tui/screens/search.py
-    loc: 73
+    loc: 79
     target: polylogue/ui/tui/screens/search.py
     owner: stable
   - path: polylogue/ui/tui/widgets/stats.py
