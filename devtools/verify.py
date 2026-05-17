@@ -323,6 +323,12 @@ def build_verify_steps(
         _report_dir = Path(".cache/test-reports")
         _report_dir.mkdir(parents=True, exist_ok=True)
         PYTEST_REPORT_DIR.mkdir(parents=True, exist_ok=True)
+        # Scale-tier policy (issue #1183): default verify includes
+        # ``scale_small`` but excludes ``scale_medium`` / ``scale_large``.
+        # ``--lab`` lets the medium tier in; the large tier is reserved
+        # for nightly CI and explicit ``devtools benchmark-campaign``
+        # invocations.
+        scale_marker_expr = "not scale_large" if lab else "not scale_medium and not scale_large"
         pytest_cmd = [
             "pytest",
             "-q",
@@ -335,7 +341,9 @@ def build_verify_steps(
             f"--json-report-file={PYTEST_REPORT_PATH}",
         ]
         if skip_slow:
-            pytest_cmd.extend(["-m", "not slow"])
+            pytest_cmd.extend(["-m", f"not slow and {scale_marker_expr}"])
+        else:
+            pytest_cmd.extend(["-m", scale_marker_expr])
         if seed_testmon:
             pytest_cmd.extend(["--testmon", "--testmon-noselect", *_pytest_worker_args(default="16")])
             steps.append(("pytest seed-testmon", pytest_cmd))

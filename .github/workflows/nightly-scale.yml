@@ -1,0 +1,35 @@
+name: Nightly Scale
+
+# Runs the large-tier scale fixtures (issue #1183) outside the normal
+# CI critical path. The default ``devtools verify`` baseline deselects
+# ``scale_large``; this workflow exists so a regression in the large
+# tier still produces a visible signal without burning CI minutes on
+# every PR.
+
+on:
+  schedule:
+    - cron: "37 6 * * *"  # 06:37 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  scale-large:
+    timeout-minutes: 90
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.13"
+      - run: uv sync --extra dev --frozen
+      - name: Run large-tier scale tests
+        env:
+          POLYLOGUE_FORCE_PLAIN: "1"
+          HYPOTHESIS_PROFILE: ci
+        run: uv run pytest -q --tb=short --ignore=tests/integration -m "scale_large" -p no:randomly -n 0 tests/benchmarks
