@@ -17,7 +17,7 @@ from polylogue.paths import db_path
 from polylogue.storage.sqlite.connection_profile import open_connection
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
 _DAEMON_EVENTS_DDL = """
 CREATE TABLE IF NOT EXISTS daemon_events (
@@ -171,6 +171,54 @@ def get_recent_operations(limit: int = 10) -> Sequence[dict[str, object]]:
     return query_daemon_events(kind="operation", limit=limit)
 
 
+def emit_catch_up_cycle(
+    *,
+    operation_id: str,
+    phase: str,
+    backlog_start: int,
+    backlog_end: int,
+    discovered: int,
+    attempted: int,
+    skipped: int,
+    ingested: int,
+    quarantine_count: int,
+    errors_by_kind: Mapping[str, int],
+    cursor_before: Mapping[str, object] | None,
+    cursor_after: Mapping[str, object] | None,
+    duration_ms: float,
+    stage_timings_s: Mapping[str, float] | None,
+    repair: Mapping[str, object] | None,
+) -> None:
+    """Emit one catch-up convergence cycle envelope.
+
+    Carries the runtime observability matrix declared in #999 (cursor lag,
+    attempts taxonomy, errors, queue/backlog, repair state, per-stage timings)
+    so downstream tooling can read durable evidence without scraping logs.
+
+    ``phase`` is ``"start"`` or ``"end"``; the same ``operation_id`` ties them
+    together. End events carry the realized counts and timings.
+    """
+    payload: dict[str, object] = {
+        "phase": phase,
+        "backlog_start": backlog_start,
+        "backlog_end": backlog_end,
+        "discovered": discovered,
+        "attempted": attempted,
+        "skipped": skipped,
+        "ingested": ingested,
+        "quarantine_count": quarantine_count,
+        "errors_by_kind": dict(errors_by_kind),
+        "cursor_before": dict(cursor_before) if cursor_before is not None else None,
+        "cursor_after": dict(cursor_after) if cursor_after is not None else None,
+        "duration_ms": round(float(duration_ms), 3),
+        "stage_timings_s": (
+            {key: round(float(value), 6) for key, value in stage_timings_s.items()} if stage_timings_s else {}
+        ),
+        "repair": dict(repair) if repair is not None else None,
+    }
+    emit_daemon_event("catch_up_cycle", operation_id=operation_id, payload=payload)
+
+
 def get_daemon_event_counts() -> dict[str, int]:
     """Return event counts by kind."""
     conn = _ensure_events_db()
@@ -182,6 +230,7 @@ def get_daemon_event_counts() -> dict[str, int]:
 
 
 __all__ = [
+    "emit_catch_up_cycle",
     "emit_daemon_event",
     "get_daemon_event_counts",
     "get_last_ingestion_batch",
