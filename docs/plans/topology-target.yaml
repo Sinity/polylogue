@@ -82,7 +82,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/insights.py
-    loc: 175
+    loc: 198
     target: polylogue/api/insights.py
     owner: stable
     cross_cut: { api: async }
@@ -201,7 +201,7 @@ files:
     owner: archive-conversation
     reason: archive-domain semantics
   - path: polylogue/archive/conversation/runtime.py
-    loc: 225
+    loc: 228
     target: polylogue/archive/conversation/runtime.py
     owner: archive-conversation
     reason: archive-domain semantics
@@ -920,7 +920,7 @@ files:
     target: polylogue/cli/verb_names.py
     owner: stable
   - path: polylogue/config.py
-    loc: 769
+    loc: 785
     target: polylogue/config.py
     owner: kernel
     reason: kernel root rule
@@ -1060,7 +1060,7 @@ files:
     target: polylogue/daemon/live_ingest_attempt_workload.py
     owner: stable
   - path: polylogue/daemon/notifications.py
-    loc: 111
+    loc: 254
     target: polylogue/daemon/notifications.py
     owner: stable
   - path: polylogue/daemon/status.py
@@ -1112,6 +1112,10 @@ files:
   - path: polylogue/insights/authored_payloads.py
     loc: 163
     target: polylogue/insights/authored_payloads.py
+    owner: stable
+  - path: polylogue/insights/classification.py
+    loc: 373
+    target: polylogue/insights/classification.py
     owner: stable
   - path: polylogue/insights/export_bundles.py
     loc: 328
@@ -1203,7 +1207,7 @@ files:
     target: polylogue/mcp/server_context_tools.py
     owner: stable
   - path: polylogue/mcp/server_insight_tools.py
-    loc: 148
+    loc: 172
     target: polylogue/mcp/server_insight_tools.py
     owner: stable
   - path: polylogue/mcp/server_maintenance_tools.py

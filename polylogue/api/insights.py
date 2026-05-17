@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol
 
+from polylogue.archive.session.session_profile import SessionProfile
 from polylogue.insights.archive import (
     ArchiveDebtInsight,
     ArchiveDebtInsightQuery,
@@ -26,6 +27,7 @@ from polylogue.insights.archive import (
     WorkThreadInsight,
     WorkThreadInsightQuery,
 )
+from polylogue.insights.classification import SessionClassification, classify_session
 
 if TYPE_CHECKING:
 
@@ -93,11 +95,18 @@ if TYPE_CHECKING:
         ) -> list[ArchiveDebtInsight]: ...
 
 
+class _RepositorySurface(Protocol):
+    async def get_session_profile(self, conversation_id: str) -> SessionProfile | None: ...
+
+
 class PolylogueInsightsMixin:
     if TYPE_CHECKING:
 
         @property
         def operations(self) -> _InsightOperationsSurface: ...
+
+        @property
+        def repository(self) -> _RepositorySurface: ...
 
     async def list_session_tag_rollup_insights(
         self,
@@ -173,3 +182,17 @@ class PolylogueInsightsMixin:
         query: ArchiveDebtInsightQuery | None = None,
     ) -> list[ArchiveDebtInsight]:
         return await self.operations.list_archive_debt_insights(query)
+
+    async def classify_session(self, conversation_id: str) -> SessionClassification | None:
+        """Classify a session into the typed :class:`SessionCategory` taxonomy.
+
+        Computed on-the-fly from the hydrated :class:`SessionProfile`. The
+        classifier is pure and deterministic (see
+        :mod:`polylogue.insights.classification` for details). Returns
+        ``None`` when no profile exists for ``conversation_id``.
+        """
+
+        profile = await self.repository.get_session_profile(conversation_id)
+        if profile is None:
+            return None
+        return classify_session(profile)

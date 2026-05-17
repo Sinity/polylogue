@@ -2354,6 +2354,22 @@
     }
   },
   {
+    "name": "session_classification",
+    "parameters": {
+      "properties": {
+        "conversation_id": {
+          "title": "Conversation Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation_id"
+      ],
+      "title": "session_classificationArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "session_costs",
     "parameters": {
       "properties": {
