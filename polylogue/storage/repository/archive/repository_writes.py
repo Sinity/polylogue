@@ -249,14 +249,30 @@ class RepositoryWriteMixin:
         target_id: str | None = None,
         message_id: str | None = None,
     ) -> bool:
-        """Add a mark to a conversation or message target. Returns True if newly inserted."""
+        """Add a mark to any supported user-state target. Returns True if newly inserted.
+
+        Supported kinds: see ``polylogue.core.user_state_targets`` (#1113). The
+        caller is expected to have resolved/validated ``target_id`` via the
+        archive facade resolver; this method enforces the substrate-level
+        invariants only.
+        """
         import datetime as _dt
+
+        from polylogue.core.user_state_targets import TARGET_KIND_NAMES
 
         if mark_type not in ("star", "pin", "archive"):
             raise ValueError(f"invalid mark_type: {mark_type!r}")
-        resolved_target_id = target_id or (message_id if target_type == "message" else conversation_id)
+        if target_type not in TARGET_KIND_NAMES:
+            raise ValueError(f"invalid target_type: {target_type!r}. Supported: {', '.join(TARGET_KIND_NAMES)}")
+        resolved_target_id: str | None
+        if target_type == "conversation":
+            resolved_target_id = target_id or conversation_id
+        elif target_type == "message":
+            resolved_target_id = target_id or message_id
+        else:
+            resolved_target_id = target_id
         if resolved_target_id is None:
-            raise ValueError("target_id is required for non-conversation marks")
+            raise ValueError(f"target_id is required for {target_type!r} marks")
         async with self._backend.connection() as conn:
             return await conversations_q.add_mark(
                 conn,

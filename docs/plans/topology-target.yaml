@@ -111,6 +111,11 @@ files:
     target: polylogue/api/sync/view_loader.py
     owner: stable
     cross_cut: { api: sync }
+  - path: polylogue/api/user_state_resolver.py
+    loc: 251
+    target: polylogue/api/user_state_resolver.py
+    owner: stable
+    cross_cut: { api: async }
   - path: polylogue/archive/__init__.py
     loc: 1
     target: polylogue/archive/__init__.py
@@ -996,6 +1001,11 @@ files:
   - path: polylogue/core/timestamps.py
     loc: 81
     target: polylogue/core/timestamps.py
+    owner: core-primitive
+    reason: core primitive
+  - path: polylogue/core/user_state_targets.py
+    loc: 138
+    target: polylogue/core/user_state_targets.py
     owner: core-primitive
     reason: core primitive
   - path: polylogue/cost/__init__.py

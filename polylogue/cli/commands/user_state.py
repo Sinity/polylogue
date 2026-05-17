@@ -10,9 +10,11 @@ import click
 
 from polylogue.cli.shared.machine_errors import emit_success
 from polylogue.cli.shared.types import AppEnv
+from polylogue.core.user_state_targets import TARGET_KIND_NAMES
 
 _MARK_TYPES = ("star", "pin", "archive")
 _WORKSPACE_MODES = ("tabs", "stack", "compare", "timeline")
+_TARGET_TYPES = list(TARGET_KIND_NAMES)
 
 
 def _run(coro: Any) -> Any:
@@ -84,7 +86,7 @@ def marks_group() -> None:
 @marks_group.command("list")
 @click.option("--mark-type", type=click.Choice(_MARK_TYPES), default=None)
 @click.option("--conversation-id", default=None)
-@click.option("--target-type", type=click.Choice(["conversation", "message"]), default=None)
+@click.option("--target-type", type=click.Choice(_TARGET_TYPES), default=None)
 @click.option("--target-id", default=None)
 @click.option("--message-id", default=None)
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
@@ -121,7 +123,7 @@ def list_marks_command(
 @marks_group.command("add")
 @click.argument("conversation_id")
 @click.argument("mark_type", type=click.Choice(_MARK_TYPES))
-@click.option("--target-type", type=click.Choice(["conversation", "message"]), default="conversation")
+@click.option("--target-type", type=click.Choice(_TARGET_TYPES), default="conversation")
 @click.option("--target-id", default=None)
 @click.option("--message-id", default=None)
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
@@ -157,7 +159,7 @@ def add_mark_command(
 @marks_group.command("remove")
 @click.argument("conversation_id")
 @click.argument("mark_type", type=click.Choice(_MARK_TYPES))
-@click.option("--target-type", type=click.Choice(["conversation", "message"]), default="conversation")
+@click.option("--target-type", type=click.Choice(_TARGET_TYPES), default="conversation")
 @click.option("--target-id", default=None)
 @click.option("--message-id", default=None)
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
@@ -197,7 +199,7 @@ def annotations_group() -> None:
 
 @annotations_group.command("list")
 @click.option("--conversation-id", default=None)
-@click.option("--target-type", type=click.Choice(["conversation", "message"]), default=None)
+@click.option("--target-type", type=click.Choice(_TARGET_TYPES), default=None)
 @click.option("--target-id", default=None)
 @click.option("--message-id", default=None)
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
@@ -233,7 +235,7 @@ def list_annotations_command(
 @click.argument("annotation_id")
 @click.argument("conversation_id")
 @click.argument("note_text")
-@click.option("--target-type", type=click.Choice(["conversation", "message"]), default="conversation")
+@click.option("--target-type", type=click.Choice(_TARGET_TYPES), default="conversation")
 @click.option("--target-id", default=None)
 @click.option("--message-id", default=None)
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
