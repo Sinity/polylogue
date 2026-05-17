@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `5`
 - synthetic benchmark campaigns: `7`
-- scenario projections: `252`
+- scenario projections: `254`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `5`
-  - exercise: `145`
+  - exercise: `147`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `7`
@@ -328,6 +328,8 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-config` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | config help |
 | `exercise` | `help-context-pack` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | context-pack help |
 | `exercise` | `help-cost` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | cost help |
+| `exercise` | `help-cost-outlook` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | cost outlook help |
+| `exercise` | `help-cost-rollup` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | cost rollup help |
 | `exercise` | `help-count` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | count help |
 | `exercise` | `help-dashboard` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | dashboard help |
 | `exercise` | `help-delete` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | delete help |

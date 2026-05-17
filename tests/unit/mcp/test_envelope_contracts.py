@@ -67,6 +67,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "session_classification": "single_object",
     "get_resume_brief": "single_object",
     "archive_coverage": "single_object",
+    "cost_outlook": "single_object",
     "stats": "single_object",
     "build_context_pack": "single_object",
     "readiness_check": "single_object",

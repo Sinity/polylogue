@@ -14,6 +14,21 @@ documentation polish do not require an entry.
 
 ### Added
 
+- Cycle outlook reaches the CLI and MCP surfaces (#1138). New
+  `polylogue cost outlook --plan <name>` subcommand renders the typed
+  `CycleOutlook` payload from #1137 — cycle window, burn rate,
+  projected total, quota pressure, overage rows, coverage, and
+  confidence — in JSON or plain mode. Plain mode labels USD totals as
+  API-equivalent, quota figures by basis, and surfaces "quota not
+  configured" explicitly so subscription-equivalent and
+  API-equivalent numbers never collapse into a single unlabelled
+  `cost`. The legacy flat surface is preserved as
+  `polylogue cost rollup`. New MCP tool `cost_outlook(plan, method)`
+  returns the same typed payload; the matching async facade method
+  `Polylogue.cost_outlook(plan_name, now=None, method=...)` resolves
+  plans against `[[cost.subscription.plans]]` user overrides merged
+  with the curated seed.
+
 - Tool usage analytics with explicit per-provider coverage (#1133). New
   insight type `tool_usage` rolls up per-(provider, tool, action_kind)
   call counts, conversation counts, distinct tool ids, and affected-path

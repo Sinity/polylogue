@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol
 
 from polylogue.archive.session.session_profile import SessionProfile
+from polylogue.cost.aggregation import session_costs_to_daily_usd
+from polylogue.cost.outlook import CycleOutlook, ProjectionMethod, build_cycle_outlook
+from polylogue.cost.plans import resolve_plan
 from polylogue.insights.archive import (
     ArchiveDebtInsight,
     ArchiveDebtInsightQuery,
@@ -209,6 +213,37 @@ class PolylogueInsightsMixin:
         query: ArchiveDebtInsightQuery | None = None,
     ) -> list[ArchiveDebtInsight]:
         return await self.operations.list_archive_debt_insights(query)
+
+    async def cost_outlook(
+        self,
+        plan_name: str,
+        *,
+        now: datetime | None = None,
+        method: ProjectionMethod = ProjectionMethod.linear,
+    ) -> CycleOutlook | None:
+        """Project the current billing cycle for ``plan_name``.
+
+        Resolves the plan against user-supplied
+        ``[[cost.subscription.plans]]`` rows merged with the curated
+        seed, lists materialized session-cost insights, folds them into
+        per-day USD usage, and projects the current cycle using
+        ``method``.
+
+        Returns ``None`` when the plan has no ``cycle_anchor_day`` —
+        surfaces must report "no cycle window" explicitly. Raises
+        :class:`polylogue.cost.plans.PlanLookupError` when ``plan_name``
+        is non-empty but unknown.
+        """
+        from polylogue.config import load_polylogue_config
+
+        polylogue_config = load_polylogue_config()
+        plan = resolve_plan(plan_name, user_rows=polylogue_config.subscription_plans)
+        if plan is None:
+            return None
+        when = (now or datetime.now(UTC)).astimezone(UTC)
+        session_costs = await self.list_session_cost_insights()
+        daily = session_costs_to_daily_usd(session_costs)
+        return build_cycle_outlook(plan, daily, now=when, method=method)
 
     async def classify_session(self, conversation_id: str) -> SessionClassification | None:
         """Classify a session into the typed :class:`SessionCategory` taxonomy.

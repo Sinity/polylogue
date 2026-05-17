@@ -113,6 +113,7 @@ _COMMAND_NAMES: dict[str, str] = {
 }
 
 _GROUP_ATTRS: dict[str, str] = {
+    "cost": "cost_command",
     "diagnostics": "diagnostics_group",
     "insights": "insights_command",
     "maintenance": "maintenance_group",
