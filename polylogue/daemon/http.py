@@ -503,6 +503,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_get_conversation_cost(path[2])
         elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "provenance":
             self._handle_get_conversation_provenance(path[2], params)
+        elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "topology":
+            self._handle_get_conversation_topology(path[2], params)
         elif len(path) == 4 and path[:3] == ["api", "raw_artifacts"]:
             self._handle_get_raw_artifact(path[3])
         else:
@@ -1006,6 +1008,46 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.NOT_FOUND, "not_found")
             return
         self._send_json(HTTPStatus.OK, payload)
+
+    # ------------------------------------------------------------------
+    # Handlers: per-conversation topology (#1121)
+    # ------------------------------------------------------------------
+
+    @daemon_safe_handler
+    def _handle_get_conversation_topology(
+        self,
+        conv_id: str,
+        params: dict[str, list[str]],
+    ) -> None:
+        """``GET /api/conversations/{id}/topology[?limit=N]``.
+
+        Returns a bounded :class:`polylogue.insights.topology.SessionTopology`
+        envelope rooted at *conv_id*'s lineage root. ``?limit=`` is the
+        operator-visible knob; the daemon enforces the hard cap from
+        :data:`polylogue.daemon.topology_http.MAX_NODE_LIMIT` regardless of
+        client input (#1121 AC: lineage rendering is bounded).
+        """
+        from polylogue.daemon.topology_http import (
+            build_topology_envelope,
+            coerce_node_limit,
+        )
+
+        node_limit = coerce_node_limit(self._get_param(params, "limit"))
+        if node_limit is None:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_limit")
+            return
+
+        async def _get(poly: Polylogue) -> object:
+            topology = await poly.repository.get_session_topology(conv_id)
+            if topology is None:
+                return None
+            return build_topology_envelope(topology, node_limit=node_limit)
+
+        result = self._sync_run(_get)
+        if result is None:
+            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
+            return
+        self._send_json(HTTPStatus.OK, result)
 
     # ------------------------------------------------------------------
     # Handlers: get messages

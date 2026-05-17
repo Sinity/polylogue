@@ -86,9 +86,9 @@ exceptions:
     reason: "added FK integrity, quarantine regression, FTS commit-ordering tests (#820/#844/#817)"
 
   - path: polylogue/daemon/http.py
-    ceiling: 1340
-    reason: "daemon HTTP route dispatch + read handlers; added cost-panel endpoint (#1122) and provenance endpoint (#1125); events dispatcher delegates to daemon/events_http.py (#957); split candidate: per-domain handler modules under daemon/handlers/"
+    ceiling: 1380
+    reason: "daemon HTTP route dispatch + read handlers; added cost-panel endpoint (#1122), provenance endpoint (#1125), and topology endpoint (#1121, envelope helpers delegated to daemon/topology_http.py); events dispatcher delegates to daemon/events_http.py (#957); split candidate: per-domain handler modules under daemon/handlers/"
 
   - path: polylogue/daemon/web_shell.py
     ceiling: 1280
-    reason: "single-page reader shell — CSS, HTML region scaffolding, and JS bootstrap; bulk/workspace/provenance assets already extracted to daemon/web_shell_bulk.py, daemon/web_shell_workspace.py, daemon/web_shell_provenance.py; added compare action (#1124); split candidate: extract inspector entry-points into daemon/web_shell_inspector.py"
+    reason: "single-page reader shell — CSS, HTML region scaffolding, and JS bootstrap; bulk/workspace/provenance/lineage assets already extracted to daemon/web_shell_bulk.py, daemon/web_shell_workspace.py, daemon/web_shell_provenance.py, daemon/web_shell_lineage.py (#1121); added compare action (#1124); split candidate: extract inspector entry-points into daemon/web_shell_inspector.py"

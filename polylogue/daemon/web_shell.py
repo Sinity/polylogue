@@ -8,6 +8,7 @@ from polylogue.daemon.web_shell_bulk import (
     BULK_PREVIEW_HTML,
     BULK_TOOLBAR_HTML,
 )
+from polylogue.daemon.web_shell_lineage import LINEAGE_JS
 from polylogue.daemon.web_shell_provenance import PROVENANCE_JS
 from polylogue.daemon.web_shell_workspace import WORKSPACE_CSS, WORKSPACE_HTML, WORKSPACE_JS
 
@@ -251,6 +252,7 @@ __WORKSPACE_HTML__
     <div id="inspector-tabs">
       <button class="active" data-tab="info">Info</button>
       <button data-tab="cost">Cost</button>
+      <button data-tab="lineage">Lineage</button>
       <button data-tab="raw">Raw</button>
       <button data-tab="notes">Notes</button>
     </div>
@@ -306,7 +308,11 @@ var state = {
   // Per-conversation provenance (#1125). Loaded lazily when the Raw
   // inspector tab is opened for the selected conversation; raw payload
   // preview within is opt-in via explicit user click.
-  provenance: null
+  provenance: null,
+  // Per-conversation lineage envelope (#1121). Loaded lazily when the
+  // Lineage inspector tab is opened. ``undefined`` means "not loaded
+  // yet"; ``{error}`` means "fetch failed".
+  lineage: undefined
 };
 
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -704,6 +710,7 @@ function renderInspector() {
   var tab = state.inspectorTab || 'info';
   if (tab === 'info') renderInspectorInfo(el, c);
   else if (tab === 'cost') renderInspectorCost(el, c);
+  else if (tab === 'lineage') renderInspectorLineage(el, c);
   else if (tab === 'raw') renderInspectorRaw(el, c);
   else if (tab === 'notes') renderInspectorNotes(el, c);
 }
@@ -861,6 +868,8 @@ function renderInspectorInfo(el, c) {
 }
 
 __PROVENANCE_JS__
+
+__LINEAGE_JS__
 
 async function openCompareWith() {
   if (!state.selected) return;
@@ -1232,4 +1241,5 @@ startRealtimeChannel();
     .replace("__BULK_PREVIEW_HTML__", BULK_PREVIEW_HTML)
     .replace("__BULK_JS__", BULK_JS)
     .replace("__PROVENANCE_JS__", PROVENANCE_JS)
+    .replace("__LINEAGE_JS__", LINEAGE_JS)
 )
