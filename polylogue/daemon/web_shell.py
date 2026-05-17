@@ -8,6 +8,7 @@ from polylogue.daemon.web_shell_bulk import (
     BULK_PREVIEW_HTML,
     BULK_TOOLBAR_HTML,
 )
+from polylogue.daemon.web_shell_lineage import LINEAGE_CSS, LINEAGE_JS
 from polylogue.daemon.web_shell_workspace import WORKSPACE_CSS, WORKSPACE_HTML, WORKSPACE_JS
 
 WEB_SHELL_HTML = (
@@ -188,6 +189,7 @@ __WORKSPACE_CSS__
 .annotation-item .meta { color: var(--text-dim); font-family: var(--font-mono); font-size: 10px; margin-bottom: 4px; }
 .annotation-item .note { color: var(--text); line-height: 1.45; white-space: pre-wrap; font-size: var(--small); }
 .annotation-actions { display: flex; gap: 4px; margin-top: 6px; }
+__LINEAGE_CSS__
 .raw-block { font-family: var(--font-mono); font-size: 10px; white-space: pre-wrap; word-break: break-all;
   background: var(--panel-subtle); border: 1px solid var(--border); padding: 8px; border-radius: var(--radius);
   max-height: 300px; overflow-y: auto; color: var(--text-muted); }
@@ -249,6 +251,7 @@ __WORKSPACE_HTML__
   <div id="inspector">
     <div id="inspector-tabs">
       <button class="active" data-tab="info">Info</button>
+      <button data-tab="lineage">Lineage</button>
       <button data-tab="raw">Raw</button>
       <button data-tab="notes">Notes</button>
     </div>
@@ -292,6 +295,10 @@ var state = {
   status: {}, facets: null, inspectorTab: 'info',
   marks: {}, annotations: {}, savedViews: [], workspaces: [], userStateError: '',
   mode: 'single', stackPayload: null, comparePayload: null,
+  // Lineage view (#1121): topology payload keyed by conversation id and
+  // cached for the lifetime of the selection so flipping tabs does not
+  // re-fetch.
+  lineage: null, lineageLoading: false, lineageError: '',
   // Bulk selection state (#1119). selection is a Set-like object keyed by
   // conversation_id. lastBulkResult holds the per-conversation envelope from
   // the most recent bulk operation: {succeeded:[ids], failed:[{id,reason}],
@@ -393,6 +400,8 @@ async function loadConversation(id, updateURL) {
   state.mode = 'single';
   state.stackPayload = null;
   state.comparePayload = null;
+  state.lineage = null;
+  state.lineageError = '';
   if (updateURL !== false) pushSingleURL(id);
   try {
     var data = await fetchJSON('/api/conversations/' + id);
@@ -693,9 +702,12 @@ function renderInspector() {
   var c = state.selected;
   var tab = state.inspectorTab || 'info';
   if (tab === 'info') renderInspectorInfo(el, c);
+  else if (tab === 'lineage') renderInspectorLineage(el, c);
   else if (tab === 'raw') renderInspectorRaw(el, c);
   else if (tab === 'notes') renderInspectorNotes(el, c);
 }
+
+__LINEAGE_JS__
 
 function renderInspectorInfo(el, c) {
   var fields = [
@@ -1081,4 +1093,6 @@ startRealtimeChannel();
     .replace("__BULK_TOOLBAR_HTML__", BULK_TOOLBAR_HTML)
     .replace("__BULK_PREVIEW_HTML__", BULK_PREVIEW_HTML)
     .replace("__BULK_JS__", BULK_JS)
+    .replace("__LINEAGE_CSS__", LINEAGE_CSS)
+    .replace("__LINEAGE_JS__", LINEAGE_JS)
 )

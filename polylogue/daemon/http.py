@@ -397,6 +397,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_get_messages(path[2], params)
         elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "raw":
             self._handle_get_conversation_raw(path[2])
+        elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "topology":
+            self._handle_get_topology(path[2], params)
         elif len(path) == 4 and path[:3] == ["api", "raw_artifacts"]:
             self._handle_get_raw_artifact(path[3])
         else:
@@ -831,6 +833,32 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "session_id": getattr(conv, "session_id", None),
             "raw_artifacts": raw_items,
         }
+
+    # ------------------------------------------------------------------
+    # Handlers: get session topology (lineage graph)
+    # ------------------------------------------------------------------
+
+    @daemon_safe_handler
+    def _handle_get_topology(self, conv_id: str, params: dict[str, list[str]]) -> None:
+        """Return the bounded lineage graph rooted at ``conv_id``.
+
+        Bounded by ``?limit=`` (default 200, hard cap 1000) so the reader
+        never streams an unbounded subtree (#1121 AC). Envelope shape is
+        owned by ``daemon.topology_http.topology_envelope``.
+        """
+        from polylogue.daemon.topology_http import topology_envelope
+
+        node_limit = max(1, min(self._get_int(params, "limit", 200), 1000))
+
+        async def _get(poly: Polylogue) -> object:
+            topology = await poly.repository.get_session_topology(conv_id)
+            return None if topology is None else topology_envelope(topology, node_limit=node_limit)
+
+        result = self._sync_run(_get)
+        if result is None:
+            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
+            return
+        self._send_json(HTTPStatus.OK, result)
 
     # ------------------------------------------------------------------
     # Handlers: get messages
