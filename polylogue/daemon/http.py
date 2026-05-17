@@ -655,6 +655,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_get_conversation_topology(path[2], params)
         elif len(path) == 4 and path[:3] == ["api", "insights", "sessions"]:
             self._handle_get_session_insights(path[3], params)
+        elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "similar":
+            self._handle_get_conversation_similar(path[2], params)
         elif len(path) == 4 and path[:3] == ["api", "raw_artifacts"]:
             self._handle_get_raw_artifact(path[3])
         else:
@@ -1299,6 +1301,42 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.NOT_FOUND, "not_found")
             return
         self._send_json(HTTPStatus.OK, result)
+
+    # ------------------------------------------------------------------
+    # Handlers: per-conversation embedding similarity (#1123)
+    # ------------------------------------------------------------------
+
+    @daemon_safe_handler
+    def _handle_get_conversation_similar(
+        self,
+        conv_id: str,
+        params: dict[str, list[str]],
+    ) -> None:
+        """``GET /api/conversations/{id}/similar[?limit=N]``.
+
+        Returns ranked similar conversations through the embedding read
+        surface from #828. The endpoint is honest about the embedding
+        pipeline's state: when embeddings are disabled, unavailable, or
+        the source conversation has not been embedded yet, the response
+        carries an explicit ``status`` rather than an empty success.
+        ``limit`` is clamped server-side to
+        :data:`polylogue.daemon.similarity.SIMILAR_RESULTS_MAX`.
+        """
+        from polylogue.daemon.similarity import build_similar_payload
+
+        requested_limit: int | None = None
+        raw_limit = self._get_param(params, "limit")
+        if raw_limit is not None:
+            try:
+                requested_limit = int(raw_limit)
+            except (TypeError, ValueError):
+                requested_limit = None
+
+        payload = build_similar_payload(conv_id, limit=requested_limit)
+        if payload is None:
+            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
+            return
+        self._send_json(HTTPStatus.OK, payload)
 
     # ------------------------------------------------------------------
     # Handlers: get messages

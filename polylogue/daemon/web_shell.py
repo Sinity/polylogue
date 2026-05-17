@@ -10,6 +10,7 @@ from polylogue.daemon.web_shell_bulk import (
 )
 from polylogue.daemon.web_shell_lineage import LINEAGE_JS
 from polylogue.daemon.web_shell_provenance import PROVENANCE_JS
+from polylogue.daemon.web_shell_similar import SIMILAR_JS
 from polylogue.daemon.web_shell_workspace import WORKSPACE_CSS, WORKSPACE_HTML, WORKSPACE_JS
 
 WEB_SHELL_HTML = (
@@ -263,6 +264,7 @@ __WORKSPACE_HTML__
       <button data-tab="lineage">Lineage</button>
       <button data-tab="insights">Insights</button>
       <button data-tab="raw">Raw</button>
+      <button data-tab="similar">Similar</button>
       <button data-tab="notes">Notes</button>
     </div>
     <div id="inspector-content"><div class="inspector-empty">Select a conversation to inspect</div></div>
@@ -329,7 +331,12 @@ var state = {
   insightsPanels: {},
   // Per-conversation collapsed-section toggles for the Insights tab.
   // Keyed as ``"<conversation_id>:<kind>"``; default = expanded.
-  insightsCollapsed: {}
+  insightsCollapsed: {},
+  // Per-conversation similarity panel cache (#1123). Keyed by
+  // conversation_id; populated on demand when the Similar inspector
+  // tab is opened. ``undefined`` means "not loaded yet"; the envelope
+  // carries the explicit pipeline state under ``status``.
+  similarPanels: {}
 };
 
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -730,6 +737,7 @@ function renderInspector() {
   else if (tab === 'lineage') renderInspectorLineage(el, c);
   else if (tab === 'insights') renderInspectorInsights(el, c);
   else if (tab === 'raw') renderInspectorRaw(el, c);
+  else if (tab === 'similar') renderInspectorSimilar(el, c);
   else if (tab === 'notes') renderInspectorNotes(el, c);
 }
 
@@ -1053,6 +1061,8 @@ function renderInspectorInfo(el, c) {
 __PROVENANCE_JS__
 
 __LINEAGE_JS__
+
+__SIMILAR_JS__
 
 async function openCompareWith() {
   if (!state.selected) return;
@@ -1425,4 +1435,5 @@ startRealtimeChannel();
     .replace("__BULK_JS__", BULK_JS)
     .replace("__PROVENANCE_JS__", PROVENANCE_JS)
     .replace("__LINEAGE_JS__", LINEAGE_JS)
+    .replace("__SIMILAR_JS__", SIMILAR_JS)
 )
