@@ -276,6 +276,11 @@ class PolylogueConfig:
         return str(self._data.get("notification_backend", "log"))
 
     @property
+    def notification_webhook_url(self) -> str | None:
+        v = self._data.get("notification_webhook_url")
+        return v if isinstance(v, str) and v else None
+
+    @property
     def health_check_interval_s(self) -> int:
         return int(str(self._data.get("health_check_interval_s", 300)))
 
@@ -410,6 +415,7 @@ def _default_config_values() -> dict[str, object]:
         "force_plain": False,
         "schema_validation": "advisory",
         "notification_backend": "log",
+        "notification_webhook_url": None,
         "health_check_interval_s": 300,
         "health_check_tiers": "fast,medium",
         "watch_debounce_s": 2.0,
@@ -568,7 +574,10 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
             "level": "log_level",
             "force_plain": "force_plain",
         },
-        "notifications": {"backend": "notification_backend"},
+        "notifications": {
+            "backend": "notification_backend",
+            "webhook_url": "notification_webhook_url",
+        },
         "health": {
             "check_interval_s": "health_check_interval_s",
             "check_tiers": "health_check_tiers",
@@ -603,6 +612,7 @@ def _apply_env_overrides(cfg: dict[str, object]) -> None:
         "POLYLOGUE_SLOW_QUERY_NOTICE_SECONDS": "slow_query_notice_seconds",
         "POLYLOGUE_SCHEMA_VALIDATION": "schema_validation",
         "POLYLOGUE_NOTIFICATION_BACKEND": "notification_backend",
+        "POLYLOGUE_NOTIFICATION_WEBHOOK_URL": "notification_webhook_url",
         "POLYLOGUE_HEALTH_CHECK_INTERVAL_S": "health_check_interval_s",
         "POLYLOGUE_HEALTH_CHECK_TIERS": "health_check_tiers",
         "POLYLOGUE_API_HOST": "api_host",
@@ -689,7 +699,13 @@ def format_config_toml(cfg: dict[str, object]) -> str:
                 ("force_plain", "force_plain"),
             ],
         ),
-        ("notifications", [("backend", "notification_backend")]),
+        (
+            "notifications",
+            [
+                ("backend", "notification_backend"),
+                ("webhook_url", "notification_webhook_url"),
+            ],
+        ),
         (
             "health",
             [

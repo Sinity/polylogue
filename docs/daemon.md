@@ -194,7 +194,7 @@ Configure via `polylogue.toml`:
 
 ```toml
 [notifications]
-notification_backend = "log"
+backend = "log"
 ```
 
 Or via environment variable:
@@ -202,6 +202,52 @@ Or via environment variable:
 ```bash
 export POLYLOGUE_NOTIFICATION_BACKEND=log
 ```
+
+#### Webhook backend
+
+Selecting `backend = "webhook"` POSTs a typed JSON envelope to a
+user-configured URL on every non-OK health tick. The URL is fed through the
+resolved config and must be set; missing or empty URLs raise a typed config
+error at daemon startup rather than silently falling back to `log`.
+
+```toml
+[notifications]
+backend = "webhook"
+webhook_url = "https://hooks.example.invalid/polylogue"
+```
+
+Or via environment variables:
+
+```bash
+export POLYLOGUE_NOTIFICATION_BACKEND=webhook
+export POLYLOGUE_NOTIFICATION_WEBHOOK_URL=https://hooks.example.invalid/polylogue
+```
+
+Envelope shape:
+
+```json
+{
+  "alerts": [
+    {
+      "check_name": "wal_size",
+      "tier": "fast",
+      "severity": "warning",
+      "message": "wal_size warning: 80 MB",
+      "checked_at": "2026-05-17T00:00:00+00:00",
+      "consecutive_failures": 1
+    }
+  ],
+  "emitted_at": 1747440000.123,
+  "daemon_version": "0.6.0+g<sha>"
+}
+```
+
+The backend uses a bounded 5-second per-attempt timeout and a single retry on
+transient failure (network error or HTTP 5xx). 4xx responses are treated as
+permanent client errors and are not retried. Persistent failure surfaces
+through the existing periodic-loop catch boundary in
+`polylogue/daemon/cli.py`; it does not crash the daemon. Dedup and
+rate-limiting are out of scope for this backend.
 
 ## Maintenance
 
