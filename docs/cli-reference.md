@@ -145,6 +145,7 @@ Commands:
   doctor        Run archive health checks and repairs.
   export        Export conversations.
   ingest        Import conversations from configured sources.
+  init          Detect chat sources and write a starter polylogue.toml.
   insights      Rebuild and inspect derived session insights.
   list          List matched conversations.
   maintenance   Preview and run maintenance backfill operations.

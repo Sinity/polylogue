@@ -153,13 +153,20 @@ def _show_status_json(env: AppEnv, status: dict[str, Any]) -> None:
 
 def _show_direct_json(env: AppEnv) -> None:
     """Machine-readable JSON fallback when daemon is not running."""
+    from polylogue.cli.commands.init import starter_config_path
     from polylogue.paths import archive_root, db_path
 
     db = db_path()
+    config_path = starter_config_path()
     payload: dict[str, Any] = {
         "daemon_liveness": False,
         "archive_root": str(archive_root()),
         "db_exists": db.exists(),
+        "config_exists": config_path.exists(),
+        "config_path": str(config_path),
+        "next_action": (
+            "polylogued run" if db.exists() else ("polylogued run" if config_path.exists() else "polylogue init")
+        ),
     }
     if db.exists():
         try:
@@ -183,9 +190,18 @@ def _show_direct_status(env: AppEnv, *, compact: bool = False) -> None:
 
     db = db_path()
     if not db.exists():
-        env.ui.console.print(
-            "\n[yellow]No archive found.[/yellow] Start the daemon with [bold]polylogued run[/bold] to begin ingestion."
-        )
+        from polylogue.cli.commands.init import starter_config_path
+
+        config_path = starter_config_path()
+        env.ui.console.print("\n[yellow]No archive found.[/yellow]")
+        if not config_path.exists():
+            env.ui.console.print(
+                "  First-run setup: run [bold]polylogue init[/bold]"
+                " to detect chat sources and write a starter config,"
+                " then [bold]polylogued run[/bold] to start ingestion."
+            )
+        else:
+            env.ui.console.print("  Start the daemon with [bold]polylogued run[/bold] to begin ingestion.")
         return
 
     try:

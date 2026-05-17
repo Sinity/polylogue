@@ -526,6 +526,7 @@ class TestCliMetadata:
             "reset",
             "status",
             "ingest",
+            "init",
             "auth",
             "backup",
             "completions",
