@@ -31,6 +31,7 @@ from polylogue.insights.archive import (
     WorkThreadInsight,
     WorkThreadInsightQuery,
 )
+from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 
 if TYPE_CHECKING:
@@ -119,6 +120,12 @@ class SyncInsightQueriesMixin:
         query: ProviderAnalyticsInsightQuery | None = None,
     ) -> list[ProviderAnalyticsInsight]:
         return run_coroutine_sync(self._facade.list_provider_analytics_insights(query))
+
+    def list_tool_usage_insights(
+        self,
+        query: ToolUsageInsightQuery | None = None,
+    ) -> list[ToolUsageInsight]:
+        return run_coroutine_sync(self._facade.list_tool_usage_insights(query))
 
     def list_session_cost_insights(
         self,

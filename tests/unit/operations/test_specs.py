@@ -33,6 +33,7 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "query-day-session-summaries",
         "query-week-session-summaries",
         "query-provider-analytics",
+        "query-tool-usage",
         "query-session-enrichments",
         "query-session-insight-status",
         "query-archive-debt",

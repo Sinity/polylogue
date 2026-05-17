@@ -23,11 +23,16 @@ from polylogue.storage.sqlite.queries import conversations as conversations_q
 from polylogue.storage.sqlite.queries import messages as messages_q
 from polylogue.storage.sqlite.queries import provider_events as provider_events_q
 from polylogue.storage.sqlite.queries import stats as stats_q
+from polylogue.storage.sqlite.queries import tool_usage as tool_usage_q
 from polylogue.storage.sqlite.queries.messages import MessageTypeName
 from polylogue.storage.sqlite.queries.stats import (
     AggregateMessageStats,
     ProviderConversationCountRow,
     ProviderMetricsRow,
+)
+from polylogue.storage.sqlite.queries.tool_usage import (
+    ToolUsageProviderCoverageRow,
+    ToolUsageRow,
 )
 
 
@@ -251,6 +256,16 @@ class SQLiteQueryStoreArchiveMixin:
     async def get_provider_metrics_rows(self) -> list[ProviderMetricsRow]:
         async with self._connection_factory() as conn:
             return await stats_q.get_provider_metrics_rows(conn)
+
+    async def get_tool_usage_rows(self) -> list[ToolUsageRow]:
+        async with self._connection_factory() as conn:
+            return await tool_usage_q.get_tool_usage_rows(conn)
+
+    async def get_tool_usage_provider_coverage_rows(
+        self,
+    ) -> list[ToolUsageProviderCoverageRow]:
+        async with self._connection_factory() as conn:
+            return await tool_usage_q.get_tool_usage_provider_coverage_rows(conn)
 
     async def get_last_sync_timestamp(self) -> str | None:
         async with self._connection_factory() as conn:

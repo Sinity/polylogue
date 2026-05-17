@@ -76,6 +76,7 @@ _INSIGHT_OPERATION_BY_METHOD = {
     "list_day_session_summary_insights": "query-day-session-summaries",
     "list_week_session_summary_insights": "query-week-session-summaries",
     "list_provider_analytics_insights": "query-provider-analytics",
+    "list_tool_usage_insights": "query-tool-usage",
     "list_archive_debt_insights": "query-archive-debt",
 }
 _INSIGHT_SUBCOMMAND_OPERATION_NAMES = {

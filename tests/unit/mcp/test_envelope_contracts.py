@@ -107,6 +107,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "week_session_summaries": ("envelope", frozenset({"items", "total"})),
     "work_threads": ("envelope", frozenset({"items", "total"})),
     "provider_analytics": ("envelope", frozenset({"items", "total"})),
+    "tool_usage": ("envelope", frozenset({"items", "total"})),
     "archive_debt": ("envelope", frozenset({"items", "total"})),
 }
 

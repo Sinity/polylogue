@@ -14,6 +14,19 @@ documentation polish do not require an entry.
 
 ### Added
 
+- Tool usage analytics with explicit per-provider coverage (#1133). New
+  insight type `tool_usage` rolls up per-(provider, tool, action_kind)
+  call counts, conversation counts, distinct tool ids, and affected-path
+  / output-text density over canonical `action_events`. The same
+  envelope carries a per-provider coverage map distinguishing
+  "data unavailable" (provider exposes no tool events) from "zero
+  observed" so coverage gaps are never collapsed into silent zeros.
+  Available as `polylogue insights tool-usage` (`--tool`,
+  `--mcp-server`, `--action-kind` filters), MCP tool `tool_usage`, and
+  facade `list_tool_usage_insights(query)`. MCP tool names of the form
+  `mcp__<server>__<tool>` have their server segment extracted as a
+  first-class `mcp_server` field on each entry.
+
 - Resume brief is now a first-class durable insight (#1129). `ResumeBrief`
   carries a typed `provenance` payload citing the session, message,
   work-event, phase, and work-thread IDs it composed from, with a
