@@ -6,6 +6,16 @@ runs detect any accidental output changes.
 
 Run ``pytest --snapshot-update`` to regenerate snapshots after intentional
 renderer changes.
+
+Anti-pattern (rejected case): we intentionally do NOT snapshot
+non-deterministic fields like wall-clock timestamps, internal hash prefixes,
+or process timings. All conversations built here use stable IDs, fixed roles,
+and fixed text so that the snapshot files pin output *shape* (column order,
+heading structure, redaction markers, code-fence preservation, attachment
+shape) rather than implementation noise. If a future renderer change wants
+to add e.g. a per-render generated UUID, the test must be updated to redact
+it before the snapshot comparison — not the snapshot baseline regenerated to
+absorb the change.
 """
 
 from __future__ import annotations
@@ -14,7 +24,9 @@ import pytest
 
 syrupy = pytest.importorskip("syrupy")
 
+from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.models import Conversation, Message
+from polylogue.rendering.core_markdown import format_conversation_markdown
 from polylogue.rendering.renderers.html import render_conversation_html
 from polylogue.types import ContentBlockType
 from tests.infra.builders import make_conv as build_conv
@@ -93,6 +105,332 @@ def test_conversation_with_followup_html_snapshot(snapshot: object) -> None:
         _make_msg("m4", "user", "Follow-up"),
     ]
     conv = _make_conv(msgs, title="Followup After Branch")
+    html = render_conversation_html(conv)
+    assert html == snapshot
+
+
+# ---------------------------------------------------------------------------
+# Markdown renderer snapshots
+#
+# These pin user-visible Markdown contract shape: heading levels, fenced code
+# preservation, structured-block expansion (tool_use/thinking/attachments),
+# JSON pretty-printing. Conversations are built with stable IDs and fixed
+# content so the snapshot files are deterministic.
+# ---------------------------------------------------------------------------
+
+
+def test_empty_conversation_markdown_snapshot(snapshot: object) -> None:
+    """A conversation with no messages renders header-only Markdown."""
+    conv = build_conv(
+        id="snap-md-empty",
+        provider="chatgpt",
+        title="Empty Conversation",
+        messages=[],
+    )
+    md = format_conversation_markdown(conv)
+    assert md == snapshot
+
+
+def test_single_user_turn_markdown_snapshot(snapshot: object) -> None:
+    """Single user message renders one ``## user`` section."""
+    msgs = [build_msg(id="m1", role="user", text="What is the meaning of life?")]
+    conv = build_conv(
+        id="snap-md-user",
+        provider="chatgpt",
+        title="Single User Turn",
+        messages=msgs,
+    )
+    md = format_conversation_markdown(conv)
+    assert md == snapshot
+
+
+def test_single_assistant_turn_markdown_snapshot(snapshot: object) -> None:
+    """Single assistant message renders one ``## assistant`` section."""
+    msgs = [
+        build_msg(
+            id="m1",
+            role="assistant",
+            text="The answer is 42.",
+        )
+    ]
+    conv = build_conv(
+        id="snap-md-assistant",
+        provider="chatgpt",
+        title="Single Assistant Turn",
+        messages=msgs,
+    )
+    md = format_conversation_markdown(conv)
+    assert md == snapshot
+
+
+def test_tool_use_roundtrip_markdown_snapshot(snapshot: object) -> None:
+    """Tool-use + tool-result blocks render in markdown form."""
+    msgs = [
+        build_msg(id="m1", role="user", text="List files in cwd"),
+        build_msg(
+            id="m2",
+            role="assistant",
+            text="",
+            content_blocks=[
+                {
+                    "type": ContentBlockType.TOOL_USE.value,
+                    "name": "bash",
+                    "id": "call-1",
+                    "input": {"command": "ls"},
+                },
+            ],
+        ),
+        build_msg(
+            id="m3",
+            role="tool",
+            text="",
+            content_blocks=[
+                {
+                    "type": ContentBlockType.TOOL_RESULT.value,
+                    "tool_use_id": "call-1",
+                    "content": "README.md\npyproject.toml\n",
+                }
+            ],
+        ),
+    ]
+    conv = build_conv(
+        id="snap-md-tool",
+        provider="claude-ai",
+        title="Tool Use Roundtrip",
+        messages=msgs,
+    )
+    md = format_conversation_markdown(conv)
+    assert md == snapshot
+
+
+def test_thinking_block_markdown_snapshot(snapshot: object) -> None:
+    """Thinking block renders as a collapsible ``<details>`` section."""
+    msgs = [
+        build_msg(
+            id="m1",
+            role="assistant",
+            text="",
+            content_blocks=[
+                {
+                    "type": ContentBlockType.THINKING.value,
+                    "text": "Let me think step by step about this.",
+                },
+                {
+                    "type": ContentBlockType.TEXT.value,
+                    "text": "Final answer.",
+                },
+            ],
+        )
+    ]
+    conv = build_conv(
+        id="snap-md-thinking",
+        provider="claude-ai",
+        title="Thinking Block",
+        messages=msgs,
+    )
+    md = format_conversation_markdown(conv)
+    assert md == snapshot
+
+
+def test_attachment_markdown_snapshot(snapshot: object) -> None:
+    """Messages with attachments render an ``Attachment:`` line per asset."""
+    msgs = [
+        build_msg(
+            id="m1",
+            role="user",
+            text="Please review this document",
+            attachments=[
+                Attachment(
+                    id="att-1",
+                    name="spec.pdf",
+                    mime_type="application/pdf",
+                    path="assets/spec.pdf",
+                ),
+            ],
+        ),
+    ]
+    conv = build_conv(
+        id="snap-md-attachment",
+        provider="chatgpt",
+        title="Attachment Message",
+        messages=msgs,
+    )
+    md = format_conversation_markdown(conv)
+    assert md == snapshot
+
+
+def test_code_fence_with_backticks_markdown_snapshot(snapshot: object) -> None:
+    """Code blocks render via a code block; embedded backticks preserved verbatim."""
+    msgs = [
+        build_msg(
+            id="m1",
+            role="assistant",
+            text="",
+            content_blocks=[
+                {
+                    "type": ContentBlockType.CODE.value,
+                    "language": "python",
+                    "text": "# example\nprint('inline `backticks` survive')\n",
+                }
+            ],
+        )
+    ]
+    conv = build_conv(
+        id="snap-md-code",
+        provider="chatgpt",
+        title="Code With Backticks",
+        messages=msgs,
+    )
+    md = format_conversation_markdown(conv)
+    assert md == snapshot
+
+
+def test_json_payload_markdown_snapshot(snapshot: object) -> None:
+    """Plain-text JSON payloads get wrapped in a fenced ``json`` block."""
+    msgs = [
+        build_msg(
+            id="m1",
+            role="assistant",
+            text='{"answer": 42, "ok": true}',
+        )
+    ]
+    conv = build_conv(
+        id="snap-md-json",
+        provider="chatgpt",
+        title="JSON Payload",
+        messages=msgs,
+    )
+    md = format_conversation_markdown(conv)
+    assert md == snapshot
+
+
+# ---------------------------------------------------------------------------
+# HTML renderer matrix snapshots
+#
+# Mirror the markdown matrix to pin contract-shaped HTML output: empty
+# conversation, single turns, structured blocks, attachments. Renderer-internal
+# noise (Pygments CSS classes) is preserved deliberately — those classes ARE
+# part of the rendered surface contract and any change to them affects shipped
+# stylesheets. See the module docstring "anti-pattern" note.
+# ---------------------------------------------------------------------------
+
+
+def test_empty_conversation_html_snapshot(snapshot: object) -> None:
+    """Empty conversation renders chrome (header/template) but no message rows."""
+    conv = build_conv(
+        id="snap-html-empty",
+        provider="chatgpt",
+        title="Empty Conversation",
+        messages=[],
+    )
+    html = render_conversation_html(conv)
+    assert html == snapshot
+
+
+def test_single_user_turn_html_snapshot(snapshot: object) -> None:
+    """Single user message renders one message row."""
+    msgs = [build_msg(id="m1", role="user", text="What is the meaning of life?")]
+    conv = build_conv(
+        id="snap-html-user",
+        provider="chatgpt",
+        title="Single User Turn",
+        messages=msgs,
+    )
+    html = render_conversation_html(conv)
+    assert html == snapshot
+
+
+def test_tool_use_roundtrip_html_snapshot(snapshot: object) -> None:
+    """Tool-use round-trip renders structured tool/tool-result blocks in HTML."""
+    msgs = [
+        build_msg(id="m1", role="user", text="List files in cwd"),
+        build_msg(
+            id="m2",
+            role="assistant",
+            text="",
+            content_blocks=[
+                {
+                    "type": ContentBlockType.TOOL_USE.value,
+                    "name": "bash",
+                    "id": "call-1",
+                    "input": {"command": "ls"},
+                },
+            ],
+        ),
+        build_msg(
+            id="m3",
+            role="tool",
+            text="",
+            content_blocks=[
+                {
+                    "type": ContentBlockType.TOOL_RESULT.value,
+                    "tool_use_id": "call-1",
+                    "content": "README.md\npyproject.toml\n",
+                }
+            ],
+        ),
+    ]
+    conv = build_conv(
+        id="snap-html-tool",
+        provider="claude-ai",
+        title="Tool Use Roundtrip",
+        messages=msgs,
+    )
+    html = render_conversation_html(conv)
+    assert html == snapshot
+
+
+def test_thinking_block_html_snapshot(snapshot: object) -> None:
+    """Thinking block renders as a collapsible section in HTML."""
+    msgs = [
+        build_msg(
+            id="m1",
+            role="assistant",
+            text="",
+            content_blocks=[
+                {
+                    "type": ContentBlockType.THINKING.value,
+                    "text": "Let me think step by step about this.",
+                },
+                {
+                    "type": ContentBlockType.TEXT.value,
+                    "text": "Final answer.",
+                },
+            ],
+        )
+    ]
+    conv = build_conv(
+        id="snap-html-thinking",
+        provider="claude-ai",
+        title="Thinking Block",
+        messages=msgs,
+    )
+    html = render_conversation_html(conv)
+    assert html == snapshot
+
+
+def test_code_fence_with_backticks_html_snapshot(snapshot: object) -> None:
+    """Code blocks render via Pygments; embedded backticks survive escaping."""
+    msgs = [
+        build_msg(
+            id="m1",
+            role="assistant",
+            text="",
+            content_blocks=[
+                {
+                    "type": ContentBlockType.CODE.value,
+                    "language": "python",
+                    "text": "# example\nprint('inline `backticks` survive')\n",
+                }
+            ],
+        )
+    ]
+    conv = build_conv(
+        id="snap-html-code",
+        provider="chatgpt",
+        title="Code With Backticks",
+        messages=msgs,
+    )
     html = render_conversation_html(conv)
     assert html == snapshot
 

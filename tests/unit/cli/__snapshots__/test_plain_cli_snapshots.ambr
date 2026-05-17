@@ -1,0 +1,35 @@
+# serializer version: 1
+# name: test_plain_count_snapshot
+  '''
+  2
+  
+  '''
+# ---
+# name: test_plain_list_provider_filter_snapshot
+  '''
+  chatgpt:402913ec-9ef2-49  <TIMESTAMP>  chatgpt       corpus-01 (5 msgs)
+  chatgpt:8a476a87-e49d-48  <TIMESTAMP>  chatgpt       corpus-00 (5 msgs)
+  
+  '''
+# ---
+# name: test_plain_list_snapshot
+  '''
+  chatgpt:402913ec-9ef2-49  <TIMESTAMP>  chatgpt       corpus-01 (5 msgs)
+  chatgpt:8a476a87-e49d-48  <TIMESTAMP>  chatgpt       corpus-00 (5 msgs)
+  
+  '''
+# ---
+# name: test_plain_stats_snapshot
+  '''
+  
+  Conversations: 2
+  
+  Messages: 10 total (6 user, 4 assistant)
+  Providers: chatgpt (2)
+  Attachment refs: 0
+  Unique attachments: 0
+  Embeddings: 0/2 convs, 0 msgs (0.0%), pending 2
+  Date range: <TIMESTAMP> to <TIMESTAMP>
+  
+  '''
+# ---
