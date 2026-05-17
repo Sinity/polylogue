@@ -193,7 +193,17 @@ def _apply_params(filter_obj: Any, params: FilterParams) -> Any:
     """
     plan = filter_obj._plan
     if params.provider is not None:
-        filter_obj = filter_obj.provider(params.provider)
+        # Provider on the builder replaces a prior provider rather than
+        # intersecting. The monotonicity / commutativity laws (more
+        # constraints → fewer results) only hold when a second provider
+        # filter that disagrees with the first becomes the empty set,
+        # not a different provider's results. Map disagreement to an
+        # impossible provider so the second filter strictly tightens.
+        current_providers = tuple(str(p) for p in plan.providers)
+        if current_providers and params.provider not in current_providers:
+            filter_obj = filter_obj.provider("__no_such_provider__")
+        else:
+            filter_obj = filter_obj.provider(params.provider)
     if params.has_tool_use:
         filter_obj = filter_obj.has_tool_use()
     if params.has_thinking:

@@ -134,12 +134,6 @@ def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
-def _get_or_create_polylogue() -> Polylogue:
-    from polylogue.api import Polylogue as _Polylogue
-
-    return _Polylogue()
-
-
 def _build_query_spec_params(
     params: dict[str, list[str]],
     handler: DaemonAPIHandler,
@@ -955,14 +949,18 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         op_id = f"reset-{scope}-{conv_id[:16] if conv_id else 'all'}"
 
-        def _do_reset() -> dict[str, object]:
-            poly = _get_or_create_polylogue()
+        async def _do_reset(poly: Polylogue) -> dict[str, object]:
             if scope == "conversation" and conv_id:
-                deleted = poly.delete_conversation(conv_id)
-                return {"deleted": deleted, "conversation_id": conv_id}
+                # Route through the typed delete contract so resolution and
+                # idempotency live in ArchiveMutationsMixin (#862). The prior
+                # implementation invoked the async ``delete_conversation`` from
+                # a sync callback, sending the resulting coroutine into the
+                # JSON encoder unchanged.
+                result = await poly.delete_conversation_safe(conv_id)
+                return {"deleted": result.outcome == "deleted", "conversation_id": conv_id}
             return {"ok": True}
 
-        result = self._sync_run(lambda p: _do_reset())
+        result = self._sync_run(_do_reset)
 
         emit_daemon_event("reset", operation_id=op_id, payload=result if isinstance(result, dict) else None)
 

@@ -33,7 +33,12 @@ if TYPE_CHECKING:
     from polylogue.storage.insights.session.runtime import SessionInsightCounts
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.search.models import SearchResult
-    from polylogue.surfaces.payloads import TagMutationResult
+    from polylogue.surfaces.payloads import (
+        BulkTagMutationResult,
+        DeleteConversationResult,
+        MetadataMutationResult,
+        TagMutationResult,
+    )
 
 
 class ConversationNotFoundError(PolylogueError):
@@ -374,10 +379,16 @@ class PolylogueArchiveMixin:
         """Permanently delete a conversation and all associated data.
 
         Returns ``True`` if something was deleted, ``False`` if the conversation
-        was not found.
+        was not found. Routes through :meth:`ArchiveMutationsMixin
+        .delete_conversation_safe` so resolution and idempotency stay
+        centralized (#862).
         """
-        deleted_count = await self.filter().id(conversation_id).delete()
-        return deleted_count > 0
+        result = await self.operations.delete_conversation_safe(conversation_id)
+        return result.outcome == "deleted"
+
+    async def delete_conversation_safe(self, conversation_id: str) -> DeleteConversationResult:
+        """Typed delete that returns ``outcome="deleted"`` or ``"not_found"``."""
+        return await self.operations.delete_conversation_safe(conversation_id)
 
     async def add_tag(self, conversation_id: str, tag: str) -> TagMutationResult:
         """Add a tag to a conversation.
@@ -427,12 +438,29 @@ class PolylogueArchiveMixin:
         """Set a metadata key on a conversation.
 
         Returns ``True`` if the value was changed, ``False`` if it was already set
-        to the same value.
+        to the same value. Routes through :meth:`ArchiveMutationsMixin
+        .set_metadata_validated` so key validation and conversation
+        resolution stay centralized (#862).
         """
-        resolved = await self.repository.resolve_id(conversation_id, strict=True)
-        if resolved is None:
-            raise ConversationNotFoundError(conversation_id)
-        return await self.operations.update_metadata(str(resolved), key, value)
+        result = await self.operations.set_metadata_validated(conversation_id, key, value)
+        return result.outcome == "set"
+
+    async def set_metadata(self, conversation_id: str, key: str, value: object) -> MetadataMutationResult:
+        """Typed metadata-set returning ``outcome="set"`` or ``"unchanged"``."""
+        return await self.operations.set_metadata_validated(conversation_id, key, value)
+
+    async def delete_metadata(self, conversation_id: str, key: str) -> MetadataMutationResult:
+        """Typed metadata-delete returning ``outcome="deleted"`` or ``"not_found"``."""
+        return await self.operations.delete_metadata_validated(conversation_id, key)
+
+    async def bulk_tag_conversations(self, conversation_ids: list[str], tags: list[str]) -> BulkTagMutationResult:
+        """Apply a bulk-tag operation across many conversations (#862).
+
+        Validation (empty inputs and size limits) is enforced inside the
+        :class:`ArchiveMutationsMixin` so every surface sees the same
+        behavior.
+        """
+        return await self.operations.bulk_tag_conversations(conversation_ids, tags)
 
     # ------------------------------------------------------------------
     # Marks

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from contextlib import suppress
 from hashlib import sha256
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from polylogue.mcp.payloads import (
     MCPMetadataPayload,
@@ -181,24 +181,18 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def bulk_tag_conversations(conversation_ids: list[str], tags: list[str]) -> str:
         async def run() -> str:
-            if not conversation_ids:
-                return hooks.error_json("bulk_tag_conversations requires at least one conversation_id")
-            if not tags:
-                return hooks.error_json("bulk_tag_conversations requires at least one tag")
-            if len(conversation_ids) > 100:
-                return hooks.error_json("bulk_tag_conversations supports at most 100 conversation_ids")
-            if len(tags) > 20:
-                return hooks.error_json("bulk_tag_conversations supports at most 20 tags")
-            tag_store = hooks.get_tag_store()
-            applied_count = await tag_store.bulk_add_tags(conversation_ids, tags)
-            skipped_count = len(conversation_ids) - applied_count
+            poly = hooks.get_polylogue()
+            try:
+                result = await poly.bulk_tag_conversations(conversation_ids, tags)
+            except ValueError as exc:
+                return hooks.error_json(str(exc))
             return hooks.json_payload(
                 MutationResultPayload(
-                    status="ok",
-                    conversation_count=len(conversation_ids),
-                    tag_count=len(tags),
-                    affected_count=applied_count,
-                    skipped_count=skipped_count,
+                    status=result.outcome,
+                    conversation_count=result.conversation_count,
+                    tag_count=result.tag_count,
+                    affected_count=result.affected_count,
+                    skipped_count=result.skipped_count,
                 ),
                 exclude_none=True,
             )
@@ -611,24 +605,20 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def set_metadata(conversation_id: str, key: str, value: str) -> str:
         async def run() -> str:
-            # Validate metadata key
-            if not key or not key.strip():
-                return hooks.error_json(
-                    "metadata key must not be empty",
-                    conversation_id=conversation_id,
-                    code="invalid_key",
-                )
-            if len(key) > 200:
-                return hooks.error_json(
-                    "metadata key exceeds 200 characters",
-                    conversation_id=conversation_id,
-                    code="invalid_key",
-                )
+            from polylogue.api.archive import ConversationNotFoundError
+            from polylogue.operations.mutations import MetadataKeyValidationError
+            from polylogue.surfaces.payloads import validate_metadata_key
 
-            resolved, err = await _resolve_or_error(hooks, conversation_id)
-            if err:
-                return err
-            assert resolved is not None  # _resolve_or_error contract
+            # Short-circuit on key validation before opening the facade so
+            # the contract is fast and unit tests can exercise the rejection
+            # path without standing up an archive.
+            key_error = validate_metadata_key(key)
+            if key_error is not None:
+                return hooks.error_json(
+                    key_error,
+                    conversation_id=conversation_id,
+                    code="invalid_key",
+                )
 
             parsed_value: object = value
             with suppress(json.JSONDecodeError, TypeError):
@@ -636,13 +626,26 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             parsed_str = str(parsed_value)
 
             poly = hooks.get_polylogue()
-            was_changed = await poly.update_metadata(resolved, key, parsed_str)
+            try:
+                result = await poly.set_metadata(conversation_id, key, parsed_str)
+            except MetadataKeyValidationError as exc:
+                return hooks.error_json(
+                    str(exc),
+                    conversation_id=conversation_id,
+                    code="invalid_key",
+                )
+            except ConversationNotFoundError:
+                return hooks.error_json(
+                    "Conversation not found",
+                    code="not_found",
+                    conversation_id=conversation_id,
+                )
             return hooks.json_payload(
                 MutationResultPayload(
-                    status="ok" if was_changed else "unchanged",
-                    conversation_id=resolved,
-                    key=key,
-                    detail=None if was_changed else "value_unchanged",
+                    status="ok" if result.outcome == "set" else "unchanged",
+                    conversation_id=result.conversation_id,
+                    key=result.key,
+                    detail=result.detail,
                 ),
                 exclude_none=True,
             )
@@ -652,19 +655,39 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def delete_metadata(conversation_id: str, key: str) -> str:
         async def run() -> str:
-            resolved, err = await _resolve_or_error(hooks, conversation_id)
-            if err:
-                return err
-            assert resolved is not None  # _resolve_or_error contract
+            from polylogue.api.archive import ConversationNotFoundError
+            from polylogue.operations.mutations import MetadataKeyValidationError
+            from polylogue.surfaces.payloads import validate_metadata_key
 
-            tag_store: Any = hooks.get_tag_store()
-            was_deleted = await tag_store.delete_metadata(resolved, key)
+            key_error = validate_metadata_key(key)
+            if key_error is not None:
+                return hooks.error_json(
+                    key_error,
+                    conversation_id=conversation_id,
+                    code="invalid_key",
+                )
+
+            poly = hooks.get_polylogue()
+            try:
+                result = await poly.delete_metadata(conversation_id, key)
+            except MetadataKeyValidationError as exc:
+                return hooks.error_json(
+                    str(exc),
+                    conversation_id=conversation_id,
+                    code="invalid_key",
+                )
+            except ConversationNotFoundError:
+                return hooks.error_json(
+                    "Conversation not found",
+                    code="not_found",
+                    conversation_id=conversation_id,
+                )
             return hooks.json_payload(
                 MutationResultPayload(
-                    status="ok" if was_deleted else "not_found",
-                    conversation_id=resolved,
-                    key=key,
-                    detail=None if was_deleted else "key_not_found",
+                    status="ok" if result.outcome == "deleted" else "not_found",
+                    conversation_id=result.conversation_id,
+                    key=result.key,
+                    detail=result.detail,
                 ),
                 exclude_none=True,
             )
@@ -679,19 +702,14 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     "Safety guard: set confirm=true to delete",
                     conversation_id=conversation_id,
                 )
-            resolved, err = await _resolve_or_error(hooks, conversation_id)
-            if err:
-                return err
-            assert resolved is not None  # _resolve_or_error contract
 
-            from polylogue.mcp.server_support import _get_polylogue
-
-            poly = _get_polylogue()
-            deleted = await poly.delete_conversation(resolved)
+            poly = hooks.get_polylogue()
+            result = await poly.delete_conversation_safe(conversation_id)
             return hooks.json_payload(
                 MutationResultPayload(
-                    status="deleted" if deleted else "not_found",
-                    conversation_id=resolved,
+                    status="deleted" if result.outcome == "deleted" else "not_found",
+                    conversation_id=result.conversation_id,
+                    detail=result.detail,
                 ),
                 exclude_none=True,
             )

@@ -600,6 +600,60 @@ class TagMutationResult(SurfacePayloadModel):
         return self.outcome in ("added", "removed")
 
 
+MetadataMutationOutcome: TypeAlias = Literal["set", "unchanged", "deleted", "not_found"]
+"""Metadata idempotency outcome exposed by all mutation surfaces."""
+
+
+class MetadataMutationResult(SurfacePayloadModel):
+    """Typed result for metadata set/delete mutations.
+
+    ``outcome``:
+    - ``set`` — the value changed (insert or update of a different value)
+    - ``unchanged`` — the key already held the same value
+    - ``deleted`` — the key existed and was removed
+    - ``not_found`` — the key did not exist on delete
+    """
+
+    outcome: MetadataMutationOutcome
+    conversation_id: str
+    key: str
+    detail: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.outcome in ("set", "deleted")
+
+
+DeleteConversationOutcome: TypeAlias = Literal["deleted", "not_found"]
+"""Conversation delete idempotency outcome exposed by all surfaces."""
+
+
+class DeleteConversationResult(SurfacePayloadModel):
+    """Typed result for a single conversation delete."""
+
+    outcome: DeleteConversationOutcome
+    conversation_id: str
+    detail: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.outcome == "deleted"
+
+
+class BulkTagMutationResult(SurfacePayloadModel):
+    """Typed result for bulk tag mutations.
+
+    Carries the same counts the MCP/CLI/daemon surfaces expose: how many
+    conversations had at least one tag applied (``affected_count``) and how
+    many were untouched because every tag was already present
+    (``skipped_count``).
+    """
+
+    outcome: Literal["ok"] = "ok"
+    conversation_count: int
+    tag_count: int
+    affected_count: int
+    skipped_count: int
+
+
 class ConversationDetailResponse(SurfacePayloadModel):
     """Shared response envelope for a single conversation detail."""
 
@@ -685,7 +739,26 @@ def _build_flags_from_conversation(conversation: object) -> ConversationFlagsPay
     return ConversationFlagsPayload(has_tool_use=has_tool, has_thinking=has_thinking, has_paste=has_paste)
 
 
+METADATA_KEY_MAX_LENGTH = 200
+"""Centralized maximum length for user metadata keys."""
+
+
+def validate_metadata_key(key: object) -> str | None:
+    """Validate a user metadata key.
+
+    Returns a machine-readable error message string, or ``None`` if the key
+    is valid. Centralized so CLI, MCP, daemon, and API surfaces enforce the
+    same constraints (issue #862).
+    """
+    if not isinstance(key, str) or not key or not key.strip():
+        return "metadata key must not be empty"
+    if len(key) > METADATA_KEY_MAX_LENGTH:
+        return f"metadata key exceeds {METADATA_KEY_MAX_LENGTH} characters"
+    return None
+
+
 __all__ = [
+    "BulkTagMutationResult",
     "ConversationDetailPayload",
     "ConversationDetailResponse",
     "ConversationFlagsPayload",
@@ -703,6 +776,11 @@ __all__ = [
     "MachineErrorEnvelope",
     "MachineSuccessEnvelope",
     "MachineSuccessPayload",
+    "METADATA_KEY_MAX_LENGTH",
+    "MetadataMutationOutcome",
+    "MetadataMutationResult",
+    "DeleteConversationOutcome",
+    "DeleteConversationResult",
     "MutationResultPayload",
     "QueryErrorPayload",
     "QueryMissDiagnosticsPayload",
@@ -720,4 +798,5 @@ __all__ = [
     "reader_conversation_actions",
     "reader_message_actions",
     "serialize_surface_payload",
+    "validate_metadata_key",
 ]

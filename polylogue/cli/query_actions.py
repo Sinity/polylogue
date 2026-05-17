@@ -115,7 +115,13 @@ async def apply_modifiers(
         if mutation.set_meta:
             for kv in mutation.set_meta:
                 key, value = kv[0], kv[1]
-                await repo.update_metadata(result_id(conv), key, value)
+                if custom_repo:
+                    await repo.update_metadata(result_id(conv), key, value)
+                else:
+                    # Route through the facade so the metadata key is
+                    # validated and the conversation existence check fires
+                    # (#862). The facade returns a typed MetadataMutationResult.
+                    await env.polylogue.set_metadata(result_id(conv), key, value)
                 meta_set += 1
 
         if mutation.add_tags:
@@ -144,9 +150,17 @@ async def delete_conversations(
     mutation: QueryMutationSpec,
     repo: ConversationQueryRuntimeStore | None = None,
 ) -> None:
-    """Delete matched conversations."""
+    """Delete matched conversations.
+
+    Routes deletes through ``env.polylogue.delete_conversation_safe`` by
+    default so resolution and idempotency stay centralized in
+    :class:`ArchiveMutationsMixin` (#862). Tests/batch tools that supply a
+    custom repository keep direct access for the same reason
+    ``apply_modifiers`` accepts a custom tag repo.
+    """
     from collections import Counter
 
+    custom_repo = repo is not None
     repo = repo or env.repository
     if not results:
         env.ui.console.print("No conversations matched.")
@@ -198,8 +212,13 @@ async def delete_conversations(
 
     deleted_count = 0
     for conv in results:
-        if await repo.delete_conversation(result_id(conv)):
-            deleted_count += 1
+        if custom_repo:
+            if await repo.delete_conversation(result_id(conv)):
+                deleted_count += 1
+        else:
+            result = await env.polylogue.delete_conversation_safe(result_id(conv))
+            if result.outcome == "deleted":
+                deleted_count += 1
 
     click.echo(f"Deleted {deleted_count} conversation(s)")
 
