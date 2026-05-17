@@ -1,0 +1,261 @@
+"""Contract suite pinning the schema-version policy from docs/internals.md.
+
+These tests pin the **fresh-first** schema policy:
+
+- ``SCHEMA_VERSION`` constant in ``storage/sqlite/schema_ddl.py`` is the
+  authority.
+- On open, the on-disk ``PRAGMA user_version`` is compared against the
+  constant.
+- Version match → normal operation.
+- Version mismatch → the database is *rejected*. There is no automatic
+  migration. The operator must explicitly run a reviewed in-place
+  upgrade script for that exact version transition.
+
+The corresponding doc section is
+``docs/internals.md`` § "Schema Versioning Model".
+
+We also pin the FTS-trigger canonical set that fresh init must
+produce — the six triggers ``messages_fts_a{i,d,u}`` and
+``action_events_fts_a{i,d,u}`` named in
+``docs/internals.md`` § "Daemon Convergence Evidence". Missing
+triggers mean FTS index drift, which is a documented daemon failure
+mode.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from polylogue.errors import SchemaIncompatibleError
+from polylogue.storage.sqlite.schema import (
+    SCHEMA_VERSION,
+    _ensure_schema,
+    assert_readable_archive_layout,
+    ensure_schema_async,
+)
+from polylogue.storage.sqlite.schema_bootstrap import (
+    capture_schema_snapshot,
+    decide_schema_bootstrap,
+    schema_version_mismatch_message,
+)
+
+# ---------------------------------------------------------------------------
+# Canonical FTS triggers — see docs/internals.md
+# § "Daemon Convergence Evidence" (fts_trigger_state)
+# ---------------------------------------------------------------------------
+
+_CANONICAL_FTS_TRIGGERS = frozenset(
+    {
+        "messages_fts_ai",
+        "messages_fts_ad",
+        "messages_fts_au",
+        "action_events_fts_ai",
+        "action_events_fts_ad",
+        "action_events_fts_au",
+    }
+)
+
+
+# ---------------------------------------------------------------------------
+# § Schema Versioning Model — fresh-first; mismatch is rejected.
+# ---------------------------------------------------------------------------
+
+
+def _planted_db(tmp_path: Path, *, planted_version: int) -> Path:
+    """Plant a SQLite file whose ``user_version`` and shape look like
+    a schema-versioned database but which the runtime does not know
+    how to upgrade.
+
+    We include a ``raw_conversations`` table (and a few sibling tables
+    referenced by upgrade-path branching) so ``decide_schema_bootstrap``
+    routes the snapshot through the no-known-upgrade-path arm rather
+    than the create-fresh arm.
+    """
+    db_path = tmp_path / f"planted-v{planted_version}.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE raw_conversations (
+            raw_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL DEFAULT '',
+            source_path TEXT NOT NULL DEFAULT '',
+            blob_size INTEGER NOT NULL DEFAULT 0,
+            acquired_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE conversations (
+            conversation_id TEXT PRIMARY KEY
+        );
+        CREATE TABLE messages (
+            message_id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL
+        );
+        """
+    )
+    conn.execute(f"PRAGMA user_version = {planted_version}")
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+def test_fresh_database_initialises_to_current_version(tmp_path: Path) -> None:
+    """docs/internals.md § Schema Versioning Model:
+    ``SCHEMA_VERSION`` is the authority. A brand-new empty database
+    bootstraps to that exact version.
+    """
+    db_path = tmp_path / "fresh.db"
+    conn = sqlite3.connect(db_path)
+    _ensure_schema(conn)
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    conn.close()
+    assert version == SCHEMA_VERSION
+
+
+def test_matching_version_database_opens_cleanly(tmp_path: Path) -> None:
+    """docs/internals.md § Schema Versioning Model: a database whose
+    ``user_version`` already equals ``SCHEMA_VERSION`` must open
+    without raising — version match is normal operation.
+    """
+    db_path = tmp_path / "matching.db"
+    conn = sqlite3.connect(db_path)
+    _ensure_schema(conn)
+    # Re-open the same DB through the bootstrap path; this must be a
+    # no-op rather than an error.
+    _ensure_schema(conn)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    conn.close()
+
+
+def test_future_schema_version_is_rejected(tmp_path: Path) -> None:
+    """docs/internals.md § Schema Versioning Model: a DB whose version
+    is *newer* than this runtime understands must be rejected.
+    Half-running against a forward-versioned DB risks data loss; the
+    operator is expected to upgrade the runtime instead.
+    """
+    db_path = _planted_db(tmp_path, planted_version=SCHEMA_VERSION + 1)
+    conn = sqlite3.connect(db_path)
+    try:
+        with pytest.raises(SchemaIncompatibleError) as excinfo:
+            _ensure_schema(conn)
+        assert excinfo.value.current_version == SCHEMA_VERSION + 1
+        assert excinfo.value.expected_version == SCHEMA_VERSION
+    finally:
+        conn.close()
+
+
+def test_unknown_older_schema_version_is_rejected(tmp_path: Path) -> None:
+    """docs/internals.md § Schema Versioning Model: a DB whose version
+    is unknown to the runtime (no reviewed in-place upgrade path) must
+    be rejected. We use ``SCHEMA_VERSION - 1`` when no upgrade arm
+    handles that transition.
+
+    The fresh-first policy is "rejected rather than partially patched
+    with additive DDL" (see ``schema.py:_ensure_schema`` docstring).
+    """
+    # Use a version far enough below current that no reviewed
+    # upgrade-path arm covers it. v1 is intentionally never reachable
+    # via the upgrade chain.
+    db_path = _planted_db(tmp_path, planted_version=1)
+    conn = sqlite3.connect(db_path)
+    try:
+        with pytest.raises(SchemaIncompatibleError) as excinfo:
+            _ensure_schema(conn)
+        assert excinfo.value.current_version == 1
+        assert excinfo.value.expected_version == SCHEMA_VERSION
+    finally:
+        conn.close()
+
+
+def test_version_mismatch_message_distinguishes_newer_and_older() -> None:
+    """docs/internals.md § Schema Versioning Model: the rejection
+    diagnostic must be specific enough that the operator can act on
+    it — a newer DB needs a runtime upgrade, an older one needs a
+    reviewed in-place upgrade script.
+    """
+    newer = schema_version_mismatch_message(SCHEMA_VERSION + 1)
+    older = schema_version_mismatch_message(SCHEMA_VERSION - 1)
+    assert str(SCHEMA_VERSION) in newer
+    assert str(SCHEMA_VERSION) in older
+    assert newer != older
+    assert "newer" in newer.lower()
+
+
+def test_decision_for_unknown_version_is_explicit_mismatch(tmp_path: Path) -> None:
+    """docs/internals.md § Schema Versioning Model: the bootstrap
+    decision for an unknown version is the ``version_mismatch``
+    action — never silently falling through to apply current
+    extensions.
+
+    This pins the policy decision rather than the side effect.
+    """
+    db_path = _planted_db(tmp_path, planted_version=SCHEMA_VERSION + 5)
+    conn = sqlite3.connect(db_path)
+    try:
+        snapshot = capture_schema_snapshot(conn)
+        decision = decide_schema_bootstrap(snapshot)
+        assert decision.action == "version_mismatch"
+        assert decision.current_version == SCHEMA_VERSION + 5
+    finally:
+        conn.close()
+
+
+def test_assert_readable_archive_layout_also_rejects_mismatch(tmp_path: Path) -> None:
+    """docs/internals.md § Schema Versioning Model: the read-only
+    open path applies the same fresh-first rejection. A read tool
+    must not silently operate against a foreign-version archive.
+    """
+    db_path = _planted_db(tmp_path, planted_version=SCHEMA_VERSION + 2)
+    conn = sqlite3.connect(db_path)
+    try:
+        with pytest.raises(SchemaIncompatibleError):
+            assert_readable_archive_layout(conn)
+    finally:
+        conn.close()
+
+
+def test_async_path_rejects_unknown_version(tmp_path: Path) -> None:
+    """docs/internals.md § Schema Versioning Model: the async
+    bootstrap path enforces the same policy as the sync path.
+    Polylogue's primary runtime is async; a policy that only fires
+    on the sync path would be a hole.
+    """
+    db_path = _planted_db(tmp_path, planted_version=1)
+
+    async def _run() -> None:
+        import aiosqlite
+
+        async with aiosqlite.connect(str(db_path)) as conn:
+            with pytest.raises(SchemaIncompatibleError):
+                await ensure_schema_async(conn)
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# § FTS trigger canonical set — docs/internals.md
+# § "Daemon Convergence Evidence" (fts_trigger_state)
+# ---------------------------------------------------------------------------
+
+
+def test_fresh_init_creates_canonical_fts_trigger_set(tmp_path: Path) -> None:
+    """docs/internals.md § Daemon Convergence Evidence: the six FTS
+    sync triggers (``messages_fts_a{i,d,u}``,
+    ``action_events_fts_a{i,d,u}``) are the canonical set that fresh
+    initialisation must produce. A missing trigger is documented as an
+    "FTS index drift risk".
+    """
+    db_path = tmp_path / "fts.db"
+    conn = sqlite3.connect(db_path)
+    _ensure_schema(conn)
+
+    rows = conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'").fetchall()
+    conn.close()
+
+    triggers = {row[0] for row in rows}
+    missing = _CANONICAL_FTS_TRIGGERS - triggers
+    assert not missing, (
+        f"Fresh init is missing canonical FTS triggers: {sorted(missing)} — docs/internals.md pins the 6-trigger set"
+    )
