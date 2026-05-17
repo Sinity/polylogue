@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.maintenance.invalidation import InvalidationReason
 
 
 class MaintenanceCategory(str, Enum):
@@ -30,6 +31,7 @@ class DerivedModelStatus:
     missing_provenance_rows: int = 0
     materializer_version: int | None = None
     matches_version: bool | None = None
+    invalidated_reason: InvalidationReason | None = None
 
     def to_dict(self) -> JSONDocument:
         return json_document(
@@ -48,6 +50,7 @@ class DerivedModelStatus:
                 "missing_provenance_rows": self.missing_provenance_rows,
                 "materializer_version": self.materializer_version,
                 "matches_version": self.matches_version,
+                "invalidated_reason": (self.invalidated_reason.value if self.invalidated_reason is not None else None),
             }
         )
 

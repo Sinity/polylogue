@@ -33,7 +33,7 @@ Current registry snapshot:
 - uncovered runtime paths: —
 - uncovered runtime artifacts: —
 - uncovered runtime operations: `mutate-add-tag`, `mutate-bulk-tag-conversations`, `mutate-delete-conversation`, `mutate-delete-metadata`, `mutate-remove-tag`, `mutate-set-metadata`
-- uncovered maintenance targets: `empty_conversations`, `message_type_backfill`, `orphaned_attachments`, `orphaned_blobs`, `orphaned_content_blocks`, `orphaned_messages`, `wal_checkpoint`
+- uncovered maintenance targets: `empty_conversations`, `message_embeddings`, `message_type_backfill`, `orphaned_attachments`, `orphaned_blobs`, `orphaned_content_blocks`, `orphaned_messages`, `wal_checkpoint`
 - uncovered declared operation targets: `mutate-add-tag`, `mutate-bulk-tag-conversations`, `mutate-delete-conversation`, `mutate-delete-metadata`, `mutate-remove-tag`, `mutate-set-metadata`
 
 Inspect the full authored map with:

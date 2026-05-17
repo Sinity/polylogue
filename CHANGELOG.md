@@ -23,6 +23,15 @@ documentation polish do not require an entry.
   `polylogue resume <session-id>` CLI continues to render the brief and now
   surfaces the provenance fields via `--format json`.
 
+- Typed maintenance planner contract (#1144): `BackfillOperation`
+  envelopes now carry a typed `scope`, `reason`
+  (`InvalidationReason`), `resume_cursor`, bounded `failure_samples`
+  with a `truncated` flag, and `metrics` alongside the existing
+  fields. `polylogue maintenance run --target` exposes a new
+  `message_embeddings` target (no-op until the dormant embedding
+  pipeline is wired in, #828) so the planner's invalidation-key
+  vocabulary covers messages FTS, action-event read model, session
+  insights, and embeddings/vector index.
 - Realtime update channel for the daemon web reader (#957): new
   `GET /api/events` Server-Sent Events endpoint streams daemon-event
   notifications (`ingestion_batch`, `ingest`, `reset`, `operation`) so the
