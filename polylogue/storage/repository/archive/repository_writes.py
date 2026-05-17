@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from polylogue.archive.conversation.models import Conversation
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.core.payload_coercion import string_sequence
+from polylogue.insights.feedback import LearningCorrection
 from polylogue.storage.repository.archive.writes.conversations import (
     conversation_to_record,
     delete_conversation_via_backend,
@@ -455,3 +456,69 @@ class RepositoryWriteMixin:
         """Delete a reader workspace. Returns True if deleted."""
         async with self._backend.connection() as conn:
             return await conversations_q.delete_workspace(conn, workspace_id)
+
+    # ------------------------------------------------------------------
+    # Learning corrections (#1131)
+    #
+    # Persisted in ``user_corrections``. Lives outside the content-hash
+    # boundary: applying or removing a correction never touches the
+    # ``conversations.content_hash`` column. See
+    # :mod:`polylogue.storage.insights.feedback` for the SQL surface and
+    # :mod:`polylogue.insights.feedback` for the merge semantics.
+    # ------------------------------------------------------------------
+
+    async def record_correction(
+        self,
+        conversation_id: str,
+        kind: str,
+        payload: dict[str, str],
+        *,
+        note: str | None = None,
+    ) -> LearningCorrection:
+        from polylogue.insights.feedback import parse_correction_kind
+        from polylogue.storage.insights.feedback import upsert_correction
+
+        typed_kind = parse_correction_kind(kind)
+        async with self._backend.connection() as conn:
+            return await upsert_correction(
+                conn,
+                conversation_id=conversation_id,
+                kind=typed_kind,
+                payload=payload,
+                note=note,
+            )
+
+    async def list_corrections(
+        self,
+        *,
+        conversation_id: str | None = None,
+        kind: str | None = None,
+    ) -> builtins.list[LearningCorrection]:
+        from polylogue.insights.feedback import parse_correction_kind
+        from polylogue.storage.insights.feedback import list_corrections
+
+        typed_kind = parse_correction_kind(kind) if kind is not None else None
+        async with self._backend.connection() as conn:
+            return await list_corrections(
+                conn,
+                conversation_id=conversation_id,
+                kind=typed_kind,
+            )
+
+    async def delete_correction(self, conversation_id: str, kind: str) -> bool:
+        from polylogue.insights.feedback import parse_correction_kind
+        from polylogue.storage.insights.feedback import delete_correction
+
+        typed_kind = parse_correction_kind(kind)
+        async with self._backend.connection() as conn:
+            return await delete_correction(
+                conn,
+                conversation_id=conversation_id,
+                kind=typed_kind,
+            )
+
+    async def clear_corrections(self, conversation_id: str) -> int:
+        from polylogue.storage.insights.feedback import clear_corrections
+
+        async with self._backend.connection() as conn:
+            return await clear_corrections(conn, conversation_id=conversation_id)

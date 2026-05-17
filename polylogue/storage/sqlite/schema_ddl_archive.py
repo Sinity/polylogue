@@ -438,6 +438,50 @@ READER_WORKSPACES_DDL = """
 """
 
 
+# ---------------------------------------------------------------------------
+# User corrections — learning-feedback loop (#1131)
+# ---------------------------------------------------------------------------
+# Corrections live outside the content-hashed payload by design: the table is
+# keyed by ``(conversation_id, insight_kind)`` and is consulted by insight
+# materialization paths after they compute their base suggestion. Applying or
+# removing a correction never touches the conversation's ``content_hash`` — the
+# archive's idempotency invariant is preserved (AC #1131).
+#
+# Schema:
+#   correction_id   surrogate identifier (uuid4 hex, stable across rebuilds).
+#   conversation_id target session.
+#   insight_kind    one of the closed enum values in
+#                   ``polylogue.insights.feedback.CorrectionKind`` (the
+#                   application layer enforces the closed set; storage is
+#                   permissive to keep the table compatible across versions).
+#   payload_json    correction-specific data (override label, accept/reject
+#                   verdict, replacement summary text, etc.). Always JSON.
+#   note            optional free-form reason text from the user.
+#   created_at      ISO-8601 timestamp of the latest write (upsert refreshes).
+#
+# The ``(conversation_id, insight_kind)`` uniqueness contract is what makes
+# rebuilds deterministic: at most one correction of each kind per session,
+# and it always wins over the heuristic suggestion.
+
+USER_CORRECTIONS_DDL = """
+        CREATE TABLE IF NOT EXISTS user_corrections (
+            correction_id   TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            insight_kind    TEXT NOT NULL,
+            payload_json    TEXT NOT NULL,
+            note            TEXT,
+            created_at      TEXT NOT NULL,
+            UNIQUE (conversation_id, insight_kind)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_user_corrections_conversation
+            ON user_corrections(conversation_id);
+
+        CREATE INDEX IF NOT EXISTS idx_user_corrections_kind
+            ON user_corrections(insight_kind);
+"""
+
+
 __all__ = [
     "ARCHIVE_STORAGE_DDL",
     "BLOB_LEASE_DDL",
@@ -448,5 +492,6 @@ __all__ = [
     "SAVED_VIEWS_DDL",
     "TAGS_M2M_DDL",
     "USER_ANNOTATIONS_DDL",
+    "USER_CORRECTIONS_DDL",
     "USER_MARKS_DDL",
 ]

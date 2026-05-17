@@ -17,7 +17,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 916
+    loc: 983
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -82,7 +82,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/insights.py
-    loc: 225
+    loc: 277
     target: polylogue/api/insights.py
     owner: stable
     cross_cut: { api: async }
@@ -491,7 +491,7 @@ files:
     owner: archive-semantic
     reason: archive-domain semantics
   - path: polylogue/archive/semantic/pricing.py
-    loc: 581
+    loc: 711
     target: polylogue/archive/semantic/pricing.py
     owner: archive-semantic
     reason: archive-domain semantics
@@ -642,7 +642,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 165
+    loc: 169
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -682,7 +682,7 @@ files:
     target: polylogue/cli/commands/context_pack.py
     owner: stable
   - path: polylogue/cli/commands/cost.py
-    loc: 86
+    loc: 243
     target: polylogue/cli/commands/cost.py
     owner: stable
   - path: polylogue/cli/commands/dashboard.py
@@ -696,6 +696,10 @@ files:
   - path: polylogue/cli/commands/export.py
     loc: 56
     target: polylogue/cli/commands/export.py
+    owner: stable
+  - path: polylogue/cli/commands/feedback.py
+    loc: 183
+    target: polylogue/cli/commands/feedback.py
     owner: stable
   - path: polylogue/cli/commands/ingest.py
     loc: 99
@@ -1105,7 +1109,7 @@ files:
     target: polylogue/insights/__init__.py
     owner: stable
   - path: polylogue/insights/archive.py
-    loc: 560
+    loc: 573
     target: polylogue/insights/archive.py
     owner: stable
   - path: polylogue/insights/archive_models.py
@@ -1114,7 +1118,7 @@ files:
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/insights/archive_rollups.py
-    loc: 129
+    loc: 286
     target: polylogue/insights/archive_rollups.py
     owner: stable
   - path: polylogue/insights/archive_summaries.py
@@ -1133,6 +1137,10 @@ files:
     loc: 328
     target: polylogue/insights/export_bundles.py
     owner: stable
+  - path: polylogue/insights/feedback.py
+    loc: 286
+    target: polylogue/insights/feedback.py
+    owner: stable
   - path: polylogue/insights/productivity.py
     loc: 414
     target: polylogue/insights/productivity.py
@@ -1146,7 +1154,7 @@ files:
     target: polylogue/insights/readiness.py
     owner: stable
   - path: polylogue/insights/registry.py
-    loc: 764
+    loc: 768
     target: polylogue/insights/registry.py
     owner: stable
   - path: polylogue/insights/resume.py
@@ -1239,7 +1247,7 @@ files:
     target: polylogue/mcp/server_context_tools.py
     owner: stable
   - path: polylogue/mcp/server_insight_tools.py
-    loc: 172
+    loc: 230
     target: polylogue/mcp/server_insight_tools.py
     owner: stable
   - path: polylogue/mcp/server_maintenance_tools.py
@@ -1247,7 +1255,7 @@ files:
     target: polylogue/mcp/server_maintenance_tools.py
     owner: stable
   - path: polylogue/mcp/server_mutation_tools.py
-    loc: 720
+    loc: 824
     target: polylogue/mcp/server_mutation_tools.py
     owner: stable
   - path: polylogue/mcp/server_prompts.py
@@ -1271,7 +1279,7 @@ files:
     target: polylogue/operations/__init__.py
     owner: stable
   - path: polylogue/operations/archive.py
-    loc: 1270
+    loc: 1208
     target: polylogue/operations/archive.py
     owner: stable
   - path: polylogue/operations/completion_aggregates.py
@@ -1283,7 +1291,7 @@ files:
     target: polylogue/operations/import_contracts.py
     owner: stable
   - path: polylogue/operations/mutations.py
-    loc: 438
+    loc: 480
     target: polylogue/operations/mutations.py
     owner: stable
   - path: polylogue/operations/specs.py
@@ -2641,6 +2649,10 @@ files:
     loc: 63
     target: polylogue/storage/insights/aggregate/records.py
     owner: stable
+  - path: polylogue/storage/insights/feedback/__init__.py
+    loc: 237
+    target: polylogue/storage/insights/feedback/__init__.py
+    owner: stable
   - path: polylogue/storage/insights/insight_read_support.py
     loc: 35
     target: polylogue/storage/insights/insight_read_support.py
@@ -2762,7 +2774,7 @@ files:
     target: polylogue/storage/repository/archive/reads.py
     owner: stable
   - path: polylogue/storage/repository/archive/repository_writes.py
-    loc: 457
+    loc: 524
     target: polylogue/storage/repository/archive/repository_writes.py
     owner: stable
     cross_cut: { layer: write }
@@ -3157,7 +3169,7 @@ files:
     target: polylogue/storage/sqlite/schema_bootstrap.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl.py
-    loc: 112
+    loc: 117
     target: polylogue/storage/sqlite/schema_ddl.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_actions.py
@@ -3165,7 +3177,7 @@ files:
     target: polylogue/storage/sqlite/schema_ddl_actions.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_archive.py
-    loc: 452
+    loc: 497
     target: polylogue/storage/sqlite/schema_ddl_archive.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_aux.py

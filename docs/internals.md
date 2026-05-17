@@ -95,6 +95,35 @@ This design avoids migration-chain complexity (no Alembic, no forward/reverse
 migrations, no partially-applied migration states) at the cost of requiring
 explicit version-transition scripts.
 
+## Learning Corrections (Feedback Loop)
+
+User corrections are stored in `user_corrections` and live outside the
+content-hash boundary by construction (#1131):
+
+- Keyed by `(conversation_id, insight_kind)` — at most one correction of
+  each kind per session, so deterministic rebuilds always produce the
+  same merged insight output.
+- Recognized kinds (closed `CorrectionKind` enum):
+  `classification_override`, `tag_reject`, `tag_accept`,
+  `summary_override`. New kinds are an explicit code change.
+- Recording or removing a correction never touches
+  `conversations.content_hash`. The hash invariant is asserted by
+  `tests/unit/insights/test_feedback.py`.
+- Insight materialization paths consult corrections after computing the
+  heuristic suggestion. `classify_session()` is the first wired consumer
+  (`apply_correction_to_classification`); auto-tag and summary merge
+  helpers live in `polylogue/insights/feedback.py` for follow-on
+  materialization paths.
+- Surfaces:
+  - CLI: `polylogue feedback {record,list,clear}`.
+  - MCP: `record_correction`, `list_corrections`, `clear_corrections`.
+  - Library: `Polylogue.record_correction(...)`,
+    `Polylogue.list_corrections(...)`,
+    `Polylogue.delete_correction(...)`, `Polylogue.clear_corrections(...)`.
+- Storage backed by `polylogue/storage/insights/feedback/` (async SQL
+  helpers) and `RepositoryWriteMixin.record_correction` /
+  `list_corrections` / `delete_correction` / `clear_corrections`.
+
 ## Content Hash Model
 
 Archive writes are idempotent by content hash:

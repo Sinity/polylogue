@@ -95,6 +95,7 @@ _SHORT_HELP: dict[str, str] = {
     "dashboard": "Open the local dashboard.",
     "diagnostics": "Temporal session diagnostics",
     "export": "Export conversations.",
+    "feedback": "Record learning corrections for derived insights.",
     "ingest": "Import conversations from configured sources.",
     "init": "Detect chat sources and write a starter polylogue.toml.",
     "insights": "Rebuild and inspect derived session insights.",
@@ -115,6 +116,7 @@ _COMMAND_NAMES: dict[str, str] = {
 _GROUP_ATTRS: dict[str, str] = {
     "cost": "cost_command",
     "diagnostics": "diagnostics_group",
+    "feedback": "feedback_command",
     "insights": "insights_command",
     "maintenance": "maintenance_group",
     "schema": "schema_command",
@@ -150,6 +152,7 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("resume"),
     _L("insights"),
     _L("tags"),
+    _L("feedback"),
     _L("user_state"),
     _L("schema"),
     _L("diagnostics"),

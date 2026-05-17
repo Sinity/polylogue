@@ -245,23 +245,30 @@
     }
   },
   {
-    "name": "cost_outlook",
+    "name": "clear_corrections",
     "parameters": {
       "properties": {
-        "method": {
-          "default": "linear",
-          "title": "Method",
+        "conversation_id": {
+          "title": "Conversation Id",
           "type": "string"
         },
-        "plan": {
-          "title": "Plan",
-          "type": "string"
+        "kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Kind"
         }
       },
       "required": [
-        "plan"
+        "conversation_id"
       ],
-      "title": "cost_outlookArguments",
+      "title": "clear_correctionsArguments",
       "type": "object"
     }
   },
@@ -1453,6 +1460,39 @@
     }
   },
   {
+    "name": "list_corrections",
+    "parameters": {
+      "properties": {
+        "conversation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Conversation Id"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Kind"
+        }
+      },
+      "title": "list_correctionsArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "list_marks",
     "parameters": {
       "properties": {
@@ -1567,59 +1607,6 @@
     }
   },
   {
-    "name": "maintenance_execute",
-    "parameters": {
-      "properties": {
-        "dry_run": {
-          "default": false,
-          "title": "Dry Run",
-          "type": "boolean"
-        },
-        "targets": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Targets"
-        }
-      },
-      "title": "maintenance_executeArguments",
-      "type": "object"
-    }
-  },
-  {
-    "name": "maintenance_preview",
-    "parameters": {
-      "properties": {
-        "targets": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Targets"
-        }
-      },
-      "title": "maintenance_previewArguments",
-      "type": "object"
-    }
-  },
-  {
     "name": "neighbor_candidates",
     "parameters": {
       "properties": {
@@ -1672,68 +1659,6 @@
         }
       },
       "title": "neighbor_candidatesArguments",
-      "type": "object"
-    }
-  },
-  {
-    "name": "productivity_rollups",
-    "parameters": {
-      "properties": {
-        "granularity": {
-          "default": "day",
-          "title": "Granularity",
-          "type": "string"
-        },
-        "limit": {
-          "default": 200,
-          "minimum": 1,
-          "title": "Limit",
-          "type": "integer"
-        },
-        "offset": {
-          "default": 0,
-          "minimum": 0,
-          "title": "Offset",
-          "type": "integer"
-        },
-        "provider": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Provider"
-        },
-        "since": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Since"
-        },
-        "until": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Until"
-        }
-      },
-      "title": "productivity_rollupsArguments",
       "type": "object"
     }
   },
@@ -1835,6 +1760,47 @@
         }
       },
       "title": "rebuild_session_insightsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "record_correction",
+    "parameters": {
+      "properties": {
+        "conversation_id": {
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "payload": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Payload",
+          "type": "object"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "kind",
+        "payload"
+      ],
+      "title": "record_correctionArguments",
       "type": "object"
     }
   },
