@@ -1190,6 +1190,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verification-impact` | Route changed paths or refs to affected verification checks and focused commands; emit the full PR-confidence report with --full. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
 | `devtools verify-ci-workflows` | Verify CI workflow files reference locally-known devtools commands and existing paths. |
+| `devtools verify-closure-matrix` | Verify docs/plans/test-closure-matrix.yaml stays grounded in the realized tree. |
 | `devtools verify-cluster-cohesion` | Validate proposed clusters from the topology projection using the import graph. |
 | `devtools verify-cross-cuts` | Verify cross-cut tags in the topology projection match module-name conventions. |
 | `devtools verify-distribution-surface` | Verify wheel/sdist installed artifacts expose only supported runtime entrypoints. |
