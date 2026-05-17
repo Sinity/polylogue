@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from http import HTTPStatus
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from polylogue.surfaces.payloads import TargetRefPayload
 
@@ -84,33 +84,15 @@ async def build_compare_payload(
     align: str,
     load_conversation: ConversationPayloadLoader,
 ) -> dict[str, object]:
+    # Imported lazily to avoid a circular import: ``compare`` re-uses
+    # ``missing_conversation_target`` and ``COMPARE_ALIGN_MODES`` from this
+    # module, so importing it at module scope would trip the initial import.
+    from polylogue.daemon.compare import build_compare_envelope
+
     left_payload = await load_conversation(poly, left)
     right_payload = await load_conversation(poly, right)
-    left_messages = left_payload.get("messages", []) if isinstance(left_payload, dict) else []
-    right_messages = right_payload.get("messages", []) if isinstance(right_payload, dict) else []
-    if not isinstance(left_messages, list):
-        left_messages = []
-    if not isinstance(right_messages, list):
-        right_messages = []
-    max_len = max(len(left_messages), len(right_messages))
-    pairs = [
-        {
-            "index": idx,
-            "left": left_messages[idx] if idx < len(left_messages) else None,
-            "right": right_messages[idx] if idx < len(right_messages) else None,
-            "status": "paired" if idx < len(left_messages) and idx < len(right_messages) else "unpaired",
-        }
-        for idx in range(max_len)
-    ]
-    return {
-        "mode": "compare",
-        "align": align,
-        "left": left_payload if isinstance(left_payload, dict) else missing_conversation_target(left),
-        "right": right_payload if isinstance(right_payload, dict) else missing_conversation_target(right),
-        "pairs": pairs,
-        "total": len(pairs),
-        "degraded_count": int(not isinstance(left_payload, dict)) + int(not isinstance(right_payload, dict)),
-    }
+    envelope = build_compare_envelope(left_payload, right_payload, left, right, align)
+    return cast("dict[str, object]", envelope)
 
 
 def dispatch_get(handler: object, path: list[str], params: dict[str, list[str]]) -> bool:

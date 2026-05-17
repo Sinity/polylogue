@@ -1034,6 +1034,10 @@ files:
     loc: 910
     target: polylogue/daemon/cli.py
     owner: stable
+  - path: polylogue/daemon/compare.py
+    loc: 286
+    target: polylogue/daemon/compare.py
+    owner: stable
   - path: polylogue/daemon/convergence.py
     loc: 408
     target: polylogue/daemon/convergence.py
@@ -1059,7 +1063,7 @@ files:
     target: polylogue/daemon/health.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 1174
+    loc: 1307
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_models.py
@@ -1088,7 +1092,7 @@ files:
     target: polylogue/daemon/user_state_http.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
-    loc: 1081
+    loc: 1235
     target: polylogue/daemon/web_shell.py
     owner: stable
   - path: polylogue/daemon/web_shell_bulk.py
@@ -1100,11 +1104,11 @@ files:
     target: polylogue/daemon/web_shell_provenance.py
     owner: stable
   - path: polylogue/daemon/web_shell_workspace.py
-    loc: 429
+    loc: 500
     target: polylogue/daemon/web_shell_workspace.py
     owner: stable
   - path: polylogue/daemon/workspace_routes.py
-    loc: 160
+    loc: 142
     target: polylogue/daemon/workspace_routes.py
     owner: stable
   - path: polylogue/errors.py

@@ -360,6 +360,11 @@ class TestReaderWorkspaceRoutes:
         assert result["mode"] == "compare"
         assert result["align"] == "prompt"
         assert result["degraded_count"] == 1
+        # New compare envelope fields (#1124) expose alignment strategy and
+        # which side(s) failed to load so the UI can render a precise banner.
+        assert result["degraded_sides"] == ["right"]
+        assert result["alignment"] in {"anchor", "sequential"}
+        assert result["metadata_diff"] == {}
         left = cast(dict[str, object], result["left"])
         right = cast(dict[str, object], result["right"])
         pairs = cast(list[dict[str, object]], result["pairs"])
@@ -368,6 +373,24 @@ class TestReaderWorkspaceRoutes:
         assert pairs[0]["left"] is not None
         assert pairs[0]["right"] is None
         assert pairs[0]["status"] == "unpaired"
+
+    def test_compare_route_two_conversations_surface_diff_and_metadata(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            payload = _get_json(base_url, "/api/compare?left=c1&right=c2&align=prompt")
+
+        result = cast(dict[str, object], payload)
+        # Both sides present → no degradation, metadata diff populated.
+        assert result["degraded_count"] == 0
+        assert result["degraded_sides"] == []
+        metadata = cast(dict[str, dict[str, object]], result["metadata_diff"])
+        # Providers differ between the seeded conversations.
+        assert metadata["provider"]["status"] == "changed"
+        assert metadata["title"]["status"] == "changed"
+        pairs = cast(list[dict[str, object]], result["pairs"])
+        # Seeded messages share text "Hello reader" and role "user", but have
+        # distinct anchors → alignment is sequential and content is equal.
+        assert pairs[0]["diff_status"] == "equal"
+        assert pairs[0]["role_match"] is True
 
     def test_compare_route_rejects_invalid_align(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):

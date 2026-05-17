@@ -850,10 +850,42 @@ function renderInspectorInfo(el, c) {
   if (c.flags) {
     html += '<div class="inspector-section"><h4>Flags</h4>' + JSON.stringify(c.flags) + '</div>';
   }
+  // "Compare with..." entry point (#1124). Prompts for another conversation
+  // id and opens the side-by-side compare workspace. Kept as a thin operator
+  // shortcut here; richer pickers (recent conversations, lineage parent) can
+  // hook into the same ``openCompareWith`` helper without changing the route.
+  html += '<div class="inspector-section"><h4>Compare</h4>'
+    + '<button class="user-action" onclick="openCompareWith()">Compare with\u2026</button>'
+    + '</div>';
   el.innerHTML = html;
 }
 
 __PROVENANCE_JS__
+
+async function openCompareWith() {
+  if (!state.selected) return;
+  var other = window.prompt('Other conversation id', '');
+  if (!other) return;
+  other = other.trim();
+  if (!other) return;
+  if (other === state.selected.id) {
+    state.userStateError = 'Cannot compare a conversation with itself';
+    renderInspector();
+    return;
+  }
+  await loadWorkspaceRoute({mode: 'compare', left: state.selected.id, right: other, align: 'prompt'}, true);
+}
+
+function renderInspectorRaw(el, c) {
+  var html = '<div class="inspector-section"><h4>Provenance</h4>';
+  html += '<div class="inspector-field"><span class="label">Provider</span><span class="value">' + esc(c.provider || '-') + '</span></div>';
+  html += '<div class="inspector-field"><span class="label">Branch</span><span class="value">' + esc(c.branch_type || 'main') + '</span></div>';
+  html += '<div class="inspector-field"><span class="label">Parent</span><span class="value">' + esc(c.parent_id || '-') + '</span></div>';
+  html += '</div><div class="inspector-section"><h4>Raw Artifacts</h4>';
+  html += '<button style="background:var(--panel-elevated);border:1px solid var(--border);color:var(--accent);padding:4px 10px;border-radius:3px;cursor:pointer;font-size:var(--small)" onclick="loadRawData()">Load raw data</button>';
+  html += '<div id="raw-data-area"></div></div>';
+  el.innerHTML = html;
+}
 
 function renderInspectorNotes(el, c) {
   var marks = Object.keys(markSetFor(c.id));

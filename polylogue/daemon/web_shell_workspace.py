@@ -34,8 +34,30 @@ WORKSPACE_CSS = r"""
   background: var(--bg-raised); border-bottom: 1px solid var(--border); }
 .compare-pane-title { padding: 8px 12px; border-right: 1px solid var(--border); color: var(--text); }
 .compare-pair { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid var(--border); }
+.compare-pair.diff-added { border-left: 2px solid var(--ok); }
+.compare-pair.diff-removed { border-left: 2px solid var(--err); }
+.compare-pair.diff-changed { border-left: 2px solid var(--warn); }
+.compare-pair.diff-equal { border-left: 2px solid transparent; }
 .compare-cell { min-width: 0; border-right: 1px solid var(--border); background: var(--bg); }
 .compare-cell.empty { display: flex; align-items: center; justify-content: center; color: var(--text-dim); min-height: 68px; }
+.compare-pair-marker { grid-column: 1/-1; padding: 2px 12px; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.6px; color: var(--text-dim); background: var(--panel-subtle); border-bottom: 1px solid var(--border); }
+.compare-pair-marker.changed { color: var(--warn); }
+.compare-pair-marker.added { color: var(--ok); }
+.compare-pair-marker.removed { color: var(--err); }
+#compare-metadata-panel { padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--panel-subtle); }
+#compare-metadata-panel h4 { font-size: 11px; font-weight: 600; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px; }
+.compare-metadata-row { display: grid; grid-template-columns: 110px 1fr 1fr 70px; gap: 8px;
+  font-size: var(--small); padding: 2px 0; border-bottom: 1px solid var(--border); }
+.compare-metadata-row .label { color: var(--text-muted); }
+.compare-metadata-row .value { font-family: var(--font-mono); font-size: 11px; word-break: break-word; color: var(--text); }
+.compare-metadata-row .value.empty { color: var(--text-dim); }
+.compare-metadata-row .status { font-size: 10px; text-align: right; text-transform: uppercase; letter-spacing: 0.6px; }
+.compare-metadata-row.status-equal .status { color: var(--ok); }
+.compare-metadata-row.status-changed .status { color: var(--warn); }
+.compare-metadata-row.status-missing .status { color: var(--err); }
+#compare-metadata-empty { font-size: var(--small); color: var(--text-dim); }
 .workspace-degraded { padding: 10px 16px; color: var(--warn); background: var(--warn-bg);
   border-bottom: 1px solid var(--border); font-size: var(--small); }
 """
@@ -227,11 +249,47 @@ function renderStackWorkspace() {
     + '</div></div>';
 }
 
+function compareMetadataPanelHtml(metadataDiff) {
+  // ``metadataDiff`` mirrors the backend ``metadata_diff`` envelope: a map of
+  // field-name -> {left, right, status}. Iterates in stable backend order so
+  // the panel layout is deterministic for visual smoke and snapshot tests.
+  if (!metadataDiff || typeof metadataDiff !== 'object') {
+    return '<div id="compare-metadata-panel"><h4>Metadata</h4>'
+      + '<div id="compare-metadata-empty">No metadata to compare</div></div>';
+  }
+  var keys = Object.keys(metadataDiff);
+  if (!keys.length) {
+    return '<div id="compare-metadata-panel"><h4>Metadata</h4>'
+      + '<div id="compare-metadata-empty">No metadata to compare</div></div>';
+  }
+  return '<div id="compare-metadata-panel"><h4>Metadata</h4>'
+    + keys.map(function(field) {
+      var entry = metadataDiff[field] || {};
+      var status = entry.status || 'equal';
+      var lDisplay = (entry.left === null || entry.left === undefined || entry.left === '')
+        ? '\u2014' : (Array.isArray(entry.left) ? entry.left.join(', ') : String(entry.left));
+      var rDisplay = (entry.right === null || entry.right === undefined || entry.right === '')
+        ? '\u2014' : (Array.isArray(entry.right) ? entry.right.join(', ') : String(entry.right));
+      var lCls = (entry.left === null || entry.left === undefined || entry.left === '') ? ' empty' : '';
+      var rCls = (entry.right === null || entry.right === undefined || entry.right === '') ? ' empty' : '';
+      return '<div class="compare-metadata-row status-' + esc(status) + '" data-field="' + escAttr(field) + '">'
+        + '<span class="label">' + esc(field) + '</span>'
+        + '<span class="value' + lCls + '">' + esc(lDisplay) + '</span>'
+        + '<span class="value' + rCls + '">' + esc(rDisplay) + '</span>'
+        + '<span class="status">' + esc(status) + '</span>'
+        + '</div>';
+    }).join('')
+    + '</div>';
+}
+
 function renderCompareWorkspace() {
   var headerEl = document.getElementById('conv-header');
   var msgEl = document.getElementById('msg-list');
   var payload = state.comparePayload;
-  headerEl.innerHTML = '<h2>Compare workspace</h2><div class="conv-stats"><span>align: '
+  var alignment = (payload && payload.alignment) || 'sequential';
+  headerEl.innerHTML = '<h2>Compare workspace</h2><div class="conv-stats">'
+    + '<span class="chip" id="compare-alignment-chip" title="Message alignment strategy">alignment: ' + esc(alignment) + '</span>'
+    + '<span>align: '
     + '<select id="compare-align-select" onchange="changeCompareAlign(this.value)"><option value="prompt">prompt</option></select></span></div>';
   if (!payload) {
     msgEl.innerHTML = '<div class="main-empty"><h3>Compare unavailable</h3></div>';
@@ -239,13 +297,26 @@ function renderCompareWorkspace() {
   }
   var leftTitle = payload.left && payload.left.title ? payload.left.title : (payload.left && payload.left.conversation_id || 'left');
   var rightTitle = payload.right && payload.right.title ? payload.right.title : (payload.right && payload.right.conversation_id || 'right');
-  var banner = payload.degraded_count ? '<div class="workspace-degraded" id="compare-degraded-banner">' + payload.degraded_count + ' degraded side(s)</div>' : '<div id="compare-degraded-banner" style="display:none"></div>';
+  var degradedSides = payload.degraded_sides || [];
+  var banner = '<div id="compare-degraded-banner" style="display:none"></div>';
+  if (payload.degraded_count) {
+    var degradedLabel = degradedSides.length
+      ? degradedSides.join(' & ') + ' side' + (degradedSides.length === 1 ? '' : 's') + ' failed to load'
+      : payload.degraded_count + ' degraded side(s)';
+    banner = '<div class="workspace-degraded" id="compare-degraded-banner">' + esc(degradedLabel) + '</div>';
+  }
   msgEl.innerHTML = '<div id="compare-view">' + banner
+    + compareMetadataPanelHtml(payload.metadata_diff)
     + '<div class="compare-header"><div class="compare-pane-title" id="compare-left-pane">' + esc(leftTitle) + '</div>'
     + '<div class="compare-pane-title" id="compare-right-pane">' + esc(rightTitle) + '</div></div>'
     + '<div id="compare-pairs">'
     + (payload.pairs || []).map(function(pair) {
-      return '<div class="compare-pair">'
+      var diffStatus = pair.diff_status || 'equal';
+      var marker = diffStatus !== 'equal'
+        ? '<div class="compare-pair-marker ' + esc(diffStatus) + '">' + esc(diffStatus) + '</div>'
+        : '';
+      return '<div class="compare-pair diff-' + esc(diffStatus) + '" data-diff-status="' + esc(diffStatus) + '">'
+        + marker
         + '<div class="compare-cell' + (pair.left ? '' : ' empty') + '">' + (pair.left ? messageBlocksHtml([pair.left]) : 'No message') + '</div>'
         + '<div class="compare-cell' + (pair.right ? '' : ' empty') + '">' + (pair.right ? messageBlocksHtml([pair.right]) : 'No message') + '</div>'
         + '</div>';
