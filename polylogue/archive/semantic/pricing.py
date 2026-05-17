@@ -19,6 +19,29 @@ if TYPE_CHECKING:
 
 CostEstimateStatus = Literal["exact", "priced", "partial", "unavailable"]
 
+# Discrete reasons a session/message lacks a priced estimate. Surfaces in the
+# typed cost read model so consumers can show "why" instead of an opaque
+# `total_usd = 0.0`. See #1136.
+CostUnavailableReason = Literal[
+    "no_model",
+    "no_price",
+    "no_tokens",
+    "provider_zero",
+    "subscription_unconfigured",
+    "no_messages",
+]
+
+# Discrete cost basis labels (#1136). A single estimate may carry non-zero
+# values on more than one axis (e.g. provider-reported total AND a parallel
+# catalog-priced reconciliation).
+CostBasis = Literal[
+    "provider_reported",
+    "api_equivalent",
+    "subscription_equivalent",
+    "catalog_priced",
+    "tool_surcharge",
+]
+
 LITELLM_PRICE_MAP_URL = "https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json"
 CATALOG_PROVENANCE = "polylogue-curated-litellm-shaped-seed"
 CATALOG_EFFECTIVE_DATE = "2026-04-24"
@@ -72,6 +95,47 @@ class CostComponentPayload(PricingModel):
     usd: float = 0.0
 
 
+class CostBasisPayload(PricingModel):
+    """Cost split across the five basis axes (#1136).
+
+    Each basis is independent; values do not sum to ``total_usd`` because the
+    same usage may be expressed on multiple axes (e.g. a provider-reported
+    total AND a parallel catalog-priced reconciliation for the same tokens).
+    Consumers pick the basis that matches their question.
+    """
+
+    provider_reported_usd: float = 0.0
+    api_equivalent_usd: float = 0.0
+    subscription_equivalent_usd: float = 0.0
+    catalog_priced_usd: float = 0.0
+    tool_surcharge_usd: float = 0.0
+
+    def plus(self, other: CostBasisPayload) -> CostBasisPayload:
+        return CostBasisPayload(
+            provider_reported_usd=self.provider_reported_usd + other.provider_reported_usd,
+            api_equivalent_usd=self.api_equivalent_usd + other.api_equivalent_usd,
+            subscription_equivalent_usd=self.subscription_equivalent_usd + other.subscription_equivalent_usd,
+            catalog_priced_usd=self.catalog_priced_usd + other.catalog_priced_usd,
+            tool_surcharge_usd=self.tool_surcharge_usd + other.tool_surcharge_usd,
+        )
+
+
+class CostModelBreakdown(PricingModel):
+    """Per-model cost roll-up within a session or cross-session rollup (#1136).
+
+    Keyed by ``normalized_model`` when available; falls back to
+    ``model_name``. Sessions that mix models surface one row per model;
+    nothing is collapsed.
+    """
+
+    model_name: str | None = None
+    normalized_model: str | None = None
+    usage: CostUsagePayload = Field(default_factory=CostUsagePayload)
+    basis: CostBasisPayload = Field(default_factory=CostBasisPayload)
+    total_usd: float = 0.0
+    session_count: int = 0
+
+
 class CostEstimatePayload(PricingModel):
     provider_name: str
     conversation_id: str | None = None
@@ -81,11 +145,17 @@ class CostEstimatePayload(PricingModel):
     status: CostEstimateStatus
     confidence: float = 0.0
     currency: str = "USD"
+    # ``total_usd`` remains the legacy single-number summary for
+    # backwards-compat. It draws from ``basis.provider_reported_usd`` when an
+    # exact provider total is present, otherwise from ``basis.catalog_priced_usd``.
     total_usd: float = 0.0
+    basis: CostBasisPayload = Field(default_factory=CostBasisPayload)
     usage: CostUsagePayload = Field(default_factory=CostUsagePayload)
     price: CostPricePayload | None = None
     components: tuple[CostComponentPayload, ...] = ()
+    per_model_breakdown: tuple[CostModelBreakdown, ...] = ()
     missing_reasons: tuple[str, ...] = ()
+    unavailable_reason: CostUnavailableReason | None = None
     provenance: tuple[str, ...] = ()
 
     @property
@@ -322,6 +392,19 @@ def _exact_estimate(
     usage: CostUsagePayload | None = None,
 ) -> CostEstimatePayload:
     normalized_model = _normalize_model(model_name) if model_name else None
+    effective_usage = usage or CostUsagePayload()
+    # Parallel catalog estimate when a price exists, so consumers can compare
+    # provider-reported cost against catalog-estimated cost on identical usage.
+    catalog_usd = 0.0
+    if normalized_model is not None:
+        pricing = PRICING.get(normalized_model)
+        if pricing is not None:
+            catalog_usd = sum(component.usd for component in _cost_components(effective_usage, pricing))
+    basis = CostBasisPayload(
+        provider_reported_usd=total_usd,
+        api_equivalent_usd=total_usd,
+        catalog_priced_usd=catalog_usd,
+    )
     return CostEstimatePayload(
         provider_name=provider_name,
         conversation_id=conversation_id,
@@ -331,7 +414,8 @@ def _exact_estimate(
         status="exact",
         confidence=1.0,
         total_usd=total_usd,
-        usage=usage or CostUsagePayload(),
+        basis=basis,
+        usage=effective_usage,
         components=(CostComponentPayload(name="provider_reported_total", usd=total_usd),),
         provenance=("archive_provider_reported_cost",),
     )
@@ -355,6 +439,7 @@ def _estimate_from_usage(
             confidence=0.0,
             usage=usage,
             missing_reasons=("missing_model",),
+            unavailable_reason="no_model",
             provenance=provenance,
         )
     if usage.billable_tokens <= 0:
@@ -368,6 +453,7 @@ def _estimate_from_usage(
             confidence=0.0,
             usage=usage,
             missing_reasons=("missing_token_usage",),
+            unavailable_reason="no_tokens",
             provenance=provenance,
         )
     normalized_model = _normalize_model(model_name)
@@ -383,9 +469,11 @@ def _estimate_from_usage(
             confidence=0.0,
             usage=usage,
             missing_reasons=("missing_price",),
+            unavailable_reason="no_price",
             provenance=provenance,
         )
     components = _cost_components(usage, pricing)
+    total = sum(component.usd for component in components)
     return CostEstimatePayload(
         provider_name=provider_name,
         conversation_id=conversation_id,
@@ -394,7 +482,11 @@ def _estimate_from_usage(
         normalized_model=normalized_model,
         status="priced",
         confidence=0.85,
-        total_usd=sum(component.usd for component in components),
+        total_usd=total,
+        basis=CostBasisPayload(
+            api_equivalent_usd=total,
+            catalog_priced_usd=total,
+        ),
         usage=usage,
         price=pricing.to_payload(model_name=model_name, normalized_model=normalized_model),
         components=components,
@@ -501,26 +593,58 @@ def estimate_conversation_cost(conversation: Conversation) -> CostEstimatePayloa
         return conversation_estimate
     if not priced:
         missing = ("missing_token_usage",) if message_estimates else ("no_messages",)
+        unavailable: CostUnavailableReason = "no_tokens" if message_estimates else "no_messages"
         return CostEstimatePayload(
             provider_name=provider_name,
             conversation_id=str(conversation.id),
             status="unavailable",
             confidence=0.0,
             missing_reasons=missing,
+            unavailable_reason=unavailable,
             provenance=("conversation_messages",),
         )
 
     usage = CostUsagePayload()
     total_usd = 0.0
+    basis = CostBasisPayload()
     components: list[CostComponentPayload] = []
     missing_reasons: list[str] = []
     provenance: list[str] = []
+    per_model_map: dict[tuple[str | None, str | None], CostModelBreakdown] = {}
     for estimate in message_estimates:
         usage = usage.plus(estimate.usage)
         total_usd += estimate.total_usd
+        basis = basis.plus(estimate.basis)
         components.extend(estimate.components)
         missing_reasons.extend(estimate.missing_reasons)
         provenance.extend(estimate.provenance)
+        key = (estimate.model_name, estimate.normalized_model)
+        existing = per_model_map.get(key)
+        if existing is None:
+            per_model_map[key] = CostModelBreakdown(
+                model_name=estimate.model_name,
+                normalized_model=estimate.normalized_model,
+                usage=estimate.usage,
+                basis=estimate.basis,
+                total_usd=estimate.total_usd,
+                session_count=1,
+            )
+        else:
+            per_model_map[key] = CostModelBreakdown(
+                model_name=existing.model_name,
+                normalized_model=existing.normalized_model,
+                usage=existing.usage.plus(estimate.usage),
+                basis=existing.basis.plus(estimate.basis),
+                total_usd=existing.total_usd + estimate.total_usd,
+                session_count=existing.session_count,
+            )
+    per_model_breakdown = tuple(
+        sorted(
+            per_model_map.values(),
+            key=lambda entry: entry.total_usd,
+            reverse=True,
+        )
+    )
     model_name, normalized_model = _dominant_model(message_estimates)
     missing_count = len(message_estimates) - len(priced)
     all_exact = missing_count == 0 and bool(priced) and all(e.status == "exact" for e in priced)
@@ -543,8 +667,10 @@ def estimate_conversation_cost(conversation: Conversation) -> CostEstimatePayloa
         status=status,
         confidence=confidence,
         total_usd=total_usd,
+        basis=basis,
         usage=usage,
         components=tuple(components),
+        per_model_breakdown=per_model_breakdown,
         missing_reasons=tuple(sorted(set(missing_reasons))),
         provenance=tuple(sorted(set(provenance))),
     )
@@ -565,10 +691,14 @@ __all__ = [
     "CATALOG_EFFECTIVE_DATE",
     "CATALOG_PROVENANCE",
     "LITELLM_PRICE_MAP_URL",
+    "CostBasis",
+    "CostBasisPayload",
     "CostComponentPayload",
     "CostEstimatePayload",
     "CostEstimateStatus",
+    "CostModelBreakdown",
     "CostPricePayload",
+    "CostUnavailableReason",
     "CostUsagePayload",
     "ModelPricing",
     "PRICING",

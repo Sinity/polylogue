@@ -6,7 +6,12 @@ from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Protocol
 
-from polylogue.archive.semantic.pricing import CostEstimatePayload, CostUsagePayload
+from polylogue.archive.semantic.pricing import (
+    CostBasisPayload,
+    CostEstimatePayload,
+    CostModelBreakdown,
+    CostUsagePayload,
+)
 from polylogue.archive.session.session_profile import SessionProfile
 from polylogue.errors import PolylogueError
 from polylogue.insights.archive_models import (
@@ -404,7 +409,13 @@ class CostRollupInsight(ArchiveInsightModel):
     priced_session_count: int = 0
     unavailable_session_count: int = 0
     status_counts: dict[str, int]
+    # ``total_usd`` is the legacy summary draw: provider_reported_usd when
+    # any exact totals were aggregated, else catalog_priced_usd. Consumers
+    # that need a specific basis should read ``basis`` directly (#1136).
     total_usd: float = 0.0
+    basis: CostBasisPayload = CostBasisPayload()
+    unavailable_reason_counts: dict[str, int] = {}
+    per_model_breakdown: tuple[CostModelBreakdown, ...] = ()
     usage: CostUsagePayload
     confidence: float = 0.0
     provenance: ArchiveInsightProvenance
@@ -522,6 +533,8 @@ __all__ = [
     "ArchiveInferenceProvenance",
     "ArchiveInsightModel",
     "ArchiveInsightProvenance",
+    "CostBasisPayload",
+    "CostModelBreakdown",
     "CostRollupInsight",
     "CostRollupInsightQuery",
     "ArchiveInsightUnavailableError",
