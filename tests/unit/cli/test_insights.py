@@ -981,3 +981,44 @@ def test_insights_profiles_reject_incomplete_profile_search_index(cli_workspace:
     message = _exception_message(result)
     assert "search index is incomplete" in message
     assert "polylogue doctor --repair --target session_insights" in message
+
+
+def test_insights_timeline_json_emits_fidelity_tags(cli_workspace: CliWorkspace) -> None:
+    """`insights timeline <conv-id> --format json` emits per-entry fidelity tags."""
+    _seed_products(cli_workspace)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["insights", "timeline", "conv-root", "--format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = extract_json_result(result.output)
+    assert payload["conversation_id"] == "conv-root"
+    counts = json_object(payload["fidelity_counts"])
+    # Both fidelity buckets are present in the contract output even if zero.
+    assert "hook" in counts
+    assert "sort_key" in counts
+    entries = json_object_list(payload["entries"])
+    # Every entry carries a fidelity tag drawn from the contract set.
+    for entry in entries:
+        assert entry["fidelity"] in {"hook", "sort_key"}
+        assert "timing_provenance" in entry
+        assert entry["source"] in {"work_event", "phase"}
+
+
+def test_insights_timeline_plain_includes_legend(cli_workspace: CliWorkspace) -> None:
+    _seed_products(cli_workspace)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["insights", "timeline", "conv-root"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert "Timeline for conv-root" in result.output
+    assert "legend:" in result.output

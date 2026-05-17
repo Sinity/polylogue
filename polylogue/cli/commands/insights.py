@@ -37,6 +37,11 @@ from polylogue.insights.registry import (
     fetch_insights,
     render_insight_items,
 )
+from polylogue.insights.timeline_renderer import (
+    build_session_timeline,
+    render_markdown,
+    render_plain,
+)
 
 _ROOT_FILTER_KEYS = ("provider", "since", "until")
 
@@ -287,6 +292,46 @@ def insights_export_command(
         emit_success(result.model_dump(mode="json"))
         return
     _render_export_plain(result)
+
+
+@insights_command.command("timeline")
+@click.argument("conversation_id")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["plain", "markdown", "json"]),
+    default=None,
+    help="Output format (default: plain, inherits root --format).",
+)
+@click.pass_context
+def insights_timeline_command(
+    ctx: click.Context,
+    conversation_id: str,
+    output_format: str | None,
+) -> None:
+    """Render a per-session timeline with hook-vs-sort-key fidelity tags.
+
+    Merges materialized work events and session phases for one conversation
+    into a chronological timeline. Each entry carries an explicit fidelity
+    tag: ``hook`` for entries whose timing came from a recorded timestamped
+    range, ``sort_key`` for entries reconstructed from message sort-key
+    ordering.
+    """
+    env: AppEnv = ctx.obj
+    resolved_format = output_format or ctx.find_root().params.get("output_format") or "plain"
+    try:
+        work_events = run_coroutine_sync(env.operations.get_session_work_event_insights(conversation_id))
+        phases = run_coroutine_sync(env.operations.get_session_phase_insights(conversation_id))
+    except ArchiveInsightUnavailableError as exc:
+        fail("insights timeline", str(exc))
+    timeline = build_session_timeline(conversation_id, work_events, phases)
+    if resolved_format == "json":
+        emit_success(timeline.to_dict())
+        return
+    if resolved_format == "markdown":
+        click.echo(render_markdown(timeline))
+        return
+    click.echo(render_plain(timeline))
 
 
 # Register all insight types as subcommands
