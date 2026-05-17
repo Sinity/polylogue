@@ -710,7 +710,7 @@ files:
     target: polylogue/cli/commands/insights.py
     owner: stable
   - path: polylogue/cli/commands/maintenance.py
-    loc: 126
+    loc: 197
     target: polylogue/cli/commands/maintenance.py
     owner: stable
   - path: polylogue/cli/commands/neighbors.py
@@ -1035,7 +1035,7 @@ files:
     target: polylogue/daemon/convergence_stages.py
     owner: stable
   - path: polylogue/daemon/events.py
-    loc: 192
+    loc: 241
     target: polylogue/daemon/events.py
     owner: stable
   - path: polylogue/daemon/events_http.py
@@ -1072,11 +1072,11 @@ files:
     target: polylogue/daemon/user_state_http.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
-    loc: 1068
+    loc: 1055
     target: polylogue/daemon/web_shell.py
     owner: stable
   - path: polylogue/daemon/web_shell_workspace.py
-    loc: 348
+    loc: 429
     target: polylogue/daemon/web_shell_workspace.py
     owner: stable
   - path: polylogue/daemon/workspace_routes.py
@@ -1130,7 +1130,7 @@ files:
     target: polylogue/insights/registry.py
     owner: stable
   - path: polylogue/insights/resume.py
-    loc: 452
+    loc: 511
     target: polylogue/insights/resume.py
     owner: stable
   - path: polylogue/insights/storage.py
@@ -1150,12 +1150,16 @@ files:
     loc: 0
     target: polylogue/maintenance/__init__.py
     owner: stable
+  - path: polylogue/maintenance/invalidation.py
+    loc: 54
+    target: polylogue/maintenance/invalidation.py
+    owner: stable
   - path: polylogue/maintenance/models.py
-    loc: 55
+    loc: 58
     target: polylogue/maintenance/models.py
     owner: stable
   - path: polylogue/maintenance/planner.py
-    loc: 261
+    loc: 473
     target: polylogue/maintenance/planner.py
     owner: stable
   - path: polylogue/maintenance/preview.py
@@ -1163,7 +1167,7 @@ files:
     target: polylogue/maintenance/preview.py
     owner: stable
   - path: polylogue/maintenance/targets.py
-    loc: 268
+    loc: 291
     target: polylogue/maintenance/targets.py
     owner: stable
   - path: polylogue/mcp/__init__.py
@@ -1199,7 +1203,7 @@ files:
     target: polylogue/mcp/server_context_tools.py
     owner: stable
   - path: polylogue/mcp/server_insight_tools.py
-    loc: 129
+    loc: 148
     target: polylogue/mcp/server_insight_tools.py
     owner: stable
   - path: polylogue/mcp/server_maintenance_tools.py

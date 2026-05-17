@@ -34,6 +34,11 @@ class MaintenanceTargetSpec:
     archive_readiness_unready_status: OutcomeStatus | None = None
     archive_readiness_requires_deep: bool = False
     aliases: tuple[str, ...] = ()
+    #: Stable invalidation-key tokens this target watches. The planner
+    #: matches these against schema/materializer/config snapshots to
+    #: decide which ``InvalidationReason`` applies. Examples:
+    #: ``"messages_fts"``, ``"session.profile"``, ``"embedding.voyage-4"``.
+    invalidation_keys: tuple[str, ...] = ()
 
     def to_dict(self) -> JSONDocument:
         return json_document(
@@ -52,6 +57,7 @@ class MaintenanceTargetSpec:
                 ),
                 "archive_readiness_requires_deep": self.archive_readiness_requires_deep,
                 "aliases": list(self.aliases),
+                "invalidation_keys": list(self.invalidation_keys),
             }
         )
 
@@ -159,6 +165,13 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         include_preview_when_ready=True,
         doctor_readiness_operation="project-session-insight-readiness",
         doctor_repair_operation="materialize-session-insights",
+        invalidation_keys=(
+            "session.profile",
+            "session.work_events",
+            "session.phases",
+            "session.threads",
+            "session.summaries",
+        ),
     ),
     MaintenanceTargetSpec(
         name="action_event_read_model",
@@ -170,6 +183,7 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         doctor_readiness_operation="project-action-event-readiness",
         doctor_repair_operation="materialize-action-events",
         aliases=("action_events",),
+        invalidation_keys=("action_events", "action_events_fts"),
     ),
     MaintenanceTargetSpec(
         name="dangling_fts",
@@ -179,6 +193,7 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         description="Repair lexical message FTS rows that are missing or dangling.",
         include_preview_when_ready=True,
         doctor_repair_operation="index-message-fts",
+        invalidation_keys=("messages_fts",),
     ),
     MaintenanceTargetSpec(
         name="message_type_backfill",
@@ -188,6 +203,14 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         description="Backfill message_type for rows ingested before context/protocol classification (#839).",
         include_preview_when_ready=True,
         doctor_repair_operation="backfill-message-type",
+    ),
+    MaintenanceTargetSpec(
+        name="message_embeddings",
+        mode=MaintenanceTargetMode.REPAIR,
+        category=MaintenanceCategory.DERIVED_REPAIR,
+        destructive=False,
+        description="Rebuild message embeddings and the vector index (dormant until daemon embedding is enabled, see #828).",
+        invalidation_keys=("message_embeddings", "embeddings_meta", "embedding_status"),
     ),
     MaintenanceTargetSpec(
         name="wal_checkpoint",
