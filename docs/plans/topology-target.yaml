@@ -1076,8 +1076,12 @@ files:
     target: polylogue/daemon/user_state_http.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
-    loc: 1055
+    loc: 1084
     target: polylogue/daemon/web_shell.py
+    owner: stable
+  - path: polylogue/daemon/web_shell_bulk.py
+    loc: 275
+    target: polylogue/daemon/web_shell_bulk.py
     owner: stable
   - path: polylogue/daemon/web_shell_workspace.py
     loc: 429

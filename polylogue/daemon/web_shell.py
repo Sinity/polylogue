@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from polylogue.daemon.web_shell_bulk import (
+    BULK_CSS,
+    BULK_JS,
+    BULK_PREVIEW_HTML,
+    BULK_TOOLBAR_HTML,
+)
 from polylogue.daemon.web_shell_workspace import WORKSPACE_CSS, WORKSPACE_HTML, WORKSPACE_JS
 
 WEB_SHELL_HTML = (
@@ -98,6 +104,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
 .conv-item .conv-meta .flag.think { color: var(--role-thinking); }
 .conv-item .conv-meta .flag.mark { color: var(--warn); border: 1px solid var(--border); }
 .provider-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 3px; flex-shrink: 0; }
+__BULK_CSS__
 .sidebar-state { padding: 16px 12px; color: var(--text-dim); font-size: var(--small); text-align: center; line-height: 1.6; }
 .sidebar-state .state-icon { font-size: 24px; margin-bottom: 6px; opacity: 0.4; }
 
@@ -226,6 +233,7 @@ __WORKSPACE_CSS__
       <button class="help-btn" id="help-btn" title="Keyboard shortcuts (?)">?</button>
     </div>
     <div id="facet-bar"></div>
+__BULK_TOOLBAR_HTML__
     <div id="conv-list"><div class="sidebar-state"><div class="state-icon">&mdash;</div>Loading...</div></div>
   </div>
   <div id="main">
@@ -274,6 +282,8 @@ __WORKSPACE_HTML__
   </div>
 </div>
 
+__BULK_PREVIEW_HTML__
+
 <script>
 var API = '';
 var state = {
@@ -281,7 +291,12 @@ var state = {
   provider: '', query: '', offset: 0, limit: 100, total: 0,
   status: {}, facets: null, inspectorTab: 'info',
   marks: {}, annotations: {}, savedViews: [], workspaces: [], userStateError: '',
-  mode: 'single', stackPayload: null, comparePayload: null
+  mode: 'single', stackPayload: null, comparePayload: null,
+  // Bulk selection state (#1119). selection is a Set-like object keyed by
+  // conversation_id. lastBulkResult holds the per-conversation envelope from
+  // the most recent bulk operation: {succeeded:[ids], failed:[{id,reason}],
+  // skipped:[{id,reason}], dryRun:bool, action:string}.
+  bulkSelection: {}, lastBulkResult: null, bulkPending: null
 };
 
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -490,6 +505,7 @@ function renderConversations() {
   }
   el.innerHTML = items.map(function(c) {
     var sel = state.selected && state.selected.id === c.id ? ' selected' : '';
+    var bulkSel = isBulkSelected(c.id) ? ' bulk-selected' : '';
     var title = esc((c.title || 'Untitled').substring(0, 100));
     var date = c.date ? new Date(c.date).toLocaleDateString() : (c.created_at ? new Date(c.created_at).toLocaleDateString() : '');
     var p = c.provider || 'unknown';
@@ -504,7 +520,11 @@ function renderConversations() {
     if (hasMark(c.id, 'pin')) flagsHtml += '<span class="flag mark" title="Pinned">P</span>';
     if (hasMark(c.id, 'archive')) flagsHtml += '<span class="flag mark" title="Archived">A</span>';
     var repoHtml = c.repo ? '<span class="chip" style="font-size:10px;padding:0 4px">' + esc(c.repo.split('/').pop()) + '</span>' : '';
-    return '<div class="conv-item' + sel + '" data-id="' + escAttr(c.id) + '" onclick="selectConversation(\'' + escAttr(c.id) + '\')">'
+    var checked = isBulkSelected(c.id) ? ' checked' : '';
+    return '<div class="conv-item' + sel + bulkSel + '" data-id="' + escAttr(c.id) + '">'
+      + '<div class="conv-row">'
+      + '<input type="checkbox" class="bulk-check" data-bulk-id="' + escAttr(c.id) + '" aria-label="Select conversation"' + checked + '>'
+      + '<div class="conv-body" onclick="selectConversation(\'' + escAttr(c.id) + '\')">'
       + '<div class="conv-title">' + title + '</div>'
       + '<div class="conv-meta">'
       + '<span class="provider-dot" style="background:' + dotColor + '"></span>'
@@ -512,9 +532,12 @@ function renderConversations() {
       + '<span>' + date + '</span>'
       + '<span>' + (c.message_count || 0) + ' msgs</span>'
       + flagsHtml + repoHtml
-      + '</div></div>';
+      + '</div></div></div></div>';
   }).join('');
+  renderBulkToolbar();
 }
+
+__BULK_JS__
 
 function renderFacets() {
   var f = state.facets;
@@ -938,6 +961,8 @@ document.getElementById('facet-bar').addEventListener('click', function(e) {
   if (facet === 'provider') { state.provider = value || ''; state.offset = 0; loadConversations(); renderFacets(); }
 });
 
+attachBulkHandlers();
+
 document.getElementById('inspector-tabs').addEventListener('click', function(e) {
   if (e.target.tagName !== 'BUTTON') return;
   state.inspectorTab = e.target.dataset.tab;
@@ -1052,4 +1077,8 @@ startRealtimeChannel();
 </html>""".replace("__WORKSPACE_CSS__", WORKSPACE_CSS)
     .replace("__WORKSPACE_HTML__", WORKSPACE_HTML)
     .replace("__WORKSPACE_JS__", WORKSPACE_JS)
+    .replace("__BULK_CSS__", BULK_CSS)
+    .replace("__BULK_TOOLBAR_HTML__", BULK_TOOLBAR_HTML)
+    .replace("__BULK_PREVIEW_HTML__", BULK_PREVIEW_HTML)
+    .replace("__BULK_JS__", BULK_JS)
 )
