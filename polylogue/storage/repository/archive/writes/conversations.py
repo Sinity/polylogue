@@ -68,6 +68,7 @@ from polylogue.storage.sqlite.queries import conversations as conversations_q
 from polylogue.storage.sqlite.queries import messages as messages_q
 from polylogue.storage.sqlite.queries import provider_events as provider_events_q
 from polylogue.storage.sqlite.queries import stats as stats_q
+from polylogue.storage.sqlite.queries.conversations_identity import repoint_user_state_by_identity
 
 
 def provider_conversation_id(conversation_id: str, provider: str | None) -> str:
@@ -445,6 +446,13 @@ async def save_via_backend(
                 counts["attachments"] = len(attachments)
             await recount_and_prune_attachments_async(conn, affected_attachment_ids)
             timings["attachments"] = _time.perf_counter() - t0
+
+        # Rebind any orphaned marks/annotations whose identity_key matches the
+        # freshly-written conversation. See #1114 — identity_key survives reset
+        # because conversation_id is deterministic across reimport.
+        t0 = _time.perf_counter()
+        await repoint_user_state_by_identity(conn, conversation.conversation_id)
+        timings["repoint_user_state"] = _time.perf_counter() - t0
 
     total = _time.perf_counter() - t_start
     if total > 2.0:

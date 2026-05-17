@@ -66,7 +66,7 @@ from polylogue.storage.sqlite.schema_ddl_provider_events import (
     PROVIDER_EVENT_DDL as _PROVIDER_EVENT_DDL,
 )
 
-SCHEMA_VERSION = 16  # 2026-05-17: user-state targets admit insight kinds (#1113)
+SCHEMA_VERSION = 17  # 2026-05-17: identity-preserving marks/annotations across reimport (#1114, builds on #1113 v16)
 
 
 # Complete target schema applied to fresh databases.

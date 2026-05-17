@@ -603,10 +603,54 @@ def store_records(
         # parity test exercising those filters would observe an empty
         # result set on every surface.
         _upsert_conversation_stats_sync(db_conn, conversation=conversation, messages=messages)
+        # Mirror save_via_backend's identity-preserving repoint pass (#1114) so
+        # tests that exercise reset/reimport via the sync builder see the same
+        # rebinding behaviour as production async ingest.
+        _repoint_user_state_by_identity_sync(db_conn, conversation.conversation_id)
         # Commit inside lock to ensure atomic transaction boundaries
         db_conn.commit()
 
     return counts
+
+
+def _repoint_user_state_by_identity_sync(conn: sqlite3.Connection, conversation_id: str) -> None:
+    """Sync mirror of ``repoint_user_state_by_identity`` for #1114 test parity."""
+    conv_key = f"conversation:{conversation_id}"
+    msg_key_prefix = f"message:{conversation_id}:"
+    conn.execute(
+        """
+        UPDATE user_marks SET conversation_id = ?
+        WHERE identity_key = ? AND target_type = 'conversation'
+          AND (conversation_id IS NULL OR conversation_id != ?)
+        """,
+        (conversation_id, conv_key, conversation_id),
+    )
+    conn.execute(
+        """
+        UPDATE user_annotations SET conversation_id = ?
+        WHERE identity_key = ? AND target_type = 'conversation'
+          AND (conversation_id IS NULL OR conversation_id != ?)
+        """,
+        (conversation_id, conv_key, conversation_id),
+    )
+    conn.execute(
+        """
+        UPDATE user_marks SET conversation_id = ?, message_id = target_id
+        WHERE identity_key LIKE ? AND target_type = 'message'
+          AND EXISTS (SELECT 1 FROM messages m WHERE m.message_id = user_marks.target_id AND m.conversation_id = ?)
+          AND (conversation_id IS NULL OR message_id IS NULL)
+        """,
+        (conversation_id, f"{msg_key_prefix}%", conversation_id),
+    )
+    conn.execute(
+        """
+        UPDATE user_annotations SET conversation_id = ?, message_id = target_id
+        WHERE identity_key LIKE ? AND target_type = 'message'
+          AND EXISTS (SELECT 1 FROM messages m WHERE m.message_id = user_annotations.target_id AND m.conversation_id = ?)
+          AND (conversation_id IS NULL OR message_id IS NULL)
+        """,
+        (conversation_id, f"{msg_key_prefix}%", conversation_id),
+    )
 
 
 def _upsert_conversation_stats_sync(

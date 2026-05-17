@@ -177,6 +177,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             "upgrade_v11_to_v12",
             "upgrade_v12_to_v13",
             "upgrade_v13_to_v14",
+            "upgrade_v14_to_v15",
+            "upgrade_v15_to_v16",
+            "upgrade_v16_to_v17",
         }
         and decision.extension_plan is not None
     ):
@@ -230,6 +233,9 @@ async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
             "upgrade_v11_to_v12",
             "upgrade_v12_to_v13",
             "upgrade_v13_to_v14",
+            "upgrade_v14_to_v15",
+            "upgrade_v15_to_v16",
+            "upgrade_v16_to_v17",
         }
         and decision.extension_plan is not None
     ):

@@ -333,6 +333,13 @@ BLOB_LEASE_DDL = """
 # User state — target-aware marks and annotations
 # ---------------------------------------------------------------------------
 
+# NOTE (#1114): ``user_marks`` and ``user_annotations`` survive the conversation
+# row's lifecycle.  ``identity_key`` is the stable surface identifier
+# (``conversation:{cid}`` or ``message:{cid}:{mid}``) used to repoint the
+# resolved ``conversation_id``/``message_id`` columns when a logically identical
+# conversation is re-imported after delete/reset.  Conversation row FKs use
+# ``ON DELETE SET NULL`` so marks/annotations persist across hard delete and are
+# rebound by ``repoint_user_state_by_identity`` once the conversation reappears.
 USER_MARKS_DDL = """
         CREATE TABLE IF NOT EXISTS user_marks (
             target_type     TEXT NOT NULL CHECK (target_type IN (
@@ -340,20 +347,12 @@ USER_MARKS_DDL = """
                 'thread', 'content_block', 'attachment', 'paste_span'
             )),
             target_id       TEXT NOT NULL,
-            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-            message_id      TEXT REFERENCES messages(message_id) ON DELETE CASCADE,
+            identity_key    TEXT NOT NULL,
+            conversation_id TEXT REFERENCES conversations(conversation_id) ON DELETE SET NULL,
+            message_id      TEXT REFERENCES messages(message_id) ON DELETE SET NULL,
             mark_type       TEXT NOT NULL CHECK (mark_type IN ('star', 'pin', 'archive')),
             created_at      TEXT NOT NULL,
-            PRIMARY KEY (target_type, target_id, mark_type),
-            CHECK (
-                (target_type = 'conversation' AND target_id = conversation_id AND message_id IS NULL)
-                OR
-                (target_type = 'message' AND message_id IS NOT NULL AND target_id = message_id)
-                OR
-                (target_type = 'content_block' AND message_id IS NOT NULL)
-                OR
-                (target_type IN ('session', 'work_event', 'thread', 'attachment', 'paste_span'))
-            )
+            PRIMARY KEY (target_type, target_id, mark_type)
         );
 
         CREATE INDEX IF NOT EXISTS idx_user_marks_type
@@ -364,6 +363,9 @@ USER_MARKS_DDL = """
 
         CREATE INDEX IF NOT EXISTS idx_user_marks_message
             ON user_marks(message_id);
+
+        CREATE INDEX IF NOT EXISTS idx_user_marks_identity_key
+            ON user_marks(identity_key);
 """
 
 USER_ANNOTATIONS_DDL = """
@@ -374,20 +376,12 @@ USER_ANNOTATIONS_DDL = """
                 'thread', 'content_block', 'attachment', 'paste_span'
             )),
             target_id       TEXT NOT NULL,
-            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-            message_id      TEXT REFERENCES messages(message_id) ON DELETE CASCADE,
+            identity_key    TEXT NOT NULL,
+            conversation_id TEXT REFERENCES conversations(conversation_id) ON DELETE SET NULL,
+            message_id      TEXT REFERENCES messages(message_id) ON DELETE SET NULL,
             note_text       TEXT NOT NULL,
             created_at      TEXT NOT NULL,
-            updated_at      TEXT NOT NULL,
-            CHECK (
-                (target_type = 'conversation' AND target_id = conversation_id AND message_id IS NULL)
-                OR
-                (target_type = 'message' AND message_id IS NOT NULL AND target_id = message_id)
-                OR
-                (target_type = 'content_block' AND message_id IS NOT NULL)
-                OR
-                (target_type IN ('session', 'work_event', 'thread', 'attachment', 'paste_span'))
-            )
+            updated_at      TEXT NOT NULL
         );
 
         CREATE INDEX IF NOT EXISTS idx_user_annotations_target
@@ -398,6 +392,9 @@ USER_ANNOTATIONS_DDL = """
 
         CREATE INDEX IF NOT EXISTS idx_user_annotations_message
             ON user_annotations(message_id);
+
+        CREATE INDEX IF NOT EXISTS idx_user_annotations_identity_key
+            ON user_annotations(identity_key);
 """
 
 # ---------------------------------------------------------------------------
