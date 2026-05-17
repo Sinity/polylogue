@@ -706,7 +706,7 @@ files:
     target: polylogue/cli/commands/init.py
     owner: stable
   - path: polylogue/cli/commands/insights.py
-    loc: 298
+    loc: 343
     target: polylogue/cli/commands/insights.py
     owner: stable
   - path: polylogue/cli/commands/maintenance.py
@@ -1148,6 +1148,10 @@ files:
   - path: polylogue/insights/storage.py
     loc: 141
     target: polylogue/insights/storage.py
+    owner: stable
+  - path: polylogue/insights/timeline_renderer.py
+    loc: 316
+    target: polylogue/insights/timeline_renderer.py
     owner: stable
   - path: polylogue/insights/tool_usage.py
     loc: 223
