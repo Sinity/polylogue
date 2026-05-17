@@ -17,13 +17,9 @@
       };
       python = pkgs.python313;
 
-      devtoolsCli = pkgs.writeShellScriptBin "devtools" ''
-        if [ -z "''${POLYLOGUE_REPO_ROOT:-}" ]; then
-          echo "devtools: POLYLOGUE_REPO_ROOT is not set; enter the project devshell first" >&2
-          exit 1
-        fi
-        exec python "$POLYLOGUE_REPO_ROOT/devtools/__main__.py" "$@"
-      '';
+      # Script body lives in nix/devtools-wrapper.sh so it can be unit-tested
+      # directly (see tests/unit/devtools/test_cli_wrapper.py).
+      devtoolsCli = pkgs.writeShellScriptBin "devtools" (builtins.readFile ./nix/devtools-wrapper.sh);
 
       polylogue = pkgs.python313Packages.buildPythonPackage {
         pname = "polylogue";
