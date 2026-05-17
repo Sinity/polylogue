@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
+
 import click
 
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.logging import configure_logging
 from polylogue.maintenance.planner import execute_backfill, preview_backfill
+from polylogue.maintenance.preview import ALL_SCOPES, staleness_inventory
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES, build_maintenance_target_catalog
 from polylogue.paths import archive_root, render_root
 
@@ -123,4 +126,72 @@ def run_command(env: AppEnv, targets: tuple[str, ...], dry_run: bool) -> None:
             click.echo(f"\nElapsed: {elapsed:.1f}s")
 
 
-__all__ = ["maintenance_group", "plan_command", "run_command"]
+@maintenance_group.command("preview")
+@click.option(
+    "--scope",
+    "scopes",
+    multiple=True,
+    type=click.Choice(ALL_SCOPES),
+    help="Limit preview to named scopes (derived, retrieval, archive_cleanup, backfill).",
+)
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+    help="Output format.",
+)
+@click.option(
+    "--shallow",
+    is_flag=True,
+    help="Skip the expensive full-verification path (faster, slightly less accurate).",
+)
+@click.pass_obj
+def preview_command(
+    env: AppEnv,
+    scopes: tuple[str, ...],
+    output_format: str,
+    shallow: bool,
+) -> None:
+    """Staleness inventory by model and scope. Read-only.
+
+    Shows per-model counts of stale/missing/orphan rows with typed
+    :class:`InvalidationReason` tags. Use before triggering ``polylogue
+    maintenance run`` so the operator knows what will be rebuilt and why.
+    Models with nothing stale produce explicit zero rows rather than
+    being absent from the output.
+    """
+
+    configure_logging()
+    inventory = staleness_inventory(
+        scopes=scopes or None,
+        verify_full=not shallow,
+    )
+
+    if output_format == "json":
+        click.echo(json.dumps(inventory.to_dict(), indent=2, sort_keys=True))
+        return
+
+    click.echo(f"Captured: {inventory.captured_at}")
+    click.echo(f"Database: {inventory.db_path}")
+    click.echo(f"Scopes:   {', '.join(inventory.scopes)}")
+    click.echo(f"Total stale rows: {inventory.total_stale():,}")
+    click.echo("")
+
+    by_model = inventory.by_model()
+    if not by_model:
+        click.echo("No models inventoried.")
+        return
+
+    for model, items in sorted(by_model.items()):
+        click.echo(f"{model}:")
+        for item in items:
+            fraction_pct = item.fraction * 100.0
+            click.echo(
+                f"  {item.reason.value:>20s}  count={item.count:>10,}  fraction={fraction_pct:>5.1f}%  {item.detail}"
+            )
+        click.echo("")
+
+
+__all__ = ["maintenance_group", "plan_command", "preview_command", "run_command"]
