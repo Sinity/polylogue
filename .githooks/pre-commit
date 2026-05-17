@@ -1,8 +1,54 @@
 #!/usr/bin/env bash
 # Fast pre-commit gate: format + lint only.
 # Installed automatically by the devshell (shellHook in flake.nix).
+#
+# Worktree-escape detector (#1211):
+#   Agents working in isolated git worktrees occasionally `cd` into a
+#   different directory before committing, which can route the commit to
+#   an unintended branch and corrupt both the worktree and the target
+#   checkout. When git reports a worktree context (the per-worktree git
+#   dir differs from the shared common dir), we resolve the worktree's
+#   real root from `$GIT_DIR/gitdir` and verify that the current working
+#   directory is inside that worktree. If it isn't, we abort with a
+#   clear diagnostic before any commit lands in the wrong place.
+#
+#   Override (for legitimate cross-worktree commit flows):
+#     POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1 git commit ...
 
 set -euo pipefail
+
+# Worktree-escape detection.
+git_dir=$(git rev-parse --git-dir)
+git_common_dir=$(git rev-parse --git-common-dir)
+git_dir_abs=$(cd "$git_dir" && pwd -P)
+git_common_dir_abs=$(cd "$git_common_dir" && pwd -P)
+
+if [ "$git_dir_abs" != "$git_common_dir_abs" ]; then
+  # We are in a linked worktree. The per-worktree gitdir file points at
+  # the worktree's .git file; its parent is the worktree root.
+  if [ -f "$git_dir_abs/gitdir" ]; then
+    worktree_dotgit=$(cat "$git_dir_abs/gitdir")
+    worktree_root=$(cd "$(dirname "$worktree_dotgit")" && pwd -P)
+    pwd_real=$(pwd -P)
+    case "$pwd_real/" in
+      "$worktree_root"/*) ;;
+      *)
+        if [ "${POLYLOGUE_ALLOW_WORKTREE_ESCAPE:-0}" != "1" ]; then
+          echo "pre-commit: worktree escape detected" >&2
+          echo "  expected worktree root: $worktree_root" >&2
+          echo "  current directory:      $pwd_real" >&2
+          echo "  git common dir:         $git_common_dir_abs" >&2
+          echo "  per-worktree git dir:   $git_dir_abs" >&2
+          echo "" >&2
+          echo "  Refusing to commit. cd back into the worktree, or set" >&2
+          echo "  POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1 to override." >&2
+          exit 1
+        fi
+        echo "pre-commit: worktree escape override active (POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1)" >&2
+        ;;
+    esac
+  fi
+fi
 
 # Only check Python files staged for commit, including renames.
 mapfile -d '' staged < <(git diff --cached --name-only -z --diff-filter=ACMR -- '*.py')

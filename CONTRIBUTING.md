@@ -180,6 +180,13 @@ The repository should stay aligned with the workflow above:
 The devshell installs git hooks automatically (`core.hooksPath .githooks`):
 
 - **pre-commit**: `ruff format --check` + `ruff check` on staged files.
+  Also runs a worktree-escape detector (#1211): when committing from a
+  linked worktree, the hook resolves the worktree root from its per-
+  worktree git dir and aborts if the current working directory has
+  drifted outside that root (a common failure mode when an agent
+  `cd`s into the main checkout from inside a worktree). Set
+  `POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1` for legitimate cross-worktree
+  commit flows.
 - **pre-push**: `devtools verify --quick` (format, lint, mypy, generated
   surfaces, and fast manifest checks).
 
