@@ -273,6 +273,27 @@
     }
   },
   {
+    "name": "cost_outlook",
+    "parameters": {
+      "properties": {
+        "method": {
+          "default": "linear",
+          "title": "Method",
+          "type": "string"
+        },
+        "plan": {
+          "title": "Plan",
+          "type": "string"
+        }
+      },
+      "required": [
+        "plan"
+      ],
+      "title": "cost_outlookArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "cost_rollups",
     "parameters": {
       "properties": {
@@ -1607,6 +1628,59 @@
     }
   },
   {
+    "name": "maintenance_execute",
+    "parameters": {
+      "properties": {
+        "dry_run": {
+          "default": false,
+          "title": "Dry Run",
+          "type": "boolean"
+        },
+        "targets": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Targets"
+        }
+      },
+      "title": "maintenance_executeArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "maintenance_preview",
+    "parameters": {
+      "properties": {
+        "targets": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Targets"
+        }
+      },
+      "title": "maintenance_previewArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "neighbor_candidates",
     "parameters": {
       "properties": {
@@ -1659,6 +1733,68 @@
         }
       },
       "title": "neighbor_candidatesArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "productivity_rollups",
+    "parameters": {
+      "properties": {
+        "granularity": {
+          "default": "day",
+          "title": "Granularity",
+          "type": "string"
+        },
+        "limit": {
+          "default": 200,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "offset": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Offset",
+          "type": "integer"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since"
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Until"
+        }
+      },
+      "title": "productivity_rollupsArguments",
       "type": "object"
     }
   },
