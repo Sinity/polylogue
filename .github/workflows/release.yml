@@ -1,0 +1,127 @@
+name: Release
+
+# Triggered by pushing an annotated tag matching `vX.Y.Z`. Builds the
+# wheel + sdist, smokes them through verify-distribution-surface, then:
+#   - publishes to PyPI via Trusted Publishing (OIDC, no API token), and
+#   - builds + pushes a multi-stage OCI image to ghcr.io.
+#
+# A manual `workflow_dispatch` path exists to dry-run the build/smoke
+# pipeline against any ref without publishing.
+#
+# PyPI Trusted Publishing must be configured once in the project on
+# pypi.org under "Publishing" → "Add a new pending publisher" with:
+#   owner = Sinity, repo = polylogue, workflow = release.yml,
+#   environment = pypi.
+# See docs/release.md for the operator checklist.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to PyPI and GHCR (false = dry-run build/smoke only)"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build-and-smoke
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.13"
+      - name: Install dev dependencies (frozen lockfile)
+        run: uv sync --extra dev --frozen
+      - name: Build wheel + sdist and smoke installed entrypoints
+        run: uv run devtools verify-distribution-surface --work-dir "${RUNNER_TEMP}/dist" --keep-work-dir
+        env:
+          POLYLOGUE_FORCE_PLAIN: "1"
+      - name: Extract project version from pyproject.toml
+        id: version
+        run: |
+          version=$(uv run python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: distribution-artifacts
+          path: ${{ runner.temp }}/dist/dist/*
+          if-no-files-found: error
+
+  publish-pypi:
+    name: publish-pypi
+    needs: build
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/polylogue/${{ needs.build.outputs.version }}/
+    permissions:
+      # OIDC token for PyPI Trusted Publishing.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: distribution-artifacts
+          path: dist/
+      - name: Drop work-dir scaffolding (keep only top-level wheel + sdist)
+        # verify-distribution-surface emits the unpacked-sdist tree under
+        # the work-dir; we only want the top-level dist/*.whl and *.tar.gz.
+        run: |
+          find dist/ -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+          ls -la dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+          verbose: true
+
+  publish-container:
+    name: publish-container
+    needs: build
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
+    timeout-minutes: 25
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/polylogue
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=tag
+            type=raw,value=latest,enable={{is_default_branch}}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Containerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

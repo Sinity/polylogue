@@ -1,11 +1,14 @@
 # Distribution-coverage manifest.
 #
 # Documents the current state of install-artifact parity across
-# wheel, sdist, and Nix package. The local distribution gate now
-# builds wheel/sdist artifacts, rebuilds from unpacked sdist without
-# .git, and smokes installed runtime entrypoints.
+# wheel, sdist, Nix package, and OCI container. The local distribution
+# gate now builds wheel/sdist artifacts, rebuilds from unpacked sdist
+# without .git, smokes installed runtime entrypoints, and is wired into
+# CI (.github/workflows/ci.yml::distribution). PyPI Trusted Publishing
+# and GHCR container push run from .github/workflows/release.yml on
+# `vX.Y.Z` tag push.
 #
-# Updated 2026-05-02 from realized codebase state.
+# Updated 2026-05-17 for #953 — broad-distribution packaging.
 
 description: >
   Wheel/sdist/Nix install parity for polylogue. Documents build
@@ -17,32 +20,34 @@ artifacts:
     description: Python wheel distribution (bdist_wheel)
     build_system: hatchling
     config_location: pyproject.toml
-    build_command: uv build --wheel .
-    install_command: pip install polylogue-*.whl
+    build_command: devtools verify-distribution-surface
+    install_command: pip install polylogue
     verification_command: devtools verify-distribution-surface
-    ci_build: false
-    ci_test: false
+    ci_build: true
+    ci_test: true
     notes: >
       pyproject.toml uses [build-system] with hatchling.
-      The source-checkout distribution gate builds the wheel,
-      installs it in a fresh environment, smokes polylogue,
-      polylogued, polylogue-mcp, and python -m polylogue. The
-      gate is not yet scheduled in CI.
+      The distribution gate (ci.yml::distribution) builds wheel +
+      sdist, installs each in a fresh venv, and smokes polylogue,
+      polylogued, polylogue-mcp, and python -m polylogue. Tagged
+      releases publish to PyPI via OIDC Trusted Publishing
+      (release.yml::publish-pypi).
 
   sdist:
     description: Python source distribution (sdist)
     build_system: hatchling
     config_location: pyproject.toml
-    build_command: uv build --sdist .
-    install_command: pip install polylogue-*.tar.gz
+    build_command: devtools verify-distribution-surface
+    install_command: pip install polylogue
     verification_command: devtools verify-distribution-surface
-    ci_build: false
-    ci_test: false
+    ci_build: true
+    ci_test: true
     notes: >
       Source distribution embeds polylogue/_build_info.py. The
       distribution gate unpacks the sdist outside .git, rebuilds
       a wheel from it, installs that wheel, and runs the same
-      runtime smoke surface. The gate is not yet scheduled in CI.
+      runtime smoke surface (ci.yml::distribution). Tagged releases
+      publish to PyPI via OIDC Trusted Publishing.
 
   nix_package:
     description: Nix flake package derivation
@@ -70,6 +75,24 @@ artifacts:
       Development install via pip install -e . (hatchling).
       Used locally but not verified in CI. The devshell
       (nix develop) is the canonical dev environment.
+
+  oci_container:
+    description: OCI image with polylogue / polylogued / polylogue-mcp on PATH
+    build_system: Containerfile (multi-stage, uv wheel build + slim runtime)
+    config_location: Containerfile
+    build_command: docker buildx build -f Containerfile .
+    install_command: podman pull ghcr.io/sinity/polylogue:latest
+    ci_build: false
+    ci_test: false
+    notes: >
+      Builder stage uses `uv build --wheel`; runtime stage installs the
+      wheel into python:3.13-slim-bookworm under a non-root user with
+      tini as PID 1. Volumes /data (XDG_DATA_HOME) and /config
+      (XDG_CONFIG_HOME) are declared. Build + push to GHCR runs from
+      release.yml::publish-container on `vX.Y.Z` tag push. Pre-tag CI
+      does not build the image to keep ci.yml fast; the
+      verify-distribution-surface gate exercises the same wheel that
+      the Containerfile installs.
 
   devshell:
     description: Nix development shell
@@ -105,24 +128,6 @@ artifacts:
       3.13). No macOS or Windows runners.
 
 coverage_gaps:
-  - id: distribution.wheel-ci
-    artifact: wheel
-    gap: Distribution gate exists locally but is not scheduled in CI
-    owner: distribution
-    severity: major
-    declared_at: "2026-05-02"
-    review_after: "2026-08-01"
-    issue: 593
-    next_evidence: devtools verify-distribution-surface
-  - id: distribution.sdist-ci
-    artifact: sdist
-    gap: Distribution gate exists locally but is not scheduled in CI
-    owner: distribution
-    severity: major
-    declared_at: "2026-05-02"
-    review_after: "2026-08-01"
-    issue: 593
-    next_evidence: devtools verify-distribution-surface
   - id: distribution.dev-install-ci
     artifact: dev_install
     gap: Not verified in CI; devshell is canonical environment
@@ -158,4 +163,22 @@ coverage_gaps:
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
     issue: 593
+    next_evidence: devtools verify-distribution-surface
+  - id: distribution.container-ci-build
+    artifact: oci_container
+    gap: Containerfile is built+pushed only on tag (release.yml). No pre-tag CI build means image-only regressions surface at release time.
+    owner: distribution
+    severity: minor
+    declared_at: "2026-05-17"
+    review_after: "2026-08-01"
+    issue: 953
+    next_evidence: devtools verify-distribution-surface
+  - id: distribution.browser-extension-store
+    artifact: browser_extension
+    gap: Browser extension is unpacked-install only — no Chrome Web Store / AMO submission yet (issue #953 phase 4).
+    owner: distribution
+    severity: minor
+    declared_at: "2026-05-17"
+    review_after: "2026-08-01"
+    issue: 953
     next_evidence: devtools verify-distribution-surface

@@ -44,6 +44,14 @@ documentation polish do not require an entry.
 
 ### Added
 
+- Broad-distribution packaging readiness (#953): the
+  `verify-distribution-surface` gate now runs as a `distribution` job in
+  `ci.yml` on every push, a new `release.yml` workflow publishes wheel
+  and sdist to PyPI via OIDC Trusted Publishing on `vX.Y.Z` tag push,
+  and a multi-stage `Containerfile` produces an OCI image that
+  `release.yml` builds and pushes to `ghcr.io/sinity/polylogue` with
+  semver tags. See [`docs/release.md`](docs/release.md) for the cut-time
+  checklist.
 - Local source discovery and parsing for Gemini CLI `~/.gemini/tmp` sessions
   and Hermes `~/.hermes/sessions` session documents, with distinct
   `gemini-cli` / `hermes` source identities.
