@@ -1176,6 +1176,99 @@ class TestReaderSavedViewsUI:
         assert empty_payload == {"items": [], "total": 0}
 
 
+# ---------------------------------------------------------------------------
+# polylogue.local_reader.bulk — multi-select bulk operations (#1119)
+# ---------------------------------------------------------------------------
+
+
+class TestReaderBulkOperations:
+    """``polylogue.local_reader.bulk``: selection toolbar + per-conversation envelope.
+
+    The bulk surface is composed client-side over existing daemon
+    endpoints (``/api/user/marks`` for tag mutations, ``/api/conversations/{id}``
+    for export). Delete and re-embed are exposed only through a preview
+    overlay because the daemon has no corresponding mutation routes yet.
+
+    These tests assert the shipped HTML carries every load-bearing region
+    hook and that the underlying tag endpoint accepts the per-conversation
+    POSTs the bulk toolbar drives — that is the contract the JS depends on.
+    Pixel-level assertions are deliberately avoided so reader visual
+    iteration does not invalidate the smoke.
+    """
+
+    BULK_REGION_HOOKS = (
+        "bulk-toolbar",
+        "bulk-select-all",
+        "bulk-clear",
+        'data-bulk-action="tag-star"',
+        'data-bulk-action="tag-pin"',
+        'data-bulk-action="tag-archive"',
+        'data-bulk-action="export"',
+        'data-bulk-action="delete-preview"',
+        'data-bulk-action="reembed-preview"',
+        "bulk-preview",
+        "bulk-preview-confirm",
+        "bulkApplyMark",
+        "bulkExport",
+        "openBulkPreview",
+        "confirmBulkPreview",
+        "renderBulkToolbar",
+        "isBulkSelected",
+        "bulkSelection",
+        "no_endpoint",
+    )
+
+    def test_bulk_toolbar_regions_present_in_shell(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            status, content_type, body = _get_text(base_url, "/")
+        assert status == 200
+        assert "text/html" in content_type
+        for hook in self.BULK_REGION_HOOKS:
+            assert hook in body, f"web shell missing bulk hook {hook!r}"
+
+    def test_bulk_envelope_keys_documented_in_shell(self, workspace_env: dict[str, Path]) -> None:
+        """The shipped JS must reference the per-conversation status keys the
+        bulk envelope contract uses (succeeded/failed/skipped + dryRun + action).
+        These are the field names the UI surfaces to the operator after a bulk
+        op; renaming any of them silently would break the rendered status."""
+        with _running_server(workspace_env) as (_, base_url):
+            _, _, body = _get_text(base_url, "/")
+        for key in ("succeeded", "failed", "skipped", "dryRun", "action"):
+            assert key in body, f"bulk envelope key {key!r} missing from shell"
+
+    def test_bulk_tag_drives_existing_marks_endpoint(self, workspace_env: dict[str, Path]) -> None:
+        """The bulk toolbar issues per-conversation POSTs against
+        ``/api/user/marks``. This simulates that loop server-side to lock the
+        contract: the daemon must accept the same payload shape the bulk JS
+        emits for every selected conversation, and a follow-up GET must
+        surface the resulting marks on every conversation."""
+        with _running_server(workspace_env) as (_, base_url):
+            statuses: list[int] = []
+            for cid in ("c1", "c2", "c3"):
+                status, _ = _request_json(
+                    base_url,
+                    "POST",
+                    "/api/user/marks",
+                    payload={"conversation_id": cid, "mark_type": "star"},
+                )
+                statuses.append(status)
+            listing = _get_json(base_url, "/api/user/marks?mark_type=star")
+        assert statuses == [201, 201, 201]
+        payload = cast(dict[str, object], listing)
+        items = cast(list[dict[str, object]], payload["items"])
+        ids = sorted(str(item["conversation_id"]) for item in items)
+        assert ids == ["c1", "c2", "c3"]
+
+    def test_bulk_export_uses_conversation_detail_endpoint(self, workspace_env: dict[str, Path]) -> None:
+        """Bulk export concatenates per-conversation GETs. This pins the
+        contract that ``/api/conversations/{id}`` returns the detail payload
+        the export bundle is composed from, for every selected id."""
+        with _running_server(workspace_env) as (_, base_url):
+            payloads = [_get_json(base_url, f"/api/conversations/{cid}") for cid in ("c1", "c2", "c3")]
+        ids = sorted(str(cast(dict[str, object], p)["id"]) for p in payloads)
+        assert ids == ["c1", "c2", "c3"]
+
+
 @pytest.mark.parametrize("path", ["/", "/api/conversations", "/api/facets", "/api/status", "/api/health"])
 def test_each_reader_route_responds_within_a_reasonable_budget(workspace_env: dict[str, Path], path: str) -> None:
     """Each reader-facing route returns within 10 s on a synthetic
