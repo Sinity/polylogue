@@ -105,6 +105,59 @@ def query_daemon_events(
         conn.close()
 
 
+def query_events_since(
+    last_id: int,
+    *,
+    kinds: Sequence[str] | None = None,
+    limit: int = 200,
+) -> list[dict[str, object]]:
+    """Return daemon events with ``id > last_id``, oldest-first.
+
+    Used by the live SSE stream and ETag polling fallback in the web reader.
+    ``kinds`` restricts to a whitelist (empty/None means all kinds).
+    """
+    conn = _ensure_events_db()
+    try:
+        kinds_tuple = tuple(kinds or ())
+        if kinds_tuple:
+            placeholders = ",".join("?" for _ in kinds_tuple)
+            sql = (
+                f"SELECT id, ts, kind, operation_id, payload_json "
+                f"FROM daemon_events WHERE id > ? AND kind IN ({placeholders}) "
+                f"ORDER BY id ASC LIMIT ?"
+            )
+            params: tuple[object, ...] = (last_id, *kinds_tuple, limit)
+        else:
+            sql = (
+                "SELECT id, ts, kind, operation_id, payload_json "
+                "FROM daemon_events WHERE id > ? ORDER BY id ASC LIMIT ?"
+            )
+            params = (last_id, limit)
+        rows = conn.execute(sql, params).fetchall()
+        return [
+            {
+                "id": row[0],
+                "ts": row[1],
+                "kind": row[2],
+                "operation_id": row[3],
+                "payload": json.loads(row[4]),
+            }
+            for row in rows
+        ]
+    finally:
+        conn.close()
+
+
+def get_latest_event_id() -> int:
+    """Return the id of the most recent daemon event, or 0 if none exist."""
+    conn = _ensure_events_db()
+    try:
+        row = conn.execute("SELECT COALESCE(MAX(id), 0) FROM daemon_events").fetchone()
+        return int(row[0]) if row is not None else 0
+    finally:
+        conn.close()
+
+
 def get_last_ingestion_batch() -> dict[str, object] | None:
     """Return the most recent ingestion_batch event, if any."""
     events = query_daemon_events(kind="ingestion_batch", limit=1)
@@ -132,6 +185,8 @@ __all__ = [
     "emit_daemon_event",
     "get_daemon_event_counts",
     "get_last_ingestion_batch",
+    "get_latest_event_id",
     "get_recent_operations",
     "query_daemon_events",
+    "query_events_since",
 ]

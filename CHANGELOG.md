@@ -12,6 +12,17 @@ documentation polish do not require an entry.
 
 ## [Unreleased]
 
+### Added
+
+- Realtime update channel for the daemon web reader (#957): new
+  `GET /api/events` Server-Sent Events endpoint streams daemon-event
+  notifications (`ingestion_batch`, `ingest`, `reset`, `operation`) so the
+  reader updates without a manual refresh. `?poll=1` returns the same
+  payload as a JSON snapshot for `EventSource`-less fallbacks. `GET
+  /api/status` now advertises a monotonic `last_event_id` field and a
+  weak ETag, and returns `304 Not Modified` when the client's
+  `If-None-Match` matches.
+
 ### Security
 
 - FTS5 query escaping now treats `.`, `/`, and `?` as special characters so
