@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from polylogue.archive.message.messages import MessageCollection
+from polylogue.archive.models import Message
 from polylogue.archive.semantic.pricing import (
     CostBasisPayload,
     CostModelBreakdown,
@@ -27,7 +28,7 @@ def _msg_with_tokens(
     input_tokens: int,
     output_tokens: int,
     role: str = "assistant",
-) -> object:
+) -> Message:
     """Build a Message whose provider_meta carries reported tokens and a model name.
 
     The harmonized viewport extracts model + tokens from provider_meta at

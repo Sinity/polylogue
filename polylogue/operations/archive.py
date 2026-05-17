@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar, cast
@@ -13,9 +12,6 @@ from polylogue.archive.conversation.models import ConversationSummary
 from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec, project_message_content
 from polylogue.archive.semantic.pricing import (
-    CostBasisPayload,
-    CostModelBreakdown,
-    CostUsagePayload,
     _normalize_model,
     estimate_conversation_cost,
     generated_at,
@@ -50,7 +46,7 @@ from polylogue.insights.archive import (
     WorkThreadInsight,
     WorkThreadInsightQuery,
 )
-from polylogue.insights.archive_rollups import aggregate_session_tag_rollup_insights
+from polylogue.insights.archive_rollups import aggregate_cost_rollup_insights, aggregate_session_tag_rollup_insights
 from polylogue.insights.archive_summaries import (
     aggregate_day_session_summary_insights,
     aggregate_week_session_summary_insights,
@@ -880,114 +876,7 @@ class ArchiveInsightAggregateMixin:
                 limit=None,
             )
         )
-        grouped: dict[tuple[str, str | None], list[SessionCostInsight]] = {}
-        for insight in session_costs:
-            key = (insight.provider_name, insight.estimate.normalized_model or insight.estimate.model_name)
-            grouped.setdefault(key, []).append(insight)
-
-        rollups: list[CostRollupInsight] = []
-        for (provider_name, normalized_model), insights in sorted(
-            grouped.items(),
-            key=lambda item: (item[0][0], item[0][1] or ""),
-        ):
-            usage = CostUsagePayload()
-            basis = CostBasisPayload()
-            status_counts: Counter[str] = Counter()
-            unavailable_reason_counts: Counter[str] = Counter()
-            total_usd = 0.0
-            priced_count = 0
-            confidence_total = 0.0
-            per_model_acc: dict[tuple[str | None, str | None], CostModelBreakdown] = {}
-            source_updated_at = max(
-                (
-                    insight.provenance.source_updated_at
-                    for insight in insights
-                    if insight.provenance.source_updated_at is not None
-                ),
-                default=None,
-            )
-            source_sort_key = max(
-                (
-                    insight.provenance.source_sort_key
-                    for insight in insights
-                    if insight.provenance.source_sort_key is not None
-                ),
-                default=None,
-            )
-            model_names = Counter(insight.estimate.model_name for insight in insights if insight.estimate.model_name)
-            for insight in insights:
-                estimate = insight.estimate
-                usage = usage.plus(estimate.usage)
-                basis = basis.plus(estimate.basis)
-                status_counts[estimate.status] += 1
-                total_usd += estimate.total_usd
-                if estimate.unavailable_reason is not None:
-                    unavailable_reason_counts[estimate.unavailable_reason] += 1
-                if estimate.priced:
-                    priced_count += 1
-                    confidence_total += estimate.confidence
-                # Per-model breakdown: prefer the session-level breakdown when
-                # populated (mixed-model sessions). Fall back to a single-row
-                # synthesized entry from the dominant model so rollups for
-                # provider-reported-only sessions still expose per-model rows.
-                breakdown_entries = estimate.per_model_breakdown
-                if not breakdown_entries and (estimate.model_name or estimate.normalized_model):
-                    breakdown_entries = (
-                        CostModelBreakdown(
-                            model_name=estimate.model_name,
-                            normalized_model=estimate.normalized_model,
-                            usage=estimate.usage,
-                            basis=estimate.basis,
-                            total_usd=estimate.total_usd,
-                            session_count=1,
-                        ),
-                    )
-                for entry in breakdown_entries:
-                    key = (entry.model_name, entry.normalized_model)
-                    existing = per_model_acc.get(key)
-                    if existing is None:
-                        per_model_acc[key] = CostModelBreakdown(
-                            model_name=entry.model_name,
-                            normalized_model=entry.normalized_model,
-                            usage=entry.usage,
-                            basis=entry.basis,
-                            total_usd=entry.total_usd,
-                            session_count=1,
-                        )
-                    else:
-                        per_model_acc[key] = CostModelBreakdown(
-                            model_name=existing.model_name,
-                            normalized_model=existing.normalized_model,
-                            usage=existing.usage.plus(entry.usage),
-                            basis=existing.basis.plus(entry.basis),
-                            total_usd=existing.total_usd + entry.total_usd,
-                            session_count=existing.session_count + 1,
-                        )
-            per_model_breakdown = tuple(sorted(per_model_acc.values(), key=lambda entry: entry.total_usd, reverse=True))
-            rollups.append(
-                CostRollupInsight(
-                    provider_name=provider_name,
-                    model_name=model_names.most_common(1)[0][0] if model_names else None,
-                    normalized_model=normalized_model,
-                    session_count=len(insights),
-                    priced_session_count=priced_count,
-                    unavailable_session_count=status_counts["unavailable"],
-                    status_counts=dict(sorted(status_counts.items())),
-                    total_usd=total_usd,
-                    basis=basis,
-                    unavailable_reason_counts=dict(sorted(unavailable_reason_counts.items())),
-                    per_model_breakdown=per_model_breakdown,
-                    usage=usage,
-                    confidence=(confidence_total / priced_count if priced_count else 0.0),
-                    provenance=ArchiveInsightProvenance(
-                        materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
-                        materialized_at=generated_at(),
-                        source_updated_at=source_updated_at,
-                        source_sort_key=source_sort_key,
-                    ),
-                )
-            )
-        rollups.sort(key=lambda insight: insight.total_usd, reverse=True)
+        rollups = aggregate_cost_rollup_insights(session_costs, materialized_at=generated_at())
         return _slice_insights(rollups, offset=request.offset, limit=request.limit)
 
     async def get_insight_readiness_report(
