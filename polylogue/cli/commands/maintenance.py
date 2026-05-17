@@ -9,6 +9,7 @@ import click
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.logging import configure_logging
+from polylogue.maintenance.envelope import envelope_from_operation
 from polylogue.maintenance.planner import preview_backfill
 from polylogue.maintenance.preview import ALL_SCOPES, staleness_inventory
 from polylogue.maintenance.replay import ReplayProgress, execute_replay
@@ -31,8 +32,16 @@ def maintenance_group() -> None:
     type=click.Choice(MAINTENANCE_TARGET_NAMES),
     help=_MAINTENANCE_TARGET_HELP,
 )
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+    help="Output format. ``json`` emits the shared MaintenanceOperationEnvelope.",
+)
 @click.pass_obj
-def plan_command(env: AppEnv, targets: tuple[str, ...]) -> None:
+def plan_command(env: AppEnv, targets: tuple[str, ...], output_format: str) -> None:
     """Dry-run summary: show what would be rebuilt without executing.
 
     Displays affected rows and estimated time for each target.
@@ -45,6 +54,11 @@ def plan_command(env: AppEnv, targets: tuple[str, ...]) -> None:
         sources=[],  # maintenance doesn't need source acquisition
     )
     result = preview_backfill(config, targets=targets)
+
+    if output_format == "json":
+        envelope = envelope_from_operation(result, origin="cli", mode="preview")
+        click.echo(json.dumps(envelope.to_dict(), indent=2, sort_keys=True))
+        return
 
     click.echo(f"Operation: {result.operation_id}")
     click.echo(f"Targets:  {', '.join(result.targets) if result.targets else 'all'}")
@@ -99,6 +113,14 @@ def plan_command(env: AppEnv, targets: tuple[str, ...]) -> None:
         "loaded automatically."
     ),
 )
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+    help="Output format. ``json`` emits the shared MaintenanceOperationEnvelope.",
+)
 @click.pass_obj
 def run_command(
     env: AppEnv,
@@ -106,6 +128,7 @@ def run_command(
     dry_run: bool,
     operation_id: str | None,
     resume_cursor: str | None,
+    output_format: str,
 ) -> None:
     """Run (or dry-run) maintenance backfill operations.
 
@@ -136,6 +159,11 @@ def run_command(
         dry_run=dry_run,
         progress_callback=_emit_progress,
     )
+
+    if output_format == "json":
+        envelope = envelope_from_operation(result, origin="cli", mode="execute")
+        click.echo(json.dumps(envelope.to_dict(), indent=2, sort_keys=True))
+        return
 
     action = "Would affect" if dry_run else "Processed"
     click.echo(f"Operation: {result.operation_id}")

@@ -1567,6 +1567,59 @@
     }
   },
   {
+    "name": "maintenance_execute",
+    "parameters": {
+      "properties": {
+        "dry_run": {
+          "default": false,
+          "title": "Dry Run",
+          "type": "boolean"
+        },
+        "targets": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Targets"
+        }
+      },
+      "title": "maintenance_executeArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "maintenance_preview",
+    "parameters": {
+      "properties": {
+        "targets": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Targets"
+        }
+      },
+      "title": "maintenance_previewArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "neighbor_candidates",
     "parameters": {
       "properties": {
