@@ -8,6 +8,7 @@ from polylogue.daemon.web_shell_bulk import (
     BULK_PREVIEW_HTML,
     BULK_TOOLBAR_HTML,
 )
+from polylogue.daemon.web_shell_provenance import PROVENANCE_JS
 from polylogue.daemon.web_shell_workspace import WORKSPACE_CSS, WORKSPACE_HTML, WORKSPACE_JS
 
 WEB_SHELL_HTML = (
@@ -301,7 +302,11 @@ var state = {
   // Cost panel cache (#1122). Keyed by conversation_id; populated on demand
   // when the Cost inspector tab is opened. ``undefined`` means "not loaded
   // yet", null/{error} means "fetch failed".
-  costPanels: {}
+  costPanels: {},
+  // Per-conversation provenance (#1125). Loaded lazily when the Raw
+  // inspector tab is opened for the selected conversation; raw payload
+  // preview within is opt-in via explicit user click.
+  provenance: null
 };
 
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -848,16 +853,7 @@ function renderInspectorInfo(el, c) {
   el.innerHTML = html;
 }
 
-function renderInspectorRaw(el, c) {
-  var html = '<div class="inspector-section"><h4>Provenance</h4>';
-  html += '<div class="inspector-field"><span class="label">Provider</span><span class="value">' + esc(c.provider || '-') + '</span></div>';
-  html += '<div class="inspector-field"><span class="label">Branch</span><span class="value">' + esc(c.branch_type || 'main') + '</span></div>';
-  html += '<div class="inspector-field"><span class="label">Parent</span><span class="value">' + esc(c.parent_id || '-') + '</span></div>';
-  html += '</div><div class="inspector-section"><h4>Raw Artifacts</h4>';
-  html += '<button style="background:var(--panel-elevated);border:1px solid var(--border);color:var(--accent);padding:4px 10px;border-radius:3px;cursor:pointer;font-size:var(--small)" onclick="loadRawData()">Load raw data</button>';
-  html += '<div id="raw-data-area"></div></div>';
-  el.innerHTML = html;
-}
+__PROVENANCE_JS__
 
 function renderInspectorNotes(el, c) {
   var marks = Object.keys(markSetFor(c.id));
@@ -1203,4 +1199,5 @@ startRealtimeChannel();
     .replace("__BULK_TOOLBAR_HTML__", BULK_TOOLBAR_HTML)
     .replace("__BULK_PREVIEW_HTML__", BULK_PREVIEW_HTML)
     .replace("__BULK_JS__", BULK_JS)
+    .replace("__PROVENANCE_JS__", PROVENANCE_JS)
 )

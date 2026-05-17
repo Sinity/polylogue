@@ -1059,7 +1059,7 @@ files:
     target: polylogue/daemon/health.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 1132
+    loc: 1174
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_models.py
@@ -1075,6 +1075,10 @@ files:
     loc: 254
     target: polylogue/daemon/notifications.py
     owner: stable
+  - path: polylogue/daemon/provenance.py
+    loc: 301
+    target: polylogue/daemon/provenance.py
+    owner: stable
   - path: polylogue/daemon/status.py
     loc: 1140
     target: polylogue/daemon/status.py
@@ -1084,12 +1088,16 @@ files:
     target: polylogue/daemon/user_state_http.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
-    loc: 1084
+    loc: 1081
     target: polylogue/daemon/web_shell.py
     owner: stable
   - path: polylogue/daemon/web_shell_bulk.py
     loc: 275
     target: polylogue/daemon/web_shell_bulk.py
+    owner: stable
+  - path: polylogue/daemon/web_shell_provenance.py
+    loc: 103
+    target: polylogue/daemon/web_shell_provenance.py
     owner: stable
   - path: polylogue/daemon/web_shell_workspace.py
     loc: 429
