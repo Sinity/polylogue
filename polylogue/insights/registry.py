@@ -38,6 +38,7 @@ from polylogue.insights.archive import (
     WeekSessionSummaryInsightQuery,
     WorkThreadInsightQuery,
 )
+from polylogue.insights.productivity import ProductivityRollupInsightQuery
 from polylogue.insights.tool_usage import ToolUsageInsightQuery
 
 InsightAccessor: TypeAlias = Callable[[ArchiveInsightModel], str]
@@ -569,6 +570,44 @@ register(
             InsightField("total_calls", _attr("total_call_count", "0"), group=0),
             InsightField("distinct_tools", _attr("total_distinct_tools", "0"), group=0),
             InsightField("coverage_gaps", _attr("has_coverage_gaps"), group=0),
+        ),
+    )
+)
+
+register(
+    InsightType(
+        name="productivity_rollups",
+        display_name="Productivity Rollups",
+        json_key="productivity_rollups",
+        empty_message="No productivity rollups matched.",
+        query_model=ProductivityRollupInsightQuery,
+        operations_method_name="list_productivity_rollup_insights",
+        cli_command_name="productivity",
+        cli_help=(
+            "Productivity rollups (hour-of-day, project focus, context switches, "
+            "outcome breakdown) with explicit caveats."
+        ),
+        readiness_exempt=True,
+        cli_options=(
+            CliOption(
+                "granularity",
+                ("--granularity",),
+                type=click.Choice(["day", "week", "project"]),
+                default="day",
+                show_default=True,
+                help="Bucket granularity: ISO day, ISO week, or project (cwd_path).",
+            ),
+            CliOption("provider", ("--provider",), help="Only sessions from this provider"),
+            CliOption("since", ("--since",), help="Only sessions on/after this ISO date"),
+            CliOption("until", ("--until",), help="Only sessions on/before this ISO date"),
+        ),
+        mcp_default_limit=200,
+        fields=(
+            InsightField("granularity", _attr("granularity"), group=0),
+            InsightField("total_sessions", _attr("total_sessions", "0"), group=0),
+            InsightField("total_work_events", _attr("total_work_events", "0"), group=0),
+            InsightField("untimed_sessions", _attr("total_untimed_sessions", "0"), group=0),
+            InsightField("entries", _attr("entries", "0"), group=0),
         ),
     )
 )

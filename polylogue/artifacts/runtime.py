@@ -501,6 +501,20 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         readiness_surfaces=("insights", "facade", "mcp"),
     ),
     ArtifactNode(
+        name="productivity_rollup_results",
+        layer=ArtifactLayer.PROJECTION,
+        description=(
+            "Productivity rollup envelopes derived from session_profile and session_work_event "
+            "substrates with explicit per-entry caveats and a baseline disclaimer."
+        ),
+        depends_on=("session_insight_rows",),
+        code_refs=(
+            "polylogue.operations.archive.ArchiveInsightMixin.list_productivity_rollup_insights",
+            "polylogue.cli.commands.insights",
+        ),
+        readiness_surfaces=("insights", "facade", "mcp"),
+    ),
+    ArtifactNode(
         name="archive_debt_results",
         layer=ArtifactLayer.PROJECTION,
         description="Query/read results for archive debt views derived from projected readiness and maintenance state.",
@@ -807,6 +821,14 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
         nodes=(
             "action_event_rows",
             "tool_usage_results",
+        ),
+    ),
+    ArtifactPath(
+        name="productivity-rollup-query-loop",
+        description=("Session-insight rows through productivity-rollup envelopes with first-class caveats."),
+        nodes=(
+            "session_insight_rows",
+            "productivity_rollup_results",
         ),
     ),
     ArtifactPath(

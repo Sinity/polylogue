@@ -251,6 +251,7 @@ Commands:
   enrichments     List durable probabilistic session-enrichment insights.
   export          Export versioned archive-insight bundles.
   phases          List durable session-phase insights.
+  productivity    Productivity rollups (hour-of-day, project focus,...
   profiles        List durable session-profile insights.
   status          Report insight materialization coverage and readiness.
   tags            List durable session-tag rollup insights.

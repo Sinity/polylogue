@@ -6,6 +6,7 @@ from .archive import (
     ArchiveStats,
     CompletionAggregate,
     get_provider_counts,
+    list_productivity_rollup_insights,
     list_provider_analytics_insights,
     list_tool_usage_insights,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "build_declared_operation_catalog",
     "build_runtime_operation_catalog",
     "get_provider_counts",
+    "list_productivity_rollup_insights",
     "list_provider_analytics_insights",
     "list_tool_usage_insights",
 ]

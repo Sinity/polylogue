@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeVar, cast
+from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
 import structlog
 
@@ -58,6 +58,11 @@ from polylogue.insights.export_bundles import (
     InsightExportBundleResult,
     InsightExportOperations,
     export_insight_bundle,
+)
+from polylogue.insights.productivity import (
+    ProductivityRollupInsight,
+    ProductivityRollupInsightQuery,
+    build_productivity_rollup_insight,
 )
 from polylogue.insights.readiness import (
     InsightReadinessQuery,
@@ -116,6 +121,25 @@ if TYPE_CHECKING:
 
 _ResultT = TypeVar("_ResultT")
 _QueryT = TypeVar("_QueryT")
+
+
+class _SessionInsightReaders(Protocol):
+    """Cross-mixin dispatch protocol for productivity rollup aggregation.
+
+    The aggregate mixin needs to read session-profile and session-work-event
+    insights at runtime — both implemented on
+    :class:`ArchiveInsightSessionMixin`. The protocol gives mypy a typed
+    surface without forcing the aggregate mixin to inherit from the session
+    mixin directly.
+    """
+
+    async def list_session_profile_insights(
+        self, query: SessionProfileInsightQuery | None = None
+    ) -> list[SessionProfileInsight]: ...
+
+    async def list_session_work_event_insights(
+        self, query: SessionWorkEventInsightQuery | None = None
+    ) -> list[SessionWorkEventInsight]: ...
 
 
 def _build_search_snippet(text: str, query: str) -> str:
@@ -842,6 +866,51 @@ class ArchiveInsightAggregateMixin:
         )
         return [insight]
 
+    async def list_productivity_rollup_insights(
+        self,
+        query: ProductivityRollupInsightQuery | None = None,
+    ) -> list[ProductivityRollupInsight]:
+        """Aggregate productivity rollups over materialized session insights.
+
+        Reads ``session_profile`` and ``session_work_events`` substrate
+        rows live; no productivity-specific storage is required.
+        Aggregation, filtering, and caveat assignment are delegated to
+        :func:`polylogue.insights.productivity.build_productivity_rollup_insight`
+        so the contract is exercised identically in tests, CLI, MCP,
+        and the dashboard.
+
+        ``self`` is statically the aggregate mixin but is composed into
+        :class:`ArchiveInsightMixin` with session/work-event readers; the
+        runtime type satisfies the :class:`_SessionInsightReaders`
+        protocol used for the cross-mixin dispatch below.
+        """
+
+        request = _default_query(query, ProductivityRollupInsightQuery)
+        readers = cast(_SessionInsightReaders, self)
+        profiles = await readers.list_session_profile_insights(
+            SessionProfileInsightQuery(
+                provider=request.provider,
+                since=request.since,
+                until=request.until,
+                limit=None,
+            )
+        )
+        work_events = await readers.list_session_work_event_insights(
+            SessionWorkEventInsightQuery(
+                provider=request.provider,
+                since=request.since,
+                until=request.until,
+                limit=None,
+            )
+        )
+        insight = build_productivity_rollup_insight(
+            profiles=profiles,
+            work_events=work_events,
+            query=request,
+            materialized_at=generated_at(),
+        )
+        return [insight]
+
     async def list_session_cost_insights(
         self,
         query: SessionCostInsightQuery | None = None,
@@ -1173,13 +1242,29 @@ async def list_tool_usage_insights(
     return await _with_operations(_action, services=services, db_path=db_path)
 
 
+async def list_productivity_rollup_insights(
+    *,
+    services: RuntimeServices | None = None,
+    db_path: Path | None = None,
+    query: ProductivityRollupInsightQuery | None = None,
+) -> list[ProductivityRollupInsight]:
+    """Return productivity rollups with first-class caveats."""
+
+    async def _action(operations: ArchiveOperations) -> list[ProductivityRollupInsight]:
+        return await operations.list_productivity_rollup_insights(query)
+
+    return await _with_operations(_action, services=services, db_path=db_path)
+
+
 __all__ = [
     "ArchiveDebtInsight",
     "ArchiveOperations",
     "ArchiveStats",
     "CompletionAggregate",
+    "build_productivity_rollup_insight",
     "build_tool_usage_insight",
     "get_provider_counts",
+    "list_productivity_rollup_insights",
     "list_provider_analytics_insights",
     "list_tool_usage_insights",
 ]
