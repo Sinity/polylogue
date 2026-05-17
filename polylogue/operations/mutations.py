@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
+from polylogue.insights.feedback import LearningCorrection
 from polylogue.surfaces.payloads import (
     BulkTagMutationResult,
     DeleteConversationResult,
@@ -433,6 +434,47 @@ class ArchiveMutationsMixin:
 
         store: RepositoryWriteMixin = cast("RepositoryWriteMixin", self.repository)
         return await store.delete_workspace(workspace_id)
+
+    # ------------------------------------------------------------------
+    # Learning corrections (#1131)
+    # ------------------------------------------------------------------
+
+    async def record_correction(
+        self,
+        conversation_id: str,
+        kind: str,
+        payload: dict[str, str],
+        *,
+        note: str | None = None,
+    ) -> LearningCorrection:
+        """Persist a typed correction. See ``insights/feedback.py``."""
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = cast("RepositoryWriteMixin", self.repository)
+        return await store.record_correction(conversation_id, kind, payload, note=note)
+
+    async def list_corrections(
+        self,
+        *,
+        conversation_id: str | None = None,
+        kind: str | None = None,
+    ) -> list[LearningCorrection]:
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = cast("RepositoryWriteMixin", self.repository)
+        return list(await store.list_corrections(conversation_id=conversation_id, kind=kind))
+
+    async def delete_correction(self, conversation_id: str, kind: str) -> bool:
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = cast("RepositoryWriteMixin", self.repository)
+        return await store.delete_correction(conversation_id, kind)
+
+    async def clear_corrections(self, conversation_id: str) -> int:
+        from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
+
+        store: RepositoryWriteMixin = cast("RepositoryWriteMixin", self.repository)
+        return await store.clear_corrections(conversation_id)
 
 
 __all__ = ["ArchiveMutationsMixin", "MetadataKeyValidationError"]

@@ -540,6 +540,7 @@ class TestCliMetadata:
             "insights",
             "schema",
             "tags",
+            "feedback",
             "user-state",
             "diagnostics",
             "maintenance",

@@ -716,5 +716,109 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("delete_conversation", run)
 
+    # ------------------------------------------------------------------
+    # Learning corrections (#1131)
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    async def record_correction(
+        conversation_id: str,
+        kind: str,
+        payload: dict[str, str],
+        note: str | None = None,
+    ) -> str:
+        """Record a user correction targeting a derived insight."""
+
+        async def run() -> str:
+            from polylogue.insights.feedback import UnknownCorrectionKindError
+
+            resolved, err = await _resolve_or_error(hooks, conversation_id)
+            if err:
+                return err
+            assert resolved is not None
+            poly = hooks.get_polylogue()
+            try:
+                correction = await poly.record_correction(resolved, kind, payload, note=note)
+            except UnknownCorrectionKindError as exc:
+                return hooks.error_json(str(exc), code="unknown_kind", kind=str(kind or ""))
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="ok",
+                    conversation_id=correction.conversation_id,
+                    outcome=correction.kind.value,
+                    detail=correction.note,
+                ),
+                exclude_none=True,
+            )
+
+        return await hooks.async_safe_call("record_correction", run)
+
+    @mcp.tool()
+    async def list_corrections(
+        conversation_id: str | None = None,
+        kind: str | None = None,
+    ) -> str:
+        """List stored learning corrections."""
+
+        async def run() -> str:
+            from polylogue.insights.feedback import UnknownCorrectionKindError
+
+            poly = hooks.get_polylogue()
+            try:
+                corrections = await poly.list_corrections(conversation_id=conversation_id, kind=kind)
+            except UnknownCorrectionKindError as exc:
+                return hooks.error_json(str(exc), code="unknown_kind", kind=str(kind or ""))
+            items = [
+                {
+                    "conversation_id": c.conversation_id,
+                    "kind": c.kind.value,
+                    "payload": dict(c.payload),
+                    "note": c.note,
+                    "created_at": c.created_at.isoformat(),
+                }
+                for c in corrections
+            ]
+            return json.dumps({"corrections": items, "total": len(items)}, sort_keys=True)
+
+        return await hooks.async_safe_call("list_corrections", run)
+
+    @mcp.tool()
+    async def clear_corrections(conversation_id: str, kind: str | None = None) -> str:
+        """Delete one or all corrections for a conversation."""
+
+        async def run() -> str:
+            from polylogue.insights.feedback import UnknownCorrectionKindError
+
+            resolved, err = await _resolve_or_error(hooks, conversation_id)
+            if err:
+                return err
+            assert resolved is not None
+            poly = hooks.get_polylogue()
+            try:
+                if kind is None:
+                    count = await poly.clear_corrections(resolved)
+                    return hooks.json_payload(
+                        MutationResultPayload(
+                            status="ok",
+                            conversation_id=resolved,
+                            affected_count=count,
+                            outcome="cleared",
+                        ),
+                        exclude_none=True,
+                    )
+                removed = await poly.delete_correction(resolved, kind)
+            except UnknownCorrectionKindError as exc:
+                return hooks.error_json(str(exc), code="unknown_kind", kind=str(kind or ""))
+            return hooks.json_payload(
+                MutationResultPayload(
+                    status="ok" if removed else "not_found",
+                    conversation_id=resolved,
+                    outcome=kind,
+                ),
+                exclude_none=True,
+            )
+
+        return await hooks.async_safe_call("clear_corrections", run)
+
 
 __all__ = ["register_mutation_tools"]

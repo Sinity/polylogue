@@ -16,6 +16,7 @@ from polylogue.insights.archive import (
     SessionProfileInsight,
     SessionProfileInsightQuery,
 )
+from polylogue.insights.feedback import LearningCorrection
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
 
@@ -914,3 +915,69 @@ class PolylogueArchiveMixin:
     async def delete_workspace(self, workspace_id: str) -> bool:
         """Delete a durable reader workspace. Returns ``True`` if deleted."""
         return await self.operations.delete_workspace(workspace_id)
+
+    # ------------------------------------------------------------------
+    # Learning corrections (#1131)
+    #
+    # User-recorded overrides that the insight materialization paths
+    # consult after computing their base suggestion. Lives outside the
+    # content-hash boundary by construction; see
+    # :mod:`polylogue.insights.feedback` and
+    # :mod:`polylogue.storage.insights.feedback`.
+    # ------------------------------------------------------------------
+
+    async def record_correction(
+        self,
+        conversation_id: str,
+        kind: str,
+        payload: dict[str, str],
+        *,
+        note: str | None = None,
+    ) -> LearningCorrection:
+        """Record a typed user correction for a session.
+
+        Resolves the conversation ID first (short IDs are accepted) so
+        the durable row is keyed by the canonical ID. Raises
+        :class:`ConversationNotFoundError` when the target session does
+        not exist and
+        :class:`~polylogue.insights.feedback.UnknownCorrectionKindError`
+        when ``kind`` is not a recognized
+        :class:`~polylogue.insights.feedback.CorrectionKind`.
+        """
+
+        resolved = await self.repository.resolve_id(conversation_id, strict=True)
+        if resolved is None:
+            raise ConversationNotFoundError(conversation_id)
+        return await self.operations.record_correction(str(resolved), kind, payload, note=note)
+
+    async def list_corrections(
+        self,
+        *,
+        conversation_id: str | None = None,
+        kind: str | None = None,
+    ) -> list[LearningCorrection]:
+        """List stored corrections, optionally filtered by session/kind."""
+
+        resolved: str | None = None
+        if conversation_id is not None:
+            looked_up = await self.repository.resolve_id(conversation_id, strict=True)
+            if looked_up is None:
+                raise ConversationNotFoundError(conversation_id)
+            resolved = str(looked_up)
+        return await self.operations.list_corrections(conversation_id=resolved, kind=kind)
+
+    async def delete_correction(self, conversation_id: str, kind: str) -> bool:
+        """Delete one correction. Returns ``True`` when a row was removed."""
+
+        resolved = await self.repository.resolve_id(conversation_id, strict=True)
+        if resolved is None:
+            raise ConversationNotFoundError(conversation_id)
+        return await self.operations.delete_correction(str(resolved), kind)
+
+    async def clear_corrections(self, conversation_id: str) -> int:
+        """Delete every correction for a session. Returns the count."""
+
+        resolved = await self.repository.resolve_id(conversation_id, strict=True)
+        if resolved is None:
+            raise ConversationNotFoundError(conversation_id)
+        return await self.operations.clear_corrections(str(resolved))

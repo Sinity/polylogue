@@ -32,6 +32,7 @@ from polylogue.insights.archive import (
     WorkThreadInsightQuery,
 )
 from polylogue.insights.classification import SessionClassification, classify_session
+from polylogue.insights.feedback import LearningCorrection
 from polylogue.insights.productivity import (
     ProductivityRollupInsight,
     ProductivityRollupInsightQuery,
@@ -112,6 +113,13 @@ if TYPE_CHECKING:
             self,
             query: ArchiveDebtInsightQuery | None = None,
         ) -> list[ArchiveDebtInsight]: ...
+
+        async def list_corrections(
+            self,
+            *,
+            conversation_id: str | None = None,
+            kind: str | None = None,
+        ) -> list[LearningCorrection]: ...
 
 
 class _RepositorySurface(Protocol):
@@ -249,12 +257,21 @@ class PolylogueInsightsMixin:
         """Classify a session into the typed :class:`SessionCategory` taxonomy.
 
         Computed on-the-fly from the hydrated :class:`SessionProfile`. The
-        classifier is pure and deterministic (see
-        :mod:`polylogue.insights.classification` for details). Returns
-        ``None`` when no profile exists for ``conversation_id``.
+        heuristic classifier is pure and deterministic; user corrections
+        recorded via :meth:`record_correction` are applied on top so a
+        rebuild always produces the same merged verdict (AC #1131).
+        Returns ``None`` when no profile exists for ``conversation_id``.
         """
+
+        from polylogue.insights.feedback import apply_correction_to_classification
 
         profile = await self.repository.get_session_profile(conversation_id)
         if profile is None:
             return None
-        return classify_session(profile)
+        base = classify_session(profile)
+        # Consult user corrections after the heuristic — corrections win
+        # without altering the conversation's content hash.
+        corrections = await self.operations.list_corrections(conversation_id=conversation_id)
+        if not corrections:
+            return base
+        return apply_correction_to_classification(base, corrections)

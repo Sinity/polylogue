@@ -28,6 +28,23 @@ documentation polish do not require an entry.
   `Polylogue.cost_outlook(plan_name, now=None, method=...)` resolves
   plans against `[[cost.subscription.plans]]` user overrides merged
   with the curated seed.
+- Learning feedback loop — corrections as deterministic rebuild signal
+  (#1131). New `polylogue feedback` command group (`record`, `list`,
+  `clear`) and matching MCP tools (`record_correction`,
+  `list_corrections`, `clear_corrections`) let users override the
+  heuristic classifier, accept/reject auto-tags, and replace generated
+  summaries. Corrections live in the new `user_corrections` table (schema
+  v15) outside the content-hash boundary: applying or removing a
+  correction never alters `conversations.content_hash`. The
+  `classify_session` insight path now consults corrections after the
+  heuristic so rebuilds always produce the same merged verdict across
+  runs.
+
+### Schema
+
+- Bump `SCHEMA_VERSION` from 14 to 15 to introduce the `user_corrections`
+  table. Existing databases are rejected with the usual fresh-first
+  message; an explicit upgrade script is required.
 
 - Tool usage analytics with explicit per-provider coverage (#1133). New
   insight type `tool_usage` rolls up per-(provider, tool, action_kind)

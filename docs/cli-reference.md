@@ -144,6 +144,7 @@ Commands:
   diagnostics   Temporal session diagnostics
   doctor        Run archive health checks and repairs.
   export        Export conversations.
+  feedback      Record learning corrections for derived insights.
   ingest        Import conversations from configured sources.
   init          Detect chat sources and write a starter polylogue.toml.
   insights      Rebuild and inspect derived session insights.

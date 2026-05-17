@@ -11,13 +11,13 @@
     --cleanup                       Run destructive archive cleanup for orphaned
                                     or empty persisted data
     --target [session_insights|action_event_read_model|dangling_fts|message_type_b
-  ackfill|wal_checkpoint|orphaned_messages|orphaned_content_blocks|empty_conversat
-  ions|orphaned_attachments|orphaned_blobs]
+  ackfill|message_embeddings|wal_checkpoint|orphaned_messages|orphaned_content_blo
+  cks|empty_conversations|orphaned_attachments|orphaned_blobs]
                                     Limit maintenance to named targets such as
                                     session_insights, action_event_read_model,
                                     dangling_fts, message_type_backfill,
-                                    wal_checkpoint, orphaned_messages,
-                                    orphaned_content_blocks,
+                                    message_embeddings, wal_checkpoint,
+                                    orphaned_messages, orphaned_content_blocks,
                                     empty_conversations, orphaned_attachments,
                                     or orphaned_blobs
     --preview                       Preview maintenance without executing
@@ -198,6 +198,7 @@
     diagnostics   Temporal session diagnostics
     doctor        Run archive health checks and repairs.
     export        Export conversations.
+    feedback      Record learning corrections for derived insights.
     ingest        Import conversations from configured sources.
     init          Detect chat sources and write a starter polylogue.toml.
     insights      Rebuild and inspect derived session insights.
@@ -403,6 +404,8 @@
     diagnostics   Temporal session diagnostics
     doctor        Run archive health checks and repairs.
     export        Export conversations.
+    feedback      Record learning corrections for derived insi
+  ghts.
     ingest        Import conversations from configured sources
   .
     init          Detect chat sources and write a starter poly
@@ -560,6 +563,7 @@
     diagnostics   Temporal session diagnostics
     doctor        Run archive health checks and repairs.
     export        Export conversations.
+    feedback      Record learning corrections for derived insights.
     ingest        Import conversations from configured sources.
     init          Detect chat sources and write a starter polylogue.toml.
     insights      Rebuild and inspect derived session insights.

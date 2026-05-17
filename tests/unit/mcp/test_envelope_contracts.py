@@ -90,6 +90,10 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "set_metadata": "operation_result",
     "delete_metadata": "operation_result",
     "delete_conversation": "operation_result",
+    # ------- learning corrections (#1131) -------
+    "record_correction": "operation_result",
+    "list_corrections": ("envelope", frozenset({"corrections", "total"})),
+    "clear_corrections": "operation_result",
     # ------- maintenance tools -------
     "rebuild_index": "operation_result",
     "rebuild_session_insights": "operation_result",

@@ -36,6 +36,9 @@ from polylogue.storage.sqlite.schema_ddl_archive import (
     USER_ANNOTATIONS_DDL as _USER_ANNOTATIONS_DDL,
 )
 from polylogue.storage.sqlite.schema_ddl_archive import (
+    USER_CORRECTIONS_DDL as _USER_CORRECTIONS_DDL,
+)
+from polylogue.storage.sqlite.schema_ddl_archive import (
     USER_MARKS_DDL as _USER_MARKS_DDL,
 )
 from polylogue.storage.sqlite.schema_ddl_aux import (
@@ -63,7 +66,7 @@ from polylogue.storage.sqlite.schema_ddl_provider_events import (
     PROVIDER_EVENT_DDL as _PROVIDER_EVENT_DDL,
 )
 
-SCHEMA_VERSION = 14  # 2026-05-15: durable reader workspaces (#867)
+SCHEMA_VERSION = 15  # 2026-05-17: user_corrections table for learning-feedback loop (#1131)
 
 
 # Complete target schema applied to fresh databases.
@@ -83,6 +86,7 @@ SCHEMA_DDL += "\n\n" + _USER_ANNOTATIONS_DDL
 SCHEMA_DDL += "\n\n" + _SAVED_VIEWS_DDL
 SCHEMA_DDL += "\n\n" + _RECALL_PACKS_DDL
 SCHEMA_DDL += "\n\n" + _READER_WORKSPACES_DDL
+SCHEMA_DDL += "\n\n" + _USER_CORRECTIONS_DDL
 
 _SESSION_INSIGHT_DDL = _SESSION_INSIGHT_PROFILE_DDL + _SESSION_INSIGHT_TIMELINE_DDL + _SESSION_INSIGHT_AGGREGATE_DDL
 
@@ -107,6 +111,7 @@ __all__ = [
     "_SAVED_VIEWS_DDL",
     "_TAGS_M2M_DDL",
     "_USER_ANNOTATIONS_DDL",
+    "_USER_CORRECTIONS_DDL",
     "_USER_MARKS_DDL",
     "_VEC0_DDL",
 ]

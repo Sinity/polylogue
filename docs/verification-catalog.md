@@ -8,7 +8,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `594`
+- subjects: `598`
 - claims: `37`
 - runner bindings: `37`
 - proof obligations: `475`
@@ -40,7 +40,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 20 |
 | `assurance.coverage_item` | 106 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 60 |
+| `cli.command` | 64 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -78,6 +78,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue diagnostics turns` | `polylogue/cli/commands/diagnostics.py:92` `polylogue.cli.commands.diagnostics.turns_command` |
 | `polylogue doctor` | `polylogue/cli/click_app.py` `polylogue doctor` |
 | `polylogue export` | `polylogue/cli/click_app.py` `polylogue export` |
+| `polylogue feedback` | `polylogue/cli/click_app.py` `polylogue feedback` |
+| `polylogue feedback clear` | `polylogue/cli/commands/feedback.py:143` `polylogue.cli.commands.feedback.clear_corrections_cmd` |
+| `polylogue feedback list` | `polylogue/cli/commands/feedback.py:110` `polylogue.cli.commands.feedback.list_corrections_cmd` |
+| `polylogue feedback record` | `polylogue/cli/commands/feedback.py:61` `polylogue.cli.commands.feedback.record_correction_cmd` |
 | `polylogue ingest` | `polylogue/cli/click_app.py` `polylogue ingest` |
 | `polylogue init` | `polylogue/cli/click_app.py` `polylogue init` |
 | `polylogue insights` | `polylogue/cli/click_app.py` `polylogue insights` |
