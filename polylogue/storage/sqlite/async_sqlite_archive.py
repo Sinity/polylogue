@@ -77,6 +77,10 @@ from polylogue.storage.sqlite.queries.stats import (
     ProviderConversationCountRow,
     ProviderMetricsRow,
 )
+from polylogue.storage.sqlite.queries.tool_usage import (
+    ToolUsageProviderCoverageRow,
+    ToolUsageRow,
+)
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -316,6 +320,16 @@ class SQLiteArchiveMixin:
     async def get_provider_metrics_rows(self) -> list[ProviderMetricsRow]:
         """Return raw provider aggregation rows for analytics reporting."""
         return await self.queries.get_provider_metrics_rows()
+
+    async def get_tool_usage_rows(self) -> list[ToolUsageRow]:
+        """Return per-(provider, tool, action_kind) tool usage rows."""
+        return await self.queries.get_tool_usage_rows()
+
+    async def get_tool_usage_provider_coverage_rows(
+        self,
+    ) -> list[ToolUsageProviderCoverageRow]:
+        """Return per-provider tool-data coverage signals."""
+        return await self.queries.get_tool_usage_provider_coverage_rows()
 
 
 __all__ = ["SQLiteArchiveMixin"]

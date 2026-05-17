@@ -480,6 +480,21 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead",),
     ),
     OperationSpec(
+        name="query-tool-usage",
+        kind=OperationKind.QUERY,
+        description="Resolve per-provider tool usage analytics from canonical action events.",
+        consumes=("action_event_rows",),
+        produces=("tool_usage_results",),
+        path_targets=("tool-usage-query-loop",),
+        code_refs=(
+            "polylogue.operations.archive.ArchiveInsightMixin.list_tool_usage_insights",
+            "polylogue.cli.commands.insights",
+        ),
+        surfaces=("insights", "facade", "mcp"),
+        previewable=True,
+        effects=("DbRead",),
+    ),
+    OperationSpec(
         name="query-archive-debt",
         kind=OperationKind.QUERY,
         description="Resolve archive debt views from projected derived-model readiness and maintenance state.",

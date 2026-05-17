@@ -28,6 +28,7 @@ from polylogue.insights.archive import (
     WorkThreadInsightQuery,
 )
 from polylogue.insights.classification import SessionClassification, classify_session
+from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 
 if TYPE_CHECKING:
 
@@ -78,6 +79,11 @@ if TYPE_CHECKING:
             self,
             query: ProviderAnalyticsInsightQuery | None = None,
         ) -> list[ProviderAnalyticsInsight]: ...
+
+        async def list_tool_usage_insights(
+            self,
+            query: ToolUsageInsightQuery | None = None,
+        ) -> list[ToolUsageInsight]: ...
 
         async def list_session_cost_insights(
             self,
@@ -164,6 +170,12 @@ class PolylogueInsightsMixin:
         query: ProviderAnalyticsInsightQuery | None = None,
     ) -> list[ProviderAnalyticsInsight]:
         return await self.operations.list_provider_analytics_insights(query)
+
+    async def list_tool_usage_insights(
+        self,
+        query: ToolUsageInsightQuery | None = None,
+    ) -> list[ToolUsageInsight]:
+        return await self.operations.list_tool_usage_insights(query)
 
     async def list_session_cost_insights(
         self,

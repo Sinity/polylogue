@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `5`
 - synthetic benchmark campaigns: `7`
-- scenario projections: `249`
+- scenario projections: `250`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `5`
-  - exercise: `142`
+  - exercise: `143`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `7`
@@ -25,11 +25,11 @@ Current registry snapshot:
 
 ## Runtime Coverage
 
-- covered runtime paths: `25`
-- covered runtime artifacts: `50`
-- covered runtime operations: `29`
+- covered runtime paths: `26`
+- covered runtime artifacts: `51`
+- covered runtime operations: `30`
 - covered maintenance targets: `3`
-- covered declared operation targets: `43`
+- covered declared operation targets: `44`
 - uncovered runtime paths: —
 - uncovered runtime artifacts: —
 - uncovered runtime operations: `mutate-add-tag`, `mutate-bulk-tag-conversations`, `mutate-delete-conversation`, `mutate-delete-metadata`, `mutate-remove-tag`, `mutate-set-metadata`
@@ -352,6 +352,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-insights-status` | `session-insight-status-query-loop` | `session_insight_readiness`<br>`session_insight_status_results` | `cli.help`<br>`query-session-insight-status` | — | `generated`<br>`help`<br>`structural` | insights status help |
 | `exercise` | `help-insights-tags` | `session-tag-rollup-query-loop` | `session_tag_rollup_rows`<br>`session_tag_rollup_results` | `cli.help`<br>`query-session-tag-rollups` | — | `generated`<br>`help`<br>`structural` | insights tags help |
 | `exercise` | `help-insights-threads` | `work-thread-query-loop` | `work_thread_rows`<br>`work_thread_fts`<br>`work_thread_results` | `cli.help`<br>`query-work-threads` | — | `generated`<br>`help`<br>`structural` | insights threads help |
+| `exercise` | `help-insights-tool-usage` | `tool-usage-query-loop` | `action_event_rows`<br>`tool_usage_results` | `cli.help`<br>`query-tool-usage` | — | `generated`<br>`help`<br>`structural` | insights tool-usage help |
 | `exercise` | `help-insights-week-summaries` | `week-summary-query-loop` | `day_session_summary_rows`<br>`week_session_summary_results` | `cli.help`<br>`query-week-session-summaries` | — | `generated`<br>`help`<br>`structural` | insights week-summaries help |
 | `exercise` | `help-insights-work-events` | `session-work-event-query-loop` | `session_work_event_rows`<br>`session_work_event_fts`<br>`session_work_event_results` | `cli.help`<br>`query-session-work-events` | — | `generated`<br>`help`<br>`structural` | insights work-events help |
 | `exercise` | `help-list` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | list help |

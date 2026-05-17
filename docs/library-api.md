@@ -288,6 +288,7 @@ asyncio.run(main())
 | `list_day_session_summary_insights(query)` | List durable day-summary insights |
 | `list_week_session_summary_insights(query)` | List durable week-summary insights |
 | `list_provider_analytics_insights(query)` | List provider-level analytics insights |
+| `list_tool_usage_insights(query)` | Per-provider tool usage with explicit coverage gaps |
 | `list_archive_debt_insights(query)` | List governed archive-debt insights |
 
 ---

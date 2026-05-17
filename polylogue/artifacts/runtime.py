@@ -490,6 +490,17 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         readiness_surfaces=("insights", "facade", "mcp", "helpers"),
     ),
     ArtifactNode(
+        name="tool_usage_results",
+        layer=ArtifactLayer.PROJECTION,
+        description="Query/read results for per-provider tool usage analytics with explicit coverage map.",
+        depends_on=("action_event_rows",),
+        code_refs=(
+            "polylogue.operations.archive.ArchiveInsightMixin.list_tool_usage_insights",
+            "polylogue.cli.commands.insights",
+        ),
+        readiness_surfaces=("insights", "facade", "mcp"),
+    ),
+    ArtifactNode(
         name="archive_debt_results",
         layer=ArtifactLayer.PROJECTION,
         description="Query/read results for archive debt views derived from projected readiness and maintenance state.",
@@ -788,6 +799,14 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
         nodes=(
             "session_insight_rows",
             "provider_analytics_results",
+        ),
+    ),
+    ArtifactPath(
+        name="tool-usage-query-loop",
+        description="Canonical action event rows through tool-usage analytics query results.",
+        nodes=(
+            "action_event_rows",
+            "tool_usage_results",
         ),
     ),
     ArtifactPath(

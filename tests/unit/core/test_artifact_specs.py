@@ -61,6 +61,7 @@ def test_runtime_artifact_specs_expose_the_curated_vertical_paths() -> None:
         "day-summary-query-loop",
         "week-summary-query-loop",
         "provider-analytics-query-loop",
+        "tool-usage-query-loop",
         "session-insight-status-query-loop",
         "archive-debt-query-loop",
         "inferred-corpus-compilation-loop",

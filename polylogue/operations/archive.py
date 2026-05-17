@@ -65,6 +65,11 @@ from polylogue.insights.readiness import (
     build_insight_readiness_report,
 )
 from polylogue.insights.resume import ResumeBrief, ResumeOperations, build_resume_brief
+from polylogue.insights.tool_usage import (
+    ToolUsageInsight,
+    ToolUsageInsightQuery,
+    build_tool_usage_insight,
+)
 from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.operations.completion_aggregates import ArchiveCompletionMixin, CompletionAggregate
 from polylogue.operations.mutations import ArchiveMutationsMixin
@@ -822,6 +827,21 @@ class ArchiveInsightAggregateMixin:
             insights = [insight for insight in insights if insight.provider_name == request.provider]
         return _slice_insights(insights, offset=request.offset, limit=request.limit)
 
+    async def list_tool_usage_insights(
+        self,
+        query: ToolUsageInsightQuery | None = None,
+    ) -> list[ToolUsageInsight]:
+        request = _default_query(query, ToolUsageInsightQuery)
+        usage_rows = await self.backend.get_tool_usage_rows()
+        coverage_rows = await self.backend.get_tool_usage_provider_coverage_rows()
+        insight = build_tool_usage_insight(
+            rows=usage_rows,
+            coverage_rows=coverage_rows,
+            query=request,
+            materialized_at=generated_at(),
+        )
+        return [insight]
+
     async def list_session_cost_insights(
         self,
         query: SessionCostInsightQuery | None = None,
@@ -1139,11 +1159,27 @@ async def list_provider_analytics_insights(
     return await _with_operations(_action, services=services, db_path=db_path)
 
 
+async def list_tool_usage_insights(
+    *,
+    services: RuntimeServices | None = None,
+    db_path: Path | None = None,
+    query: ToolUsageInsightQuery | None = None,
+) -> list[ToolUsageInsight]:
+    """Return tool-usage insights with explicit per-provider coverage."""
+
+    async def _action(operations: ArchiveOperations) -> list[ToolUsageInsight]:
+        return await operations.list_tool_usage_insights(query)
+
+    return await _with_operations(_action, services=services, db_path=db_path)
+
+
 __all__ = [
     "ArchiveDebtInsight",
     "ArchiveOperations",
     "ArchiveStats",
     "CompletionAggregate",
+    "build_tool_usage_insight",
     "get_provider_counts",
     "list_provider_analytics_insights",
+    "list_tool_usage_insights",
 ]

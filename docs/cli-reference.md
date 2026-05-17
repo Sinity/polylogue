@@ -255,6 +255,7 @@ Commands:
   status          Report insight materialization coverage and readiness.
   tags            List durable session-tag rollup insights.
   threads         List durable work-thread insights.
+  tool-usage      Per-tool, per-provider rollups over canonical action...
   week-summaries  List durable week-level session summary insights.
   work-events     List durable work-event insights.
 ```

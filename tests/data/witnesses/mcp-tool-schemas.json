@@ -3106,6 +3106,75 @@
     }
   },
   {
+    "name": "tool_usage",
+    "parameters": {
+      "properties": {
+        "action_kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Action Kind"
+        },
+        "limit": {
+          "default": 200,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "mcp_server": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mcp Server"
+        },
+        "offset": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Offset",
+          "type": "integer"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool"
+        }
+      },
+      "title": "tool_usageArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "update_index",
     "parameters": {
       "properties": {

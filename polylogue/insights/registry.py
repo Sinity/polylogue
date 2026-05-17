@@ -38,6 +38,7 @@ from polylogue.insights.archive import (
     WeekSessionSummaryInsightQuery,
     WorkThreadInsightQuery,
 )
+from polylogue.insights.tool_usage import ToolUsageInsightQuery
 
 InsightAccessor: TypeAlias = Callable[[ArchiveInsightModel], str]
 
@@ -537,6 +538,37 @@ register(
             InsightField("avg_messages", _formatted_float("avg_messages_per_conversation"), group=0),
             InsightField("tools", _count_with_percentage("tool_use_count", "tool_use_percentage"), group=1),
             InsightField("thinking", _count_with_percentage("thinking_count", "thinking_percentage"), group=1),
+        ),
+    )
+)
+
+register(
+    InsightType(
+        name="tool_usage",
+        display_name="Tool Usage",
+        json_key="tool_usage",
+        empty_message="No tool usage data available.",
+        query_model=ToolUsageInsightQuery,
+        operations_method_name="list_tool_usage_insights",
+        cli_command_name="tool-usage",
+        cli_help="Per-tool, per-provider rollups over canonical action events with coverage map.",
+        readiness_exempt=True,
+        cli_options=(
+            CliOption("tool", ("--tool",), help="Only entries for this normalized tool name"),
+            CliOption("mcp_server", ("--mcp-server",), help="Only entries for this MCP server prefix"),
+            CliOption(
+                "action_kind",
+                ("--action-kind",),
+                help="Only entries for this action_kind value (e.g. file_read, shell)",
+            ),
+        ),
+        mcp_default_limit=200,
+        fields=(
+            InsightField("providers_with_data", _attr("providers_with_data", "0"), group=0),
+            InsightField("providers_without_data", _attr("providers_without_data", "0"), group=0),
+            InsightField("total_calls", _attr("total_call_count", "0"), group=0),
+            InsightField("distinct_tools", _attr("total_distinct_tools", "0"), group=0),
+            InsightField("coverage_gaps", _attr("has_coverage_gaps"), group=0),
         ),
     )
 )
