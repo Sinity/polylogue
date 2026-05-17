@@ -14,6 +14,15 @@ documentation polish do not require an entry.
 
 ### Added
 
+- Resume brief is now a first-class durable insight (#1129). `ResumeBrief`
+  carries a typed `provenance` payload citing the session, message,
+  work-event, phase, and work-thread IDs it composed from, with a
+  `materializer_version` consumers can use to invalidate cached renderings.
+  New MCP tool `get_resume_brief(conversation_id, related_limit)` returns the
+  typed brief on the shared single-object envelope; the existing
+  `polylogue resume <session-id>` CLI continues to render the brief and now
+  surfaces the provenance fields via `--format json`.
+
 - Realtime update channel for the daemon web reader (#957): new
   `GET /api/events` Server-Sent Events endpoint streams daemon-event
   notifications (`ingestion_batch`, `ingest`, `reset`, `operation`) so the

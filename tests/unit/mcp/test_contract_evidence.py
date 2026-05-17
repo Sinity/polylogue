@@ -317,6 +317,73 @@ class TestToolErrorEnvelopes:
             facts={"is_error": body["is_error"], "code": body.get("code")},
         )
 
+    def test_get_resume_brief_missing_returns_not_found_envelope(
+        self,
+        mcp_server: MCPServerUnderTest,
+        record_contract_evidence: ContractEvidenceRecorder,
+    ) -> None:
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.resume_brief = AsyncMock(return_value=None)
+            mock_get_polylogue.return_value = mock_poly
+
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["get_resume_brief"].fn,
+                conversation_id="missing-session",
+            )
+
+        body = _structured_error(result)
+        assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
+        record_contract_evidence.record(
+            "mcp.tool.get_resume_brief.not_found",
+            surface="mcp",
+            facts={"is_error": body["is_error"], "code": body.get("code")},
+        )
+
+    def test_get_resume_brief_returns_typed_brief_payload(
+        self,
+        mcp_server: MCPServerUnderTest,
+        record_contract_evidence: ContractEvidenceRecorder,
+    ) -> None:
+        from polylogue.insights.resume import (
+            RESUME_BRIEF_MATERIALIZER_VERSION,
+            ResumeBrief,
+            ResumeFacts,
+            ResumeInferences,
+            ResumeProvenance,
+        )
+
+        brief = ResumeBrief(
+            session_id="conv-123",
+            facts=ResumeFacts(conversation_id="conv-123", provider_name="claude-code", message_count=2),
+            inferences=ResumeInferences(),
+            provenance=ResumeProvenance(
+                materializer_version=RESUME_BRIEF_MATERIALIZER_VERSION,
+                computed_at="2026-05-17T00:00:00+00:00",
+                cited_session_ids=("conv-123",),
+                cited_message_ids=("m1", "m2"),
+            ),
+        )
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.resume_brief = AsyncMock(return_value=brief)
+            mock_get_polylogue.return_value = mock_poly
+
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["get_resume_brief"].fn,
+                conversation_id="conv-123",
+            )
+
+        payload = json.loads(result)
+        assert payload["session_id"] == "conv-123"
+        assert payload["provenance"]["materializer_version"] == RESUME_BRIEF_MATERIALIZER_VERSION
+        assert "conv-123" in payload["provenance"]["cited_session_ids"]
+        record_contract_evidence.record(
+            "mcp.tool.get_resume_brief.ok",
+            surface="mcp",
+            facts={"session_id": payload["session_id"]},
+        )
+
     def test_bulk_tag_validation_returns_structured_error(
         self,
         mcp_server: MCPServerUnderTest,
