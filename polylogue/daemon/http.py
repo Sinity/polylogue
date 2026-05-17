@@ -501,6 +501,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_get_conversation_raw(path[2])
         elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "cost":
             self._handle_get_conversation_cost(path[2])
+        elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "provenance":
+            self._handle_get_conversation_provenance(path[2], params)
         elif len(path) == 4 and path[:3] == ["api", "raw_artifacts"]:
             self._handle_get_raw_artifact(path[3])
         else:
@@ -964,6 +966,46 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 return None
             return _empty_cost_payload(conv_id, str(conv.provider) if conv.provider else None)
         return _cost_panel_payload(insights[0])
+
+    # ------------------------------------------------------------------
+    # Handlers: per-conversation provenance (#1125)
+    # ------------------------------------------------------------------
+
+    @daemon_safe_handler
+    def _handle_get_conversation_provenance(
+        self,
+        conv_id: str,
+        params: dict[str, list[str]],
+    ) -> None:
+        """``GET /api/conversations/{id}/provenance[?include_raw=1[&bytes=N]]``.
+
+        Returns the source artifact metadata that produced *conv_id*.
+        The raw payload preview is opt-in (``include_raw=1``) and is
+        bounded server-side by
+        :data:`polylogue.daemon.provenance.RAW_PREVIEW_MAX_BYTES` —
+        client-supplied ``bytes`` only narrows the window, never widens
+        it.
+        """
+        from polylogue.daemon.provenance import build_provenance_payload
+
+        include_raw = self._get_bool(params, "include_raw")
+        requested_bytes: int | None = None
+        raw_bytes_param = self._get_param(params, "bytes")
+        if raw_bytes_param is not None:
+            try:
+                requested_bytes = int(raw_bytes_param)
+            except (TypeError, ValueError):
+                requested_bytes = None
+
+        payload = build_provenance_payload(
+            conv_id,
+            include_raw=include_raw,
+            requested_bytes=requested_bytes,
+        )
+        if payload is None:
+            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
+            return
+        self._send_json(HTTPStatus.OK, payload)
 
     # ------------------------------------------------------------------
     # Handlers: get messages
