@@ -1059,6 +1059,24 @@ def repair_message_type_backfill(config: Config, dry_run: bool = False) -> Repai
     return _to_repair_result(run_backfill(config, dry_run=dry_run))
 
 
+def repair_message_embeddings(config: Config, dry_run: bool = False) -> RepairResult:
+    """No-op embedding rebuild stub.
+
+    Embeddings are materialized exclusively by the daemon's embedding stage
+    (see #828); there is no synchronous rebuild path. The maintenance target
+    is registered so planners and surfaces can name the dormant work, but
+    invoking it through ``doctor --repair`` is a no-op that records dormancy
+    rather than failing the run.
+    """
+    verb = "Would skip" if dry_run else "Skipped"
+    return _repair_result(
+        "message_embeddings",
+        repaired_count=0,
+        success=True,
+        detail=f"{verb}: embedding rebuild is daemon-owned and dormant (#828).",
+    )
+
+
 _PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": preview_session_insights,
     "action_event_read_model": preview_action_event_read_model,
@@ -1076,6 +1094,7 @@ _REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "action_event_read_model": repair_action_event_read_model,
     "dangling_fts": repair_dangling_fts,
     "message_type_backfill": repair_message_type_backfill,
+    "message_embeddings": repair_message_embeddings,
     "wal_checkpoint": repair_wal_checkpoint,
     "orphaned_messages": repair_orphaned_messages,
     "orphaned_content_blocks": repair_orphaned_content_blocks,
