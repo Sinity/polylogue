@@ -5,14 +5,19 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Markdown as MarkdownWidget
 from textual.widgets import Tree
 
+from polylogue.api.contracts.tui_surface import TUIReadSurface
+from polylogue.archive.query.spec import ConversationQuerySpec
+from polylogue.types import Provider
 from polylogue.ui.tui.screens.base import RepositoryBoundContainer
 
 
 class Browser(RepositoryBoundContainer):
     """Browser widget for navigating conversations.
 
-    Routes list/stats operations through ``ArchiveOperations``
-    instead of calling repository methods directly.
+    Consumes the typed :class:`ConversationListResponse` envelope (and
+    :class:`ConversationListRowPayload` rows) through
+    :class:`TUIReadSurface` so the TUI shares the web reader's payload
+    contract instead of rendering from raw repository rows.
     """
 
     def compose(self) -> ComposeResult:
@@ -28,15 +33,21 @@ class Browser(RepositoryBoundContainer):
         """Fetch tree data asynchronously, then update DOM."""
         try:
             ops = self._get_ops("Browser")
+            surface = TUIReadSurface(ops)
 
             stats = await ops.storage_stats()
             providers = sorted(stats.providers.keys()) if stats.providers else []
 
-            # Collect tree data: list of (provider_label, [(title, conv_id), ...])
+            # Collect tree data using the typed payload envelope; each row
+            # carries id/title/provider as canonical fields.
             tree_data: list[tuple[str, list[tuple[str, str]]]] = []
             for provider in providers:
-                conversations = await ops.list_conversations(limit=50, provider=provider)
-                leaves = [(conv.title or str(conv.id), str(conv.id)) for conv in conversations]
+                spec = ConversationQuerySpec(
+                    providers=(Provider.from_string(provider),),
+                    limit=50,
+                )
+                envelope = await surface.list_conversations(spec)
+                leaves = [(row.title, row.id) for row in envelope.items]
                 tree_data.append((provider.capitalize(), leaves))
 
         except Exception as e:

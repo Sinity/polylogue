@@ -5,15 +5,19 @@ from textual.containers import Container, Horizontal, Vertical
 from textual.widgets import DataTable, Input
 from textual.widgets import Markdown as MarkdownWidget
 
+from polylogue.api.contracts.tui_surface import TUIReadSurface
+from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.ui.tui.screens.base import RepositoryBoundContainer
 
 
 class Search(RepositoryBoundContainer):
     """Search widget for finding conversations.
 
-    Routes through ``ArchiveOperations.search()`` which applies the
-    canonical query pipeline (FTS5, filters, result mapping) instead of
-    calling the repository's ``search_summaries`` directly.
+    Routes through :class:`TUIReadSurface.search_conversations` so the
+    TUI consumes the same :class:`ConversationListResponse` envelope as
+    the web reader, CLI JSON, MCP, and Python API surfaces.  Result
+    rows are rendered from the typed :class:`ConversationListRowPayload`
+    fields (``id``, ``provider``, ``title``, ``date``).
     """
 
     def compose(self) -> ComposeResult:
@@ -36,12 +40,14 @@ class Search(RepositoryBoundContainer):
             return
 
         ops = self._get_ops("Search")
+        surface = TUIReadSurface(ops)
 
         table = self.query_one("#search-results", DataTable)
         table.clear()
 
+        spec = ConversationQuerySpec(query_terms=(query,), limit=50)
         try:
-            result = await ops.search(query, limit=50)
+            envelope = await surface.search_conversations(spec)
         except Exception:
             table.add_row(
                 "—",
@@ -51,13 +57,13 @@ class Search(RepositoryBoundContainer):
             )
             return
 
-        for hit in result.hits:
+        for row in envelope.items:
             table.add_row(
-                hit.conversation_id,
-                hit.provider_name,
-                hit.title or "Untitled",
-                str(hit.timestamp) if hit.timestamp else "",
-                key=hit.conversation_id,
+                row.id,
+                row.provider,
+                row.title or "Untitled",
+                row.date or "",
+                key=row.id,
             )
 
     async def on_data_table_row_selected(self, message: DataTable.RowSelected) -> None:
