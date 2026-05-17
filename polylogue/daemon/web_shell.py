@@ -740,13 +740,16 @@ function renderInspectorNotes(el, c) {
       var bits = [];
       if (q.query) bits.push('query=' + q.query);
       if (q.provider) bits.push('provider=' + q.provider);
-      html += '<div class="saved-view-item"><div><div>' + esc(v.name || v.view_id) + '</div>'
+      html += '<div class="saved-view-item" data-view-id="' + escAttr(v.view_id) + '"><div><div>' + esc(v.name || v.view_id) + '</div>'
         + '<div class="value">' + esc(bits.join(' / ') || 'all conversations') + '</div></div>'
-        + '<button class="user-action" onclick="applySavedView(\'' + escAttr(v.view_id) + '\')">Open</button></div>';
+        + '<div style="display:flex;gap:4px;flex-shrink:0">'
+        + '<button class="user-action" onclick="applySavedView(\'' + escAttr(v.view_id) + '\')">Open</button>'
+        + '<button class="user-action" title="Delete saved view" onclick="deleteSavedView(\'' + escAttr(v.view_id) + '\')">Delete</button>'
+        + '</div></div>';
     });
     html += '</div>';
   } else {
-    html += '<div class="inspector-empty">No saved views</div>';
+    html += '<div class="inspector-empty">No saved views. Click "Save current view" to name the current filter chain.</div>';
   }
   if (state.userStateError) {
     html += '<div class="inspector-empty">' + esc(state.userStateError) + '</div>';
@@ -793,22 +796,6 @@ async function toggleMark(markType) {
   renderConversations();
   renderMain();
   renderInspector();
-}
-
-async function saveCurrentView() {
-  var query = {limit: state.limit, offset: 0};
-  if (state.query) query.query = state.query;
-  if (state.provider) query.provider = state.provider;
-  var defaultName = state.query || state.provider || 'All conversations';
-  var name = window.prompt('Saved view name', defaultName);
-  if (!name) return;
-  try {
-    await sendJSON('/api/user/saved-views', 'POST', {name: name, query: query});
-    await loadUserState();
-  } catch(e) {
-    state.userStateError = 'Failed to save view';
-    renderInspector();
-  }
 }
 
 function applySavedView(viewId) {
