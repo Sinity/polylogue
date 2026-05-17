@@ -27,7 +27,7 @@ dependencies = [
   "google-api-python-client",
   "google-auth-httplib2",
   "httpx[http2]>=0.28.1,<1.0",
-  "rich>=13.0.0",
+  "rich>=15.0.0",
   "textual>=8.2.6",
   "jinja2",
   "markdown-it-py",
