@@ -249,6 +249,7 @@ __WORKSPACE_HTML__
   <div id="inspector">
     <div id="inspector-tabs">
       <button class="active" data-tab="info">Info</button>
+      <button data-tab="cost">Cost</button>
       <button data-tab="raw">Raw</button>
       <button data-tab="notes">Notes</button>
     </div>
@@ -296,7 +297,11 @@ var state = {
   // conversation_id. lastBulkResult holds the per-conversation envelope from
   // the most recent bulk operation: {succeeded:[ids], failed:[{id,reason}],
   // skipped:[{id,reason}], dryRun:bool, action:string}.
-  bulkSelection: {}, lastBulkResult: null, bulkPending: null
+  bulkSelection: {}, lastBulkResult: null, bulkPending: null,
+  // Cost panel cache (#1122). Keyed by conversation_id; populated on demand
+  // when the Cost inspector tab is opened. ``undefined`` means "not loaded
+  // yet", null/{error} means "fetch failed".
+  costPanels: {}
 };
 
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -693,8 +698,125 @@ function renderInspector() {
   var c = state.selected;
   var tab = state.inspectorTab || 'info';
   if (tab === 'info') renderInspectorInfo(el, c);
+  else if (tab === 'cost') renderInspectorCost(el, c);
   else if (tab === 'raw') renderInspectorRaw(el, c);
   else if (tab === 'notes') renderInspectorNotes(el, c);
+}
+
+// --- Cost panel (#1122) --------------------------------------------------
+// Loads /api/conversations/{id}/cost on demand and caches per-conversation
+// in state.costPanels. Each visible number carries a confidence chip
+// driven by the MK3 q-* vocabulary returned by the daemon (q-canonical /
+// q-estimated / q-heuristic / q-unavailable).
+async function loadCostPanel(id) {
+  try {
+    var data = await fetchJSON('/api/conversations/' + encodeURIComponent(id) + '/cost');
+    state.costPanels[id] = data;
+  } catch(e) {
+    state.costPanels[id] = {error: String(e)};
+  }
+  if (state.selected && state.selected.id === id && state.inspectorTab === 'cost') {
+    renderInspector();
+  }
+}
+
+function formatUsd(value) {
+  var n = Number(value || 0);
+  if (n === 0) return '$0.00';
+  if (n < 0.01) return '$' + n.toFixed(4);
+  if (n < 1) return '$' + n.toFixed(3);
+  return '$' + n.toFixed(2);
+}
+
+function costChip(label, tag) {
+  return '<span class="chip ' + esc(tag) + '" title="confidence: ' + esc(tag) + '">' + esc(label) + '</span>';
+}
+
+function renderInspectorCost(el, c) {
+  var cost = state.costPanels[c.id];
+  if (cost === undefined) {
+    el.innerHTML = '<div class="inspector-empty">Loading cost...</div>';
+    loadCostPanel(c.id);
+    return;
+  }
+  if (cost && cost.error) {
+    el.innerHTML = '<div class="inspector-empty">Cost surface unavailable</div>';
+    return;
+  }
+  var tag = cost.confidence_tag || 'q-unavailable';
+  var status = cost.status || 'unavailable';
+  var html = '';
+  html += '<div class="inspector-section"><h4>Total</h4>';
+  html += '<div class="inspector-field"><span class="label">Cost</span>'
+    + '<span class="value">' + esc(formatUsd(cost.total_usd)) + ' ' + costChip(status, tag) + '</span></div>';
+  html += '<div class="inspector-field"><span class="label">Confidence</span>'
+    + '<span class="value">' + esc((cost.confidence != null ? cost.confidence.toFixed(2) : '0.00')) + '</span></div>';
+  if (cost.model_name) {
+    html += '<div class="inspector-field"><span class="label">Model</span>'
+      + '<span class="value">' + esc(cost.model_name) + '</span></div>';
+  }
+  if (cost.unavailable_reason) {
+    html += '<div class="inspector-field"><span class="label">Reason</span>'
+      + '<span class="value">' + esc(cost.unavailable_reason) + '</span></div>';
+  }
+  html += '</div>';
+
+  // Basis split (#1136). Each axis is independent and never collapsed.
+  var basis = cost.basis || {};
+  var basisAxes = [
+    ['provider_reported_usd', 'Provider-reported', 'q-canonical'],
+    ['api_equivalent_usd', 'API equivalent', 'q-estimated'],
+    ['subscription_equivalent_usd', 'Subscription equiv.', 'q-heuristic'],
+    ['catalog_priced_usd', 'Catalog-priced', 'q-estimated'],
+    ['tool_surcharge_usd', 'Tool surcharge', 'q-partial']
+  ];
+  var basisHasAny = basisAxes.some(function(row) { return Number(basis[row[0]] || 0) > 0; });
+  if (basisHasAny) {
+    html += '<div class="inspector-section"><h4>Basis split</h4>';
+    basisAxes.forEach(function(row) {
+      var amt = Number(basis[row[0]] || 0);
+      if (amt === 0) return;
+      html += '<div class="inspector-field"><span class="label">' + esc(row[1]) + '</span>'
+        + '<span class="value">' + esc(formatUsd(amt)) + ' ' + costChip(row[2].replace('q-', ''), row[2]) + '</span></div>';
+    });
+    html += '</div>';
+  }
+
+  // Per-model breakdown (#1136). Sessions that mix models surface one row per model.
+  if (cost.per_model_breakdown && cost.per_model_breakdown.length) {
+    html += '<div class="inspector-section"><h4>Per-model</h4>';
+    cost.per_model_breakdown.forEach(function(entry) {
+      var name = entry.model_name || entry.normalized_model || 'unknown';
+      html += '<div class="inspector-field"><span class="label">' + esc(name) + '</span>'
+        + '<span class="value">' + esc(formatUsd(entry.total_usd)) + '</span></div>';
+    });
+    html += '</div>';
+  }
+
+  // Usage breakdown.
+  var usage = cost.usage || {};
+  if (usage.total_tokens) {
+    html += '<div class="inspector-section"><h4>Tokens</h4>';
+    [['input_tokens', 'Input'], ['output_tokens', 'Output'],
+     ['cache_read_tokens', 'Cache read'], ['cache_write_tokens', 'Cache write'],
+     ['total_tokens', 'Total']].forEach(function(row) {
+      var v = Number(usage[row[0]] || 0);
+      if (v === 0 && row[0] !== 'total_tokens') return;
+      html += '<div class="inspector-field"><span class="label">' + esc(row[1]) + '</span>'
+        + '<span class="value">' + esc(v.toLocaleString()) + '</span></div>';
+    });
+    html += '</div>';
+  }
+
+  if (cost.missing_reasons && cost.missing_reasons.length) {
+    html += '<div class="inspector-section"><h4>Missing</h4>';
+    cost.missing_reasons.forEach(function(r) {
+      html += '<div class="inspector-field"><span class="label">&mdash;</span>'
+        + '<span class="value">' + esc(r) + '</span></div>';
+    });
+    html += '</div>';
+  }
+  el.innerHTML = html;
 }
 
 function renderInspectorInfo(el, c) {

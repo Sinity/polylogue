@@ -94,6 +94,108 @@ def _staged_inbox_source(raw_path: object, inbox: Path) -> tuple[Path | None, st
     return None, "path_not_found"
 
 
+def _confidence_tag(status: str) -> str:
+    """Map a cost-estimate status to the MK3 data-quality chip vocabulary (#1122).
+
+    The reader cost panel renders one chip per surfaced number; the chip
+    classname comes from this mapping. ``q-canonical`` is reserved for
+    provider-reported exact totals; ``q-estimated`` for catalog-priced
+    estimates; ``q-heuristic`` for partial coverage; ``q-unavailable``
+    for the unpriced state.
+    """
+    if status == "exact":
+        return "q-canonical"
+    if status == "priced":
+        return "q-estimated"
+    if status == "partial":
+        return "q-heuristic"
+    return "q-unavailable"
+
+
+def _basis_dict(basis: Any) -> dict[str, float]:
+    return {
+        "provider_reported_usd": float(basis.provider_reported_usd),
+        "api_equivalent_usd": float(basis.api_equivalent_usd),
+        "subscription_equivalent_usd": float(basis.subscription_equivalent_usd),
+        "catalog_priced_usd": float(basis.catalog_priced_usd),
+        "tool_surcharge_usd": float(basis.tool_surcharge_usd),
+    }
+
+
+def _usage_dict(usage: Any) -> dict[str, int]:
+    return {
+        "input_tokens": int(usage.input_tokens),
+        "output_tokens": int(usage.output_tokens),
+        "cache_read_tokens": int(usage.cache_read_tokens),
+        "cache_write_tokens": int(usage.cache_write_tokens),
+        "total_tokens": int(usage.total_tokens),
+    }
+
+
+def _cost_panel_payload(insight: Any) -> dict[str, object]:
+    """Render a typed ``SessionCostInsight`` as a cost-panel JSON payload (#1122)."""
+    estimate = insight.estimate
+    return {
+        "conversation_id": insight.conversation_id,
+        "provider": insight.provider_name,
+        "model_name": estimate.model_name,
+        "normalized_model": estimate.normalized_model,
+        "status": estimate.status,
+        "confidence": float(estimate.confidence),
+        "confidence_tag": _confidence_tag(estimate.status),
+        "currency": estimate.currency,
+        "total_usd": float(estimate.total_usd),
+        "basis": _basis_dict(estimate.basis),
+        "usage": _usage_dict(estimate.usage),
+        "per_model_breakdown": [
+            {
+                "model_name": entry.model_name,
+                "normalized_model": entry.normalized_model,
+                "total_usd": float(entry.total_usd),
+                "basis": _basis_dict(entry.basis),
+                "usage": _usage_dict(entry.usage),
+            }
+            for entry in estimate.per_model_breakdown
+        ],
+        "missing_reasons": list(estimate.missing_reasons),
+        "unavailable_reason": estimate.unavailable_reason,
+        "provenance": list(estimate.provenance),
+    }
+
+
+def _empty_cost_payload(conversation_id: str, provider: str | None) -> dict[str, object]:
+    """Explicit ``unavailable`` payload when no cost insight is materialized (#1122)."""
+    return {
+        "conversation_id": conversation_id,
+        "provider": provider,
+        "model_name": None,
+        "normalized_model": None,
+        "status": "unavailable",
+        "confidence": 0.0,
+        "confidence_tag": "q-unavailable",
+        "currency": "USD",
+        "total_usd": 0.0,
+        "basis": {
+            "provider_reported_usd": 0.0,
+            "api_equivalent_usd": 0.0,
+            "subscription_equivalent_usd": 0.0,
+            "catalog_priced_usd": 0.0,
+            "tool_surcharge_usd": 0.0,
+        },
+        "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "total_tokens": 0,
+        },
+        "per_model_breakdown": [],
+        "missing_reasons": ["no_session_cost_insight"],
+        "unavailable_reason": "no_messages",
+        "provenance": [],
+    }
+
+
 def _message_type_value(message: object) -> str:
     message_type = getattr(message, "message_type", "")
     if hasattr(message_type, "value"):
@@ -397,6 +499,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_get_messages(path[2], params)
         elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "raw":
             self._handle_get_conversation_raw(path[2])
+        elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "cost":
+            self._handle_get_conversation_cost(path[2])
         elif len(path) == 4 and path[:3] == ["api", "raw_artifacts"]:
             self._handle_get_raw_artifact(path[3])
         else:
@@ -831,6 +935,35 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "session_id": getattr(conv, "session_id", None),
             "raw_artifacts": raw_items,
         }
+
+    # ------------------------------------------------------------------
+    # Handlers: get conversation cost (#1122)
+    # ------------------------------------------------------------------
+
+    @daemon_safe_handler
+    def _handle_get_conversation_cost(self, conv_id: str) -> None:
+        async def _get(poly: Polylogue) -> object:
+            return await self._do_get_conversation_cost(poly, conv_id)
+
+        result = self._sync_run(_get)
+        if result is None:
+            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
+            return
+        self._send_json(HTTPStatus.OK, result)
+
+    async def _do_get_conversation_cost(self, poly: Polylogue, conv_id: str) -> object:
+        from polylogue.insights.archive import SessionCostInsightQuery
+
+        insights = await poly.list_session_cost_insights(SessionCostInsightQuery(conversation_id=conv_id))
+        if not insights:
+            # No matching session-cost insight: confirm the conversation exists
+            # so we can distinguish "unknown conversation" (404) from "cost
+            # surface unavailable" (200 with explicit unavailable shape).
+            conv = await poly.get_conversation(conv_id)
+            if conv is None:
+                return None
+            return _empty_cost_payload(conv_id, str(conv.provider) if conv.provider else None)
+        return _cost_panel_payload(insights[0])
 
     # ------------------------------------------------------------------
     # Handlers: get messages
