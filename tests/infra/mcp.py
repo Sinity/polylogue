@@ -48,6 +48,7 @@ EXPECTED_TOOL_NAMES = {
     "session_profile",
     "session_classification",
     "get_resume_brief",
+    "cost_outlook",
     "archive_debt",
     "session_profiles",
     "session_enrichments",
@@ -225,6 +226,7 @@ def make_polylogue_mock() -> MagicMock:
     poly.list_session_cost_insights = AsyncMock(return_value=[])
     poly.list_cost_rollup_insights = AsyncMock(return_value=[])
     poly.list_archive_debt_insights = AsyncMock(return_value=[])
+    poly.cost_outlook = AsyncMock(return_value=None)
     # Typed mutation entrypoints (#862).
     from polylogue.surfaces.payloads import (
         BulkTagMutationResult,

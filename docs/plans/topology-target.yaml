@@ -998,6 +998,10 @@ files:
     loc: 44
     target: polylogue/cost/__init__.py
     owner: stable
+  - path: polylogue/cost/aggregation.py
+    loc: 68
+    target: polylogue/cost/aggregation.py
+    owner: stable
   - path: polylogue/cost/outlook.py
     loc: 406
     target: polylogue/cost/outlook.py

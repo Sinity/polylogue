@@ -491,7 +491,7 @@ class TestConfigJsonContract:
 
 
 class TestCostJsonContract:
-    """cost --format json emits raw JSON (Pydantic model dump, no envelope)."""
+    """cost rollup --format json emits raw JSON (Pydantic model dump, no envelope)."""
 
     @pytest.mark.contract
     def test_cost_json_is_valid_json_object(
@@ -500,16 +500,16 @@ class TestCostJsonContract:
         workspace_env: dict[str, Path],
         record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
-        """polylogue cost --format json outputs a valid JSON object."""
-        exit_code, output = _invoke_raw_json_command(["cost", "--format", "json"], monkeypatch)
-        assert exit_code == 0, f"cost --format json exited {exit_code}: {output!r}"
+        """polylogue cost rollup --format json outputs a valid JSON object."""
+        exit_code, output = _invoke_raw_json_command(["cost", "rollup", "--format", "json"], monkeypatch)
+        assert exit_code == 0, f"cost rollup --format json exited {exit_code}: {output!r}"
         assert TRACEBACK_SENTINEL not in output
         parsed = json.loads(output)
         assert isinstance(parsed, dict)
         record_contract_evidence.record(
             "cli.cost_json",
             surface="cli",
-            command=("polylogue", "cost", "--format", "json"),
+            command=("polylogue", "cost", "rollup", "--format", "json"),
             facts={"exit_code": exit_code, "top_level_keys": sorted(parsed.keys())},
         )
 
@@ -518,13 +518,14 @@ class TestCostJsonContract:
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
     ) -> None:
-        """cost with an unknown plan falls back gracefully without traceback.
+        """cost rollup with an unknown plan falls back gracefully without traceback.
 
-        The plan name is free-form text, so passing an arbitrary string should
-        not crash — the implementation will default or skip quota math.
+        The legacy ``cost rollup`` plan name is free-form text, so passing an
+        arbitrary string should not crash — the implementation will default
+        or skip quota math.
         """
         exit_code, output = _invoke_raw_json_command(
-            ["cost", "--plan", "nonexistent_plan_xyz", "--format", "json"], monkeypatch
+            ["cost", "rollup", "--plan", "nonexistent_plan_xyz", "--format", "json"], monkeypatch
         )
         # Must not produce traceback regardless of exit code
         assert TRACEBACK_SENTINEL not in output

@@ -8,7 +8,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `592`
+- subjects: `594`
 - claims: `37`
 - runner bindings: `37`
 - proof obligations: `475`
@@ -40,7 +40,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 20 |
 | `assurance.coverage_item` | 106 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 58 |
+| `cli.command` | 60 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -67,6 +67,8 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue config` | `polylogue/cli/click_app.py` `polylogue config` |
 | `polylogue context-pack` | `polylogue/cli/click_app.py` `polylogue context-pack` |
 | `polylogue cost` | `polylogue/cli/click_app.py` `polylogue cost` |
+| `polylogue cost outlook` | `polylogue/cli/commands/cost.py:39` `polylogue.cli.commands.cost.outlook_command` |
+| `polylogue cost rollup` | `polylogue/cli/commands/cost.py:107` `polylogue.cli.commands.cost.rollup_command` |
 | `polylogue count` | `polylogue/cli/click_app.py` `polylogue count` |
 | `polylogue dashboard` | `polylogue/cli/click_app.py` `polylogue dashboard` |
 | `polylogue delete` | `polylogue/cli/click_app.py` `polylogue delete` |

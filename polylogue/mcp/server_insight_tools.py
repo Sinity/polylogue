@@ -129,6 +129,64 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("get_resume_brief", run)
 
     @mcp.tool()
+    async def cost_outlook(plan: str, method: str = "linear") -> str:
+        """Project the current billing cycle for a subscription plan (#1138).
+
+        Returns the typed :class:`polylogue.cost.outlook.CycleOutlook`
+        payload from #1137: cycle window, burn rate, projected total,
+        quota pressure, overage rows, coverage ratio, and confidence.
+
+        Parameters
+        ----------
+        plan:
+            Subscription plan name (e.g. ``"claude-pro"``,
+            ``"claude-max-5x"``, ``"chatgpt-plus"``). User-supplied rows
+            from ``[[cost.subscription.plans]]`` are merged with the
+            curated seed; user rows always win.
+        method:
+            Projection method tag — one of ``"linear"``,
+            ``"trailing-7d-mean"``, ``"eom-naive"``. The chosen method
+            is echoed in the response so callers cannot lose track of
+            how the projection was made.
+
+        Returns the JSON-serialized outlook on success, or a typed
+        error envelope when the plan is unknown or has no cycle anchor.
+        """
+        from polylogue.cost.outlook import ProjectionMethod
+        from polylogue.cost.plans import PlanLookupError
+
+        async def run() -> str:
+            try:
+                projection_method = ProjectionMethod(method)
+            except ValueError:
+                return hooks.error_json(
+                    f"Unknown projection method {method!r}.",
+                    code="invalid_argument",
+                    detail=f"plan={plan!r} method={method!r}",
+                    tool="cost_outlook",
+                )
+            try:
+                poly = hooks.get_polylogue()
+                outlook = await poly.cost_outlook(plan, method=projection_method)
+            except PlanLookupError as exc:
+                return hooks.error_json(
+                    str(exc),
+                    code="not_found",
+                    detail=f"plan={plan!r}",
+                    tool="cost_outlook",
+                )
+            if outlook is None:
+                return hooks.error_json(
+                    f"Plan {plan!r} has no cycle_anchor_day; cannot project a cycle window.",
+                    code="no_cycle_window",
+                    detail=f"plan={plan!r}",
+                    tool="cost_outlook",
+                )
+            return hooks.json_payload(outlook, exclude_none=False)
+
+        return await hooks.async_safe_call("cost_outlook", run)
+
+    @mcp.tool()
     async def archive_coverage() -> str:
         """Show archive coverage statistics."""
 
