@@ -196,6 +196,154 @@ def _empty_cost_payload(conversation_id: str, provider: str | None) -> dict[str,
     }
 
 
+# ---------------------------------------------------------------------------
+# Insights browser helpers (#1120)
+#
+# The insights browser endpoint surfaces the four per-session insight kinds
+# (profile, work-event timeline, phases, work threads) as a single JSON
+# envelope so the reader inspector can render them inline. Each kind carries
+# a readiness chip from the closed vocabulary ``q-ready`` / ``q-partial`` /
+# ``q-missing`` driven by:
+#
+# - ``q-ready``    — the insight is materialized for this conversation.
+# - ``q-missing``  — the insight has no materialized row for this conversation
+#   (the substrate is empty for this scope, not the whole archive).
+# - ``q-partial``  — the insight is materialized but the row count is zero
+#   (e.g. a session profile exists but has no work events recorded).
+#
+# The endpoint never imports insight storage modules directly — it routes
+# through the same public ``Polylogue`` facade adapters that CLI and MCP use
+# (AC#1120, AC#1018).
+# ---------------------------------------------------------------------------
+
+INSIGHT_KINDS: tuple[str, ...] = ("profile", "timeline", "phases", "threads")
+
+
+def _readiness_tag(*, materialized: bool, row_count: int | None = None) -> str:
+    """Map a materialized/row-count pair to the readiness chip vocabulary.
+
+    The chip vocabulary is closed (``q-ready`` / ``q-partial`` / ``q-missing``).
+    Unknown / unmaterialized rows are ``q-missing``; materialized rows with
+    zero downstream rows are ``q-partial`` (the rebuild ran but produced
+    nothing); everything else is ``q-ready``.
+    """
+    if not materialized:
+        return "q-missing"
+    if row_count is not None and row_count <= 0:
+        return "q-partial"
+    return "q-ready"
+
+
+def _parse_insight_includes(raw: str | None) -> tuple[str, ...]:
+    """Resolve the ``?include=`` query param into a stable tuple.
+
+    Returns the canonical insight-kind tuple in :data:`INSIGHT_KINDS` order
+    when *raw* is None or empty (default = include everything). Unknown
+    tokens are dropped; ordering is normalized to :data:`INSIGHT_KINDS`.
+    """
+    if raw is None or not raw.strip():
+        return INSIGHT_KINDS
+    requested = {token.strip().lower() for token in raw.split(",") if token.strip()}
+    if not requested:
+        return INSIGHT_KINDS
+    return tuple(kind for kind in INSIGHT_KINDS if kind in requested)
+
+
+def _provenance_dict(prov: Any) -> dict[str, object]:
+    return {
+        "materializer_version": int(getattr(prov, "materializer_version", 0)),
+        "materialized_at": getattr(prov, "materialized_at", None),
+        "source_updated_at": getattr(prov, "source_updated_at", None),
+        "source_sort_key": getattr(prov, "source_sort_key", None),
+    }
+
+
+def _profile_panel_payload(profile: Any) -> dict[str, object]:
+    """Project a ``SessionProfile`` into the JSON shape served by the reader.
+
+    Uses :meth:`SessionProfile.to_dict` for fidelity to the substrate shape
+    and adds a readiness chip + provenance summary on top.
+    """
+    body = dict(profile.to_dict())
+    return {
+        "readiness_tag": _readiness_tag(materialized=True, row_count=int(body.get("message_count", 0) or 0)),
+        "materialized": True,
+        "profile": body,
+    }
+
+
+def _empty_profile_panel_payload() -> dict[str, object]:
+    return {
+        "readiness_tag": "q-missing",
+        "materialized": False,
+        "profile": None,
+    }
+
+
+def _work_event_panel_payload(events: list[Any]) -> dict[str, object]:
+    items: list[dict[str, object]] = []
+    for ev in events:
+        items.append(
+            {
+                "event_id": ev.event_id,
+                "event_index": int(ev.event_index),
+                "conversation_id": ev.conversation_id,
+                "provider": ev.provider_name,
+                "evidence": ev.evidence.model_dump(mode="json"),
+                "inference": ev.inference.model_dump(mode="json"),
+                "provenance": _provenance_dict(ev.provenance),
+            }
+        )
+    return {
+        "readiness_tag": _readiness_tag(materialized=bool(events), row_count=len(events)),
+        "materialized": bool(events),
+        "count": len(items),
+        "events": items,
+    }
+
+
+def _phase_panel_payload(phases: list[Any]) -> dict[str, object]:
+    items: list[dict[str, object]] = []
+    for ph in phases:
+        items.append(
+            {
+                "phase_id": ph.phase_id,
+                "phase_index": int(ph.phase_index),
+                "conversation_id": ph.conversation_id,
+                "provider": ph.provider_name,
+                "evidence": ph.evidence.model_dump(mode="json"),
+                "inference": ph.inference.model_dump(mode="json"),
+                "provenance": _provenance_dict(ph.provenance),
+            }
+        )
+    return {
+        "readiness_tag": _readiness_tag(materialized=bool(phases), row_count=len(phases)),
+        "materialized": bool(phases),
+        "count": len(items),
+        "phases": items,
+    }
+
+
+def _thread_panel_payload(threads: list[Any]) -> dict[str, object]:
+    items: list[dict[str, object]] = []
+    for th in threads:
+        items.append(
+            {
+                "thread_id": th.thread_id,
+                "root_id": th.root_id,
+                "dominant_repo": th.dominant_repo,
+                "thread": th.thread.model_dump(mode="json"),
+                "provenance": _provenance_dict(th.provenance),
+            }
+        )
+    return {
+        "readiness_tag": _readiness_tag(materialized=bool(threads), row_count=len(threads)),
+        "materialized": bool(threads),
+        "count": len(items),
+        "threads": items,
+    }
+
+
 def _message_type_value(message: object) -> str:
     message_type = getattr(message, "message_type", "")
     if hasattr(message_type, "value"):
@@ -505,6 +653,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_get_conversation_provenance(path[2], params)
         elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "topology":
             self._handle_get_conversation_topology(path[2], params)
+        elif len(path) == 4 and path[:3] == ["api", "insights", "sessions"]:
+            self._handle_get_session_insights(path[3], params)
         elif len(path) == 4 and path[:3] == ["api", "raw_artifacts"]:
             self._handle_get_raw_artifact(path[3])
         else:
@@ -968,6 +1118,107 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 return None
             return _empty_cost_payload(conv_id, str(conv.provider) if conv.provider else None)
         return _cost_panel_payload(insights[0])
+
+    # ------------------------------------------------------------------
+    # Handlers: insights browser (#1120)
+    # ------------------------------------------------------------------
+
+    @daemon_safe_handler
+    def _handle_get_session_insights(self, conv_id: str, params: dict[str, list[str]]) -> None:
+        """``GET /api/insights/sessions/{id}?include=profile,timeline,phases,threads``.
+
+        Returns a single typed envelope joining the four per-session insight
+        kinds for *conv_id* — session profile (#1018), work-event timeline
+        (#1133/#1135), phases, and work threads. Each section carries a
+        readiness chip drawn from the closed vocabulary
+        (``q-ready`` / ``q-partial`` / ``q-missing``).
+
+        Unknown conversations return ``404 not_found``. Existing conversations
+        without materialized insights return ``200`` with explicit ``q-missing``
+        per-kind shapes so the panel is never blank (AC#1120).
+        """
+        include_raw = self._get_param(params, "include")
+        includes = _parse_insight_includes(include_raw)
+
+        async def _get(poly: Polylogue) -> object:
+            return await self._do_get_session_insights(poly, conv_id, includes)
+
+        result = self._sync_run(_get)
+        if result is None:
+            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
+            return
+        self._send_json(HTTPStatus.OK, result)
+
+    async def _do_get_session_insights(
+        self,
+        poly: Polylogue,
+        conv_id: str,
+        includes: tuple[str, ...],
+    ) -> object:
+        from polylogue.insights.archive import (
+            ArchiveInsightUnavailableError,
+            SessionPhaseInsightQuery,
+            SessionWorkEventInsightQuery,
+            WorkThreadInsightQuery,
+        )
+
+        # Confirm the conversation exists first: distinguishes "unknown
+        # conversation" (404) from "insights surface unavailable" (200 with
+        # explicit q-missing shapes).
+        conv = await poly.get_conversation(conv_id)
+        if conv is None:
+            return None
+
+        envelope: dict[str, object] = {
+            "conversation_id": conv_id,
+            "provider": str(conv.provider) if conv.provider else None,
+            "include": list(includes),
+            "kinds": {},
+        }
+        kinds = envelope["kinds"]
+        assert isinstance(kinds, dict)
+
+        if "profile" in includes:
+            try:
+                profile = await poly.repository.get_session_profile(conv_id)
+            except ArchiveInsightUnavailableError:
+                # The substrate hasn't materialized this insight kind yet;
+                # surface q-missing rather than 503 the whole envelope.
+                profile = None
+            kinds["profile"] = (
+                _profile_panel_payload(profile) if profile is not None else _empty_profile_panel_payload()
+            )
+
+        if "timeline" in includes:
+            try:
+                # Per-conversation list adapter — same path as MCP `session_work_events`.
+                events = await poly.list_session_work_event_insights(
+                    SessionWorkEventInsightQuery(conversation_id=conv_id, limit=None)
+                )
+            except ArchiveInsightUnavailableError:
+                events = []
+            kinds["timeline"] = _work_event_panel_payload(events)
+
+        if "phases" in includes:
+            try:
+                phases = await poly.list_session_phase_insights(
+                    SessionPhaseInsightQuery(conversation_id=conv_id, limit=None)
+                )
+            except ArchiveInsightUnavailableError:
+                phases = []
+            kinds["phases"] = _phase_panel_payload(phases)
+
+        if "threads" in includes:
+            try:
+                # Work threads are not keyed per-conversation in the substrate;
+                # the reader filters the materialized rows by membership.
+                all_threads = await poly.list_work_thread_insights(WorkThreadInsightQuery(limit=None))
+            except ArchiveInsightUnavailableError:
+                all_threads = []
+            member_threads = [th for th in all_threads if conv_id in (th.thread.session_ids or ())]
+            kinds["threads"] = _thread_panel_payload(member_threads)
+
+        return envelope
 
     # ------------------------------------------------------------------
     # Handlers: per-conversation provenance (#1125)

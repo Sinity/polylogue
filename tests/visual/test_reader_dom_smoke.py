@@ -360,6 +360,83 @@ def test_reader_cost_panel_evidence(reader_workspace: ReaderWorkspace, tmp_path:
     )
 
 
+def test_reader_insights_browser_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
+    """Insights browser endpoint surfaces typed envelope + readiness chips (#1120).
+
+    Pins:
+    - existing conversation returns the four-kind envelope (profile/timeline/
+      phases/threads), each with a chip from the closed q-ready/q-partial/
+      q-missing vocabulary;
+    - unknown conversation returns 404 (not a blank panel);
+    - include= subset honors the request and drops unknown tokens;
+    - shell HTML carries the new ``Insights`` tab + ``renderInspectorInsights``
+      so the panel is reachable through the inspector tab strip and uses
+      the readiness chip CSS classes.
+    """
+    with running_reader_server(reader_workspace) as (_, base_url):
+        status, content_type, shell = get_text(base_url, "/c/reader-c1")
+        known = cast(dict[str, object], get_json(base_url, "/api/insights/sessions/reader-c1"))
+        subset = cast(
+            dict[str, object],
+            get_json(base_url, "/api/insights/sessions/reader-c1?include=profile,bogus,phases"),
+        )
+        unknown_status, _, unknown_body = get_text(base_url, "/api/insights/sessions/does-not-exist")
+
+    assert status == 200
+    assert "text/html" in content_type
+    for phrase in (
+        'data-tab="insights"',
+        "renderInspectorInsights",
+        "loadInsightsPanel",
+        "q-ready",
+        "q-partial",
+        "q-missing",
+        "Work events",
+        "Phases",
+        "Work threads",
+    ):
+        assert phrase in shell, f"missing phrase in shell: {phrase!r}"
+
+    assert known["conversation_id"] == "reader-c1"
+    assert isinstance(known["kinds"], dict)
+    kinds = cast(dict[str, dict[str, object]], known["kinds"])
+    assert set(kinds.keys()) == {"profile", "timeline", "phases", "threads"}
+    for kind, body in kinds.items():
+        assert body["readiness_tag"] in {"q-ready", "q-partial", "q-missing"}, kind
+        assert "materialized" in body
+
+    subset_kinds = cast(dict[str, dict[str, object]], subset["kinds"])
+    assert set(subset_kinds.keys()) == {"profile", "phases"}
+    assert subset["include"] == ["profile", "phases"]
+
+    assert unknown_status == 404
+    unknown_payload = json.loads(unknown_body)
+    assert unknown_payload.get("error") in {"not_found", None}
+
+    assert_no_private_paths(json.dumps(known), context="insights browser envelope")
+    assert_no_private_paths(shell, context="reader shell HTML")
+
+    write_evidence_manifest(
+        tmp_path / "reader-insights-browser-dom-evidence.json",
+        artifact_id="polylogue.local_reader.insights_browser",
+        route="/api/insights/sessions/reader-c1",
+        fixture_id="reader-visual-synthetic-v1",
+        checks={
+            "shell_status": status,
+            "insights_endpoint_status": 200,
+            "unknown_endpoint_status": unknown_status,
+            "kinds_present": sorted(kinds.keys()),
+            "profile_readiness": kinds["profile"]["readiness_tag"],
+            "timeline_readiness": kinds["timeline"]["readiness_tag"],
+            "phases_readiness": kinds["phases"]["readiness_tag"],
+            "threads_readiness": kinds["threads"]["readiness_tag"],
+            "subset_honored": list(subset_kinds.keys()),
+            "chip_vocabulary_in_shell": True,
+            "private_path_safe": True,
+        },
+    )
+
+
 def test_reader_empty_and_degraded_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
     with running_reader_server(reader_workspace, conversations=False) as (_, base_url):
         empty_list = cast(dict[str, object], get_json(base_url, "/api/conversations"))
