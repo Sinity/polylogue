@@ -770,7 +770,7 @@ files:
     target: polylogue/cli/query_group.py
     owner: stable
   - path: polylogue/cli/query_output.py
-    loc: 850
+    loc: 967
     target: polylogue/cli/query_output.py
     owner: stable
   - path: polylogue/cli/query_output_contracts.py
@@ -844,7 +844,7 @@ files:
     target: polylogue/cli/shared/embed_stats.py
     owner: stable
   - path: polylogue/cli/shared/formatting.py
-    loc: 228
+    loc: 244
     target: polylogue/cli/shared/formatting.py
     owner: stable
   - path: polylogue/cli/shared/helper_source_selection.py
@@ -1027,15 +1027,19 @@ files:
     target: polylogue/daemon/convergence_stages.py
     owner: stable
   - path: polylogue/daemon/events.py
-    loc: 137
+    loc: 192
     target: polylogue/daemon/events.py
+    owner: stable
+  - path: polylogue/daemon/events_http.py
+    loc: 110
+    target: polylogue/daemon/events_http.py
     owner: stable
   - path: polylogue/daemon/health.py
     loc: 934
     target: polylogue/daemon/health.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 1084
+    loc: 1128
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_models.py
@@ -1060,7 +1064,7 @@ files:
     target: polylogue/daemon/user_state_http.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
-    loc: 891
+    loc: 983
     target: polylogue/daemon/web_shell.py
     owner: stable
   - path: polylogue/daemon/web_shell_workspace.py

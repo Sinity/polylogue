@@ -16,7 +16,10 @@ from urllib.parse import parse_qs, urlparse
 
 from polylogue.core.loopback import is_loopback_origin
 from polylogue.daemon import user_state_http, workspace_routes
-from polylogue.daemon.events import emit_daemon_event
+from polylogue.daemon.events import (
+    emit_daemon_event,
+    get_latest_event_id,
+)
 from polylogue.daemon.status import daemon_status_payload
 from polylogue.errors import PolylogueError
 from polylogue.logging import get_logger
@@ -261,8 +264,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         When a token IS configured, all clients — including localhost —
         must present it. Loopback is not a security boundary when a
         browser on the same host can reach the daemon.
+
+        ``access_token`` query parameter is accepted as a fallback for
+        clients that cannot set custom headers (``EventSource``).
         """
         auth_header = self.headers.get("Authorization", "")
+        if not auth_header and self._auth_token:
+            parsed = urlparse(self.path)
+            qs_params = parse_qs(parsed.query)
+            qs_token = qs_params.get("access_token", [None])[0]
+            if qs_token:
+                auth_header = f"Bearer {qs_token}"
         result = _check_auth_logic(self._auth_token, self._client_host, auth_header)
         if not result.allowed:
             self._send_error(HTTPStatus.UNAUTHORIZED, result.reason or "unauthorized")
@@ -272,11 +284,20 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _send_json(self, status: HTTPStatus, payload: object) -> None:
+    def _send_json(
+        self,
+        status: HTTPStatus,
+        payload: object,
+        *,
+        extra_headers: Mapping[str, str] | None = None,
+    ) -> None:
         raw = _json_bytes(payload)
         self.send_response(status.value)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
+        if extra_headers:
+            for name, value in extra_headers.items():
+                self.send_header(name, value)
         self.end_headers()
         self.wfile.write(raw)
 
@@ -357,7 +378,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         elif path == ["api", "health"]:
             self._handle_health()
         elif path == ["api", "status"]:
-            self._handle_status()
+            self._handle_status(params)
+        elif path == ["api", "events"]:
+            self._handle_events(params)
         elif path == ["api", "conversations"]:
             self._handle_list_conversations(params)
         elif path == ["api", "facets"]:
@@ -515,9 +538,30 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------
 
     @daemon_safe_handler
-    def _handle_status(self) -> None:
+    def _handle_status(self, params: dict[str, list[str]] | None = None) -> None:
+        latest_event_id = get_latest_event_id()
+        etag = f'W/"events-{latest_event_id}"'
+        if_none_match = self.headers.get("If-None-Match", "")
+        if if_none_match and if_none_match == etag:
+            self.send_response(HTTPStatus.NOT_MODIFIED.value)
+            self.send_header("ETag", etag)
+            self.end_headers()
+            return
         status = daemon_status_payload()
-        self._send_json(HTTPStatus.OK, status)
+        if isinstance(status, dict):
+            status["last_event_id"] = latest_event_id
+        self._send_json(HTTPStatus.OK, status, extra_headers={"ETag": etag})
+
+    # ------------------------------------------------------------------
+    # Handlers: events (SSE + JSON poll) — implementation in events_http
+    # ------------------------------------------------------------------
+
+    @daemon_safe_handler
+    def _handle_events(self, params: dict[str, list[str]]) -> None:
+        """Dispatch ``GET /api/events`` to the realtime channel handler."""
+        from polylogue.daemon.events_http import handle_events
+
+        handle_events(self, params)
 
     # ------------------------------------------------------------------
     # Handlers: list conversations

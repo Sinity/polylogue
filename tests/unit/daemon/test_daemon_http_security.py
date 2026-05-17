@@ -671,7 +671,7 @@ class TestJsonSerializationRobustness:
         recorded: list[tuple[HTTPStatus, object]] = []
         call_count = 0
 
-        def _mock_send_json(status: HTTPStatus, payload: object) -> None:
+        def _mock_send_json(status: HTTPStatus, payload: object, **kwargs: object) -> None:
             nonlocal call_count
             call_count += 1
             if call_count == 1:

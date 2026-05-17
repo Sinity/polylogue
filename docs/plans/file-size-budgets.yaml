@@ -84,3 +84,7 @@ exceptions:
   - path: tests/unit/storage/test_backend.py
     ceiling: 1750
     reason: "added FK integrity, quarantine regression, FTS commit-ordering tests (#820/#844/#817)"
+
+  - path: polylogue/daemon/http.py
+    ceiling: 1200
+    reason: "daemon HTTP route dispatch + read handlers; events dispatcher delegates to daemon/events_http.py (#957); split candidate: per-domain handler modules under daemon/handlers/"

@@ -218,6 +218,7 @@ __WORKSPACE_CSS__
     <span class="chip" id="status-fts" title="FTS readiness">FTS: --</span>
     <span class="chip" id="status-insights" title="Session insight freshness" style="display:none">insights: --</span>
     <span class="chip" id="status-ingest" style="display:none">live</span>
+    <span class="chip" id="status-live" title="Realtime channel">live: --</span>
   </div>
   <div id="sidebar">
     <div id="search-box">
@@ -967,7 +968,98 @@ loadConversations().then(function() {
 loadFacets();
 loadUserState();
 loadStatus();
-setInterval(loadStatus, 30000);
+
+// --- Realtime channel ----------------------------------------------------
+// Subscribe to /api/events (SSE) when available. On ingest/reset events the
+// conversation list, facets, and status chips reload. EventSource handles
+// reconnects automatically; on persistent failure we fall back to polling.
+var realtime = {
+  source: null,
+  lastEventId: 0,
+  pollTimer: null,
+  refreshTimer: null,
+  status: 'connecting'
+};
+
+function setLiveChip(status, lastSeen) {
+  var el = document.getElementById('status-live');
+  if (!el) return;
+  el.className = 'chip' + (status === 'live' ? ' accent' : '');
+  var label = 'live: ' + status;
+  if (lastSeen) label += ' \u00b7 #' + lastSeen;
+  el.textContent = label;
+}
+
+function scheduleRefresh() {
+  if (realtime.refreshTimer) return;
+  realtime.refreshTimer = setTimeout(function() {
+    realtime.refreshTimer = null;
+    loadConversations();
+    loadFacets();
+    loadStatus();
+  }, 250);
+}
+
+function handleRealtimeEvent(payload) {
+  if (!payload || typeof payload !== 'object') return;
+  if (typeof payload.id === 'number') realtime.lastEventId = payload.id;
+  setLiveChip('live', realtime.lastEventId);
+  var kind = payload.kind || '';
+  if (kind === 'ingestion_batch' || kind === 'ingest' || kind === 'reset' || kind === 'operation') {
+    scheduleRefresh();
+  }
+}
+
+function startPollingFallback() {
+  if (realtime.pollTimer) return;
+  setLiveChip('polling', realtime.lastEventId);
+  realtime.pollTimer = setInterval(async function() {
+    try {
+      var data = await fetchJSON('/api/events?poll=1&since=' + realtime.lastEventId);
+      var events = data.events || [];
+      events.forEach(handleRealtimeEvent);
+      if (typeof data.last_event_id === 'number') realtime.lastEventId = data.last_event_id;
+      loadStatus();
+    } catch(e) {
+      setLiveChip('offline', realtime.lastEventId);
+    }
+  }, 5000);
+}
+
+function startRealtimeChannel() {
+  if (typeof EventSource === 'undefined') { startPollingFallback(); return; }
+  try {
+    var url = '/api/events?since=' + realtime.lastEventId;
+    realtime.source = new EventSource(url);
+    setLiveChip('connecting', realtime.lastEventId);
+    realtime.source.onopen = function() { setLiveChip('live', realtime.lastEventId); };
+    var consumeMessage = function(e) {
+      var data = null;
+      try { data = JSON.parse(e.data); } catch(_) { return; }
+      handleRealtimeEvent(data);
+    };
+    realtime.source.onmessage = consumeMessage;
+    ['ingestion_batch', 'ingest', 'reset', 'operation'].forEach(function(kind) {
+      realtime.source.addEventListener(kind, consumeMessage);
+    });
+    realtime.source.onerror = function() {
+      setLiveChip('stale', realtime.lastEventId);
+      // EventSource retries automatically; if it never reopens within 15s,
+      // switch to polling fallback.
+      setTimeout(function() {
+        if (!realtime.source || realtime.source.readyState !== EventSource.OPEN) {
+          try { realtime.source && realtime.source.close(); } catch(_) {}
+          realtime.source = null;
+          startPollingFallback();
+        }
+      }, 15000);
+    };
+  } catch(e) {
+    startPollingFallback();
+  }
+}
+
+startRealtimeChannel();
 </script>
 </body>
 </html>""".replace("__WORKSPACE_CSS__", WORKSPACE_CSS)

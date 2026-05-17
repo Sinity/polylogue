@@ -91,6 +91,7 @@ REQUIRED_STATUS_KEYS: frozenset[str] = frozenset(
         "raw_quarantined",
         "raw_detection_warnings",
         "raw_failure_samples",
+        "last_event_id",
     }
 )
 
