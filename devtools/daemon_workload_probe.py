@@ -335,7 +335,10 @@ def _fts_trigger_state(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
-def _convergence_stage_timings(attempts: list[dict[str, Any]]) -> dict[str, Any]:
+def _convergence_stage_timings(
+    attempts: list[dict[str, Any]],
+    conn: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
     completed = [a for a in attempts if a.get("status") == "completed"]
     if not completed:
         return {
@@ -343,6 +346,7 @@ def _convergence_stage_timings(attempts: list[dict[str, Any]]) -> dict[str, Any]
             "parse_time_s": _summary_stat([]),
             "convergence_time_s": _summary_stat([]),
             "read_amplification": _summary_stat([]),
+            "per_stage_s": {},
         }
     parse_times = [float(a.get("parse_time_s") or 0.0) for a in completed]
     convergence_times = [float(a.get("convergence_time_s") or 0.0) for a in completed]
@@ -352,7 +356,58 @@ def _convergence_stage_timings(attempts: list[dict[str, Any]]) -> dict[str, Any]
         "parse_time_s": _summary_stat(parse_times),
         "convergence_time_s": _summary_stat(convergence_times),
         "read_amplification": _summary_stat(amps),
+        "per_stage_s": _per_stage_timings(
+            [str(a.get("attempt_id")) for a in completed if a.get("attempt_id")],
+            conn,
+        ),
     }
+
+
+def _per_stage_timings(
+    attempt_ids: list[str],
+    conn: sqlite3.Connection | None,
+) -> dict[str, dict[str, float]]:
+    """Aggregate per-stage timings from ``live_ingest_stage_event``.
+
+    Returns ``{stage_name: summary_stat}`` over the latest ``stage_timings_json``
+    payload for each attempt.  Returns ``{}`` when the table does not exist or
+    no completed attempts carry timings.
+    """
+    if conn is None or not attempt_ids:
+        return {}
+    if not _table_exists(conn, "live_ingest_stage_event"):
+        return {}
+    placeholders = ",".join("?" for _ in attempt_ids)
+    rows = conn.execute(
+        f"""
+        SELECT attempt_id, stage_timings_json
+        FROM live_ingest_stage_event
+        WHERE attempt_id IN ({placeholders})
+          AND stage_timings_json IS NOT NULL
+        ORDER BY attempt_id, sequence DESC
+        """,
+        tuple(attempt_ids),
+    ).fetchall()
+    latest_by_attempt: dict[str, str] = {}
+    for row in rows:
+        attempt_id = str(row[0])
+        if attempt_id in latest_by_attempt:
+            continue
+        if isinstance(row[1], str) and row[1]:
+            latest_by_attempt[attempt_id] = row[1]
+    per_stage: dict[str, list[float]] = {}
+    for payload in latest_by_attempt.values():
+        try:
+            decoded = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(decoded, dict):
+            continue
+        for stage_name, value in decoded.items():
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                continue
+            per_stage.setdefault(str(stage_name), []).append(float(value))
+    return {stage: _summary_stat(values) for stage, values in sorted(per_stage.items())}
 
 
 def _summary_stat(values: list[float]) -> dict[str, float]:
@@ -493,7 +548,7 @@ def probe(db: Path, *, limit: int = 5) -> dict[str, Any]:
             "db_path": str(db),
             "attempt_counts": _attempt_counts(conn),
             "recent_attempts": recent_attempts,
-            "convergence_stage_timings": _convergence_stage_timings(recent_attempts),
+            "convergence_stage_timings": _convergence_stage_timings(recent_attempts, conn),
             "boundary_table_counts": _boundary_table_counts(conn),
             "blob_lease_state": _blob_lease_state(conn),
             "gc_state": _gc_state(conn),
