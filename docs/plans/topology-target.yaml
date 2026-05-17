@@ -674,7 +674,7 @@ files:
     target: polylogue/cli/commands/completions.py
     owner: stable
   - path: polylogue/cli/commands/config.py
-    loc: 37
+    loc: 84
     target: polylogue/cli/commands/config.py
     owner: stable
   - path: polylogue/cli/commands/context_pack.py
@@ -920,7 +920,7 @@ files:
     target: polylogue/cli/verb_names.py
     owner: stable
   - path: polylogue/config.py
-    loc: 607
+    loc: 769
     target: polylogue/config.py
     owner: kernel
     reason: kernel root rule
@@ -994,6 +994,14 @@ files:
     target: polylogue/core/timestamps.py
     owner: core-primitive
     reason: core primitive
+  - path: polylogue/cost/__init__.py
+    loc: 44
+    target: polylogue/cost/__init__.py
+    owner: stable
+  - path: polylogue/cost/plans.py
+    loc: 301
+    target: polylogue/cost/plans.py
+    owner: stable
   - path: polylogue/daemon/__init__.py
     loc: 19
     target: polylogue/daemon/__init__.py
@@ -1064,11 +1072,11 @@ files:
     target: polylogue/daemon/user_state_http.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
-    loc: 983
+    loc: 1068
     target: polylogue/daemon/web_shell.py
     owner: stable
   - path: polylogue/daemon/web_shell_workspace.py
-    loc: 314
+    loc: 348
     target: polylogue/daemon/web_shell_workspace.py
     owner: stable
   - path: polylogue/daemon/workspace_routes.py

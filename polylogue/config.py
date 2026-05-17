@@ -316,6 +316,25 @@ class PolylogueConfig:
     def get(self, key: str, default: object = None) -> object:
         return self._data.get(key, default)
 
+    @property
+    def subscription_plans(self) -> tuple[dict[str, object], ...]:
+        """User-supplied subscription plan rows from ``[[cost.subscription.plans]]``.
+
+        Returns the raw row dicts so callers in :mod:`polylogue.cost.plans` can
+        validate them through the typed :class:`SubscriptionPlan` model. The
+        config layer deliberately stays loose so a malformed plan entry fails
+        loudly at the cost-cluster boundary (with a useful name) rather than
+        silently dropping fields here.
+        """
+        raw = self._data.get("subscription_plans")
+        if not isinstance(raw, (list, tuple)):
+            return ()
+        rows: list[dict[str, object]] = []
+        for entry in raw:
+            if isinstance(entry, dict):
+                rows.append(dict(entry))
+        return tuple(rows)
+
 
 #: Default site-wide configuration path. Overridable through the
 #: ``POLYLOGUE_SITE_CONFIG`` env var (primarily for tests and packaging).
@@ -591,6 +610,13 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
                         cfg[flat_key] = tuple(value)
                     else:
                         cfg[flat_key] = value
+
+    # Array-of-tables: [[cost.subscription.plans]].
+    cost_section = toml_data.get("cost")
+    sub_section = cost_section.get("subscription") if isinstance(cost_section, dict) else None
+    plans = sub_section.get("plans") if isinstance(sub_section, dict) else None
+    if isinstance(plans, list):
+        cfg["subscription_plans"] = tuple(p for p in plans if isinstance(p, dict))
 
 
 def _apply_env_overrides(cfg: dict[str, object]) -> None:
