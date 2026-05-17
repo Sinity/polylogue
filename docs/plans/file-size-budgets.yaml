@@ -62,8 +62,8 @@ exceptions:
     reason: "blob orphan/integrity (#818) + message_type backfill (#839); split candidate: lift backfill into pipeline/services"
 
   - path: polylogue/operations/archive.py
-    ceiling: 1200
-    reason: "shared operation contracts for ingest/maintenance/mutation routes (#861, #862); split candidate: per-domain operation modules under operations/"
+    ceiling: 1300
+    reason: "shared operation contracts for ingest/maintenance/mutation/insight aggregation routes (#861, #862, #1134); split candidate: per-domain operation modules under operations/"
 
   - path: polylogue/daemon/status.py
     ceiling: 1150

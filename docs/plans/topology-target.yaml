@@ -82,7 +82,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/insights.py
-    loc: 210
+    loc: 225
     target: polylogue/api/insights.py
     owner: stable
     cross_cut: { api: async }
@@ -102,7 +102,7 @@ files:
     owner: stable
     cross_cut: { api: sync }
   - path: polylogue/api/sync/insights.py
-    loc: 155
+    loc: 165
     target: polylogue/api/sync/insights.py
     owner: stable
     cross_cut: { api: sync }
@@ -601,7 +601,7 @@ files:
     target: polylogue/artifacts/graph.py
     owner: stable
   - path: polylogue/artifacts/runtime.py
-    loc: 889
+    loc: 911
     target: polylogue/artifacts/runtime.py
     owner: stable
   - path: polylogue/assets.py
@@ -1129,6 +1129,10 @@ files:
     loc: 328
     target: polylogue/insights/export_bundles.py
     owner: stable
+  - path: polylogue/insights/productivity.py
+    loc: 414
+    target: polylogue/insights/productivity.py
+    owner: stable
   - path: polylogue/insights/provenance.py
     loc: 122
     target: polylogue/insights/provenance.py
@@ -1138,7 +1142,7 @@ files:
     target: polylogue/insights/readiness.py
     owner: stable
   - path: polylogue/insights/registry.py
-    loc: 725
+    loc: 764
     target: polylogue/insights/registry.py
     owner: stable
   - path: polylogue/insights/resume.py
@@ -1255,11 +1259,11 @@ files:
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
-    loc: 41
+    loc: 43
     target: polylogue/operations/__init__.py
     owner: stable
   - path: polylogue/operations/archive.py
-    loc: 1185
+    loc: 1270
     target: polylogue/operations/archive.py
     owner: stable
   - path: polylogue/operations/completion_aggregates.py
@@ -1275,7 +1279,7 @@ files:
     target: polylogue/operations/mutations.py
     owner: stable
   - path: polylogue/operations/specs.py
-    loc: 836
+    loc: 855
     target: polylogue/operations/specs.py
     owner: stable
   - path: polylogue/paths/__init__.py
@@ -1597,7 +1601,7 @@ files:
     target: polylogue/scenarios/executable.py
     owner: stable
   - path: polylogue/scenarios/execution.py
-    loc: 618
+    loc: 619
     target: polylogue/scenarios/execution.py
     owner: stable
   - path: polylogue/scenarios/insight_surfaces.py

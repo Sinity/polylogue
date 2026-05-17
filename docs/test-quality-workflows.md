@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `5`
 - synthetic benchmark campaigns: `7`
-- scenario projections: `251`
+- scenario projections: `252`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `5`
-  - exercise: `144`
+  - exercise: `145`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `7`
@@ -25,11 +25,11 @@ Current registry snapshot:
 
 ## Runtime Coverage
 
-- covered runtime paths: `26`
-- covered runtime artifacts: `51`
-- covered runtime operations: `30`
+- covered runtime paths: `27`
+- covered runtime artifacts: `52`
+- covered runtime operations: `31`
 - covered maintenance targets: `3`
-- covered declared operation targets: `44`
+- covered declared operation targets: `45`
 - uncovered runtime paths: —
 - uncovered runtime artifacts: —
 - uncovered runtime operations: `mutate-add-tag`, `mutate-bulk-tag-conversations`, `mutate-delete-conversation`, `mutate-delete-metadata`, `mutate-remove-tag`, `mutate-set-metadata`
@@ -348,6 +348,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-insights-enrichments` | `session-enrichment-query-loop` | `session_profile_rows`<br>`session_enrichment_results` | `cli.help`<br>`query-session-enrichments` | — | `generated`<br>`help`<br>`structural` | insights enrichments help |
 | `exercise` | `help-insights-export` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | insights export help |
 | `exercise` | `help-insights-phases` | `session-phase-query-loop` | `session_phase_rows`<br>`session_phase_results` | `cli.help`<br>`query-session-phases` | — | `generated`<br>`help`<br>`structural` | insights phases help |
+| `exercise` | `help-insights-productivity` | `productivity-rollup-query-loop` | `session_insight_rows`<br>`productivity_rollup_results` | `cli.help`<br>`query-productivity-rollups` | — | `generated`<br>`help`<br>`structural` | insights productivity help |
 | `exercise` | `help-insights-profiles` | `session-profile-query-loop` | `session_profile_rows`<br>`session_profile_results` | `cli.help`<br>`query-session-profiles` | — | `generated`<br>`help`<br>`structural` | insights profiles help |
 | `exercise` | `help-insights-status` | `session-insight-status-query-loop` | `session_insight_readiness`<br>`session_insight_status_results` | `cli.help`<br>`query-session-insight-status` | — | `generated`<br>`help`<br>`structural` | insights status help |
 | `exercise` | `help-insights-tags` | `session-tag-rollup-query-loop` | `session_tag_rollup_rows`<br>`session_tag_rollup_results` | `cli.help`<br>`query-session-tag-rollups` | — | `generated`<br>`help`<br>`structural` | insights tags help |

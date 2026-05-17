@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `587`
+- subjects: `592`
 - claims: `37`
 - runner bindings: `37`
-- proof obligations: `473`
+- proof obligations: `475`
 
 ## Quality Checks
 
@@ -36,19 +36,19 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `architecture.topology` | 1 |
 | `architecture.witness` | 1 |
 | `archive.query_law` | 1 |
-| `artifact.path` | 26 |
+| `artifact.path` | 27 |
 | `assurance.coverage_gap` | 20 |
 | `assurance.coverage_item` | 106 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 57 |
+| `cli.command` | 58 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
 | `generated.scenario_family` | 9 |
-| `insight.surface` | 13 |
+| `insight.surface` | 14 |
 | `maintenance.target` | 11 |
-| `operation.spec` | 50 |
-| `operation.spec.effect` | 135 |
+| `operation.spec` | 51 |
+| `operation.spec.effect` | 136 |
 | `provider.capability` | 3 |
 | `schema.annotation` | 130 |
 | `schema.roundtrip` | 1 |
@@ -87,6 +87,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue insights enrichments` | `polylogue/cli/commands/insights.py:105` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue insights export` | `polylogue/cli/commands/insights.py:239` `polylogue.cli.commands.insights.insights_export_command` |
 | `polylogue insights phases` | `polylogue/cli/commands/insights.py:105` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
+| `polylogue insights productivity` | `polylogue/cli/commands/insights.py:105` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue insights profiles` | `polylogue/cli/commands/insights.py:105` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue insights status` | `polylogue/cli/commands/insights.py:194` `polylogue.cli.commands.insights.insights_status_command` |
 | `polylogue insights tags` | `polylogue/cli/commands/insights.py:105` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
@@ -289,7 +290,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `generated.scenario.family_registered` | 9 |
 | `generated.scenario.local_deterministic` | 4 |
 | `generated.scenario.semantic_claim_mapping` | 9 |
-| `insight.surface.registered` | 13 |
+| `insight.surface.registered` | 14 |
 | `maintenance.repair.crash_consistency` | 11 |
 | `operation.effect.atomic` | 18 |
 | `operation.effect.confirmed_before_execute` | 1 |
@@ -302,7 +303,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `operation.effect.retry_bounded` | 1 |
 | `operation.effect.rollback_safe` | 18 |
 | `operation.effect.sampling_bounded` | 1 |
-| `operation.effect.snapshot_consistent` | 41 |
+| `operation.effect.snapshot_consistent` | 42 |
 | `operation.effect.timeout_bounded` | 1 |
 | `parser.quarantine.context_redaction` | 1 |
 | `provider.capability.identity_bridge` | 3 |

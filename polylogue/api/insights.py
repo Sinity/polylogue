@@ -28,6 +28,10 @@ from polylogue.insights.archive import (
     WorkThreadInsightQuery,
 )
 from polylogue.insights.classification import SessionClassification, classify_session
+from polylogue.insights.productivity import (
+    ProductivityRollupInsight,
+    ProductivityRollupInsightQuery,
+)
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 
 if TYPE_CHECKING:
@@ -84,6 +88,11 @@ if TYPE_CHECKING:
             self,
             query: ToolUsageInsightQuery | None = None,
         ) -> list[ToolUsageInsight]: ...
+
+        async def list_productivity_rollup_insights(
+            self,
+            query: ProductivityRollupInsightQuery | None = None,
+        ) -> list[ProductivityRollupInsight]: ...
 
         async def list_session_cost_insights(
             self,
@@ -176,6 +185,12 @@ class PolylogueInsightsMixin:
         query: ToolUsageInsightQuery | None = None,
     ) -> list[ToolUsageInsight]:
         return await self.operations.list_tool_usage_insights(query)
+
+    async def list_productivity_rollup_insights(
+        self,
+        query: ProductivityRollupInsightQuery | None = None,
+    ) -> list[ProductivityRollupInsight]:
+        return await self.operations.list_productivity_rollup_insights(query)
 
     async def list_session_cost_insights(
         self,

@@ -495,6 +495,25 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead",),
     ),
     OperationSpec(
+        name="query-productivity-rollups",
+        kind=OperationKind.QUERY,
+        description=(
+            "Aggregate productivity rollups (hour-of-day, project focus, context switches, "
+            "outcome breakdown) over session_profile and session_work_event substrates with "
+            "first-class caveats."
+        ),
+        consumes=("session_insight_rows",),
+        produces=("productivity_rollup_results",),
+        path_targets=("productivity-rollup-query-loop",),
+        code_refs=(
+            "polylogue.operations.archive.ArchiveInsightMixin.list_productivity_rollup_insights",
+            "polylogue.cli.commands.insights",
+        ),
+        surfaces=("insights", "facade", "mcp"),
+        previewable=True,
+        effects=("DbRead",),
+    ),
+    OperationSpec(
         name="query-archive-debt",
         kind=OperationKind.QUERY,
         description="Resolve archive debt views from projected derived-model readiness and maintenance state.",
