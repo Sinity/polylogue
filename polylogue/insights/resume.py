@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Protocol
 
 from pydantic import Field
@@ -24,6 +25,21 @@ from polylogue.storage.search.query_support import normalize_fts5_query
 
 if TYPE_CHECKING:
     from polylogue.archive.message.models import Message
+
+
+RESUME_BRIEF_MATERIALIZER_VERSION = 1
+"""Bumped whenever the resume-brief composition contract changes shape.
+
+Owned by ``polylogue/insights/resume.py``. The brief is composed on read
+from already-materialized session insights (profile, enrichment, work
+events, phases, work thread); the version bumps when fields or
+composition semantics change so consumers can invalidate cached
+renderings.
+"""
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class ResumeLastMessage(ArchiveInsightModel):
@@ -101,6 +117,23 @@ class ResumeUncertainty(ArchiveInsightModel):
     detail: str
 
 
+class ResumeProvenance(ArchiveInsightModel):
+    """Cites the substrate rows that contributed to a resume brief.
+
+    Every brief surface (CLI, MCP, reader) must be able to point back at
+    the specific session, message, work-event, phase, and related-session
+    IDs it composed from — no opaque prose.
+    """
+
+    materializer_version: int
+    computed_at: str
+    cited_session_ids: tuple[str, ...] = ()
+    cited_message_ids: tuple[str, ...] = ()
+    cited_work_event_ids: tuple[str, ...] = ()
+    cited_phase_ids: tuple[str, ...] = ()
+    cited_work_thread_id: str | None = None
+
+
 class ResumeBrief(ArchiveInsightModel):
     session_id: str
     facts: ResumeFacts
@@ -108,6 +141,12 @@ class ResumeBrief(ArchiveInsightModel):
     related_sessions: tuple[ResumeRelatedSession, ...] = ()
     uncertainties: tuple[ResumeUncertainty, ...] = ()
     next_steps: tuple[str, ...] = ()
+    provenance: ResumeProvenance = Field(
+        default_factory=lambda: ResumeProvenance(
+            materializer_version=RESUME_BRIEF_MATERIALIZER_VERSION,
+            computed_at=_utc_now_iso(),
+        )
+    )
 
 
 class ResumeOperations(Protocol):
@@ -421,29 +460,49 @@ async def build_resume_brief(
         phases=phases,
         work_thread=work_thread,
     )
+    related_sessions = await _related_sessions(
+        operations,
+        conversation,
+        work_thread,
+        related_limit=related_limit,
+    )
+
+    cited_session_ids: tuple[str, ...] = (conversation_id,) + tuple(
+        related.conversation_id for related in related_sessions
+    )
+    cited_message_ids: tuple[str, ...] = tuple(str(message.id) for message in conversation.messages)
+    cited_work_event_ids: tuple[str, ...] = tuple(event.event_id for event in events[:5])
+    cited_phase_ids: tuple[str, ...] = tuple(phase.phase_id for phase in phases[:5])
+    provenance = ResumeProvenance(
+        materializer_version=RESUME_BRIEF_MATERIALIZER_VERSION,
+        computed_at=_utc_now_iso(),
+        cited_session_ids=cited_session_ids,
+        cited_message_ids=cited_message_ids,
+        cited_work_event_ids=cited_work_event_ids,
+        cited_phase_ids=cited_phase_ids,
+        cited_work_thread_id=work_thread.thread_id if work_thread is not None else None,
+    )
 
     return ResumeBrief(
         session_id=conversation_id,
         facts=_facts_from_conversation(conversation, profile),
         inferences=inferences,
-        related_sessions=await _related_sessions(
-            operations,
-            conversation,
-            work_thread,
-            related_limit=related_limit,
-        ),
+        related_sessions=related_sessions,
         uncertainties=tuple(uncertainties),
         next_steps=_next_steps(conversation, inferences),
+        provenance=provenance,
     )
 
 
 __all__ = [
+    "RESUME_BRIEF_MATERIALIZER_VERSION",
     "ResumeBrief",
     "ResumeFacts",
     "ResumeInferences",
     "ResumeLastMessage",
     "ResumeOperations",
     "ResumePhase",
+    "ResumeProvenance",
     "ResumeRelatedSession",
     "ResumeUncertainty",
     "ResumeWorkEvent",

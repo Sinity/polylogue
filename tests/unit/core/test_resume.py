@@ -104,6 +104,38 @@ async def test_resume_brief_composes_insights_and_related_sessions(cli_workspace
 
 
 @pytest.mark.asyncio
+async def test_resume_brief_provenance_cites_substrate_rows(cli_workspace: dict[str, Path]) -> None:
+    """Provenance must point back at every substrate row composed into the brief."""
+
+    from polylogue.insights.resume import RESUME_BRIEF_MATERIALIZER_VERSION
+
+    db_path = cli_workspace["db_path"]
+    _seed_resume_sessions(db_path)
+    with open_connection(db_path) as conn:
+        rebuild_session_insights_sync(conn)
+
+    archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
+    brief = await archive.resume_brief("resume-child")
+
+    assert brief is not None
+    provenance = brief.provenance
+    assert provenance.materializer_version == RESUME_BRIEF_MATERIALIZER_VERSION
+    assert provenance.computed_at  # ISO timestamp populated
+    # Target session is always first cited.
+    assert provenance.cited_session_ids[0] == "resume-child"
+    # Related sessions discovered via session-tree / work-thread must also be cited.
+    assert "resume-root" in provenance.cited_session_ids
+    # Every message in the target conversation must be cited by ID.
+    assert set(provenance.cited_message_ids) == {"child-u1", "child-a1"}
+    # Work-event provenance cites the substrate IDs, not opaque summaries.
+    assert provenance.cited_work_event_ids
+    for event_id in provenance.cited_work_event_ids:
+        assert event_id  # non-empty
+    # Work thread, when found, is cited by its substrate ID.
+    assert provenance.cited_work_thread_id is not None
+
+
+@pytest.mark.asyncio
 async def test_resume_brief_degrades_when_insights_are_unavailable(cli_workspace: dict[str, Path]) -> None:
     db_path = cli_workspace["db_path"]
     _seed_resume_sessions(db_path)

@@ -86,6 +86,25 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("session_profile", run)
 
     @mcp.tool()
+    async def get_resume_brief(conversation_id: str, related_limit: int = 6) -> str:
+        """Get a typed resume brief for one archived session.
+
+        The brief composes already-materialized session insights (profile,
+        enrichment, work events, phases, work thread) into a handoff
+        payload. Provenance fields cite the session, message, work-event,
+        and phase IDs that contributed.
+        """
+
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            brief = await poly.resume_brief(conversation_id, related_limit=related_limit)
+            if brief is None:
+                return hooks.error_json("Conversation not found", code="not_found", conversation_id=conversation_id)
+            return hooks.json_payload(brief, exclude_none=False)
+
+        return await hooks.async_safe_call("get_resume_brief", run)
+
+    @mcp.tool()
     async def archive_coverage() -> str:
         """Show archive coverage statistics."""
 

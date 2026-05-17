@@ -901,6 +901,27 @@
     }
   },
   {
+    "name": "get_resume_brief",
+    "parameters": {
+      "properties": {
+        "conversation_id": {
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "related_limit": {
+          "default": 6,
+          "title": "Related Limit",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "conversation_id"
+      ],
+      "title": "get_resume_briefArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "get_session_tree",
     "parameters": {
       "properties": {
