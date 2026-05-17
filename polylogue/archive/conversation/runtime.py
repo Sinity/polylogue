@@ -193,14 +193,17 @@ class ConversationRuntimeMixin:
 
     @property
     def total_cost_usd(self) -> float:
-        from polylogue.archive.message.model_runtime import _coerce_optional_float
+        """Sum of per-message ``cost_usd`` values.
 
-        message_total = sum((message.cost_usd or 0.0) for message in self.messages)
-        if message_total > 0.0:
-            return message_total
-        if self.provider_meta is None:
-            return 0.0
-        return _coerce_optional_float(self.provider_meta.get("total_cost_usd")) or 0.0
+        This is the parser/runtime view, derived only from message-level data.
+        Conversation-level cost facts in ``provider_meta`` are extracted by
+        ``polylogue.archive.semantic.pricing`` into the typed
+        ``CostEstimatePayload`` model; downstream readers (insights, session
+        summaries, threads) consume the typed model, not ``provider_meta``.
+        See issue #1139.
+        """
+
+        return sum((message.cost_usd or 0.0) for message in self.messages)
 
     @property
     def total_duration_ms(self) -> int:

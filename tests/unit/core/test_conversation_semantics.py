@@ -306,7 +306,15 @@ class TestConversationMetadataAndAggregation:
         assert branched.assistant_message_count == 3
         assert conversation_with_metadata.model_copy() == conversation_with_metadata
 
-    def test_cost_duration_fall_back_to_conversation_provider_meta(self) -> None:
+    def test_total_cost_usd_does_not_fall_back_to_provider_meta(self) -> None:
+        """Per #1139: Conversation.total_cost_usd is message-only.
+
+        Conversation-level cost in ``provider_meta`` must be consumed via the
+        typed ``pricing.estimate_conversation_cost`` /
+        ``harmonize_session_cost`` extractor path, not via a silent
+        runtime-property fallback.
+        """
+
         conversation = make_conv(
             id="claude-code-session",
             provider="claude-code",
@@ -319,8 +327,11 @@ class TestConversationMetadataAndAggregation:
             provider_meta={"total_cost_usd": "0.75", "total_duration_ms": "3200"},
         )
 
-        assert conversation.total_cost_usd == pytest.approx(0.75)
+        # Runtime property no longer falls back to provider_meta for cost.
+        assert conversation.total_cost_usd == 0.0
+        # Duration still falls back (out of #1139 scope).
         assert conversation.total_duration_ms == 3200
+        # The typed extractor path still surfaces the provider-reported cost.
         assert harmonize_session_cost(conversation) == (0.75, False)
 
 
