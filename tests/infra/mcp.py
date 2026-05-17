@@ -222,6 +222,21 @@ def make_polylogue_mock() -> MagicMock:
     poly.list_session_cost_insights = AsyncMock(return_value=[])
     poly.list_cost_rollup_insights = AsyncMock(return_value=[])
     poly.list_archive_debt_insights = AsyncMock(return_value=[])
+    # Typed mutation entrypoints (#862).
+    from polylogue.surfaces.payloads import (
+        BulkTagMutationResult,
+        DeleteConversationResult,
+        MetadataMutationResult,
+    )
+
+    poly.set_metadata = AsyncMock(return_value=MetadataMutationResult(outcome="set", conversation_id="", key=""))
+    poly.delete_metadata = AsyncMock(return_value=MetadataMutationResult(outcome="deleted", conversation_id="", key=""))
+    poly.delete_conversation_safe = AsyncMock(
+        return_value=DeleteConversationResult(outcome="deleted", conversation_id="")
+    )
+    poly.bulk_tag_conversations = AsyncMock(
+        return_value=BulkTagMutationResult(conversation_count=0, tag_count=0, affected_count=0, skipped_count=0)
+    )
     return poly
 
 

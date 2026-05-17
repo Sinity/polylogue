@@ -13,8 +13,19 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
+from polylogue.surfaces.payloads import (
+    BulkTagMutationResult,
+    DeleteConversationResult,
+    MetadataMutationResult,
+    validate_metadata_key,
+)
+
 if TYPE_CHECKING:
     from polylogue.storage.repository import ConversationRepository
+
+
+class MetadataKeyValidationError(ValueError):
+    """Raised when a user metadata key fails the centralized validation rules."""
 
 
 class ArchiveMutationsMixin:
@@ -24,6 +35,21 @@ class ArchiveMutationsMixin:
 
         @property
         def repository(self) -> ConversationRepository: ...
+
+    # ------------------------------------------------------------------
+    # Validation helpers shared across surfaces
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _validate_metadata_key(key: str) -> None:
+        """Raise :class:`MetadataKeyValidationError` for invalid metadata keys."""
+        error = validate_metadata_key(key)
+        if error is not None:
+            raise MetadataKeyValidationError(error)
+
+    async def _resolve_or_none(self, conversation_id: str) -> str | None:
+        resolved = await self.repository.resolve_id(conversation_id, strict=True)
+        return str(resolved) if resolved else None
 
     # ------------------------------------------------------------------
     # Tags
@@ -83,6 +109,108 @@ class ArchiveMutationsMixin:
 
         store: RepositoryWriteMixin = cast("RepositoryWriteMixin", self.repository)
         return await store.delete_conversation(conversation_id)
+
+    # ------------------------------------------------------------------
+    # Validated, resolve-aware entrypoints used by all surfaces (#862)
+    # ------------------------------------------------------------------
+
+    async def set_metadata_validated(self, conversation_id: str, key: str, value: object) -> MetadataMutationResult:
+        """Validate, resolve, and set a metadata key.
+
+        Raises :class:`MetadataKeyValidationError` on bad keys and
+        :class:`~polylogue.api.archive.ConversationNotFoundError` when the
+        conversation is missing. Always returns a typed
+        :class:`MetadataMutationResult`.
+        """
+        from polylogue.api.archive import ConversationNotFoundError
+
+        self._validate_metadata_key(key)
+        resolved = await self._resolve_or_none(conversation_id)
+        if resolved is None:
+            raise ConversationNotFoundError(conversation_id)
+        changed = await self.update_metadata(resolved, key, value)
+        return MetadataMutationResult(
+            outcome="set" if changed else "unchanged",
+            conversation_id=resolved,
+            key=key,
+            detail=None if changed else "value_unchanged",
+        )
+
+    async def delete_metadata_validated(self, conversation_id: str, key: str) -> MetadataMutationResult:
+        """Validate, resolve, and delete a metadata key.
+
+        Returns a typed result with ``outcome="deleted"`` if the key existed
+        and ``outcome="not_found"`` otherwise. Raises
+        :class:`MetadataKeyValidationError` on bad keys and
+        :class:`~polylogue.api.archive.ConversationNotFoundError` when the
+        conversation is missing.
+        """
+        from polylogue.api.archive import ConversationNotFoundError
+
+        self._validate_metadata_key(key)
+        resolved = await self._resolve_or_none(conversation_id)
+        if resolved is None:
+            raise ConversationNotFoundError(conversation_id)
+        deleted = await self.delete_metadata(resolved, key)
+        return MetadataMutationResult(
+            outcome="deleted" if deleted else "not_found",
+            conversation_id=resolved,
+            key=key,
+            detail=None if deleted else "key_not_found",
+        )
+
+    async def delete_conversation_safe(self, conversation_id: str) -> DeleteConversationResult:
+        """Idempotent typed delete that never raises on missing conversations.
+
+        Returns a :class:`DeleteConversationResult` with ``outcome="deleted"``
+        or ``outcome="not_found"``. Surfaces can rely on this contract instead
+        of mapping booleans into status strings themselves.
+        """
+        resolved = await self._resolve_or_none(conversation_id)
+        if resolved is None:
+            return DeleteConversationResult(
+                outcome="not_found",
+                conversation_id=conversation_id,
+                detail="conversation_not_found",
+            )
+        deleted = await self.delete_conversation(resolved)
+        if not deleted:
+            return DeleteConversationResult(
+                outcome="not_found",
+                conversation_id=resolved,
+                detail="conversation_not_found",
+            )
+        return DeleteConversationResult(outcome="deleted", conversation_id=resolved)
+
+    async def bulk_tag_conversations(
+        self,
+        conversation_ids: list[str],
+        tags: list[str],
+        *,
+        max_conversations: int = 100,
+        max_tags: int = 20,
+    ) -> BulkTagMutationResult:
+        """Validate and apply a bulk-tag operation.
+
+        Raises :class:`ValueError` for empty or oversize inputs. Returns a
+        :class:`BulkTagMutationResult` with the affected and skipped counts.
+        """
+        if not conversation_ids:
+            raise ValueError("bulk_tag_conversations requires at least one conversation_id")
+        if not tags:
+            raise ValueError("bulk_tag_conversations requires at least one tag")
+        if len(conversation_ids) > max_conversations:
+            raise ValueError(f"bulk_tag_conversations supports at most {max_conversations} conversation_ids")
+        if len(tags) > max_tags:
+            raise ValueError(f"bulk_tag_conversations supports at most {max_tags} tags")
+        applied = await self.bulk_add_tags(conversation_ids, tags)
+        skipped = len(conversation_ids) - applied
+        return BulkTagMutationResult(
+            conversation_count=len(conversation_ids),
+            tag_count=len(tags),
+            affected_count=applied,
+            skipped_count=skipped,
+        )
 
     # ------------------------------------------------------------------
     # Marks
@@ -307,4 +435,4 @@ class ArchiveMutationsMixin:
         return await store.delete_workspace(workspace_id)
 
 
-__all__ = ["ArchiveMutationsMixin"]
+__all__ = ["ArchiveMutationsMixin", "MetadataKeyValidationError"]
