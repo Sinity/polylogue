@@ -64,6 +64,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "get_conversation_summary": "single_object",
     "get_metadata": "single_object",
     "session_profile": "single_object",
+    "session_classification": "single_object",
     "get_resume_brief": "single_object",
     "archive_coverage": "single_object",
     "stats": "single_object",

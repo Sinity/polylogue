@@ -82,7 +82,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/insights.py
-    loc: 175
+    loc: 198
     target: polylogue/api/insights.py
     owner: stable
     cross_cut: { api: async }
@@ -1121,6 +1121,10 @@ files:
     loc: 163
     target: polylogue/insights/authored_payloads.py
     owner: stable
+  - path: polylogue/insights/classification.py
+    loc: 373
+    target: polylogue/insights/classification.py
+    owner: stable
   - path: polylogue/insights/export_bundles.py
     loc: 328
     target: polylogue/insights/export_bundles.py
@@ -1215,7 +1219,7 @@ files:
     target: polylogue/mcp/server_context_tools.py
     owner: stable
   - path: polylogue/mcp/server_insight_tools.py
-    loc: 148
+    loc: 172
     target: polylogue/mcp/server_insight_tools.py
     owner: stable
   - path: polylogue/mcp/server_maintenance_tools.py

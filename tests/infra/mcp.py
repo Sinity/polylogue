@@ -46,6 +46,7 @@ EXPECTED_TOOL_NAMES = {
     "export_query_results",
     "rebuild_session_insights",
     "session_profile",
+    "session_classification",
     "get_resume_brief",
     "archive_debt",
     "session_profiles",
