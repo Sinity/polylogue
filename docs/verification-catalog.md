@@ -8,7 +8,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `577`
+- subjects: `578`
 - claims: `37`
 - runner bindings: `37`
 - proof obligations: `469`
@@ -40,7 +40,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 20 |
 | `assurance.coverage_item` | 105 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 53 |
+| `cli.command` | 54 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -77,6 +77,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue doctor` | `polylogue/cli/click_app.py` `polylogue doctor` |
 | `polylogue export` | `polylogue/cli/click_app.py` `polylogue export` |
 | `polylogue ingest` | `polylogue/cli/click_app.py` `polylogue ingest` |
+| `polylogue init` | `polylogue/cli/click_app.py` `polylogue init` |
 | `polylogue insights` | `polylogue/cli/click_app.py` `polylogue insights` |
 | `polylogue insights analytics` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue insights cost-rollups` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
