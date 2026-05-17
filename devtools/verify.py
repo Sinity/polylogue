@@ -303,6 +303,7 @@ def build_verify_steps(
                 ("verify-layering", _devtools_cmd("verify-layering")),
                 ("verify-file-budgets", _devtools_cmd("verify-file-budgets")),
                 ("verify-test-ownership", _devtools_cmd("verify-test-ownership")),
+                ("verify-closure-matrix", _devtools_cmd("verify-closure-matrix")),
                 ("verify-schema-roundtrip", _devtools_cmd("verify-schema-roundtrip", "--all")),
                 ("verify-cross-cuts", _devtools_cmd("verify-cross-cuts")),
                 (

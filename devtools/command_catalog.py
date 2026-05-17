@@ -306,6 +306,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-test-ownership", "devtools verify-test-ownership --json"),
     ),
     CommandSpec(
+        "verify-closure-matrix",
+        "verification",
+        "Verify docs/plans/test-closure-matrix.yaml stays grounded in the realized tree.",
+        "devtools.verify_closure_matrix",
+        use_when=(
+            "Keep the per-domain test-closure matrix honest — fails when a declared target file or "
+            "representative test path is missing, or when a row violates the gate schema."
+        ),
+        examples=("devtools verify-closure-matrix", "devtools verify-closure-matrix --json"),
+    ),
+    CommandSpec(
         "verify-migrations",
         "verification",
         "Verify migration-completeness against docs/plans/migrations.yaml.",
