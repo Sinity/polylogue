@@ -86,5 +86,9 @@ exceptions:
     reason: "added FK integrity, quarantine regression, FTS commit-ordering tests (#820/#844/#817)"
 
   - path: polylogue/daemon/http.py
-    ceiling: 1200
-    reason: "daemon HTTP route dispatch + read handlers; events dispatcher delegates to daemon/events_http.py (#957); split candidate: per-domain handler modules under daemon/handlers/"
+    ceiling: 1280
+    reason: "daemon HTTP route dispatch + read handlers; added cost-panel endpoint (#1122); events dispatcher delegates to daemon/events_http.py (#957); split candidate: per-domain handler modules under daemon/handlers/"
+
+  - path: polylogue/daemon/web_shell.py
+    ceiling: 1220
+    reason: "single-page reader shell; added cost inspector tab + renderer (#1122); split candidate: per-tab modules alongside web_shell_workspace.py and web_shell_bulk.py"

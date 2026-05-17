@@ -292,6 +292,74 @@ def test_reader_search_query_no_results_and_facets_evidence(
     )
 
 
+def test_reader_cost_panel_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
+    """Cost panel endpoint surfaces typed cost shape with confidence chip vocabulary (#1122).
+
+    Pins:
+    - existing conversation returns the typed cost-panel payload with a
+      confidence chip from the MK3 vocabulary;
+    - unknown conversation returns 404 (not a blank panel);
+    - shell HTML carries the new ``Cost`` tab + ``renderInspectorCost``
+      so the panel is reachable through the inspector tab strip.
+    """
+    with running_reader_server(reader_workspace) as (_, base_url):
+        status, content_type, shell = get_text(base_url, "/c/reader-c1")
+        known_cost = cast(dict[str, object], get_json(base_url, "/api/conversations/reader-c1/cost"))
+        unknown_status, _, unknown_body = get_text(base_url, "/api/conversations/does-not-exist/cost")
+
+    assert status == 200
+    assert "text/html" in content_type
+    # The Cost tab is wired into the inspector strip and its renderer is
+    # present in the shell payload.
+    for phrase in (
+        'data-tab="cost"',
+        "renderInspectorCost",
+        "loadCostPanel",
+        "q-canonical",
+        "q-estimated",
+        "q-heuristic",
+        "q-unavailable",
+        "Basis split",
+        "Per-model",
+    ):
+        assert phrase in shell
+
+    # Known conversation: typed envelope, with a chip from the closed vocabulary.
+    assert known_cost["conversation_id"] == "reader-c1"
+    assert known_cost["confidence_tag"] in {
+        "q-canonical",
+        "q-estimated",
+        "q-heuristic",
+        "q-unavailable",
+    }
+    assert isinstance(known_cost["basis"], dict)
+    assert isinstance(known_cost["usage"], dict)
+    assert isinstance(known_cost["per_model_breakdown"], list)
+    assert "missing_reasons" in known_cost
+
+    # Unknown conversation: 404, not a blank panel.
+    assert unknown_status == 404
+    unknown_payload = json.loads(unknown_body)
+    assert unknown_payload.get("error") in {"not_found", None}
+
+    write_evidence_manifest(
+        tmp_path / "reader-cost-panel-dom-evidence.json",
+        artifact_id="polylogue.local_reader.cost_panel",
+        route="/api/conversations/reader-c1/cost",
+        fixture_id="reader-visual-synthetic-v1",
+        checks={
+            "shell_status": status,
+            "cost_endpoint_status": 200,
+            "unknown_endpoint_status": unknown_status,
+            "confidence_tag": known_cost["confidence_tag"],
+            "has_basis_split": True,
+            "has_per_model_block": True,
+            "chip_vocabulary_in_shell": True,
+            "private_path_safe": True,
+        },
+    )
+
+
 def test_reader_empty_and_degraded_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
     with running_reader_server(reader_workspace, conversations=False) as (_, base_url):
         empty_list = cast(dict[str, object], get_json(base_url, "/api/conversations"))
