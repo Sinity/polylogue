@@ -31,14 +31,30 @@ captures the things to *check* at cut time.
 - [ ] Push the tag: `git push origin vX.Y.Z` (or
       `git pst` — uses `--follow-tags`).
 
+Pushing the tag triggers
+[`release.yml`](../.github/workflows/release.yml), which builds and
+smokes the wheel + sdist (`devtools verify-distribution-surface`),
+publishes them to PyPI via OIDC Trusted Publishing, and builds + pushes
+the OCI image to `ghcr.io/sinity/polylogue`. A
+[Trusted Publisher](https://docs.pypi.org/trusted-publishers/) for
+`Sinity/polylogue` / `release.yml` / environment `pypi` must be
+registered on PyPI; otherwise the publish step will fail with an OIDC
+error and the tag must be re-cut after re-running the workflow.
+
 ## Post
 
 - [ ] Draft GitHub release notes from the `[X.Y.Z]` section of
       `CHANGELOG.md`.
 - [ ] Verify `polylogue --version` on the tagged commit shows the
       expected version, commit hash, and clean dirty state.
-- [ ] Verify wheel and sdist build (once #416 lands the install path).
-- [ ] Smoke `polylogue --help` from a clean install.
+- [ ] Confirm the PyPI release page at
+      `https://pypi.org/project/polylogue/X.Y.Z/` shows wheel + sdist.
+- [ ] Confirm the GHCR image tag `ghcr.io/sinity/polylogue:X.Y.Z`
+      exists and `podman pull` succeeds.
+- [ ] Smoke `pip install polylogue==X.Y.Z` in a clean venv and run
+      `polylogue --help`, `polylogued --help`, `polylogue-mcp --help`.
+- [ ] Smoke the container: `podman run --rm
+      ghcr.io/sinity/polylogue:X.Y.Z polylogue --version`.
 
 ## Rollback
 

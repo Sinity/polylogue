@@ -75,3 +75,24 @@ jobs:
       - run: uv run devtools lab-scenario verify-baselines
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
+
+  distribution:
+    # Build wheel + sdist from the checkout, rebuild a wheel from the unpacked
+    # sdist, install each into fresh venvs, and smoke the runtime entrypoints
+    # (polylogue / polylogued / polylogue-mcp). Closes the distribution.wheel-ci
+    # and distribution.sdist-ci gaps tracked under #593 / #953.
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.13"
+      - run: uv sync --extra dev --frozen
+      - run: uv run devtools verify-distribution-surface --work-dir "${RUNNER_TEMP}/dist" --keep-work-dir
+        env:
+          POLYLOGUE_FORCE_PLAIN: "1"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: distribution-artifacts
+          path: ${{ runner.temp }}/dist/dist/*
