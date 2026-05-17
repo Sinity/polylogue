@@ -8,7 +8,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `579`
+- subjects: `580`
 - claims: `37`
 - runner bindings: `37`
 - proof obligations: `470`
@@ -40,7 +40,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 20 |
 | `assurance.coverage_item` | 106 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 54 |
+| `cli.command` | 55 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -95,8 +95,9 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue insights work-events` | `polylogue/cli/commands/insights.py:100` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue list` | `polylogue/cli/click_app.py` `polylogue list` |
 | `polylogue maintenance` | `polylogue/cli/click_app.py` `polylogue maintenance` |
-| `polylogue maintenance plan` | `polylogue/cli/commands/maintenance.py:22` `polylogue.cli.commands.maintenance.plan_command` |
-| `polylogue maintenance run` | `polylogue/cli/commands/maintenance.py:67` `polylogue.cli.commands.maintenance.run_command` |
+| `polylogue maintenance plan` | `polylogue/cli/commands/maintenance.py:25` `polylogue.cli.commands.maintenance.plan_command` |
+| `polylogue maintenance preview` | `polylogue/cli/commands/maintenance.py:129` `polylogue.cli.commands.maintenance.preview_command` |
+| `polylogue maintenance run` | `polylogue/cli/commands/maintenance.py:70` `polylogue.cli.commands.maintenance.run_command` |
 | `polylogue messages` | `polylogue/cli/click_app.py` `polylogue messages` |
 | `polylogue neighbors` | `polylogue/cli/click_app.py` `polylogue neighbors` |
 | `polylogue open` | `polylogue/cli/click_app.py` `polylogue open` |
