@@ -142,8 +142,6 @@ def _content_block_mapping(block: ContentBlockRecord) -> dict[str, object]:
         payload["tool_id"] = block.tool_id
     if block.tool_input is not None:
         payload["tool_input"] = block.tool_input
-    if block.media_type is not None:
-        payload["media_type"] = block.media_type
     if block.metadata is not None:
         payload["metadata"] = block.metadata
     if block.semantic_type is not None:

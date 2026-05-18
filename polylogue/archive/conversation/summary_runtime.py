@@ -58,6 +58,10 @@ class ConversationSummaryRuntimeMixin:
 
     @property
     def tags(self) -> list[str]:
+        # #1240: prefer M2M-hydrated tags when available.
+        m2m = getattr(self, "tags_m2m", None)
+        if m2m:
+            return list(m2m)
         return _metadata_tags(self.metadata)
 
     @property

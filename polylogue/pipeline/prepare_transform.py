@@ -97,7 +97,6 @@ def transform_to_records(convo: ParsedConversation, source_name: str, *, archive
                     tool_name=block.tool_name,
                     tool_id=block.tool_id,
                     tool_input=block.tool_input_json,
-                    media_type=block.media_type,
                     metadata=block.metadata_json,
                     semantic_type=block.semantic_type,
                 )

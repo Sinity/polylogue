@@ -212,8 +212,18 @@ def _content_block_record_to_hash_payload(block: ContentBlockRecord) -> dict[str
                 payload["tool_input"] = hash_payload(block.tool_input)
         except Exception:
             payload["tool_input"] = hash_payload(block.tool_input)
-    if block.media_type:
-        payload["media_type"] = _normalize_for_hash(block.media_type)
+    # #1240: media_type is carried inside block.metadata (JSON) for image/document
+    # blocks instead of a dedicated column. Re-extract it so the row-graph hash
+    # matches the parser-side hash computed in pipeline/ids.py.
+    if block.metadata:
+        try:
+            parsed_meta = loads(block.metadata)
+        except Exception:
+            parsed_meta = None
+        if isinstance(parsed_meta, dict):
+            media_type = parsed_meta.get("media_type")
+            if isinstance(media_type, str) and media_type:
+                payload["media_type"] = _normalize_for_hash(media_type)
     return payload
 
 

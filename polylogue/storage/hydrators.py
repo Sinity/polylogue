@@ -78,19 +78,26 @@ def message_from_record(
             ts = None
 
     # Domain messages expose semantic content blocks, not storage row identity.
-    blocks = [
-        {
-            "type": str(b.type),
-            "text": b.text,
-            "tool_name": b.tool_name,
-            "tool_id": b.tool_id,
-            "tool_input": _parse_json_blob(b.tool_input),
-            "media_type": b.media_type,
-            "metadata": _parse_json_blob(b.metadata),
-            "semantic_type": str(b.semantic_type) if b.semantic_type is not None else None,
-        }
-        for b in record.content_blocks
-    ]
+    # #1240: media_type is stored inside the block-metadata JSON (image/document
+    # blocks). Lift it back to the top-level for callers that still expect it.
+    blocks = []
+    for b in record.content_blocks:
+        block_metadata = _parse_json_blob(b.metadata)
+        media_type: object = None
+        if isinstance(block_metadata, dict):
+            media_type = block_metadata.get("media_type")
+        blocks.append(
+            {
+                "type": str(b.type),
+                "text": b.text,
+                "tool_name": b.tool_name,
+                "tool_id": b.tool_id,
+                "tool_input": _parse_json_blob(b.tool_input),
+                "media_type": media_type,
+                "metadata": block_metadata,
+                "semantic_type": str(b.semantic_type) if b.semantic_type is not None else None,
+            }
+        )
 
     normalized_provider = None
     if provider is not None:
@@ -130,7 +137,11 @@ def provider_event_from_record(record: ProviderEventRecord) -> ProviderEvent:
     )
 
 
-def conversation_summary_from_record(record: ConversationRecord) -> ConversationSummary:
+def conversation_summary_from_record(
+    record: ConversationRecord,
+    *,
+    tags: tuple[str, ...] = (),
+) -> ConversationSummary:
     """Hydrate a ConversationSummary domain model from a ConversationRecord."""
     return ConversationSummary(
         id=record.conversation_id,
@@ -142,6 +153,7 @@ def conversation_summary_from_record(record: ConversationRecord) -> Conversation
         metadata=record.metadata or {},
         parent_id=record.parent_conversation_id,
         branch_type=record.branch_type,
+        tags_m2m=tags,
     )
 
 
@@ -150,6 +162,8 @@ def conversation_from_records(
     messages: list[MessageRecord],
     attachments: list[AttachmentRecord],
     provider_events: list[ProviderEventRecord] | None = None,
+    *,
+    tags: tuple[str, ...] = (),
 ) -> Conversation:
     """Hydrate a Conversation domain model from records.
 
@@ -191,6 +205,7 @@ def conversation_from_records(
         provider_events=tuple(provider_event_from_record(event) for event in (provider_events or [])),
         parent_id=conversation.parent_conversation_id,
         branch_type=conversation.branch_type,
+        tags_m2m=tags,
     )
 
 

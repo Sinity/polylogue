@@ -126,7 +126,6 @@ ContentBlockTuple = tuple[
     str | None,
     str | None,
     str | None,
-    str | None,
     SemanticBlockType | str | None,
 ]
 ActionEventTuple = tuple[
@@ -867,7 +866,6 @@ def _content_block_tuple(
         block.tool_name,
         block.tool_id,
         block.tool_input_json,
-        block.media_type,
         block.metadata_json,
         block.semantic_type,
     )
@@ -1098,7 +1096,6 @@ def _content_block_mapping_for_action_event(
         "tool_name": block.tool_name,
         "tool_id": block.tool_id,
         "tool_input": block.tool_input_json,
-        "media_type": block.media_type,
         "metadata": block.metadata_json,
         "semantic_type": block.semantic_type,
     }

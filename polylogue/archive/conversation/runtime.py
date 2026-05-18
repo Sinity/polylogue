@@ -94,6 +94,10 @@ class ConversationRuntimeMixin:
 
     @property
     def tags(self) -> list[str]:
+        # #1240: M2M-sourced tags are authoritative once hydrated.
+        m2m = getattr(self, "tags_m2m", None)
+        if m2m:
+            return list(m2m)
         return _metadata_tags(self.metadata)
 
     def filter(self, predicate: Callable[[Message], bool]) -> Self:

@@ -55,7 +55,6 @@ async def save_content_blocks(
                 record.tool_name,
                 record.tool_id,
                 record.tool_input,
-                record.media_type,
                 record.metadata,
                 record.semantic_type,
             )

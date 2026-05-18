@@ -148,3 +148,74 @@ async def test_tag_validation_rejects_invalid_input(
             await repo.add_tag(scenario.resolved_conversation_id, tag)
     finally:
         await repo.close()
+
+
+# ---------------------------------------------------------------------------
+# #1240: M2M tag tables are the only tag read surface.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio()
+async def test_list_tags_ignores_json_metadata_only_tags(workspace_env: Mapping[str, Path]) -> None:
+    """#1240: ``list_tags`` reads only the M2M tables.
+
+    Tags written exclusively into ``conversations.metadata`` (as JSON) must
+    not appear in ``list_tags`` output. The legacy JSON fallback path was
+    removed with SCHEMA_VERSION 3.
+    """
+    scenario = ArchiveScenario(
+        name="json-only-tags",
+        provider="test",
+        title="Legacy JSON tags",
+        messages=(ScenarioMessage(role="user", text="x", message_id="m1"),),
+    )
+    db_path, _ = seed_workspace_scenarios(workspace_env, [scenario])
+
+    # Inject a JSON-only tag value directly into conversations.metadata,
+    # bypassing the M2M tables that the scenario seeder would normally write.
+    import sqlite3
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
+            ('{"tags": ["json-only-tag"]}', scenario.resolved_conversation_id),
+        )
+        conn.commit()
+
+    repo = repository_for_scenario_db(db_path)
+    try:
+        listed = await repo.list_tags()
+        assert "json-only-tag" not in listed, (
+            "list_tags must not surface tags that live only in conversations.metadata JSON"
+        )
+        assert listed == {}, f"expected empty tag list, got {listed!r}"
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio()
+async def test_add_tag_does_not_dual_write_into_metadata_json(workspace_env: Mapping[str, Path]) -> None:
+    """#1240: ``add_tag`` writes only to the M2M tables.
+
+    The legacy dual-write into ``conversations.metadata['tags']`` was
+    removed; ``add_tag`` must not modify the metadata column.
+    """
+    scenario = ArchiveScenario(
+        name="add-tag-no-dual-write",
+        provider="test",
+        title="Add-tag isolation",
+        messages=(ScenarioMessage(role="user", text="x", message_id="m1"),),
+    )
+    db_path, _ = seed_workspace_scenarios(workspace_env, [scenario])
+
+    repo = repository_for_scenario_db(db_path)
+    try:
+        await repo.add_tag(scenario.resolved_conversation_id, "review")
+        metadata = await repo.get_metadata(scenario.resolved_conversation_id)
+        assert "tags" not in metadata, f"add_tag must not write into metadata.tags; got metadata={metadata!r}"
+
+        # And the M2M read surface does see it.
+        listed = await repo.list_tags()
+        assert listed == {"review": 1}
+    finally:
+        await repo.close()

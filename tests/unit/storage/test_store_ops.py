@@ -118,6 +118,21 @@ def _content_block(
     metadata: str | None = None,
     semantic_type: str | None = None,
 ) -> ContentBlockRecord:
+    # #1240: media_type now lives inside the metadata JSON envelope.
+    if media_type:
+        from polylogue.core.json import dumps as _json_dumps
+        from polylogue.core.json import loads as _json_loads
+
+        base: dict[str, object] = {}
+        if metadata:
+            try:
+                parsed = _json_loads(metadata)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                base.update(parsed)
+        base.setdefault("media_type", media_type)
+        metadata = _json_dumps(base)
     return ContentBlockRecord(
         block_id=block_id,
         message_id=_message_id(message_id),
@@ -128,7 +143,6 @@ def _content_block(
         tool_name=tool_name,
         tool_id=tool_id,
         tool_input=tool_input,
-        media_type=media_type,
         metadata=metadata,
         semantic_type=None if semantic_type is None else SemanticBlockType.from_string(semantic_type),
     )

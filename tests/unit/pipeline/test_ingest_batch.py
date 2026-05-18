@@ -206,7 +206,6 @@ def _block_tuple(
         None,
         None,
         None,
-        None,
     )
 
 

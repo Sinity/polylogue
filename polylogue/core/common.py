@@ -103,15 +103,14 @@ _CONTENT_BLOCK_UPSERT_SQL = """
 INSERT INTO content_blocks (
     block_id, message_id, conversation_id, block_index,
     type, text, tool_name, tool_id, tool_input,
-    media_type, metadata, semantic_type
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    metadata, semantic_type
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(message_id, block_index) DO UPDATE SET
     type = excluded.type,
     text = excluded.text,
     tool_name = excluded.tool_name,
     tool_id = excluded.tool_id,
     tool_input = excluded.tool_input,
-    media_type = excluded.media_type,
     metadata = excluded.metadata,
     semantic_type = excluded.semantic_type
 """
