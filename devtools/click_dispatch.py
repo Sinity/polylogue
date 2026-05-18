@@ -53,20 +53,52 @@ def _print_inventory(*, json: bool) -> None:
             click.echo(f"    {spec.name:<25} {spec.description}")
 
 
+class _PreservedEpilogCommand(click.Command):
+    """Click command that emits the epilog verbatim, preserving newlines."""
+
+    def format_epilog(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        if not self.epilog:
+            return
+        formatter.write("\n")
+        for line in self.epilog.splitlines():
+            formatter.write(line + "\n")
+
+
+def _build_epilog(spec: CommandSpec) -> str | None:
+    """Render ``use_when`` and ``examples`` from a CommandSpec into a help epilog.
+
+    Returns ``None`` when neither field has content so Click omits the
+    section entirely.
+    """
+    sections: list[str] = []
+    if spec.use_when:
+        sections.append(f"Use when:\n  {spec.use_when}")
+    if spec.examples:
+        example_lines = "\n".join(f"  {line}" for line in spec.examples)
+        sections.append(f"Examples:\n{example_lines}")
+    if not sections:
+        return None
+    return "\n\n".join(sections)
+
+
 def _make_command(spec: CommandSpec) -> click.Command:
     """Create a Click command from a CommandSpec.
 
     Args after the command name are forwarded as-is to the spec's
     resolve_main() entrypoint.  The ``--json`` flag is accepted both at
     the root group level (propagated via ctx.obj) and locally on each
-    command.
+    command.  ``--inner-help`` proxies ``--help`` to the wrapped
+    argparse entrypoint so callers can discover sub-flags the catalog
+    does not declare.
     """
     from devtools.command_catalog import COMMANDS
 
-    def callback(args: tuple[str, ...], json_flag: bool = False) -> None:
+    def callback(args: tuple[str, ...], json_flag: bool = False, inner_help: bool = False) -> None:
         ctx = click.get_current_context()
         root_json = ctx.obj.get("json", False) if ctx.obj else False
         argv = list(args)
+        if inner_help:
+            argv = [*argv, "--help"]
         if json_flag or root_json:
             argv = [*argv, "--json"]
         # Resolve at call time so monkeypatching COMMANDS works (used in tests)
@@ -86,11 +118,18 @@ def _make_command(spec: CommandSpec) -> click.Command:
             help="Emit machine-readable JSON for this command.",
             expose_value=True,
         ),
+        click.Option(
+            ["--inner-help", "inner_help"],
+            is_flag=True,
+            help="Forward --help to the wrapped command for its native flag list.",
+            expose_value=True,
+        ),
     ]
 
-    cmd = click.Command(
+    cmd = _PreservedEpilogCommand(
         name=spec.name,
         help=spec.description,
+        epilog=_build_epilog(spec),
         callback=callback,
         params=params,
     )
