@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `5`
 - synthetic benchmark campaigns: `7`
-- scenario projections: `259`
+- scenario projections: `266`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `5`
-  - exercise: `152`
+  - exercise: `159`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `7`
@@ -338,6 +338,13 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-diagnostics-tools` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | diagnostics tools help |
 | `exercise` | `help-diagnostics-turns` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | diagnostics turns help |
 | `exercise` | `help-doctor` | `message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `message_fts`<br>`action_event_readiness`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`archive_readiness` | `cli.help`<br>`project-archive-readiness` | — | `generated`<br>`help`<br>`structural` | doctor help |
+| `exercise` | `help-embed` | `embedding-materialization-loop` | `archive_conversation_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | embed help |
+| `exercise` | `help-embed-activate` | `embedding-materialization-loop` | `archive_conversation_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | embed activate help |
+| `exercise` | `help-embed-backfill` | `embedding-materialization-loop` | `archive_conversation_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | embed backfill help |
+| `exercise` | `help-embed-disable` | `embedding-materialization-loop` | `archive_conversation_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | embed disable help |
+| `exercise` | `help-embed-enable` | `embedding-materialization-loop` | `archive_conversation_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | embed enable help |
+| `exercise` | `help-embed-preflight` | `embedding-materialization-loop` | `archive_conversation_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | embed preflight help |
+| `exercise` | `help-embed-status` | `embedding-materialization-loop` | `archive_conversation_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | embed status help |
 | `exercise` | `help-export` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | export help |
 | `exercise` | `help-feedback` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | feedback help |
 | `exercise` | `help-feedback-clear` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | feedback clear help |

@@ -94,6 +94,7 @@ _SHORT_HELP: dict[str, str] = {
     "cost": "Summarize conversation cost telemetry.",
     "dashboard": "Open the local dashboard.",
     "diagnostics": "Temporal session diagnostics",
+    "embed": "Enable, preflight, and backfill the embedding pipeline.",
     "export": "Export conversations.",
     "feedback": "Record learning corrections for derived insights.",
     "ingest": "Import conversations from configured sources.",
@@ -116,6 +117,7 @@ _COMMAND_NAMES: dict[str, str] = {
 _GROUP_ATTRS: dict[str, str] = {
     "cost": "cost_command",
     "diagnostics": "diagnostics_group",
+    "embed": "embed_command",
     "feedback": "feedback_command",
     "insights": "insights_command",
     "maintenance": "maintenance_group",
@@ -156,6 +158,7 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("user_state"),
     _L("schema"),
     _L("diagnostics"),
+    _L("embed"),
     _L("maintenance"),
 )
 

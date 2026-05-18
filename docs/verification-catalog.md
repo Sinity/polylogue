@@ -8,7 +8,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `599`
+- subjects: `606`
 - claims: `37`
 - runner bindings: `37`
 - proof obligations: `475`
@@ -40,7 +40,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 20 |
 | `assurance.coverage_item` | 106 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 65 |
+| `cli.command` | 72 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -77,6 +77,13 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue diagnostics tools` | `polylogue/cli/commands/diagnostics.py:139` `polylogue.cli.commands.diagnostics.tools_command` |
 | `polylogue diagnostics turns` | `polylogue/cli/commands/diagnostics.py:92` `polylogue.cli.commands.diagnostics.turns_command` |
 | `polylogue doctor` | `polylogue/cli/click_app.py` `polylogue doctor` |
+| `polylogue embed` | `polylogue/cli/click_app.py` `polylogue embed` |
+| `polylogue embed activate` | `polylogue/cli/commands/embed.py:301` `polylogue.cli.commands.embed.activate_subcommand` |
+| `polylogue embed backfill` | `polylogue/cli/commands/embed.py:335` `polylogue.cli.commands.embed.backfill_subcommand` |
+| `polylogue embed disable` | `polylogue/cli/commands/embed.py:308` `polylogue.cli.commands.embed.disable_subcommand` |
+| `polylogue embed enable` | `polylogue/cli/commands/embed.py:240` `polylogue.cli.commands.embed.enable_subcommand` |
+| `polylogue embed preflight` | `polylogue/cli/commands/embed.py:323` `polylogue.cli.commands.embed.preflight_subcommand` |
+| `polylogue embed status` | `polylogue/cli/commands/embed.py:437` `polylogue.cli.commands.embed.status_subcommand` |
 | `polylogue export` | `polylogue/cli/click_app.py` `polylogue export` |
 | `polylogue feedback` | `polylogue/cli/click_app.py` `polylogue feedback` |
 | `polylogue feedback clear` | `polylogue/cli/commands/feedback.py:143` `polylogue.cli.commands.feedback.clear_corrections_cmd` |

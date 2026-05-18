@@ -49,6 +49,11 @@ Options:
   --exclude-text TEXT             Exclude FTS term
   --retrieval-lane LANE           Query lane: dialogue FTS, action text, or
                                   hybrid
+  --lexical                       Force FTS-only search (overrides hybrid
+                                  auto-elevation when embeddings are
+                                  populated).
+  --semantic                      Treat the query as a similarity prompt
+                                  (vector-only; requires embeddings).
   -p, --provider TEXT             Include providers (comma = OR)
   --exclude-provider TEXT         Exclude providers
   -r, --repo TEXT                 Filter by repository name (comma = OR)
@@ -143,6 +148,7 @@ Commands:
   delete        Delete matched conversations.
   diagnostics   Temporal session diagnostics
   doctor        Run archive health checks and repairs.
+  embed         Enable, preflight, and backfill the embedding pipeline.
   export        Export conversations.
   feedback      Record learning corrections for derived insights.
   ingest        Import conversations from configured sources.

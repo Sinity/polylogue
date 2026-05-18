@@ -248,9 +248,39 @@ Vector embeddings for semantic search, powered by Voyage AI (`voyage-4`,
   default live convergence does not call the embedding provider during catch-up
   ([#828](https://github.com/Sinity/polylogue/issues/828)).
 
-The embedding pipeline is fully built but dormant (0 messages embedded in
-production). It requires `VOYAGE_API_KEY`, explicit daemon opt-in, and the
-`sqlite-vec` Python package.
+### Activation flow (#1217)
+
+The `polylogue embed` group is the operator-facing onboarding surface:
+
+| Command | Purpose |
+|---------|---------|
+| `polylogue embed preflight` | Count pending messages + Voyage cost estimate without contacting the provider. |
+| `polylogue embed enable` (alias `activate`) | Verify `sqlite-vec`, capture the Voyage key, print the cost preflight, and on confirmation persist `[embedding] enabled = true` (and the API key unless `--no-store-key`) into the user `polylogue.toml`. |
+| `polylogue embed backfill` | Run the first embedding batch with per-conversation cost feedback; honours `embedding_max_cost_usd` as a soft cap and stops on overshoot. |
+| `polylogue embed disable` | Flip `embedding.enabled = false` without dropping existing embeddings — previously-embedded messages remain queryable via `--similar`. |
+| `polylogue embed status` | Coverage / freshness snapshot via `embedding_status_payload`. |
+
+The CLI orchestrates substrate primitives under
+`polylogue.storage.embeddings` (`iter_pending_conversations`,
+`embed_conversation_sync`) and the cost constants
+`ESTIMATED_TOKENS_PER_MESSAGE` / `VOYAGE_4_COST_PER_1M_TOKENS` from
+`polylogue.storage.search_providers.sqlite_vec_support`.
+
+### Search defaults (#1217)
+
+Once `embedding_enabled = true` and at least one message is embedded,
+`polylogue` searches automatically promote `retrieval_lane=auto` to
+`hybrid` (FTS5 + vector RRF) when an FTS query is present. The
+elevation lives in
+`polylogue/cli/query.py:_maybe_elevate_to_hybrid`. Two ergonomic
+overrides land on the root query surface:
+
+- `--lexical` — force `retrieval_lane=dialogue` (FTS-only).
+- `--semantic` — promote the query string into `similar_text` so the
+  request runs as a vector-only similarity probe (no FTS leg).
+
+`polylogue status` includes an `Embeddings:` line whenever any
+messages are embedded, so the operator can see coverage at a glance.
 
 ## Blob Store
 
