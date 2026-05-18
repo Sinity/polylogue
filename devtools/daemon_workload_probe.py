@@ -34,7 +34,7 @@ _BOUNDARY_TABLES: tuple[str, ...] = (
     "conversations",
     "messages",
     "content_blocks",
-    "blob_links",
+    "artifact_observations",
     "messages_fts_docsize",
     "action_events",
     "action_events_fts_docsize",

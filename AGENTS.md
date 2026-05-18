@@ -742,7 +742,9 @@ attachments, exports):
   subdirectories (`blob/ab/cdef...`)
 - **Dedup**: Identical content produces identical hashes — automatic
   deduplication
-- **Linking**: `link_group_key` groups blobs by session for lifecycle management
+- **Linking**: `artifact_observations.link_group_key` groups blobs by session
+  for lifecycle management (there is no separate `blob_links` table; the name
+  is a historical alias for this row-group view of `artifact_observations`)
 - **Scale**: ~24K blobs, ~42 GB in production archive
 - **GC**: Blob garbage collection is tracked in
   [#818](https://github.com/Sinity/polylogue/issues/818)
@@ -956,8 +958,13 @@ Content-addressed blob storage for large binary data:
   Identical content → identical hash → automatic deduplication.
 - **Prefix sharding**: 256 subdirectories (`blob/00/` through `blob/ff/`),
   each containing blobs keyed by the remaining 62 hex characters of the hash.
-- **Linking**: `link_group_key` groups related blobs (e.g., all blobs belonging
-  to one session). `blob_links` table maps conversations to their blobs.
+- **Linking**: `artifact_observations.link_group_key` groups related blobs
+  (e.g., all blobs belonging to one session). The blob store itself
+  (`polylogue/storage/blob_store.py`) is a pure content-addressed store with
+  no notion of grouping; conversation-to-blob association is recorded as
+  rows in `artifact_observations` keyed by `raw_id` with a shared
+  `link_group_key`. (There is no separate `blob_links` table; the name is a
+  historical alias for this row-group view of `artifact_observations`.)
 - **Operations**: Blobs are write-once, read-many. No in-place modification.
   GC identifies unreferenced blobs via link counting.
 
@@ -1030,7 +1037,7 @@ The report has a stable top-level shape carrying its `report_version`,
   amplification stats over completed attempts.
 - `boundary_table_counts` — row counts for the daemon-relevant tables
   (`raw_conversations`, `conversations`, `messages`, `content_blocks`,
-  `blob_links`, `messages_fts_docsize`, `action_events`,
+  `artifact_observations`, `messages_fts_docsize`, `action_events`,
   `action_events_fts_docsize`, `message_embeddings`, `session_profile`,
   `live_ingest_attempt`, `live_convergence_debt`, `pending_blob_refs`).
   Missing tables surface as `-1` rather than crashing the probe.
