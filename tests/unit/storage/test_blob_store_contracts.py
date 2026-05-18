@@ -69,7 +69,8 @@ def _make_gc_db(path: Path) -> sqlite3.Connection:
         );
         CREATE TABLE gc_generations (
             generation INTEGER PRIMARY KEY,
-            completed_at INTEGER NOT NULL
+            completed_at INTEGER NOT NULL,
+            evidence TEXT
         );
         """
     )

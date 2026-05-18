@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
+from datetime import UTC, datetime
 
 import click
 
@@ -15,6 +17,7 @@ from polylogue.maintenance.preview import ALL_SCOPES, staleness_inventory
 from polylogue.maintenance.replay import ReplayProgress, execute_replay
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES, build_maintenance_target_catalog
 from polylogue.paths import archive_root, render_root
+from polylogue.storage.blob_gc import read_gc_history
 
 _MAINTENANCE_TARGET_HELP = build_maintenance_target_catalog().help_text()
 
@@ -272,4 +275,86 @@ def preview_command(
         click.echo("")
 
 
-__all__ = ["maintenance_group", "plan_command", "preview_command", "run_command"]
+@maintenance_group.command("gc-history")
+@click.option(
+    "--limit",
+    type=int,
+    default=20,
+    show_default=True,
+    help="Maximum number of recent GC passes to display.",
+)
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+    help="Output format.",
+)
+@click.pass_obj
+def gc_history_command(env: AppEnv, limit: int, output_format: str) -> None:
+    """Show recent blob-GC passes recorded in ``gc_generations.evidence``.
+
+    Surfaces per-pass evidence (inspected/skipped/deleted, skip reasons,
+    dry-run flag, batch bound) written by ``run_blob_gc`` so operators
+    can audit GC behaviour over time without bespoke SQLite tooling.
+
+    Pre-#1190 generations and crashed-mid-pass rows surface with
+    ``evidence: null`` so operators can see they happened.
+    """
+    configure_logging()
+    config = Config(
+        archive_root=archive_root(),
+        render_root=render_root(),
+        sources=[],
+    )
+    db_path = config.archive_root / "archive.db"
+    history = read_gc_history(db_path, limit=limit)
+
+    if output_format == "json":
+        payload = [
+            {
+                "generation": row.generation,
+                "completed_at": row.completed_at,
+                "completed_at_iso": (
+                    datetime.fromtimestamp(row.completed_at, tz=UTC).isoformat() if row.completed_at else None
+                ),
+                "evidence": asdict(row.evidence) if row.evidence else None,
+            }
+            for row in history
+        ]
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    if not history:
+        click.echo("No GC generations recorded yet.")
+        return
+
+    click.echo(f"Recent blob-GC passes (newest first, limit={limit}):")
+    click.echo("")
+    for row in history:
+        when = (
+            datetime.fromtimestamp(row.completed_at, tz=UTC).isoformat(timespec="seconds")
+            if row.completed_at
+            else "unknown"
+        )
+        click.echo(f"  generation={row.generation:>6}  completed_at={when}")
+        ev = row.evidence
+        if ev is None:
+            click.echo("    (no evidence — pre-#1190 row or crashed pass)")
+            continue
+        dry = " [DRY-RUN]" if ev.dry_run else ""
+        click.echo(
+            f"    inspected={ev.inspected:>4}  deleted={ev.deleted:>4}{dry}  "
+            f"skipped_ref={ev.skipped_referenced} skipped_leased={ev.skipped_leased} "
+            f"skipped_missing={ev.skipped_missing} unlink_errors={ev.skipped_unlink_error}"
+        )
+
+
+__all__ = [
+    "gc_history_command",
+    "maintenance_group",
+    "plan_command",
+    "preview_command",
+    "run_command",
+]

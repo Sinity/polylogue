@@ -8,7 +8,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `598`
+- subjects: `599`
 - claims: `37`
 - runner bindings: `37`
 - proof obligations: `475`
@@ -40,7 +40,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 20 |
 | `assurance.coverage_item` | 106 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 64 |
+| `cli.command` | 65 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -104,9 +104,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue insights work-events` | `polylogue/cli/commands/insights.py:105` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue list` | `polylogue/cli/click_app.py` `polylogue list` |
 | `polylogue maintenance` | `polylogue/cli/click_app.py` `polylogue maintenance` |
-| `polylogue maintenance plan` | `polylogue/cli/commands/maintenance.py:27` `polylogue.cli.commands.maintenance.plan_command` |
-| `polylogue maintenance preview` | `polylogue/cli/commands/maintenance.py:207` `polylogue.cli.commands.maintenance.preview_command` |
-| `polylogue maintenance run` | `polylogue/cli/commands/maintenance.py:85` `polylogue.cli.commands.maintenance.run_command` |
+| `polylogue maintenance gc-history` | `polylogue/cli/commands/maintenance.py:278` `polylogue.cli.commands.maintenance.gc_history_command` |
+| `polylogue maintenance plan` | `polylogue/cli/commands/maintenance.py:30` `polylogue.cli.commands.maintenance.plan_command` |
+| `polylogue maintenance preview` | `polylogue/cli/commands/maintenance.py:210` `polylogue.cli.commands.maintenance.preview_command` |
+| `polylogue maintenance run` | `polylogue/cli/commands/maintenance.py:88` `polylogue.cli.commands.maintenance.run_command` |
 | `polylogue messages` | `polylogue/cli/click_app.py` `polylogue messages` |
 | `polylogue neighbors` | `polylogue/cli/click_app.py` `polylogue neighbors` |
 | `polylogue open` | `polylogue/cli/click_app.py` `polylogue open` |

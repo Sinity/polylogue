@@ -325,7 +325,8 @@ BLOB_LEASE_DDL = """
 
         CREATE TABLE IF NOT EXISTS gc_generations (
             generation   INTEGER PRIMARY KEY,
-            completed_at INTEGER
+            completed_at INTEGER,
+            evidence     TEXT
         );
 """
 

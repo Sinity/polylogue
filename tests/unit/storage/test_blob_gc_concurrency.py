@@ -62,7 +62,8 @@ def _make_db(path: Path) -> sqlite3.Connection:
     conn.execute(
         """CREATE TABLE gc_generations (
             generation INTEGER PRIMARY KEY,
-            completed_at INTEGER NOT NULL
+            completed_at INTEGER NOT NULL,
+            evidence TEXT
         )"""
     )
     conn.commit()
@@ -178,6 +179,14 @@ def test_concurrent_acquire_and_gc_never_deletes_referenced(tmp_path: Path) -> N
     blob_hash, _ = blob_store.write_from_bytes(b"raced payload")
     _age_blob(blob_store, blob_hash, seconds=MIN_AGE_S + 5)
 
+    # Pre-acquire a sentinel lease before any thread starts so the blob
+    # cannot be GC'd in the gap between thread spawn and the first
+    # ``acquire_blob_leases`` call. The writer drops this sentinel on
+    # exit; until then, it bridges the test's startup window the same way
+    # the production lease handshake bridges the
+    # acquire-blob → write-DB-row window in real ingest.
+    acquire_blob_leases(db_path, [blob_hash], operation_id="op-sentinel")
+
     stop = threading.Event()
     error: list[BaseException] = []
 
@@ -204,6 +213,16 @@ def test_concurrent_acquire_and_gc_never_deletes_referenced(tmp_path: Path) -> N
         except BaseException as exc:  # pragma: no cover - reported via assertion
             error.append(exc)
         finally:
+            # Drop the sentinel lease now that the row exists and refs the blob.
+            try:
+                conn = sqlite3.connect(str(db_path), timeout=5.0)
+                try:
+                    release_operation_leases(conn, "op-sentinel")
+                    conn.commit()
+                finally:
+                    conn.close()
+            except BaseException as exc:  # pragma: no cover - defensive sentinel-release error capture
+                error.append(exc)
             stop.set()
 
     def gc_loop() -> None:
