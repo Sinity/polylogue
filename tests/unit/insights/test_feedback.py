@@ -348,21 +348,8 @@ class TestFeedbackStorage:
 
 
 # ---------------------------------------------------------------------------
-# Defense-in-depth — schema version bump
+# Defense-in-depth — user_corrections is in canonical DDL
 # ---------------------------------------------------------------------------
-
-
-def test_schema_version_bumped_for_user_corrections() -> None:
-    """The user_corrections table requires a schema version transition.
-
-    The fresh-first schema rejects mismatched databases. Bumping
-    ``SCHEMA_VERSION`` is the durable acceptance criterion that this PR
-    actually introduced the new table.
-    """
-
-    from polylogue.storage.sqlite.schema_ddl import SCHEMA_VERSION
-
-    assert SCHEMA_VERSION >= 15
 
 
 def test_user_corrections_ddl_is_in_schema_ddl() -> None:

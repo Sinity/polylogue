@@ -206,20 +206,19 @@ rows:
       - tests/integration/test_cli_tags_surface.py
     gate: required
 
-  - domain: storage.schema_migration
+  - domain: storage.schema_policy
     target_files:
       - polylogue/storage/sqlite/schema.py
       - polylogue/storage/sqlite/schema_ddl.py
       - polylogue/storage/sqlite/schema_bootstrap.py
     representative_tests:
       - tests/unit/storage/test_schema_safety.py
-      - tests/unit/storage/test_schema_upgrades.py
-      - tests/unit/storage/test_action_fts_schema_upgrade.py
+      - tests/unit/storage/test_schema_policy_contracts.py
     gate: required
     known_gaps:
-      - polylogue uses fresh-first schema versioning (no migration chain); the
-        reviewed in-place upgrade scripts for specific version transitions are
-        validated ad hoc, not by a dedicated lane
+      - polylogue has no schema migration chain (#1212); version mismatch
+        is rejected and the operator re-ingests from source. There is no
+        in-place upgrade path to validate.
 
   # ── Substrate: schemas ──────────────────────────────────────────────────
   - domain: schemas.inference

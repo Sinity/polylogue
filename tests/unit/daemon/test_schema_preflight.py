@@ -122,65 +122,6 @@ def test_schema_version_health_critical_when_db_ahead(
     assert "rebuild" in alert.message.lower() or "redeploy" in alert.message.lower()
 
 
-def test_schema_health_critical_when_source_name_is_generated(
-    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Same user_version is not enough: generated source_name is not writable."""
-    db = workspace_env["archive_root"] / "polylogue.db"
-    db.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db)
-    try:
-        conn.executescript(
-            f"""
-            CREATE TABLE raw_conversations (
-                raw_id TEXT PRIMARY KEY
-            );
-            CREATE TABLE conversations (
-                conversation_id TEXT PRIMARY KEY,
-                provider_meta TEXT,
-                source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED
-            );
-            PRAGMA user_version = {SCHEMA_VERSION};
-            """
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    monkeypatch.setattr("polylogue.daemon.health.db_path", lambda: db)
-
-    alert = _check_schema_version_fast()
-
-    assert alert.severity == HealthSeverity.CRITICAL
-    assert "generated conversations.source_name" in alert.message
-
-
-def test_ensure_schema_rejects_generated_source_name_layout(tmp_path: Path) -> None:
-    """Write-mode bootstrap rejects v12 databases with unwritable source_name."""
-    db = tmp_path / "generated-source-name.db"
-    conn = sqlite3.connect(db)
-    try:
-        conn.executescript(
-            f"""
-            CREATE TABLE raw_conversations (
-                raw_id TEXT PRIMARY KEY
-            );
-            CREATE TABLE conversations (
-                conversation_id TEXT PRIMARY KEY,
-                provider_meta TEXT,
-                source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED
-            );
-            PRAGMA user_version = {SCHEMA_VERSION};
-            """
-        )
-        conn.commit()
-
-        with pytest.raises(DatabaseError, match="generated conversations.source_name"):
-            _ensure_schema(conn)
-    finally:
-        conn.close()
-
-
 def test_schema_version_health_ok_when_no_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Fresh-install case: bootstrap will create at the right version."""
     monkeypatch.setattr("polylogue.daemon.health.db_path", lambda: tmp_path / "missing.db")

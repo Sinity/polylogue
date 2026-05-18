@@ -20,7 +20,6 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
-from polylogue.errors import DatabaseError
 from polylogue.logging import get_logger
 from polylogue.paths import archive_root, db_path
 
@@ -312,21 +311,12 @@ def _check_schema_version_fast() -> HealthAlert:
             conn.close()
 
         current = snapshot.current_version
-        # Reuse the same compatibility decision the storage layer applies on
-        # bootstrap. Older versions for which an explicit upgrade plan exists
-        # are NOT structurally incompatible — the next write-mode connection
-        # applies the plan. Only ``version_mismatch`` (no plan) is fatal.
-        try:
-            decision = decide_schema_bootstrap(snapshot)
-        except DatabaseError as exc:
-            return HealthAlert(
-                check_name="schema_version",
-                tier=HealthTier.FAST,
-                severity=HealthSeverity.CRITICAL,
-                message=f"schema layout incompatible with runtime v{SCHEMA_VERSION}: {exc}",
-                checked_at=now,
-                consecutive_failures=_record_failure("schema_version", False),
-            )
+        # Polylogue has no migration chain. Either the DB is at the canonical
+        # version (or empty, awaiting fresh init) or it is structurally
+        # incompatible — the watcher must refuse to operate against a foreign
+        # version. ``decide_schema_bootstrap`` returns the same three-way
+        # classification the storage bootstrap uses.
+        decision = decide_schema_bootstrap(snapshot)
 
         if current == SCHEMA_VERSION:
             severity = HealthSeverity.OK
@@ -336,18 +326,14 @@ def _check_schema_version_fast() -> HealthAlert:
             # handle this, not a structural mismatch.
             severity = HealthSeverity.OK
             message = f"empty database (will bootstrap v{SCHEMA_VERSION})"
-        elif decision.action == "version_mismatch":
+        else:
+            assert decision.action == "version_mismatch"
             severity = HealthSeverity.CRITICAL
             if current > SCHEMA_VERSION:
                 hint = "rebuild or redeploy polylogue to a build that supports this schema"
             else:
-                hint = "runtime cannot upgrade this schema; rebuild the archive or move it aside"
+                hint = "no in-place upgrade exists; rebuild the archive from source or move it aside"
             message = f"schema v{current} incompatible with runtime v{SCHEMA_VERSION} — {hint}"
-        else:
-            # An upgrade plan exists (e.g. upgrade_v11_to_v12). Do not block
-            # the watcher; the storage layer will apply the plan on demand.
-            severity = HealthSeverity.OK
-            message = f"schema v{current} will upgrade to v{SCHEMA_VERSION} on next write"
 
         is_ok = severity == HealthSeverity.OK
         return HealthAlert(

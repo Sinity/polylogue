@@ -89,6 +89,25 @@ The PR title becomes the squash-merge subject on `master` — write it as the
 history line you want. Branch-local commits serve review; the PR title and body
 serve history.
 
+## Schema-Touching Changes
+
+Polylogue has no schema migration chain. A PR that bumps
+`SCHEMA_VERSION` or otherwise changes the canonical SQLite shape is
+not a migration — it is a deletes-then-defines edit of `SCHEMA_DDL`.
+The PR body must replace the usual "migration plan" section with a
+**re-ingest plan**:
+
+- which user-visible archive operation triggers re-acquisition from
+  source (e.g. `polylogue reset --database && polylogued run`),
+- which downstream products (insights, blob store, FTS) are rebuilt
+  automatically vs. needing explicit recomputation,
+- the expected end-user impact (rebuild time, disk usage, anything
+  that requires action beyond the reset).
+
+There is no requirement to provide an in-place upgrade path, and PRs
+that try to add one will be rejected on policy grounds (see
+`docs/internals.md` § "Schema Versioning Model" and #1212).
+
 ## Versioning and Releases
 
 `pyproject.toml` records the last tagged release. Development builds are

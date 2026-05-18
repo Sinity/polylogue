@@ -80,20 +80,38 @@ Run `devtools render-all` to update the generated catalog in
 
 ## Schema Versioning Model
 
-Polylogue uses fresh-first schema versioning, not migration chains:
+Polylogue has no schema migration chain. The runtime knows exactly one
+schema shape:
 
-- `SCHEMA_VERSION` constant in `storage/sqlite/schema_ddl.py` is the authority
-- On startup, the version in the database is compared against the constant
-- **Version match**: normal operation
-- **Version mismatch**: the database is rejected. There is no automatic
-  migration. The operator must explicitly run a reviewed in-place upgrade
-  script for that exact version transition.
-- Schema is regenerated fresh for provider schemas via `devtools schema-generate`
-  and promoted via `devtools schema-promote`
+- `SCHEMA_VERSION` constant in `storage/sqlite/schema_ddl.py` is the
+  authority. The canonical schema is described directly by `SCHEMA_DDL`;
+  there are no upgrade plans, no `build_vN_to_vM_*` helpers, and no
+  chain-dispatch logic in `schema_bootstrap.py`.
+- On startup the on-disk `PRAGMA user_version` is compared against the
+  constant:
+  - **Empty file** (`user_version == 0`): bootstrap fresh.
+  - **Version match**: open as-is.
+  - **Anything else** (older or newer): the database is rejected.
+- **Mismatch → re-ingest from source.** Polylogue does not patch an
+  out-of-band shape into the canonical one. The operator moves the
+  database aside and runs `polylogue reset --database && polylogued run`,
+  which re-acquires from the source archives and rebuilds the canonical
+  archive.
+- Schema bumps are deletes-then-defines, never deltas. A schema change
+  is a single PR that edits `schema_ddl*.py`, bumps `SCHEMA_VERSION`,
+  and documents the re-ingest expectation. No migration helpers are
+  added for the bump.
+- Provider schemas (the parsing/validation surface, distinct from the
+  storage schema) are still regenerated fresh via
+  `devtools schema-generate` and promoted via `devtools schema-promote`.
 
-This design avoids migration-chain complexity (no Alembic, no forward/reverse
-migrations, no partially-applied migration states) at the cost of requiring
-explicit version-transition scripts.
+This design intentionally rejects migration-chain complexity (no
+Alembic, no forward/reverse migrations, no partially-applied migration
+states, no `_apply_version_upgrade_plan` rollback windows) at the cost
+of requiring users with out-of-band archives to re-ingest. The recent
+session-loss audit (`MEMORY.md` § Claude Session Loss Incident
+2026-03-21) confirmed that no relevant legacy DB instances exist in
+practice, so the trade is decisively in favour of the simpler runtime.
 
 ## Learning Corrections (Feedback Loop)
 

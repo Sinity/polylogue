@@ -16,7 +16,7 @@ import pytest
 
 import polylogue.paths
 from polylogue.archive.message.roles import Role
-from polylogue.errors import DatabaseError
+from polylogue.errors import SchemaIncompatibleError
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 from polylogue.storage.query_models import ConversationRecordQuery
 from polylogue.storage.repository import ConversationRepository
@@ -33,15 +33,8 @@ from polylogue.storage.sqlite.connection_profile import (
 )
 from polylogue.storage.sqlite.schema import SCHEMA_VERSION, _ensure_schema
 from polylogue.storage.sqlite.schema_bootstrap import (
-    SchemaColumnExtensionDescriptor,
-    SchemaIndexExtensionDescriptor,
     SchemaSnapshot,
-    build_current_schema_extension_plan,
-    build_v2_to_v3_upgrade_plan,
-    build_v7_to_v8_upgrade_plan,
     decide_schema_bootstrap,
-    schema_extension_snapshot_indexes,
-    schema_extension_snapshot_tables,
 )
 from tests.infra.storage_records import (
     make_attachment,
@@ -61,69 +54,6 @@ def _replace_ensure_schema(
 
 def _table_names(conn: sqlite3.Connection) -> set[str]:
     return {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-
-
-def _message_types(conn: sqlite3.Connection) -> dict[str, str]:
-    return {row[0]: row[1] for row in conn.execute("SELECT message_id, message_type FROM messages").fetchall()}
-
-
-def _create_v2_message_type_fixture(conn: sqlite3.Connection, *, include_message_type: bool = False) -> None:
-    message_type_column = ", message_type TEXT NOT NULL DEFAULT 'message'" if include_message_type else ""
-    message_type_insert_column = ", message_type" if include_message_type else ""
-    explicit_value = ", 'summary'" if include_message_type else ""
-    conn.executescript(
-        f"""
-        CREATE TABLE messages (
-            message_id TEXT PRIMARY KEY,
-            conversation_id TEXT NOT NULL,
-            role TEXT,
-            text TEXT,
-            sort_key REAL,
-            content_hash TEXT NOT NULL,
-            version INTEGER NOT NULL,
-            branch_index INTEGER NOT NULL DEFAULT 0,
-            provider_name TEXT NOT NULL DEFAULT '',
-            word_count INTEGER NOT NULL DEFAULT 0,
-            has_tool_use INTEGER NOT NULL DEFAULT 0,
-            has_thinking INTEGER NOT NULL DEFAULT 0,
-            has_paste INTEGER NOT NULL DEFAULT 0
-            {message_type_column}
-        );
-        CREATE TABLE content_blocks (
-            block_id TEXT PRIMARY KEY,
-            message_id TEXT NOT NULL,
-            conversation_id TEXT NOT NULL,
-            block_index INTEGER NOT NULL,
-            type TEXT NOT NULL,
-            text TEXT,
-            tool_name TEXT,
-            tool_id TEXT,
-            tool_input TEXT,
-            media_type TEXT,
-            metadata TEXT,
-            semantic_type TEXT,
-            UNIQUE (message_id, block_index)
-        );
-        INSERT INTO messages (
-            message_id, conversation_id, role, text, sort_key, content_hash,
-            version, provider_name, has_tool_use, has_thinking{message_type_insert_column}
-        ) VALUES
-            ('normal', 'conv-1', 'user', 'hello', 1, 'h-normal', 1, 'codex', 0, 0{explicit_value}),
-            ('thinking-block', 'conv-1', 'assistant', '', 2, 'h-thinking', 1, 'codex', 0, 0{explicit_value}),
-            ('tool-result-block', 'conv-1', 'assistant', '', 3, 'h-tool-result', 1, 'codex', 1, 0{explicit_value}),
-            ('tool-role', 'conv-1', 'tool', '', 4, 'h-tool-role', 1, 'codex', 1, 0{explicit_value}),
-            ('tool-use-block', 'conv-1', 'assistant', '', 5, 'h-tool-use', 1, 'codex', 1, 0{explicit_value}),
-            ('tool-flag', 'conv-1', 'assistant', '', 6, 'h-tool-flag', 1, 'codex', 1, 0{explicit_value});
-        INSERT INTO content_blocks (
-            block_id, message_id, conversation_id, block_index, type
-        ) VALUES
-            ('block-thinking', 'thinking-block', 'conv-1', 0, 'thinking'),
-            ('block-tool-result', 'tool-result-block', 'conv-1', 0, 'tool_result'),
-            ('block-tool-use', 'tool-use-block', 'conv-1', 0, 'tool_use');
-        PRAGMA user_version = 2;
-        """
-    )
-    conn.commit()
 
 
 def _build_record(conversation_id: str = "conv-1") -> ConversationRecord:
@@ -162,121 +92,6 @@ def test_ensure_schema_contract(tmp_path: Path) -> None:
     conn.close()
 
 
-def test_ensure_schema_upgrades_v2_message_types_without_reimport(tmp_path: Path) -> None:
-    """The supported v2->v3 path adds message_type without deleting archive rows."""
-    db_path = tmp_path / "v2.db"
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    _create_v2_message_type_fixture(conn)
-
-    before_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-
-    _ensure_schema(conn)
-
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == before_count
-    assert "message_type" in {row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
-    assert (
-        conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_messages_conversation_message_type'"
-        ).fetchone()
-        is not None
-    )
-    assert _message_types(conn) == {
-        "normal": "message",
-        "thinking-block": "thinking",
-        "tool-result-block": "tool_result",
-        "tool-role": "tool_result",
-        "tool-use-block": "tool_use",
-        "tool-flag": "tool_use",
-    }
-    conn.close()
-
-
-def test_ensure_schema_upgrades_v2_already_extended_without_overwriting(tmp_path: Path) -> None:
-    """A v2 archive that already has message_type only needs the version marker."""
-    db_path = tmp_path / "v2-already-extended.db"
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    _create_v2_message_type_fixture(conn, include_message_type=True)
-
-    _ensure_schema(conn)
-
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-    assert set(_message_types(conn).values()) == {"summary"}
-    conn.close()
-
-
-def test_v2_to_v3_upgrade_plan_skips_backfill_when_message_type_exists() -> None:
-    """Already-extended v2 archives should not pay for an archive-wide backfill."""
-    snapshot = SchemaSnapshot(
-        current_version=2,
-        table_columns={
-            "messages": frozenset({"message_id", "conversation_id", "message_type"}),
-            "content_blocks": frozenset({"message_id", "type"}),
-        },
-        index_sql={"idx_messages_conversation_message_type": None},
-    )
-
-    plan = build_v2_to_v3_upgrade_plan(snapshot)
-
-    assert any("idx_messages_conversation_message_type" in statement for statement in plan.statements)
-    assert not any(statement.lstrip().startswith("UPDATE messages") for statement in plan.statements)
-
-
-def test_ensure_schema_upgrades_v7_by_dropping_run_ledger(tmp_path: Path) -> None:
-    """The v7->v8 path removes the retired batch-run ledger in place."""
-    db_path = tmp_path / "v7-run-ledger.db"
-    conn = sqlite3.connect(db_path)
-    conn.executescript(
-        """
-        CREATE TABLE raw_conversations (
-            raw_id TEXT PRIMARY KEY,
-            provider_name TEXT NOT NULL,
-            source_path TEXT NOT NULL,
-            blob_size INTEGER NOT NULL,
-            acquired_at TEXT NOT NULL
-        );
-        CREATE TABLE runs (
-            run_id TEXT PRIMARY KEY,
-            timestamp TEXT NOT NULL,
-            plan_snapshot TEXT,
-            counts_json TEXT,
-            drift_json TEXT,
-            indexed INTEGER,
-            duration_ms INTEGER
-        );
-        CREATE INDEX idx_runs_timestamp ON runs(timestamp DESC);
-        INSERT INTO runs (run_id, timestamp) VALUES ('run-1', '2026-05-06T00:00:00+00:00');
-        PRAGMA user_version = 7;
-        """
-    )
-    conn.commit()
-
-    _ensure_schema(conn)
-
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-    assert "raw_conversations" in _table_names(conn)
-    assert "runs" not in _table_names(conn)
-    assert (
-        conn.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_runs_timestamp'").fetchone() is None
-    )
-    conn.close()
-
-
-def test_v7_to_v8_upgrade_plan_is_run_ledger_only() -> None:
-    """The v8 migration should not carry unrelated archive-wide work."""
-    snapshot = SchemaSnapshot(current_version=7, table_columns={"raw_conversations": frozenset()}, index_sql={})
-
-    plan = build_v7_to_v8_upgrade_plan(snapshot)
-
-    assert plan.scripts == ()
-    assert plan.statements == (
-        "DROP INDEX IF EXISTS idx_runs_timestamp",
-        "DROP TABLE IF EXISTS runs",
-    )
-
-
 def test_ensure_schema_rejects_version_mismatch_without_mutating(tmp_path: Path) -> None:
     """Version mismatch fails clearly instead of partially patching old layouts."""
     db_path = tmp_path / "test.db"
@@ -290,154 +105,29 @@ def test_ensure_schema_rejects_version_mismatch_without_mutating(tmp_path: Path)
             blob_size INTEGER NOT NULL,
             acquired_at TEXT NOT NULL
         );
-        PRAGMA user_version = 2;
+        PRAGMA user_version = 999;
         """
     )
     conn.commit()
 
-    with pytest.raises(DatabaseError) as exc_info:
+    with pytest.raises(SchemaIncompatibleError) as exc_info:
         _ensure_schema(conn)
 
-    assert "only supports explicitly declared in-place archive upgrades" in str(exc_info.value)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert exc_info.value.current_version == 999
+    assert exc_info.value.expected_version == SCHEMA_VERSION
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 999
     assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'").fetchone() is None
     conn.close()
 
 
 def test_schema_bootstrap_decision_returns_version_mismatch_action() -> None:
     """Version mismatch returns version_mismatch action instead of raising."""
-    snapshot = SchemaSnapshot(current_version=999, table_columns={}, index_sql={})
+    snapshot = SchemaSnapshot(current_version=999)
 
     decision = decide_schema_bootstrap(snapshot)
 
     assert decision.action == "version_mismatch"
     assert decision.current_version == 999
-
-
-def test_schema_extension_descriptors_detect_missing_columns_and_indexes() -> None:
-    """Descriptor expansion should be table-gated and idempotent."""
-    column_descriptor = SchemaColumnExtensionDescriptor(
-        table_name="demo",
-        column_name="extra",
-        ddl="ALTER TABLE demo ADD COLUMN extra TEXT",
-    )
-    missing_column_snapshot = SchemaSnapshot(
-        current_version=SCHEMA_VERSION,
-        table_columns={"demo": frozenset({"id"})},
-        index_sql={},
-    )
-    current_column_snapshot = SchemaSnapshot(
-        current_version=SCHEMA_VERSION,
-        table_columns={"demo": frozenset({"id", "extra"})},
-        index_sql={},
-    )
-    absent_table_snapshot = SchemaSnapshot(current_version=SCHEMA_VERSION, table_columns={}, index_sql={})
-
-    assert column_descriptor.statements(missing_column_snapshot) == ("ALTER TABLE demo ADD COLUMN extra TEXT",)
-    assert column_descriptor.statements(current_column_snapshot) == ()
-    assert column_descriptor.statements(absent_table_snapshot) == ()
-
-    index_descriptor = SchemaIndexExtensionDescriptor(
-        table_name="demo",
-        index_name="idx_demo_id",
-        ddl="CREATE INDEX IF NOT EXISTS idx_demo_id ON demo(id)",
-        replace_on_drift=True,
-    )
-    missing_index_snapshot = SchemaSnapshot(
-        current_version=SCHEMA_VERSION,
-        table_columns={"demo": frozenset({"id"})},
-        index_sql={"idx_demo_id": None},
-    )
-    current_index_snapshot = SchemaSnapshot(
-        current_version=SCHEMA_VERSION,
-        table_columns={"demo": frozenset({"id"})},
-        index_sql={"idx_demo_id": "CREATE INDEX idx_demo_id ON demo(id)"},
-    )
-    drifted_index_snapshot = SchemaSnapshot(
-        current_version=SCHEMA_VERSION,
-        table_columns={"demo": frozenset({"id", "other_id"})},
-        index_sql={"idx_demo_id": "CREATE INDEX idx_demo_id ON demo(other_id)"},
-    )
-
-    assert index_descriptor.statements(absent_table_snapshot) == ()
-    assert index_descriptor.statements(missing_index_snapshot) == (
-        "CREATE INDEX IF NOT EXISTS idx_demo_id ON demo(id)",
-    )
-    assert index_descriptor.statements(current_index_snapshot) == ()
-    assert index_descriptor.statements(drifted_index_snapshot) == (
-        "DROP INDEX IF EXISTS idx_demo_id",
-        "CREATE INDEX IF NOT EXISTS idx_demo_id ON demo(id)",
-    )
-
-
-def test_schema_extension_catalog_declares_snapshot_scope() -> None:
-    """Snapshot capture should follow the descriptor catalog instead of ad hoc lists."""
-    table_names = schema_extension_snapshot_tables()
-    index_names = schema_extension_snapshot_indexes()
-
-    assert len(table_names) == len(set(table_names))
-    assert len(index_names) == len(set(index_names))
-    assert {"raw_conversations", "attachments", "session_profiles", "session_phases"}.issubset(table_names)
-    assert {
-        "idx_messages_conversation_message_type",
-        "idx_raw_conv_source_mtime",
-        "idx_raw_conv_source_path_raw_id",
-        "idx_conversations_raw_id",
-        "idx_raw_conv_effective_provider",
-        "idx_content_blocks_tool_use_conversation",
-        "idx_attachments_provider_meta_file_id",
-        "idx_attachment_refs_message",
-        "idx_attachment_refs_provider_meta_drive_id",
-        "idx_provider_events_source_message",
-    }.issubset(index_names)
-
-
-def test_schema_extension_plan_expands_catalog_descriptors() -> None:
-    """Current-version extension planning should expand descriptor facts into SQL."""
-    snapshot = SchemaSnapshot(
-        current_version=SCHEMA_VERSION,
-        table_columns={
-            "messages": frozenset({"message_id", "conversation_id"}),
-            "raw_conversations": frozenset({"raw_id", "source_path", "file_mtime"}),
-            "conversations": frozenset({"conversation_id", "raw_id"}),
-            "content_blocks": frozenset({"conversation_id", "type"}),
-            "attachments": frozenset({"provider_meta"}),
-            "session_profiles": frozenset({"conversation_id", "search_text"}),
-        },
-        index_sql=dict.fromkeys(schema_extension_snapshot_indexes()),
-    )
-
-    plan = build_current_schema_extension_plan(snapshot)
-
-    assert "ALTER TABLE messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'message'" in plan.statements
-    assert any("idx_messages_conversation_message_type" in statement for statement in plan.statements)
-    assert "ALTER TABLE raw_conversations ADD COLUMN blob_size INTEGER NOT NULL DEFAULT 0" in plan.statements
-    assert any("idx_content_blocks_tool_use_conversation" in statement for statement in plan.statements)
-    assert any("idx_attachments_provider_meta_id" in statement for statement in plan.statements)
-    assert any("idx_raw_conv_source_path_raw_id" in statement for statement in plan.statements)
-    assert any("idx_conversations_raw_id" in statement for statement in plan.statements)
-    assert any("idx_raw_conv_effective_provider" in statement for statement in plan.statements)
-    assert any(
-        "ALTER TABLE session_profiles ADD COLUMN evidence_search_text" in statement for statement in plan.statements
-    )
-    assert any("UPDATE session_profiles" in statement for statement in plan.statements)
-    # Partial indexes scoping each backfill UPDATE to unbackfilled rows.
-    assert any("idx_session_profiles_evidence_search_text_unbackfilled" in statement for statement in plan.statements)
-    assert any("idx_session_profiles_inference_search_text_unbackfilled" in statement for statement in plan.statements)
-    assert any("idx_session_profiles_enrichment_search_text_unbackfilled" in statement for statement in plan.statements)
-    # Indexes precede the matching UPDATE so the optimizer can use them on first run.
-    statements = list(plan.statements)
-    for column in ("evidence_search_text", "inference_search_text", "enrichment_search_text"):
-        index_position = next(i for i, s in enumerate(statements) if f"idx_session_profiles_{column}_unbackfilled" in s)
-        update_position = next(i for i, s in enumerate(statements) if "UPDATE session_profiles" in s and column in s)
-        assert index_position < update_position, f"{column}: index must be created before its backfill UPDATE"
-    assert any("source_file_cursor" in statement for statement in plan.scripts), (
-        "Slice B: source_file_cursor table DDL must be in extension scripts"
-    )
-    assert any("provider_events" in statement for statement in plan.scripts), (
-        "Provider-event archive table DDL must be in extension scripts"
-    )
-    assert len(plan.scripts) == 6
 
 
 def test_convergence_source_path_lookup_uses_source_index(tmp_path: Path) -> None:
@@ -488,8 +178,8 @@ def test_convergence_source_path_lookup_uses_source_index(tmp_path: Path) -> Non
 
 
 def test_ensure_schema_rejects_old_raw_table_version_without_mutating(tmp_path: Path) -> None:
-    """Old-version raw tables are blocked instead of being partially patched."""
-    db_path = tmp_path / "legacy-v1.db"
+    """Old-version archives are rejected so the operator re-ingests from source."""
+    db_path = tmp_path / "legacy.db"
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.executescript(
@@ -497,72 +187,21 @@ def test_ensure_schema_rejects_old_raw_table_version_without_mutating(tmp_path: 
         CREATE TABLE raw_conversations (
             raw_id TEXT PRIMARY KEY,
             provider_name TEXT NOT NULL,
-            payload_provider TEXT,
-            source_name TEXT,
             source_path TEXT NOT NULL,
-            source_index INTEGER,
-            blob_size INTEGER NOT NULL DEFAULT 0,
-            acquired_at TEXT NOT NULL,
-            file_mtime TEXT,
-            parsed_at TEXT,
-            parse_error TEXT,
-            validated_at TEXT,
-            validation_status TEXT CHECK (validation_status IN ('passed', 'failed', 'skipped') OR validation_status IS NULL),
-            validation_error TEXT,
-            validation_drift_count INTEGER DEFAULT 0,
-            validation_provider TEXT,
-            validation_mode TEXT
+            blob_size INTEGER NOT NULL,
+            acquired_at TEXT NOT NULL
         );
-        PRAGMA user_version = 2;
+        PRAGMA user_version = 17;
         """
     )
     conn.commit()
 
-    with pytest.raises(DatabaseError) as exc_info:
+    with pytest.raises(SchemaIncompatibleError) as exc_info:
         _ensure_schema(conn)
 
-    assert "only supports explicitly declared in-place archive upgrades" in str(exc_info.value)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert exc_info.value.current_version == 17 and exc_info.value.expected_version == SCHEMA_VERSION
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 17
     assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'").fetchone() is None
-    conn.close()
-
-
-def test_ensure_schema_rejects_legacy_inline_raw_layout(tmp_path: Path) -> None:
-    """Legacy inline-raw databases should fail with a clear reset/back-up message."""
-    db_path = tmp_path / "legacy-inline-raw.db"
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    conn.executescript(
-        """
-        CREATE TABLE raw_conversations (
-            raw_id TEXT PRIMARY KEY,
-            provider_name TEXT NOT NULL,
-            payload_provider TEXT,
-            source_name TEXT,
-            source_path TEXT NOT NULL,
-            source_index INTEGER,
-            raw_content BLOB NOT NULL,
-            acquired_at TEXT NOT NULL,
-            file_mtime TEXT,
-            parsed_at TEXT,
-            parse_error TEXT,
-            validated_at TEXT,
-            validation_status TEXT,
-            validation_error TEXT,
-            validation_drift_count INTEGER DEFAULT 0,
-            validation_provider TEXT,
-            validation_mode TEXT
-        );
-        PRAGMA user_version = 1;
-        """
-    )
-    conn.commit()
-
-    with pytest.raises(Exception) as exc_info:
-        _ensure_schema(conn)
-
-    assert exc_info.type.__name__ == "DatabaseError"
-    assert "legacy inline raw-content layout" in str(exc_info.value)
     conn.close()
 
 
@@ -638,19 +277,19 @@ def test_open_read_connection_rejects_old_schema_without_mutating(tmp_path: Path
             blob_size INTEGER NOT NULL,
             acquired_at TEXT NOT NULL
         );
-        PRAGMA user_version = 2;
+        PRAGMA user_version = 17;
         """
     )
     conn.commit()
     conn.close()
 
-    with pytest.raises(DatabaseError) as exc_info:
+    with pytest.raises(SchemaIncompatibleError) as exc_info:
         with open_read_connection(db_path):
             pass
 
-    assert "only supports explicitly declared in-place archive upgrades" in str(exc_info.value)
+    assert exc_info.value.current_version == 17 and exc_info.value.expected_version == SCHEMA_VERSION
     with sqlite3.connect(db_path) as verify_conn:
-        assert verify_conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert verify_conn.execute("PRAGMA user_version").fetchone()[0] == 17
         assert (
             verify_conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'").fetchone() is None
         )
@@ -751,46 +390,6 @@ async def test_sqlite_backend_init_contract(tmp_path: Path, monkeypatch: pytest.
     await default_backend.close()
 
 
-async def test_async_backend_rejects_legacy_inline_raw_layout(tmp_path: Path) -> None:
-    """Async backend writes should reject legacy inline-raw databases before acquisition begins."""
-    db_path = tmp_path / "legacy-inline-raw.db"
-    conn = sqlite3.connect(db_path)
-    conn.executescript(
-        """
-        CREATE TABLE raw_conversations (
-            raw_id TEXT PRIMARY KEY,
-            provider_name TEXT NOT NULL,
-            payload_provider TEXT,
-            source_name TEXT,
-            source_path TEXT NOT NULL,
-            source_index INTEGER,
-            raw_content BLOB NOT NULL,
-            acquired_at TEXT NOT NULL,
-            file_mtime TEXT,
-            parsed_at TEXT,
-            parse_error TEXT,
-            validated_at TEXT,
-            validation_status TEXT,
-            validation_error TEXT,
-            validation_drift_count INTEGER DEFAULT 0,
-            validation_provider TEXT,
-            validation_mode TEXT
-        );
-        PRAGMA user_version = 1;
-        """
-    )
-    conn.commit()
-    conn.close()
-
-    backend = SQLiteBackend(db_path=db_path)
-    with pytest.raises(Exception) as exc_info:
-        await backend.get_raw_conversation_count()
-
-    assert exc_info.type.__name__ == "DatabaseError"
-    assert "legacy inline raw-content layout" in str(exc_info.value)
-    await backend.close()
-
-
 async def test_async_backend_schema_and_lock_contracts(tmp_path: Path) -> None:
     """Async schema guards and write locks must serialize correctly without blocking readers."""
     backend = SQLiteBackend(db_path=tmp_path / "async.db")
@@ -805,58 +404,27 @@ async def test_async_backend_schema_and_lock_contracts(tmp_path: Path) -> None:
         await backend.close()
 
 
-async def test_async_backend_upgrades_v2_message_types_without_reimport(tmp_path: Path) -> None:
-    """Async schema initialization should use the same v2->v3 upgrade path."""
-    db_path = tmp_path / "v2-async.db"
-    conn = sqlite3.connect(db_path)
-    _create_v2_message_type_fixture(conn)
-    conn.close()
-
-    backend = SQLiteBackend(db_path=db_path)
-    async with backend.connection():
-        pass
-
-    with sqlite3.connect(db_path) as verify_conn:
-        assert verify_conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert verify_conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 6
-        assert _message_types(verify_conn)["tool-result-block"] == "tool_result"
-        assert _message_types(verify_conn)["thinking-block"] == "thinking"
-    await backend.close()
-
-
 async def test_async_backend_rejects_old_raw_table_version(tmp_path: Path) -> None:
     """Async backend init should not silently patch old-version raw tables."""
-    db_path = tmp_path / "legacy-v1-async.db"
+    db_path = tmp_path / "legacy-async.db"
     conn = sqlite3.connect(db_path)
     conn.executescript(
         """
         CREATE TABLE raw_conversations (
             raw_id TEXT PRIMARY KEY,
             provider_name TEXT NOT NULL,
-            payload_provider TEXT,
-            source_name TEXT,
             source_path TEXT NOT NULL,
-            source_index INTEGER,
-            blob_size INTEGER NOT NULL DEFAULT 0,
-            acquired_at TEXT NOT NULL,
-            file_mtime TEXT,
-            parsed_at TEXT,
-            parse_error TEXT,
-            validated_at TEXT,
-            validation_status TEXT CHECK (validation_status IN ('passed', 'failed', 'skipped') OR validation_status IS NULL),
-            validation_error TEXT,
-            validation_drift_count INTEGER DEFAULT 0,
-            validation_provider TEXT,
-            validation_mode TEXT
+            blob_size INTEGER NOT NULL,
+            acquired_at TEXT NOT NULL
         );
-        PRAGMA user_version = 2;
+        PRAGMA user_version = 17;
         """
     )
     conn.commit()
     conn.close()
 
     backend = SQLiteBackend(db_path=db_path)
-    with pytest.raises(DatabaseError) as exc_info:
+    with pytest.raises(SchemaIncompatibleError) as exc_info:
         await backend.save_raw_conversation(
             make_raw_conversation(
                 raw_id="raw-legacy",
@@ -867,122 +435,11 @@ async def test_async_backend_rejects_old_raw_table_version(tmp_path: Path) -> No
             )
         )
 
-    assert "only supports explicitly declared in-place archive upgrades" in str(exc_info.value)
+    assert exc_info.value.current_version == 17 and exc_info.value.expected_version == SCHEMA_VERSION
 
     with sqlite3.connect(db_path) as verify_conn:
-        assert verify_conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert verify_conn.execute("PRAGMA user_version").fetchone()[0] == 17
         assert verify_conn.execute("SELECT COUNT(*) FROM raw_conversations").fetchone()[0] == 0
-    await backend.close()
-
-
-async def test_async_backend_applies_current_session_profile_extensions(tmp_path: Path) -> None:
-    """Async schema ensure should apply the same current-version profile extensions as the sync backend."""
-    db_path = tmp_path / "legacy-profile-current.db"
-    conn = sqlite3.connect(db_path)
-    conn.executescript(
-        f"""
-        CREATE TABLE session_profiles (
-            conversation_id TEXT PRIMARY KEY,
-            materializer_version INTEGER NOT NULL DEFAULT 5,
-            materialized_at TEXT NOT NULL,
-            source_updated_at TEXT,
-            source_sort_key REAL,
-            provider_name TEXT NOT NULL,
-            title TEXT,
-            first_message_at TEXT,
-            repo_paths_json TEXT,
-            repo_names_json TEXT,
-            tags_json TEXT,
-            auto_tags_json TEXT,
-            message_count INTEGER NOT NULL DEFAULT 0,
-            work_event_count INTEGER NOT NULL DEFAULT 0,
-            word_count INTEGER NOT NULL DEFAULT 0,
-            tool_use_count INTEGER NOT NULL DEFAULT 0,
-            thinking_count INTEGER NOT NULL DEFAULT 0,
-            total_cost_usd REAL NOT NULL DEFAULT 0,
-            total_duration_ms INTEGER NOT NULL DEFAULT 0,
-            wall_duration_ms INTEGER NOT NULL DEFAULT 0,
-            search_text TEXT NOT NULL,
-            inference_search_text TEXT NOT NULL DEFAULT ''
-        );
-
-        INSERT INTO session_profiles (
-            conversation_id,
-            materializer_version,
-            materialized_at,
-            source_updated_at,
-            source_sort_key,
-            provider_name,
-            title,
-            first_message_at,
-            repo_paths_json,
-            repo_names_json,
-            tags_json,
-            auto_tags_json,
-            message_count,
-            work_event_count,
-            word_count,
-            tool_use_count,
-            thinking_count,
-            total_cost_usd,
-            total_duration_ms,
-            wall_duration_ms,
-            search_text,
-            inference_search_text
-        ) VALUES (
-            'conv-1',
-            5,
-            '2026-04-01T00:00:00Z',
-            '2026-04-01T00:00:00Z',
-            1.0,
-            'chatgpt',
-            'Legacy profile',
-            '2026-04-01T00:00:00Z',
-            '[]',
-            '[]',
-            '[]',
-            '[]',
-            1,
-            0,
-            2,
-            0,
-            0,
-            0.0,
-            0,
-            0,
-            'search baseline',
-            ''
-        );
-
-        PRAGMA user_version = {SCHEMA_VERSION};
-        """
-    )
-    conn.commit()
-    conn.close()
-
-    backend = SQLiteBackend(db_path=db_path)
-    async with backend.connection():
-        pass
-
-    with sqlite3.connect(db_path) as verify_conn:
-        columns = {row[1] for row in verify_conn.execute("PRAGMA table_info(session_profiles)").fetchall()}
-        row = verify_conn.execute(
-            """
-            SELECT evidence_search_text, inference_search_text, enrichment_search_text, enrichment_family
-            FROM session_profiles
-            WHERE conversation_id = ?
-            """,
-            ("conv-1",),
-        ).fetchone()
-
-    assert {"evidence_search_text", "enrichment_payload_json", "enrichment_search_text", "enrichment_family"}.issubset(
-        columns
-    )
-    assert row is not None
-    assert row[0] == "search baseline"
-    assert row[1] == "search baseline"
-    assert row[2] == "search baseline"
-    assert row[3] == "scored_session_enrichment"
     await backend.close()
 
 

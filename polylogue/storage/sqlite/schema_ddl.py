@@ -66,7 +66,7 @@ from polylogue.storage.sqlite.schema_ddl_provider_events import (
     PROVIDER_EVENT_DDL as _PROVIDER_EVENT_DDL,
 )
 
-SCHEMA_VERSION = 17  # 2026-05-17: identity-preserving marks/annotations across reimport (#1114, builds on #1113 v16)
+SCHEMA_VERSION = 1  # Canonical schema. No migration chain: mismatch → re-ingest from source (#1212).
 
 
 # Complete target schema applied to fresh databases.

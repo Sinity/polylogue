@@ -273,10 +273,17 @@ def test_run_archive_readiness_reports_busy_archive_with_operator_message(tmp_pa
     )
 
 
-def test_run_archive_readiness_reports_legacy_inline_raw_layout(
+def test_run_archive_readiness_reports_legacy_schema_version(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Legacy archives (any non-canonical user_version) surface as a readiness error.
+
+    Polylogue collapsed the migration chain to canonical SCHEMA_VERSION in
+    #1212. The operator handles legacy databases by re-ingesting from source,
+    not by patching them in place — readiness must report the mismatch so the
+    surface refuses to operate against a foreign-version archive.
+    """
     import polylogue.paths
     from polylogue.config import get_config
     from polylogue.readiness import VerifyStatus, run_archive_readiness
@@ -293,23 +300,11 @@ def test_run_archive_readiness_reports_legacy_inline_raw_layout(
         CREATE TABLE raw_conversations (
             raw_id TEXT PRIMARY KEY,
             provider_name TEXT NOT NULL,
-            payload_provider TEXT,
-            source_name TEXT,
             source_path TEXT NOT NULL,
-            source_index INTEGER,
-            raw_content BLOB NOT NULL,
-            acquired_at TEXT NOT NULL,
-            file_mtime TEXT,
-            parsed_at TEXT,
-            parse_error TEXT,
-            validated_at TEXT,
-            validation_status TEXT,
-            validation_error TEXT,
-            validation_drift_count INTEGER DEFAULT 0,
-            validation_provider TEXT,
-            validation_mode TEXT
+            blob_size INTEGER NOT NULL,
+            acquired_at TEXT NOT NULL
         );
-        PRAGMA user_version = 1;
+        PRAGMA user_version = 17;
         """
     )
     conn.commit()
@@ -320,7 +315,7 @@ def test_run_archive_readiness_reports_legacy_inline_raw_layout(
     database_check = next(check for check in report.checks if check.name == "database")
     index_check = next(check for check in report.checks if check.name == "index")
     assert database_check.status == VerifyStatus.ERROR
-    assert "legacy inline raw-content layout" in database_check.summary
+    assert "schema version 17" in database_check.summary
     assert index_check.status == VerifyStatus.WARNING
 
 
