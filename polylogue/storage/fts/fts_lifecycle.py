@@ -383,7 +383,13 @@ def message_fts_readiness_sync(
         ready = exists and triggers_present and indexed_rows == total_messages
     else:
         exists = bool(conn.execute(FTS_INDEX_EXISTS_SQL).fetchone())
-        has_indexed_rows = exists and bool(conn.execute("SELECT 1 FROM messages_fts LIMIT 1").fetchone())
+        # messages_fts is a contentless FTS5 virtual table backed by
+        # messages — DELETE FROM messages_fts does not actually drop
+        # rows from the virtual surface, but it does drop the rows in
+        # the messages_fts_docsize shadow table. Probe the shadow table
+        # so the cheap path can still see the "FTS exists but empty"
+        # state without paying for a full COUNT(*) (#1314).
+        has_indexed_rows = exists and bool(conn.execute("SELECT 1 FROM messages_fts_docsize LIMIT 1").fetchone())
         has_indexable_messages = bool(conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1").fetchone())
         triggers_present = exists and _triggers_present_sync(conn, _MESSAGE_FTS_TRIGGER_NAMES)
         indexed_rows = 0
@@ -414,7 +420,11 @@ async def message_fts_readiness_async(
         ready = exists and triggers_present and indexed_rows == total_messages
     else:
         exists = bool(await (await conn.execute(FTS_INDEX_EXISTS_SQL)).fetchone())
-        has_indexed_rows = exists and bool(await (await conn.execute("SELECT 1 FROM messages_fts LIMIT 1")).fetchone())
+        # See message_fts_readiness_sync above for why we probe
+        # messages_fts_docsize rather than messages_fts itself (#1314).
+        has_indexed_rows = exists and bool(
+            await (await conn.execute("SELECT 1 FROM messages_fts_docsize LIMIT 1")).fetchone()
+        )
         has_indexable_messages = bool(
             await (await conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1")).fetchone()
         )

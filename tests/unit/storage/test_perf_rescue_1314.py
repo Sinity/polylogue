@@ -1,0 +1,205 @@
+"""Regression guards for the #1314 perf rescue cluster.
+
+These tests pin the four perf invariants from issue #1314 by counting
+SQL operations (not wall-clock time), so they stay portable across
+hosts and CI shapes.
+
+1. ``_SESSION_INSIGHT_REBUILD_PAGE_SIZE`` must be at least 50; the
+   page-size-1 regression produced ~17K SQL round-trips for ~4K
+   conversations.
+2. ``search_conversation_hits`` / ``search_conversation_evidence_hits``
+   must not run ``SELECT COUNT(*) FROM messages_fts(_docsize)?`` —
+   daemon convergence is the canonical FTS-readiness gate.
+3. ``get_provider_metrics_rows`` must read ``conversation_stats`` for
+   the per-conversation pre-aggregates instead of scanning ``messages``
+   for them.
+4. The hydration path (``get_messages*``) must not call pydantic
+   ``model_copy`` per message — in-place attachment of content blocks
+   is the load-bearing invariant.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
+
+import aiosqlite
+import pytest
+
+from polylogue.storage.insights.session.rebuild import _SESSION_INSIGHT_REBUILD_PAGE_SIZE
+from polylogue.storage.sqlite.queries.conversations_search import search_conversation_hits
+from polylogue.storage.sqlite.queries.stats import get_provider_metrics_rows
+from tests.benchmarks.helpers import open_bench_store
+
+
+@contextmanager
+def _capture_aiosqlite_sql() -> Iterator[list[str]]:
+    """Capture every SQL string passed to ``aiosqlite.Connection.execute``."""
+    statements: list[str] = []
+    original = aiosqlite.Connection.execute
+
+    async def _spy(self: aiosqlite.Connection, sql: str, *args: Any, **kwargs: Any) -> Any:
+        statements.append(sql)
+        return await original(self, sql, *args, **kwargs)
+
+    aiosqlite.Connection.execute = _spy  # type: ignore[method-assign,assignment]
+    try:
+        yield statements
+    finally:
+        aiosqlite.Connection.execute = original  # type: ignore[method-assign]
+
+
+# ---------------------------------------------------------------------------
+# Item 1: rebuild page size.
+# ---------------------------------------------------------------------------
+
+
+def test_session_insight_rebuild_page_size_is_at_least_50() -> None:
+    """The page-size-1 regression caused ~17K SQL round-trips for ~4K convs.
+
+    The message-budget chunker (#1314) is the actual safety net for large
+    conversations; the page size only controls per-conversation SQL
+    round-trips. Anything below 50 reintroduces the round-trip storm.
+    """
+    assert _SESSION_INSIGHT_REBUILD_PAGE_SIZE >= 50, (
+        "Page size dropped back below the #1314 floor — full rebuilds will "
+        "spend most of their wall-clock in per-conversation round-trips."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Item 2: per-call FTS readiness COUNT(*).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.scale_small
+def test_search_conversation_hits_does_not_count_fts_index(tier_small_db: Path) -> None:
+    """The per-search FTS-readiness probe must avoid the COUNT(*) scan.
+
+    Daemon convergence maintains the strict-readiness invariant at startup
+    and after every ingest cycle (``polylogue/daemon/convergence_stages.py``).
+    Repeating the same COUNT(*) per search burns one full FTS scan on
+    every query — see issue #1314.
+    """
+    with open_bench_store(tier_small_db) as store:
+        backend = store.backend
+
+        async def _run(statements: list[str]) -> None:
+            async with backend.connection() as conn:
+                await search_conversation_hits(conn, "analysis", limit=5)
+
+        with _capture_aiosqlite_sql() as statements:
+            store.run(_run(statements))
+
+        offenders = [
+            sql
+            for sql in statements
+            if "count(" in sql.lower() and ("messages_fts" in sql.lower() or "messages_fts_docsize" in sql.lower())
+        ]
+        assert not offenders, (
+            "search_conversation_hits ran a full FTS COUNT(*) — #1314 says the "
+            f"per-call probe must be a LIMIT-1 existence check. Offenders: {offenders!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Item 3: provider metrics reads conversation_stats.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.scale_small
+def test_provider_metrics_reads_conversation_stats(tier_small_db: Path) -> None:
+    """Provider metrics must source the per-conversation pre-aggregates from
+    ``conversation_stats`` rather than scanning ``messages``.
+
+    The aggregates were already precomputed (#1314); the only column types
+    that still warrant scanning ``messages`` are the role-keyed splits
+    (user/assistant counts and word sums).
+    """
+    with open_bench_store(tier_small_db) as store:
+        backend = store.backend
+
+        async def _run() -> list[dict[str, object]]:
+            async with backend.connection() as conn:
+                rows = await get_provider_metrics_rows(conn)
+                return [dict(row) for row in rows]
+
+        with _capture_aiosqlite_sql() as statements:
+            rows = store.run(_run())
+
+        assert rows, "scale_small fixture should produce at least one provider row"
+        joined = "\n".join(statements).lower()
+        assert "conversation_stats" in joined, (
+            "get_provider_metrics_rows no longer reads conversation_stats — "
+            "the per-conversation pre-aggregates fell back to scanning messages."
+        )
+        # And sanity-check the role-split query still runs against messages
+        # for the per-role columns.
+        assert "from messages" in joined, (
+            "get_provider_metrics_rows must still query messages for role-keyed "
+            "splits; the simplification dropped the user/assistant breakdown."
+        )
+
+        # Result envelope must keep the contract intact.
+        first = rows[0]
+        for key in (
+            "provider_name",
+            "conversation_count",
+            "message_count",
+            "user_message_count",
+            "assistant_message_count",
+            "user_word_sum",
+            "assistant_word_sum",
+            "tool_use_count",
+            "thinking_count",
+            "conversations_with_tools",
+            "conversations_with_thinking",
+        ):
+            assert key in first, f"ProviderMetricsRow contract dropped {key!r}"
+
+
+# ---------------------------------------------------------------------------
+# Item 4: hydration avoids per-message model_copy.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.scale_small
+def test_get_messages_hydration_does_not_call_model_copy(tier_small_db: Path) -> None:
+    """``get_messages`` must mutate the freshly-constructed MessageRecord
+    instances in place rather than calling pydantic's ``model_copy``.
+
+    The hot hydration path used ``model_copy`` to attach content blocks —
+    every call built a second BaseModel instance per message. In-place
+    attachment is the #1314 invariant.
+    """
+    from polylogue.storage.runtime import MessageRecord
+
+    calls: list[None] = []
+    original = MessageRecord.model_copy
+
+    def _spy(self: Any, *args: Any, **kwargs: Any) -> Any:
+        calls.append(None)
+        return original(self, *args, **kwargs)
+
+    MessageRecord.model_copy = _spy  # type: ignore[method-assign]
+    try:
+        with open_bench_store(tier_small_db) as store:
+
+            async def _run() -> int:
+                summaries = await store.repository.list_summaries(limit=5)
+                target = next(iter(summaries), None)
+                if target is None:
+                    return 0
+                messages = await store.repository.get_messages(str(target.id))
+                assert isinstance(messages, list)
+                return len(messages)
+
+            store.run(_run())
+    finally:
+        MessageRecord.model_copy = original  # type: ignore[method-assign]
+
+    assert not calls, (
+        "get_messages still calls MessageRecord.model_copy — the #1314 in-place attachment invariant regressed."
+    )

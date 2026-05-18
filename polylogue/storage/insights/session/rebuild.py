@@ -86,8 +86,13 @@ ORDER BY COALESCE(source_sort_key, 0) DESC, conversation_id
 """
 # Full rebuilds must tolerate pathological historical provider_meta blobs and
 # very large conversation payloads without letting a single chunk inflate RSS
-# into multi-GB territory.
-_SESSION_INSIGHT_REBUILD_PAGE_SIZE = 1
+# into multi-GB territory. The message-budget chunker
+# (_chunk_conversation_ids_by_message_budget_sync) caps total messages per
+# chunk, so the page size only controls per-conversation SQL round-trips.
+# A page size of 1 caused ~17K round-trips for ~4K conversations on the
+# scale_small fixture; 50 keeps RSS bounded by the message budget while
+# cutting round-trips by ~50x (#1314).
+_SESSION_INSIGHT_REBUILD_PAGE_SIZE = 50
 _SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET = 5_000
 _SESSION_INSIGHT_CONVERSATION_SQL_TEMPLATE = """
 SELECT
