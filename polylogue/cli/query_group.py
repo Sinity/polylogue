@@ -64,8 +64,15 @@ def _option_arity(group: click.Group) -> dict[str, int]:
 
 
 def _iter_option_values(args: list[str], index: int, nargs: int):  # type: ignore[no-untyped-def]
-    """Yield the next ``nargs`` positional args from the arg list."""
+    """Yield the next ``nargs`` positional args from the arg list.
+
+    Tolerates truncated input (shell tab-completion supplies a partial
+    command line where the trailing option may have no value yet); in
+    that case we yield whatever values are present without raising.
+    """
     for j in range(1, nargs + 1):
+        if index + j >= len(args):
+            return
         yield args[index + j]
 
 
