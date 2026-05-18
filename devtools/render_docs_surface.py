@@ -90,7 +90,15 @@ def build_docs_readme(
             "",
             _render_named_table(
                 docs_by_title,
-                ("CLI Reference", "Library API", "MCP Integration", "Browser Capture", "Generate", "Providers"),
+                (
+                    "CLI Reference",
+                    "Library API",
+                    "MCP Integration",
+                    "Browser Capture",
+                    "Generate",
+                    "Maintenance",
+                    "Providers",
+                ),
                 from_dir="docs",
             ),
             "",

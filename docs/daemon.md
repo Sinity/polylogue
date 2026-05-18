@@ -254,6 +254,14 @@ rate-limiting are out of scope for this backend.
 Maintenance tasks are split between daemon-owned (fast, inline) and
 operator-owned (heavy, scheduled externally via systemd timers or cron).
 
+For the operator-facing maintenance surface — `polylogue maintenance
+preview/plan/run`, the resume/`--operation-id` pattern, scope filters,
+the status and failure surfaces, and incident runbooks — see
+[maintenance.md](maintenance.md). The daemon's inline convergence
+loops below cover the high-frequency, low-cost tasks; anything that
+exceeds those bounded windows is operator-driven and documented
+there.
+
 ### Daemon-Owned Tasks
 
 These run automatically inside the daemon process:

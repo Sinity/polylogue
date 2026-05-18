@@ -25,6 +25,7 @@ Use this map when you need the complete repository documentation surface. The to
 | [MCP Integration](mcp-integration.md) | Model Context Protocol server setup and usage. |
 | [Browser Capture](browser-capture.md) | Local browser extension capture for ChatGPT and Claude.ai sessions. |
 | [Generate](generate.md) | Synthetic archive generation, seed mode, and demo workflows. |
+| [Maintenance](maintenance.md) | Operator guide for preview/plan/run, resume, scope filters, and incident runbooks. |
 | [Providers](providers/README.md) | Provider-specific parsing and export-format notes. |
 
 ## Verification and Quality
