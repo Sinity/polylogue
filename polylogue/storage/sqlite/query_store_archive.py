@@ -129,10 +129,12 @@ class SQLiteQueryStoreArchiveMixin:
         if not messages:
             return []
         blocks_by_message = await self.get_content_blocks([message.message_id for message in messages])
-        return [
-            message.model_copy(update={"content_blocks": blocks_by_message.get(message.message_id, [])})
-            for message in messages
-        ]
+        # In-place attachment avoids constructing a second pydantic instance
+        # per message in the hot hydration path (#1314). The MessageRecord
+        # instances were just constructed by _row_to_message and aren't shared.
+        for message in messages:
+            message.content_blocks = blocks_by_message.get(message.message_id, [])
+        return messages
 
     async def get_messages_paginated(
         self,
@@ -155,10 +157,9 @@ class SQLiteQueryStoreArchiveMixin:
         if not messages:
             return [], total
         blocks_by_message = await self.get_content_blocks([message.message_id for message in messages])
-        return [
-            message.model_copy(update={"content_blocks": blocks_by_message.get(message.message_id, [])})
-            for message in messages
-        ], total
+        for message in messages:
+            message.content_blocks = blocks_by_message.get(message.message_id, [])
+        return messages, total
 
     async def get_messages_batch(
         self,
@@ -181,13 +182,9 @@ class SQLiteQueryStoreArchiveMixin:
         if not all_messages:
             return result
         blocks_by_message = await self.get_content_blocks([message.message_id for message in all_messages])
-        return {
-            conversation_id: [
-                message.model_copy(update={"content_blocks": blocks_by_message.get(message.message_id, [])})
-                for message in records
-            ]
-            for conversation_id, records in result.items()
-        }
+        for message in all_messages:
+            message.content_blocks = blocks_by_message.get(message.message_id, [])
+        return result
 
     async def get_content_blocks(self, message_ids: list[str]) -> dict[str, list[ContentBlockRecord]]:
         async with self._connection_factory() as conn:

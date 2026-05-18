@@ -276,41 +276,87 @@ async def get_provider_conversation_counts(
 async def get_provider_metrics_rows(
     conn: aiosqlite.Connection,
 ) -> list[ProviderMetricsRow]:
-    """Return raw provider aggregation rows for analytics reporting."""
-    cursor = await conn.execute(
+    """Return raw provider aggregation rows for analytics reporting.
+
+    Aggregates that are already pre-computed per-conversation
+    (conversation_count, message_count, tool_use_count, thinking_count,
+    conversations_with_tools, conversations_with_thinking) come from
+    ``conversation_stats`` — one row per conversation, far smaller than
+    ``messages``. Role-keyed splits (user/assistant counts and word sums)
+    are not pre-aggregated and still come from ``messages`` via the
+    ``idx_messages_provider_stats`` covering index (#1314).
+    """
+    # Per-conversation pre-aggregates from the small stats table.
+    stats_cursor = await conn.execute(
         """
         SELECT
-            COALESCE(NULLIF(m.provider_name, ''), c.provider_name, 'unknown')              AS provider_name,
-            COUNT(DISTINCT m.conversation_id)                                              AS conversation_count,
-            COUNT(*)                                                                       AS message_count,
-            SUM(CASE WHEN role = 'user'      THEN 1 ELSE 0 END)                           AS user_message_count,
-            SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END)                           AS assistant_message_count,
-            SUM(CASE WHEN role = 'user'      THEN word_count ELSE 0 END)                  AS user_word_sum,
-            SUM(CASE WHEN role = 'assistant' THEN word_count ELSE 0 END)                  AS assistant_word_sum,
-            SUM(has_tool_use)                                                              AS tool_use_count,
-            SUM(has_thinking)                                                              AS thinking_count,
-            COUNT(DISTINCT CASE WHEN has_tool_use = 1 THEN m.conversation_id END)         AS conversations_with_tools,
-            COUNT(DISTINCT CASE WHEN has_thinking = 1 THEN m.conversation_id END)         AS conversations_with_thinking
-        FROM messages m
-        LEFT JOIN conversations c ON c.conversation_id = m.conversation_id
-        GROUP BY COALESCE(NULLIF(m.provider_name, ''), c.provider_name, 'unknown')
-        ORDER BY conversation_count DESC
+            COALESCE(NULLIF(cs.provider_name, ''), 'unknown')        AS provider_name,
+            COUNT(*)                                                  AS conversation_count,
+            COALESCE(SUM(cs.message_count), 0)                        AS message_count,
+            COALESCE(SUM(cs.tool_use_count), 0)                       AS tool_use_count,
+            COALESCE(SUM(cs.thinking_count), 0)                       AS thinking_count,
+            SUM(CASE WHEN cs.tool_use_count > 0 THEN 1 ELSE 0 END)    AS conversations_with_tools,
+            SUM(CASE WHEN cs.thinking_count > 0 THEN 1 ELSE 0 END)    AS conversations_with_thinking
+        FROM conversation_stats cs
+        GROUP BY COALESCE(NULLIF(cs.provider_name, ''), 'unknown')
         """
     )
-    rows = await cursor.fetchall()
-    return [
-        {
-            "provider_name": str(row["provider_name"] or "unknown"),
-            "conversation_count": int(row["conversation_count"] or 0),
-            "message_count": int(row["message_count"] or 0),
+    stats_rows = await stats_cursor.fetchall()
+
+    # Role-keyed splits (not pre-aggregated) from messages via the
+    # idx_messages_provider_stats covering index. Only user/assistant rows
+    # are read; other roles aren't reported as per-role splits.
+    role_cursor = await conn.execute(
+        """
+        SELECT
+            COALESCE(NULLIF(m.provider_name, ''), c.provider_name, 'unknown') AS provider_name,
+            SUM(CASE WHEN m.role = 'user'      THEN 1 ELSE 0 END)             AS user_message_count,
+            SUM(CASE WHEN m.role = 'assistant' THEN 1 ELSE 0 END)             AS assistant_message_count,
+            SUM(CASE WHEN m.role = 'user'      THEN m.word_count ELSE 0 END)  AS user_word_sum,
+            SUM(CASE WHEN m.role = 'assistant' THEN m.word_count ELSE 0 END)  AS assistant_word_sum
+        FROM messages m
+        LEFT JOIN conversations c ON c.conversation_id = m.conversation_id
+        WHERE m.role IN ('user', 'assistant')
+        GROUP BY COALESCE(NULLIF(m.provider_name, ''), c.provider_name, 'unknown')
+        """
+    )
+    role_rows = await role_cursor.fetchall()
+    role_by_provider: dict[str, dict[str, int]] = {
+        str(row["provider_name"] or "unknown"): {
             "user_message_count": int(row["user_message_count"] or 0),
             "assistant_message_count": int(row["assistant_message_count"] or 0),
             "user_word_sum": int(row["user_word_sum"] or 0),
             "assistant_word_sum": int(row["assistant_word_sum"] or 0),
-            "tool_use_count": int(row["tool_use_count"] or 0),
-            "thinking_count": int(row["thinking_count"] or 0),
-            "conversations_with_tools": int(row["conversations_with_tools"] or 0),
-            "conversations_with_thinking": int(row["conversations_with_thinking"] or 0),
         }
-        for row in rows
-    ]
+        for row in role_rows
+    }
+
+    merged: list[ProviderMetricsRow] = []
+    for row in stats_rows:
+        provider = str(row["provider_name"] or "unknown")
+        role_split = role_by_provider.get(
+            provider,
+            {
+                "user_message_count": 0,
+                "assistant_message_count": 0,
+                "user_word_sum": 0,
+                "assistant_word_sum": 0,
+            },
+        )
+        merged.append(
+            {
+                "provider_name": provider,
+                "conversation_count": int(row["conversation_count"] or 0),
+                "message_count": int(row["message_count"] or 0),
+                "user_message_count": role_split["user_message_count"],
+                "assistant_message_count": role_split["assistant_message_count"],
+                "user_word_sum": role_split["user_word_sum"],
+                "assistant_word_sum": role_split["assistant_word_sum"],
+                "tool_use_count": int(row["tool_use_count"] or 0),
+                "thinking_count": int(row["thinking_count"] or 0),
+                "conversations_with_tools": int(row["conversations_with_tools"] or 0),
+                "conversations_with_thinking": int(row["conversations_with_thinking"] or 0),
+            }
+        )
+    merged.sort(key=lambda item: item["conversation_count"], reverse=True)
+    return merged
