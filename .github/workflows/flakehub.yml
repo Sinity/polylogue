@@ -1,0 +1,42 @@
+name: FlakeHub
+
+# Publish the polylogue flake to FlakeHub (https://flakehub.com) for
+# discoverability beyond niche Nix circles. Triggered on release tags
+# matching `vX.Y.Z` and on manual dispatch (e.g. for a rolling `0.1.x`
+# pre-release publish from master).
+#
+# FlakeHub uses OIDC for authentication (no secrets required), keyed off
+# the `id-token: write` permission on this workflow.
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag or rolling channel to publish (e.g. 0.1.0-rolling)"
+        required: false
+        default: "0.1.0-rolling"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: Push flake to FlakeHub
+        uses: DeterminateSystems/flakehub-push@main
+        with:
+          visibility: public
+          rolling: ${{ github.event_name == 'workflow_dispatch' }}
+          rolling-minor: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
+          tag: ${{ github.event_name == 'push' && github.ref_name || '' }}

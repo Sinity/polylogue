@@ -1,0 +1,44 @@
+name: Cachix
+
+# Push polylogue build closures (package + devshell) to the polylogue cachix
+# binary cache on master pushes and tags. Downstream `nix run github:Sinity/polylogue`
+# users with `cache.nixos.org` + `polylogue.cachix.org` configured will hit the
+# cache instead of rebuilding from source.
+#
+# Requires `CACHIX_AUTH_TOKEN` repository secret with write access to the
+# `polylogue` cachix cache.
+
+on:
+  push:
+    branches: [master]
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  push:
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v15
+        with:
+          name: polylogue
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Build and push package
+        run: nix build .#polylogue --print-out-paths
+      - name: Build and push api-python
+        run: nix build .#api-python --print-out-paths
+      - name: Build and push devshell closure
+        run: |
+          nix develop --profile dev-profile --command true
+          nix path-info ./dev-profile --recursive | cachix push polylogue

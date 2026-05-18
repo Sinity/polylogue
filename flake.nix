@@ -295,6 +295,28 @@
 
       formatter.${system} = pkgs.nixfmt;
 
+      apps.${system} = {
+        polylogue = {
+          type = "app";
+          program = "${polylogue}/bin/polylogue";
+        };
+        polylogued = {
+          type = "app";
+          program = "${polylogue}/bin/polylogued";
+        };
+        polylogue-mcp = {
+          type = "app";
+          program = "${polylogue}/bin/polylogue-mcp";
+        };
+        default = {
+          type = "app";
+          program = "${polylogue}/bin/polylogue";
+        };
+      };
+
       nixosModules.default = import ./nix/module.nix;
+      nixosModules.polylogue = import ./nix/module.nix;
+      homeManagerModules.default = import ./nix/hm-module.nix;
+      homeManagerModules.polylogue = import ./nix/hm-module.nix;
     };
 }
