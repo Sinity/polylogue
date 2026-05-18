@@ -289,6 +289,20 @@ class PolylogueConfig:
         return str(self._data.get("health_check_tiers", "fast,medium"))
 
     @property
+    def health_convergence_debt(self) -> dict[str, object]:
+        """Raw ``[health.convergence_debt]`` table from polylogue.toml.
+
+        Returned verbatim as the underlying TOML dict (with nested
+        ``families`` sub-table) so :mod:`polylogue.daemon.convergence_debt_alert`
+        can decode it into typed thresholds without the config layer
+        owning the alert vocabulary.
+        """
+        raw = self._data.get("health_convergence_debt")
+        if isinstance(raw, dict):
+            return dict(raw)
+        return {}
+
+    @property
     def watch_debounce_s(self) -> float:
         return float(str(self._data.get("watch_debounce_s", 2.0)))
 
@@ -619,6 +633,14 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
                         cfg[flat_key] = tuple(value)
                     else:
                         cfg[flat_key] = value
+
+    # [health.convergence_debt] — typed nested table with per-family overrides.
+    # See polylogue/daemon/convergence_debt_alert.py for shape and semantics.
+    health_section = toml_data.get("health")
+    debt_section = health_section.get("convergence_debt") if isinstance(health_section, dict) else None
+    if isinstance(debt_section, dict):
+        # Stored as a nested dict on the flat config under a reserved key.
+        cfg["health_convergence_debt"] = dict(debt_section)
 
     # Array-of-tables: [[cost.subscription.plans]].
     cost_section = toml_data.get("cost")

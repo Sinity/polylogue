@@ -1098,6 +1098,12 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                         f"{stage.get('stage')}: {stage.get('failed_count', 0)} failed, "
                         f"{stage.get('retry_due_count', 0)} retry due"
                     )
+        families = convergence.get("family_summaries")
+        if isinstance(families, list) and families:
+            lines.append("  by source family:")
+            for family in families[:5]:
+                if isinstance(family, dict):
+                    lines.append(f"    {family.get('family')}: {family.get('failed_count', 0)} failed")
     # Health summary
     health = payload.get("health")
     if isinstance(health, dict):

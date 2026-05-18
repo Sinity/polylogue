@@ -17,6 +17,13 @@ class ConvergenceDebtStageSummary(BaseModel):
     retry_due_count: int = 0
 
 
+class ConvergenceDebtFamilySummary(BaseModel):
+    """Convergence-debt counts bucketed by inferred source family (#1226)."""
+
+    family: str
+    failed_count: int = 0
+
+
 class ConvergenceDebtItem(BaseModel):
     stage: str
     subject_type: str
@@ -33,6 +40,7 @@ class ConvergenceDebtSummary(BaseModel):
     failed_count: int = 0
     retry_due_count: int = 0
     stage_summaries: list[ConvergenceDebtStageSummary] = Field(default_factory=list)
+    family_summaries: list[ConvergenceDebtFamilySummary] = Field(default_factory=list)
     recent: list[ConvergenceDebtItem] = Field(default_factory=list)
 
 
@@ -101,10 +109,27 @@ def convergence_debt_summary_info(dbf: Path) -> ConvergenceDebtSummary:
         )
         for row in recent_rows
     ]
+    # Per-family rollup over the recent items so polylogue status and the
+    # /health envelope show which source family the debt belongs to. This
+    # is the same view the convergence-debt alert (see
+    # polylogue/daemon/convergence_debt_alert.py) thresholds against, so
+    # operators can correlate alert messages with status output directly.
+    from polylogue.daemon.convergence_debt_alert import source_family_for_subject
+
+    family_counts: dict[str, int] = {}
+    for item in recent:
+        family = source_family_for_subject(item.subject_type, item.subject_id)
+        family_counts[family] = family_counts.get(family, 0) + 1
+    family_summaries = [
+        ConvergenceDebtFamilySummary(family=family, failed_count=count)
+        for family, count in sorted(family_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+
     return ConvergenceDebtSummary(
         failed_count=sum(item.failed_count for item in stage_summaries),
         retry_due_count=sum(item.retry_due_count for item in stage_summaries),
         stage_summaries=stage_summaries,
+        family_summaries=family_summaries,
         recent=recent,
     )
 
@@ -143,6 +168,7 @@ def _retry_due(next_retry_at: str | None, *, now: datetime) -> bool:
 
 
 __all__ = [
+    "ConvergenceDebtFamilySummary",
     "ConvergenceDebtItem",
     "ConvergenceDebtStageSummary",
     "ConvergenceDebtSummary",
