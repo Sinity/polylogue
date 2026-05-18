@@ -130,6 +130,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify-suppressions` | Enforce suppression registry expiry dates from docs/plans/suppressions.yaml. |
 | `devtools verify-test-ownership` | Verify each production module is imported by at least one unit test. |
 | `devtools verify-topology` | Verify the realized polylogue tree against the topology projection. |
+| `devtools verify-witness-coverage` | Audit merged fix PRs for missing witnesses under tests/witnesses/. |
 | `devtools verify-witness-lifecycle` | Verify committed witness lifecycle health — staleness, unexercised, stale xfails. |
 
 ### Campaigns
