@@ -1,0 +1,131 @@
+name: Container
+
+# Builds the polylogued OCI image and publishes it to ghcr.io.
+#
+# Trigger surface:
+#   - push to master      → publishes ghcr.io/sinity/polylogue:master-<sha7>
+#                           (slim) and :master-<sha7>-distroless (distroless)
+#   - tag push v*.*.*     → publishes :latest, :X.Y.Z, :X.Y, and the
+#                           corresponding -distroless variants
+#   - pull_request        → builds both variants on amd64 only as a smoke
+#                           test; does not push
+#   - workflow_dispatch   → manual build; `push=true` opt-in
+#
+# The release pipeline (release.yml) used to carry an inlined publish-container
+# job. That job has been removed in favour of this dedicated workflow so the
+# container surface can iterate independently of the wheel/sdist gate.
+
+on:
+  push:
+    branches: [master]
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  pull_request:
+    paths:
+      - Containerfile
+      - .dockerignore
+      - .github/workflows/container.yml
+      - pyproject.toml
+      - polylogue/**
+  workflow_dispatch:
+    inputs:
+      push:
+        description: "Push images to ghcr.io (default: false)"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/polylogue
+
+jobs:
+  build-and-push:
+    name: build (${{ matrix.target }})
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [runtime, distroless]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Decide whether to push
+        id: decide
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "push=false" >> "${GITHUB_OUTPUT}"
+            echo "platforms=linux/amd64" >> "${GITHUB_OUTPUT}"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "push=${{ inputs.push }}" >> "${GITHUB_OUTPUT}"
+            echo "platforms=linux/amd64,linux/arm64" >> "${GITHUB_OUTPUT}"
+          else
+            echo "push=true" >> "${GITHUB_OUTPUT}"
+            echo "platforms=linux/amd64,linux/arm64" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Log in to GHCR
+        if: steps.decide.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # The distroless build gets a `-distroless` suffix on every tag
+          # so both variants share the same repository.
+          flavor: |
+            suffix=${{ matrix.target == 'distroless' && '-distroless' || '' }},onlatest=true
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=tag
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=master-,format=short,enable=${{ github.ref == 'refs/heads/master' }}
+
+      - name: Build${{ steps.decide.outputs.push == 'true' && ' and push' || '' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Containerfile
+          target: ${{ matrix.target }}
+          platforms: ${{ steps.decide.outputs.platforms }}
+          push: ${{ steps.decide.outputs.push }}
+          load: ${{ steps.decide.outputs.push != 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha,scope=container-${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=container-${{ matrix.target }}
+
+      - name: Smoke test (amd64 image, --version)
+        if: steps.decide.outputs.push != 'true'
+        run: |
+          # On PR builds the image is loaded into the local docker daemon.
+          # Pick the first tag from the metadata-action output (sha-based).
+          tag=$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)
+          echo "Smoking ${tag}"
+          if [[ "${{ matrix.target }}" == "runtime" ]]; then
+            docker run --rm --entrypoint polylogue "${tag}" --version
+            docker run --rm --entrypoint polylogued "${tag}" --help > /dev/null
+          else
+            # Distroless has no shell; entrypoint is polylogued itself.
+            docker run --rm --entrypoint /usr/local/bin/polylogue "${tag}" --version
+          fi

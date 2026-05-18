@@ -1,21 +1,25 @@
 # syntax=docker/dockerfile:1.7
 #
-# Polylogue OCI image. Multi-stage:
-#   1. builder — uses `uv` to build the wheel from the checkout
-#   2. runtime — slim python image, installs only the built wheel
+# Polylogue OCI image. Daemon-first multi-stage build.
 #
-# Exposes three console scripts (polylogue, polylogued, polylogue-mcp) on PATH.
+# Stages:
+#   1. builder    — uses `uv` to build the wheel from the checkout
+#   2. runtime    — slim python image; default; entrypoint = polylogued
+#   3. distroless — gcr.io/distroless/python3-debian12; minimal, no shell
+#
+# Build the default (slim) image:
+#   docker buildx build --target runtime    -t polylogue:slim       .
+# Build the distroless image:
+#   docker buildx build --target distroless -t polylogue:distroless .
+#
+# Console scripts on PATH in the runtime stage:
+#   polylogue, polylogued, polylogue-mcp  (CLI is included for `docker exec` debug)
+#
 # Operators are expected to mount durable state:
-#   -v polylogue-data:/data    (XDG_DATA_HOME — archive SQLite, blobs)
-#   -v polylogue-config:/config (XDG_CONFIG_HOME — polylogue.toml, secrets)
+#   -v polylogue-archive:/data/archive   (POLYLOGUE_ARCHIVE_ROOT — SQLite + blobs)
+#   -v polylogue-config:/etc/polylogue   (POLYLOGUE_CONFIG_DIR — polylogue.toml, secrets)
 #
-# Example invocations:
-#   podman run --rm ghcr.io/sinity/polylogue:latest polylogue --version
-#   podman run --rm -v polylogue-data:/data ghcr.io/sinity/polylogue:latest \
-#     polylogue stats
-#   podman run -d --name polylogued -v polylogue-data:/data \
-#     -v polylogue-config:/config -p 7777:7777 \
-#     ghcr.io/sinity/polylogue:latest polylogued run --enable-api
+# See docs/installation.md and docs/docker-compose.yaml for example invocations.
 
 # ---- builder ------------------------------------------------------------
 FROM python:3.13-slim-bookworm AS builder
@@ -35,41 +39,129 @@ COPY . /src
 # hatch_build.py, so the resulting wheel knows its own version + commit.
 RUN uv build --wheel --out-dir /dist /src
 
-# ---- runtime ------------------------------------------------------------
+# ---- runtime (default) --------------------------------------------------
 FROM python:3.13-slim-bookworm AS runtime
+
+ARG POLYLOGUE_UID=10001
+ARG POLYLOGUE_GID=10001
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     POLYLOGUE_FORCE_PLAIN=1 \
+    POLYLOGUE_ARCHIVE_ROOT=/data/archive \
+    POLYLOGUE_CONFIG_DIR=/etc/polylogue \
     XDG_DATA_HOME=/data \
-    XDG_CONFIG_HOME=/config \
-    XDG_CACHE_HOME=/cache
+    XDG_CONFIG_HOME=/etc/polylogue \
+    XDG_CACHE_HOME=/var/cache/polylogue \
+    POLYLOGUE_DAEMON_API_HOST=0.0.0.0 \
+    POLYLOGUE_DAEMON_API_PORT=8766
 
 # Runtime deps:
 #   ca-certificates — outbound HTTPS (PyPI, Voyage, Drive)
 #   tini             — PID 1 for clean SIGTERM/SIGINT signalling
+#   curl             — used by HEALTHCHECK against the daemon /api/health endpoint
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tini \
+ && apt-get install -y --no-install-recommends ca-certificates tini curl \
  && rm -rf /var/lib/apt/lists/*
 
-# Install the built wheel without dev/extras. Dependencies are resolved
-# from PyPI against the wheel's declared metadata.
+# Install the built wheel without dev/extras. Dependencies resolve from PyPI
+# against the wheel's declared metadata. The resulting site-packages tree is
+# copied unchanged into the distroless stage below.
 COPY --from=builder /dist/*.whl /tmp/
 RUN pip install --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
 
-# Non-root runtime user; archive writes happen under /data so it must own
-# the mount target. Operators that bind-mount a host path are expected to
-# either chown it to UID 1000 or override --user explicitly.
-RUN groupadd --system --gid 1000 polylogue \
- && useradd  --system --uid 1000 --gid polylogue --home /home/polylogue --create-home polylogue \
- && mkdir -p /data /config /cache \
- && chown -R polylogue:polylogue /data /config /cache
+# Non-root runtime user (UID 10001 by AC). Archive writes happen under
+# /data/archive, config under /etc/polylogue, cache under /var/cache/polylogue.
+# Operators that bind-mount host paths must chown those to UID 10001 or
+# override --user explicitly.
+RUN groupadd --system --gid ${POLYLOGUE_GID} polylogue \
+ && useradd  --system --uid ${POLYLOGUE_UID} --gid polylogue \
+       --home /home/polylogue --create-home polylogue \
+ && mkdir -p /data/archive /etc/polylogue /var/cache/polylogue \
+ && chown -R polylogue:polylogue /data /etc/polylogue /var/cache/polylogue
 
 USER polylogue
 WORKDIR /home/polylogue
-VOLUME ["/data", "/config"]
+VOLUME ["/data/archive", "/etc/polylogue"]
+EXPOSE 8766
 
+# Healthcheck hits the daemon HTTP API. The daemon must be started with
+# --enable-api (the default container CMD does this) for this to succeed.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD curl --fail --silent --show-error \
+      "http://127.0.0.1:${POLYLOGUE_DAEMON_API_PORT}/api/health" \
+      > /dev/null || exit 1
+
+# tini reaps zombies and forwards signals; the daemon binary is PID 2.
+# --enable-api turns on the HTTP surface used by HEALTHCHECK.
+# --api-host 0.0.0.0 lets the host reach the API across the container boundary;
+# operators that want loopback-only should override the CMD.
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["polylogue", "--help"]
+CMD ["polylogued", "run", \
+     "--enable-api", \
+     "--api-host", "0.0.0.0", \
+     "--api-port", "8766"]
+
+# OCI image annotations. The release workflow overrides these from
+# docker/metadata-action, but bake conservative defaults so a manual
+# `docker build .` still produces an annotated image.
+LABEL org.opencontainers.image.title="polylogue" \
+      org.opencontainers.image.description="Polylogue AI conversation archive daemon (polylogued) + CLI" \
+      org.opencontainers.image.source="https://github.com/Sinity/polylogue" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.vendor="Sinity"
+
+# ---- distroless (optional) ----------------------------------------------
+# Distroless variant for security-conscious deployments. Reuses the wheel
+# installed into /usr/local in the runtime stage. No shell, no package
+# manager — `docker exec` debugging is not possible against this image.
+#
+# Build with:  docker buildx build --target distroless -t polylogue:distroless .
+#
+# Note: distroless does not ship curl, so HEALTHCHECK is omitted at the
+# image level. Operators using Kubernetes / compose should configure
+# probes against the same /api/health endpoint at the orchestrator layer.
+FROM gcr.io/distroless/python3-debian12:nonroot AS distroless
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    POLYLOGUE_FORCE_PLAIN=1 \
+    POLYLOGUE_ARCHIVE_ROOT=/data/archive \
+    POLYLOGUE_CONFIG_DIR=/etc/polylogue \
+    XDG_DATA_HOME=/data \
+    XDG_CONFIG_HOME=/etc/polylogue \
+    XDG_CACHE_HOME=/var/cache/polylogue \
+    POLYLOGUE_DAEMON_API_HOST=0.0.0.0 \
+    POLYLOGUE_DAEMON_API_PORT=8766 \
+    PATH=/usr/local/bin:/usr/bin:/bin
+
+# Copy the installed Python environment and the console scripts from the
+# runtime stage. site-packages lives under /usr/local/lib/python3.13.
+COPY --from=runtime /usr/local/lib/python3.13 /usr/local/lib/python3.13
+COPY --from=runtime /usr/local/bin/polylogue       /usr/local/bin/polylogue
+COPY --from=runtime /usr/local/bin/polylogued      /usr/local/bin/polylogued
+COPY --from=runtime /usr/local/bin/polylogue-mcp   /usr/local/bin/polylogue-mcp
+
+# Distroless ships /etc/passwd with the `nonroot` user at UID 65532. The
+# `:nonroot` tag selects that user by default; we also chown'd the data
+# directories in the runtime stage but distroless can't run chown, so
+# operators must ensure host bind-mounts allow writes by UID 65532.
+COPY --from=runtime --chown=65532:65532 /data           /data
+COPY --from=runtime --chown=65532:65532 /etc/polylogue  /etc/polylogue
+COPY --from=runtime --chown=65532:65532 /var/cache/polylogue /var/cache/polylogue
+
+USER nonroot
+WORKDIR /home/nonroot
+VOLUME ["/data/archive", "/etc/polylogue"]
+EXPOSE 8766
+
+LABEL org.opencontainers.image.title="polylogue (distroless)" \
+      org.opencontainers.image.description="Polylogue daemon + CLI on distroless python3" \
+      org.opencontainers.image.source="https://github.com/Sinity/polylogue" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.vendor="Sinity"
+
+ENTRYPOINT ["/usr/local/bin/polylogued"]
+CMD ["run", "--enable-api", "--api-host", "0.0.0.0", "--api-port", "8766"]
