@@ -29,6 +29,15 @@ class RootModeRequest:
     def from_params(cls, params: Mapping[str, object]) -> RootModeRequest:
         normalized_params = dict(params)
         query_terms = coerce_query_terms(normalized_params.pop("query", ()))
+        # --lexical and --semantic are ergonomic shortcuts that desugar
+        # into existing query knobs so downstream specs stay unchanged.
+        lexical = bool(normalized_params.pop("lexical", False))
+        semantic = bool(normalized_params.pop("semantic", False))
+        if semantic and query_terms:
+            normalized_params["similar_text"] = " ".join(query_terms)
+            query_terms = ()
+        if lexical:
+            normalized_params["retrieval_lane"] = "dialogue"
         return cls(params=normalized_params, query_terms=query_terms)
 
     def query_params(self) -> dict[str, object]:

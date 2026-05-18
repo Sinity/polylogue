@@ -79,6 +79,8 @@ def cli(
     contains: tuple[str, ...],
     exclude_text: tuple[str, ...],
     retrieval_lane: str | None,
+    lexical: bool,
+    semantic: bool,
     provider: str | None,
     exclude_provider: str | None,
     repo: str | None,

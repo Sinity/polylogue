@@ -242,6 +242,21 @@ def _show_direct_status(env: AppEnv, *, compact: bool = False) -> None:
         fts_pct = 100 * fts / msgs if msgs else 100
         fts_color = "green" if fts_pct > 99 else "yellow"
         env.ui.console.print(f"  FTS indexed: [{fts_color}]{fts_pct:.1f}%[/{fts_color}]")
+
+        try:
+            from polylogue.storage.embeddings.status_payload import embedding_status_payload
+
+            ep = embedding_status_payload(env)
+            if ep["total_conversations"] > 0:
+                emb_pct = ep["embedding_coverage_percent"]
+                emb_color = "green" if ep["retrieval_ready"] else "dim"
+                env.ui.console.print(
+                    f"  Embeddings: [{emb_color}]{ep['embedded_messages']:,} msgs, "
+                    f"{ep['embedded_conversations']:,}/{ep['total_conversations']:,} convs "
+                    f"({emb_pct:.1f}%)[/{emb_color}]"
+                )
+        except Exception:
+            pass
         if not compact:
             env.ui.console.print("\n  [dim]Run [bold]polylogued run[/bold] to start the daemon.[/dim]")
     except Exception:

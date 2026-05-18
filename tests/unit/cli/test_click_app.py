@@ -543,6 +543,7 @@ class TestCliMetadata:
             "feedback",
             "user-state",
             "diagnostics",
+            "embed",
             "maintenance",
             # Query verbs
             "list",

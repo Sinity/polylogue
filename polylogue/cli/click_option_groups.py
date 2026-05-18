@@ -134,6 +134,20 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         shell_complete=_complete_retrieval_lane,
     ),
     click.option(
+        "--lexical",
+        "lexical",
+        is_flag=True,
+        default=False,
+        help="Force FTS-only search (overrides hybrid auto-elevation when embeddings are populated).",
+    ),
+    click.option(
+        "--semantic",
+        "semantic",
+        is_flag=True,
+        default=False,
+        help="Treat the query as a similarity prompt (vector-only; requires embeddings).",
+    ),
+    click.option(
         "--provider",
         "-p",
         help="Include providers (comma = OR)",

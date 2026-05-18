@@ -346,6 +346,37 @@ async def async_execute_query(env: AppEnv, params: QueryParams) -> None:
     await async_execute_query_request(env, RootModeRequest.from_params(params))
 
 
+async def _maybe_elevate_to_hybrid(
+    plan: QueryExecutionPlan,
+    *,
+    vector_provider: VectorProvider | None,
+    repo: QueryExecutionStore,
+) -> QueryExecutionPlan:
+    """Promote ``retrieval_lane='auto'`` to ``'hybrid'`` when the archive has
+    embeddings and a vector provider is wired.
+
+    This makes hybrid the default search experience once the embedding
+    pipeline is activated and populated (#1217). Pure-FTS lookups stay on
+    the fast dialogue path: hybrid only kicks in when an FTS query is
+    actually present. The ``--lexical`` flag (``retrieval_lane=dialogue``)
+    forces FTS-only and is never overridden.
+    """
+    from dataclasses import replace
+
+    selection = plan.selection
+    if selection.retrieval_lane != "auto":
+        return plan
+    # Only promote when there's an FTS query to fuse against vectors.
+    if not (selection.query_terms or selection.contains_terms):
+        return plan
+    if vector_provider is None:
+        return plan
+    archive_stats = await repo.get_archive_stats()
+    if archive_stats.embedded_messages <= 0:
+        return plan
+    return replace(plan, selection=replace(selection, retrieval_lane="hybrid"))
+
+
 async def _execute_query_plan(
     env: AppEnv,
     params: QueryParams,
@@ -355,6 +386,8 @@ async def _execute_query_plan(
     plan: QueryExecutionPlan,
 ) -> None:
     vector_provider = _create_query_vector_provider(config, db_path=repo.backend.db_path)
+
+    plan = await _maybe_elevate_to_hybrid(plan, vector_provider=vector_provider, repo=repo)
 
     if plan.selection.similar_text and vector_provider is None:
         click.echo(

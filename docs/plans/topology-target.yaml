@@ -643,15 +643,15 @@ files:
     target: polylogue/cli/bulk_export.py
     owner: stable
   - path: polylogue/cli/click_app.py
-    loc: 224
+    loc: 226
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 169
+    loc: 172
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
-    loc: 350
+    loc: 364
     target: polylogue/cli/click_option_groups.py
     owner: stable
   - path: polylogue/cli/command_inventory.py
@@ -675,7 +675,7 @@ files:
     target: polylogue/cli/commands/check.py
     owner: stable
   - path: polylogue/cli/commands/completions.py
-    loc: 23
+    loc: 66
     target: polylogue/cli/commands/completions.py
     owner: stable
   - path: polylogue/cli/commands/config.py
@@ -697,6 +697,10 @@ files:
   - path: polylogue/cli/commands/diagnostics.py
     loc: 179
     target: polylogue/cli/commands/diagnostics.py
+    owner: stable
+  - path: polylogue/cli/commands/embed.py
+    loc: 460
+    target: polylogue/cli/commands/embed.py
     owner: stable
   - path: polylogue/cli/commands/export.py
     loc: 56
@@ -739,7 +743,7 @@ files:
     target: polylogue/cli/commands/schema.py
     owner: stable
   - path: polylogue/cli/commands/status.py
-    loc: 240
+    loc: 255
     target: polylogue/cli/commands/status.py
     owner: stable
   - path: polylogue/cli/commands/tags.py
@@ -759,7 +763,7 @@ files:
     target: polylogue/cli/messages.py
     owner: stable
   - path: polylogue/cli/query.py
-    loc: 749
+    loc: 782
     target: polylogue/cli/query.py
     owner: stable
   - path: polylogue/cli/query_actions.py
@@ -775,7 +779,7 @@ files:
     target: polylogue/cli/query_feedback.py
     owner: stable
   - path: polylogue/cli/query_group.py
-    loc: 118
+    loc: 125
     target: polylogue/cli/query_group.py
     owner: stable
   - path: polylogue/cli/query_output.py
@@ -803,7 +807,7 @@ files:
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/root_request.py
-    loc: 87
+    loc: 96
     target: polylogue/cli/root_request.py
     owner: stable
   - path: polylogue/cli/select.py
