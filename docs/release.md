@@ -54,10 +54,25 @@ anything different; release-please consumes the existing history.
    commit lands on `master`.
 2. release-please pushes a signed `vX.Y.Z` annotated tag at that commit.
 3. The tag push triggers [`release.yml`](../.github/workflows/release.yml),
-   which builds the wheel + sdist, smokes them via
-   `devtools verify-distribution-surface`, publishes to PyPI via OIDC Trusted
-   Publishing, and builds + pushes the OCI image to
-   `ghcr.io/sinity/polylogue`.
+   which runs, in order:
+   - `build-and-smoke` — builds wheel + sdist, runs
+     `devtools verify-distribution-surface`, and verifies PyPI long-description
+     renderability with `twine check`.
+   - `installed-smoke` matrix — installs the freshly-built wheel into a fresh
+     `python -m venv` on `{ubuntu-latest, macos-latest} × py{3.11, 3.12, 3.13}`
+     and exercises `polylogue --version | --help | stats | count`,
+     `polylogued --help`, `polylogue-mcp --help`, and `python -m polylogue
+     --version` against an empty `POLYLOGUE_ARCHIVE_ROOT`. This is the
+     OS/Python-version coverage gate: PyPI publication waits on it.
+   - `sbom` — emits a CycloneDX SBOM (`*.cdx.json` and `*.cdx.xml`) from the
+     wheel's resolved dependency closure and uploads it as the
+     `sbom-artifacts` workflow artifact.
+   - `publish-pypi` — signs wheel + sdist with Sigstore keyless OIDC
+     (`sigstore/gh-action-sigstore-python`), publishes to PyPI via
+     Trusted Publishing (no API token), and retains the `.sigstore` bundles
+     as the `signing-artifacts-publish-pypi` workflow artifact.
+   - `publish-container` — builds + pushes the OCI image to
+     `ghcr.io/sinity/polylogue`.
 
 If the release PR looks wrong (missing entries, wrong bump, stale title),
 close it without merging and adjust the source commits — release-please will
@@ -68,6 +83,14 @@ PyPI Trusted Publishing requires a one-time registration on pypi.org under
 `repo = polylogue`, `workflow = release.yml`, `environment = pypi`. If this
 is missing the publish step fails with an OIDC error and the tag must be
 re-cut after re-running the workflow.
+
+Sigstore keyless signing requires no project-side configuration; it derives
+identity from the workflow's `id-token: write` OIDC claim and publishes to
+the public Sigstore transparency log. Consumers can verify the bundle with
+`python -m sigstore verify identity --cert-identity
+https://github.com/Sinity/polylogue/.github/workflows/release.yml@refs/tags/vX.Y.Z
+--cert-oidc-issuer https://token.actions.githubusercontent.com
+polylogue-X.Y.Z-py3-none-any.whl polylogue-X.Y.Z-py3-none-any.whl.sigstore`.
 
 ## Post
 
@@ -84,6 +107,10 @@ re-cut after re-running the workflow.
       `polylogue --help`, `polylogued --help`, `polylogue-mcp --help`.
 - [ ] Smoke the container: `podman run --rm
       ghcr.io/sinity/polylogue:X.Y.Z polylogue --version`.
+- [ ] Confirm the `signing-artifacts-publish-pypi` workflow artifact on the
+      release run contains a `.sigstore` bundle for each `*.whl` and `*.tar.gz`.
+- [ ] Confirm the `sbom-artifacts` workflow artifact contains both
+      `polylogue-X.Y.Z.cdx.json` and `polylogue-X.Y.Z.cdx.xml`.
 
 ## Rollback
 

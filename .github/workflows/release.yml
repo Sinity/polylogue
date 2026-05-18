@@ -1,7 +1,10 @@
 name: Release
 
 # Triggered by pushing an annotated tag matching `vX.Y.Z`. Builds the
-# wheel + sdist, smokes them through verify-distribution-surface, then:
+# wheel + sdist, smokes them through verify-distribution-surface on the
+# build host, runs an installed-wheel smoke matrix across supported
+# Python versions on Linux + macOS, signs the artifacts with Sigstore
+# keyless OIDC, emits a CycloneDX SBOM, then:
 #   - publishes to PyPI via Trusted Publishing (OIDC, no API token), and
 #   - builds + pushes a multi-stage OCI image to ghcr.io.
 #
@@ -50,20 +53,115 @@ jobs:
         run: uv run devtools verify-distribution-surface --work-dir "${RUNNER_TEMP}/dist" --keep-work-dir
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
+      - name: twine check (PyPI metadata long-description renderability)
+        run: |
+          uv run --with twine python -m twine check "${RUNNER_TEMP}/dist/dist"/*.whl "${RUNNER_TEMP}/dist/dist"/*.tar.gz
       - name: Extract project version from pyproject.toml
         id: version
         run: |
           version=$(uv run python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
+      - name: Stage top-level wheel + sdist for downstream jobs
+        run: |
+          mkdir -p staged-dist
+          cp "${RUNNER_TEMP}/dist/dist"/*.whl staged-dist/
+          cp "${RUNNER_TEMP}/dist/dist"/*.tar.gz staged-dist/
+          ls -la staged-dist/
       - uses: actions/upload-artifact@v7
         with:
           name: distribution-artifacts
-          path: ${{ runner.temp }}/dist/dist/*
+          path: staged-dist/*
+          if-no-files-found: error
+
+  installed-smoke:
+    name: installed-smoke (${{ matrix.os }}, py${{ matrix.python-version }})
+    needs: build
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: distribution-artifacts
+          path: dist/
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install built wheel into fresh venv
+        shell: bash
+        run: |
+          python -m venv .venv-smoke
+          # shellcheck disable=SC1091
+          source .venv-smoke/bin/activate
+          python -m pip install --upgrade pip
+          wheel=$(ls dist/*.whl | head -n1)
+          echo "Installing ${wheel}"
+          python -m pip install "${wheel}"
+      - name: Smoke installed entrypoints against an empty XDG archive
+        shell: bash
+        env:
+          POLYLOGUE_FORCE_PLAIN: "1"
+        run: |
+          # shellcheck disable=SC1091
+          source .venv-smoke/bin/activate
+          archive_root="${RUNNER_TEMP}/polylogue-archive"
+          mkdir -p "${archive_root}"
+          export POLYLOGUE_ARCHIVE_ROOT="${archive_root}"
+          polylogue --version
+          polylogue --help > /dev/null
+          polylogued --help > /dev/null
+          polylogue-mcp --help > /dev/null
+          # `stats` against an empty XDG archive must not crash on first-run
+          # (covers schema bootstrap on a fresh database).
+          polylogue --plain stats
+          # `--plain count` is the smoke parity with verify-distribution-surface.
+          polylogue --plain count
+          python -m polylogue --version
+
+  sbom:
+    name: sbom
+    needs: build
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: distribution-artifacts
+          path: dist/
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.13"
+      - name: Generate CycloneDX SBOM from built wheel
+        run: |
+          wheel=$(ls dist/*.whl | head -n1)
+          mkdir -p sbom
+          # Resolve the dependency closure inside a fresh venv so the SBOM
+          # reflects what `pip install polylogue==X.Y.Z` would actually pull.
+          uv venv .venv-sbom
+          # shellcheck disable=SC1091
+          source .venv-sbom/bin/activate
+          uv pip install "${wheel}"
+          uv pip install cyclonedx-bom
+          cyclonedx-py environment \
+            --output-format json \
+            --output-file sbom/polylogue-${{ needs.build.outputs.version }}.cdx.json
+          cyclonedx-py environment \
+            --output-format xml \
+            --output-file sbom/polylogue-${{ needs.build.outputs.version }}.cdx.xml
+          ls -la sbom/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sbom-artifacts
+          path: sbom/*
           if-no-files-found: error
 
   publish-pypi:
     name: publish-pypi
-    needs: build
+    needs: [build, installed-smoke, sbom]
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
     timeout-minutes: 15
     runs-on: ubuntu-latest
@@ -71,18 +169,30 @@ jobs:
       name: pypi
       url: https://pypi.org/project/polylogue/${{ needs.build.outputs.version }}/
     permissions:
-      # OIDC token for PyPI Trusted Publishing.
+      # OIDC token for PyPI Trusted Publishing + Sigstore keyless signing.
       id-token: write
+      contents: read
     steps:
       - uses: actions/download-artifact@v6
         with:
           name: distribution-artifacts
           path: dist/
-      - name: Drop work-dir scaffolding (keep only top-level wheel + sdist)
-        # verify-distribution-surface emits the unpacked-sdist tree under
-        # the work-dir; we only want the top-level dist/*.whl and *.tar.gz.
+      - name: List artifacts about to be signed and published
+        run: ls -la dist/
+      - name: Sign wheel + sdist with Sigstore (keyless OIDC)
+        uses: sigstore/gh-action-sigstore-python@v3.0.0
+        with:
+          inputs: |
+            ./dist/*.whl
+            ./dist/*.tar.gz
+          upload-signing-artifacts: true
+      - name: Drop Sigstore bundles before PyPI upload
+        # PyPI's gh-action-pypi-publish rejects anything other than .whl / .tar.gz
+        # in the dist/ directory. The .sigstore bundles are retained as the
+        # `signing-artifacts-publish-pypi` workflow artifact attached to the
+        # run by sigstore/gh-action-sigstore-python.
         run: |
-          find dist/ -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+          find dist/ -type f ! \( -name '*.whl' -o -name '*.tar.gz' \) -delete
           ls -la dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
