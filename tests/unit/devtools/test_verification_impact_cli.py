@@ -42,6 +42,83 @@ def test_main_human_discovers_paths_from_refs(
     assert "provider.capability.codex" in rendered
 
 
+def test_main_json_routes_speculative_paths_via_paths_flag(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--paths X Y computes the same envelope as --path X --path Y for speculative routing.
+
+    Used by agents asking 'if I touch these files, what gates trip?' before editing.
+    """
+    rc_paths = verification_impact_cli.main(
+        [
+            "--json",
+            "--paths",
+            "docs/verification-catalog.md",
+            "polylogue/sources/parsers/codex.py",
+        ]
+    )
+    assert rc_paths == 0
+    payload_paths = json.loads(capsys.readouterr().out)
+
+    rc_path = verification_impact_cli.main(
+        [
+            "--json",
+            "--path",
+            "docs/verification-catalog.md",
+            "--path",
+            "polylogue/sources/parsers/codex.py",
+        ]
+    )
+    assert rc_path == 0
+    payload_path = json.loads(capsys.readouterr().out)
+
+    assert payload_paths["changed_paths"] == [
+        "docs/verification-catalog.md",
+        "polylogue/sources/parsers/codex.py",
+    ]
+    # Same envelope shape and routing as the repeated --path form.
+    assert payload_paths == payload_path
+
+
+def test_main_paths_and_path_combine_and_dedupe(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc = verification_impact_cli.main(
+        [
+            "--json",
+            "--path",
+            "docs/verification-catalog.md",
+            "--paths",
+            "polylogue/sources/parsers/codex.py",
+            "docs/verification-catalog.md",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["changed_paths"] == [
+        "docs/verification-catalog.md",
+        "polylogue/sources/parsers/codex.py",
+    ]
+
+
+def test_main_full_paths_speculative_routing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--paths works against --full report (clean_tree False, has changed_paths)."""
+    rc = verification_impact_cli.main(
+        [
+            "--full",
+            "--json",
+            "--paths",
+            "polylogue/storage/sqlite/schema_ddl.py",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["changed_paths"] == ["polylogue/storage/sqlite/schema_ddl.py"]
+    assert payload["clean_tree"] is False
+
+
 def test_main_markdown_renders_affected_obligations(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
