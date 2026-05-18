@@ -42,7 +42,9 @@ def test_quick_verify_omits_pytest() -> None:
         "verify-manifests",
         "verify-ci-workflows",
         "verify-witness-lifecycle",
+        "verify-witness-coverage",
         "verify-lane-assertions",
+        "verify-test-infra-currency",
         "verification-impact check",
     ]
 

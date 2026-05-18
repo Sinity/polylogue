@@ -322,6 +322,7 @@ def build_verify_steps(
                     _devtools_cmd("verify-witness-coverage", "--soft"),
                 ),
                 ("verify-lane-assertions", _devtools_cmd("verify-lane-assertions")),
+                ("verify-test-infra-currency", _devtools_cmd("verify-test-infra-currency")),
             ]
         )
 
