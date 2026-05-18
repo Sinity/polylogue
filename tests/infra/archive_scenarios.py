@@ -172,6 +172,27 @@ class ArchiveScenario:
                     provider_meta=attachment.provider_meta,
                 )
         builder.save()
+        # Tags are stored in the normalized ``tags`` / ``conversation_tags`` M2M
+        # tables, not by reading ``metadata.tags`` at query time. The legacy
+        # json-to-m2m backfill was removed with the migration chain (#1212);
+        # scenarios that want seed tags must populate the canonical tables.
+        metadata_tags = self.metadata.get("tags") if self.metadata else None
+        if isinstance(metadata_tags, list):
+            import sqlite3
+
+            with sqlite3.connect(db_path) as tag_conn:
+                for tag_name in metadata_tags:
+                    if not isinstance(tag_name, str):
+                        continue
+                    tag_conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag_name,))
+                    tag_conn.execute(
+                        """
+                        INSERT OR IGNORE INTO conversation_tags (conversation_id, tag_id)
+                        SELECT ?, id FROM tags WHERE name = ?
+                        """,
+                        (self.resolved_conversation_id, tag_name),
+                    )
+                tag_conn.commit()
         return ArchiveScenarioSeed(scenario=self, conversation_id=self.resolved_conversation_id)
 
     def facts_from_connection(self, conn: sqlite3.Connection) -> ConversationFacts:

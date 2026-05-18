@@ -376,9 +376,13 @@ class TestRuntimeHealthReadOnlyPaths:
 class TestRuntimeHealthLegacySchema:
     """Tests for explicit reporting of unsupported legacy archive layouts."""
 
-    def test_runtime_health_reports_legacy_inline_raw_layout(
+    def test_runtime_health_reports_legacy_schema_version(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Polylogue collapsed the migration chain in #1212; any non-canonical
+        user_version surfaces as a runtime-health error so the operator
+        re-ingests from source instead of silently opening a foreign archive.
+        """
         import polylogue.paths
 
         monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
@@ -393,23 +397,11 @@ class TestRuntimeHealthLegacySchema:
             CREATE TABLE raw_conversations (
                 raw_id TEXT PRIMARY KEY,
                 provider_name TEXT NOT NULL,
-                payload_provider TEXT,
-                source_name TEXT,
                 source_path TEXT NOT NULL,
-                source_index INTEGER,
-                raw_content BLOB NOT NULL,
-                acquired_at TEXT NOT NULL,
-                file_mtime TEXT,
-                parsed_at TEXT,
-                parse_error TEXT,
-                validated_at TEXT,
-                validation_status TEXT,
-                validation_error TEXT,
-                validation_drift_count INTEGER DEFAULT 0,
-                validation_provider TEXT,
-                validation_mode TEXT
+                blob_size INTEGER NOT NULL,
+                acquired_at TEXT NOT NULL
             );
-            PRAGMA user_version = 1;
+            PRAGMA user_version = 17;
             """
         )
         conn.commit()
@@ -428,7 +420,7 @@ class TestRuntimeHealthLegacySchema:
         schema_check = next((c for c in report.checks if c.name == "schema_version"), None)
         assert schema_check is not None
         assert schema_check.status == VerifyStatus.ERROR
-        assert "legacy inline raw-content layout" in schema_check.summary
+        assert "schema version 17" in schema_check.summary
 
 
 class TestRuntimeHealthToDict:

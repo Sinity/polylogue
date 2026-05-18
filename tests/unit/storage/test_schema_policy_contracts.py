@@ -66,14 +66,9 @@ _CANONICAL_FTS_TRIGGERS = frozenset(
 
 
 def _planted_db(tmp_path: Path, *, planted_version: int) -> Path:
-    """Plant a SQLite file whose ``user_version`` and shape look like
-    a schema-versioned database but which the runtime does not know
-    how to upgrade.
-
-    We include a ``raw_conversations`` table (and a few sibling tables
-    referenced by upgrade-path branching) so ``decide_schema_bootstrap``
-    routes the snapshot through the no-known-upgrade-path arm rather
-    than the create-fresh arm.
+    """Plant a SQLite file whose ``user_version`` is non-zero and not the
+    canonical :data:`SCHEMA_VERSION`. ``decide_schema_bootstrap`` must
+    classify it as ``version_mismatch`` rather than ``create_fresh``.
     """
     db_path = tmp_path / f"planted-v{planted_version}.db"
     conn = sqlite3.connect(db_path)
@@ -148,22 +143,17 @@ def test_future_schema_version_is_rejected(tmp_path: Path) -> None:
 
 def test_unknown_older_schema_version_is_rejected(tmp_path: Path) -> None:
     """docs/internals.md § Schema Versioning Model: a DB whose version
-    is unknown to the runtime (no reviewed in-place upgrade path) must
-    be rejected. We use ``SCHEMA_VERSION - 1`` when no upgrade arm
-    handles that transition.
-
-    The fresh-first policy is "rejected rather than partially patched
-    with additive DDL" (see ``schema.py:_ensure_schema`` docstring).
+    is not the canonical version must be rejected. Polylogue has no
+    in-place upgrade path — the operator re-ingests from source.
     """
-    # Use a version far enough below current that no reviewed
-    # upgrade-path arm covers it. v1 is intentionally never reachable
-    # via the upgrade chain.
-    db_path = _planted_db(tmp_path, planted_version=1)
+    # Use any non-canonical, non-zero version. v17 was the last legacy
+    # version before the canonical-schema collapse (#1212).
+    db_path = _planted_db(tmp_path, planted_version=17)
     conn = sqlite3.connect(db_path)
     try:
         with pytest.raises(SchemaIncompatibleError) as excinfo:
             _ensure_schema(conn)
-        assert excinfo.value.current_version == 1
+        assert excinfo.value.current_version == 17
         assert excinfo.value.expected_version == SCHEMA_VERSION
     finally:
         conn.close()
@@ -222,7 +212,7 @@ def test_async_path_rejects_unknown_version(tmp_path: Path) -> None:
     Polylogue's primary runtime is async; a policy that only fires
     on the sync path would be a hole.
     """
-    db_path = _planted_db(tmp_path, planted_version=1)
+    db_path = _planted_db(tmp_path, planted_version=17)
 
     async def _run() -> None:
         import aiosqlite
