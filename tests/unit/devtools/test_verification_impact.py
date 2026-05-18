@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -35,7 +34,6 @@ def test_verification_impact_reports_diff_shaped_fields() -> None:
     assert "stable_routed_checks" in report
     assert "catalog_quality_checks" in report
     assert "artifact_source_groups" in report
-    assert "contract_evidence_artifacts" in report
     assert "clean_tree" in report
     assert "_context" in report
 
@@ -56,7 +54,6 @@ def test_verification_impact_markdown_is_pr_comment_ready() -> None:
     assert "### Confidence Gates (optional)" in rendered
     assert "### Affected Checks by Artifact Source" in rendered
     assert "stable routed checks" in rendered
-    assert "### Contract Evidence Artifacts" in rendered
 
 
 def test_verification_impact_surfaces_manifest_known_gaps_for_affected_domains() -> None:
@@ -102,42 +99,6 @@ def test_verification_impact_markdown_lists_manual_review_requirements() -> None
     assert "### Manual Review Requirements" in rendered
     assert "operation.effect.privacy_safe_evidence" in rendered
     assert "artifact `missing`" in rendered
-
-
-def test_verification_impact_summarizes_contract_evidence_artifacts(tmp_path: Path) -> None:
-    evidence_dir = tmp_path / ".cache" / "verification" / "evidence"
-    evidence_dir.mkdir(parents=True)
-    (evidence_dir / "cli-json.json").write_text(
-        json.dumps(
-            {
-                "contract": "cli.json.status",
-                "surface": "cli",
-                "test_nodeid": "tests/unit/cli/test_json.py::test_status",
-                "git_sha": "abc123",
-                "dirty": False,
-                "timestamp": "2026-05-15T00:00:00+00:00",
-            }
-        ),
-        encoding="utf-8",
-    )
-    (evidence_dir / "bad.json").write_text("{", encoding="utf-8")
-
-    report = verification_impact.build_verification_impact_report(
-        tmp_path,
-        base_ref="origin/master",
-        head_ref="HEAD",
-        changed_paths=["docs/plans/layering.yaml"],
-    )
-
-    summary = report["contract_evidence_artifacts"]
-    assert summary["artifact_count"] == 1
-    assert summary["by_surface"] == {"cli": 1}
-    assert summary["artifacts"][0]["contract"] == "cli.json.status"
-    assert summary["artifacts"][0]["path"] == ".cache/verification/evidence/cli-json.json"
-
-    rendered = render_markdown(report)
-    assert "### Contract Evidence Artifacts" in rendered
-    assert "cli.json.status" in rendered
 
 
 def test_verification_impact_check_policy_blocks_catalog_quality_errors() -> None:

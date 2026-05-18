@@ -44,7 +44,6 @@ from polylogue.operations.import_contracts import ImportOperation
 from polylogue.services import build_runtime_services
 from polylogue.surfaces.payloads import TagMutationResult
 from polylogue.types import Provider
-from tests.infra.contract_evidence import ContractEvidenceRecorder
 from tests.infra.storage_records import ConversationBuilder, db_setup
 
 # ---------------------------------------------------------------------------
@@ -106,7 +105,6 @@ async def _seed_archive(db_path: Path) -> str:
 
 async def test_tag_mutation_envelope_parity(
     workspace_env: dict[str, Path],
-    record_contract_evidence: ContractEvidenceRecorder,
 ) -> None:
     """``add_tag``/``remove_tag`` return the same TagMutationResult across adapters."""
     db_path = db_setup(workspace_env)
@@ -145,16 +143,6 @@ async def test_tag_mutation_envelope_parity(
         assert cli_removed.outcome == "not_present"
         assert mcp_removed.outcome == "not_present"
 
-        record_contract_evidence.record(
-            "write-surface-tag-mutation-parity",
-            surface="api+cli+mcp",
-            facts={
-                "first_add_outcome": api_added.outcome,
-                "idempotent_add_outcome": cli_added.outcome,
-                "first_remove_outcome": api_removed.outcome,
-                "idempotent_remove_outcome": cli_removed.outcome,
-            },
-        )
     finally:
         await polylogue.close()
         await services.close()
@@ -162,7 +150,6 @@ async def test_tag_mutation_envelope_parity(
 
 async def test_maintenance_envelope_parity(
     workspace_env: dict[str, Path],
-    record_contract_evidence: ContractEvidenceRecorder,
 ) -> None:
     """``run_maintenance`` dry-run returns a typed BackfillOperation across adapters."""
     db_path = db_setup(workspace_env)
@@ -194,15 +181,6 @@ async def test_maintenance_envelope_parity(
                 f"{surface_name} unexpected status {envelope.status.value!r}"
             )
 
-        record_contract_evidence.record(
-            "write-surface-maintenance-envelope-parity",
-            surface="api+cli+mcp",
-            facts={
-                "api_status": envelopes["api"].status.value,
-                "cli_status": envelopes["cli"].status.value,
-                "mcp_status": envelopes["mcp"].status.value,
-            },
-        )
     finally:
         await polylogue.close()
         await services.close()
@@ -210,7 +188,6 @@ async def test_maintenance_envelope_parity(
 
 async def test_ingest_envelope_parity_for_missing_path(
     workspace_env: dict[str, Path],
-    record_contract_evidence: ContractEvidenceRecorder,
 ) -> None:
     """``ingest_path`` returns a typed ImportOperation across adapters.
 
@@ -245,15 +222,6 @@ async def test_ingest_envelope_parity_for_missing_path(
             assert envelope.error, f"{surface_name} status=failed envelope must populate error field"
             assert envelope.operation_id
 
-        record_contract_evidence.record(
-            "write-surface-ingest-missing-path-parity",
-            surface="api+cli+mcp",
-            facts={
-                "api_status": envelopes["api"].status,
-                "cli_status": envelopes["cli"].status,
-                "mcp_status": envelopes["mcp"].status,
-            },
-        )
     finally:
         await polylogue.close()
         await services.close()

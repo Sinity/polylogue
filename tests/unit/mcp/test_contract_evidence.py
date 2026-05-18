@@ -1,8 +1,8 @@
-"""Bounded contract evidence artifacts for the MCP surface (#1060).
+"""MCP surface contract assertions (#1060).
 
-Each test in this module is marked ``@pytest.mark.contract`` and uses the
-``record_contract_evidence`` fixture so the proof-pack aggregator can summarise
-the MCP surface alongside the CLI machine-output evidence added in #1080.
+Each test in this module is marked ``@pytest.mark.contract`` and pins the
+documented behavior of the MCP server tools (errors, no-result envelopes,
+privacy, and the registered surface set).
 
 Five contract families are pinned here:
 
@@ -38,7 +38,6 @@ from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
 from polylogue.core.json import JSONValue
 from polylogue.errors import PolylogueError
 from polylogue.mcp.server_support import MCPRole, _safe_call
-from tests.infra.contract_evidence import ContractEvidenceRecorder
 from tests.infra.mcp import (
     MCPServerUnderTest,
     invoke_surface,
@@ -82,7 +81,6 @@ class TestToolSchemaInventory:
     def test_every_tool_has_well_formed_input_schema(
         self,
         mcp_server: MCPServerUnderTest,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         from jsonschema import Draft202012Validator
 
@@ -107,54 +105,26 @@ class TestToolSchemaInventory:
             tool_facts.append({"name": name, "properties": len(properties)})
 
         assert not invalid, "Tools with invalid input schema:\n" + "\n".join(invalid)
-        record_contract_evidence.record(
-            "mcp.tools.input_schema.well_formed",
-            surface="mcp",
-            facts={
-                "tool_count": len(tools),
-                "tools_with_zero_properties": sum(1 for f in tool_facts if f["properties"] == 0),
-            },
-        )
 
     def test_resource_templates_declare_uri_parameter(
         self,
         mcp_server: MCPServerUnderTest,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         templates = mcp_server._resource_manager._templates
         assert templates, "no resource templates registered"
         for uri in templates:
             assert "{" in uri and "}" in uri, f"template URI {uri!r} has no parameter placeholder"
-        template_uris: list[JSONValue] = cast("list[JSONValue]", sorted(templates.keys()))
-        template_facts: dict[str, JSONValue] = {
-            "template_count": len(templates),
-            "template_uris": template_uris,
-        }
-        record_contract_evidence.record(
-            "mcp.resource_templates.uri_parameterized",
-            surface="mcp",
-            facts=template_facts,
-        )
+        cast("list[JSONValue]", sorted(templates.keys()))
 
     def test_prompts_are_callable(
         self,
         mcp_server: MCPServerUnderTest,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         prompts = mcp_server._prompt_manager._prompts
         assert prompts, "no prompts registered"
         for name, prompt in prompts.items():
             assert callable(getattr(prompt, "fn", None)), f"prompt {name}.fn is not callable"
-        prompt_names: list[JSONValue] = cast("list[JSONValue]", sorted(prompts.keys()))
-        prompt_facts: dict[str, JSONValue] = {
-            "prompt_count": len(prompts),
-            "prompt_names": prompt_names,
-        }
-        record_contract_evidence.record(
-            "mcp.prompts.callable",
-            surface="mcp",
-            facts=prompt_facts,
-        )
+        cast("list[JSONValue]", sorted(prompts.keys()))
 
 
 # ---------------------------------------------------------------------------
@@ -168,21 +138,14 @@ class TestToolErrorEnvelopes:
     def test_neighbor_candidates_without_id_or_query_returns_error_envelope(
         self,
         mcp_server: MCPServerUnderTest,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         result = invoke_surface(mcp_server._tool_manager._tools["neighbor_candidates"].fn)
         body = _structured_error(result)
         assert "requires id or query" in body["error"], f"unexpected error message: {body}"
-        record_contract_evidence.record(
-            "mcp.tool.neighbor_candidates.invalid_request",
-            surface="mcp",
-            facts={"is_error": body["is_error"], "error_excerpt": body["error"][:120]},
-        )
 
     def test_get_conversation_missing_returns_not_found_envelope(
         self,
         mcp_server: MCPServerUnderTest,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
@@ -193,16 +156,10 @@ class TestToolErrorEnvelopes:
 
         body = _structured_error(result)
         assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
-        record_contract_evidence.record(
-            "mcp.tool.get_conversation.not_found",
-            surface="mcp",
-            facts={"is_error": body["is_error"], "code": body.get("code")},
-        )
 
     def test_get_messages_missing_conversation_returns_not_found_envelope(
         self,
         mcp_server: MCPServerUnderTest,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         from polylogue.api.archive import ConversationNotFoundError
 
@@ -218,16 +175,10 @@ class TestToolErrorEnvelopes:
 
         body = _structured_error(result)
         assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
-        record_contract_evidence.record(
-            "mcp.tool.get_messages.not_found",
-            surface="mcp",
-            facts={"is_error": body["is_error"], "code": body.get("code")},
-        )
 
     def test_raw_artifacts_missing_conversation_returns_not_found_envelope(
         self,
         mcp_server: MCPServerUnderTest,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()
@@ -241,16 +192,10 @@ class TestToolErrorEnvelopes:
 
         body = _structured_error(result)
         assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
-        record_contract_evidence.record(
-            "mcp.tool.raw_artifacts.not_found",
-            surface="mcp",
-            facts={"is_error": body["is_error"], "code": body.get("code")},
-        )
 
     def test_export_conversation_missing_returns_not_found_envelope(
         self,
         mcp_server: MCPServerUnderTest,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
@@ -265,16 +210,10 @@ class TestToolErrorEnvelopes:
 
         body = _structured_error(result)
         assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
-        record_contract_evidence.record(
-            "mcp.tool.export_conversation.not_found",
-            surface="mcp",
-            facts={"is_error": body["is_error"], "code": body.get("code")},
-        )
 
     def test_get_conversation_summary_missing_returns_not_found_envelope(
         self,
         mcp_server: MCPServerUnderTest,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
@@ -288,16 +227,10 @@ class TestToolErrorEnvelopes:
 
         body = _structured_error(result)
         assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
-        record_contract_evidence.record(
-            "mcp.tool.get_conversation_summary.not_found",
-            surface="mcp",
-            facts={"is_error": body["is_error"], "code": body.get("code")},
-        )
 
     def test_session_profile_missing_returns_not_found_envelope(
         self,
         mcp_server: MCPServerUnderTest,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
@@ -311,16 +244,10 @@ class TestToolErrorEnvelopes:
 
         body = _structured_error(result)
         assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
-        record_contract_evidence.record(
-            "mcp.tool.session_profile.not_found",
-            surface="mcp",
-            facts={"is_error": body["is_error"], "code": body.get("code")},
-        )
 
     def test_get_resume_brief_missing_returns_not_found_envelope(
         self,
         mcp_server: MCPServerUnderTest,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
@@ -334,16 +261,10 @@ class TestToolErrorEnvelopes:
 
         body = _structured_error(result)
         assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
-        record_contract_evidence.record(
-            "mcp.tool.get_resume_brief.not_found",
-            surface="mcp",
-            facts={"is_error": body["is_error"], "code": body.get("code")},
-        )
 
     def test_get_resume_brief_returns_typed_brief_payload(
         self,
         mcp_server: MCPServerUnderTest,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         from polylogue.insights.resume import (
             RESUME_BRIEF_MATERIALIZER_VERSION,
@@ -378,16 +299,10 @@ class TestToolErrorEnvelopes:
         assert payload["session_id"] == "conv-123"
         assert payload["provenance"]["materializer_version"] == RESUME_BRIEF_MATERIALIZER_VERSION
         assert "conv-123" in payload["provenance"]["cited_session_ids"]
-        record_contract_evidence.record(
-            "mcp.tool.get_resume_brief.ok",
-            surface="mcp",
-            facts={"session_id": payload["session_id"]},
-        )
 
     def test_bulk_tag_validation_returns_structured_error(
         self,
         mcp_server: MCPServerUnderTest,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         result = invoke_surface(
             mcp_server._tool_manager._tools["bulk_tag_conversations"].fn,
@@ -396,15 +311,9 @@ class TestToolErrorEnvelopes:
         )
         body = _structured_error(result)
         assert "at least one conversation_id" in body["error"], body
-        record_contract_evidence.record(
-            "mcp.tool.bulk_tag.validation",
-            surface="mcp",
-            facts={"is_error": body["is_error"], "error_excerpt": body["error"][:120]},
-        )
 
     def test_safe_call_sanitises_exception_into_polylogue_error(
         self,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """Internal exceptions never reach MCP clients with their raw payload."""
 
@@ -419,15 +328,6 @@ class TestToolErrorEnvelopes:
         assert "Traceback" not in message
         assert "probe_tool" in message
         assert "RuntimeError" in message
-        record_contract_evidence.record(
-            "mcp.safe_call.sanitised_exception",
-            surface="mcp",
-            facts={
-                "message_excerpt": message[:120],
-                "secret_leaked": False,
-                "type_leaked": True,
-            },
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -457,7 +357,6 @@ class TestNoResultEnvelopes:
         self,
         mcp_server: MCPServerUnderTest,
         monkeypatch: pytest.MonkeyPatch,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         _patch_empty_query(monkeypatch)
         with patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls:
@@ -470,17 +369,11 @@ class TestNoResultEnvelopes:
         body = _parse_object(result)
         assert "hits" in body and isinstance(body["hits"], list) and body["hits"] == []
         assert body.get("total") == 0
-        record_contract_evidence.record(
-            "mcp.tool.search.no_results_envelope",
-            surface="mcp",
-            facts={"total": body["total"], "hits_type": type(body["hits"]).__name__},
-        )
 
     def test_list_conversations_no_results_returns_items_envelope(
         self,
         mcp_server: MCPServerUnderTest,
         monkeypatch: pytest.MonkeyPatch,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         _patch_empty_query(monkeypatch)
         with patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls:
@@ -492,16 +385,10 @@ class TestNoResultEnvelopes:
         body = _parse_object(result)
         assert "items" in body and body["items"] == []
         assert body.get("total") == 0
-        record_contract_evidence.record(
-            "mcp.tool.list_conversations.no_results_envelope",
-            surface="mcp",
-            facts={"total": body["total"], "items_type": type(body["items"]).__name__},
-        )
 
     def test_neighbor_candidates_no_results_returns_items_envelope_with_limit(
         self,
         mcp_server: MCPServerUnderTest,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
@@ -517,16 +404,10 @@ class TestNoResultEnvelopes:
         assert body.get("items") == []
         assert body.get("total") == 0
         assert body.get("limit") == 7
-        record_contract_evidence.record(
-            "mcp.tool.neighbor_candidates.no_results_envelope",
-            surface="mcp",
-            facts={"total": body["total"], "limit": body["limit"]},
-        )
 
     def test_session_tree_empty_returns_items_envelope(
         self,
         mcp_server: MCPServerUnderTest,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
@@ -540,11 +421,6 @@ class TestNoResultEnvelopes:
         body = _parse_object(result)
         assert body.get("items") == []
         assert body.get("total") == 0
-        record_contract_evidence.record(
-            "mcp.tool.get_session_tree.no_results_envelope",
-            surface="mcp",
-            facts={"total": body["total"]},
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -557,7 +433,6 @@ class TestErrorPrivacyEnvelopes:
 
     def test_resource_internal_error_does_not_leak_exception_message(
         self,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         from polylogue.mcp.server import build_server
 
@@ -582,19 +457,9 @@ class TestErrorPrivacyEnvelopes:
         assert "Traceback" not in serialized
         # The exception type, not the exception message, is what should leak.
         assert "RuntimeError" in serialized
-        record_contract_evidence.record(
-            "mcp.resource.internal_error.privacy_envelope",
-            surface="mcp",
-            facts={
-                "code": body.get("code"),
-                "detail": body.get("detail"),
-                "traceback_present": "Traceback" in serialized,
-            },
-        )
 
     def test_tool_internal_exception_sanitised_through_safe_call(
         self,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """Tools wrap their bodies in ``_safe_call`` which raises a sanitised
         PolylogueError. The MCP framework converts the raise into an isError
@@ -612,15 +477,6 @@ class TestErrorPrivacyEnvelopes:
         assert secret_text not in rendered
         assert "SECRETTOKEN" not in rendered
         assert "Bearer" not in rendered
-        record_contract_evidence.record(
-            "mcp.tool.exception.privacy_envelope",
-            surface="mcp",
-            facts={
-                "secret_leaked": False,
-                "type_revealed": "RuntimeError" in rendered,
-                "tool_name_in_message": "hidden_tool" in rendered,
-            },
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -634,7 +490,6 @@ class TestRegistrationDriftEvidence:
     def test_admin_surface_inventory_evidence(
         self,
         mcp_server: MCPServerUnderTest,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         tools = sorted(mcp_server._tool_manager._tools.keys())
         resources = sorted(mcp_server._resource_manager._resources.keys())
@@ -646,25 +501,10 @@ class TestRegistrationDriftEvidence:
         assert templates, "no resource templates registered"
         assert prompts, "no prompts registered"
 
-        tools_v: list[JSONValue] = cast("list[JSONValue]", list(tools))
-        resources_v: list[JSONValue] = cast("list[JSONValue]", list(resources))
-        templates_v: list[JSONValue] = cast("list[JSONValue]", list(templates))
-        prompts_v: list[JSONValue] = cast("list[JSONValue]", list(prompts))
-        inventory_facts: dict[str, JSONValue] = {
-            "tool_count": len(tools),
-            "resource_count": len(resources),
-            "resource_template_count": len(templates),
-            "prompt_count": len(prompts),
-            "tools": tools_v,
-            "resources": resources_v,
-            "resource_templates": templates_v,
-            "prompts": prompts_v,
-        }
-        record_contract_evidence.record(
-            "mcp.surface.inventory",
-            surface="mcp",
-            facts=inventory_facts,
-        )
+        cast("list[JSONValue]", list(tools))
+        cast("list[JSONValue]", list(resources))
+        cast("list[JSONValue]", list(templates))
+        cast("list[JSONValue]", list(prompts))
 
     @pytest.mark.parametrize(
         ("role", "must_contain", "must_omit"),
@@ -687,7 +527,6 @@ class TestRegistrationDriftEvidence:
         role: MCPRole,
         must_contain: frozenset[str],
         must_omit: frozenset[str],
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         from polylogue.mcp.server import build_server
 
@@ -697,19 +536,8 @@ class TestRegistrationDriftEvidence:
         leaked = must_omit & tools
         assert not missing, f"role={role}: required tools missing {sorted(missing)}"
         assert not leaked, f"role={role}: forbidden tools present {sorted(leaked)}"
-        required_present: list[JSONValue] = cast("list[JSONValue]", sorted(must_contain))
-        forbidden_omitted: list[JSONValue] = cast("list[JSONValue]", sorted(must_omit))
-        role_facts: dict[str, JSONValue] = {
-            "role": role,
-            "required_present": required_present,
-            "forbidden_omitted": forbidden_omitted,
-            "tool_count": len(tools),
-        }
-        record_contract_evidence.record(
-            f"mcp.role.{role}.capability_envelope",
-            surface="mcp",
-            facts=role_facts,
-        )
+        cast("list[JSONValue]", sorted(must_contain))
+        cast("list[JSONValue]", sorted(must_omit))
 
 
 # ---------------------------------------------------------------------------
@@ -723,7 +551,6 @@ class TestAsyncEnvelopeCoverage:
     async def test_async_search_no_results_envelope_emits_evidence(
         self,
         mcp_server: MCPServerUnderTest,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         with (
             patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops,
@@ -746,8 +573,3 @@ class TestAsyncEnvelopeCoverage:
                 )
         body = _parse_object(result)
         assert "hits" in body and body["hits"] == []
-        record_contract_evidence.record(
-            "mcp.tool.search.async_no_results_envelope",
-            surface="mcp",
-            facts={"total": body.get("total")},
-        )

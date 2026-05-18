@@ -37,7 +37,6 @@ def test_quick_verify_omits_pytest() -> None:
         "verify-test-ownership",
         "verify-closure-matrix",
         "verify-schema-roundtrip",
-        "verify-cross-cuts",
         "verify-suppressions",
         "verify-manifests",
         "verify-ci-workflows",

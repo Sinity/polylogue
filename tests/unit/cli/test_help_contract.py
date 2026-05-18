@@ -19,7 +19,6 @@ from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.cli.command_inventory import CommandPath, iter_command_paths
-from tests.infra.contract_evidence import ContractEvidenceRecorder
 
 pytestmark = pytest.mark.contract
 
@@ -46,7 +45,6 @@ class TestRootHelpStructure:
     def test_root_help_contains_usage_and_commands(
         self,
         runner: CliRunner,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         result = runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
@@ -54,18 +52,6 @@ class TestRootHelpStructure:
         assert "Usage:" in result.output, f"missing 'Usage:' section: {result.output!r}"
         assert "Options:" in result.output, f"missing 'Options:' section: {result.output!r}"
         assert "Commands:" in result.output, f"missing 'Commands:' section: {result.output!r}"
-        record_contract_evidence.record(
-            "cli.help.root",
-            surface="cli",
-            command=("polylogue", "--help"),
-            stdout=result.output,
-            exit_code=result.exit_code,
-            facts={
-                "has_usage": True,
-                "has_options": True,
-                "has_commands": True,
-            },
-        )
 
     def test_root_help_alias_short_flag(self, runner: CliRunner) -> None:
         """``-h`` is an alias for ``--help`` per the root group config."""
@@ -83,7 +69,6 @@ class TestEverySubcommandHasHelp:
         self,
         path: CommandPath,
         runner: CliRunner,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         result = runner.invoke(cli, [*path.path, "--help"])
         assert result.exit_code == 0, f"{path.display_name} --help exited {result.exit_code}: {result.output!r}"
@@ -93,16 +78,6 @@ class TestEverySubcommandHasHelp:
         # Click always emits a Usage line; assert it's present so a regression
         # to empty help text would fail this contract.
         assert "Usage:" in result.output, f"{path.display_name} --help missing Usage: section"
-        record_contract_evidence.record(
-            "cli.help.subcommand",
-            surface="cli",
-            command=("polylogue", *path.path, "--help"),
-            facts={
-                "path": path.display_name,
-                "exit_code": result.exit_code,
-                "has_usage": True,
-            },
-        )
 
     @pytest.mark.parametrize("path", _COMMAND_PATHS, ids=_COMMAND_IDS)
     def test_subcommand_help_has_nonempty_description(
@@ -138,7 +113,6 @@ class TestVersionContract:
     def test_version_includes_commit_hash(
         self,
         runner: CliRunner,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """Per CONTRIBUTING.md: version output must include commit + dirty marker."""
         result = runner.invoke(cli, ["--version"])
@@ -147,17 +121,6 @@ class TestVersionContract:
         line = result.output.strip()
         assert _VERSION_RE.match(line), (
             f"version line does not match expected shape 'polylogue, version <semver>+<sha>[-dirty]': {line!r}"
-        )
-        record_contract_evidence.record(
-            "cli.help.version",
-            surface="cli",
-            command=("polylogue", "--version"),
-            stdout=result.output,
-            exit_code=result.exit_code,
-            facts={
-                "matches_dev_build_shape": True,
-                "has_plus_separator": "+" in line,
-            },
         )
 
 

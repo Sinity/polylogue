@@ -29,7 +29,6 @@ from polylogue.storage.runtime import RawConversationRecord
 from tests.infra.builders import make_conv, make_msg
 
 pytest_plugins = (
-    "tests.infra.contract_evidence",
     "tests.infra.corpus_fixtures",
     "tests.infra.scale_fixtures",
     "tests.conftest_witness",

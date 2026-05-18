@@ -16,7 +16,6 @@ from polylogue.daemon.cli import main
 from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
-from tests.infra.contract_evidence import ContractEvidenceRecorder
 
 
 def test_polylogued_help_lists_watch_command() -> None:
@@ -33,7 +32,6 @@ def test_polylogued_help_lists_watch_command() -> None:
 @pytest.mark.contract
 def test_polylogued_status_json_reports_daemon_components(
     tmp_path: Path,
-    record_contract_evidence: ContractEvidenceRecorder,
 ) -> None:
     sources = (
         WatchSource(name="exists", root=tmp_path),
@@ -61,19 +59,6 @@ def test_polylogued_status_json_reports_daemon_components(
     assert live["source_count"] == 2
     assert live["existing_source_count"] == 1
     assert browser_capture["spool_path"] == str(tmp_path / "captures")
-    record_contract_evidence.record(
-        "daemon.status.json",
-        surface="daemon",
-        command=("polylogued", "status", "--spool", "<tmp>/captures", "--format", "json"),
-        result=payload,
-        exit_code=result.exit_code,
-        stdout=result.output,
-        facts={
-            "source_count": live["source_count"],
-            "existing_source_count": live["existing_source_count"],
-            "browser_capture_spool_reported": bool(browser_capture["spool_path"]),
-        },
-    )
 
 
 def test_polylogued_status_plain_reports_daemon_components(tmp_path: Path) -> None:
@@ -92,7 +77,6 @@ def test_polylogued_status_plain_reports_daemon_components(tmp_path: Path) -> No
 @pytest.mark.contract
 def test_drain_convergence_debt_retries_due_items_without_source_failure(
     tmp_path: Path,
-    record_contract_evidence: ContractEvidenceRecorder,
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
@@ -118,34 +102,17 @@ def test_drain_convergence_debt_retries_due_items_without_source_failure(
         execute=lambda candidate: candidate == source,
     )
     with patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=(stage,)):
-        debt_before = cursor.list_convergence_debt()
         retried = daemon_cli._drain_convergence_debt_once(db)
         debt_after = cursor.list_convergence_debt()
 
     assert retried == 1
     assert debt_after == []
     assert cursor.get_record(source) is None
-    record_contract_evidence.record(
-        "daemon.convergence_debt.source_retry",
-        surface="daemon",
-        request={
-            "stage": "insights",
-            "subject_type": "source_path",
-            "subject_exists": True,
-        },
-        facts={
-            "debt_before": len(debt_before),
-            "retried": retried,
-            "debt_after": len(debt_after),
-            "cursor_record_cleared": cursor.get_record(source) is None,
-        },
-    )
 
 
 @pytest.mark.contract
 def test_drain_convergence_debt_retries_conversation_subjects_without_source_lookup(
     tmp_path: Path,
-    record_contract_evidence: ContractEvidenceRecorder,
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
@@ -171,26 +138,11 @@ def test_drain_convergence_debt_retries_conversation_subjects_without_source_loo
         execute_conversations=lambda conversation_ids: tuple(conversation_ids) == ("conv-1",),
     )
     with patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=(stage,)):
-        debt_before = cursor.list_convergence_debt()
         retried = daemon_cli._drain_convergence_debt_once(db)
         debt_after = cursor.list_convergence_debt()
 
     assert retried == 1
     assert debt_after == []
-    record_contract_evidence.record(
-        "daemon.convergence_debt.conversation_retry",
-        surface="daemon",
-        request={
-            "stage": "insights",
-            "subject_type": "conversation_id",
-            "source_lookup_required": False,
-        },
-        facts={
-            "debt_before": len(debt_before),
-            "retried": retried,
-            "debt_after": len(debt_after),
-        },
-    )
 
 
 def test_polylogued_browser_capture_help_lists_service_commands() -> None:

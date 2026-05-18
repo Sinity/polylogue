@@ -17,7 +17,6 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
-from tests.infra.contract_evidence import ContractEvidenceRecorder
 
 pytestmark = pytest.mark.contract
 
@@ -70,25 +69,11 @@ class TestPlainOutputIsAscii:
         contract_id: str,
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """Plain output has no ANSI CSI codes or box-drawing characters."""
         exit_code, stdout, stderr = _invoke_plain(args, monkeypatch)
         _assert_plain(stdout, context=f"stdout for {' '.join(args)}")
         _assert_plain(stderr, context=f"stderr for {' '.join(args)}")
-        record_contract_evidence.record(
-            contract_id,
-            surface="cli",
-            command=("polylogue", *args),
-            stdout=stdout,
-            stderr=stderr,
-            exit_code=exit_code,
-            facts={
-                "stdout_bytes": len(stdout.encode("utf-8")),
-                "stderr_bytes": len(stderr.encode("utf-8")),
-                "ansi_present": False,
-            },
-        )
 
 
 class TestPlainEmptyArchiveMessages:
@@ -98,7 +83,6 @@ class TestPlainEmptyArchiveMessages:
         self,
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """``polylogue --plain list`` reports no conversations in human prose."""
         exit_code, stdout, _stderr = _invoke_plain(["--plain", "list"], monkeypatch)
@@ -108,34 +92,17 @@ class TestPlainEmptyArchiveMessages:
             f"plain list emitted JSON-shaped output instead of human text: {stdout!r}"
         )
         assert "No conversations" in stdout, f"missing 'No conversations' in {stdout!r}"
-        record_contract_evidence.record(
-            "cli.plain.list_empty_message",
-            surface="cli",
-            command=("polylogue", "--plain", "list"),
-            stdout=stdout,
-            exit_code=exit_code,
-            facts={"has_no_conversations_phrase": True, "is_json_shaped": False},
-        )
 
     def test_plain_stats_empty_archive_message(
         self,
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """``polylogue --plain stats`` reports empty archive in human prose."""
         exit_code, stdout, _stderr = _invoke_plain(["--plain", "stats"], monkeypatch)
         assert exit_code in (0, 2), f"unexpected exit {exit_code}: {stdout!r}"
         assert not stdout.lstrip().startswith("{"), (
             f"plain stats emitted JSON-shaped output instead of human text: {stdout!r}"
-        )
-        record_contract_evidence.record(
-            "cli.plain.stats_empty_message",
-            surface="cli",
-            command=("polylogue", "--plain", "stats"),
-            stdout=stdout,
-            exit_code=exit_code,
-            facts={"is_json_shaped": False, "exit_code": exit_code},
         )
 
 
@@ -162,7 +129,6 @@ class TestPlainOutputIsDeterministic:
         contract_id: str,
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """Two back-to-back invocations on the same empty archive match exactly."""
         first_exit, first_stdout, _ = _invoke_plain(args, monkeypatch)
@@ -170,14 +136,6 @@ class TestPlainOutputIsDeterministic:
         assert first_exit == second_exit, f"exit code drift: {first_exit} vs {second_exit} for {' '.join(args)}"
         assert first_stdout == second_stdout, (
             f"stdout drift for {' '.join(args)}:\nfirst  : {first_stdout!r}\nsecond : {second_stdout!r}"
-        )
-        record_contract_evidence.record(
-            contract_id,
-            surface="cli",
-            command=("polylogue", *args),
-            stdout=first_stdout,
-            exit_code=first_exit,
-            facts={"stable": True, "byte_len": len(first_stdout.encode("utf-8"))},
         )
 
 
@@ -193,7 +151,6 @@ class TestPlainModeRespectsStderrDiscipline:
         self,
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """Plain mode + invalid choice -> non-zero exit, error stays on stderr."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
@@ -208,16 +165,3 @@ class TestPlainModeRespectsStderrDiscipline:
         )
         # The actual error text should not be on stdout.
         assert "Invalid value" not in result.stdout, f"error text leaked to stdout in plain mode: {result.stdout!r}"
-        record_contract_evidence.record(
-            "cli.plain.stderr_discipline",
-            surface="cli",
-            command=("polylogue", "--plain", "list", "--format", "xml"),
-            stdout=result.stdout,
-            stderr=result.stderr,
-            exit_code=result.exit_code,
-            facts={
-                "exit_code": result.exit_code,
-                "error_on_stderr": True,
-                "error_not_on_stdout": True,
-            },
-        )

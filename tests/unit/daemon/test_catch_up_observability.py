@@ -40,7 +40,6 @@ from polylogue.daemon.events import (
     query_daemon_events,
 )
 from polylogue.sources.live.cursor import CursorStore
-from tests.infra.contract_evidence import ContractEvidenceRecorder
 
 pytestmark = pytest.mark.usefixtures("workspace_env")
 
@@ -95,7 +94,6 @@ def _seed_source_file(path: Path, *, body: str) -> int:
 
 def test_catch_up_cycle_emits_runtime_observability_evidence(
     tmp_path: Path,
-    record_contract_evidence: ContractEvidenceRecorder,
 ) -> None:
     """One full catch-up cycle records the Runtime Evidence Matrix."""
 
@@ -316,37 +314,6 @@ def test_catch_up_cycle_emits_runtime_observability_evidence(
 
     # ── Record bounded evidence so the matrix lands in
     # ``.cache/verification/evidence/`` under the contract id from #999. ──
-    from polylogue.core.json import JSONValue
-
-    facts: dict[str, JSONValue] = {
-        "cursor": {
-            "before": dict(cursor_before),
-            "after": dict(cursor_after),
-            "restart_seen": restart_seen,
-        },
-        "attempts": {
-            "discovered": discovered,
-            "attempted": attempted,
-            "skipped": skipped,
-            "ingested": ingested,
-        },
-        "errors_by_kind": dict(errors_by_kind),
-        "quarantine_count": quarantine_count,
-        "backlog": {
-            "start": backlog_start,
-            "end": backlog_end,
-            "duration_ms": round(duration_ms, 3),
-        },
-        "repair": dict(repair),
-        "stage_timings_s": dict(stage_timings),
-        "stage_event_count": len(status.recent_events),
-        "attempt_id": attempt_id,
-    }
-    record_contract_evidence.record(
-        "daemon.convergence.catch_up",
-        surface="daemon.convergence",
-        facts=facts,
-    )
 
 
 def test_catch_up_cycle_evidence_payload_is_bounded(tmp_path: Path) -> None:
