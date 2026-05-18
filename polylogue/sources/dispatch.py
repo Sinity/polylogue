@@ -179,11 +179,19 @@ def _detect_provider_from_raw_bytes(
     try:
         stream = _iter_json_stream(BytesIO(stream_bytes), stream_name)
         payloads = list(islice(stream, 32)) if jsonl_like else list(stream)
-    except Exception:
-        logger.exception(
-            "Provider detection by JSON-stream parsing failed for %s; falling back to %s",
-            stream_name,
-            fallback_provider.value,
+    except Exception as exc:
+        # JSON-stream detection commonly fails on payloads that the
+        # record-shape detectors above already handled (or that simply do
+        # not parse as a record stream — e.g. ChatGPT bundles read via
+        # `devtools pipeline-probe`). Emit a structured WARNING rather
+        # than a Rich traceback so default invocations do not look
+        # broken when the fallback is the intended path.
+        logger.warning(
+            "provider_detection_stream_fallback",
+            stream_name=stream_name,
+            fallback_provider=fallback_provider.value,
+            error_type=type(exc).__name__,
+            error=str(exc),
         )
         return fallback_provider
 
