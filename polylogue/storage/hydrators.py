@@ -108,6 +108,9 @@ def message_from_record(
         message_type=record.message_type,
         parent_id=record.parent_message_id,
         branch_index=record.branch_index,
+        has_tool_use=bool(record.has_tool_use),
+        has_thinking=bool(record.has_thinking),
+        has_paste=bool(record.has_paste),
     )
 
 

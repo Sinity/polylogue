@@ -9,6 +9,7 @@ from polylogue.daemon.web_shell_bulk import (
     BULK_TOOLBAR_HTML,
 )
 from polylogue.daemon.web_shell_lineage import LINEAGE_JS
+from polylogue.daemon.web_shell_paste import PASTE_CSS, PASTE_JS
 from polylogue.daemon.web_shell_provenance import PROVENANCE_JS
 from polylogue.daemon.web_shell_reader import READER_CSS, READER_HELP_HTML, READER_JS
 from polylogue.daemon.web_shell_similar import SIMILAR_JS
@@ -156,6 +157,7 @@ __WORKSPACE_CSS__
 .msg-block .msg-expand:hover { color: var(--active); }
 .msg-block .msg-text:not(.collapsed) + .msg-expand { display: none; }
 __READER_CSS__
+__PASTE_CSS__
 .tool-block { border-left: 2px solid var(--role-tool); padding-left: 12px; margin: 2px 0; }
 .tool-block .tool-summary { font-size: var(--small); color: var(--text-muted); cursor: pointer; padding: 3px 0; }
 .tool-block .tool-summary:hover { color: var(--text); }
@@ -1411,6 +1413,7 @@ function startRealtimeChannel() {
 
 startRealtimeChannel();
 __READER_JS__
+__PASTE_JS__
 </script>
 </body>
 </html>""".replace("__WORKSPACE_CSS__", WORKSPACE_CSS)
@@ -1426,4 +1429,6 @@ __READER_JS__
     .replace("__READER_CSS__", READER_CSS)
     .replace("__READER_HELP_HTML__", READER_HELP_HTML)
     .replace("__READER_JS__", READER_JS)
+    .replace("__PASTE_CSS__", PASTE_CSS)
+    .replace("__PASTE_JS__", PASTE_JS)
 )

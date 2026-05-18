@@ -21,6 +21,13 @@ from polylogue.daemon.events import (
     get_latest_event_id,
 )
 from polylogue.daemon.status import daemon_status_payload
+from polylogue.daemon.web_shell_paste import (
+    PasteBrowserEntry,
+    build_paste_browser_payload,
+    envelope_paste_spans,
+    render_paste_browser_page,
+    snippet_for_paste,
+)
 from polylogue.errors import PolylogueError
 from polylogue.logging import get_logger
 from polylogue.paths import db_path
@@ -683,6 +690,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._serve_web_shell()
             return
 
+        # Paste browser is a standalone reader page (#1201). Served
+        # alongside the main web shell, unauthenticated like the main
+        # shell because the daemon binds to loopback by default and the
+        # page only embeds JS that calls the authenticated archive API.
+        if path == ["p"]:
+            self._serve_paste_browser_page()
+            return
+
         # Kubernetes-style probes. Unauthenticated by convention — k8s,
         # docker, and systemd healthchecks don't carry credentials, and the
         # probes leak only liveness/readiness booleans plus structured reason
@@ -714,6 +729,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_list_conversations(params)
         elif path == ["api", "facets"]:
             self._handle_facets(params)
+        elif path == ["api", "paste-browser"]:
+            self._handle_paste_browser(params)
         elif workspace_routes.dispatch_get(self, path, params) or (
             path[:2] == ["api", "user"] and user_state_http.dispatch_get(self, path[2:], params)
         ):
@@ -803,6 +820,72 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.daemon.web_shell import WEB_SHELL_HTML
 
         self._send_html(HTTPStatus.OK, WEB_SHELL_HTML)
+
+    def _serve_paste_browser_page(self) -> None:
+        self._send_html(HTTPStatus.OK, render_paste_browser_page())
+
+    @daemon_safe_handler
+    def _handle_paste_browser(self, params: dict[str, list[str]]) -> None:
+        limit = self._get_int(params, "limit", 200)
+        offset = self._get_int(params, "offset", 0)
+
+        async def _run(poly: Polylogue) -> object:
+            return await self._do_paste_browser(poly, limit=limit, offset=offset)
+
+        result = self._sync_run(_run)
+        self._send_json(HTTPStatus.OK, result)
+
+    async def _do_paste_browser(
+        self,
+        poly: Polylogue,
+        *,
+        limit: int,
+        offset: int,
+    ) -> object:
+        # Walk all conversation summaries and emit one entry per
+        # paste-flagged message. The message-level ``has_paste`` flag
+        # is the load-bearing signal — we deliberately do not pre-
+        # filter on the conversation-level flag because that flag is
+        # populated from ``conversation_stats`` which can lag behind
+        # direct message writes (visible to operators staging fixtures
+        # or replaying historical ingests).
+        convs = await poly.filter().list_summaries()
+        entries: list[PasteBrowserEntry] = []
+        total_messages_seen = 0
+        for summary in convs:
+            conv = await poly.get_conversation(str(summary.id))
+            if conv is None:
+                continue
+            for msg in conv.messages:
+                if not bool(getattr(msg, "has_paste", False)):
+                    continue
+                total_messages_seen += 1
+                if total_messages_seen <= offset:
+                    continue
+                if len(entries) >= limit:
+                    break
+                text = msg.text or ""
+                spans = envelope_paste_spans(text, has_paste=True)
+                snippet = snippet_for_paste(text, spans)
+                anchor = reader_anchor("message", msg.id)
+                entries.append(
+                    PasteBrowserEntry(
+                        conversation_id=str(summary.id),
+                        conversation_title=summary.display_title or str(summary.id),
+                        provider=str(summary.provider) if summary.provider else None,
+                        message_id=str(msg.id),
+                        message_anchor=anchor,
+                        role=str(msg.role) if msg.role else "",
+                        timestamp=msg.timestamp.isoformat() if msg.timestamp else None,
+                        word_count=int(getattr(msg, "word_count", 0) or 0),
+                        snippet=snippet,
+                        paste_spans=spans,
+                        has_diff=any(span.get("kind") == "diff" for span in spans),
+                    )
+                )
+            if len(entries) >= limit:
+                break
+        return build_paste_browser_payload(entries, total=total_messages_seen)
 
     # ------------------------------------------------------------------
     # Handlers: health
@@ -1117,6 +1200,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "has_tool_use": bool(msg.has_tool_use) if hasattr(msg, "has_tool_use") else False,
                     "has_thinking": bool(msg.has_thinking) if hasattr(msg, "has_thinking") else False,
                     "has_paste": bool(msg.has_paste) if hasattr(msg, "has_paste") else False,
+                    "paste_spans": envelope_paste_spans(
+                        msg.text,
+                        has_paste=bool(msg.has_paste) if hasattr(msg, "has_paste") else False,
+                    ),
                 }
                 for msg in conv.messages
             ],

@@ -252,12 +252,12 @@ files:
     reason: archive-domain semantics
     cross_cut: { lifecycle: runtime }
   - path: polylogue/archive/message/models.py
-    loc: 71
+    loc: 79
     target: polylogue/archive/message/models.py
     owner: archive-message
     reason: archive-domain semantics
   - path: polylogue/archive/message/paste_detection.py
-    loc: 63
+    loc: 150
     target: polylogue/archive/message/paste_detection.py
     owner: archive-message
     reason: archive-domain semantics
@@ -1066,7 +1066,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 1780
+    loc: 1867
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_models.py
@@ -1103,7 +1103,7 @@ files:
     target: polylogue/daemon/user_state_http.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
-    loc: 1429
+    loc: 1434
     target: polylogue/daemon/web_shell.py
     owner: stable
   - path: polylogue/daemon/web_shell_bulk.py
@@ -1114,12 +1114,16 @@ files:
     loc: 175
     target: polylogue/daemon/web_shell_lineage.py
     owner: stable
+  - path: polylogue/daemon/web_shell_paste.py
+    loc: 667
+    target: polylogue/daemon/web_shell_paste.py
+    owner: stable
   - path: polylogue/daemon/web_shell_provenance.py
     loc: 103
     target: polylogue/daemon/web_shell_provenance.py
     owner: stable
   - path: polylogue/daemon/web_shell_reader.py
-    loc: 461
+    loc: 466
     target: polylogue/daemon/web_shell_reader.py
     owner: stable
   - path: polylogue/daemon/web_shell_similar.py
@@ -2679,7 +2683,7 @@ files:
     target: polylogue/storage/fts/sql.py
     owner: stable
   - path: polylogue/storage/hydrators.py
-    loc: 200
+    loc: 203
     target: polylogue/storage/hydrators.py
     owner: storage-root
     reason: storage-root cross-cutting helper
