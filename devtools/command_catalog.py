@@ -177,6 +177,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools verification-impact --full --markdown",
             "devtools verification-impact --path polylogue/sources/parsers/codex.py",
             "devtools verification-impact --json --path docs/verification-catalog.md",
+            "devtools verification-impact --json --paths polylogue/storage/sqlite/schema_ddl.py polylogue/sources/parsers/codex.py",
         ),
     ),
     CommandSpec("run-validation-lanes", "verification", "Run named validation lanes.", "devtools.run_validation_lanes"),

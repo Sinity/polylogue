@@ -29,6 +29,17 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="Changed repo-relative path. Repeat to bypass git diff path discovery.",
     )
+    parser.add_argument(
+        "--paths",
+        nargs="+",
+        default=[],
+        metavar="PATH",
+        help=(
+            "Speculative repo-relative path set (nargs+). Equivalent to repeating --path, "
+            "intended for agents asking 'if I touch these files, what gates trip?' before editing. "
+            "Combines with --path entries; presence of either bypasses git diff discovery."
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="Emit a machine-readable affected-check report.")
     parser.add_argument("--markdown", action="store_true", help="Emit a markdown-formatted affected-check report.")
     parser.add_argument(
@@ -42,6 +53,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Exit non-zero when blocking policy fails (only with --full).",
     )
     args = parser.parse_args(argv)
+    combined_paths: list[str] = []
+    seen_paths: set[str] = set()
+    for value in (*args.path, *args.paths):
+        if value and value not in seen_paths:
+            seen_paths.add(value)
+            combined_paths.append(value)
 
     if args.full:
         from devtools import repo_root as _get_root
@@ -57,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
             root,
             base_ref=args.base_ref,
             head_ref=args.head_ref,
-            changed_paths=args.path or None,
+            changed_paths=combined_paths or None,
         )
         check_result = evaluate_check_policy(full_report)
         if args.check:
@@ -72,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
             _print_human_report(full_report)
         return 1 if args.check and check_result["status"] != "ok" else 0
 
-    explicit_paths = tuple(args.path)
+    explicit_paths = tuple(combined_paths)
     base_ids: tuple[str, ...] | None
     head_ids: tuple[str, ...] | None
     if explicit_paths:
