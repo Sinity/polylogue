@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 from urllib.request import Request, urlopen
 
@@ -10,17 +11,34 @@ import click
 
 from polylogue.cli.shared.types import AppEnv
 
-_DEFAULT_DAEMON_URL = "http://127.0.0.1:8766"
+_BUILTIN_DAEMON_URL = "http://127.0.0.1:8766"
 _FAST_TIMEOUT_S = 1.0
 _FULL_TIMEOUT_S = 5.0
+
+
+def _default_daemon_url() -> str:
+    """Resolve the default daemon URL.
+
+    Honours ``POLYLOGUE_DAEMON_URL`` so test fixtures can route the CLI to an
+    unreachable address and avoid contacting an operator-host ``polylogued``
+    listening at the built-in default (#1325).
+    """
+    override = os.environ.get("POLYLOGUE_DAEMON_URL")
+    if override:
+        return override
+    return _BUILTIN_DAEMON_URL
+
+
+# Backwards-compatible name retained for the (rare) external import.
+_DEFAULT_DAEMON_URL = _BUILTIN_DAEMON_URL
 
 
 @click.command("status")
 @click.option(
     "--daemon-url",
-    default=_DEFAULT_DAEMON_URL,
+    default=_default_daemon_url,
     show_default=True,
-    help="Daemon API URL.",
+    help="Daemon API URL (env: POLYLOGUE_DAEMON_URL).",
 )
 @click.option(
     "--format",
@@ -64,15 +82,16 @@ def status_command(
         _show_daemon_status(env, result)
 
 
-def show_fast_status(env: AppEnv, *, daemon_url: str = _DEFAULT_DAEMON_URL) -> None:
+def show_fast_status(env: AppEnv, *, daemon_url: str | None = None) -> None:
     """Fast bare-invocation status: try daemon, fall back to local SQLite.
 
     Called from ``polylogue`` with no args. Uses a short HTTP timeout
     and bounded SQLite queries to stay under 2 seconds.
     """
+    resolved_url = daemon_url if daemon_url is not None else _default_daemon_url()
     try:
         req = Request(
-            f"{daemon_url}/api/status",
+            f"{resolved_url}/api/status",
             headers={"Accept": "application/json"},
             method="GET",
         )

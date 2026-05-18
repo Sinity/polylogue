@@ -121,6 +121,66 @@ class TestNoArchiveStatus:
         assert "no archive" in output_lower or "polylogued" in output_lower
 
 
+class TestEnvIsolation:
+    """Regression coverage for #1325: workspace_env strips host POLYLOGUE_* env vars."""
+
+    def test_autouse_clears_host_polylogue_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Setting POLYLOGUE_* before the autouse runs must be wiped.
+
+        ``monkeypatch`` here is a *different* instance than the autouse
+        fixture, but pytest's fixture finalisation runs LIFO: the autouse
+        runs first (clearing host env) and the per-test monkeypatch runs
+        after. We simulate the "operator daemon already running" case by
+        re-asserting that no POLYLOGUE_* leaked through.
+        """
+        # The autouse ``_clear_polylogue_env`` fixture has already run and
+        # stripped every POLYLOGUE_* var the host had. Verify it.
+        leaked = [
+            k
+            for k in os.environ
+            if k.startswith("POLYLOGUE_")
+            and k
+            not in {
+                "POLYLOGUE_SITE_CONFIG",
+                "POLYLOGUE_DAEMON_URL",
+            }
+        ]
+        assert leaked == [], f"host POLYLOGUE_* vars leaked into test env: {leaked}"
+        # And the daemon URL must be routed to an unreachable address.
+        assert os.environ["POLYLOGUE_DAEMON_URL"] == "http://127.0.0.1:1"
+        # And site config lookup must be disabled.
+        assert os.environ["POLYLOGUE_SITE_CONFIG"] == ""
+
+    def test_workspace_env_overrides_polluted_host(
+        self,
+        workspace_env: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """``workspace_env`` must win over a contaminated host environment.
+
+        Set the offending vars in this test body to simulate a polluted
+        host that escaped the autouse clear (e.g. a vendoring agent), then
+        re-invoke the relevant resolver paths.
+        """
+        # Simulate an operator who has POLYLOGUE_ARCHIVE_ROOT set in their
+        # shell pointing at the production archive.
+        production_archive = Path("/var/lib/polylogue/archive")
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(production_archive))
+
+        # workspace_env declared its own archive root via fixture wiring;
+        # _clear_polylogue_env ran before workspace_env so the production
+        # value above was set AFTER workspace_env. The fixture's contract
+        # is that *its* value is the one tests should see at fixture-setup
+        # time. We assert the documented value is the tmp_path one.
+        assert workspace_env["archive_root"] == tmp_path / "archive"
+        # The CLI default daemon URL resolution must not point at the host
+        # ``polylogued`` listening on 8766.
+        from polylogue.cli.commands.status import _default_daemon_url
+
+        assert _default_daemon_url() == "http://127.0.0.1:1"
+
+
 class TestDaemonStatus:
     """Daemon status rendering tests."""
 

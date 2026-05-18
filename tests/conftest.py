@@ -153,13 +153,20 @@ def _clear_polylogue_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
 
     reset_blob_store()
 
+    # Strip every POLYLOGUE_* host env var so tests never inherit operator
+    # configuration (archive root, daemon api host/port, validation mode,
+    # notification webhook, etc.) from the developer host (#1325). A live
+    # ``polylogued`` on the dev machine sets several of these and previously
+    # caused the CLI under test to connect to the host daemon instead of the
+    # fixture archive. Iterate ``os.environ`` so future POLYLOGUE_* additions
+    # are stripped automatically.
+    for key in list(os.environ):
+        if key.startswith("POLYLOGUE_"):
+            monkeypatch.delenv(key, raising=False)
+
     for key in (
-        "POLYLOGUE_ARCHIVE_ROOT",
         # Prevent tests from hitting external Voyage API
         "VOYAGE_API_KEY",
-        # Clear Drive credentials to ensure test isolation
-        "POLYLOGUE_CREDENTIAL_PATH",
-        "POLYLOGUE_TOKEN_PATH",
         "XDG_DATA_HOME",
         "XDG_STATE_HOME",
         "XDG_CONFIG_HOME",
@@ -169,6 +176,16 @@ def _clear_polylogue_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    # Disable the site-wide config (``/etc/polylogue/polylogue.toml``) so that
+    # operator-installed daemon settings (api host/port, archive root) cannot
+    # bleed into tests. Empty string is the documented "disable" sentinel
+    # honoured by :func:`polylogue.config._load_site_config` (#1325).
+    monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+    # Route the CLI status surface to an unreachable URL so that an operator
+    # ``polylogued`` listening on the built-in ``127.0.0.1:8766`` cannot
+    # respond to in-process or subprocess CLI invocations. Port 1 is reserved
+    # (TCPMUX) and reliably refuses on a developer host (#1325).
+    monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:1")
 
 
 @pytest.fixture
