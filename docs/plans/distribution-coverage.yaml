@@ -61,7 +61,16 @@ artifacts:
       Nix flake check runs in CI (nix-build gate). nix flake
       check validates the derivation can build. Nix is the
       primary distribution mechanism for the project author.
-      Python version is managed by Nix, not pip.
+      Python version is managed by Nix, not pip. The flake exposes
+      apps.{polylogue,polylogued,polylogue-mcp} for `nix run
+      github:Sinity/polylogue#<app>`, a NixOS module
+      (nixosModules.default) wiring services.polylogue, and a Home
+      Manager module (homeManagerModules.default) wiring
+      programs.polylogued. The cachix workflow
+      (.github/workflows/cachix.yml) pushes the package + devshell
+      closures to the polylogue cachix cache on master pushes and
+      tags; the flakehub workflow (.github/workflows/flakehub.yml)
+      publishes the flake to FlakeHub on tag push.
 
   dev_install:
     description: Editable development install
