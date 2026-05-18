@@ -188,35 +188,29 @@ serve history.
 identified by git metadata, and `polylogue --version` must include the commit
 hash plus the dirty marker when applicable.
 
-Routine PRs do not touch `version = "X.Y.Z"`. Change it only when this exact
-slice is cutting the matching `vX.Y.Z` tag.
+Routine PRs do not touch `version = "X.Y.Z"` or `CHANGELOG.md`. Both are
+maintained by [release-please](https://github.com/googleapis/release-please)
+from conventional commit subjects on `master` — see
+[docs/release.md](docs/release.md) for the full flow.
 
-User-visible changes (new flags, renamed or removed commands, output changes,
-breaking migrations, security fixes) get a one-line entry in the `Unreleased`
-section of [CHANGELOG.md](CHANGELOG.md) as part of the PR. Refactors and
-test-only changes are exempt.
+What this means in practice for normal PRs:
 
-See [docs/release.md](docs/release.md) for the cut-time checklist
-(pre-flight checks, the `Unreleased → [X.Y.Z]` move, tagging, and post-cut
-verification). The condensed procedure:
+- Use conventional commit subjects (`feat:`, `fix:`, `perf:`, `refactor:`,
+  `docs:`, `test:`, `chore:`, `build:`, `ci:`, `style:`). The PR title is
+  what becomes the squash-merge subject on `master` and is what
+  release-please reads.
+- Do not edit `CHANGELOG.md` or `pyproject.toml` `version` directly. A
+  user-visible change is described by its `feat:` / `fix:` / `perf:` subject
+  and PR body; release-please rolls it into the changelog at release time.
+- A breaking change uses `feat!:` / `fix!:` or a `BREAKING CHANGE:` footer
+  in the commit body, exactly as conventional-commits specifies.
 
-1. Update `pyproject.toml` to `X.Y.Z` and roll the `Unreleased` heading
-   in `CHANGELOG.md` to `[X.Y.Z] — YYYY-MM-DD`.
-2. Run:
-
-```bash
-devtools render-all
-devtools render-all --check
-ruff check polylogue tests devtools
-pytest -q --ignore=tests/integration
-nix flake check
-```
-
-3. Commit the version bump as its own small change, normally `chore: release X.Y.Z`.
-4. Tag that exact commit as `vX.Y.Z` (signed and annotated).
-
-If this slice is not producing the matching tag, leave `pyproject.toml`
-unchanged.
+The release itself is one merge: release-please keeps an open
+`chore(release): X.Y.Z` PR up to date on every push to `master`. Merging it
+bumps the version, rolls `Unreleased → [X.Y.Z]`, and pushes the signed
+`vX.Y.Z` tag. The downstream `release.yml` workflow handles PyPI + GHCR
+publish from the tag. The manual procedure is retained in
+[docs/release.md](docs/release.md#manual-fallback) as a fallback only.
 
 ## Issues
 
