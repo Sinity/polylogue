@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.core.json import JSONValue
 from polylogue.daemon import health as health_module
 from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier, check_health
-from tests.infra.contract_evidence import ContractEvidenceRecorder
 
 
 def _alert(name: str, tier: HealthTier, severity: HealthSeverity) -> HealthAlert:
@@ -24,7 +22,6 @@ def _alert(name: str, tier: HealthTier, severity: HealthSeverity) -> HealthAlert
 @pytest.mark.contract
 def test_check_health_aggregates_requested_tiers_and_worst_status(
     monkeypatch: pytest.MonkeyPatch,
-    record_contract_evidence: ContractEvidenceRecorder,
 ) -> None:
     fast_alerts = [
         _alert("daemon_liveness", HealthTier.FAST, HealthSeverity.OK),
@@ -45,19 +42,3 @@ def test_check_health_aggregates_requested_tiers_and_worst_status(
         "fast": {"ok": 1, "warning": 1, "error": 0, "critical": 0},
         "medium": {"ok": 0, "warning": 0, "error": 1, "critical": 0},
     }
-    severities: list[JSONValue] = [alert.severity.value for alert in health.alerts]
-    tier_summary: dict[str, JSONValue] = {tier: dict(counts) for tier, counts in health.tier_summary.items()}
-    record_contract_evidence.record(
-        "daemon.health.aggregate",
-        surface="daemon",
-        request={"tiers": [HealthTier.FAST.value, HealthTier.MEDIUM.value]},
-        result={
-            "overall_status": health.overall_status.value,
-            "alert_count": len(health.alerts),
-            "tier_summary": tier_summary,
-        },
-        facts={
-            "expensive_tier_excluded": all(alert.tier != HealthTier.EXPENSIVE for alert in health.alerts),
-            "severities": severities,
-        },
-    )

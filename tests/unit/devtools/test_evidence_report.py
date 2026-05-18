@@ -32,7 +32,6 @@ def test_json_output_structure(
     payload = json.loads(capsys.readouterr().out)
     assert "timestamp" in payload
     assert "verify_history" in payload
-    assert "contract_evidence" in payload
     assert "suppressions" in payload
     assert "witnesses" in payload
     assert "benchmark_campaigns" in payload
@@ -65,31 +64,6 @@ def test_reads_verify_history(
     assert len(runs) == 1
     assert runs[0]["tier"] == "quick"
     assert runs[0]["exit_code"] == 0
-
-
-def test_reads_contract_evidence(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Contract evidence artifacts are counted and grouped."""
-    monkeypatch.setattr(evidence_report, "ROOT", tmp_path)
-    evidence_dir = tmp_path / ".cache" / "verification" / "evidence"
-    evidence_dir.mkdir(parents=True)
-    artifact = {
-        "contract": "cli.json_envelope",
-        "command": "list",
-        "dirty": False,
-        "git_sha": "abc123",
-        "facts": [],
-    }
-    (evidence_dir / "cli.json_envelope-abc123.json").write_text(json.dumps(artifact))
-
-    rc = evidence_report.main(["--json"])
-    assert rc == 0
-    payload = json.loads(capsys.readouterr().out)
-    evidence = payload["contract_evidence"]
-    assert evidence["total_artifacts"] == 1
-    assert evidence["stale_artifacts"] == 0
-    assert "cli" in evidence["by_prefix"]
 
 
 def test_reads_witnesses(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -159,47 +133,6 @@ def test_blocking_true_when_last_two_both_failed(
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["blocking"] is True
-
-
-def test_blocking_true_when_stale_evidence_and_recent_failure(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Stale contract evidence combined with a recent verify failure triggers blocking."""
-    monkeypatch.setattr(evidence_report, "ROOT", tmp_path)
-    cache = tmp_path / ".cache"
-    cache.mkdir()
-    history = cache / "verify-history.jsonl"
-    entry = {"timestamp": "2026-05-16T04:00:00+00:00", "tier": "quick", "exit_code": 1, "total_duration_s": 10.0}
-    history.write_text(json.dumps(entry) + "\n")
-    # Create a stale artifact (dirty=True means it's stale)
-    evidence_dir = cache / "verification" / "evidence"
-    evidence_dir.mkdir(parents=True)
-    artifact = {"contract": "cli.json_envelope", "dirty": True, "git_sha": None}
-    (evidence_dir / "stale.json").write_text(json.dumps(artifact))
-    rc = evidence_report.main(["--json"])
-    assert rc == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["blocking"] is True
-
-
-def test_blocking_false_when_stale_evidence_but_no_failure(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Stale evidence without any verify failure is not blocking."""
-    monkeypatch.setattr(evidence_report, "ROOT", tmp_path)
-    cache = tmp_path / ".cache"
-    cache.mkdir()
-    history = cache / "verify-history.jsonl"
-    entry = {"timestamp": "2026-05-16T04:00:00+00:00", "tier": "quick", "exit_code": 0, "total_duration_s": 10.0}
-    history.write_text(json.dumps(entry) + "\n")
-    evidence_dir = cache / "verification" / "evidence"
-    evidence_dir.mkdir(parents=True)
-    artifact = {"contract": "cli.json_envelope", "dirty": True, "git_sha": None}
-    (evidence_dir / "stale.json").write_text(json.dumps(artifact))
-    rc = evidence_report.main(["--json"])
-    assert rc == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["blocking"] is False
 
 
 def test_blocking_human_output(

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -21,41 +20,6 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload))
 
 
-def _write_evidence_artifact(
-    root: Path,
-    *,
-    name: str,
-    contract: str,
-    surface: str,
-    test_nodeid: str,
-    age_days: int = 0,
-    dirty: bool = False,
-) -> Path:
-    evidence_dir = root / evidence_dashboard.EVIDENCE_DIR_REL
-    evidence_dir.mkdir(parents=True, exist_ok=True)
-    artifact = evidence_dir / f"{name}.json"
-    artifact.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "contract": contract,
-                "surface": surface,
-                "test_nodeid": test_nodeid,
-                "timestamp": "2026-05-16T00:00:00+00:00",
-                "git_sha": "abc123",
-                "dirty": dirty,
-            }
-        )
-    )
-    if age_days:
-        ts = datetime.now(timezone.utc) - timedelta(days=age_days)
-        epoch = ts.timestamp()
-        import os
-
-        os.utime(artifact, (epoch, epoch))
-    return artifact
-
-
 # ──────────────────────────────────────────────────────────────────────
 # section: dashboard JSON shape
 # ──────────────────────────────────────────────────────────────────────
@@ -68,7 +32,6 @@ def test_dashboard_runs_on_empty_tree(tmp_path: Path) -> None:
     # All artifact-backed sections report unavailable on a bare tree.
     for section in (
         "pytest",
-        "contract_evidence",
         "coverage",
         "benchmark_campaigns",
         "slo_catalog",
@@ -90,7 +53,6 @@ def test_dashboard_top_level_keys_are_stable(tmp_path: Path) -> None:
         "generated_at",
         "root",
         "pytest",
-        "contract_evidence",
         "coverage",
         "benchmark_campaigns",
         "slo_catalog",
@@ -129,79 +91,6 @@ def test_pytest_health_reports_failures(tmp_path: Path) -> None:
     )
     dashboard = evidence_dashboard.build_dashboard(tmp_path)
     assert dashboard["pytest"]["status"] == "fail"
-
-
-# ──────────────────────────────────────────────────────────────────────
-# section: contract evidence
-# ──────────────────────────────────────────────────────────────────────
-
-
-def test_contract_evidence_groups_by_surface(tmp_path: Path) -> None:
-    _write_evidence_artifact(
-        tmp_path,
-        name="cli-1",
-        contract="cli.help.root",
-        surface="cli",
-        test_nodeid="tests/unit/cli/test_help.py::test_root",
-    )
-    _write_evidence_artifact(
-        tmp_path,
-        name="cli-2",
-        contract="cli.stats",
-        surface="cli",
-        test_nodeid="tests/unit/cli/test_stats.py::test_stats",
-    )
-    _write_evidence_artifact(
-        tmp_path,
-        name="mcp-1",
-        contract="mcp.search",
-        surface="mcp",
-        test_nodeid="tests/unit/mcp/test_search.py::test_search",
-    )
-    dashboard = evidence_dashboard.build_dashboard(tmp_path)
-    contract = dashboard["contract_evidence"]
-    assert contract["available"] is True
-    assert contract["total_artifacts"] == 3
-    assert contract["unique_contracts"] == 3
-    assert contract["by_surface"]["cli"]["total_artifacts"] == 2
-    assert contract["by_surface"]["cli"]["unique_contracts"] == 2
-    assert contract["by_surface"]["mcp"]["total_artifacts"] == 1
-
-
-def test_contract_evidence_flags_stale_artifacts(tmp_path: Path) -> None:
-    _write_evidence_artifact(
-        tmp_path,
-        name="fresh",
-        contract="cli.fresh",
-        surface="cli",
-        test_nodeid="tests/unit/cli/test_a.py::test_fresh",
-    )
-    _write_evidence_artifact(
-        tmp_path,
-        name="old",
-        contract="cli.old",
-        surface="cli",
-        test_nodeid="tests/unit/cli/test_a.py::test_old",
-        age_days=30,
-    )
-    dashboard = evidence_dashboard.build_dashboard(tmp_path, stale_days=7)
-    contract = dashboard["contract_evidence"]
-    assert contract["stale_count"] == 1
-    assert "cli.old" in contract["stale_contracts"]
-    assert "cli.fresh" not in contract["stale_contracts"]
-
-
-def test_contract_evidence_counts_dirty(tmp_path: Path) -> None:
-    _write_evidence_artifact(
-        tmp_path,
-        name="dirty",
-        contract="cli.dirty",
-        surface="cli",
-        test_nodeid="tests/unit/cli/test.py::test_dirty",
-        dirty=True,
-    )
-    dashboard = evidence_dashboard.build_dashboard(tmp_path)
-    assert dashboard["contract_evidence"]["dirty_count"] == 1
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -302,47 +191,6 @@ def test_build_trace_returns_stable_keys(monkeypatch: pytest.MonkeyPatch, tmp_pa
     }
     assert trace["changed_path_count"] == 1
     assert trace["changes"][0]["path"] == "tests/unit/cli/test_help.py"
-    assert trace["changes"][0]["evidence_artifact_count"] == 0
-
-
-def test_build_trace_links_evidence_artifacts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Trace links contract-evidence artifacts to changed paths via test_nodeid."""
-
-    nodeid = "tests/unit/cli/test_help.py::TestRootHelp::test_root"
-    _write_evidence_artifact(
-        tmp_path,
-        name="cli-help",
-        contract="cli.help.root",
-        surface="cli",
-        test_nodeid=nodeid,
-    )
-
-    def _fake_impact(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        return {
-            "base_ref": "origin/master",
-            "head_ref": "HEAD",
-            "change_subjects": [
-                {
-                    "id": "c-1",
-                    "path": "tests/unit/cli/test_help.py",
-                    "kind": "test",
-                    "reason": "test source changed",
-                    "subject_ids": [],
-                    "operation_names": [],
-                    "surface_names": ["cli"],
-                    "checks": [],
-                }
-            ],
-            "required_pr_gates": [],
-            "deployment_gates": [],
-        }
-
-    monkeypatch.setattr(evidence_dashboard, "build_verification_impact_report", _fake_impact)
-
-    trace = evidence_dashboard.build_trace(tmp_path)
-    row = trace["changes"][0]
-    assert row["evidence_artifact_count"] == 1
-    assert row["evidence_artifacts"][0]["contract"] == "cli.help.root"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -375,7 +223,6 @@ def test_cli_dashboard_markdown(
     out = capsys.readouterr().out
     assert "# Evidence Dashboard" in out
     assert "## Pytest health" in out
-    assert "## Contract evidence" in out
     assert "## Coverage" in out
     assert "## Static gates" in out
 

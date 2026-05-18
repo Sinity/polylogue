@@ -15,7 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -40,24 +40,6 @@ def _load_verify_history(history_file: Path) -> list[dict[str, Any]]:
     except (OSError, json.JSONDecodeError):
         pass
     return entries
-
-
-def _load_contract_evidence(evidence_dir: Path) -> list[dict[str, Any]]:
-    """Load contract evidence artifacts from .json files."""
-    if not evidence_dir.exists():
-        return []
-    artifacts: list[dict[str, Any]] = []
-    try:
-        for json_file in sorted(evidence_dir.glob("*.json")):
-            try:
-                with open(json_file) as f:
-                    data = json.load(f)
-                    artifacts.append(data)
-            except (OSError, json.JSONDecodeError):
-                pass
-    except OSError:
-        pass
-    return artifacts
 
 
 def _load_witnesses(witnesses_dir: Path) -> list[dict[str, Any]]:
@@ -147,13 +129,11 @@ def main(argv: list[str] | None = None) -> int:
 
     cache_dir = ROOT / ".cache"
     verify_history_file = cache_dir / "verify-history.jsonl"
-    evidence_dir = cache_dir / "verification" / "evidence"
     witnesses_dir = ROOT / "tests" / "witnesses"
     campaigns_dir = ROOT / ".local" / "benchmark-campaigns"
 
     # Load all data
     verify_history = _load_verify_history(verify_history_file)
-    contract_evidence = _load_contract_evidence(evidence_dir)
     witnesses = _load_witnesses(witnesses_dir)
     benchmark_runs = _load_benchmark_campaigns(campaigns_dir)
     registry_path = ROOT / "docs" / "plans" / "suppressions.yaml"
@@ -165,16 +145,6 @@ def main(argv: list[str] | None = None) -> int:
     last_30d_runs = _get_last_n_days(verify_history, 30)
     pass_count = sum(1 for r in last_30d_runs if r.get("exit_code") == 0)
     fail_count = sum(1 for r in last_30d_runs if r.get("exit_code") != 0)
-
-    # Process contract evidence
-    evidence_by_prefix: dict[str, int] = defaultdict(int)
-    stale_artifacts = []
-    for artifact in contract_evidence:
-        contract = artifact.get("contract", "unknown")
-        prefix = contract.split(".")[0] if contract else "unknown"
-        evidence_by_prefix[prefix] += 1
-        if artifact.get("dirty") or not artifact.get("git_sha"):
-            stale_artifacts.append(contract)
 
     # Process suppressions
     suppression_by_kind = Counter(s.kind for s in suppressions)
@@ -191,13 +161,11 @@ def main(argv: list[str] | None = None) -> int:
             latest_campaigns[name] = mtime
 
     # Compute blocking status from verify history
-    # Conservative criteria: only block when there is clear evidence of a broken baseline.
-    # Criterion A: last 2+ consecutive verify runs both failed (sustained breakage).
-    # Criterion B: there are stale contract evidence artifacts AND a recent verify failure.
+    # Conservative criterion: block when the last 2+ consecutive verify runs both failed
+    # (sustained breakage).
     recent_runs = verify_history[-2:] if len(verify_history) >= 2 else []
     last_two_both_failed = len(recent_runs) == 2 and all(r.get("exit_code") != 0 for r in recent_runs)
-    any_recent_failure = any(r.get("exit_code") != 0 for r in verify_history[-5:]) if verify_history else False
-    blocking = last_two_both_failed or (bool(stale_artifacts) and any_recent_failure)
+    blocking = last_two_both_failed
 
     # Report timestamp
     now = datetime.now(timezone.utc)
@@ -220,11 +188,6 @@ def main(argv: list[str] | None = None) -> int:
                     "passed": pass_count,
                     "failed": fail_count,
                 },
-            },
-            "contract_evidence": {
-                "total_artifacts": len(contract_evidence),
-                "stale_artifacts": len(stale_artifacts),
-                "by_prefix": dict(evidence_by_prefix),
             },
             "suppressions": {
                 "total_discovered": len(suppressions),
@@ -263,13 +226,6 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {ts} {tier} {status}  {duration:.2f}s")
         else:
             print("  (no history)")
-        print()
-
-        # Contract evidence section
-        print(f"CONTRACT EVIDENCE ({len(contract_evidence)} artifacts, {len(stale_artifacts)} stale)")
-        for prefix in sorted(evidence_by_prefix.keys()):
-            count = evidence_by_prefix[prefix]
-            print(f"  {prefix}: {count} artifacts")
         print()
 
         # Suppressions section

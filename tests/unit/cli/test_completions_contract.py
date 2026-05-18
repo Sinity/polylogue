@@ -15,7 +15,6 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
-from tests.infra.contract_evidence import ContractEvidenceRecorder
 
 pytestmark = pytest.mark.contract
 
@@ -40,7 +39,6 @@ class TestCompletionsPerShell:
         self,
         shell: str,
         runner: CliRunner,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         result = runner.invoke(cli, ["completions", "--shell", shell])
         assert result.exit_code == 0, f"completions --shell {shell} exited {result.exit_code}: {result.output!r}"
@@ -50,18 +48,6 @@ class TestCompletionsPerShell:
         # not know which completion handler to attach.
         assert "polylogue" in result.stdout, (
             f"completion script for shell={shell} does not mention 'polylogue': {result.stdout!r}"
-        )
-        record_contract_evidence.record(
-            "cli.completions.shell_script",
-            surface="cli",
-            command=("polylogue", "completions", "--shell", shell),
-            stdout=result.stdout,
-            exit_code=result.exit_code,
-            facts={
-                "shell": shell,
-                "script_bytes": len(result.stdout.encode("utf-8")),
-                "mentions_program_name": True,
-            },
         )
 
     @pytest.mark.parametrize("shell", SUPPORTED_SHELLS)
@@ -93,20 +79,10 @@ class TestCompletionsErrorPaths:
     def test_unknown_shell_exits_non_zero(
         self,
         runner: CliRunner,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         result = runner.invoke(cli, ["completions", "--shell", "ksh"])
         assert result.exit_code != 0
         assert TRACEBACK_SENTINEL not in result.output
-        record_contract_evidence.record(
-            "cli.completions.unknown_shell",
-            surface="cli",
-            command=("polylogue", "completions", "--shell", "ksh"),
-            stdout=result.stdout,
-            stderr=result.stderr,
-            exit_code=result.exit_code,
-            facts={"exit_code": result.exit_code, "traceback_present": False},
-        )
 
     def test_missing_shell_flag_exits_non_zero(self, runner: CliRunner) -> None:
         """``polylogue completions`` without ``--shell`` is a Click usage error."""

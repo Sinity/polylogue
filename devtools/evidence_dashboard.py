@@ -7,7 +7,6 @@ this command aggregates the full pytest-first evidence surface introduced by
 PRs #1083/#1086/#1087/#1088:
 
 - pytest health from ``.cache/verify/last-pytest.json``;
-- contract evidence inventory from ``.cache/verification/evidence/*.json``;
 - coverage from ``.coverage`` / ``coverage.xml`` when present;
 - benchmark/SLO catalog rows and their required-artifact coverage;
 - static gate status from ``.cache/verify-history.jsonl``;
@@ -28,7 +27,6 @@ import argparse
 import json
 import sys
 import xml.etree.ElementTree as ET
-from collections import Counter, defaultdict
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,7 +41,6 @@ ROOT = _get_root()
 PYTEST_REPORT_REL = Path(".cache/verify/last-pytest.json")
 VERIFY_HISTORY_REL = Path(".cache/verify-history.jsonl")
 LAST_VERIFY_RESULT_REL = Path(".cache/last-verify-result.json")
-EVIDENCE_DIR_REL = Path(".cache/verification/evidence")
 COVERAGE_DATA_REL = Path(".coverage")
 COVERAGE_XML_REL = Path("coverage.xml")
 WITNESSES_COMMITTED_REL = Path("tests/witnesses")
@@ -102,71 +99,6 @@ def _pytest_health(root: Path, *, now: datetime) -> dict[str, Any]:
         "last_run": mtime.isoformat(),
         "age_days": age_days,
         "stale": age_days > DEFAULT_STALE_DAYS,
-    }
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Section: contract evidence inventory
-# ──────────────────────────────────────────────────────────────────────
-
-
-def _contract_evidence(root: Path, *, now: datetime, stale_days: int) -> dict[str, Any]:
-    evidence_dir = root / EVIDENCE_DIR_REL
-    if not evidence_dir.exists():
-        return {
-            "available": False,
-            "reason": f"missing {EVIDENCE_DIR_REL} — run pytest contract tests",
-            "path": str(EVIDENCE_DIR_REL),
-        }
-    artifacts: list[dict[str, Any]] = []
-    for json_file in sorted(evidence_dir.glob("*.json")):
-        try:
-            data = json.loads(json_file.read_text())
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        mtime = datetime.fromtimestamp(json_file.stat().st_mtime, tz=timezone.utc)
-        artifacts.append(
-            {
-                "path": str(json_file.relative_to(root)),
-                "contract": str(data.get("contract", "unknown")),
-                "surface": str(data.get("surface", "unknown")),
-                "test_nodeid": data.get("test_nodeid"),
-                "git_sha": data.get("git_sha"),
-                "dirty": bool(data.get("dirty")),
-                "timestamp": data.get("timestamp"),
-                "mtime": mtime.isoformat(),
-                "age_days": (now - mtime).days,
-            }
-        )
-
-    by_surface: dict[str, Counter[str]] = defaultdict(Counter)
-    stale: list[str] = []
-    dirty: list[str] = []
-    for art in artifacts:
-        by_surface[art["surface"]][art["contract"]] += 1
-        if art["age_days"] > stale_days:
-            stale.append(art["contract"])
-        if art["dirty"]:
-            dirty.append(art["contract"])
-
-    surface_summary = {
-        surface: {
-            "total_artifacts": sum(counts.values()),
-            "unique_contracts": len(counts),
-        }
-        for surface, counts in sorted(by_surface.items())
-    }
-    return {
-        "available": True,
-        "path": str(EVIDENCE_DIR_REL),
-        "total_artifacts": len(artifacts),
-        "unique_contracts": len({art["contract"] for art in artifacts}),
-        "by_surface": surface_summary,
-        "stale_count": len(stale),
-        "stale_contracts": sorted(set(stale)),
-        "dirty_count": len(dirty),
     }
 
 
@@ -297,7 +229,6 @@ _STATIC_GATE_NAMES: tuple[str, ...] = (
     "verify-file-budgets",
     "verify-test-ownership",
     "verify-schema-roundtrip",
-    "verify-cross-cuts",
     "verify-suppressions",
     "verify-manifests",
     "verify-witness-lifecycle",
@@ -450,7 +381,7 @@ def _mutation_campaigns(root: Path, *, now: datetime) -> dict[str, Any]:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def build_dashboard(root: Path, *, now: datetime | None = None, stale_days: int = DEFAULT_STALE_DAYS) -> dict[str, Any]:
+def build_dashboard(root: Path, *, now: datetime | None = None) -> dict[str, Any]:
     """Build the complete evidence-dashboard payload from real artifacts."""
     when = now or datetime.now(timezone.utc)
     benchmark_section = _benchmark_slo(root, now=when)
@@ -459,7 +390,6 @@ def build_dashboard(root: Path, *, now: datetime | None = None, stale_days: int 
         "generated_at": when.isoformat(),
         "root": str(root),
         "pytest": _pytest_health(root, now=when),
-        "contract_evidence": _contract_evidence(root, now=when, stale_days=stale_days),
         "coverage": _coverage(root),
         "benchmark_campaigns": benchmark_section["benchmark_campaigns"],
         "slo_catalog": benchmark_section["slo_catalog"],
@@ -472,40 +402,6 @@ def build_dashboard(root: Path, *, now: datetime | None = None, stale_days: int 
 # ──────────────────────────────────────────────────────────────────────
 # Change traceability
 # ──────────────────────────────────────────────────────────────────────
-
-
-def _changed_path_evidence_map(root: Path) -> dict[str, list[dict[str, Any]]]:
-    """Index every contract-evidence artifact by its originating test source path.
-
-    Reads artifacts directly from disk rather than reusing the bounded summary
-    in ``verification_impact`` (which truncates to the most recent 20). The
-    trace surface needs the complete index so every changed test file maps
-    to its committed evidence.
-    """
-    evidence_dir = root / EVIDENCE_DIR_REL
-    by_path: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    if not evidence_dir.exists():
-        return by_path
-    for json_file in sorted(evidence_dir.glob("*.json")):
-        try:
-            payload = json.loads(json_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(payload, dict):
-            continue
-        nodeid = payload.get("test_nodeid")
-        if not isinstance(nodeid, str) or "::" not in nodeid:
-            continue
-        test_path = nodeid.split("::", 1)[0]
-        by_path[test_path].append(
-            {
-                "path": str(json_file.relative_to(root)),
-                "contract": str(payload.get("contract") or ""),
-                "surface": str(payload.get("surface") or "unknown"),
-                "test_nodeid": nodeid,
-            }
-        )
-    return by_path
 
 
 def build_trace(
@@ -524,8 +420,6 @@ def build_trace(
         head_ref=head_ref,
         changed_paths=list(changed_paths) if changed_paths is not None else None,
     )
-
-    evidence_by_path = _changed_path_evidence_map(root)
 
     # The verification-impact report exposes change subjects either at the
     # top level (when test fixtures supply a flattened shape) or nested under
@@ -551,7 +445,6 @@ def build_trace(
         path = subject.get("path")
         if not isinstance(path, str):
             continue
-        evidence_arts = evidence_by_path.get(path, [])
         rows.append(
             {
                 "path": path,
@@ -561,16 +454,6 @@ def build_trace(
                 "operation_names": subject.get("operation_names", []),
                 "surface_names": subject.get("surface_names", []),
                 "checks": subject.get("checks", []),
-                "evidence_artifacts": [
-                    {
-                        "path": art["path"],
-                        "contract": art.get("contract"),
-                        "surface": art.get("surface"),
-                        "test_nodeid": art.get("test_nodeid"),
-                    }
-                    for art in evidence_arts
-                ],
-                "evidence_artifact_count": len(evidence_arts),
             }
         )
 
@@ -615,21 +498,6 @@ def render_markdown(dashboard: dict[str, Any]) -> str:
         )
     else:
         lines.append(f"- unavailable: {pytest_data.get('reason')}")
-    lines.append("")
-
-    contract = dashboard["contract_evidence"]
-    lines.append("## Contract evidence")
-    if contract.get("available"):
-        lines.append(
-            f"- total_artifacts: {contract.get('total_artifacts')}, "
-            f"unique_contracts: {contract.get('unique_contracts')}, "
-            f"stale: {contract.get('stale_count')}, dirty: {contract.get('dirty_count')}"
-        )
-        by_surface = contract.get("by_surface", {})
-        for surface, info in sorted(by_surface.items()):
-            lines.append(f"  - {surface}: {info['total_artifacts']} artifacts ({info['unique_contracts']} contracts)")
-    else:
-        lines.append(f"- unavailable: {contract.get('reason')}")
     lines.append("")
 
     coverage = dashboard["coverage"]
@@ -715,9 +583,6 @@ def render_trace_markdown(trace: dict[str, Any]) -> str:
             lines.append(f"- subjects: {', '.join(row['subject_ids'])}")
         if row["surface_names"]:
             lines.append(f"- surfaces: {', '.join(row['surface_names'])}")
-        lines.append(f"- contract-evidence artifacts: {row['evidence_artifact_count']}")
-        for art in row["evidence_artifacts"][:5]:
-            lines.append(f"  - {art['contract']} ({art['surface']}) -> {art['path']}")
         if row["checks"]:
             lines.append("- recommended checks:")
             for check in row["checks"][:5]:
@@ -734,7 +599,7 @@ def render_trace_markdown(trace: dict[str, Any]) -> str:
 
 
 def _emit_dashboard(args: argparse.Namespace) -> int:
-    dashboard = build_dashboard(ROOT, stale_days=args.stale_days)
+    dashboard = build_dashboard(ROOT)
     if args.json or not args.markdown:
         json.dump(dashboard, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")
@@ -760,12 +625,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="Emit JSON output (default).")
     parser.add_argument("--markdown", action="store_true", help="Emit Markdown output (combinable with --json).")
-    parser.add_argument(
-        "--stale-days",
-        type=int,
-        default=DEFAULT_STALE_DAYS,
-        help=f"Mark contract-evidence artifacts older than N days as stale (default: {DEFAULT_STALE_DAYS}).",
-    )
     sub = parser.add_subparsers(dest="cmd")
 
     trace = sub.add_parser("trace", help="Change → claim → evidence → gate trace for the changed paths.")

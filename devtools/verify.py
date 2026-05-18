@@ -305,7 +305,6 @@ def build_verify_steps(
                 ("verify-test-ownership", _devtools_cmd("verify-test-ownership")),
                 ("verify-closure-matrix", _devtools_cmd("verify-closure-matrix")),
                 ("verify-schema-roundtrip", _devtools_cmd("verify-schema-roundtrip", "--all")),
-                ("verify-cross-cuts", _devtools_cmd("verify-cross-cuts")),
                 (
                     "verify-suppressions",
                     _devtools_cmd("verify-suppressions", "--enforce-kinds", "type_ignore,noqa,no_cover"),

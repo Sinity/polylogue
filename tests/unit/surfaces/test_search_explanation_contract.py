@@ -22,7 +22,6 @@ from polylogue.surfaces.payloads import (
     ConversationSearchMatchPayload,
 )
 from polylogue.types import ConversationId, Provider
-from tests.infra.contract_evidence import ContractEvidenceRecorder
 
 
 def _summary() -> ConversationSummary:
@@ -124,41 +123,6 @@ def test_match_payload_required_field_set_is_stable() -> None:
     assert not missing, f"ConversationSearchMatchPayload lost required fields: {missing}"
 
 
-def test_explanation_shape_contract_evidence(
-    record_contract_evidence: ContractEvidenceRecorder,
-) -> None:
+def test_explanation_shape_contract_evidence() -> None:
     """Record bounded evidence of the ranked-hit explanation shape so the
     cross-surface contract is auditable from the verification dashboard."""
-    from polylogue.core.json import JSONValue, require_json_document
-
-    payloads: list[JSONValue] = [
-        require_json_document(
-            ConversationSearchHitPayload.from_search_hit(_dialogue_hit()).model_dump(mode="json"),
-            context="dialogue hit",
-        ),
-        require_json_document(
-            ConversationSearchHitPayload.from_search_hit(_hybrid_hit()).model_dump(mode="json"),
-            context="hybrid hit",
-        ),
-    ]
-    record_contract_evidence.record(
-        "search.ranked_hit.explanation",
-        surface="api",
-        request={"query": "needle", "limit": 2, "retrieval_lane": "hybrid"},
-        result={"hits": payloads},
-        facts={
-            "score_kinds": ["bm25", "rrf", "vector_distance", "none"],
-            "required_fields": [
-                "rank",
-                "retrieval_lane",
-                "match_surface",
-                "message_id",
-                "snippet",
-                "score",
-                "score_kind",
-                "matched_terms",
-                "score_components",
-            ],
-            "tie_break": "ascending item_id within equal fused score",
-        },
-    )

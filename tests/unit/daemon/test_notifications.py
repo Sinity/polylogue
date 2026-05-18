@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.core.json import JSONValue
 from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier
 from polylogue.daemon.notifications import send_notifications
-from tests.infra.contract_evidence import ContractEvidenceRecorder
 
 
 class RecordingBackend:
@@ -35,9 +33,7 @@ def _alert(name: str, severity: HealthSeverity) -> HealthAlert:
 
 
 @pytest.mark.contract
-def test_send_notifications_routes_alert_batch_to_backend(
-    record_contract_evidence: ContractEvidenceRecorder,
-) -> None:
+def test_send_notifications_routes_alert_batch_to_backend() -> None:
     backend = RecordingBackend()
     config: dict[str, object] = {"notification_backend": "recording", "health_check_interval_s": 30}
     alerts = [
@@ -52,21 +48,6 @@ def test_send_notifications_routes_alert_batch_to_backend(
     delivered_alerts, delivered_config = backend.calls[0]
     assert delivered_alerts == alerts
     assert delivered_config == config
-    severities: list[JSONValue] = [alert.severity.value for alert in delivered_alerts]
-    record_contract_evidence.record(
-        "daemon.notifications.dispatch",
-        surface="daemon",
-        request={
-            "backend": "recording",
-            "alert_count": len(alerts),
-            "severities": severities,
-        },
-        facts={
-            "call_count": len(backend.calls),
-            "config_forwarded": delivered_config == config,
-            "delivered_severities": severities,
-        },
-    )
 
 
 def test_send_notifications_rejects_unknown_backend() -> None:

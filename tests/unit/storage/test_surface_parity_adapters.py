@@ -34,7 +34,6 @@ from tests.infra.archive_scenarios import (
     ScenarioMessage,
     seed_workspace_scenarios,
 )
-from tests.infra.contract_evidence import ContractEvidenceRecorder
 from tests.infra.query_cases import ArchiveQueryCase
 from tests.infra.surfaces import (
     ArchiveSurfaceSet,
@@ -126,9 +125,6 @@ async def adapter_surfaces(
 async def _assert_parity(
     surfaces: ArchiveSurfaceSet,
     case: ArchiveQueryCase,
-    recorder: ContractEvidenceRecorder,
-    *,
-    contract_root: str,
 ) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
     """Run ``case`` through every surface and assert id-tuple agreement."""
     expected = tuple(sorted(case.expected_ids))
@@ -139,13 +135,6 @@ async def _assert_parity(
         assert ids == expected, f"{surface.name} returned {ids} for {case.name!r}; expected {expected}"
         count = await surface.query_count(case)
         assert count == len(expected), f"{surface.name} count={count} for {case.name!r}; expected {len(expected)}"
-        recorder.record(
-            f"{contract_root}.{surface.name}",
-            surface=surface.name,
-            request={"case": case.name},
-            result={"ids": list(ids), "count": count},
-            facts={"expected_ids": list(expected)},
-        )
     return expected, projections
 
 
@@ -160,42 +149,39 @@ class TestProviderParity:
     async def test_provider_chatgpt_parity(
         self,
         adapter_surfaces: ArchiveSurfaceSet,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         case = ArchiveQueryCase(
             name="provider-chatgpt",
             provider="chatgpt",
             expected_ids=("parity-chatgpt-1",),
         )
-        await _assert_parity(adapter_surfaces, case, record_contract_evidence, contract_root="query.parity.provider")
+        await _assert_parity(adapter_surfaces, case)
 
     @pytest.mark.contract
     @pytest.mark.asyncio()
     async def test_provider_claude_parity(
         self,
         adapter_surfaces: ArchiveSurfaceSet,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         case = ArchiveQueryCase(
             name="provider-claude",
             provider="claude-code",
             expected_ids=("parity-claude-1", "parity-claude-2"),
         )
-        await _assert_parity(adapter_surfaces, case, record_contract_evidence, contract_root="query.parity.provider")
+        await _assert_parity(adapter_surfaces, case)
 
     @pytest.mark.contract
     @pytest.mark.asyncio()
     async def test_provider_codex_parity(
         self,
         adapter_surfaces: ArchiveSurfaceSet,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         case = ArchiveQueryCase(
             name="provider-codex",
             provider="codex",
             expected_ids=("parity-codex-1",),
         )
-        await _assert_parity(adapter_surfaces, case, record_contract_evidence, contract_root="query.parity.provider")
+        await _assert_parity(adapter_surfaces, case)
 
 
 # ---------------------------------------------------------------------------
@@ -209,28 +195,26 @@ class TestSearchParity:
     async def test_search_unique_token_parity(
         self,
         adapter_surfaces: ArchiveSurfaceSet,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         case = ArchiveQueryCase(
             name="search-aardvark",
             search_text="aardvark",
             expected_ids=("parity-chatgpt-1",),
         )
-        await _assert_parity(adapter_surfaces, case, record_contract_evidence, contract_root="query.parity.search")
+        await _assert_parity(adapter_surfaces, case)
 
     @pytest.mark.contract
     @pytest.mark.asyncio()
     async def test_search_shared_token_parity(
         self,
         adapter_surfaces: ArchiveSurfaceSet,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         case = ArchiveQueryCase(
             name="search-buffalo",
             search_text="buffalo",
             expected_ids=("parity-claude-1",),
         )
-        await _assert_parity(adapter_surfaces, case, record_contract_evidence, contract_root="query.parity.search")
+        await _assert_parity(adapter_surfaces, case)
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +234,6 @@ class TestStatsJoinParity:
     async def test_min_messages_filter_parity(
         self,
         adapter_surfaces: ArchiveSurfaceSet,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         # Counts: chatgpt-1=2, claude-1=3, claude-2=5, codex-1=1.
         # min_messages=3 → claude-1, claude-2.
@@ -259,14 +242,13 @@ class TestStatsJoinParity:
             min_messages=3,
             expected_ids=("parity-claude-1", "parity-claude-2"),
         )
-        await _assert_parity(adapter_surfaces, case, record_contract_evidence, contract_root="query.parity.stats")
+        await _assert_parity(adapter_surfaces, case)
 
     @pytest.mark.contract
     @pytest.mark.asyncio()
     async def test_max_messages_filter_parity(
         self,
         adapter_surfaces: ArchiveSurfaceSet,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         # max_messages=2 → chatgpt-1 (2 msgs), codex-1 (1 msg).
         case = ArchiveQueryCase(
@@ -274,14 +256,13 @@ class TestStatsJoinParity:
             max_messages=2,
             expected_ids=("parity-chatgpt-1", "parity-codex-1"),
         )
-        await _assert_parity(adapter_surfaces, case, record_contract_evidence, contract_root="query.parity.stats")
+        await _assert_parity(adapter_surfaces, case)
 
     @pytest.mark.contract
     @pytest.mark.asyncio()
     async def test_min_words_filter_parity(
         self,
         adapter_surfaces: ArchiveSurfaceSet,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         # claude-2 carries 5 messages of ~4 words each → ~20 words; everyone
         # else is below. min_words=15 → claude-2.
@@ -290,7 +271,7 @@ class TestStatsJoinParity:
             min_words=15,
             expected_ids=("parity-claude-2",),
         )
-        await _assert_parity(adapter_surfaces, case, record_contract_evidence, contract_root="query.parity.stats")
+        await _assert_parity(adapter_surfaces, case)
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +285,6 @@ class TestLimitOffsetParity:
     async def test_provider_with_limit_subset_parity(
         self,
         adapter_surfaces: ArchiveSurfaceSet,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """provider=claude-code + limit=1 returns one id; the id must agree across surfaces.
 
@@ -329,12 +309,6 @@ class TestLimitOffsetParity:
         ref = next(iter(seen.values()))
         for name, ids in seen.items():
             assert ids == ref, f"limit-1 disagreement: {name}={ids} vs reference={ref}"
-        record_contract_evidence.record(
-            "query.parity.limit.adapter-set",
-            surface="adapter-set",
-            request={"case": case.name},
-            result={"per_surface_ids": {k: list(v) for k, v in seen.items()}},
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +322,6 @@ class TestCombinedFilterParity:
     async def test_provider_plus_min_messages_parity(
         self,
         adapter_surfaces: ArchiveSurfaceSet,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         # claude-code conversations with >= 4 messages → claude-2 only.
         case = ArchiveQueryCase(
@@ -357,9 +330,4 @@ class TestCombinedFilterParity:
             min_messages=4,
             expected_ids=("parity-claude-2",),
         )
-        await _assert_parity(
-            adapter_surfaces,
-            case,
-            record_contract_evidence,
-            contract_root="query.parity.combined",
-        )
+        await _assert_parity(adapter_surfaces, case)

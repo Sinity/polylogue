@@ -21,15 +21,11 @@ contracts that any one of those layers could silently break:
 * the curated subscription seed never claims to be vendor-authoritative;
 * CLI/MCP cost surfaces share the same typed ``CycleOutlook`` envelope.
 
-Each assertion-bearing test also records a bounded contract-evidence
-artifact via the ``record_contract_evidence`` fixture so dashboards and
-PR-impact reports can attribute the surface that was exercised.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -41,7 +37,6 @@ from polylogue.archive.semantic.pricing import (
     CostEstimatePayload,
     estimate_conversation_cost,
 )
-from polylogue.core.json import JSONValue
 from polylogue.cost.aggregation import session_costs_to_daily_usd
 from polylogue.cost.outlook import (
     CycleOutlook,
@@ -75,7 +70,6 @@ from polylogue.maintenance.cost_migration import (
 from polylogue.maintenance.invalidation import InvalidationReason
 from polylogue.maintenance.planner import BackfillKind, BackfillStatus
 from tests.infra.builders import make_conv, make_msg
-from tests.infra.contract_evidence import ContractEvidenceRecorder
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -154,7 +148,7 @@ def _provenance() -> ArchiveInsightProvenance:
 # ---------------------------------------------------------------------------
 
 
-def test_basis_fields_are_independent(record_contract_evidence: ContractEvidenceRecorder) -> None:
+def test_basis_fields_are_independent() -> None:
     """The five basis axes never collapse into one another or into ``total_usd``.
 
     Each axis is reported separately because identical underlying usage can be
@@ -173,20 +167,8 @@ def test_basis_fields_are_independent(record_contract_evidence: ContractEvidence
     # Subscription stays zero unless explicitly configured by the cluster.
     assert estimate.basis.subscription_equivalent_usd == 0.0
 
-    record_contract_evidence.record(
-        "cost.basis.independent_axes",
-        surface="archive.semantic.pricing",
-        facts={
-            "total_usd": estimate.total_usd,
-            "basis": cast("dict[str, JSONValue]", _basis_to_dict(estimate.basis)),
-            "status": estimate.status,
-        },
-    )
 
-
-def test_provider_reported_usd_preserved_exactly(
-    record_contract_evidence: ContractEvidenceRecorder,
-) -> None:
+def test_provider_reported_usd_preserved_exactly() -> None:
     """When the source supplies a provider-reported total, it is preserved verbatim.
 
     The estimator must not round, scale, or otherwise transform an exact
@@ -195,16 +177,9 @@ def test_provider_reported_usd_preserved_exactly(
     estimate = _exact_estimate()
     assert estimate.basis.provider_reported_usd == 1.25
     assert estimate.status == "exact"
-    record_contract_evidence.record(
-        "cost.basis.provider_reported_preserved",
-        surface="archive.semantic.pricing",
-        facts={"provider_reported_usd": estimate.basis.provider_reported_usd},
-    )
 
 
-def test_estimated_status_signals_non_exact(
-    record_contract_evidence: ContractEvidenceRecorder,
-) -> None:
+def test_estimated_status_signals_non_exact() -> None:
     """Estimates not derived from an exact provider total must declare it.
 
     The substrate's signal for "this is estimated" is
@@ -219,16 +194,9 @@ def test_estimated_status_signals_non_exact(
     assert estimate.status != "exact"
     # Confidence is bounded below 0.95 reserved for exact status.
     assert estimate.confidence < 0.95
-    record_contract_evidence.record(
-        "cost.basis.estimated_flag",
-        surface="archive.semantic.pricing",
-        facts={"status": estimate.status, "confidence": estimate.confidence},
-    )
 
 
-def test_per_model_breakdown_sums_to_aggregate_within_rounding(
-    record_contract_evidence: ContractEvidenceRecorder,
-) -> None:
+def test_per_model_breakdown_sums_to_aggregate_within_rounding() -> None:
     """Per-model breakdown rows reconcile to the session aggregate.
 
     When every priced row has a known model, the sum of ``per_model_breakdown``
@@ -249,20 +217,9 @@ def test_per_model_breakdown_sums_to_aggregate_within_rounding(
     ):
         axis_sum = sum(getattr(row.basis, field) for row in estimate.per_model_breakdown)
         assert axis_sum == pytest.approx(getattr(estimate.basis, field), rel=1e-9, abs=1e-9)
-    record_contract_evidence.record(
-        "cost.basis.per_model_reconciles_aggregate",
-        surface="archive.semantic.pricing",
-        facts={
-            "total_usd": estimate.total_usd,
-            "breakdown_sum": breakdown_sum,
-            "row_count": len(estimate.per_model_breakdown),
-        },
-    )
 
 
-def test_partial_status_when_some_rows_unpriced(
-    record_contract_evidence: ContractEvidenceRecorder,
-) -> None:
+def test_partial_status_when_some_rows_unpriced() -> None:
     """A session with at least one unpriced message carries ``status='partial'``.
 
     The aggregate must declare partial coverage rather than silently pretending
@@ -282,11 +239,6 @@ def test_partial_status_when_some_rows_unpriced(
     estimate = estimate_conversation_cost(conversation)
     assert estimate.status == "partial"
     assert estimate.confidence < 0.85
-    record_contract_evidence.record(
-        "cost.basis.partial_coverage",
-        surface="archive.semantic.pricing",
-        facts={"status": estimate.status, "confidence": estimate.confidence},
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -294,9 +246,7 @@ def test_partial_status_when_some_rows_unpriced(
 # ---------------------------------------------------------------------------
 
 
-def test_curated_seed_marks_non_authoritative(
-    record_contract_evidence: ContractEvidenceRecorder,
-) -> None:
+def test_curated_seed_marks_non_authoritative() -> None:
     """Every curated subscription plan carries a non-authoritative notice.
 
     The cost cluster's public contract is that subscription-quota math is an
@@ -309,16 +259,9 @@ def test_curated_seed_marks_non_authoritative(
         assert plan.notice
         assert "Non-authoritative" in plan.notice or "non-authoritative" in plan.notice
         notices.append(plan.name)
-    record_contract_evidence.record(
-        "cost.plans.curated_seed_non_authoritative",
-        surface="cost.plans",
-        facts={"plan_count": len(notices), "plans": cast("list[JSONValue]", notices)},
-    )
 
 
-def test_quota_pressure_missing_when_plan_has_no_quota(
-    record_contract_evidence: ContractEvidenceRecorder,
-) -> None:
+def test_quota_pressure_missing_when_plan_has_no_quota() -> None:
     """Plans without ``quota`` and ``quota_basis`` produce ``QuotaPressureMissing``.
 
     The outlook engine must not fabricate a zero quota or pretend a plan
@@ -342,16 +285,9 @@ def test_quota_pressure_missing_when_plan_has_no_quota(
     assert isinstance(outlook.quota_pressure, QuotaPressureMissing)
     assert outlook.quota_pressure.reason == "no_quota_configured"
     assert outlook.overage_rows == ()
-    record_contract_evidence.record(
-        "cost.outlook.no_quota_pressure_when_absent",
-        surface="cost.outlook",
-        facts={"plan_name": plan.name, "reason": outlook.quota_pressure.reason},
-    )
 
 
-def test_quota_pressure_present_when_quota_declared(
-    record_contract_evidence: ContractEvidenceRecorder,
-) -> None:
+def test_quota_pressure_present_when_quota_declared() -> None:
     """When the plan declares a quota, the outlook reports typed quota pressure."""
     plan = plan_by_name("claude-pro")
     now = datetime(2026, 5, 11, tzinfo=UTC)
@@ -365,15 +301,6 @@ def test_quota_pressure_present_when_quota_declared(
     assert isinstance(outlook.quota_pressure, QuotaPressure)
     assert outlook.quota_pressure.basis is QuotaBasis.credits
     assert outlook.quota_pressure.quota == plan_with_anchor.quota
-    record_contract_evidence.record(
-        "cost.outlook.quota_pressure_when_declared",
-        surface="cost.outlook",
-        facts={
-            "plan_name": plan_with_anchor.name,
-            "basis": outlook.quota_pressure.basis.value,
-            "used": outlook.quota_pressure.used,
-        },
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -381,9 +308,7 @@ def test_quota_pressure_present_when_quota_declared(
 # ---------------------------------------------------------------------------
 
 
-def test_linear_projection_is_monotone_on_monotone_input(
-    record_contract_evidence: ContractEvidenceRecorder,
-) -> None:
+def test_linear_projection_is_monotone_on_monotone_input() -> None:
     """``project_linear`` is monotone non-decreasing in ``used``.
 
     A pure projection primitive that flipped direction on a monotone input
@@ -394,16 +319,9 @@ def test_linear_projection_is_monotone_on_monotone_input(
     projections = [project_linear(used, elapsed, total_days) for used in (10.0, 20.0, 50.0, 100.0, 200.0)]
     for left, right in zip(projections, projections[1:], strict=False):
         assert right >= left, f"projection regressed: {projections}"
-    record_contract_evidence.record(
-        "cost.outlook.projection_monotone",
-        surface="cost.outlook",
-        facts={"projections": cast("list[JSONValue]", projections)},
-    )
 
 
-def test_build_outlook_monotone_in_used(
-    record_contract_evidence: ContractEvidenceRecorder,
-) -> None:
+def test_build_outlook_monotone_in_used() -> None:
     """``build_cycle_outlook`` projected_total is monotone non-decreasing in usage."""
     plan = plan_by_name("claude-pro").model_copy(update={"cycle_anchor_day": 1})
     now = datetime(2026, 5, 11, tzinfo=UTC)
@@ -417,16 +335,9 @@ def test_build_outlook_monotone_in_used(
     values = [project(amt) for amt in (1_000.0, 10_000.0, 100_000.0, 1_000_000.0)]
     for left, right in zip(values, values[1:], strict=False):
         assert right >= left
-    record_contract_evidence.record(
-        "cost.outlook.build_monotone",
-        surface="cost.outlook",
-        facts={"projected": cast("list[JSONValue]", values)},
-    )
 
 
-def test_cycle_window_handles_month_end_anchor_deterministically(
-    record_contract_evidence: ContractEvidenceRecorder,
-) -> None:
+def test_cycle_window_handles_month_end_anchor_deterministically() -> None:
     """Cycle math is deterministic for any ``cycle_anchor_day`` in [1, 28].
 
     The plan model already rejects anchor days 29-31 (the documented
@@ -454,11 +365,6 @@ def test_cycle_window_handles_month_end_anchor_deterministically(
         assert start_iso < end_iso
         # The cycle window always contains ``now`` (or starts exactly at it).
         assert start_iso <= now.isoformat().replace("+00:00", "Z") < end_iso
-    record_contract_evidence.record(
-        "cost.outlook.cycle_anchor_determinism",
-        surface="cost.plans",
-        facts={"anchor_day": plan.cycle_anchor_day},
-    )
 
 
 def test_cycle_window_dst_invariant() -> None:
@@ -490,9 +396,7 @@ def test_cycle_window_dst_invariant() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_session_costs_aggregation_excludes_unpriced(
-    record_contract_evidence: ContractEvidenceRecorder,
-) -> None:
+def test_session_costs_aggregation_excludes_unpriced() -> None:
     """``session_costs_to_daily_usd`` excludes zero/unpriced and untimestamped rows.
 
     The cost outlook must not pretend an unpriced session contributed to the
@@ -530,11 +434,6 @@ def test_session_costs_aggregation_excludes_unpriced(
     daily = session_costs_to_daily_usd(insights)
     days = {row.day.isoformat() for row in daily}
     assert days == {"2026-05-01"}
-    record_contract_evidence.record(
-        "cost.aggregation.excludes_unpriced",
-        surface="cost.aggregation",
-        facts={"daily_rows": len(daily), "days": cast("list[JSONValue]", sorted(days))},
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -551,9 +450,7 @@ def _outlook_fixture() -> CycleOutlook:
     return outlook
 
 
-def test_api_cost_outlook_returns_typed_cycle_outlook(
-    record_contract_evidence: ContractEvidenceRecorder,
-) -> None:
+def test_api_cost_outlook_returns_typed_cycle_outlook() -> None:
     """``Polylogue.cost_outlook`` returns the typed ``CycleOutlook`` envelope.
 
     The async library API is the canonical caller behind both the CLI
@@ -578,17 +475,10 @@ def test_api_cost_outlook_returns_typed_cycle_outlook(
         "confidence",
     ):
         assert key in payload, f"missing key {key!r} in outlook envelope"
-    record_contract_evidence.record(
-        "cost.outlook.envelope_keys",
-        surface="api.cost_outlook",
-        result=cast("dict[str, JSONValue]", payload),
-    )
 
 
 @pytest.mark.asyncio
-async def test_mcp_cost_outlook_tool_uses_shared_envelope(
-    record_contract_evidence: ContractEvidenceRecorder,
-) -> None:
+async def test_mcp_cost_outlook_tool_uses_shared_envelope() -> None:
     """The MCP ``cost_outlook`` tool serializes the same typed envelope.
 
     The MCP tool is a leaf adapter — it must not redefine the cost outlook
@@ -623,11 +513,6 @@ async def test_mcp_cost_outlook_tool_uses_shared_envelope(
     # top level (matching the existing test_cost_outlook_tool.py contract).
     for key in ("plan_name", "window", "projection_method", "quota_pressure"):
         assert key in payload, f"MCP cost_outlook payload missing {key!r}"
-    record_contract_evidence.record(
-        "cost.outlook.mcp_envelope",
-        surface="mcp.cost_outlook",
-        result=cast("dict[str, JSONValue]", payload),
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -646,9 +531,7 @@ def _legacy_reader(rows: tuple[LegacyCostRow, ...]) -> object:
     return _reader
 
 
-def test_find_legacy_cost_rows_filters_by_provenance_and_amount(
-    record_contract_evidence: ContractEvidenceRecorder,
-) -> None:
+def test_find_legacy_cost_rows_filters_by_provenance_and_amount() -> None:
     """Only ``cost_provenance`` markers from the legacy set with positive cost migrate."""
     candidates = (
         LegacyCostRow("conv-legacy", "claude-code", total_cost_usd=0.42, cost_provenance="unknown"),
@@ -660,16 +543,9 @@ def test_find_legacy_cost_rows_filters_by_provenance_and_amount(
     legacy = find_legacy_cost_rows(_legacy_reader(candidates))  # type: ignore[arg-type]
     assert len(legacy) == 1
     assert legacy[0].conversation_id == "conv-legacy"
-    record_contract_evidence.record(
-        "cost.migration.find_legacy_rows",
-        surface="maintenance.cost_migration",
-        facts={"detected": [row.conversation_id for row in legacy]},
-    )
 
 
-def test_plan_cost_migration_emits_typed_backfill(
-    record_contract_evidence: ContractEvidenceRecorder,
-) -> None:
+def test_plan_cost_migration_emits_typed_backfill() -> None:
     """The migration returns a typed ``BackfillOperation`` with the legacy source tag.
 
     The planner-driven shape pins:
@@ -698,16 +574,6 @@ def test_plan_cost_migration_emits_typed_backfill(
     # Each result row exposes the source tag so downstream surfaces can render it.
     for result in op.results:
         assert result["source"] == LEGACY_COST_SOURCE
-    record_contract_evidence.record(
-        "cost.migration.plan_backfill",
-        surface="maintenance.cost_migration",
-        facts={
-            "kind": op.kind.value,
-            "target": op.targets[0],
-            "affected_rows": op.affected_rows,
-            "reason": op.reason.value,
-        },
-    )
 
 
 def test_plan_cost_migration_empty_input_produces_zero_affected() -> None:

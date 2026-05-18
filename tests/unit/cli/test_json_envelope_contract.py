@@ -24,7 +24,6 @@ from polylogue.cli.shared.machine_errors import (
     success,
 )
 from polylogue.core.json import JSONDocument
-from tests.infra.contract_evidence import ContractEvidenceRecorder
 from tests.infra.json_contracts import envelope_result, extract_json_object, json_object_field, parse_json_object
 
 pytestmark = pytest.mark.machine_contract
@@ -130,18 +129,10 @@ class TestQueryShapedJsonMatrix:
         result_key: str,
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],  # deterministic empty archive, no skip
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         parsed = _invoke_json_command(args, monkeypatch)
         assert parsed["status"] == "ok"
         assert result_key in envelope_result(parsed, context="format json envelope")
-        record_contract_evidence.record(
-            "cli.json_envelope",
-            surface="cli",
-            command=("polylogue", *args),
-            result=parsed,
-            facts={"result_key": result_key, "status": "ok"},
-        )
 
     @pytest.mark.parametrize(
         "args",
@@ -290,7 +281,6 @@ class TestListVerbJsonContract:
         self: object,
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """polylogue list --format json returns a JSON error envelope on empty archive.
 
@@ -306,12 +296,6 @@ class TestListVerbJsonContract:
         assert parsed.get("status") == "error"
         assert parsed.get("code") == "no_results"
         assert "message" in parsed
-        record_contract_evidence.record(
-            "cli.list_verb_json_empty",
-            surface="cli",
-            command=("polylogue", "list", "--format", "json"),
-            facts={"exit_code": exit_code, "status": parsed.get("status"), "code": parsed.get("code")},
-        )
 
     def test_list_json_invalid_format_choice_no_traceback(
         self: object,
@@ -341,7 +325,6 @@ class TestStatsVerbJsonContract:
         self: object,
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """polylogue stats --format json returns a JSON error envelope on empty archive."""
         exit_code, output = _invoke_raw_json_command(["stats", "--format", "json"], monkeypatch)
@@ -352,19 +335,12 @@ class TestStatsVerbJsonContract:
         assert isinstance(parsed, dict)
         assert parsed.get("status") == "error"
         assert parsed.get("code") == "no_results"
-        record_contract_evidence.record(
-            "cli.stats_verb_json_empty",
-            surface="cli",
-            command=("polylogue", "stats", "--format", "json"),
-            facts={"exit_code": exit_code, "status": parsed.get("status"), "code": parsed.get("code")},
-        )
 
     @pytest.mark.contract
     def test_stats_by_provider_json_empty_archive_returns_error_envelope(
         self: object,
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """polylogue stats --by provider --format json returns error envelope on empty archive."""
         exit_code, output = _invoke_raw_json_command(["stats", "--by", "provider", "--format", "json"], monkeypatch)
@@ -376,12 +352,6 @@ class TestStatsVerbJsonContract:
         assert isinstance(parsed, dict)
         assert parsed.get("status") == "error"
         assert "message" in parsed
-        record_contract_evidence.record(
-            "cli.stats_verb_by_provider_json_empty",
-            surface="cli",
-            command=("polylogue", "stats", "--by", "provider", "--format", "json"),
-            facts={"exit_code": exit_code, "status": parsed.get("status"), "code": parsed.get("code")},
-        )
 
     def test_stats_json_invalid_by_value_no_traceback(
         self: object,
@@ -409,7 +379,6 @@ class TestStatusJsonContract:
         self: object,
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """polylogue status --format json returns JSON when daemon is not running.
 
@@ -426,12 +395,6 @@ class TestStatusJsonContract:
         assert isinstance(parsed, dict)
         assert "daemon_liveness" in parsed, f"Missing 'daemon_liveness' key: {parsed.keys()}"
         assert parsed["daemon_liveness"] is False
-        record_contract_evidence.record(
-            "cli.status_json",
-            surface="cli",
-            command=("polylogue", "status", "--format", "json"),
-            facts={"daemon_liveness": parsed.get("daemon_liveness"), "keys": sorted(parsed.keys())},
-        )
 
     def test_status_json_no_traceback_on_bad_url(
         self: object,
@@ -460,7 +423,6 @@ class TestConfigJsonContract:
         self: object,
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """polylogue config --format json outputs a valid JSON object."""
         exit_code, output = _invoke_raw_json_command(["config", "--format", "json"], monkeypatch)
@@ -468,12 +430,6 @@ class TestConfigJsonContract:
         assert TRACEBACK_SENTINEL not in output
         parsed = json.loads(output)
         assert isinstance(parsed, dict)
-        record_contract_evidence.record(
-            "cli.config_json",
-            surface="cli",
-            command=("polylogue", "config", "--format", "json"),
-            facts={"exit_code": exit_code, "top_level_keys": sorted(parsed.keys())},
-        )
 
     def test_config_json_invalid_format_no_traceback(
         self: object,
@@ -498,7 +454,6 @@ class TestCostJsonContract:
         self: object,
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """polylogue cost rollup --format json outputs a valid JSON object."""
         exit_code, output = _invoke_raw_json_command(["cost", "rollup", "--format", "json"], monkeypatch)
@@ -506,12 +461,6 @@ class TestCostJsonContract:
         assert TRACEBACK_SENTINEL not in output
         parsed = json.loads(output)
         assert isinstance(parsed, dict)
-        record_contract_evidence.record(
-            "cli.cost_json",
-            surface="cli",
-            command=("polylogue", "cost", "rollup", "--format", "json"),
-            facts={"exit_code": exit_code, "top_level_keys": sorted(parsed.keys())},
-        )
 
     def test_cost_json_invalid_plan_exits_cleanly(
         self: object,
@@ -544,7 +493,6 @@ class TestSchemaExplainJsonContract:
         self: object,
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """schema explain --provider claude-ai --format json uses success envelope."""
         parsed = _invoke_json_command(
@@ -554,12 +502,6 @@ class TestSchemaExplainJsonContract:
         assert parsed["status"] == "ok"
         result = envelope_result(parsed, context="schema explain envelope")
         assert "provider" in result or "schema" in result or len(result) > 0
-        record_contract_evidence.record(
-            "cli.schema_explain_json",
-            surface="cli",
-            command=("polylogue", "schema", "explain", "--provider", "claude-ai", "--format", "json"),
-            facts={"status": "ok", "result_keys": ", ".join(sorted(result.keys()))},
-        )
 
     def test_schema_explain_json_unknown_provider_no_traceback(
         self: object,
@@ -624,7 +566,6 @@ class TestAllJsonCommandsProduceValidJson:
         allow_no_results: bool,
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """Every --format json command produces parseable JSON on any exit code."""
         exit_code, output = _invoke_raw_json_command(args, monkeypatch)
@@ -638,9 +579,3 @@ class TestAllJsonCommandsProduceValidJson:
         except json.JSONDecodeError as exc:
             pytest.fail(f"{' '.join(args)} produced invalid JSON: {exc}\nOutput: {output!r}")
         assert parsed is not None
-        record_contract_evidence.record(
-            contract_id,
-            surface="cli",
-            command=tuple(args),
-            facts={"exit_code": exit_code, "json_type": type(parsed).__name__},
-        )

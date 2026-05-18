@@ -11,7 +11,7 @@ from collections.abc import Callable, Mapping
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePath
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, urlparse
 
 from polylogue.core.loopback import is_loopback_origin
@@ -288,6 +288,36 @@ def _provenance_dict(prov: Any) -> dict[str, object]:
         "materialized_at": getattr(prov, "materialized_at", None),
         "source_updated_at": getattr(prov, "source_updated_at", None),
         "source_sort_key": getattr(prov, "source_sort_key", None),
+    }
+
+
+def _profile_staleness(record: Any, conversation_updated_at: str | None) -> dict[str, object] | None:
+    """Compare a session-profile record's provenance against its conversation.
+
+    Routes through :func:`polylogue.insights.provenance.is_stale` so the
+    daemon insights browser (#1018/#1120) consumes the typed staleness
+    helper rather than re-deriving the high-water-mark comparison inline.
+    Returns ``None`` when the record lacks the provenance fields the
+    helper expects.
+    """
+    from polylogue.insights.provenance import HasProvenance, is_stale
+
+    if record is None:
+        return None
+    if not all(
+        hasattr(record, field)
+        for field in ("materialized_at", "materializer_version", "input_high_water_mark", "input_row_count")
+    ):
+        return None
+    verdict = is_stale(
+        cast(HasProvenance, record),
+        source_high_water_mark=conversation_updated_at,
+    )
+    return {
+        "stale": verdict.stale,
+        "reason": verdict.reason,
+        "insight_high_water_mark": verdict.insight_high_water_mark,
+        "source_high_water_mark": verdict.source_high_water_mark,
     }
 
 
@@ -1236,9 +1266,22 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 # The substrate hasn't materialized this insight kind yet;
                 # surface q-missing rather than 503 the whole envelope.
                 profile = None
-            kinds["profile"] = (
-                _profile_panel_payload(profile) if profile is not None else _empty_profile_panel_payload()
-            )
+            panel = _profile_panel_payload(profile) if profile is not None else _empty_profile_panel_payload()
+            # Compare the materialized record's provenance against the
+            # conversation's current ``updated_at`` via the typed
+            # :func:`polylogue.insights.provenance.is_stale` helper so the
+            # reader sees explicit staleness, not just q-ready/q-missing
+            # presence chips.
+            if profile is not None:
+                try:
+                    profile_record = await poly.repository.get_session_profile_record(conv_id)
+                except ArchiveInsightUnavailableError:
+                    profile_record = None
+                conv_updated_at = conv.updated_at.isoformat() if conv.updated_at else None
+                staleness = _profile_staleness(profile_record, conv_updated_at)
+                if staleness is not None:
+                    panel["staleness"] = staleness
+            kinds["profile"] = panel
 
         if "timeline" in includes:
             try:
@@ -1596,17 +1639,53 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         assert source is not None
 
-        from polylogue.operations.import_contracts import ImportOperation
+        # Typed Operation scheduling contract (#1247/#1248): the daemon
+        # accepts an ``ImportRequest`` and emits an ``ImportAck`` carrying
+        # the shared ``OperationFollowUp`` envelope. The legacy wire keys
+        # (``path``, ``status``, ``ok``) are preserved for the CLI ingest
+        # adapter and HTTP clients that pre-date the typed contract.
+        from pydantic import ValidationError
+
+        from polylogue.operations.import_operations import ImportAck, ImportRequest
+        from polylogue.operations.operation_contract import OperationFollowUp
 
         op_id = f"ingest-{source.name}"
-        emit_daemon_event("ingest", operation_id=op_id, payload={"path": str(source), "inbox": str(inbox)})
 
-        operation = ImportOperation.pending(
+        try:
+            request = ImportRequest.model_validate(
+                {
+                    "source_path": body.get("path"),
+                    "source_name": source.name,
+                    "staged_path": str(source),
+                    "idempotency_key": body.get("idempotency_key"),
+                }
+            )
+        except ValidationError:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+
+        emit_daemon_event(
+            "ingest",
             operation_id=op_id,
-            path=str(source),
+            payload={"path": str(source), "inbox": str(inbox)},
+        )
+
+        ack = ImportAck.pending_import(
+            operation_id=op_id,
+            follow_up=OperationFollowUp(
+                status_endpoint=f"/api/operations/{op_id}",
+                poll_after_ms=500,
+            ),
             message="Ingestion scheduled. Check status for progress.",
         )
-        self._send_json(HTTPStatus.ACCEPTED, operation.to_dict())
+        response = dict(ack.to_dict())
+        response["ok"] = True
+        response["path"] = str(source)
+        # Surface the validated, typed request fields so clients can confirm
+        # the contract used; reading the request back closes the loop for
+        # adapter parity tests.
+        response["request"] = request.to_dict()
+        self._send_json(HTTPStatus.ACCEPTED, response)
 
     @daemon_safe_handler
     def _handle_maintenance_plan(self) -> None:

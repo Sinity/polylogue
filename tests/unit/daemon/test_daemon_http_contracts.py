@@ -42,9 +42,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from polylogue.core.json import JSONValue
 from polylogue.operations import build_declared_operation_catalog, build_runtime_operation_catalog
-from tests.infra.contract_evidence import ContractEvidenceRecorder
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
@@ -182,7 +180,6 @@ class TestStatusEnvelopeContract:
     def test_required_keys_always_present(
         self,
         workspace_env: dict[str, Path],
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """All ``REQUIRED_STATUS_KEYS`` are present in every status response.
 
@@ -203,20 +200,9 @@ class TestStatusEnvelopeContract:
         missing = REQUIRED_STATUS_KEYS - actual_keys
         assert not missing, f"status envelope missing required keys: {sorted(missing)}"
 
-        extra = actual_keys - REQUIRED_STATUS_KEYS
+        actual_keys - REQUIRED_STATUS_KEYS
         # Extra keys are allowed (forward-compat) but worth recording so
         # we notice when new fields are added without docs.
-        required: list[JSONValue] = [str(k) for k in sorted(REQUIRED_STATUS_KEYS)]
-        extra_keys: list[JSONValue] = [str(k) for k in sorted(extra)]
-        record_contract_evidence.record(
-            "daemon.status.envelope",
-            surface="daemon",
-            facts={
-                "required_keys": required,
-                "extra_keys_observed": extra_keys,
-                "daemon_liveness": payload["daemon_liveness"],
-            },
-        )
 
     def test_component_state_envelope_has_documented_subsystems(
         self,
@@ -274,7 +260,6 @@ class TestStatusReadOnlyContract:
     def test_status_endpoint_does_not_mutate_archive(
         self,
         workspace_env: dict[str, Path],
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """``GET /api/status`` returns observations only.
 
@@ -298,11 +283,6 @@ class TestStatusReadOnlyContract:
 
         after = _archive_state_hash(archive_root)
         assert before == after, "status endpoint mutated archive state"
-        record_contract_evidence.record(
-            "daemon.status.read_only",
-            surface="daemon",
-            facts={"polls": 3, "archive_hash_stable": before == after},
-        )
 
     def test_health_endpoint_does_not_mutate_archive(
         self,
@@ -334,7 +314,6 @@ class TestDegradedStateContract:
     def test_status_reports_daemon_liveness_false_when_no_pidfile(
         self,
         workspace_env: dict[str, Path],
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """``daemon_liveness`` is the documented disconnected indicator.
 
@@ -354,11 +333,6 @@ class TestDegradedStateContract:
         assert payload["daemon_liveness"] is False
         # component_state.api reflects the same fact.
         assert isinstance(payload["component_state"], dict)
-        record_contract_evidence.record(
-            "daemon.status.disconnected",
-            surface="daemon",
-            facts={"daemon_liveness": payload["daemon_liveness"]},
-        )
 
     def test_health_check_endpoint_reports_503_on_degraded_health(
         self,
@@ -469,7 +443,6 @@ class TestPrivacyContract:
         self,
         workspace_env: dict[str, Path],
         monkeypatch: pytest.MonkeyPatch,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """``GET /api/status`` must not include API keys or process env.
 
@@ -493,16 +466,6 @@ class TestPrivacyContract:
             if value in serialized:
                 leaks.append(name)
         assert not leaks, f"status payload leaked secret env vars: {leaks}"
-        sentinels_checked: list[JSONValue] = [str(k) for k in sorted(sentinels.keys())]
-        leaks_observed: list[JSONValue] = [str(k) for k in leaks]
-        record_contract_evidence.record(
-            "daemon.status.no_secret_leak",
-            surface="daemon",
-            facts={
-                "sentinels_checked": sentinels_checked,
-                "leaks_observed": leaks_observed,
-            },
-        )
 
     def test_status_payload_does_not_leak_full_environment(
         self,
@@ -645,7 +608,6 @@ class TestOperationSpecContract:
 
     def test_runtime_operations_are_well_formed(
         self,
-        record_contract_evidence: ContractEvidenceRecorder,
     ) -> None:
         """Strict contract for the runtime operation catalog."""
         catalog = build_runtime_operation_catalog()
@@ -676,15 +638,6 @@ class TestOperationSpecContract:
                 offenders.append(f"{spec.name}: {'; '.join(issues)}")
 
         assert not offenders, "runtime operation spec violations:\n" + "\n".join(offenders)
-        names_sample: list[JSONValue] = [str(name) for name in sorted(spec.name for spec in catalog.specs)[:10]]
-        record_contract_evidence.record(
-            "daemon.operations.runtime_spec_contract",
-            surface="daemon",
-            facts={
-                "spec_count": len(catalog.specs),
-                "names_sample": names_sample,
-            },
-        )
 
     def test_declared_operations_have_structural_fields(self) -> None:
         """Light-touch contract for the declared (superset) catalog.

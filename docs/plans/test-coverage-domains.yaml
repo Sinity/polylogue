@@ -274,12 +274,12 @@ domains:
       - tests/unit/proof/test_generated_scenario_obligations.py
       - tests/unit/devtools/test_verification_impact.py
       - tests/unit/devtools/test_verification_impact_cli.py
-      - tests/infra/test_contract_evidence.py
     notes: >
-      transitional — old proof/report tests exist, and contract-evidence
-      artifact tests now provide the replacement direction. #594/#1065 own
-      migrating this domain to reports over pytest/coverage/benchmark/CI
-      artifacts and deleting obsolete proof rows.
+      transitional — #594/#1065 own migrating this domain to reports
+      over pytest/coverage/benchmark/CI artifacts and deleting obsolete
+      proof rows. The contract-evidence recorder/fixture was removed in
+      #1322 (no production consumer); contract behavior is pinned by
+      ordinary pytest assertions instead of bounded-evidence artifacts.
 
 # -- Known gaps (from recon report #807) ----------------------------------
 #

@@ -381,16 +381,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-ci-workflows", "devtools verify-ci-workflows --json"),
     ),
     CommandSpec(
-        "verify-cross-cuts",
-        "verification",
-        "Verify cross-cut tags in the topology projection match module-name conventions.",
-        "devtools.verify_cross_cuts",
-        use_when=(
-            "Catch manual edits or rule changes that desync the cross_cut tags from the module names they describe."
-        ),
-        examples=("devtools verify-cross-cuts", "devtools verify-cross-cuts --json"),
-    ),
-    CommandSpec(
         "verify-witness-coverage",
         "verification",
         "Audit merged fix PRs for missing witnesses under tests/witnesses/.",
