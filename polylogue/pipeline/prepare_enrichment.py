@@ -150,7 +150,6 @@ def enrich_bundle_from_db(
             tool_name=block.tool_name,
             tool_id=block.tool_id,
             tool_input=block.tool_input,
-            media_type=block.media_type,
             metadata=block.metadata,
             semantic_type=block.semantic_type,
         )

@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.roles import Role
-from polylogue.core.json import dumps, require_json_document, require_json_value
+from polylogue.core.json import dumps, loads, require_json_document, require_json_value
 from polylogue.pipeline.prepare import _timestamp_sort_key
 from polylogue.storage.runtime import (
     AttachmentRecord,
@@ -146,6 +146,22 @@ def _coerce_builder_timestamp(value: object) -> str | None | _AutoTimestampSenti
     return _AUTO_TIMESTAMP
 
 
+def _merge_media_type_into_metadata(metadata: str | None, media_type: str | None) -> str | None:
+    """#1240: store media_type inside the block-metadata JSON envelope."""
+    if not media_type:
+        return metadata
+    base: dict[str, object] = {}
+    if metadata:
+        try:
+            parsed = loads(metadata)
+        except Exception:
+            return metadata
+        if isinstance(parsed, dict):
+            base.update(parsed)
+    base.setdefault("media_type", media_type)
+    return dumps(base)
+
+
 def _content_block_record(
     *,
     message_id: str,
@@ -160,6 +176,8 @@ def _content_block_record(
     metadata: str | None = None,
     semantic_type: str | None = None,
 ) -> ContentBlockRecord:
+    # #1240: media_type is now stored inside the block-metadata JSON.
+    merged_metadata = _merge_media_type_into_metadata(metadata, media_type)
     return ContentBlockRecord(
         block_id=ContentBlockRecord.make_id(message_id, block_index),
         message_id=_message_id(message_id),
@@ -170,8 +188,7 @@ def _content_block_record(
         tool_name=tool_name,
         tool_id=tool_id,
         tool_input=tool_input,
-        media_type=media_type,
-        metadata=metadata,
+        metadata=merged_metadata,
         semantic_type=None if semantic_type is None else SemanticBlockType.from_string(semantic_type),
     )
 
@@ -464,8 +481,8 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             """
             INSERT INTO content_blocks (
                 block_id, message_id, conversation_id, block_index,
-                type, text, tool_name, tool_id, tool_input, media_type, metadata, semantic_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                type, text, tool_name, tool_id, tool_input, metadata, semantic_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(message_id, block_index) DO UPDATE SET
                 type = excluded.type,
                 text = excluded.text,
@@ -484,7 +501,6 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
                 blk.tool_name,
                 blk.tool_id,
                 blk.tool_input,
-                blk.media_type,
                 blk.metadata,
                 blk.semantic_type,
             ),

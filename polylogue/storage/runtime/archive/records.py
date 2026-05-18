@@ -83,7 +83,6 @@ class ContentBlockRecord(BaseModel):
     tool_name: str | None = None
     tool_id: str | None = None
     tool_input: str | None = None
-    media_type: str | None = None
     metadata: str | None = None
     semantic_type: SemanticBlockType | None = None
 

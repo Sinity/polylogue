@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 
 from polylogue.archive.conversation.models import Conversation
 from polylogue.core.json import JSONDocument, JSONValue
-from polylogue.core.payload_coercion import string_sequence
 from polylogue.insights.feedback import LearningCorrection
 from polylogue.storage.repository.archive.writes.conversations import (
     conversation_to_record,
@@ -137,24 +136,27 @@ class RepositoryWriteMixin:
         return await self._metadata_read_modify_write(conversation_id, _delete)
 
     async def add_tag(self, conversation_id: str, tag: str) -> bool:
+        # #1240: tags are stored only in the M2M tables (tags + conversation_tags).
+        # The previous dual-write into ``conversations.metadata['tags']`` was
+        # legacy bookkeeping for the JSON read-fallback that has been removed.
         if not tag or not tag.strip():
             raise ValueError("tag must be a non-empty string")
         if len(tag) > 200:
             raise ValueError("tag must be at most 200 characters")
 
-        def _add(meta: JSONDocument) -> bool:
-            tags = list(string_sequence(meta.get("tags")))
-            if tag not in tags:
-                tags.append(tag)
-                tag_payload: list[JSONValue] = list(tags)
-                meta["tags"] = tag_payload
-                return True
-            return False
+        async with self._backend.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT 1 FROM conversation_tags ct
+                JOIN tags t ON t.id = ct.tag_id
+                WHERE ct.conversation_id = ? AND t.name = ?
+                """,
+                (conversation_id, tag),
+            )
+            already_present = await cursor.fetchone() is not None
 
-        was_added = await self._metadata_read_modify_write(conversation_id, _add)
-        # Also write to normalized tables for M2M query support
         await self._upsert_normalized_tag(conversation_id, tag)
-        return was_added
+        return not already_present
 
     async def bulk_add_tags(self, conversation_ids: list[str], tags: list[str]) -> int:
         """Add tags to multiple conversations within a single transaction.
@@ -164,7 +166,7 @@ class RepositoryWriteMixin:
             tags: List of tag strings to apply to each conversation.
 
         Returns:
-            Number of conversations whose tags were actually changed.
+            Number of conversations whose tag set was actually changed.
         """
         backend = self._backend
         applied_count = 0
@@ -176,49 +178,37 @@ class RepositoryWriteMixin:
                 )
                 if not await exists.fetchone():
                     continue
-                current = await conversations_q.get_metadata(conn, conversation_id)
-                meta: JSONDocument = dict(current) if current else {}
-                existing_tags = list(string_sequence(meta.get("tags")))
                 changed = False
                 for tag in tags:
-                    if tag not in existing_tags:
-                        existing_tags.append(tag)
+                    await conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag,))
+                    cursor = await conn.execute("SELECT id FROM tags WHERE name = ?", (tag,))
+                    row = await cursor.fetchone()
+                    if row is None:
+                        continue
+                    insert_result = await conn.execute(
+                        "INSERT OR IGNORE INTO conversation_tags (conversation_id, tag_id) VALUES (?, ?)",
+                        (conversation_id, row["id"]),
+                    )
+                    if insert_result.rowcount > 0:
                         changed = True
                 if changed:
-                    tag_payload: list[JSONValue] = list(existing_tags)
-                    meta["tags"] = tag_payload
-                    await conversations_q.update_metadata_raw(
-                        conn,
-                        conversation_id,
-                        meta,
-                    )
-                    # Also write to normalized tables
-                    for tag in tags:
-                        await conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag,))
-                        cursor = await conn.execute("SELECT id FROM tags WHERE name = ?", (tag,))
-                        row = await cursor.fetchone()
-                        if row is not None:
-                            await conn.execute(
-                                "INSERT OR IGNORE INTO conversation_tags (conversation_id, tag_id) VALUES (?, ?)",
-                                (conversation_id, row["id"]),
-                            )
                     applied_count += 1
         return applied_count
 
     async def remove_tag(self, conversation_id: str, tag: str) -> bool:
-        def _remove(meta: JSONDocument) -> bool:
-            tags = list(string_sequence(meta.get("tags")))
-            if tag in tags:
-                tags.remove(tag)
-                tag_payload: list[JSONValue] = list(tags)
-                meta["tags"] = tag_payload
-                return True
-            return False
+        async with self._backend.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT 1 FROM conversation_tags ct
+                JOIN tags t ON t.id = ct.tag_id
+                WHERE ct.conversation_id = ? AND t.name = ?
+                """,
+                (conversation_id, tag),
+            )
+            had_link = await cursor.fetchone() is not None
 
-        was_removed = await self._metadata_read_modify_write(conversation_id, _remove)
-        # Also remove from normalized tables
         await self._delete_normalized_tag(conversation_id, tag)
-        return was_removed
+        return had_link
 
     async def list_tags(self, *, provider: str | None = None) -> dict[str, int]:
         async with self._backend.connection() as conn:

@@ -150,27 +150,8 @@ async def list_tags(conn: aiosqlite.Connection, *, provider: str | None = None) 
         params,
     )
     rows = list(await cursor.fetchall())
-    if rows:
-        return {row["tag_name"]: row["cnt"] for row in rows}
-
-    # Fallback: read from JSON metadata for archives that haven't been migrated yet
-    json_where = "WHERE metadata IS NOT NULL AND json_extract(metadata, '$.tags') IS NOT NULL"
-    json_params: tuple[str, ...] = ()
-    if provider:
-        json_where += " AND provider_name = ?"
-        json_params = (provider,)
-    cursor = await conn.execute(
-        f"""
-        SELECT tag.value AS tag_name, COUNT(*) AS cnt
-        FROM conversations,
-             json_each(json_extract(metadata, '$.tags')) AS tag
-        {json_where}
-        GROUP BY tag.value
-        ORDER BY cnt DESC
-        """,
-        json_params,
-    )
-    rows = list(await cursor.fetchall())
+    # #1240: M2M (tags + conversation_tags) is the canonical read surface;
+    # the legacy JSON metadata fallback was removed with SCHEMA_VERSION 3.
     return {row["tag_name"]: row["cnt"] for row in rows}
 
 

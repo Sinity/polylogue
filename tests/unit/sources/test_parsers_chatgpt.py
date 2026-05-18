@@ -529,7 +529,6 @@ def test_chatgpt_metadata_roundtrip_parser_to_hydration(tmp_path: Path) -> None:
             tool_name=b.tool_name,
             tool_id=b.tool_id,
             tool_input=b.tool_input_json,
-            media_type=b.media_type,
             metadata=b.metadata_json,
             semantic_type=b.semantic_type,
         )
@@ -770,7 +769,6 @@ def test_chatgpt_metadata_permutation_roundtrip(
             tool_name=b.tool_name,
             tool_id=b.tool_id,
             tool_input=b.tool_input_json,
-            media_type=b.media_type,
             metadata=b.metadata_json,
             semantic_type=b.semantic_type,
         )

@@ -66,7 +66,8 @@ class RepositoryLifecycleHarness:
         return metadata
 
     async def assert_tags(self, expected: dict[str, int], *, provider: str | None = None) -> None:
-        assert await self.repository.list_tags(provider=provider) == expected
+        actual = await self.repository.list_tags(provider=provider)
+        assert actual == expected, f"expected={expected!r} actual={actual!r}"
 
     async def add_tag_and_assert_visible(self, scenario: ArchiveScenario, tag: str) -> None:
         await self.repository.add_tag(scenario.resolved_conversation_id, tag)

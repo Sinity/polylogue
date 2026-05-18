@@ -400,8 +400,8 @@ def test_update_index_refreshes_action_entries_for_updated_tool_blocks(
     test_conn.execute(
         """
         INSERT INTO content_blocks (
-            block_id, message_id, conversation_id, block_index, type, text, tool_name, tool_id, tool_input, media_type, metadata, semantic_type
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            block_id, message_id, conversation_id, block_index, type, text, tool_name, tool_id, tool_input, metadata, semantic_type
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             "blk-refresh-0b",
@@ -413,7 +413,6 @@ def test_update_index_refreshes_action_entries_for_updated_tool_blocks(
             "Bash",
             "tool-refresh",
             json.dumps({"command": "ruff check polylogue/archive/action_event/action_events.py"}),
-            None,
             None,
             "shell",
         ),

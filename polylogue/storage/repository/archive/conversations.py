@@ -30,6 +30,31 @@ class RepositoryArchiveConversationMixin:
         _backend: RepositoryBackendProtocol
         queries: SQLiteQueryStore
 
+    async def _fetch_tags_by_conversation(self, conversation_ids: list[str]) -> dict[str, tuple[str, ...]]:
+        """#1240: batch-fetch M2M tags for hydration of Conversation/ConversationSummary."""
+        if not conversation_ids:
+            return {}
+        result: dict[str, list[str]] = {cid: [] for cid in conversation_ids}
+        async with self._backend.connection() as conn:
+            placeholders = ",".join("?" for _ in conversation_ids)
+            cursor = await conn.execute(
+                f"""
+                SELECT ct.conversation_id AS cid, t.name AS name
+                FROM conversation_tags ct
+                JOIN tags t ON t.id = ct.tag_id
+                WHERE ct.conversation_id IN ({placeholders})
+                ORDER BY t.name
+                """,
+                conversation_ids,
+            )
+            rows = await cursor.fetchall()
+            for row in rows:
+                cid = row["cid"]
+                name = row["name"]
+                if cid in result:
+                    result[cid].append(name)
+        return {cid: tuple(names) for cid, names in result.items()}
+
     async def resolve_id(self, id_prefix: str, *, strict: bool = False) -> ConversationId | None:
         resolved = await self.queries.resolve_id(id_prefix, strict=strict)
         from polylogue.types import ConversationId
@@ -46,7 +71,14 @@ class RepositoryArchiveConversationMixin:
             self.queries.get_attachments(conversation_id),
             self.queries.get_provider_events(conversation_id),
         )
-        return conversation_from_records(conv_record, msg_records, att_records, provider_event_records)
+        tags_by_id = await self._fetch_tags_by_conversation([conversation_id])
+        return conversation_from_records(
+            conv_record,
+            msg_records,
+            att_records,
+            provider_event_records,
+            tags=tags_by_id.get(conversation_id, ()),
+        )
 
     async def get_render_projection(self, conversation_id: str) -> ConversationRenderProjection | None:
         conv_record = await self.queries.get_conversation(conversation_id)
@@ -139,12 +171,14 @@ class RepositoryArchiveConversationMixin:
                 self.queries.get_attachments_batch(present_ids),
                 self.queries.get_provider_events_batch(present_ids),
             )
+        tags_by_id = await self._fetch_tags_by_conversation(present_ids)
         return [
             conversation_from_records(
                 by_id[conversation_id],
                 msgs_by_id.get(conversation_id, []),
                 atts_by_id.get(conversation_id, []),
                 provider_events_by_id.get(conversation_id, []),
+                tags=tags_by_id.get(conversation_id, ()),
             )
             for conversation_id in present_ids
         ]
@@ -153,14 +187,20 @@ class RepositoryArchiveConversationMixin:
         conv_record = await self.queries.get_conversation(conversation_id)
         if not conv_record:
             return None
-        return conversation_summary_from_record(conv_record)
+        tags_by_id = await self._fetch_tags_by_conversation([conversation_id])
+        return conversation_summary_from_record(conv_record, tags=tags_by_id.get(conversation_id, ()))
 
     async def list_summaries_by_query(
         self,
         query: ConversationRecordQuery,
     ) -> list[ConversationSummary]:
         conv_records = await self.queries.list_conversation_summaries(query)
-        return [conversation_summary_from_record(record) for record in conv_records]
+        ids = [str(record.conversation_id) for record in conv_records]
+        tags_by_id = await self._fetch_tags_by_conversation(ids)
+        return [
+            conversation_summary_from_record(record, tags=tags_by_id.get(str(record.conversation_id), ()))
+            for record in conv_records
+        ]
 
     async def list_by_query(
         self,

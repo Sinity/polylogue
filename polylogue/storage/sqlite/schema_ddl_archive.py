@@ -140,7 +140,6 @@ ARCHIVE_STORAGE_DDL = """
             tool_name TEXT,
             tool_id TEXT,
             tool_input TEXT,
-            media_type TEXT,
             metadata TEXT,
             semantic_type TEXT,
             UNIQUE (message_id, block_index)
@@ -161,12 +160,6 @@ ARCHIVE_STORAGE_DDL = """
         CREATE INDEX IF NOT EXISTS idx_content_blocks_tool_use_conversation
         ON content_blocks(conversation_id)
         WHERE type = 'tool_use';
-
-        CREATE INDEX IF NOT EXISTS idx_content_blocks_semantic_type
-        ON content_blocks(semantic_type);
-
-        CREATE INDEX IF NOT EXISTS idx_content_blocks_conv_semantic
-        ON content_blocks(conversation_id, semantic_type);
 
         CREATE TABLE IF NOT EXISTS conversation_stats (
             conversation_id TEXT PRIMARY KEY
@@ -233,24 +226,6 @@ ARCHIVE_STORAGE_DDL = """
         CREATE INDEX IF NOT EXISTS idx_attachment_refs_message
         ON attachment_refs(message_id)
         WHERE message_id IS NOT NULL;
-
-        CREATE INDEX IF NOT EXISTS idx_attachments_provider_attachment_id
-        ON attachments(provider_attachment_id);
-
-        CREATE INDEX IF NOT EXISTS idx_attachments_provider_file_id
-        ON attachments(provider_file_id);
-
-        CREATE INDEX IF NOT EXISTS idx_attachments_provider_drive_id
-        ON attachments(provider_drive_id);
-
-        CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_attachment_id
-        ON attachment_refs(provider_attachment_id);
-
-        CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_file_id
-        ON attachment_refs(provider_file_id);
-
-        CREATE INDEX IF NOT EXISTS idx_attachment_refs_provider_drive_id
-        ON attachment_refs(provider_drive_id);
 
 """
 

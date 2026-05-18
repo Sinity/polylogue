@@ -126,8 +126,7 @@ The `messages` table intentionally does NOT have a `provider_meta` column. Messa
 | `text` | Block text content. |
 | `tool_name`, `tool_id` | Tool identity for tool_use blocks. |
 | `tool_input` | Tool input as JSON string. |
-| `media_type` | MIME type for media blocks. |
-| `metadata` | Extracted metadata as JSON string. |
+| `metadata` | Extracted metadata as JSON string (carries `media_type` for image/document blocks since #1240). |
 | `semantic_type` | Semantic classification enum. |
 
 All fields are canonical and properly modeled. No provider_meta column — this table is clean.

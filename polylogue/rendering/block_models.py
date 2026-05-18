@@ -85,13 +85,15 @@ def _coerce_mapping_block(block: Mapping[str, object]) -> RenderableBlock:
 
 def _coerce_record_block(block: ContentBlockRecord) -> RenderableBlock:
     metadata = _json_mapping(block.metadata)
+    # #1240: media_type lives inside the block-metadata JSON envelope.
+    mime_type = _optional_string(metadata.get("media_type")) if metadata is not None else None
     return RenderableBlock(
         type=block.type.value,
         text=block.text,
         language=_optional_string(metadata.get("language")) if metadata is not None else None,
         url=_optional_string(metadata.get("url")) if metadata is not None else None,
         name=_optional_string(metadata.get("name")) if metadata is not None else None,
-        mime_type=block.media_type,
+        mime_type=mime_type,
         tool_name=block.tool_name,
         tool_id=block.tool_id,
         tool_input=_json_mapping(block.tool_input),

@@ -69,15 +69,21 @@ async def test_repository_metadata_tag_and_delete_lifecycle_laws(workspace_env: 
         await harness.delete_metadata_and_assert_visible(scenario, "missing")
 
         metadata = await harness.repository.get_metadata(scenario.resolved_conversation_id)
-        assert metadata["tags"] == ["initial", "review"]
+        # #1240: tags are M2M-only; conversations.metadata['tags'] is no
+        # longer dual-written by add_tag, so the seeded payload is unchanged
+        # after add_tag("review").
+        assert metadata["tags"] == ["initial"]
         assert metadata["summary"] == "after"
         assert metadata["audit"] == {"status": "checked", "tooling": ["repository", "scenario"]}
+        # M2M reflects the seeded "initial" (written into conversation_tags by
+        # the scenario seeder) plus the "review" added through add_tag.
         await harness.assert_tags({"initial": 1, "review": 1})
 
         await harness.remove_tag_and_assert_visible(scenario, "initial")
         await harness.remove_tag_and_assert_visible(scenario, "initial")
         metadata_after_remove = await harness.repository.get_metadata(scenario.resolved_conversation_id)
-        assert metadata_after_remove["tags"] == ["review"]
+        # remove_tag only touches M2M; the seeded metadata payload is untouched.
+        assert metadata_after_remove["tags"] == ["initial"]
         await harness.assert_tags({"review": 1}, provider="claude-code")
         await harness.assert_archive_agrees(total_conversations=1)
 
@@ -126,9 +132,11 @@ async def test_repository_lifecycle_state_keeps_neighbor_conversations_visible(
         await harness.add_tag_and_assert_visible(target, "review")
         await harness.assert_conversation_visible(neighbor)
         await harness.update_metadata_and_assert_visible(target, "summary", "reviewed")
+        # #1240: add_tag no longer dual-writes into JSON metadata; the seeded
+        # ["target"] payload is unchanged by add_tag("review").
         await harness.assert_metadata_contains(
             target.resolved_conversation_id,
-            {"tags": ["target", "review"], "summary": "reviewed"},
+            {"tags": ["target"], "summary": "reviewed"},
         )
         await harness.assert_metadata_contains(neighbor.resolved_conversation_id, {"tags": ["neighbor"]})
         await harness.delete_conversation_and_assert_absent(target)
@@ -136,6 +144,8 @@ async def test_repository_lifecycle_state_keeps_neighbor_conversations_visible(
         await harness.assert_conversation_visible(neighbor)
         archive_facts = await harness.assert_archive_agrees(total_conversations=1)
         assert archive_facts.conversation_ids == (neighbor.resolved_conversation_id,)
+        # Target's M2M rows cascaded out with delete_conversation; neighbor's
+        # seeded "neighbor" tag remains in M2M.
         await harness.assert_tags({"neighbor": 1})
     finally:
         await harness.close()

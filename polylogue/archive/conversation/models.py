@@ -28,6 +28,10 @@ class ConversationSummary(ConversationSummaryRuntimeMixin, BaseModel):
     branch_type: BranchType | None = None
     message_count: int | None = None
     dialogue_count: int | None = None
+    # #1240: tags are sourced from the M2M conversation_tags table when
+    # hydrated through the repository. Empty by default so that legacy
+    # constructors keep working.
+    tags_m2m: tuple[str, ...] = ()
 
     @field_validator("provider", mode="before")
     @classmethod
@@ -51,6 +55,8 @@ class Conversation(ConversationRuntimeMixin, BaseModel):
     provider_events: tuple[ProviderEvent, ...] = ()
     parent_id: ConversationId | None = None
     branch_type: BranchType | None = None
+    # #1240: tags hydrated from conversation_tags M2M; see ConversationSummary.
+    tags_m2m: tuple[str, ...] = ()
 
     @field_validator("provider", mode="before")
     @classmethod

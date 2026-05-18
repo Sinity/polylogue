@@ -52,7 +52,6 @@ class MaterializedContentBlock:
     tool_name: str | None
     tool_id: str | None
     tool_input_json: str | None
-    media_type: str | None
     metadata_json: str | None
     semantic_type: SemanticBlockType | None
 
@@ -253,6 +252,14 @@ def _materialize_content_block(
         if detected_lang:
             semantic_metadata = {"language": detected_lang}
 
+    # #1240: media_type is no longer a dedicated column; preserve it under
+    # the existing block-metadata JSON for image/document blocks so the
+    # render/hash roundtrip stays lossless.
+    if block.media_type:
+        base = dict(semantic_metadata) if semantic_metadata else {}
+        base.setdefault("media_type", block.media_type)
+        semantic_metadata = base
+
     metadata_json = json_dumps(semantic_metadata) if semantic_metadata is not None else None
 
     from polylogue.storage.runtime import ContentBlockRecord
@@ -265,7 +272,6 @@ def _materialize_content_block(
         tool_name=block.tool_name,
         tool_id=block.tool_id,
         tool_input_json=tool_input_json,
-        media_type=block.media_type,
         metadata_json=metadata_json,
         semantic_type=semantic_type,
     )
