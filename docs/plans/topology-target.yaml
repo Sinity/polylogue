@@ -1072,8 +1072,12 @@ files:
     loc: 920
     target: polylogue/daemon/health.py
     owner: stable
+  - path: polylogue/daemon/healthz.py
+    loc: 166
+    target: polylogue/daemon/healthz.py
+    owner: stable
   - path: polylogue/daemon/http.py
-    loc: 1638
+    loc: 1654
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_models.py

@@ -620,6 +620,22 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._serve_web_shell()
             return
 
+        # Kubernetes-style probes. Unauthenticated by convention — k8s,
+        # docker, and systemd healthchecks don't carry credentials, and the
+        # probes leak only liveness/readiness booleans plus structured reason
+        # codes (no archive data, no environment). Implementation lives in
+        # daemon/healthz.py so http.py stays under its file-size budget.
+        if path == ["healthz", "live"]:
+            from polylogue.daemon.healthz import handle_healthz_live
+
+            handle_healthz_live(self)
+            return
+        if path == ["healthz", "ready"]:
+            from polylogue.daemon.healthz import handle_healthz_ready
+
+            handle_healthz_ready(self)
+            return
+
         if not self._check_auth():
             return
 
