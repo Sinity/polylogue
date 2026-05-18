@@ -174,14 +174,52 @@ def _make_cli() -> click.Group:
 cli = _make_cli()
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Entry point for programmatic use of the Click-based devtools CLI.
-
-    Converts argv to Click invocation and returns the exit code.
-    """
+def _dispatch(argv: list[str]) -> int:
+    """Run the Click CLI and translate ``SystemExit`` to an int return code."""
     try:
-        cli(args=argv or [], standalone_mode=True)
+        cli(args=argv, standalone_mode=True)
         return 0
     except SystemExit as e:
         code = e.code
         return code if isinstance(code, int) else 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Entry point for programmatic use of the Click-based devtools CLI.
+
+    Converts argv to Click invocation and returns the exit code.  Every
+    invocation appends a JSONL record to ``.agent/xtask/tasks.jsonl`` so
+    agent task history is self-populating (see ``devtools xtask``).  Set
+    ``POLYLOGUE_XTASK_DISABLE=1`` to opt out (also suppressed during a
+    ``devtools xtask replay`` to avoid double-logging the outer wrapper).
+    """
+    import os
+    import time
+
+    from devtools import xtask as xtask_mod
+
+    args_list = list(argv or [])
+    if not args_list or args_list[0].startswith("-"):
+        # Bare invocation or root option only — skip auto-log.
+        return _dispatch(args_list)
+
+    command_name = args_list[0]
+    inner_args = args_list[1:]
+
+    if xtask_mod.auto_log_disabled():
+        return _dispatch(args_list)
+
+    started = time.perf_counter()
+    exit_code = 0
+    try:
+        exit_code = _dispatch(args_list)
+        return exit_code
+    finally:
+        duration_ms = (time.perf_counter() - started) * 1000.0
+        xtask_mod.record_invocation(
+            command=command_name,
+            args=inner_args,
+            duration_ms=duration_ms,
+            exit_code=exit_code,
+            cwd=os.getcwd(),
+        )
