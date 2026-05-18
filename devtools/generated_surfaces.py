@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from devtools import (
     render_agents,
+    render_cli_output_schemas,
     render_cli_reference,
     render_devtools_reference,
     render_docs_surface,
@@ -49,10 +50,18 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
     GeneratedSurface(
         name="cli-reference",
         label="CLI docs",
-        description="Render docs/cli-reference.md from live CLI help.",
+        description="Render docs/cli-reference.md from live CLI help and output-assurance matrix.",
         command=control_plane_argv("render-cli-reference"),
         main=render_cli_reference.main,
-        inputs=("polylogue/cli/",),
+        inputs=("polylogue/cli/", "devtools/render_cli_reference.py"),
+    ),
+    GeneratedSurface(
+        name="cli-output-schemas",
+        label="CLI output schemas",
+        description="Render JSON Schema artifacts for stable CLI output payloads (#1272).",
+        command=control_plane_argv("render-cli-output-schemas"),
+        main=render_cli_output_schemas.main,
+        inputs=("polylogue/surfaces/payloads.py", "devtools/render_cli_output_schemas.py"),
     ),
     GeneratedSurface(
         name="devtools-reference",

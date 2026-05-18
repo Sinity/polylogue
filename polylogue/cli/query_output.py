@@ -55,7 +55,7 @@ if TYPE_CHECKING:
     from polylogue.storage.runtime import MessageRecord
 
 ConversationStats: TypeAlias = dict[str, int]
-MACHINE_OUTPUT_FORMATS = frozenset({"json", "yaml", "csv"})
+MACHINE_OUTPUT_FORMATS = frozenset({"json", "ndjson", "yaml", "csv"})
 DIALOGUE_MESSAGE_ROLES: MessageRoleFilter = (Role.USER, Role.ASSISTANT)
 
 

@@ -103,6 +103,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.render_cli_reference",
     ),
     CommandSpec(
+        "render-cli-output-schemas",
+        "generated surfaces",
+        "Render JSON Schema artifacts for stable CLI output payloads under docs/schemas/cli-output/.",
+        "devtools.render_cli_output_schemas",
+        use_when=(
+            "Refresh or verify published JSON Schemas after changing the surface payload models "
+            "that back stable CLI JSON output (#1272)."
+        ),
+        examples=(
+            "devtools render-cli-output-schemas",
+            "devtools render-cli-output-schemas --check",
+        ),
+    ),
+    CommandSpec(
         "render-devtools-reference",
         "generated surfaces",
         "Render the command catalog inside docs/devtools.md.",

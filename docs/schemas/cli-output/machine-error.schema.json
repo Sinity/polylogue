@@ -1,0 +1,45 @@
+{
+  "$id": "https://polylogue.dev/schemas/cli-output/machine-error.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Standard CLI machine-readable error envelope. Emitted by any command that ran with `--machine` or otherwise opts into a JSON error surface.\n\nGenerated from `polylogue.surfaces.payloads.MachineErrorPayload` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "properties": {
+    "code": {
+      "title": "Code",
+      "type": "string"
+    },
+    "command": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Command",
+      "type": "array"
+    },
+    "details": {
+      "additionalProperties": true,
+      "title": "Details",
+      "type": "object"
+    },
+    "message": {
+      "title": "Message",
+      "type": "string"
+    },
+    "status": {
+      "const": "error",
+      "default": "error",
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "code",
+    "message"
+  ],
+  "title": "Machine Error Envelope",
+  "type": "object",
+  "x-polylogue-cli-surfaces": [
+    "polylogue * --machine (error path)"
+  ],
+  "x-polylogue-source-model": "MachineErrorPayload"
+}

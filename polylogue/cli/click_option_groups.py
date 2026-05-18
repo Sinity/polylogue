@@ -288,8 +288,12 @@ OUTPUT_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         "--format",
         "-f",
         "output_format",
-        type=click.Choice(["markdown", "json", "html", "obsidian", "org", "yaml", "plaintext", "csv"]),
-        help="Output format (for --latest, --stream, or verb output)",
+        type=click.Choice(["markdown", "json", "ndjson", "html", "obsidian", "org", "yaml", "plaintext", "csv"]),
+        help=(
+            "Output format (for --latest, --stream, or verb output). "
+            "`ndjson` emits one JSON document per line, streaming-friendly for shell "
+            "pipelines and LLM tool-use harnesses."
+        ),
     ),
     click.option(
         "--transform",

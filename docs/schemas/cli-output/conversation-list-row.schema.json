@@ -1,0 +1,271 @@
+{
+  "$defs": {
+    "ConversationFlagsPayload": {
+      "additionalProperties": false,
+      "description": "Boolean flags summarizing conversation content characteristics.",
+      "properties": {
+        "has_paste": {
+          "default": false,
+          "title": "Has Paste",
+          "type": "boolean"
+        },
+        "has_thinking": {
+          "default": false,
+          "title": "Has Thinking",
+          "type": "boolean"
+        },
+        "has_tool_use": {
+          "default": false,
+          "title": "Has Tool Use",
+          "type": "boolean"
+        }
+      },
+      "title": "ConversationFlagsPayload",
+      "type": "object"
+    },
+    "ReaderActionAvailabilityPayload": {
+      "additionalProperties": false,
+      "description": "Per-target reader action availability with explicit disabled reason.",
+      "properties": {
+        "disabled_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Disabled Reason"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "title": "ReaderActionAvailabilityPayload",
+      "type": "object"
+    },
+    "TargetRefPayload": {
+      "additionalProperties": false,
+      "description": "Stable reader target reference for selectable archive objects.",
+      "properties": {
+        "block_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Index"
+        },
+        "conversation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Conversation Id"
+        },
+        "identity_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Identity Key"
+        },
+        "message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message Id"
+        },
+        "target_id": {
+          "title": "Target Id",
+          "type": "string"
+        },
+        "target_type": {
+          "enum": [
+            "conversation",
+            "message"
+          ],
+          "title": "Target Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_type",
+        "target_id"
+      ],
+      "title": "TargetRefPayload",
+      "type": "object"
+    }
+  },
+  "$id": "https://polylogue.dev/schemas/cli-output/conversation-list-row.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One row of `polylogue list --format json` output. The list verb emits an array of these objects; the `ndjson` format emits one per line as results stream.\n\nGenerated from `polylogue.surfaces.payloads.ConversationListRowPayload` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "properties": {
+    "actions": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ReaderActionAvailabilityPayload"
+      },
+      "title": "Actions",
+      "type": "object"
+    },
+    "anchor": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Anchor"
+    },
+    "cwd_display": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cwd Display"
+    },
+    "date": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Date"
+    },
+    "flags": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ConversationFlagsPayload"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "messages": {
+      "title": "Messages",
+      "type": "integer"
+    },
+    "provider": {
+      "title": "Provider",
+      "type": "string"
+    },
+    "repo": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Repo"
+    },
+    "summary": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Summary"
+    },
+    "tags": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Tags",
+      "type": "array"
+    },
+    "target_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TargetRefPayload"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    },
+    "words": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Words"
+    }
+  },
+  "required": [
+    "id",
+    "provider",
+    "title",
+    "messages"
+  ],
+  "title": "Conversation List Row",
+  "type": "object",
+  "x-polylogue-cli-surfaces": [
+    "polylogue list --format json",
+    "polylogue list --format ndjson",
+    "polylogue list --format yaml"
+  ],
+  "x-polylogue-source-model": "ConversationListRowPayload"
+}

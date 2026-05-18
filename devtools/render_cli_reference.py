@@ -63,6 +63,8 @@ def render_help(command: tuple[str, ...]) -> str:
 
 
 def build_document(sections: list[tuple[str, str]]) -> str:
+    from polylogue.cli.output_assurance import render_matrix_markdown
+
     parts = [
         "[← Back to README](../README.md)",
         "",
@@ -75,6 +77,7 @@ def build_document(sections: list[tuple[str, str]]) -> str:
     ]
     for title, body in sections:
         parts.extend([f"## {title}", "", "```text", body, "```", ""])
+    parts.append(render_matrix_markdown())
     return "\n".join(parts).rstrip() + "\n"
 
 
