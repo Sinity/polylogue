@@ -777,7 +777,14 @@ def repair_session_insights(
     *,
     progress_callback: ProgressCallback | None = None,
     progress_total: int | None = None,
+    conversation_ids: tuple[str, ...] | None = None,
 ) -> RepairResult:
+    """Repair / rebuild session insights.
+
+    When ``conversation_ids`` is given, the rebuild is narrowed to that
+    set instead of touching the full archive — used by the maintenance
+    planner to honor :class:`MaintenanceScopeFilter.conversation_ids`.
+    """
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
     from polylogue.storage.insights.session.status import session_insight_status_sync
     from polylogue.storage.sqlite.connection import connection_context
@@ -788,16 +795,21 @@ def repair_session_insights(
             assessment = _assess_session_insight_repairs(status)
 
             if dry_run:
+                pending = (
+                    min(assessment.pending, len(conversation_ids))
+                    if conversation_ids is not None
+                    else assessment.pending
+                )
                 return _repair_result(
                     "session_insights",
-                    repaired_count=assessment.pending,
+                    repaired_count=pending,
                     success=True,
                     detail="Would: session insights already ready"
-                    if assessment.pending == 0
-                    else f"Would: rebuild session insights ({assessment.pending:,} pending items)",
+                    if pending == 0
+                    else f"Would: rebuild session insights ({pending:,} pending items)",
                 )
 
-            if assessment.pending == 0 and _session_insight_status_ready(status):
+            if conversation_ids is None and assessment.pending == 0 and _session_insight_status_ready(status):
                 return _repair_result(
                     "session_insights",
                     repaired_count=0,
@@ -807,12 +819,15 @@ def repair_session_insights(
 
             rebuilt = rebuild_session_insights_sync(
                 conn,
+                conversation_ids=conversation_ids,
                 progress_callback=progress_callback,
                 progress_total=progress_total,
             )
             conn.commit()
             refreshed = session_insight_status_sync(conn)
-            success = _session_insight_status_ready(refreshed)
+            # A narrowed rebuild only attests its own slice; do not
+            # demand global readiness for a scope-filtered call.
+            success = True if conversation_ids is not None else _session_insight_status_ready(refreshed)
             return _repair_result(
                 "session_insights",
                 repaired_count=rebuilt.total(),

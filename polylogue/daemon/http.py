@@ -51,6 +51,39 @@ def _json_bytes(payload: object) -> bytes:
     return orjson.dumps(payload, option=orjson.OPT_APPEND_NEWLINE)
 
 
+_SCOPE_FILTER_KEYS = frozenset(
+    {
+        "conversation_ids",
+        "provider",
+        "source_family",
+        "source_root",
+        "raw_artifact_id",
+        "time_range",
+        "failure_kind",
+        "parser_version",
+    }
+)
+
+
+def _parse_scope_filter_body(body: dict[str, Any]) -> dict[str, Any]:
+    """Extract scope-filter fields from a maintenance POST body.
+
+    Accepts both a nested ``{"scope": {"filter": {...}}}`` envelope and
+    a flat top-level shape (``conversation_ids`` etc. directly on the
+    body). The flat form is the one the CLI's ``--output-format json``
+    plan reuses when an operator pipes it back to the daemon, so
+    parity with the CLI is what pins the daemon-side parser.
+    """
+
+    scope = body.get("scope")
+    if isinstance(scope, dict):
+        scope_filter = scope.get("filter")
+        if isinstance(scope_filter, dict):
+            return dict(scope_filter)
+    # Fall back to flat keys on the body itself.
+    return {key: body[key] for key in _SCOPE_FILTER_KEYS if key in body}
+
+
 def _dump_target_ref(target_ref: TargetRefPayload) -> dict[str, object]:
     return target_ref.model_dump(mode="json", exclude_none=True)
 
@@ -1593,14 +1626,21 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.config import Config
         from polylogue.maintenance.envelope import envelope_from_operation
         from polylogue.maintenance.planner import preview_backfill
+        from polylogue.maintenance.scope import MaintenanceScopeFilter
         from polylogue.paths import archive_root, render_root
+
+        try:
+            scope_filter = MaintenanceScopeFilter.from_dict(_parse_scope_filter_body(body))
+        except (TypeError, ValueError):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
 
         config = Config(
             archive_root=archive_root(),
             render_root=render_root(),
             sources=[],
         )
-        result = preview_backfill(config, targets=targets)
+        result = preview_backfill(config, targets=targets, scope_filter=scope_filter)
         envelope = envelope_from_operation(result, origin="daemon", mode="preview")
         self._send_json(HTTPStatus.OK, envelope.to_dict())
 
@@ -1623,14 +1663,21 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.config import Config
         from polylogue.maintenance.envelope import envelope_from_operation
         from polylogue.maintenance.planner import execute_backfill
+        from polylogue.maintenance.scope import MaintenanceScopeFilter
         from polylogue.paths import archive_root, render_root
+
+        try:
+            scope_filter = MaintenanceScopeFilter.from_dict(_parse_scope_filter_body(body))
+        except (TypeError, ValueError):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
 
         config = Config(
             archive_root=archive_root(),
             render_root=render_root(),
             sources=[],
         )
-        result = execute_backfill(config, targets=targets, dry_run=dry_run)
+        result = execute_backfill(config, targets=targets, dry_run=dry_run, scope_filter=scope_filter)
         envelope = envelope_from_operation(result, origin="daemon", mode="execute")
         self._send_json(HTTPStatus.OK, envelope.to_dict())
 

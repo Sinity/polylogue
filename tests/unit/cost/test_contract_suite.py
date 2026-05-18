@@ -690,9 +690,11 @@ def test_plan_cost_migration_emits_typed_backfill(
     assert op.affected_rows == 2
     assert op.reason is InvalidationReason.STALE_MATERIALIZER_VERSION
     assert op.scope is not None
-    assert op.scope.filter["cost_basis"] == LEGACY_COST_SOURCE
-    assert op.scope.filter["conversation_ids"] == ["conv-a", "conv-b"]
-    assert op.scope.filter["dry_run"] is True
+    # The cost-migration plan now uses the typed MaintenanceScopeFilter
+    # and surfaces the legacy conversation set via ``conversation_ids``.
+    # ``cost_basis`` / ``dry_run`` are no longer scope dimensions — they
+    # are encoded in the per-result rows and in the operation status.
+    assert op.scope.filter.conversation_ids == ("conv-a", "conv-b")
     # Each result row exposes the source tag so downstream surfaces can render it.
     for result in op.results:
         assert result["source"] == LEGACY_COST_SOURCE

@@ -54,6 +54,7 @@ from polylogue.maintenance.planner import (
     FailureSample,
     MaintenanceScope,
 )
+from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.maintenance.targets import (
     MAINTENANCE_TARGET_NAMES,
     MaintenanceTargetSpec,
@@ -292,6 +293,7 @@ def execute_replay(
     dry_run: bool = False,
     persist_state: bool = True,
     progress_callback: ProgressCallback | None = None,
+    scope_filter: MaintenanceScopeFilter | None = None,
 ) -> BackfillOperation:
     """Execute (or resume) a backfill replay against the configured archive.
 
@@ -338,6 +340,7 @@ def execute_replay(
     catalog = build_maintenance_target_catalog()
     resolved_specs = catalog.resolve(tuple(targets))
     resolved_names = tuple(spec.name for spec in resolved_specs)
+    effective_filter = scope_filter or MaintenanceScopeFilter()
 
     if not resolved_names:
         return BackfillOperation(
@@ -346,7 +349,7 @@ def execute_replay(
             targets=(),
             status=BackfillStatus.FAILED,
             error="No valid targets resolved from input",
-            scope=MaintenanceScope(targets=()),
+            scope=MaintenanceScope(targets=(), filter=effective_filter),
         )
 
     if resume_cursor is None and persist_state:
@@ -375,7 +378,7 @@ def execute_replay(
     for index in range(start_index, len(resolved_names)):
         spec = resolved_specs[index]
         target_name = spec.name
-        _run_one_target(state, spec, config, dry_run=dry_run)
+        _run_one_target(state, spec, config, dry_run=dry_run, scope_filter=effective_filter)
         # Advance the cursor *after* the target completes (success or
         # failure). On failure we still advance so the next resume does
         # not re-execute the same target and stack duplicate failure
@@ -421,7 +424,7 @@ def execute_replay(
         completed_at=completed_at,
         affected_rows=state.repaired_total,
         results=state.results,
-        scope=MaintenanceScope(targets=resolved_names),
+        scope=MaintenanceScope(targets=resolved_names, filter=effective_filter),
         reason=InvalidationReason.UNKNOWN if state.failures else None,
         resume_cursor=state.cursor,
         failure_samples=BoundedFailureSamples.from_samples(state.failures),
@@ -435,6 +438,7 @@ def _run_one_target(
     config: Config,
     *,
     dry_run: bool,
+    scope_filter: MaintenanceScopeFilter,
 ) -> None:
     """Execute one target, recording success or a typed failure sample."""
 
@@ -458,7 +462,17 @@ def _run_one_target(
         return
 
     try:
-        result = repair_fn(config, dry_run)
+        if target_name == "session_insights" and scope_filter.conversation_ids is not None:
+            # The session-insights repair fn understands a narrowed
+            # conversation-id scope natively; forward it so a one-session
+            # plan only touches that one session's insights.
+            result = repair_session_insights(
+                config,
+                dry_run,
+                conversation_ids=scope_filter.conversation_ids,
+            )
+        else:
+            result = repair_fn(config, dry_run)
     except (RuntimeError, sqlite3.Error) as exc:
         # Per-AC: a single bad target must not abort the rest of the
         # operation. Convert the raised exception into a typed failure
@@ -521,6 +535,7 @@ def _checkpoint_state(
 __all__ = [
     "CURSOR_DONE",
     "MAINTENANCE_TARGET_NAMES",
+    "MaintenanceScopeFilter",
     "ProgressCallback",
     "ReplayProgress",
     "UnsupportedReplayTargetError",

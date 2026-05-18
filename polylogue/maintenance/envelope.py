@@ -41,6 +41,7 @@ from polylogue.maintenance.planner import (
     BoundedFailureSamples,
     FailureSample,
 )
+from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.surfaces.payloads import SurfacePayloadModel
 
 #: Allowed values for the ``origin`` envelope field.
@@ -77,15 +78,17 @@ class MaintenanceFailureSamplesPayload(SurfacePayloadModel):
 
 
 class MaintenanceScopePayload(SurfacePayloadModel):
-    """Typed scope view: target ids + optional free-form filter.
+    """Typed scope view: target ids + typed scope filter.
 
-    ``filter`` is typed as ``dict[str, Any]`` at the Pydantic boundary
-    because the planner contract permits arbitrary JSON-shaped values
-    (conversation id sets, glob patterns, time windows, etc.) that the
-    recursive ``JSONValue`` alias cannot model at field-annotation time
-    without manual rebuild. JSON-document-ness is preserved by
-    :func:`envelope_from_operation`, which coerces via
-    :func:`json_document` before assignment.
+    ``filter`` is the serialized form of
+    :class:`polylogue.maintenance.scope.MaintenanceScopeFilter` —
+    a dict of named scope dimensions (``conversation_ids``,
+    ``provider``, ``source_family``, ``source_root``,
+    ``raw_artifact_id``, ``time_range``, ``failure_kind``,
+    ``parser_version``). It is typed as ``dict[str, Any]`` at the
+    Pydantic boundary so the recursive ``JSONValue`` alias does not
+    need a manual rebuild; the typed contract is pinned by
+    :class:`MaintenanceScopeFilter` itself.
     """
 
     targets: tuple[str, ...]
@@ -155,9 +158,15 @@ def envelope_from_operation(
         actual or dry-run repair pass.
     """
     scope = operation.scope
+    if scope is not None:
+        scope_targets = tuple(scope.targets)
+        scope_filter_dict = scope.filter.to_dict()
+    else:
+        scope_targets = tuple(operation.targets)
+        scope_filter_dict = MaintenanceScopeFilter().to_dict()
     scope_payload = MaintenanceScopePayload(
-        targets=tuple(scope.targets) if scope is not None else tuple(operation.targets),
-        filter=json_document(scope.filter) if scope is not None else json_document({}),
+        targets=scope_targets,
+        filter=scope_filter_dict,
     )
     return MaintenanceOperationEnvelope(
         operation_id=operation.operation_id,

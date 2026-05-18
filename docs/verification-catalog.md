@@ -104,10 +104,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue insights work-events` | `polylogue/cli/commands/insights.py:105` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue list` | `polylogue/cli/click_app.py` `polylogue list` |
 | `polylogue maintenance` | `polylogue/cli/click_app.py` `polylogue maintenance` |
-| `polylogue maintenance gc-history` | `polylogue/cli/commands/maintenance.py:278` `polylogue.cli.commands.maintenance.gc_history_command` |
-| `polylogue maintenance plan` | `polylogue/cli/commands/maintenance.py:30` `polylogue.cli.commands.maintenance.plan_command` |
-| `polylogue maintenance preview` | `polylogue/cli/commands/maintenance.py:210` `polylogue.cli.commands.maintenance.preview_command` |
-| `polylogue maintenance run` | `polylogue/cli/commands/maintenance.py:88` `polylogue.cli.commands.maintenance.run_command` |
+| `polylogue maintenance gc-history` | `polylogue/cli/commands/maintenance.py:422` `polylogue.cli.commands.maintenance.gc_history_command` |
+| `polylogue maintenance plan` | `polylogue/cli/commands/maintenance.py:127` `polylogue.cli.commands.maintenance.plan_command` |
+| `polylogue maintenance preview` | `polylogue/cli/commands/maintenance.py:354` `polylogue.cli.commands.maintenance.preview_command` |
+| `polylogue maintenance run` | `polylogue/cli/commands/maintenance.py:210` `polylogue.cli.commands.maintenance.run_command` |
 | `polylogue messages` | `polylogue/cli/click_app.py` `polylogue messages` |
 | `polylogue neighbors` | `polylogue/cli/click_app.py` `polylogue neighbors` |
 | `polylogue open` | `polylogue/cli/click_app.py` `polylogue open` |

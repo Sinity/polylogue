@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.mcp.payloads import MCPMutationStatusPayload, MCPRootPayload
 from polylogue.mcp.query_contracts import (
     MCPContentProjectionRequest,
@@ -18,15 +21,69 @@ if TYPE_CHECKING:
     from polylogue.mcp.server_support import ServerCallbacks
 
 
+def _build_mcp_scope_filter(
+    *,
+    conversation_ids: list[str] | None,
+    provider: str | None,
+    source_family: str | None,
+    source_root: str | None,
+    raw_artifact_id: str | None,
+    since: str | None,
+    until: str | None,
+    failure_kind: str | None,
+    parser_version: str | None,
+) -> MaintenanceScopeFilter:
+    """Translate MCP tool args into a :class:`MaintenanceScopeFilter`.
+
+    Shared by ``maintenance_preview`` and ``maintenance_execute`` so the
+    two MCP tools never drift on how they parse scope filters.
+    """
+    time_range: tuple[datetime, datetime] | None
+    if since is not None or until is not None:
+        if since is None or until is None:
+            raise ValueError("since and until must be supplied together")
+        since_dt = datetime.fromisoformat(since.replace("Z", "+00:00") if since.endswith("Z") else since)
+        until_dt = datetime.fromisoformat(until.replace("Z", "+00:00") if until.endswith("Z") else until)
+        time_range = (since_dt, until_dt)
+    else:
+        time_range = None
+
+    return MaintenanceScopeFilter(
+        conversation_ids=tuple(conversation_ids) if conversation_ids else None,
+        provider=provider,
+        source_family=source_family,
+        source_root=Path(source_root) if source_root else None,
+        raw_artifact_id=raw_artifact_id,
+        time_range=time_range,
+        failure_kind=failure_kind,
+        parser_version=parser_version,
+    )
+
+
 def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
-    async def maintenance_preview(targets: list[str] | None = None) -> str:
+    async def maintenance_preview(
+        targets: list[str] | None = None,
+        conversation_ids: list[str] | None = None,
+        provider: str | None = None,
+        source_family: str | None = None,
+        source_root: str | None = None,
+        raw_artifact_id: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        failure_kind: str | None = None,
+        parser_version: str | None = None,
+    ) -> str:
         """Dry-run summary of maintenance backfill targets.
 
         Returns the shared :class:`MaintenanceOperationEnvelope` so the
         result shape is byte-for-byte identical to the CLI ``polylogue
         maintenance plan --output-format json`` and the daemon HTTP
-        ``POST /api/maintenance/plan`` responses.
+        ``POST /api/maintenance/plan`` responses. The scope-filter
+        parameters mirror the CLI ``--conversation-id``, ``--provider``,
+        ``--source-family``, ``--source-root``, ``--raw-artifact``,
+        ``--since``/``--until``, ``--failure-kind``, and
+        ``--parser-version`` flags.
         """
 
         async def run() -> str:
@@ -41,19 +98,44 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 sources=[],
             )
             resolved = tuple(targets or ())
-            result = preview_backfill(config, targets=resolved)
+            scope_filter = _build_mcp_scope_filter(
+                conversation_ids=conversation_ids,
+                provider=provider,
+                source_family=source_family,
+                source_root=source_root,
+                raw_artifact_id=raw_artifact_id,
+                since=since,
+                until=until,
+                failure_kind=failure_kind,
+                parser_version=parser_version,
+            )
+            result = preview_backfill(config, targets=resolved, scope_filter=scope_filter)
             envelope = envelope_from_operation(result, origin="mcp", mode="preview")
             return hooks.json_payload(envelope)
 
         return await hooks.async_safe_call("maintenance_preview", run)
 
     @mcp.tool()
-    async def maintenance_execute(targets: list[str] | None = None, dry_run: bool = False) -> str:
+    async def maintenance_execute(
+        targets: list[str] | None = None,
+        dry_run: bool = False,
+        conversation_ids: list[str] | None = None,
+        provider: str | None = None,
+        source_family: str | None = None,
+        source_root: str | None = None,
+        raw_artifact_id: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        failure_kind: str | None = None,
+        parser_version: str | None = None,
+    ) -> str:
         """Run (or dry-run) maintenance backfill targets.
 
         Returns the shared :class:`MaintenanceOperationEnvelope` with
         ``mode="execute"``. Per-target failures are isolated and
-        reported through the bounded ``failure_samples`` envelope.
+        reported through the bounded ``failure_samples`` envelope. The
+        scope-filter parameters mirror the CLI flags on
+        ``polylogue maintenance run``.
         """
 
         async def run() -> str:
@@ -68,7 +150,18 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 sources=[],
             )
             resolved = tuple(targets or ())
-            result = execute_backfill(config, targets=resolved, dry_run=dry_run)
+            scope_filter = _build_mcp_scope_filter(
+                conversation_ids=conversation_ids,
+                provider=provider,
+                source_family=source_family,
+                source_root=source_root,
+                raw_artifact_id=raw_artifact_id,
+                since=since,
+                until=until,
+                failure_kind=failure_kind,
+                parser_version=parser_version,
+            )
+            result = execute_backfill(config, targets=resolved, dry_run=dry_run, scope_filter=scope_filter)
             envelope = envelope_from_operation(result, origin="mcp", mode="execute")
             return hooks.json_payload(envelope)
 

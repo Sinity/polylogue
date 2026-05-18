@@ -39,6 +39,7 @@ from polylogue.config import Config
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
 from polylogue.maintenance.invalidation import InvalidationReason
+from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.maintenance.targets import (
     CLEANUP_TARGETS,
     SAFE_REPAIR_TARGETS,
@@ -89,24 +90,41 @@ class BackfillStatus(str, Enum):
 
 @dataclass(frozen=True)
 class MaintenanceScope:
-    """Typed scope (target ids + optional filter) for a backfill.
+    """Typed scope (target ids + typed filter) for a backfill.
 
     ``targets`` is the resolved canonical target-name tuple; ``filter``
-    is a free-form JSON-shaped dict so callers can later attach
-    conversation id sets, source-path globs, time windows, etc. without
-    a planner-API churn.
+    is a typed :class:`MaintenanceScopeFilter` carrying the named scope
+    dimensions agreed across CLI / daemon HTTP / MCP. An empty filter
+    means "full scope for the listed targets".
     """
 
     targets: tuple[str, ...]
-    filter: JSONDocument = field(default_factory=lambda: json_document({}))
+    filter: MaintenanceScopeFilter = field(default_factory=MaintenanceScopeFilter)
 
     def to_dict(self) -> JSONDocument:
         return json_document(
             {
                 "targets": list(self.targets),
-                "filter": self.filter,
+                "filter": self.filter.to_dict(),
             }
         )
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, object]) -> MaintenanceScope:
+        targets_raw = payload.get("targets", ()) or ()
+        if not isinstance(targets_raw, (list, tuple)):
+            raise TypeError(f"scope.targets must be a list/tuple, got {type(targets_raw).__name__}")
+        targets = tuple(str(t) for t in targets_raw)
+        filter_raw = payload.get("filter")
+        if filter_raw is None:
+            filter_obj = MaintenanceScopeFilter()
+        elif isinstance(filter_raw, MaintenanceScopeFilter):
+            filter_obj = filter_raw
+        elif isinstance(filter_raw, dict):
+            filter_obj = MaintenanceScopeFilter.from_dict(filter_raw)
+        else:
+            raise TypeError(f"scope.filter must be a dict, got {type(filter_raw).__name__}")
+        return cls(targets=targets, filter=filter_obj)
 
 
 @dataclass(frozen=True)
@@ -229,6 +247,8 @@ class BackfillOperation:
 def preview_backfill(
     config: Config,
     targets: tuple[str, ...],
+    *,
+    scope_filter: MaintenanceScopeFilter | None = None,
 ) -> BackfillOperation:
     """Preview what would be rebuilt for the given targets. Read-only.
 
@@ -246,6 +266,7 @@ def preview_backfill(
     catalog = build_maintenance_target_catalog()
     resolved = catalog.resolve(targets)
     resolved_names = tuple(spec.name for spec in resolved)
+    effective_filter = scope_filter or MaintenanceScopeFilter()
 
     if not resolved_names:
         return BackfillOperation(
@@ -254,7 +275,7 @@ def preview_backfill(
             targets=(),
             status=BackfillStatus.FAILED,
             error="No valid targets resolved from input",
-            scope=MaintenanceScope(targets=()),
+            scope=MaintenanceScope(targets=(), filter=effective_filter),
         )
 
     # Thread the caller's archive db_path through the planner instead of
@@ -289,6 +310,14 @@ def preview_backfill(
             if reason is None:
                 reason = _derive_invalidation_reason(status)
 
+    # When the caller narrows by conversation_ids, the affected-rows
+    # estimate must shrink to match: a one-conversation scope cannot
+    # legitimately advertise the full archive's debt as its plan.
+    if effective_filter.conversation_ids is not None:
+        scope_size = len(effective_filter.conversation_ids)
+        total_rows = min(total_rows, scope_size) if total_rows > 0 else 0
+        estimated_time_s = total_rows / 50.0 if total_rows > 0 else 0.0
+
     return BackfillOperation(
         operation_id=operation_id,
         kind=BackfillKind.DERIVED_REBUILD,
@@ -297,7 +326,7 @@ def preview_backfill(
         affected_rows=total_rows,
         estimated_time_s=estimated_time_s,
         results=preview_results,
-        scope=MaintenanceScope(targets=resolved_names),
+        scope=MaintenanceScope(targets=resolved_names, filter=effective_filter),
         reason=reason,
     )
 
@@ -307,6 +336,7 @@ def execute_backfill(
     targets: tuple[str, ...],
     *,
     dry_run: bool = False,
+    scope_filter: MaintenanceScopeFilter | None = None,
 ) -> BackfillOperation:
     """Execute (or dry-run) a backfill for the given targets.
 
@@ -324,6 +354,7 @@ def execute_backfill(
     catalog = build_maintenance_target_catalog()
     resolved = catalog.resolve(targets)
     resolved_names = tuple(spec.name for spec in resolved)
+    effective_filter = scope_filter or MaintenanceScopeFilter()
 
     if not resolved_names:
         return BackfillOperation(
@@ -332,7 +363,7 @@ def execute_backfill(
             targets=(),
             status=BackfillStatus.FAILED,
             error="No valid targets resolved from input",
-            scope=MaintenanceScope(targets=()),
+            scope=MaintenanceScope(targets=(), filter=effective_filter),
         )
 
     logger.info(
@@ -399,7 +430,7 @@ def execute_backfill(
             affected_rows=total_repaired,
             estimated_time_s=0.0,
             results=[r.to_dict() for r in repair_results],
-            scope=MaintenanceScope(targets=resolved_names),
+            scope=MaintenanceScope(targets=resolved_names, filter=effective_filter),
             reason=reason,
             metrics={"repaired_count": float(total_repaired)},
         )
@@ -418,7 +449,7 @@ def execute_backfill(
             progress=0.0,
             started_at=started_at,
             error=f"Backfill failed: {exc}",
-            scope=MaintenanceScope(targets=resolved_names),
+            scope=MaintenanceScope(targets=resolved_names, filter=effective_filter),
             reason=reason,
             failure_samples=BoundedFailureSamples.from_samples(
                 [
@@ -468,6 +499,7 @@ __all__ = [
     "FailureSample",
     "InvalidationReason",
     "MaintenanceScope",
+    "MaintenanceScopeFilter",
     "execute_backfill",
     "preview_backfill",
 ]
