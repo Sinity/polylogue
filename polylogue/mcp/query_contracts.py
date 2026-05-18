@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import inspect
+import sys
+import typing
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
-from typing import Annotated, TypeAlias
+from dataclasses import dataclass, fields
+from typing import Annotated, Any, TypeAlias
 
 from pydantic import Field
 
@@ -150,8 +153,66 @@ class MCPContentProjectionRequest:
         )
 
 
+def conversation_query_request_signature(
+    *,
+    include_query: bool,
+) -> inspect.Signature:
+    """Build an ``inspect.Signature`` mirroring ``MCPConversationQueryRequest``.
+
+    ``include_query`` controls whether the ``query`` parameter is surfaced —
+    ``search`` exposes it as required, ``list_conversations`` omits it. The
+    resulting signature drives MCP ``inputSchema`` derivation so the JSON
+    schema and the typed request model cannot drift.
+    """
+    type_hints = typing.get_type_hints(
+        MCPConversationQueryRequest,
+        globalns=vars(sys.modules[MCPConversationQueryRequest.__module__]),
+        include_extras=True,
+    )
+    parameters: list[inspect.Parameter] = []
+    for field in fields(MCPConversationQueryRequest):
+        if field.name == "query" and not include_query:
+            continue
+        annotation = type_hints.get(field.name, Any)
+        # ``search`` exposes ``query`` as a required parameter to preserve the
+        # historical MCP tool surface — even though the dataclass default is
+        # ``None`` so other call sites can build empty requests.
+        if field.name == "query" and include_query:
+            parameters.append(
+                inspect.Parameter(
+                    field.name,
+                    inspect.Parameter.KEYWORD_ONLY,
+                    annotation=str,
+                )
+            )
+            continue
+        parameters.append(
+            inspect.Parameter(
+                field.name,
+                inspect.Parameter.KEYWORD_ONLY,
+                default=field.default,
+                annotation=annotation,
+            )
+        )
+    return inspect.Signature(parameters=parameters, return_annotation=str)
+
+
+def build_conversation_query_request(**kwargs: Any) -> MCPConversationQueryRequest:
+    """Build an ``MCPConversationQueryRequest`` from MCP tool kwargs.
+
+    Only known dataclass fields are forwarded; unexpected MCP parameters
+    raise ``TypeError`` via the dataclass constructor rather than silently
+    mutating filter state.
+    """
+    valid = {field.name for field in fields(MCPConversationQueryRequest)}
+    payload = {name: value for name, value in kwargs.items() if name in valid}
+    return MCPConversationQueryRequest(**payload)
+
+
 __all__ = [
+    "build_conversation_query_request",
     "build_query_spec",
+    "conversation_query_request_signature",
     "MCPToolLimit",
     "MCPToolOffset",
     "MCPContentProjectionRequest",

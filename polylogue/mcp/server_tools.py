@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from polylogue.config import ConfigError
 from polylogue.mcp.payloads import (
@@ -21,9 +21,10 @@ from polylogue.mcp.payloads import (
 )
 from polylogue.mcp.query_contracts import (
     MCPContentProjectionRequest,
-    MCPConversationQueryRequest,
     MCPToolLimit,
     MCPToolOffset,
+    build_conversation_query_request,
+    conversation_query_request_signature,
 )
 from polylogue.mcp.server_context_tools import register_context_tools
 from polylogue.mcp.server_insight_tools import register_insight_tools
@@ -39,93 +40,16 @@ if TYPE_CHECKING:
 
 
 def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
-    @mcp.tool()
-    async def search(
-        query: str,
-        limit: MCPToolLimit = 10,
-        retrieval_lane: str | None = None,
-        provider: str | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        tag: str | None = None,
-        repo: str | None = None,
-        title: str | None = None,
-        contains: str | None = None,
-        exclude_text: str | None = None,
-        exclude_provider: str | None = None,
-        exclude_tag: str | None = None,
-        has_type: str | None = None,
-        conv_id: str | None = None,
-        referenced_path: str | None = None,
-        cwd_prefix: str | None = None,
-        action: str | None = None,
-        exclude_action: str | None = None,
-        action_sequence: str | None = None,
-        action_text: str | None = None,
-        tool: str | None = None,
-        exclude_tool: str | None = None,
-        sort: str | None = None,
-        reverse: bool = False,
-        latest: str | None = None,
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        has_paste: bool = False,
-        typed_only: bool = False,
-        min_messages: int | None = None,
-        max_messages: int | None = None,
-        min_words: int | None = None,
-        sample: int | None = None,
-        similar_text: str | None = None,
-        since_session: str | None = None,
-        since_session_id: str | None = None,
-        message_type: str | None = None,
-        offset: MCPToolOffset = 0,
-    ) -> str:
+    async def _search(**kwargs: object) -> str:
+        if "query" not in kwargs:
+            raise TypeError("search() missing required keyword argument: 'query'")
+        request = build_conversation_query_request(**kwargs)
+
         async def run() -> str:
             ops = hooks.get_archive_ops()
-            clamped_limit = hooks.clamp_limit(limit)
-            clamped_offset = max(0, offset)
-            spec = MCPConversationQueryRequest(
-                query=query,
-                retrieval_lane=retrieval_lane,
-                provider=provider,
-                since=since,
-                until=until,
-                tag=tag,
-                repo=repo,
-                title=title,
-                contains=contains,
-                exclude_text=exclude_text,
-                exclude_provider=exclude_provider,
-                exclude_tag=exclude_tag,
-                has_type=has_type,
-                conv_id=conv_id,
-                referenced_path=referenced_path,
-                cwd_prefix=cwd_prefix,
-                action=action,
-                exclude_action=exclude_action,
-                action_sequence=action_sequence,
-                action_text=action_text,
-                tool=tool,
-                exclude_tool=exclude_tool,
-                sort=sort,
-                reverse=reverse,
-                latest=latest,
-                limit=clamped_limit,
-                has_tool_use=has_tool_use,
-                has_thinking=has_thinking,
-                has_paste=has_paste,
-                typed_only=typed_only,
-                min_messages=min_messages,
-                max_messages=max_messages,
-                min_words=min_words,
-                sample=sample,
-                similar_text=similar_text,
-                since_session=since_session,
-                since_session_id=since_session_id,
-                message_type=message_type,
-                offset=clamped_offset,
-            ).build_spec(hooks.clamp_limit)
+            clamped_limit = hooks.clamp_limit(request.limit)
+            clamped_offset = max(0, request.offset)
+            spec = request.build_spec(hooks.clamp_limit)
             results = await ops.search_conversation_hits(spec)
             total = await spec.count(hooks.get_query_store())
             diagnostics = await ops.diagnose_query_miss(spec) if not results else None
@@ -141,91 +65,22 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("search", run)
 
-    @mcp.tool()
-    async def list_conversations(
-        limit: MCPToolLimit = 10,
-        retrieval_lane: str | None = None,
-        provider: str | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        tag: str | None = None,
-        repo: str | None = None,
-        title: str | None = None,
-        contains: str | None = None,
-        exclude_text: str | None = None,
-        exclude_provider: str | None = None,
-        exclude_tag: str | None = None,
-        has_type: str | None = None,
-        conv_id: str | None = None,
-        referenced_path: str | None = None,
-        cwd_prefix: str | None = None,
-        action: str | None = None,
-        exclude_action: str | None = None,
-        action_sequence: str | None = None,
-        action_text: str | None = None,
-        tool: str | None = None,
-        exclude_tool: str | None = None,
-        sort: str | None = None,
-        reverse: bool = False,
-        latest: str | None = None,
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        has_paste: bool = False,
-        typed_only: bool = False,
-        min_messages: int | None = None,
-        max_messages: int | None = None,
-        min_words: int | None = None,
-        sample: int | None = None,
-        similar_text: str | None = None,
-        since_session: str | None = None,
-        since_session_id: str | None = None,
-        message_type: str | None = None,
-        offset: MCPToolOffset = 0,
-    ) -> str:
+    cast(Any, _search).__signature__ = conversation_query_request_signature(include_query=True)
+    _search.__name__ = "search"
+    _search.__doc__ = (
+        "Search the archive for conversations matching ``query``. "
+        "Filter parameters mirror ``MCPConversationQueryRequest`` fields."
+    )
+    mcp.tool()(_search)
+
+    async def _list_conversations(**kwargs: object) -> str:
+        request = build_conversation_query_request(**kwargs)
+
         async def run() -> str:
             ops = hooks.get_archive_ops()
-            clamped_limit = hooks.clamp_limit(limit)
-            clamped_offset = max(0, offset)
-            spec = MCPConversationQueryRequest(
-                provider=provider,
-                retrieval_lane=retrieval_lane,
-                since=since,
-                until=until,
-                tag=tag,
-                repo=repo,
-                title=title,
-                contains=contains,
-                exclude_text=exclude_text,
-                exclude_provider=exclude_provider,
-                exclude_tag=exclude_tag,
-                has_type=has_type,
-                conv_id=conv_id,
-                referenced_path=referenced_path,
-                cwd_prefix=cwd_prefix,
-                action=action,
-                exclude_action=exclude_action,
-                action_sequence=action_sequence,
-                action_text=action_text,
-                tool=tool,
-                exclude_tool=exclude_tool,
-                sort=sort,
-                reverse=reverse,
-                latest=latest,
-                limit=clamped_limit,
-                has_tool_use=has_tool_use,
-                has_thinking=has_thinking,
-                has_paste=has_paste,
-                typed_only=typed_only,
-                min_messages=min_messages,
-                max_messages=max_messages,
-                min_words=min_words,
-                sample=sample,
-                similar_text=similar_text,
-                since_session=since_session,
-                since_session_id=since_session_id,
-                message_type=message_type,
-                offset=clamped_offset,
-            ).build_spec(hooks.clamp_limit)
+            clamped_limit = hooks.clamp_limit(request.limit)
+            clamped_offset = max(0, request.offset)
+            spec = request.build_spec(hooks.clamp_limit)
             conversations = await ops.query_conversations(spec)
             total = await spec.count(hooks.get_query_store())
             diagnostics = None
@@ -245,6 +100,16 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             )
 
         return await hooks.async_safe_call("list_conversations", run)
+
+    cast(Any, _list_conversations).__signature__ = conversation_query_request_signature(
+        include_query=False,
+    )
+    _list_conversations.__name__ = "list_conversations"
+    _list_conversations.__doc__ = (
+        "List conversations matching the supplied filters. "
+        "Filter parameters mirror ``MCPConversationQueryRequest`` fields."
+    )
+    mcp.tool()(_list_conversations)
 
     @mcp.tool()
     async def get_conversation(
