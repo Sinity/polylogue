@@ -655,6 +655,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "failure-context",
+        "maintenance",
+        "Join testmon, git history, fixtures, and witnesses for a pytest failure ID into a JSON envelope.",
+        "devtools.failure_context",
+        use_when=(
+            "Bootstrap an agent inner-loop debugging session for a failing test — surfaces production "
+            "files the test depends on, their recent commits, fixtures the test uses, and similar "
+            "committed witnesses, all in one structured envelope."
+        ),
+        examples=(
+            "devtools failure-context tests/unit/storage/test_foo.py::test_bar",
+            "devtools failure-context tests/unit/storage/test_foo.py::test_bar --days 14",
+        ),
+    ),
+    CommandSpec(
         "verify-lane-assertions",
         "verification",
         "Verify scenario lanes classified as SEMANTIC_OUTPUT carry semantic assertions.",

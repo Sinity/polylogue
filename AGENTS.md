@@ -1228,6 +1228,7 @@ These are the commands worth remembering during normal repo work:
 | Command | Description |
 | --- | --- |
 | `devtools build-package` | Build the default Nix package with the out-link under .local/result. |
+| `devtools failure-context` | Join testmon, git history, fixtures, and witnesses for a pytest failure ID into a JSON envelope. |
 | `devtools witness-discover` | Save a failure-triggering input as a local witness in .local/witnesses/new/. |
 | `devtools witness-minimize` | Apply minimization heuristics to a local witness — shrink, redact, set privacy classification. |
 | `devtools witness-promote` | Promote a minimized local witness to tests/witnesses/ for durable commit. |
