@@ -58,6 +58,11 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Local browser extension capture for ChatGPT and Claude.ai sessions.",
     ),
     DocsEntry("Generate", "docs/generate.md", "Synthetic archive generation, seed mode, and demo workflows."),
+    DocsEntry(
+        "Maintenance",
+        "docs/maintenance.md",
+        "Operator guide for preview/plan/run, resume, scope filters, and incident runbooks.",
+    ),
     DocsEntry("Providers", "docs/providers/README.md", "Provider-specific parsing and export-format notes."),
     DocsEntry(
         "Test Quality Workflows",

@@ -1,0 +1,521 @@
+# Maintenance
+
+This guide is for operators choosing between
+`polylogue maintenance preview`, `polylogue maintenance plan`,
+`polylogue maintenance run`, `polylogue reset`, and "do nothing — the
+daemon will catch up." It also collects runbook recipes for the most
+common operational incidents.
+
+For the conceptual model behind derived insights and the FTS / blob
+substrate, see [architecture.md](architecture.md) and
+[internals.md](internals.md). For daemon ownership of the inline
+maintenance loop, see [daemon.md](daemon.md).
+
+## What a maintenance operation is
+
+A *maintenance operation* is an explicit, resumable, idempotent pass
+over already-ingested archive state. It does **not** acquire new
+source data. It does **not** rewrite or delete imported conversations
+beyond targeted cleanup. It rebuilds, repairs, or prunes the things
+the archive depends on but does not own as primary data:
+
+- derived read models (session insights, action events, work threads,
+  day/week summaries, message-type classifications);
+- search indexes (the FTS5 projections over messages and action
+  events);
+- backfilled columns (e.g. `message_type` for rows ingested before the
+  classifier existed);
+- archive-cleanup scopes (orphaned messages, orphaned content blocks,
+  empty conversations, orphaned attachments, orphaned blobs);
+- SQLite housekeeping (WAL checkpoint).
+
+A maintenance operation is distinguished from three adjacent things:
+
+| Surface | What it does | When you reach for it |
+| --- | --- | --- |
+| **Ingest** (`polylogue run`, `polylogued`) | Acquires source payloads, parses provider records, writes archive rows, advances derived models *for the new rows*. | You have new exports/sessions to import. |
+| **Daemon convergence** (`polylogued` inline loops) | Performs the same operations as ingest plus the lightweight maintenance loop (WAL checkpoint every 5 min, FTS convergence every 10 min, heartbeat, health checks). | The daemon is running. You do nothing. |
+| **Maintenance** (`polylogue maintenance ...`) | Rebuilds derived state and prunes archive debt over already-ingested rows. Read-only by default; mutations are explicit. | A derived model is stale or missing for old rows that the daemon's small inline windows will not pick up. |
+| **Reset** (`polylogue reset`) | Deletes data: the SQLite database, the blob store, attachments, cache, OAuth tokens, or named conversations (soft-delete via tombstones). | The data itself is wrong or unwanted, not just a derived projection of it. |
+
+The order of preference is: **do nothing → daemon → maintenance →
+reset**. Reset is the only one that destroys primary data.
+
+## The four typed scopes
+
+Maintenance targets are grouped into four scopes:
+
+| Scope | Mode | Destructive | Targets |
+| --- | --- | --- | --- |
+| `derived` (derived_repair) | repair | no | `session_insights`, `action_event_read_model`, `dangling_fts`, `message_type_backfill`, `message_embeddings` |
+| `retrieval` (database_maintenance) | repair | no | `wal_checkpoint` |
+| `archive_cleanup` | cleanup | **yes** | `orphaned_messages`, `orphaned_content_blocks`, `empty_conversations`, `orphaned_attachments`, `orphaned_blobs` |
+| `backfill` | repair | no | column/row backfills surfaced by the planner (currently subsumed by `derived`; reserved for future source-replay backfills tracked in [#1195](https://github.com/Sinity/polylogue/issues/1195)) |
+
+The canonical target list is enforced by
+`polylogue/maintenance/targets.py`. The CLI `--target` option's
+`click.Choice` is built from
+`MAINTENANCE_TARGET_NAMES`, so the source is the type system: an
+unknown target is rejected at the CLI boundary.
+
+## When to use which surface
+
+```
+                          something looks off
+                                 |
+            +--------------------+--------------------+
+            |                                         |
+   one or a few conversations               wide swath of the archive
+   look wrong / outdated                    looks stale (FTS misses
+            |                                hits, session profiles
+            |                                missing for old data, ...)
+            |                                         |
+   polylogue maintenance preview          polylogue maintenance preview
+   (scoped to that conversation)          (no scope — full inventory)
+            |                                         |
+   nothing stale?                          nothing stale?
+   - the data really is that way.          - the daemon already converged.
+     stop. open an issue with a            stop. nothing to do.
+     concrete acceptance criterion.
+            |                                         |
+   stale rows reported?                    stale rows reported?
+   polylogue maintenance run               polylogue maintenance run
+     --conversation <id>                     (no scope) or
+     [--target ...]                          --target <subset>
+            |                                         |
+   still wrong? the data itself            failures reported?
+   is wrong, not the projection.            inspect failure_samples,
+   polylogue reset --conversation           re-run with --operation-id
+   <id>  (tombstones it; preserves         to resume from cursor.
+   identity ledger for re-import)
+```
+
+Heuristics:
+
+- **Preview before plan, plan before run.** `preview` is read-only;
+  `plan` is a dry-run summary; `run` is the only mutating verb.
+- **Prefer the narrowest target.** `--target session_insights` is
+  cheaper and safer than rebuilding everything.
+- **Do not reach for `reset` to "fix a stale projection."** That is
+  what `maintenance` is for. Reset destroys the primary data the
+  projection is built from.
+- **If the daemon is running and the issue is recent**, wait one
+  convergence cycle (~10 minutes for FTS, ~5 minutes for WAL) and
+  re-check before reaching for maintenance.
+- **If maintenance reports zero stale rows but the archive still
+  looks wrong**, the bug is upstream (ingest, parser, schema) — open
+  an issue, do not loop on maintenance.
+
+## Subcommands
+
+### `polylogue maintenance preview` — staleness inventory
+
+Read-only. Produces a per-model inventory of stale, missing, orphan,
+or version-mismatched rows tagged with a typed `InvalidationReason`
+(`missing`, `stale`, `orphan`, `missing_provenance`,
+`version_mismatch`, `orphan_archive_row`). Models with nothing stale
+produce explicit zero rows rather than being absent from the output.
+
+```bash
+polylogue maintenance preview
+polylogue maintenance preview --scope derived
+polylogue maintenance preview --scope archive_cleanup --output-format json
+polylogue maintenance preview --shallow   # skip expensive full-verification path
+```
+
+Use this before triggering `run` so you know what would be touched
+and why. A write-watching SQLite hook in the test suite confirms zero
+writes during a preview pass.
+
+### `polylogue maintenance plan` — dry-run summary
+
+Read-only. Resolves targets, evaluates affected rows, and produces a
+`BackfillOperation` envelope without executing any repair. Use it to
+sanity-check what the next `run` will do.
+
+```bash
+polylogue maintenance plan
+polylogue maintenance plan --target session_insights --target dangling_fts
+polylogue maintenance plan --output-format json | jq .
+```
+
+`--output-format json` emits the shared
+`MaintenanceOperationEnvelope` so the CLI output is byte-for-byte
+identical to the daemon HTTP and MCP responses.
+
+### `polylogue maintenance run` — execute
+
+Runs the resolved targets. Per-target failures are isolated as
+`FailureSample` entries; one failing target does not abort the rest.
+Use `--dry-run` to combine the safety of `plan` with the full
+execution-path code, or pass `--operation-id <uuid>` together with
+`--resume` to pick up an interrupted operation.
+
+```bash
+polylogue maintenance run --dry-run
+polylogue maintenance run --target wal_checkpoint
+polylogue maintenance run --target session_insights --output-format json
+```
+
+### `--operation-id` and `--resume`: worked example
+
+Replay execution writes a small JSON state file under
+`<archive_root>/.maintenance-state/<operation_id>.json` after each
+target completes. The state file is removed when the operation
+terminates successfully. The cursor is an opaque string
+(`target:N`) encoding the index of the next target to run.
+
+```bash
+# Start an operation, capture its id.
+op=$(polylogue maintenance run --output-format json \
+       --target session_insights \
+       --target action_event_read_model \
+       --target dangling_fts \
+     | jq -r .operation_id)
+
+# ... operation is killed mid-run (Ctrl-C, OOM, oncall reboot) ...
+
+# Resume from the persisted cursor — same id, same target set, no flag needed.
+polylogue maintenance run --operation-id "$op" \
+       --target session_insights \
+       --target action_event_read_model \
+       --target dangling_fts
+
+# Explicit cursor override (rare — for surgical replays).
+polylogue maintenance run --operation-id "$op" --resume target:2 \
+       --target session_insights \
+       --target action_event_read_model \
+       --target dangling_fts
+```
+
+Two correctness guarantees the executor provides:
+
+1. **Convergence.** Running the same operation twice in a row produces
+   no additional changes after the first pass converges. The
+   underlying repair functions are idempotent by construction; the
+   replay loop adds the multi-target convergence guarantee.
+2. **Resume integrity.** Targets already marked done in the state
+   file are skipped on resume, and no target is run twice.
+
+If the state file is missing and `--operation-id` is supplied without
+`--resume`, the executor treats the id as a fresh start.
+
+## Scope filters
+
+The current shipping surface accepts `--target` and `--scope` only.
+The typed scope filters tracked in
+[#1196](https://github.com/Sinity/polylogue/issues/1196) — repeatable
+`--conversation-id`, `--provider`, `--source-family`, `--source-root`,
+`--raw-artifact`, `--since`/`--until`, `--failure-kind` — will be
+plumbed through CLI, HTTP, and MCP in a follow-up PR. Once landed,
+this section will gain one worked example per flag:
+
+```bash
+# Planned (#1196):
+polylogue maintenance run --conversation-id abc123 --target session_insights
+polylogue maintenance run --provider claude        --target session_insights
+polylogue maintenance run --source-root ~/.claude/projects --target dangling_fts
+polylogue maintenance run --since 2026-04-01 --until 2026-05-01 \
+                          --target action_event_read_model
+polylogue maintenance run --failure-kind parse_error --target message_type_backfill
+```
+
+Until #1196 lands, the only way to narrow a run is through `--target`
+and `--scope`. Do not script against flag names that are not yet on
+`polylogue maintenance run --help`.
+
+## Status surface
+
+A long-running operation exposes its current cursor and in-flight
+failure samples through three coherent surfaces:
+
+| Surface | How to read |
+| --- | --- |
+| CLI (`polylogue maintenance run`) | Progress lines printed to stderr each checkpoint: `[processed/total] target cursor=target:N failures=K`. The final stdout block reports `operation_id`, target results, elapsed time, and `Failures:` listing. |
+| Daemon HTTP | `POST /api/maintenance/plan` and `POST /api/maintenance/run` return the same `MaintenanceOperationEnvelope` as the CLI. A dedicated `GET /api/maintenance/status/<op_id>` endpoint is tracked in [#1197](https://github.com/Sinity/polylogue/issues/1197). |
+| MCP | `maintenance_preview` and `maintenance_execute` return the same envelope as the CLI/HTTP. A `maintenance_status` tool is tracked in [#1197](https://github.com/Sinity/polylogue/issues/1197). |
+
+All three surfaces share the same `MaintenanceOperationEnvelope`
+contract from `polylogue/maintenance/envelope.py`, so a `jq` script
+that parses the CLI JSON also parses HTTP and MCP responses byte for
+byte. The envelope carries `operation_id`, `status`, `targets`,
+`resume_cursor`, `affected_rows`, `started_at`, `completed_at`,
+per-target `results`, and a bounded `failure_samples` envelope.
+
+## Failure surface
+
+Replay failures are bounded by `BoundedFailureSamples` (a small
+fixed cap per operation) so a runaway target cannot fill the
+operation envelope with samples. Failures appear in three places:
+
+- **`polylogue maintenance run` stderr** — the final `Failures:`
+  block lists `<kind> @ <locator>: <message>` for each captured
+  sample. A truncation marker is printed if the cap was hit.
+- **`polylogue check` / `polylogue doctor`** — readiness reports
+  include maintenance-target readiness rows
+  (see `MaintenanceTargetSpec.doctor_readiness_operation` and
+  `doctor_repair_operation`).
+- **Daemon raw-failure surface** — once
+  [#1198](https://github.com/Sinity/polylogue/issues/1198) lands,
+  maintenance failures will route into the same raw-failure surface
+  that ingest uses, so they show up in `polylogued` status, the
+  health checks added in
+  [#844](https://github.com/Sinity/polylogue/issues/844), and any
+  notification backend configured under `[notifications]`.
+
+If a replay fails repeatedly with the same `FailureSample.kind` and
+`locator`, that is the signal to escalate from "re-run with
+`--operation-id`" to "open an issue against the underlying repair
+function."
+
+## Idempotency contract
+
+Re-running the same operation against unchanged input is a no-op.
+Concretely:
+
+- `preview` is read-only; running it twice produces the same
+  inventory minus timing jitter.
+- `plan` is read-only; running it twice produces the same envelope
+  modulo timestamps.
+- `run` converges: the second `run` for the same target set against
+  unchanged source rows reports zero affected rows and zero failure
+  samples. This is enforced by repair functions being idempotent by
+  construction (see `polylogue/storage/repair.py`) plus the replay
+  loop's per-target convergence guarantee.
+
+The convergence guarantee is what makes resume safe: an interrupted
+operation that already advanced past target *N* will not redo target
+*N* on resume, and the redo would have been a no-op anyway.
+
+---
+
+## Runbooks
+
+The runbooks below assume:
+
+- You have a recent local backup (`polylogue backup` — see
+  [daemon.md § Operator-Owned Tasks](daemon.md#operator-owned-tasks)).
+- You can stop the daemon if a runbook requires exclusive write
+  access (`systemctl --user stop polylogued.service`).
+- You ran `polylogue maintenance preview` first to confirm the
+  symptom matches the runbook.
+
+### Recovering from a stale FTS index
+
+**Symptoms.** Search returns fewer hits than expected for known
+strings. `polylogue check` reports a `messages_fts` or
+`action_events_fts` discrepancy. `devtools daemon-workload-probe`
+shows non-empty `fts_trigger_state.missing` or `regressed` triggers.
+
+**Root cause.** FTS5 uses `content='messages'` content-rowid
+triggers. Bulk operations suspend those triggers for speed and
+rebuild the index afterward. A SIGKILL during the suspension window
+leaves FTS out of sync. The daemon startup check and FTS convergence
+loop normally restore the triggers, but a long-running operation
+that suspends them and dies without re-enabling them will leave the
+index stale across daemon restarts.
+
+**Recovery.**
+
+```bash
+# 1. Confirm trigger state.
+devtools daemon-workload-probe --json | jq .fts_trigger_state
+# Expect all_present=true. If `missing` is non-empty, continue.
+
+# 2. Preview the dangling FTS scope.
+polylogue maintenance preview --scope derived | grep -A2 messages_fts
+
+# 3. Repair. The dangling_fts target restores triggers and rebuilds
+#    the index via `INSERT INTO messages_fts(messages_fts) VALUES('rebuild')`.
+polylogue maintenance run --target dangling_fts
+
+# 4. Verify.
+devtools daemon-workload-probe --json | jq .fts_trigger_state.all_present
+# Expect: true.
+```
+
+If `dangling_fts` reports failures, the underlying issue is structural
+(missing columns, corrupted index file). Stop the daemon, restore from
+backup, and open an issue with the probe output attached.
+
+### Draining the convergence-debt queue
+
+**Symptoms.** `devtools daemon-workload-probe` reports a non-trivial
+`convergence_debt` section. `polylogue stats` shows derived
+materialization counts (`session_profile`, `action_events`,
+`work_threads`) lagging behind `conversations`.
+
+**Root cause.** The daemon's inline convergence loops process a
+bounded slice each cycle. If ingest outpaced the loop (initial
+backfill of a large archive, bulk re-import, schema bump) the
+remaining backlog will not drain inside one cycle.
+
+**Recovery.**
+
+```bash
+# 1. Snapshot the workload before.
+devtools daemon-workload-probe --json > /tmp/before.json
+
+# 2. Preview to see which derived models are behind.
+polylogue maintenance preview --scope derived
+
+# 3. Drive the rebuilds explicitly. Use --operation-id so that an OOM
+#    or oncall reboot does not lose progress.
+op=$(uuidgen)
+polylogue maintenance run --operation-id "$op" \
+  --target session_insights \
+  --target action_event_read_model \
+  --target dangling_fts \
+  --target message_type_backfill
+
+# 4. Snapshot after and diff.
+devtools daemon-workload-probe --json > /tmp/after.json
+devtools daemon-workload-probe --compare /tmp/before.json /tmp/after.json
+```
+
+Expect `convergence_debt.delta` to be negative across each stage.
+If a stage's delta is zero or positive, that target's repair function
+is not draining the backlog — capture the `FailureSample` block and
+escalate.
+
+### Rolling back a bad schema upgrade
+
+**Symptoms.** Polylogue refuses to start after a schema bump:
+`SchemaVersionError: database is version N, code expects version M`.
+Polylogue uses fresh-first schema versioning, not migration chains
+(see [internals.md § Schema Versioning
+Model](internals.md#schema-versioning-model)) — there is no
+auto-downgrade.
+
+**Root cause.** A new release advanced `SCHEMA_VERSION` and the
+database is on the previous version. There is no reverse migration.
+
+**Recovery.**
+
+```bash
+# 1. Confirm the version mismatch.
+polylogue --version
+sqlite3 ~/.local/share/polylogue/polylogue.db "PRAGMA user_version;"
+
+# 2. STOP the daemon to release exclusive locks.
+systemctl --user stop polylogued.service
+
+# 3. Decide: roll the code back, or migrate the data forward.
+#    There is no third option — fresh-first schema versioning is
+#    explicit about rejecting mismatched databases.
+
+# 3a. Code rollback (preferred when a release just went out and you
+#     have not yet relied on any new feature):
+#     install the previous polylogue version, leave the database
+#     alone, restart the daemon.
+
+# 3b. Forward migration: locate the explicit in-place upgrade script
+#     for this exact transition under polylogue/storage/sqlite/
+#     and run it against a *copy* of the database first.
+cp ~/.local/share/polylogue/polylogue.db /tmp/upgrade-test.db
+# ...apply the upgrade script to /tmp/upgrade-test.db, verify it
+# opens cleanly with the new polylogue binary, then point production
+# at the migrated copy.
+
+# 4. Restart and verify.
+systemctl --user start polylogued.service
+polylogue check
+```
+
+If no explicit upgrade script exists for the transition, **do not**
+hand-edit the schema. The combination of fresh-first versioning and
+no migration-chain machinery means an ad-hoc edit will leave the
+database in a state no future release knows how to recognize. Restore
+from backup and stay on the old version until an upgrade script
+ships.
+
+### Investigating a stuck source
+
+**Symptoms.** A source family stops producing new conversations even
+though source files are present. `polylogue sources` shows a source
+with stale `last_seen`. Daemon logs show repeated parse errors for
+the same artifact id.
+
+**Recovery.**
+
+```bash
+# 1. Identify the stuck source.
+polylogue sources --output-format json | jq '.[] | select(.healthy==false)'
+
+# 2. Inspect raw-artifact failures from that source.
+devtools daemon-workload-probe --json \
+  | jq '.recent_attempts[] | select(.source_paths[]? | contains("PATH"))'
+
+# 3. Pull the raw artifact directly to inspect it.
+curl -sf "http://127.0.0.1:8765/api/raw_artifacts/<artifact_id>" | jq .
+
+# 4. If the artifact is malformed at the source layer (truncated
+#    JSONL, missing required field), the fix is upstream — fix the
+#    source file, then trigger a re-acquisition:
+polylogue run --source <source-name>
+
+# 5. If the artifact is fine but the parser rejects it, the fix is
+#    in the parser. Capture a witness, file an issue.
+devtools witness-discover <path-to-artifact>
+
+# 6. While the upstream fix is in flight, you can tombstone the
+#    bad conversation so it stops blocking convergence:
+polylogue reset --conversation <conv_id>
+```
+
+Do **not** reach for `polylogue maintenance run` to "fix" a stuck
+source. Maintenance operates over already-ingested rows; if the rows
+are not in the archive yet, maintenance has nothing to do.
+
+### Recovering a corrupt blob store
+
+**Symptoms.** `polylogue check` reports unreadable blobs. Conversation
+exports fail with "blob not found". `devtools daemon-workload-probe`
+shows divergence between `blob_links` count and the count of files
+under `blob/`.
+
+**Root cause.** A blob file under `<archive_root>/blob/ab/cdef...`
+was deleted, partially overwritten, or its prefix shard directory
+permissions changed. Or: a GC pass with a known orphan-detection bug
+([#818](https://github.com/Sinity/polylogue/issues/818)) deleted a
+blob that was still referenced.
+
+**Recovery.**
+
+```bash
+# 1. Stop the daemon to halt new writes.
+systemctl --user stop polylogued.service
+
+# 2. Snapshot the lease state to capture what GC believed was in
+#    flight at the time.
+devtools daemon-workload-probe --json | jq '{lease: .blob_lease_state, gc: .gc_state}'
+
+# 3. Identify the affected conversations.
+polylogue check --schemas --blob-integrity --output-format json \
+  | jq '.unreadable_blobs[]'
+
+# 4. If you have a recent backup, restore just the blob store.
+#    The blob store is content-addressed, so per-blob restore is
+#    safe — the hash is the address.
+restic restore latest --target / --include /path/to/archive_root/blob
+
+# 5. If the blob is gone for good, the conversation referencing it
+#    cannot be exported. Tombstone it so it stops blocking exports
+#    and re-ingest from the original source if available:
+polylogue reset --conversation <conv_id>
+polylogue run --source <source-name>
+
+# 6. After recovery, GC the orphan references that point at the
+#    now-missing blobs.
+polylogue maintenance run --target orphaned_blobs
+
+# 7. Restart the daemon.
+systemctl --user start polylogued.service
+```
+
+If the corruption is the result of a known GC race (PR
+[#1002](https://github.com/Sinity/polylogue/pull/1002) closed the
+primary one, but [#818](https://github.com/Sinity/polylogue/issues/818)
+tracks remaining classes), attach the lease/GC probe snapshot from
+step 2 to that issue so the GC pass that mis-classified the blob can
+be reproduced.
