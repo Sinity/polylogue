@@ -439,6 +439,15 @@ Usage: polylogue completions [OPTIONS]
 Options:
   --shell [bash|zsh|fish]  [required]
   --help                   Show this message and exit.
+
+  Install:
+    bash: add  eval "$(polylogue completions --shell bash)"  to ~/.bashrc
+    zsh:  add  eval "$(polylogue completions --shell zsh)"   to ~/.zshrc
+    fish: polylogue completions --shell fish > ~/.config/fish/completions/polylogue.fish
+
+  Dynamic completers cover: conversation IDs, providers/source-families,
+  tags, repos, cwd prefixes, action categories and sequences, tool names,
+  message types, retrieval lanes.
 ```
 
 ## Dashboard
