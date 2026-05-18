@@ -18,15 +18,42 @@ Safety invariants
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
 import time
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from polylogue.storage.sqlite.connection_profile import open_connection
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class GCRunEvidence:
+    """Structured per-pass GC evidence persisted to ``gc_generations.evidence``.
+
+    Captures inspected/skipped/deleted counts plus per-skip reason tallies
+    so operators can reconstruct what a GC pass actually did. See
+    ``polylogue maintenance gc-history`` for the surface that reads it.
+    """
+
+    inspected: int = 0
+    deleted: int = 0
+    skipped_referenced: int = 0
+    skipped_leased: int = 0
+    skipped_missing: int = 0
+    skipped_unlink_error: int = 0
+    dry_run: bool = False
+    max_batch: int = 0
+    previous_generation: int = 0
+    deleted_hashes: list[str] = field(default_factory=list)
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self), sort_keys=True)
+
 
 # Minimum age in seconds for a blob to be eligible for deletion.
 # Provides defense-in-depth against clockskew and delayed lease writes
@@ -108,10 +135,22 @@ def _candidate_blobs(
     return candidates
 
 
+def _sharded_blob_path(blob_root: Path, blob_hash: str) -> Path:
+    """Return the on-disk sharded path ``{root}/{prefix}/{remainder}`` for a blob hash.
+
+    Mirrors ``BlobStore.blob_path`` without depending on the validator —
+    GC walks discover candidate hashes from disk and they are already
+    constrained to lowercase hex by ``_candidate_blobs``.
+    """
+    return blob_root / blob_hash[:2] / blob_hash[2:]
+
+
 def run_blob_gc(
     db_path: str | Path,
     blob_dir: str | Path,
     max_batch: int = 100,
+    *,
+    dry_run: bool = False,
 ) -> int:
     """Delete unreferenced blobs that are lease-free and from prior generations.
 
@@ -131,10 +170,24 @@ def run_blob_gc(
         Path to the content-addressed blob store directory.
     max_batch:
         Maximum number of blobs to delete in one GC run (default 100).
+    dry_run:
+        When True, no files are deleted and no generation row is
+        written; the function reports the count of blobs that *would*
+        have been deleted. Use this to preview a GC pass without
+        committing to disk reclamation.
 
     Returns
     -------
-    Number of blobs deleted.
+    Number of blobs actually deleted from disk (or, for ``dry_run``,
+    the number that would have been deleted).
+
+    Notes
+    -----
+    The ``deleted`` counter only increments when an ``unlink`` actually
+    removed a file. A blob that was already missing from disk at the
+    moment of deletion (a concurrent reclaimer, a stale candidate, a
+    pre-existing partial cleanup) bumps ``skipped_missing`` in the
+    persisted evidence record and is NOT counted as a deletion (#1190).
     """
     blob_path = Path(blob_dir)
     if not blob_path.is_dir():
@@ -150,35 +203,81 @@ def run_blob_gc(
         if not candidates:
             return 0
 
+        evidence = GCRunEvidence(
+            dry_run=dry_run,
+            max_batch=max_batch,
+            previous_generation=generation,
+        )
         deleted = 0
         for blob_hash, _mtime in candidates:
             if deleted >= max_batch:
                 break
 
+            evidence.inspected += 1
+
             # Safety check 1: still referenced in DB
             if _still_referenced(conn, blob_hash):
+                evidence.skipped_referenced += 1
                 continue
 
             # Safety check 2: has active lease
             if _has_active_lease(conn, blob_hash):
+                evidence.skipped_leased += 1
                 continue
 
-            # All checks passed -- safe to delete
+            target = _sharded_blob_path(blob_path, blob_hash)
+
+            if dry_run:
+                # In dry-run mode, account the would-be deletion only when
+                # the on-disk file actually exists at the sharded path.
+                if target.is_file():
+                    deleted += 1
+                    evidence.deleted += 1
+                    evidence.deleted_hashes.append(blob_hash)
+                else:
+                    evidence.skipped_missing += 1
+                continue
+
+            # All checks passed — attempt the unlink at the sharded path.
+            # missing_ok=False so we observe whether a file actually went
+            # away; if it was already gone (concurrent GC, stale candidate)
+            # we record skipped_missing and do NOT count it as a deletion.
             try:
-                (blob_path / blob_hash).unlink(missing_ok=True)
-                deleted += 1
+                target.unlink()
+            except FileNotFoundError:
+                evidence.skipped_missing += 1
+                continue
             except PermissionError:
                 logger.warning("Permission denied deleting blob: %s", blob_hash)
+                evidence.skipped_unlink_error += 1
                 continue
             except OSError as exc:
                 logger.warning("Failed to delete blob %s: %s", blob_hash, exc)
+                evidence.skipped_unlink_error += 1
                 continue
 
-        # Record the new generation marker
+            deleted += 1
+            evidence.deleted += 1
+            evidence.deleted_hashes.append(blob_hash)
+
+        if dry_run:
+            # Dry run does not consume a generation slot — no row written,
+            # no commit needed. The caller still gets the would-be count.
+            logger.info(
+                "Blob GC dry-run: would delete %d blob(s); inspected=%d skipped_ref=%d skipped_leased=%d skipped_missing=%d",
+                evidence.deleted,
+                evidence.inspected,
+                evidence.skipped_referenced,
+                evidence.skipped_leased,
+                evidence.skipped_missing,
+            )
+            return deleted
+
+        # Record the new generation marker with structured evidence.
         new_generation = generation + 1
         conn.execute(
-            "INSERT OR REPLACE INTO gc_generations (generation, completed_at) VALUES (?, ?)",
-            (new_generation, int(time.time())),
+            "INSERT OR REPLACE INTO gc_generations (generation, completed_at, evidence) VALUES (?, ?, ?)",
+            (new_generation, int(time.time()), evidence.to_json()),
         )
         conn.commit()
 
@@ -191,6 +290,56 @@ def run_blob_gc(
         raise
     finally:
         conn.close()
+
+
+@dataclass
+class GCHistoryRow:
+    """One row of the ``gc-history`` surface — a single completed GC pass."""
+
+    generation: int
+    completed_at: int | None
+    evidence: GCRunEvidence | None
+
+
+def read_gc_history(db_path: str | Path, *, limit: int = 20) -> list[GCHistoryRow]:
+    """Return the most-recent committed GC passes, newest first.
+
+    Rows missing structured evidence (pre-#1190 generations or runs that
+    crashed before evidence was attached) surface as ``evidence=None``;
+    operators can still see they happened.
+    """
+    conn = open_connection(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT generation, completed_at, evidence FROM gc_generations ORDER BY generation DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    history: list[GCHistoryRow] = []
+    for row in rows:
+        raw_evidence = row["evidence"]
+        parsed_evidence: GCRunEvidence | None = None
+        if raw_evidence:
+            try:
+                payload = json.loads(raw_evidence)
+                parsed_evidence = GCRunEvidence(**payload)
+            except (json.JSONDecodeError, TypeError) as exc:
+                logger.warning(
+                    "gc_generations.evidence for generation %d unparseable: %s",
+                    row["generation"],
+                    exc,
+                )
+        history.append(
+            GCHistoryRow(
+                generation=int(row["generation"]),
+                completed_at=int(row["completed_at"]) if row["completed_at"] is not None else None,
+                evidence=parsed_evidence,
+            )
+        )
+    return history
 
 
 def acquire_blob_leases(
@@ -246,7 +395,10 @@ def release_operation_leases(
 
 __all__ = [
     "MIN_AGE_S",
+    "GCHistoryRow",
+    "GCRunEvidence",
     "acquire_blob_leases",
+    "read_gc_history",
     "release_operation_leases",
     "run_blob_gc",
 ]

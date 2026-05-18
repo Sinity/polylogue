@@ -50,7 +50,8 @@ def _make_db(path: str | Path | None = None) -> sqlite3.Connection:
     conn.execute(
         """CREATE TABLE gc_generations (
             generation INTEGER PRIMARY KEY,
-            completed_at INTEGER NOT NULL
+            completed_at INTEGER NOT NULL,
+            evidence TEXT
         )"""
     )
     conn.commit()
@@ -281,3 +282,199 @@ def test_run_blob_gc_nonexistent_blob_dir(tmp_path: Path) -> None:
     conn.close()
     deleted = run_blob_gc(str(db_path), str(tmp_path / "nonexistent"), max_batch=10)
     assert deleted == 0
+
+
+# ---------------------------------------------------------------------------
+# #1190 — sharded unlink path + accurate deleted counter
+# ---------------------------------------------------------------------------
+
+
+import json
+
+from polylogue.storage.blob_gc import GCRunEvidence, read_gc_history
+
+
+def _backdate(blob_store: BlobStore, blob_hash: str, *, seconds: float = 3600) -> None:
+    """Backdate a blob's mtime past MIN_AGE_S so it is GC-eligible."""
+    import os
+
+    path = blob_store.blob_path(blob_hash)
+    past = __import__("time").time() - seconds
+    os.utime(path, (past, past))
+
+
+def test_run_blob_gc_unlinks_sharded_path_and_increments_counter(tmp_path: Path) -> None:
+    """#1190 regression: an orphan blob present at the sharded path
+    ``{root}/{prefix}/{remainder}`` must actually be removed and the
+    ``deleted`` counter must increment by exactly 1.
+
+    Before the fix, ``run_blob_gc`` unlinked ``{root}/{full_hash}``
+    (a path that never exists for a real blob), and ``missing_ok=True``
+    silently swallowed the failure. The counter still bumped, so the
+    function reported successful reclamation while leaving the blob on
+    disk.
+    """
+    db_path = tmp_path / "archive.db"
+    blob_root = tmp_path / "blobs"
+    blob_store = BlobStore(blob_root)
+
+    h, _ = blob_store.write_from_bytes(b"orphan to reclaim")
+    sharded = blob_store.blob_path(h)
+    assert sharded.is_file()
+    assert (blob_root / h).exists() is False  # never lived at the flat path
+
+    _backdate(blob_store, h)
+
+    _make_db(db_path).close()
+
+    deleted = run_blob_gc(str(db_path), str(blob_root), max_batch=10)
+
+    assert deleted == 1, "deleted counter must match actual unlinks"
+    assert not sharded.exists(), "sharded blob must actually be removed from disk"
+
+
+def test_run_blob_gc_does_not_increment_when_file_already_missing(tmp_path: Path) -> None:
+    """#1190 regression: when the candidate file has vanished between
+    discovery and unlink (concurrent reclaimer, stale candidate, manual
+    cleanup), the ``deleted`` counter must NOT increment. The structured
+    evidence row should record this as ``skipped_missing``.
+    """
+    db_path = tmp_path / "archive.db"
+    blob_root = tmp_path / "blobs"
+    blob_store = BlobStore(blob_root)
+
+    h, _ = blob_store.write_from_bytes(b"will-vanish")
+    sharded = blob_store.blob_path(h)
+    _backdate(blob_store, h)
+
+    # Race simulation: file disappears after _candidate_blobs() lists it
+    # but before run_blob_gc unlinks it. We approximate this by removing
+    # the file ourselves before the call — _candidate_blobs has already
+    # seen the dirent; the unlink will hit FileNotFoundError.
+    # But _candidate_blobs runs inside run_blob_gc. We instead remove the
+    # underlying file out-of-band BEFORE the call but AFTER recording the
+    # candidate via a wrapper: simpler — patch the candidate listing to
+    # report this hash even though the file is now gone.
+    sharded.unlink()
+    assert not sharded.exists()
+
+    _make_db(db_path).close()
+
+    # Re-create a sibling so _candidate_blobs sees the directory; then
+    # patch the listing to include the vanished hash too.
+    from polylogue.storage import blob_gc as gc_mod
+
+    real_listing = gc_mod._candidate_blobs
+
+    def patched(root: Path, *, older_than: float) -> list[tuple[str, float]]:
+        out = list(real_listing(root, older_than=older_than))
+        out.append((h, 0.0))
+        return out
+
+    gc_mod._candidate_blobs = patched  # type: ignore[assignment]
+    try:
+        deleted = run_blob_gc(str(db_path), str(blob_root), max_batch=10)
+    finally:
+        gc_mod._candidate_blobs = real_listing
+
+    assert deleted == 0, "counter must not bump when no file was actually unlinked"
+
+    # Evidence row attributes the skip correctly.
+    history = read_gc_history(str(db_path), limit=1)
+    assert len(history) == 1
+    ev = history[0].evidence
+    assert ev is not None
+    assert ev.deleted == 0
+    assert ev.skipped_missing >= 1
+
+
+def test_run_blob_gc_dry_run_does_not_delete_or_record_generation(tmp_path: Path) -> None:
+    """#1190 ambitious-expansion: --dry-run previews without committing.
+
+    A dry-run must:
+      - NOT remove any file from disk;
+      - NOT insert a row into ``gc_generations`` (no generation slot consumed);
+      - still return the would-be count.
+    """
+    db_path = tmp_path / "archive.db"
+    blob_root = tmp_path / "blobs"
+    blob_store = BlobStore(blob_root)
+
+    h, _ = blob_store.write_from_bytes(b"dry-run orphan")
+    _backdate(blob_store, h)
+    _make_db(db_path).close()
+
+    would_delete = run_blob_gc(str(db_path), str(blob_root), max_batch=10, dry_run=True)
+
+    assert would_delete == 1
+    assert blob_store.exists(h), "dry-run must never touch disk"
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute("SELECT COUNT(*) FROM gc_generations").fetchone()
+    finally:
+        conn.close()
+    assert row[0] == 0, "dry-run must not consume a generation slot"
+
+
+def test_run_blob_gc_records_structured_evidence(tmp_path: Path) -> None:
+    """#1190 ambitious-expansion: each committed pass writes a JSON
+    evidence row capturing inspected/skipped/deleted counts plus the
+    list of deleted hashes — a self-describing audit trail.
+    """
+    db_path = tmp_path / "archive.db"
+    blob_root = tmp_path / "blobs"
+    blob_store = BlobStore(blob_root)
+
+    referenced_hash, _ = blob_store.write_from_bytes(b"keep me")
+    orphan_hash, _ = blob_store.write_from_bytes(b"delete me")
+    _backdate(blob_store, referenced_hash)
+    _backdate(blob_store, orphan_hash)
+
+    conn = _make_db(db_path)
+    conn.execute(
+        "INSERT INTO raw_conversations (raw_id, provider_name, source_path, blob_size, acquired_at) "
+        "VALUES (?, 'claude', 'x.json', 1, '2025-01-01')",
+        (referenced_hash,),
+    )
+    conn.commit()
+    conn.close()
+
+    deleted = run_blob_gc(str(db_path), str(blob_root), max_batch=10)
+    assert deleted == 1
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute("SELECT generation, evidence FROM gc_generations").fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    payload = json.loads(row["evidence"]) if isinstance(row, sqlite3.Row) else json.loads(row[1])
+    ev = GCRunEvidence(**payload)
+    assert ev.inspected == 2
+    assert ev.deleted == 1
+    assert ev.skipped_referenced == 1
+    assert ev.dry_run is False
+    assert orphan_hash in ev.deleted_hashes
+
+
+def test_read_gc_history_returns_recent_passes_newest_first(tmp_path: Path) -> None:
+    """#1190 ambitious-expansion: ``read_gc_history`` surfaces evidence
+    rows in newest-first order, so a ``gc-history`` operator surface can
+    show recent GC behaviour without bespoke SQLite tooling.
+    """
+    db_path = tmp_path / "archive.db"
+    blob_root = tmp_path / "blobs"
+    blob_store = BlobStore(blob_root)
+    _make_db(db_path).close()
+
+    for i in range(3):
+        h, _ = blob_store.write_from_bytes(f"orphan-{i}".encode())
+        _backdate(blob_store, h)
+        run_blob_gc(str(db_path), str(blob_root), max_batch=10)
+
+    history = read_gc_history(str(db_path), limit=10)
+    assert [row.generation for row in history] == [3, 2, 1]
+    for row in history:
+        assert row.evidence is not None
+        assert row.evidence.deleted >= 1
