@@ -15,6 +15,9 @@ Allow-list:
 * ``polylogue/api/archive.py`` — declares a ``ConversationRepository``
   type alias inside a ``TYPE_CHECKING`` block for the mixin protocol.
 * ``polylogue/api/ingest.py`` — typed property for ingest-path callers.
+* ``polylogue/api/user_state_resolver.py`` — accepts ``ConversationRepository``
+  as a typed parameter via TYPE_CHECKING for non-conversation/message
+  user-state target validation (#1113).
 * ``polylogue/cli/shared/types.py`` — typed property exposed to CLI
   commands that legitimately need the repository handle while the
   remaining bypasses are migrated.
@@ -48,6 +51,7 @@ ALLOWED: frozenset[Path] = frozenset(
         REPO_ROOT / "polylogue" / "api" / "__init__.py",
         REPO_ROOT / "polylogue" / "api" / "archive.py",
         REPO_ROOT / "polylogue" / "api" / "ingest.py",
+        REPO_ROOT / "polylogue" / "api" / "user_state_resolver.py",
         REPO_ROOT / "polylogue" / "cli" / "shared" / "types.py",
         REPO_ROOT / "polylogue" / "mcp" / "server.py",
         REPO_ROOT / "polylogue" / "mcp" / "server_context_tools.py",

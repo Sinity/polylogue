@@ -27,6 +27,8 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
         "day-summary-query-loop",
         "week-summary-query-loop",
         "provider-analytics-query-loop",
+        "productivity-rollup-query-loop",
+        "tool-usage-query-loop",
         "session-insight-status-query-loop",
         "archive-debt-query-loop",
         "inferred-corpus-compilation-loop",
@@ -80,6 +82,7 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert all(name.startswith("mutate-") for name in coverage.uncovered_operations)
     assert coverage.uncovered_maintenance_targets == (
         "empty_conversations",
+        "message_embeddings",
         "message_type_backfill",
         "orphaned_attachments",
         "orphaned_blobs",

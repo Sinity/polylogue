@@ -417,6 +417,19 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-witness-lifecycle", "devtools verify-witness-lifecycle --json"),
     ),
     CommandSpec(
+        "verify-test-infra-currency",
+        "verification",
+        "Verify tests/infra/ helpers reference only tables that exist in the current SCHEMA_VERSION.",
+        "devtools.verify_test_infra_currency",
+        use_when=(
+            "Catch helpers that target renamed or removed tables (#1208). "
+            "When SCHEMA_VERSION bumps, helper SQL drifting away from the live "
+            "schema is invisible to testmon-selected runs until an unrelated change "
+            "invalidates the affected tests."
+        ),
+        examples=("devtools verify-test-infra-currency", "devtools verify-test-infra-currency --json"),
+    ),
+    CommandSpec(
         "verify-distribution-surface",
         "verification",
         "Verify wheel/sdist installed artifacts expose only supported runtime entrypoints.",
