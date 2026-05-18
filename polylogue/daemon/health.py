@@ -649,6 +649,56 @@ def _check_repeated_stage_failures_medium() -> HealthAlert:
         )
 
 
+def _check_convergence_debt_medium() -> list[HealthAlert]:
+    """Per-source-family convergence-debt threshold alerts (#1226).
+
+    Aggregates ``live_convergence_debt`` by inferred source family and
+    raises one alert per family that crosses its configured warning or
+    error threshold. Returns an empty list when there is no debt and no
+    pending dedup state — keeps the periodic health loop quiet on a
+    healthy archive.
+
+    Returns a list rather than a single :class:`HealthAlert` because
+    multiple families may breach at once; the calling tier aggregator
+    flattens the result into the overall alert stream.
+    """
+    now = datetime.now(UTC).isoformat()
+    try:
+        from polylogue.config import load_polylogue_config
+        from polylogue.daemon.convergence_debt_alert import (
+            evaluate_convergence_debt,
+            get_default_dedup_state,
+            load_thresholds_from_config,
+        )
+        from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
+
+        cfg = load_polylogue_config()
+        thresholds = load_thresholds_from_config(cfg)
+        summary = convergence_debt_summary_info(db_path())
+        alerts = evaluate_convergence_debt(
+            summary,
+            thresholds=thresholds,
+            state=get_default_dedup_state(),
+        )
+        # Record one umbrella failure counter so the health tier summary
+        # carries a stable per-cycle signal even when the per-family
+        # alerts are deduped away.
+        is_ok = not any(a.severity != HealthSeverity.OK for a in alerts)
+        _record_failure("convergence_debt", is_ok)
+        return alerts
+    except Exception as exc:
+        return [
+            HealthAlert(
+                check_name="convergence_debt",
+                tier=HealthTier.MEDIUM,
+                severity=HealthSeverity.ERROR,
+                message=f"convergence debt check failed: {exc}",
+                checked_at=now,
+                consecutive_failures=_record_failure("convergence_debt", False),
+            )
+        ]
+
+
 def _run_medium_checks() -> list[HealthAlert]:
     return [
         _check_fts_readiness_medium(),
@@ -656,6 +706,7 @@ def _run_medium_checks() -> list[HealthAlert]:
         _check_stale_ingest_attempts_medium(),
         _check_insight_freshness_medium(),
         _check_repeated_stage_failures_medium(),
+        *_check_convergence_debt_medium(),
     ]
 
 

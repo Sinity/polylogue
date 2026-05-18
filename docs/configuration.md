@@ -77,6 +77,25 @@ backend = "log"
 [health]
 check_interval_s = 300
 check_tiers = "fast,medium"
+
+# Convergence-debt alert thresholds (#1226). The daemon raises a typed
+# HealthAlert when the per-family count of `live_convergence_debt` rows
+# crosses these levels. Overrides per source family let a stuck
+# claude-code-session session escalate sooner than a long-tail chatgpt
+# export. dedup_window_s suppresses repeated alerts within the window;
+# severity escalations and resolution always fire immediately.
+[health.convergence_debt]
+default_warning = 1
+default_error = 10
+dedup_window_s = 3600
+
+[health.convergence_debt.families.claude-code-session]
+warning = 1
+error = 5
+
+[health.convergence_debt.families.chatgpt-export]
+warning = 25
+error = 200
 ```
 
 Filesystem layout is owned by `polylogue.paths`, which reads directory

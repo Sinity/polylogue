@@ -918,7 +918,7 @@ files:
     target: polylogue/cli/verb_names.py
     owner: stable
   - path: polylogue/config.py
-    loc: 785
+    loc: 807
     target: polylogue/config.py
     owner: kernel
     reason: kernel root rule
@@ -1041,8 +1041,12 @@ files:
     loc: 408
     target: polylogue/daemon/convergence.py
     owner: stable
+  - path: polylogue/daemon/convergence_debt_alert.py
+    loc: 418
+    target: polylogue/daemon/convergence_debt_alert.py
+    owner: stable
   - path: polylogue/daemon/convergence_debt_status.py
-    loc: 150
+    loc: 176
     target: polylogue/daemon/convergence_debt_status.py
     owner: stable
   - path: polylogue/daemon/convergence_stages.py
@@ -1058,7 +1062,7 @@ files:
     target: polylogue/daemon/events_http.py
     owner: stable
   - path: polylogue/daemon/health.py
-    loc: 920
+    loc: 971
     target: polylogue/daemon/health.py
     owner: stable
   - path: polylogue/daemon/healthz.py
@@ -1091,7 +1095,7 @@ files:
     target: polylogue/daemon/similarity.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 1140
+    loc: 1146
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/topology_http.py
