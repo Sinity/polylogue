@@ -67,8 +67,8 @@ _complete_message_type = _lazy_shell_complete("message_type")
     "--format",
     "-f",
     "output_format",
-    type=click.Choice(["markdown", "json", "html", "obsidian", "org", "yaml", "plaintext", "csv"]),
-    help="Output format",
+    type=click.Choice(["markdown", "json", "ndjson", "html", "obsidian", "org", "yaml", "plaintext", "csv"]),
+    help="Output format (ndjson = one JSON document per line, streaming-friendly)",
 )
 @click.option("--fields", help="Fields: id, title, provider, date, messages, words, tags, summary")
 @click.option("--limit", "-n", type=int, help="Max results")
@@ -103,8 +103,8 @@ def count_verb(ctx: click.Context) -> None:
     "--format",
     "-f",
     "output_format",
-    type=click.Choice(["markdown", "json", "html", "obsidian", "org", "yaml", "plaintext", "csv"]),
-    help="Output format",
+    type=click.Choice(["markdown", "json", "ndjson", "html", "obsidian", "org", "yaml", "plaintext", "csv"]),
+    help="Output format (ndjson = one JSON document per row, streaming-friendly)",
 )
 @click.option("--limit", "-n", type=int, help="Max matched conversations before grouping")
 @click.pass_context

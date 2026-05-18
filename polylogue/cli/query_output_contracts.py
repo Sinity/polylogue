@@ -50,6 +50,11 @@ class StructuredRowsDocument:
     def render(self, output_format: QueryOutputFormat) -> str:
         if output_format == "json":
             return json.dumps(list(self.rows), indent=2)
+        if output_format == "ndjson":
+            # JSON Lines streaming form: one JSON document per line, no
+            # outer array, no indentation. Stable for shell pipelines and
+            # LLM tool-use harnesses that want incremental parsing (#1272).
+            return "\n".join(json.dumps(row, separators=(",", ":")) for row in self.rows)
         if output_format == "yaml":
             import yaml
 

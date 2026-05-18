@@ -163,9 +163,11 @@
     --sample INTEGER                Random sample of N conversations
     -o, --output TEXT               Output destinations: browser, clipboard,
                                     stdout (comma-separated)
-    -f, --format [markdown|json|html|obsidian|org|yaml|plaintext|csv]
+    -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|plaintext|csv]
                                     Output format (for --latest, --stream, or
-                                    verb output)
+                                    verb output). `ndjson` emits one JSON
+                                    document per line, streaming-friendly for
+                                    shell pipelines and LLM tool-use harnesses.
     --transform [strip-tools|strip-thinking|strip-all]
                                     Remove content: strip-tools (tool calls),
                                     strip-thinking (reasoning), strip-all (both)
@@ -359,11 +361,16 @@
     -o, --output TEXT               Output destinations: brows
   er, clipboard,
                                     stdout (comma-separated)
-    -f, --format [markdown|json|html|obsidian|org|yaml|plainte
-  xt|csv]
+    -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|
+  plaintext|csv]
                                     Output format (for --lates
   t, --stream, or
-                                    verb output)
+                                    verb output). `ndjson` emi
+  ts one JSON
+                                    document per line, streami
+  ng-friendly for
+                                    shell pipelines and LLM to
+  ol-use harnesses.
     --transform [strip-tools|strip-thinking|strip-all]
                                     Remove content: strip-tool
   s (tool calls),
@@ -545,9 +552,11 @@
     --sample INTEGER                Random sample of N conversations
     -o, --output TEXT               Output destinations: browser, clipboard,
                                     stdout (comma-separated)
-    -f, --format [markdown|json|html|obsidian|org|yaml|plaintext|csv]
+    -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|plaintext|csv]
                                     Output format (for --latest, --stream, or
-                                    verb output)
+                                    verb output). `ndjson` emits one JSON
+                                    document per line, streaming-friendly for
+                                    shell pipelines and LLM tool-use harnesses.
     --transform [strip-tools|strip-thinking|strip-all]
                                     Remove content: strip-tools (tool calls),
                                     strip-thinking (reasoning), strip-all (both)
