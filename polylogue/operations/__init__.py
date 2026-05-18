@@ -15,6 +15,16 @@ from .import_contracts import (
     RawFailureSample,
     bounded_failure_samples,
 )
+from .import_operations import (
+    ImportAck,
+    ImportRequest,
+)
+from .operation_contract import (
+    OperationAck,
+    OperationFollowUp,
+    OperationRequest,
+    OperationStatus,
+)
 from .specs import (
     OperationCatalog,
     OperationKind,
@@ -28,10 +38,16 @@ __all__ = [
     "ArchiveOperations",
     "ArchiveStats",
     "CompletionAggregate",
+    "ImportAck",
     "ImportOperation",
+    "ImportRequest",
+    "OperationAck",
     "OperationCatalog",
+    "OperationFollowUp",
     "OperationKind",
+    "OperationRequest",
     "OperationSpec",
+    "OperationStatus",
     "RawFailureSample",
     "bounded_failure_samples",
     "build_declared_operation_catalog",

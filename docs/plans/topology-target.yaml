@@ -1069,7 +1069,7 @@ files:
     target: polylogue/daemon/events_http.py
     owner: stable
   - path: polylogue/daemon/health.py
-    loc: 934
+    loc: 920
     target: polylogue/daemon/health.py
     owner: stable
   - path: polylogue/daemon/http.py
@@ -1277,7 +1277,7 @@ files:
     target: polylogue/mcp/payloads.py
     owner: stable
   - path: polylogue/mcp/query_contracts.py
-    loc: 160
+    loc: 221
     target: polylogue/mcp/query_contracts.py
     owner: stable
   - path: polylogue/mcp/server.py
@@ -1313,11 +1313,11 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 461
+    loc: 326
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
-    loc: 43
+    loc: 59
     target: polylogue/operations/__init__.py
     owner: stable
   - path: polylogue/operations/archive.py
@@ -1332,9 +1332,17 @@ files:
     loc: 144
     target: polylogue/operations/import_contracts.py
     owner: stable
+  - path: polylogue/operations/import_operations.py
+    loc: 172
+    target: polylogue/operations/import_operations.py
+    owner: stable
   - path: polylogue/operations/mutations.py
     loc: 480
     target: polylogue/operations/mutations.py
+    owner: stable
+  - path: polylogue/operations/operation_contract.py
+    loc: 277
+    target: polylogue/operations/operation_contract.py
     owner: stable
   - path: polylogue/operations/specs.py
     loc: 855
@@ -2298,7 +2306,7 @@ files:
     target: polylogue/sources/decoders.py
     owner: stable
   - path: polylogue/sources/dispatch.py
-    loc: 678
+    loc: 686
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
@@ -3204,11 +3212,11 @@ files:
     target: polylogue/storage/sqlite/query_store_maintenance.py
     owner: stable
   - path: polylogue/storage/sqlite/schema.py
-    loc: 260
+    loc: 116
     target: polylogue/storage/sqlite/schema.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_bootstrap.py
-    loc: 1635
+    loc: 131
     target: polylogue/storage/sqlite/schema_bootstrap.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl.py
