@@ -158,6 +158,7 @@ function _polyActionRailHtml(m, conversationId) {
     +           'onclick="openProvenanceTab()">prov</button>'
     +   '<button class="act-btn" data-act="jump-anchor" title="Jump to anchor in URL" '
     +           'onclick="jumpToAnchor(\'' + escAttr(anchor) + '\')">#</button>'
+    +   (typeof _polyCopyActionRailHtml === 'function' ? _polyCopyActionRailHtml(m) : '')
     + '</div>';
 }
 
@@ -256,6 +257,10 @@ function renderMessageBlocks(messages) {
     var body;
     if (isTool) body = _polyToolFoldHtml(m);
     else if (isThinking) body = _polyThinkingFoldHtml(m);
+    else if (typeof _polyHasPaste === 'function' && _polyHasPaste(m)) {
+      var bannerHtml = typeof _polyPasteBannerHtml === 'function' ? _polyPasteBannerHtml(m) : '';
+      body = bannerHtml + _polyRenderPasteBody(m);
+    }
     else body = _polyBodyHtml(m);
     var rail = _polyActionRailHtml(m, convId);
     return ''

@@ -25,6 +25,14 @@ class Message(MessageRuntimeMixin, BaseModel):
     message_type: MessageType = MessageType.MESSAGE
     parent_id: str | None = None
     branch_index: int = 0
+    # Stats projected from the storage layer so reader surfaces can
+    # render fold/paste indicators without re-deriving them. See #1201
+    # (paste rendering) and the conversation-level flags in
+    # ``polylogue.surfaces.payloads.ConversationFlagsPayload``. Word
+    # count remains derived (``MessageRuntimeMixin.word_count``).
+    has_tool_use: bool = False
+    has_thinking: bool = False
+    has_paste: bool = False
 
     @field_validator("role", mode="before")
     @classmethod
