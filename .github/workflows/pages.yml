@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
 
@@ -15,35 +15,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+      - uses: cachix/install-nix-action@v31
         with:
-          python-version: "3.13"
-          enable-cache: true
-
-      - name: Install dependencies
-        run: uv sync --extra dev --frozen
-
-      - name: Install Pagefind
-        run: |
-          curl -L https://github.com/CloudCannon/pagefind/releases/latest/download/pagefind-v1.3.0-x86_64-unknown-linux-musl.tar.gz | tar xz
-          mv pagefind /usr/local/bin/
+          nix_path: nixpkgs=channel:nixos-unstable
 
       - name: Build site
-        run: uv run devtools render-pages --skip-pagefind --output _site
+        run: nix develop --command devtools render-pages
 
-      - name: Index with Pagefind
-        run: pagefind --site _site/
-
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./_site
-          destination_dir: .
-          force_orphan: true
+          path: .cache/site/
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

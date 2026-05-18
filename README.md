@@ -231,6 +231,8 @@ routing, and evidence-operator surface.
 <!-- BEGIN GENERATED: docs-surface -->
 ## Documentation
 
+Live site: <https://sinity.github.io/polylogue/> (auto-published on every merge to `master`).
+
 Start with the generated command and architecture references; use [docs/README.md](docs/README.md) for the complete map.
 
 | Document | Description |
