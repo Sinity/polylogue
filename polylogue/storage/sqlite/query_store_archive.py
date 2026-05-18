@@ -129,8 +129,14 @@ class SQLiteQueryStoreArchiveMixin:
         if not messages:
             return []
         blocks_by_message = await self.get_content_blocks([message.message_id for message in messages])
+        if not blocks_by_message:
+            return list(messages)
+        # Skip model_copy when a message has no blocks — the field already
+        # defaults to [], so the copy would be a no-op allocation (#1314).
         return [
-            message.model_copy(update={"content_blocks": blocks_by_message.get(message.message_id, [])})
+            message.model_copy(update={"content_blocks": blocks})
+            if (blocks := blocks_by_message.get(message.message_id))
+            else message
             for message in messages
         ]
 
@@ -155,8 +161,12 @@ class SQLiteQueryStoreArchiveMixin:
         if not messages:
             return [], total
         blocks_by_message = await self.get_content_blocks([message.message_id for message in messages])
+        if not blocks_by_message:
+            return list(messages), total
         return [
-            message.model_copy(update={"content_blocks": blocks_by_message.get(message.message_id, [])})
+            message.model_copy(update={"content_blocks": blocks})
+            if (blocks := blocks_by_message.get(message.message_id))
+            else message
             for message in messages
         ], total
 
@@ -181,9 +191,13 @@ class SQLiteQueryStoreArchiveMixin:
         if not all_messages:
             return result
         blocks_by_message = await self.get_content_blocks([message.message_id for message in all_messages])
+        if not blocks_by_message:
+            return {cid: list(records) for cid, records in result.items()}
         return {
             conversation_id: [
-                message.model_copy(update={"content_blocks": blocks_by_message.get(message.message_id, [])})
+                message.model_copy(update={"content_blocks": blocks})
+                if (blocks := blocks_by_message.get(message.message_id))
+                else message
                 for message in records
             ]
             for conversation_id, records in result.items()

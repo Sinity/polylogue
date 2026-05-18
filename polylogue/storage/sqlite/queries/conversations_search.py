@@ -23,7 +23,10 @@ async def search_conversation_hits(
 ) -> ConversationSearchResult:
     from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_readiness_async
 
-    readiness = await message_fts_readiness_async(conn)
+    # Per-call readiness uses the light path (existence + sample + triggers)
+    # rather than per-call COUNT(*) sweeps. The full count-based check runs at
+    # daemon startup / repair paths; per-search COUNT(*) is redundant (#1314).
+    readiness = await message_fts_readiness_async(conn, verify_total_rows=False)
     check_fts_readiness(readiness, _MESSAGE_SEARCH_REPAIR_HINT)
 
     from polylogue.storage.search import build_ranked_conversation_search_query
@@ -52,7 +55,9 @@ async def search_conversation_evidence_hits(
     from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_readiness_async
     from polylogue.storage.search import build_ranked_conversation_search_query
 
-    readiness = await message_fts_readiness_async(conn)
+    # See note in search_conversation_hits — per-search readiness uses the
+    # light path; full-count checks live in startup/repair (#1314).
+    readiness = await message_fts_readiness_async(conn, verify_total_rows=False)
     check_fts_readiness(readiness, _MESSAGE_SEARCH_REPAIR_HINT)
 
     query_spec = build_ranked_conversation_search_query(

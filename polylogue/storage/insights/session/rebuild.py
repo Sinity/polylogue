@@ -86,8 +86,12 @@ ORDER BY COALESCE(source_sort_key, 0) DESC, conversation_id
 """
 # Full rebuilds must tolerate pathological historical provider_meta blobs and
 # very large conversation payloads without letting a single chunk inflate RSS
-# into multi-GB territory.
-_SESSION_INSIGHT_REBUILD_PAGE_SIZE = 1
+# into multi-GB territory. The message-count budget below caps per-chunk
+# message load; the page-size cap is a parallel upper bound on per-chunk row
+# count so that chunks of tiny conversations still emit at a reasonable rate.
+# Issue #1314: lifted from 1 → 100 to avoid ~17K SQL round-trips per 4K-
+# conversation rebuild while keeping the message-budget RSS guard intact.
+_SESSION_INSIGHT_REBUILD_PAGE_SIZE = 100
 _SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET = 5_000
 _SESSION_INSIGHT_CONVERSATION_SQL_TEMPLATE = """
 SELECT
@@ -554,6 +558,66 @@ def _session_profile_records_for_conversation_ids_sync(
     return [_row_to_session_profile_record(row) for row in rows]
 
 
+def _iter_budgeted_conversation_chunks_sync(
+    conn: sqlite3.Connection,
+    *,
+    page_size: int,
+    message_budget: int,
+) -> Iterator[tuple[str, ...]]:
+    """Yield budget-aware conversation chunks for the full-rebuild path.
+
+    Pulls conversation IDs in DB-side pages and re-chunks each page through
+    the message-budget logic so a single chunk never exceeds the per-chunk
+    RSS guard while keeping SQL round-trips small (#1314).
+    """
+    for page in iter_conversation_id_pages_sync(conn, page_size=page_size):
+        message_counts = _load_message_counts_sync(conn, page)
+        for chunk in _chunk_conversation_ids_by_message_budget_sync(
+            page,
+            message_counts=message_counts,
+            page_size=page_size,
+            message_budget=message_budget,
+        ):
+            yield chunk.conversation_ids
+
+
+async def _iter_budgeted_conversation_chunks_async(
+    conn: aiosqlite.Connection,
+    *,
+    page_size: int,
+    message_budget: int,
+) -> AsyncIterator[tuple[str, ...]]:
+    """Async variant of :func:`_iter_budgeted_conversation_chunks_sync`."""
+    async for page in iter_conversation_id_pages_async(conn, page_size=page_size):
+        message_counts = await _load_message_counts_async(conn, page)
+        for chunk in _chunk_conversation_ids_by_message_budget_sync(
+            page,
+            message_counts=message_counts,
+            page_size=page_size,
+            message_budget=message_budget,
+        ):
+            yield chunk.conversation_ids
+
+
+async def _load_message_counts_async(
+    conn: aiosqlite.Connection,
+    conversation_ids: Sequence[str],
+) -> dict[str, int]:
+    if not conversation_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in conversation_ids)
+    cursor = await conn.execute(
+        f"""
+        SELECT conversation_id, message_count
+        FROM conversation_stats
+        WHERE conversation_id IN ({placeholders})
+        """,
+        tuple(conversation_ids),
+    )
+    rows = await cursor.fetchall()
+    return {str(row["conversation_id"]): int(row["message_count"] or 0) for row in rows}
+
+
 def _refresh_thread_roots_sync(
     conn: sqlite3.Connection,
     root_ids: Sequence[str],
@@ -582,7 +646,9 @@ def rebuild_session_insights_sync(
         conn.execute("DELETE FROM session_profiles")
         conn.execute("DELETE FROM session_tag_rollups")
         conn.execute("DELETE FROM day_session_summaries")
-        conversation_chunks = iter_conversation_id_pages_sync(conn, page_size=page_size)
+        conversation_chunks = _iter_budgeted_conversation_chunks_sync(
+            conn, page_size=page_size, message_budget=_SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET
+        )
     else:
         conversation_ids = tuple(dict.fromkeys(str(conversation_id) for conversation_id in conversation_ids))
         previous_profile_groups = {
@@ -731,7 +797,9 @@ async def rebuild_session_insights_async(
     work_event_count = 0
     phase_count = 0
     if conversation_ids is None:
-        async for chunk in iter_conversation_id_pages_async(conn, page_size=page_size):
+        async for chunk in _iter_budgeted_conversation_chunks_async(
+            conn, page_size=page_size, message_budget=_SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET
+        ):
             batch = await load_async_batch(conn, chunk)
             record_bundles = build_session_insight_record_bundles(
                 hydrate_conversations(batch),
@@ -764,7 +832,18 @@ async def rebuild_session_insights_async(
                     ),
                 )
     else:
-        for chunk_ids in chunked(list(conversation_ids), size=page_size):
+        targeted_ids = tuple(dict.fromkeys(str(cid) for cid in conversation_ids))
+        targeted_counts = await _load_message_counts_async(conn, targeted_ids)
+        targeted_chunks = [
+            chunk.conversation_ids
+            for chunk in _chunk_conversation_ids_by_message_budget_sync(
+                targeted_ids,
+                message_counts=targeted_counts,
+                page_size=page_size,
+                message_budget=_SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET,
+            )
+        ]
+        for chunk_ids in targeted_chunks:
             batch = await load_async_batch(conn, chunk_ids)
             record_bundles = build_session_insight_record_bundles(
                 hydrate_conversations(batch),

@@ -276,41 +276,83 @@ async def get_provider_conversation_counts(
 async def get_provider_metrics_rows(
     conn: aiosqlite.Connection,
 ) -> list[ProviderMetricsRow]:
-    """Return raw provider aggregation rows for analytics reporting."""
-    cursor = await conn.execute(
+    """Return raw provider aggregation rows for analytics reporting.
+
+    Uses pre-computed ``conversation_stats`` for the per-conversation totals
+    (conversation_count, message_count, tool_use_count, thinking_count, and
+    the with-tool/thinking conversation counts) so analytics reads stay off
+    the large messages table. Per-role splits (user/assistant message counts
+    and word sums) still come from ``messages`` because conversation_stats
+    does not carry role-grouped figures; that secondary query is index-only
+    against ``idx_messages_provider_stats`` (#1314).
+    """
+    stats_cursor = await conn.execute(
         """
         SELECT
-            COALESCE(NULLIF(m.provider_name, ''), c.provider_name, 'unknown')              AS provider_name,
-            COUNT(DISTINCT m.conversation_id)                                              AS conversation_count,
-            COUNT(*)                                                                       AS message_count,
-            SUM(CASE WHEN role = 'user'      THEN 1 ELSE 0 END)                           AS user_message_count,
-            SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END)                           AS assistant_message_count,
-            SUM(CASE WHEN role = 'user'      THEN word_count ELSE 0 END)                  AS user_word_sum,
-            SUM(CASE WHEN role = 'assistant' THEN word_count ELSE 0 END)                  AS assistant_word_sum,
-            SUM(has_tool_use)                                                              AS tool_use_count,
-            SUM(has_thinking)                                                              AS thinking_count,
-            COUNT(DISTINCT CASE WHEN has_tool_use = 1 THEN m.conversation_id END)         AS conversations_with_tools,
-            COUNT(DISTINCT CASE WHEN has_thinking = 1 THEN m.conversation_id END)         AS conversations_with_thinking
+            COALESCE(NULLIF(s.provider_name, ''), c.provider_name, 'unknown') AS provider_name,
+            COUNT(*)                                                          AS conversation_count,
+            SUM(s.message_count)                                              AS message_count,
+            SUM(s.tool_use_count)                                             AS tool_use_count,
+            SUM(s.thinking_count)                                             AS thinking_count,
+            SUM(CASE WHEN s.tool_use_count > 0 THEN 1 ELSE 0 END)             AS conversations_with_tools,
+            SUM(CASE WHEN s.thinking_count > 0 THEN 1 ELSE 0 END)             AS conversations_with_thinking
+        FROM conversation_stats s
+        LEFT JOIN conversations c ON c.conversation_id = s.conversation_id
+        GROUP BY COALESCE(NULLIF(s.provider_name, ''), c.provider_name, 'unknown')
+        """
+    )
+    stats_rows = await stats_cursor.fetchall()
+
+    roles_cursor = await conn.execute(
+        """
+        SELECT
+            COALESCE(NULLIF(m.provider_name, ''), c.provider_name, 'unknown') AS provider_name,
+            SUM(CASE WHEN role = 'user'      THEN 1 ELSE 0 END)               AS user_message_count,
+            SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END)               AS assistant_message_count,
+            SUM(CASE WHEN role = 'user'      THEN word_count ELSE 0 END)      AS user_word_sum,
+            SUM(CASE WHEN role = 'assistant' THEN word_count ELSE 0 END)      AS assistant_word_sum
         FROM messages m
         LEFT JOIN conversations c ON c.conversation_id = m.conversation_id
         GROUP BY COALESCE(NULLIF(m.provider_name, ''), c.provider_name, 'unknown')
-        ORDER BY conversation_count DESC
         """
     )
-    rows = await cursor.fetchall()
-    return [
-        {
-            "provider_name": str(row["provider_name"] or "unknown"),
-            "conversation_count": int(row["conversation_count"] or 0),
-            "message_count": int(row["message_count"] or 0),
+    roles_rows = await roles_cursor.fetchall()
+    roles_by_provider: dict[str, dict[str, int]] = {}
+    for row in roles_rows:
+        provider = str(row["provider_name"] or "unknown")
+        roles_by_provider[provider] = {
             "user_message_count": int(row["user_message_count"] or 0),
             "assistant_message_count": int(row["assistant_message_count"] or 0),
             "user_word_sum": int(row["user_word_sum"] or 0),
             "assistant_word_sum": int(row["assistant_word_sum"] or 0),
-            "tool_use_count": int(row["tool_use_count"] or 0),
-            "thinking_count": int(row["thinking_count"] or 0),
-            "conversations_with_tools": int(row["conversations_with_tools"] or 0),
-            "conversations_with_thinking": int(row["conversations_with_thinking"] or 0),
         }
-        for row in rows
-    ]
+
+    metrics: list[ProviderMetricsRow] = []
+    for row in stats_rows:
+        provider = str(row["provider_name"] or "unknown")
+        role_splits = roles_by_provider.get(
+            provider,
+            {
+                "user_message_count": 0,
+                "assistant_message_count": 0,
+                "user_word_sum": 0,
+                "assistant_word_sum": 0,
+            },
+        )
+        metrics.append(
+            {
+                "provider_name": provider,
+                "conversation_count": int(row["conversation_count"] or 0),
+                "message_count": int(row["message_count"] or 0),
+                "user_message_count": role_splits["user_message_count"],
+                "assistant_message_count": role_splits["assistant_message_count"],
+                "user_word_sum": role_splits["user_word_sum"],
+                "assistant_word_sum": role_splits["assistant_word_sum"],
+                "tool_use_count": int(row["tool_use_count"] or 0),
+                "thinking_count": int(row["thinking_count"] or 0),
+                "conversations_with_tools": int(row["conversations_with_tools"] or 0),
+                "conversations_with_thinking": int(row["conversations_with_thinking"] or 0),
+            }
+        )
+    metrics.sort(key=lambda r: r["conversation_count"], reverse=True)
+    return metrics

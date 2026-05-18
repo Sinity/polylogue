@@ -52,7 +52,10 @@ def search_messages_impl(
 
     sql, params = query_spec.sql, query_spec.params
     with open_read_connection(db_path) as conn:
-        readiness = message_fts_readiness_sync(conn)
+        # Per-search readiness uses the light path (existence + sample +
+        # triggers); the COUNT(*)-based exact check runs at daemon startup /
+        # repair, not on every search (#1314).
+        readiness = message_fts_readiness_sync(conn, verify_total_rows=False)
         check_fts_readiness(readiness, _MESSAGE_SEARCH_REPAIR_HINT)
         try:
             rows = conn.execute(sql, tuple(params)).fetchall()

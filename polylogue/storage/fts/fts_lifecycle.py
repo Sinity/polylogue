@@ -383,7 +383,11 @@ def message_fts_readiness_sync(
         ready = exists and triggers_present and indexed_rows == total_messages
     else:
         exists = bool(conn.execute(FTS_INDEX_EXISTS_SQL).fetchone())
-        has_indexed_rows = exists and bool(conn.execute("SELECT 1 FROM messages_fts LIMIT 1").fetchone())
+        # messages_fts is an external-content FTS5 table, so `SELECT * FROM
+        # messages_fts` proxies through to `messages` and is NOT a faithful
+        # signal of index population. The docsize sidecar is the canonical
+        # "row exists in the index" probe.
+        has_indexed_rows = exists and bool(conn.execute("SELECT 1 FROM messages_fts_docsize LIMIT 1").fetchone())
         has_indexable_messages = bool(conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1").fetchone())
         triggers_present = exists and _triggers_present_sync(conn, _MESSAGE_FTS_TRIGGER_NAMES)
         indexed_rows = 0
@@ -414,7 +418,11 @@ async def message_fts_readiness_async(
         ready = exists and triggers_present and indexed_rows == total_messages
     else:
         exists = bool(await (await conn.execute(FTS_INDEX_EXISTS_SQL)).fetchone())
-        has_indexed_rows = exists and bool(await (await conn.execute("SELECT 1 FROM messages_fts LIMIT 1")).fetchone())
+        # See note in message_fts_readiness_sync — docsize is the faithful
+        # index-population probe for external-content FTS5 tables.
+        has_indexed_rows = exists and bool(
+            await (await conn.execute("SELECT 1 FROM messages_fts_docsize LIMIT 1")).fetchone()
+        )
         has_indexable_messages = bool(
             await (await conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1")).fetchone()
         )
