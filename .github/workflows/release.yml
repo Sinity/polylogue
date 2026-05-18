@@ -5,8 +5,10 @@ name: Release
 # build host, runs an installed-wheel smoke matrix across supported
 # Python versions on Linux + macOS, signs the artifacts with Sigstore
 # keyless OIDC, emits a CycloneDX SBOM, then:
-#   - publishes to PyPI via Trusted Publishing (OIDC, no API token), and
-#   - builds + pushes a multi-stage OCI image to ghcr.io.
+#   - publishes to PyPI via Trusted Publishing (OIDC, no API token).
+#
+# The OCI image is built and published by `.github/workflows/container.yml`,
+# which fans out across slim + distroless variants and linux/amd64 + linux/arm64.
 #
 # A manual `workflow_dispatch` path exists to dry-run the build/smoke
 # pipeline against any ref without publishing.
@@ -199,39 +201,3 @@ jobs:
           skip-existing: true
           verbose: true
 
-  publish-container:
-    name: publish-container
-    needs: build
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
-    timeout-minutes: 25
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v6
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Extract image metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/polylogue
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=ref,event=tag
-            type=raw,value=latest,enable={{is_default_branch}}
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Containerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max

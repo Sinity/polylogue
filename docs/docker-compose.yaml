@@ -1,0 +1,79 @@
+# Sample docker-compose.yaml for the polylogued OCI image.
+#
+# Usage:
+#   docker compose -f docs/docker-compose.yaml up -d
+#   docker compose -f docs/docker-compose.yaml exec polylogued polylogue stats
+#   curl http://localhost:8766/api/health
+#
+# The named volumes below keep the SQLite archive and configuration durable
+# across container restarts. Replace `polylogue-archive` / `polylogue-config`
+# with host bind-mount paths if you prefer (chown them to UID 10001 first).
+#
+# Pin the image tag in production. `:latest` is provided for convenience but
+# follows master; use `:vX.Y.Z` (or `:vX.Y.Z-distroless`) for reproducible
+# deploys. See docs/installation.md for the variant matrix.
+
+services:
+  polylogued:
+    image: ghcr.io/sinity/polylogue:latest
+    container_name: polylogued
+    restart: unless-stopped
+
+    # The default CMD already starts the daemon with HTTP API enabled on
+    # 0.0.0.0:8766. Override it here if you need extra flags (e.g. embeddings).
+    # command: ["polylogued", "run", "--enable-api", "--api-host", "0.0.0.0",
+    #           "--api-port", "8766"]
+
+    environment:
+      # Override defaults if needed. The image already exports these.
+      POLYLOGUE_ARCHIVE_ROOT: /data/archive
+      POLYLOGUE_CONFIG_DIR: /etc/polylogue
+      # Required only if the daemon is exposed to non-loopback callers and
+      # you want the API to demand a bearer token. The container's own
+      # HEALTHCHECK uses loopback, which is unauthenticated.
+      # POLYLOGUE_API_AUTH_TOKEN: "change-me"
+
+    volumes:
+      - polylogue-archive:/data/archive
+      - polylogue-config:/etc/polylogue
+      # Mount source export roots read-only so the daemon can ingest them in
+      # place. Adjust to match your provider layout.
+      # - ${HOME}/.claude/projects:/srv/claude:ro
+      # - ${HOME}/.codex/sessions:/srv/codex:ro
+
+    ports:
+      - "8766:8766"   # Daemon HTTP API (/api/health, /api/status, web shell)
+
+    # The image declares HEALTHCHECK against /api/health on 127.0.0.1:8766;
+    # compose surfaces the result via `docker compose ps`. The block below
+    # makes that contract explicit and lets you tighten the timing.
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error",
+             "http://127.0.0.1:8766/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+    # Run as the image's built-in non-root UID. If you bind-mount host
+    # directories above, `chown -R 10001:10001 <path>` before starting.
+    user: "10001:10001"
+
+    # Tighten the container's capabilities. The daemon does not need any
+    # of the Linux capability set; cap_drop ALL keeps the threat surface
+    # minimal and is compatible with the existing entrypoint.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    # Read-only root filesystem with a writable tmpfs for /tmp. All durable
+    # state lives in the declared volumes.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+      - /var/cache/polylogue:size=128m
+
+volumes:
+  polylogue-archive:
+  polylogue-config:

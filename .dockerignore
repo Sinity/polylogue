@@ -1,0 +1,54 @@
+# Keep the build context lean: ship source + pyproject.toml + README only.
+# Generated state, caches, and local artifacts have no place in the image.
+
+.git
+.github
+.githooks
+.direnv
+.envrc
+.venv*
+.cache
+.local
+.agent
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.testmondata
+.testmondata-*
+.coverage*
+htmlcov
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+build
+dist
+result
+result-*
+
+# Editor / OS junk
+.idea
+.vscode
+.DS_Store
+*.swp
+*~
+
+# Repo-level docs and ops that are not needed at build time
+docs
+showcase
+qa
+qa_outputs
+benchmarks
+scenarios
+tests
+fixtures
+witnesses
+*.md
+!README.md
+Containerfile
+Dockerfile*
+docker-compose*.yaml
+
+# Nix outputs / lockfiles consumed only by the flake
+flake.lock
