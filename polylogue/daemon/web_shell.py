@@ -10,6 +10,7 @@ from polylogue.daemon.web_shell_bulk import (
 )
 from polylogue.daemon.web_shell_lineage import LINEAGE_JS
 from polylogue.daemon.web_shell_provenance import PROVENANCE_JS
+from polylogue.daemon.web_shell_reader import READER_CSS, READER_HELP_HTML, READER_JS
 from polylogue.daemon.web_shell_similar import SIMILAR_JS
 from polylogue.daemon.web_shell_workspace import WORKSPACE_CSS, WORKSPACE_HTML, WORKSPACE_JS
 
@@ -154,6 +155,7 @@ __WORKSPACE_CSS__
 .msg-block .msg-expand { color: var(--accent); cursor: pointer; font-size: var(--small); margin-top: 3px; user-select: none; }
 .msg-block .msg-expand:hover { color: var(--active); }
 .msg-block .msg-text:not(.collapsed) + .msg-expand { display: none; }
+__READER_CSS__
 .tool-block { border-left: 2px solid var(--role-tool); padding-left: 12px; margin: 2px 0; }
 .tool-block .tool-summary { font-size: var(--small); color: var(--text-muted); cursor: pointer; padding: 3px 0; }
 .tool-block .tool-summary:hover { color: var(--text); }
@@ -292,6 +294,7 @@ __WORKSPACE_HTML__
       <kbd>Enter</kbd><span>Open selected</span>
       <kbd>Esc</kbd><span>Clear search / close</span>
       <kbd>?</kbd><span>Toggle this help</span>
+__READER_HELP_HTML__
     </div>
     <div class="help-close" onclick="toggleHelp()">Press <kbd>Esc</kbd> or click to close</div>
   </div>
@@ -692,34 +695,10 @@ function renderMain() {
 }
 
 function messageBlocksHtml(messages) {
-  return (messages || []).map(function(m, idx) {
-    var role = (m.role || '').toLowerCase();
-    var text = m.text || '';
-    var isTool = role === 'tool' || m.message_type === 'tool_use' || m.message_type === 'tool_result' || m.has_tool_use;
-    var tsHtml = m.timestamp ? '<span class="msg-ts" title="' + esc(m.timestamp) + '">' + new Date(m.timestamp).toLocaleTimeString() + '</span>' : '';
-    var typeTag = (m.message_type && m.message_type !== 'message') ? '<span class="msg-type">' + esc(m.message_type) + '</span>' : '';
-    var textClass = 'msg-text';
-    var textLen = text.length;
-    var collapsed = textLen > 2000;
-    if (collapsed) textClass += ' collapsed';
-    var roleClass = 'msg-role ' + role;
-    var blockClass = 'msg-block';
-    if (isTool) blockClass += ' tool-block';
-    var toolSummaryHtml = '';
-    if (isTool && textLen > 200) {
-      var lines = text.split('\n');
-      var cmdLine = lines[0] || '';
-      if (cmdLine.length > 120) cmdLine = cmdLine.substring(0, 120) + '...';
-      toolSummaryHtml = '<div class="tool-summary" onclick="var t=this.parentElement.querySelector(\'.msg-text\');t.classList.toggle(\'collapsed\');this.style.display=\'none\'">'
-        + esc('tool: ' + (role || 'tool')) + ' <code>' + esc(cmdLine) + '</code></div>';
-    }
-    return '<div class="' + blockClass + '" id="msg-' + idx + '">'
-      + '<div class="msg-header"><span class="' + roleClass + '">' + esc(role || '?') + '</span>' + typeTag + tsHtml + '</div>'
-      + toolSummaryHtml
-      + (text ? '<div class="' + textClass + '">' + esc(text) + '</div>' : '')
-      + (collapsed ? '<div class="msg-expand" onclick="var t=this.previousElementSibling;t.classList.remove(\'collapsed\');this.remove();var ts=this.parentElement.querySelector(\'.tool-summary\');if(ts)ts.style.display=\'none\'">Show all (' + textLen.toLocaleString() + ' chars)</div>' : '')
-      + '</div>';
-  }).join('');
+  // Delegates to the MK3 reader slice (#1202) which owns per-message
+  // action rails, fold policies (tool / thinking / code), and the
+  // keyboard-focused message card. Defined in web_shell_reader.py.
+  return renderMessageBlocks(messages);
 }
 
 function markButtonHtml(conversationId, markType, label, title) {
@@ -1275,6 +1254,13 @@ document.addEventListener('keydown', function(e) {
     return;
   }
   if (e.key === 'j' || e.key === 'k') {
+    // When a conversation is open the MK3 reader slice owns j/k for
+    // message-card navigation (installed via installReaderShortcuts in
+    // web_shell_reader.py). It runs as a capture-phase handler and will
+    // have already preventDefault()'d in that case. Here we only drive
+    // the sidebar list when no conversation messages are loaded.
+    var convOpen = !!(state.selected && state.selected.messages && state.selected.messages.length);
+    if (convOpen) return;
     e.preventDefault();
     var items = document.querySelectorAll('.conv-item');
     if (!items.length) return;
@@ -1424,6 +1410,7 @@ function startRealtimeChannel() {
 }
 
 startRealtimeChannel();
+__READER_JS__
 </script>
 </body>
 </html>""".replace("__WORKSPACE_CSS__", WORKSPACE_CSS)
@@ -1436,4 +1423,7 @@ startRealtimeChannel();
     .replace("__PROVENANCE_JS__", PROVENANCE_JS)
     .replace("__LINEAGE_JS__", LINEAGE_JS)
     .replace("__SIMILAR_JS__", SIMILAR_JS)
+    .replace("__READER_CSS__", READER_CSS)
+    .replace("__READER_HELP_HTML__", READER_HELP_HTML)
+    .replace("__READER_JS__", READER_JS)
 )

@@ -675,7 +675,7 @@ files:
     target: polylogue/cli/commands/check.py
     owner: stable
   - path: polylogue/cli/commands/completions.py
-    loc: 23
+    loc: 66
     target: polylogue/cli/commands/completions.py
     owner: stable
   - path: polylogue/cli/commands/config.py
@@ -775,7 +775,7 @@ files:
     target: polylogue/cli/query_feedback.py
     owner: stable
   - path: polylogue/cli/query_group.py
-    loc: 118
+    loc: 125
     target: polylogue/cli/query_group.py
     owner: stable
   - path: polylogue/cli/query_output.py
@@ -1114,7 +1114,7 @@ files:
     target: polylogue/daemon/user_state_http.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
-    loc: 1439
+    loc: 1429
     target: polylogue/daemon/web_shell.py
     owner: stable
   - path: polylogue/daemon/web_shell_bulk.py
@@ -1128,6 +1128,10 @@ files:
   - path: polylogue/daemon/web_shell_provenance.py
     loc: 103
     target: polylogue/daemon/web_shell_provenance.py
+    owner: stable
+  - path: polylogue/daemon/web_shell_reader.py
+    loc: 461
+    target: polylogue/daemon/web_shell_reader.py
     owner: stable
   - path: polylogue/daemon/web_shell_similar.py
     loc: 160
