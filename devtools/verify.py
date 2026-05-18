@@ -313,6 +313,14 @@ def build_verify_steps(
                 ("verify-manifests", _devtools_cmd("verify-manifests")),
                 ("verify-ci-workflows", _devtools_cmd("verify-ci-workflows")),
                 ("verify-witness-lifecycle", _devtools_cmd("verify-witness-lifecycle")),
+                # Recommended (not required): runs in soft mode so missing
+                # witnesses on merged fix PRs are reported without blocking
+                # ``devtools verify``. Nightly jobs invoke the command
+                # without ``--soft`` for the hard gate. See issue #1227.
+                (
+                    "verify-witness-coverage",
+                    _devtools_cmd("verify-witness-coverage", "--soft"),
+                ),
                 ("verify-lane-assertions", _devtools_cmd("verify-lane-assertions")),
             ]
         )

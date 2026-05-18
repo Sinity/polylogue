@@ -391,6 +391,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-cross-cuts", "devtools verify-cross-cuts --json"),
     ),
     CommandSpec(
+        "verify-witness-coverage",
+        "verification",
+        "Audit merged fix PRs for missing witnesses under tests/witnesses/.",
+        "devtools.verify_witness_coverage",
+        use_when=(
+            "Surface merged bug-fix PRs that landed without a regression "
+            "witness so the failure-case corpus stays trustworthy."
+        ),
+        examples=(
+            "devtools verify-witness-coverage",
+            "devtools verify-witness-coverage --days 30",
+            "devtools verify-witness-coverage --json",
+        ),
+    ),
+    CommandSpec(
         "verify-witness-lifecycle",
         "verification",
         "Verify committed witness lifecycle health — staleness, unexercised, stale xfails.",
