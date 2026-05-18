@@ -45,6 +45,7 @@ from polylogue.maintenance.planner import (
     BackfillStatus,
     MaintenanceScope,
 )
+from polylogue.maintenance.scope import MaintenanceScopeFilter
 
 __all__ = [
     "LEGACY_COST_SOURCE",
@@ -156,12 +157,8 @@ def plan_cost_migration(
     operation_id = str(uuid.uuid4())
     scope = MaintenanceScope(
         targets=(SESSION_PROFILES_REBUILD_TARGET,),
-        filter=json_document(
-            {
-                "cost_basis": LEGACY_COST_SOURCE,
-                "conversation_ids": [row.conversation_id for row in legacy_rows],
-                "dry_run": dry_run,
-            }
+        filter=MaintenanceScopeFilter(
+            conversation_ids=tuple(row.conversation_id for row in legacy_rows) or None,
         ),
     )
     affected = len(legacy_rows)

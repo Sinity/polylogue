@@ -719,7 +719,7 @@ files:
     target: polylogue/cli/commands/insights.py
     owner: stable
   - path: polylogue/cli/commands/maintenance.py
-    loc: 275
+    loc: 504
     target: polylogue/cli/commands/maintenance.py
     owner: stable
   - path: polylogue/cli/commands/neighbors.py
@@ -1077,7 +1077,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 1654
+    loc: 1701
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_models.py
@@ -1229,11 +1229,11 @@ files:
     target: polylogue/maintenance/__init__.py
     owner: stable
   - path: polylogue/maintenance/cost_migration.py
-    loc: 191
+    loc: 188
     target: polylogue/maintenance/cost_migration.py
     owner: stable
   - path: polylogue/maintenance/envelope.py
-    loc: 202
+    loc: 211
     target: polylogue/maintenance/envelope.py
     owner: stable
   - path: polylogue/maintenance/invalidation.py
@@ -1245,7 +1245,7 @@ files:
     target: polylogue/maintenance/models.py
     owner: stable
   - path: polylogue/maintenance/planner.py
-    loc: 473
+    loc: 505
     target: polylogue/maintenance/planner.py
     owner: stable
   - path: polylogue/maintenance/preview.py
@@ -1253,8 +1253,12 @@ files:
     target: polylogue/maintenance/preview.py
     owner: stable
   - path: polylogue/maintenance/replay.py
-    loc: 532
+    loc: 547
     target: polylogue/maintenance/replay.py
+    owner: stable
+  - path: polylogue/maintenance/scope.py
+    loc: 143
+    target: polylogue/maintenance/scope.py
     owner: stable
   - path: polylogue/maintenance/targets.py
     loc: 291
@@ -1297,7 +1301,7 @@ files:
     target: polylogue/mcp/server_insight_tools.py
     owner: stable
   - path: polylogue/mcp/server_maintenance_tools.py
-    loc: 244
+    loc: 337
     target: polylogue/mcp/server_maintenance_tools.py
     owner: stable
   - path: polylogue/mcp/server_mutation_tools.py
@@ -2610,7 +2614,7 @@ files:
     target: polylogue/storage/artifacts/views.py
     owner: stable
   - path: polylogue/storage/blob_gc.py
-    loc: 252
+    loc: 404
     target: polylogue/storage/blob_gc.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -2796,7 +2800,7 @@ files:
     target: polylogue/storage/raw/models.py
     owner: stable
   - path: polylogue/storage/repair.py
-    loc: 1236
+    loc: 1251
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -3232,7 +3236,7 @@ files:
     target: polylogue/storage/sqlite/schema_ddl_actions.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_archive.py
-    loc: 508
+    loc: 509
     target: polylogue/storage/sqlite/schema_ddl_archive.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_aux.py

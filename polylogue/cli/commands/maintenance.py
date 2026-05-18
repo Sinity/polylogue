@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from datetime import UTC, datetime
+from pathlib import Path
 
 import click
 
@@ -15,9 +16,105 @@ from polylogue.maintenance.envelope import envelope_from_operation
 from polylogue.maintenance.planner import preview_backfill
 from polylogue.maintenance.preview import ALL_SCOPES, staleness_inventory
 from polylogue.maintenance.replay import ReplayProgress, execute_replay
+from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES, build_maintenance_target_catalog
 from polylogue.paths import archive_root, render_root
 from polylogue.storage.blob_gc import read_gc_history
+
+
+def _build_scope_filter(
+    *,
+    conversation_ids: tuple[str, ...],
+    provider: str | None,
+    source_family: str | None,
+    source_root: str | None,
+    raw_artifact_id: str | None,
+    since: str | None,
+    until: str | None,
+    failure_kind: str | None,
+    parser_version: str | None,
+) -> MaintenanceScopeFilter:
+    """Translate CLI options into a :class:`MaintenanceScopeFilter`.
+
+    Helper exists so the CLI ``plan`` and ``run`` commands share one
+    parsing path and one error surface.
+    """
+
+    time_range: tuple[datetime, datetime] | None
+    if since is not None or until is not None:
+        if since is None or until is None:
+            raise click.UsageError("--since and --until must be supplied together")
+        try:
+            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            until_dt = datetime.fromisoformat(until.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise click.UsageError(f"--since/--until must be ISO-8601 timestamps: {exc}") from exc
+        time_range = (since_dt, until_dt)
+    else:
+        time_range = None
+
+    return MaintenanceScopeFilter(
+        conversation_ids=conversation_ids if conversation_ids else None,
+        provider=provider,
+        source_family=source_family,
+        source_root=Path(source_root) if source_root else None,
+        raw_artifact_id=raw_artifact_id,
+        time_range=time_range,
+        failure_kind=failure_kind,
+        parser_version=parser_version,
+    )
+
+
+_SCOPE_FILTER_OPTIONS = [
+    click.option(
+        "--conversation-id",
+        "conversation_ids",
+        multiple=True,
+        help="Restrict scope to one or more conversation ids (repeatable).",
+    ),
+    click.option("--provider", type=str, default=None, help="Restrict scope to one provider name."),
+    click.option(
+        "--source-family",
+        type=str,
+        default=None,
+        help="Restrict scope to one source family (e.g. claude-code-session).",
+    ),
+    click.option(
+        "--source-root",
+        type=str,
+        default=None,
+        help="Restrict scope to one source runtime root (e.g. ~/.claude/projects).",
+    ),
+    click.option(
+        "--raw-artifact",
+        "raw_artifact_id",
+        type=str,
+        default=None,
+        help="Restrict scope to one raw artifact id.",
+    ),
+    click.option("--since", type=str, default=None, help="Inclusive ISO-8601 lower bound of the time range."),
+    click.option("--until", type=str, default=None, help="Inclusive ISO-8601 upper bound of the time range."),
+    click.option(
+        "--failure-kind",
+        type=str,
+        default=None,
+        help="Restrict scope to attempts that failed with one kind.",
+    ),
+    click.option(
+        "--parser-version",
+        type=str,
+        default=None,
+        help="Restrict scope to one parser/materializer version.",
+    ),
+]
+
+
+def _apply_scope_filter_options(fn):  # type: ignore[no-untyped-def]
+    """Decorator stacking the shared scope-filter options onto a command."""
+    for option in reversed(_SCOPE_FILTER_OPTIONS):
+        fn = option(fn)
+    return fn
+
 
 _MAINTENANCE_TARGET_HELP = build_maintenance_target_catalog().help_text()
 
@@ -43,8 +140,22 @@ def maintenance_group() -> None:
     show_default=True,
     help="Output format. ``json`` emits the shared MaintenanceOperationEnvelope.",
 )
+@_apply_scope_filter_options
 @click.pass_obj
-def plan_command(env: AppEnv, targets: tuple[str, ...], output_format: str) -> None:
+def plan_command(
+    env: AppEnv,
+    targets: tuple[str, ...],
+    output_format: str,
+    conversation_ids: tuple[str, ...],
+    provider: str | None,
+    source_family: str | None,
+    source_root: str | None,
+    raw_artifact_id: str | None,
+    since: str | None,
+    until: str | None,
+    failure_kind: str | None,
+    parser_version: str | None,
+) -> None:
     """Dry-run summary: show what would be rebuilt without executing.
 
     Displays affected rows and estimated time for each target.
@@ -56,7 +167,18 @@ def plan_command(env: AppEnv, targets: tuple[str, ...], output_format: str) -> N
         render_root=render_root(),
         sources=[],  # maintenance doesn't need source acquisition
     )
-    result = preview_backfill(config, targets=targets)
+    scope_filter = _build_scope_filter(
+        conversation_ids=conversation_ids,
+        provider=provider,
+        source_family=source_family,
+        source_root=source_root,
+        raw_artifact_id=raw_artifact_id,
+        since=since,
+        until=until,
+        failure_kind=failure_kind,
+        parser_version=parser_version,
+    )
+    result = preview_backfill(config, targets=targets, scope_filter=scope_filter)
 
     if output_format == "json":
         envelope = envelope_from_operation(result, origin="cli", mode="preview")
@@ -124,6 +246,7 @@ def plan_command(env: AppEnv, targets: tuple[str, ...], output_format: str) -> N
     show_default=True,
     help="Output format. ``json`` emits the shared MaintenanceOperationEnvelope.",
 )
+@_apply_scope_filter_options
 @click.pass_obj
 def run_command(
     env: AppEnv,
@@ -132,6 +255,15 @@ def run_command(
     operation_id: str | None,
     resume_cursor: str | None,
     output_format: str,
+    conversation_ids: tuple[str, ...],
+    provider: str | None,
+    source_family: str | None,
+    source_root: str | None,
+    raw_artifact_id: str | None,
+    since: str | None,
+    until: str | None,
+    failure_kind: str | None,
+    parser_version: str | None,
 ) -> None:
     """Run (or dry-run) maintenance backfill operations.
 
@@ -154,6 +286,17 @@ def run_command(
             err=True,
         )
 
+    scope_filter = _build_scope_filter(
+        conversation_ids=conversation_ids,
+        provider=provider,
+        source_family=source_family,
+        source_root=source_root,
+        raw_artifact_id=raw_artifact_id,
+        since=since,
+        until=until,
+        failure_kind=failure_kind,
+        parser_version=parser_version,
+    )
     result = execute_replay(
         config,
         targets=targets,
@@ -161,6 +304,7 @@ def run_command(
         resume_cursor=resume_cursor,
         dry_run=dry_run,
         progress_callback=_emit_progress,
+        scope_filter=scope_filter,
     )
 
     if output_format == "json":

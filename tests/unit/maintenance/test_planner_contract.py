@@ -97,20 +97,36 @@ class TestInvalidationReasonCoverage:
 
 
 class TestMaintenanceScope:
-    def test_scope_default_filter_is_empty_dict(self) -> None:
+    def test_scope_default_filter_is_empty(self) -> None:
+        from polylogue.maintenance.scope import MaintenanceScopeFilter
+
         scope = MaintenanceScope(targets=("a", "b"))
-        assert scope.filter == {}
-        assert scope.to_dict() == {"targets": ["a", "b"], "filter": {}}
+        assert scope.filter == MaintenanceScopeFilter()
+        assert scope.filter.is_empty()
+        payload = scope.to_dict()
+        assert payload["targets"] == ["a", "b"]
+        filter_payload = cast(dict[str, object], payload["filter"])
+        # Every typed scope dimension is present with a None default.
+        assert filter_payload["conversation_ids"] is None
+        assert filter_payload["provider"] is None
 
     def test_scope_filter_roundtrips(self) -> None:
+        from polylogue.maintenance.scope import MaintenanceScopeFilter
+
         scope = MaintenanceScope(
             targets=("session_insights",),
-            filter={"conversation_ids": ["c1", "c2"], "since": "2026-01-01"},
+            filter=MaintenanceScopeFilter(
+                conversation_ids=("c1", "c2"),
+                provider="claude",
+            ),
         )
         payload = scope.to_dict()
         filter_payload = cast(dict[str, object], payload["filter"])
         assert filter_payload["conversation_ids"] == ["c1", "c2"]
-        assert filter_payload["since"] == "2026-01-01"
+        assert filter_payload["provider"] == "claude"
+        # to_dict / from_dict round-trips the scope back to itself.
+        scope_again = MaintenanceScope.from_dict(cast(dict[str, object], payload))
+        assert scope_again == scope
 
     def test_operation_synthesizes_scope_from_targets(self) -> None:
         op = BackfillOperation(
