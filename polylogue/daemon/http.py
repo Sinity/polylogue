@@ -21,6 +21,12 @@ from polylogue.daemon.events import (
     get_latest_event_id,
 )
 from polylogue.daemon.status import daemon_status_payload
+from polylogue.daemon.web_shell_attachments import (
+    LibraryEntry,
+    attachment_to_envelope,
+    build_library_payload,
+    render_attachment_library_page,
+)
 from polylogue.daemon.web_shell_paste import (
     PasteBrowserEntry,
     build_paste_browser_payload,
@@ -698,6 +704,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._serve_paste_browser_page()
             return
 
+        # Attachment library is a standalone reader page (#1199). Same
+        # auth posture as ``/p`` — the page only embeds JS that calls
+        # the authenticated archive API.
+        if path == ["a"]:
+            self._serve_attachment_library_page()
+            return
+
         # Kubernetes-style probes. Unauthenticated by convention — k8s,
         # docker, and systemd healthchecks don't carry credentials, and the
         # probes leak only liveness/readiness booleans plus structured reason
@@ -731,6 +744,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_facets(params)
         elif path == ["api", "paste-browser"]:
             self._handle_paste_browser(params)
+        elif path == ["api", "attachments"]:
+            self._handle_attachment_library(params)
         elif workspace_routes.dispatch_get(self, path, params) or (
             path[:2] == ["api", "user"] and user_state_http.dispatch_get(self, path[2:], params)
         ):
@@ -753,6 +768,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_get_session_insights(path[3], params)
         elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "similar":
             self._handle_get_conversation_similar(path[2], params)
+        elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "attachments":
+            self._handle_get_conversation_attachments(path[2])
         elif len(path) == 4 and path[:3] == ["api", "raw_artifacts"]:
             self._handle_get_raw_artifact(path[3])
         else:
@@ -824,6 +841,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _serve_paste_browser_page(self) -> None:
         self._send_html(HTTPStatus.OK, render_paste_browser_page())
 
+    def _serve_attachment_library_page(self) -> None:
+        self._send_html(HTTPStatus.OK, render_attachment_library_page())
+
     @daemon_safe_handler
     def _handle_paste_browser(self, params: dict[str, list[str]]) -> None:
         limit = self._get_int(params, "limit", 200)
@@ -886,6 +906,105 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             if len(entries) >= limit:
                 break
         return build_paste_browser_payload(entries, total=total_messages_seen)
+
+    # ------------------------------------------------------------------
+    # Handlers: attachment library + per-conversation attachments (#1199)
+    # ------------------------------------------------------------------
+
+    @daemon_safe_handler
+    def _handle_attachment_library(self, params: dict[str, list[str]]) -> None:
+        limit = self._get_int(params, "limit", 500)
+        offset = self._get_int(params, "offset", 0)
+        mime_filter = (params.get("mime") or [""])[0]
+        state_filter = (params.get("state") or [""])[0]
+        conversation_filter = (params.get("conversation") or [""])[0]
+
+        async def _run(poly: Polylogue) -> object:
+            return await self._do_attachment_library(
+                poly,
+                limit=limit,
+                offset=offset,
+                mime_filter=mime_filter,
+                state_filter=state_filter,
+                conversation_filter=conversation_filter,
+            )
+
+        result = self._sync_run(_run)
+        self._send_json(HTTPStatus.OK, result)
+
+    async def _do_attachment_library(
+        self,
+        poly: Polylogue,
+        *,
+        limit: int,
+        offset: int,
+        mime_filter: str,
+        state_filter: str,
+        conversation_filter: str,
+    ) -> object:
+        # Walk all conversation summaries and emit one library entry per
+        # attachment. We pre-filter by conversation id when supplied so
+        # the walk stops early; mime/state filters apply after
+        # envelope construction (state is derived, not stored).
+        summaries = await poly.filter().list_summaries()
+        entries: list[LibraryEntry] = []
+        total_seen = 0
+        for summary in summaries:
+            sid = str(summary.id)
+            if conversation_filter and conversation_filter != sid:
+                continue
+            conv = await poly.get_conversation(sid)
+            if conv is None:
+                continue
+            provider = str(summary.provider) if summary.provider else None
+            title = summary.display_title or sid
+            for msg in conv.messages:
+                for att in msg.attachments or []:
+                    envelope = attachment_to_envelope(att, conversation_id=sid, message_id=msg.id)
+                    mime_value = envelope.get("mime_type")
+                    if mime_filter and mime_filter not in (mime_value if isinstance(mime_value, str) else ""):
+                        continue
+                    if state_filter and envelope.get("state") != state_filter:
+                        continue
+                    total_seen += 1
+                    if total_seen <= offset:
+                        continue
+                    if len(entries) >= limit:
+                        break
+                    entries.append(
+                        LibraryEntry(
+                            envelope=envelope,
+                            conversation_title=title,
+                            provider=provider,
+                            message_anchor=reader_anchor("message", msg.id) if msg.id else None,
+                        )
+                    )
+                if len(entries) >= limit:
+                    break
+            if len(entries) >= limit:
+                break
+        return build_library_payload(entries, total=total_seen)
+
+    @daemon_safe_handler
+    def _handle_get_conversation_attachments(self, conv_id: str) -> None:
+        async def _get(poly: Polylogue) -> object:
+            return await self._do_get_conversation_attachments(poly, conv_id)
+
+        result = self._sync_run(_get)
+        if result is None:
+            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
+            return
+        self._send_json(HTTPStatus.OK, result)
+
+    async def _do_get_conversation_attachments(self, poly: Polylogue, conv_id: str) -> object:
+        conv = await poly.get_conversation(conv_id)
+        if conv is None:
+            return None
+        items: list[dict[str, object]] = []
+        for msg in conv.messages:
+            for att in msg.attachments or []:
+                items.append(attachment_to_envelope(att, conversation_id=str(conv.id), message_id=msg.id))
+        return {"items": items, "total": len(items)}
 
     # ------------------------------------------------------------------
     # Handlers: health
@@ -1172,6 +1291,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         flags = _build_flags_from_conversation(conv)
         conversation_id = str(conv.id)
         target_ref = TargetRefPayload.conversation(conversation_id)
+        # Flatten attachments across all messages so the inspector
+        # tab and the conversation envelope share one source of truth
+        # (#1199). Per-message attachments stay embedded in each
+        # message envelope so the inline card renderer doesn't need
+        # to cross-reference the conversation-level list.
+        conversation_attachments: list[dict[str, object]] = []
+        for msg in conv.messages:
+            for att in msg.attachments or []:
+                conversation_attachments.append(
+                    attachment_to_envelope(att, conversation_id=conversation_id, message_id=msg.id)
+                )
         return {
             "id": conversation_id,
             "title": conv.title,
@@ -1204,9 +1334,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                         msg.text,
                         has_paste=bool(msg.has_paste) if hasattr(msg, "has_paste") else False,
                     ),
+                    "attachments": [
+                        attachment_to_envelope(att, conversation_id=conversation_id, message_id=msg.id)
+                        for att in (msg.attachments or [])
+                    ],
                 }
                 for msg in conv.messages
             ],
+            "attachments": conversation_attachments,
             "tags": conv.tags,
             "branch_type": str(conv.branch_type) if conv.branch_type else None,
             "parent_id": str(conv.parent_id) if conv.parent_id else None,

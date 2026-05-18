@@ -1110,6 +1110,10 @@ files:
     loc: 1434
     target: polylogue/daemon/web_shell.py
     owner: stable
+  - path: polylogue/daemon/web_shell_attachments.py
+    loc: 574
+    target: polylogue/daemon/web_shell_attachments.py
+    owner: stable
   - path: polylogue/daemon/web_shell_bulk.py
     loc: 275
     target: polylogue/daemon/web_shell_bulk.py
