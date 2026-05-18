@@ -128,6 +128,8 @@ def build_readme_section(
             "<!-- BEGIN GENERATED: docs-surface -->",
             "## Documentation",
             "",
+            "Live site: <https://sinity.github.io/polylogue/> (auto-published on every merge to `master`).",
+            "",
             "Start with the generated command and architecture references; "
             "use [docs/README.md](docs/README.md) for the complete map.",
             "",
