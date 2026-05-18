@@ -118,7 +118,7 @@ packages = ["polylogue"]
 path = "hatch_build.py"
 
 [tool.pytest.ini_options]
-addopts = "-ra -n auto --benchmark-disable --benchmark-storage=file://./.cache/pytest-benchmark"
+addopts = "-rfE --tb=line -n auto --benchmark-disable --benchmark-storage=file://./.cache/pytest-benchmark"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 xfail_strict = true
