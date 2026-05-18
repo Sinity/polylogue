@@ -86,8 +86,8 @@ exceptions:
     reason: "added FK integrity, quarantine regression, FTS commit-ordering tests (#820/#844/#817)"
 
   - path: polylogue/daemon/http.py
-    ceiling: 1900
-    reason: "daemon HTTP route dispatch + read handlers; added cost-panel endpoint (#1122), provenance endpoint (#1125), topology endpoint (#1121, envelope helpers delegated to daemon/topology_http.py), insights browser endpoint (#1120), embedding-similarity endpoint (#1123, scoring delegated to daemon/similarity.py), typed maintenance scope-filter parsing (#1196), the typed Operation contract wiring for /api/ingest plus the is_stale provenance helper consumption (#1248/#1322), and the paste-browser route + envelope (#1201, span detection delegated to daemon/web_shell_paste.py); events dispatcher delegates to daemon/events_http.py (#957); split candidate: per-domain handler modules under daemon/handlers/"
+    ceiling: 2050
+    reason: "daemon HTTP route dispatch + read handlers; added cost-panel endpoint (#1122), provenance endpoint (#1125), topology endpoint (#1121, envelope helpers delegated to daemon/topology_http.py), insights browser endpoint (#1120), embedding-similarity endpoint (#1123, scoring delegated to daemon/similarity.py), typed maintenance scope-filter parsing (#1196), the typed Operation contract wiring for /api/ingest plus the is_stale provenance helper consumption (#1248/#1322), the paste-browser route + envelope (#1201, span detection delegated to daemon/web_shell_paste.py), and the attachment library + per-conversation attachments route (#1199, envelope + library page delegated to daemon/web_shell_attachments.py); events dispatcher delegates to daemon/events_http.py (#957); split candidate: per-domain handler modules under daemon/handlers/"
 
   - path: polylogue/daemon/web_shell.py
     ceiling: 1500

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from polylogue.daemon.web_shell_attachments import ATTACHMENT_CSS, ATTACHMENT_JS
 from polylogue.daemon.web_shell_bulk import (
     BULK_CSS,
     BULK_JS,
@@ -158,6 +159,7 @@ __WORKSPACE_CSS__
 .msg-block .msg-text:not(.collapsed) + .msg-expand { display: none; }
 __READER_CSS__
 __PASTE_CSS__
+__ATTACHMENT_CSS__
 .tool-block { border-left: 2px solid var(--role-tool); padding-left: 12px; margin: 2px 0; }
 .tool-block .tool-summary { font-size: var(--small); color: var(--text-muted); cursor: pointer; padding: 3px 0; }
 .tool-block .tool-summary:hover { color: var(--text); }
@@ -269,6 +271,7 @@ __WORKSPACE_HTML__
       <button data-tab="insights">Insights</button>
       <button data-tab="raw">Raw</button>
       <button data-tab="similar">Similar</button>
+      <button data-tab="attachments">Attachments</button>
       <button data-tab="notes">Notes</button>
     </div>
     <div id="inspector-content"><div class="inspector-empty">Select a conversation to inspect</div></div>
@@ -719,6 +722,7 @@ function renderInspector() {
   else if (tab === 'insights') renderInspectorInsights(el, c);
   else if (tab === 'raw') renderInspectorRaw(el, c);
   else if (tab === 'similar') renderInspectorSimilar(el, c);
+  else if (tab === 'attachments') renderInspectorAttachments(el, c);
   else if (tab === 'notes') renderInspectorNotes(el, c);
 }
 
@@ -1414,6 +1418,7 @@ function startRealtimeChannel() {
 startRealtimeChannel();
 __READER_JS__
 __PASTE_JS__
+__ATTACHMENT_JS__
 </script>
 </body>
 </html>""".replace("__WORKSPACE_CSS__", WORKSPACE_CSS)
@@ -1431,4 +1436,6 @@ __PASTE_JS__
     .replace("__READER_JS__", READER_JS)
     .replace("__PASTE_CSS__", PASTE_CSS)
     .replace("__PASTE_JS__", PASTE_JS)
+    .replace("__ATTACHMENT_CSS__", ATTACHMENT_CSS)
+    .replace("__ATTACHMENT_JS__", ATTACHMENT_JS)
 )
