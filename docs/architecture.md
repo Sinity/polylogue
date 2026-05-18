@@ -261,7 +261,9 @@ attachments, exports):
   subdirectories (`blob/ab/cdef...`)
 - **Dedup**: Identical content produces identical hashes — automatic
   deduplication
-- **Linking**: `link_group_key` groups blobs by session for lifecycle management
+- **Linking**: `artifact_observations.link_group_key` groups blobs by session
+  for lifecycle management (there is no separate `blob_links` table; the name
+  is a historical alias for this row-group view of `artifact_observations`)
 - **Scale**: ~24K blobs, ~42 GB in production archive
 - **GC**: Blob garbage collection is tracked in
   [#818](https://github.com/Sinity/polylogue/issues/818)
