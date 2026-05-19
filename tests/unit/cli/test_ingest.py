@@ -1,4 +1,4 @@
-"""Tests for polylogue ingest truthfulness (#869)."""
+"""Tests for polylogue ingest truthfulness (#869 / #1264)."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
+from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 
@@ -94,3 +95,150 @@ def test_ingest_command_stages_local_path_before_daemon_request(
     assert body == {"path": str(staged)}
     assert body["path"] != str(source)
     assert captured["timeout"] == 5
+
+    # Truthfulness: success output must point at observable state — the
+    # staged inbox path AND a pointer to 'polylogue status' so the user
+    # can verify processing is actually happening.
+    assert str(staged) in result.output
+    assert "polylogue status" in result.output
+
+
+def test_ingest_rejects_missing_path(tmp_path: Path) -> None:
+    """A path that does not exist is rejected by Click before any daemon call."""
+    from click.testing import CliRunner
+
+    from polylogue.cli.click_app import cli
+
+    missing = tmp_path / "does-not-exist.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(cli, ["ingest", str(missing)])
+
+    assert result.exit_code != 0
+    # Click's standard "Path 'X' does not exist" or equivalent.
+    assert "does not exist" in result.output.lower() or "no such" in result.output.lower()
+
+
+def test_ingest_rejects_when_daemon_unreachable(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """With no daemon running, the command must fail with an actionable error."""
+    from click.testing import CliRunner
+
+    from polylogue.cli.click_app import cli
+
+    source = tmp_path / "source.jsonl"
+    source.write_text('{"type":"session"}\n')
+
+    def fake_urlopen(req: Request, timeout: int) -> object:
+        raise URLError("Connection refused")
+
+    runner = CliRunner()
+    with patch("polylogue.cli.commands.ingest.urlopen", side_effect=fake_urlopen):
+        result = runner.invoke(
+            cli,
+            ["ingest", str(source), "--daemon-url", "http://127.0.0.1:65535"],
+        )
+
+    assert result.exit_code != 0
+    combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
+    # Must name the daemon binary so the user knows what to start.
+    assert "polylogued" in combined
+    assert "127.0.0.1:65535" in combined
+
+
+def test_ingest_surfaces_http_error_with_staged_path(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """Daemon HTTP 4xx/5xx is reported truthfully, naming the staged file."""
+    from click.testing import CliRunner
+
+    from polylogue.cli.click_app import cli
+
+    source = tmp_path / "source.jsonl"
+    source.write_text('{"type":"session"}\n')
+
+    def fake_urlopen(req: Request, timeout: int) -> object:
+        raise HTTPError(
+            url="http://127.0.0.1:8766/api/ingest",
+            code=400,
+            msg="invalid_request",
+            hdrs=None,  # type: ignore[arg-type]
+            fp=None,
+        )
+
+    runner = CliRunner()
+    with patch("polylogue.cli.commands.ingest.urlopen", side_effect=fake_urlopen):
+        result = runner.invoke(cli, ["ingest", str(source)])
+
+    assert result.exit_code != 0
+    staged = workspace_env["archive_root"] / "inbox" / source.name
+    combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
+    assert "400" in combined
+    assert str(staged).lower() in combined
+
+
+def test_ingest_refuses_unrecognized_daemon_status(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """If the daemon returns an unrecognized status, refuse to claim success."""
+    from click.testing import CliRunner
+
+    from polylogue.cli.click_app import cli
+
+    source = tmp_path / "source.jsonl"
+    source.write_text('{"type":"session"}\n')
+
+    def fake_urlopen(req: Request, timeout: int) -> _FakeDaemonResponse:
+        return _FakeDaemonResponse(
+            {
+                "ok": True,
+                "operation_id": "ingest-source.jsonl",
+                "kind": "import",
+                "status": "mystery_status",
+                "path": "/somewhere",
+                "message": "??",
+            }
+        )
+
+    runner = CliRunner()
+    with patch("polylogue.cli.commands.ingest.urlopen", side_effect=fake_urlopen):
+        result = runner.invoke(cli, ["ingest", str(source)])
+
+    assert result.exit_code != 0
+    combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
+    assert "mystery_status" in combined
+
+
+def test_ingest_surfaces_daemon_failure_status(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """Daemon-reported failure must be surfaced, not swallowed."""
+    from click.testing import CliRunner
+
+    from polylogue.cli.click_app import cli
+
+    source = tmp_path / "source.jsonl"
+    source.write_text('{"type":"session"}\n')
+
+    def fake_urlopen(req: Request, timeout: int) -> _FakeDaemonResponse:
+        return _FakeDaemonResponse(
+            {
+                "ok": False,
+                "operation_id": "ingest-source.jsonl",
+                "kind": "import",
+                "status": "failed",
+                "error": "inbox locked by another operation",
+            }
+        )
+
+    runner = CliRunner()
+    with patch("polylogue.cli.commands.ingest.urlopen", side_effect=fake_urlopen):
+        result = runner.invoke(cli, ["ingest", str(source)])
+
+    assert result.exit_code != 0
+    combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
+    assert "inbox locked" in combined
