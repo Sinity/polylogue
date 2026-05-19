@@ -44,6 +44,7 @@ from polylogue.rendering.formatting import format_conversation
 from polylogue.surfaces.payloads import (
     ConversationListRowPayload,
     ConversationSearchHitPayload,
+    SearchCursor,
     build_search_envelope,
     model_json_document,
 )
@@ -482,7 +483,7 @@ def format_search_envelope(
     offset: int,
     sort: str | None,
     message_counts: dict[str, int] | None = None,
-    cursor: object | None = None,
+    cursor: SearchCursor | None = None,
 ) -> str:
     """Render the canonical :class:`SearchEnvelope` JSON for ranked search.
 
@@ -509,7 +510,7 @@ def format_search_envelope(
         query=query,
         retrieval_lane=resolved_lane,
         sort=sort,
-        cursor=cursor,  # type: ignore[arg-type]
+        cursor=cursor,
     )
     return envelope.model_dump_json(indent=2, exclude_none=True)
 
@@ -520,7 +521,7 @@ async def output_search_hits(
     output: QueryOutputSpec,
     repo: ConversationOutputStore | None = None,
     *,
-    cursor: object | None = None,
+    cursor: SearchCursor | None = None,
 ) -> None:
     """Output evidence-bearing search hits with optional rich table rendering.
 

@@ -53,6 +53,7 @@ from polylogue.surfaces.payloads import (
 )
 from polylogue.surfaces.payloads import (
     MutationResultPayload,
+    SearchCursor,
     SearchEnvelope,
     SurfacePayloadModel,
     build_search_envelope,
@@ -277,7 +278,7 @@ def conversation_search_result_payload(
     query: str = "",
     retrieval_lane: str = "auto",
     sort: str | None = None,
-    cursor: object | None = None,
+    cursor: SearchCursor | None = None,
 ) -> SearchEnvelope:
     """Build the canonical :class:`SearchEnvelope` for an MCP search call.
 
@@ -309,7 +310,7 @@ def conversation_search_result_payload(
         retrieval_lane=resolved_lane,
         sort=sort,
         diagnostics=diag_payload,
-        cursor=cursor,  # type: ignore[arg-type]
+        cursor=cursor,
     )
 
 

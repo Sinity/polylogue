@@ -33,7 +33,7 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.json import JSONDocument
 from polylogue.logging import get_logger
-from polylogue.surfaces.payloads import ConversationListRowPayload
+from polylogue.surfaces.payloads import ConversationListRowPayload, SearchCursor
 
 logger = get_logger(__name__)
 
@@ -303,7 +303,7 @@ async def _observe_query_operation(
     )
 
 
-def _decode_cursor_or_none(token: str | None) -> object | None:
+def _decode_cursor_or_none(token: str | None) -> SearchCursor | None:
     """Decode a CLI ``--cursor`` token, or return ``None`` when absent.
 
     Returns the decoded :class:`SearchCursor` so :func:`format_search_envelope`

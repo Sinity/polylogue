@@ -681,11 +681,11 @@ class SearchCursor(BaseModel):
 
     model_config = ConfigDict(frozen=True, populate_by_name=True)
 
-    v: int = Field(default=SEARCH_CURSOR_VERSION, alias="v")
-    r: int = Field(alias="r")
-    s: float | None = Field(default=None, alias="s")
-    c: str = Field(alias="c")
-    lane: str = Field(alias="l")
+    v: int = Field(default=SEARCH_CURSOR_VERSION)
+    r: int
+    s: float | None = None
+    c: str
+    lane: str = Field(validation_alias="l", serialization_alias="l")
 
 
 class InvalidSearchCursorError(ValueError):
@@ -717,7 +717,7 @@ def build_search_cursor(hits: Sequence[ConversationSearchHitPayload]) -> str | N
         r=last.match.rank,
         s=last.match.score,
         c=last.conversation.id,
-        l=last.match.retrieval_lane,
+        lane=last.match.retrieval_lane,
     )
     payload = cursor.model_dump_json(by_alias=True)
     return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")

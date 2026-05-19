@@ -169,6 +169,18 @@ def _build_openapi_document() -> dict[str, Any]:
                                 "default": "auto",
                             },
                         },
+                        {
+                            "name": "cursor",
+                            "in": "query",
+                            "description": (
+                                "Opaque keyset cursor previously returned as ``next_cursor`` on a search "
+                                "response. Stable across archive growth and daemon restart (#1268). "
+                                "MUST be passed back unchanged. Rejected with 400 when malformed or when "
+                                "the retrieval lane no longer matches."
+                            ),
+                            "required": False,
+                            "schema": {"type": "string"},
+                        },
                     ],
                     "responses": {
                         "200": {
