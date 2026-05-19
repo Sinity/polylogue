@@ -29,7 +29,8 @@ def test_band_is_str_subclass_for_json_compat() -> None:
     """JSON / SQLite TEXT columns must see the same string as before."""
 
     assert isinstance(ConfidenceBand.STRONG, str)
-    assert ConfidenceBand.MODERATE == "moderate"
+    assert str(ConfidenceBand.MODERATE) == "ConfidenceBand.MODERATE"
+    assert ConfidenceBand.MODERATE.value == "moderate"
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +124,8 @@ def test_support_level_helper_returns_typed_band() -> None:
 
     band = support_level(0.85, support_signals=("a", "b"))
     assert band is ConfidenceBand.STRONG
-    assert band == "strong"
+    # str-subclass invariant — the persisted SQLite TEXT value is the enum value
+    assert band.value == "strong"
 
     band = support_level(0.30, support_signals=("a",))
     assert band is ConfidenceBand.WEAK
@@ -140,6 +142,9 @@ def test_classification_support_helper_returns_typed_band() -> None:
 def test_repo_inference_strength_returns_typed_band() -> None:
     """The repo-strength helper uses the same vocabulary plus NONE."""
 
+    from typing import cast
+
+    from polylogue.archive.session.session_profile import SessionProfile
     from polylogue.storage.insights.session.profiles import repo_inference_strength
 
     class _Profile:
@@ -148,11 +153,11 @@ def test_repo_inference_strength_returns_typed_band() -> None:
         file_paths_touched: tuple[str, ...] = ()
         cwd_paths: tuple[str, ...] = ()
 
-    empty = _Profile()
+    empty = cast(SessionProfile, _Profile())
     assert repo_inference_strength(empty) is ConfidenceBand.NONE
 
     class _WithRepos(_Profile):
         repo_paths: tuple[str, ...] = ("/a",)
         repo_names: tuple[str, ...] = ("a",)
 
-    assert repo_inference_strength(_WithRepos()) is ConfidenceBand.STRONG
+    assert repo_inference_strength(cast(SessionProfile, _WithRepos())) is ConfidenceBand.STRONG

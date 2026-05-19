@@ -30,6 +30,7 @@ from polylogue.insights.audit import (
     _audit_one,
     build_insight_rigor_audit_report,
 )
+from polylogue.insights.confidence import ConfidenceBand
 from polylogue.insights.registry import INSIGHT_REGISTRY
 from polylogue.insights.rigor import (
     get_rigor_contract,
@@ -76,7 +77,7 @@ def _profile(conversation_id: str = "c1") -> SessionProfileInsight:
         provenance=_provenance(),
         evidence=SessionEvidencePayload(message_count=10, word_count=200),
         inference_provenance=_inference_provenance(),
-        inference=SessionInferencePayload(support_level="strong"),
+        inference=SessionInferencePayload(support_level=ConfidenceBand.STRONG),
     )
 
 
@@ -117,7 +118,7 @@ def _enrichment(confidence: float) -> SessionEnrichmentInsight:
         provider_name="claude-code",
         provenance=_provenance(),
         enrichment_provenance=_enrichment_provenance(),
-        enrichment=SessionEnrichmentPayload(confidence=confidence, support_level="strong"),
+        enrichment=SessionEnrichmentPayload(confidence=confidence, support_level=ConfidenceBand.STRONG),
     )
 
 

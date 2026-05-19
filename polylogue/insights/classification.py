@@ -296,7 +296,7 @@ def classify_session(profile: SessionProfile) -> SessionClassification:
         return SessionClassification(
             category=SessionCategory.UNCLASSIFIED,
             confidence=0.0,
-            support_level="weak",
+            support_level=ConfidenceBand.WEAK,
             evidence=(),
         )
 
