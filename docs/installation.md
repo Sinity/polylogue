@@ -271,3 +271,66 @@ nix build .#polylogue           # the package
 nix build .#api-python          # python interpreter with polylogue importable
 nix flake check                 # smoke + format + lint
 ```
+
+## Browser extension
+
+The Manifest V3 browser-capture extension lives in
+[`browser-extension/`](../browser-extension/) and ships as packed artifacts
+attached to every GitHub release by
+[`.github/workflows/extension-release.yml`](../.github/workflows/extension-release.yml).
+
+| Artifact | Browsers | Use |
+| --- | --- | --- |
+| `polylogue-browser-capture-<version>-chrome.zip` | Chrome, Chromium, Edge, Brave, Vivaldi | Developer-mode unpacked install |
+| `polylogue-browser-capture-<version>-firefox.xpi` | Firefox | Temporary install via `about:debugging` |
+| `store-screenshots-<tag>.tar.gz` | — | Submission media for store listings |
+
+Download the artifacts from the
+[latest release](https://github.com/Sinity/polylogue/releases/latest).
+The version is locked to the polylogue Python project version on the same
+tag — the workflow rewrites `manifest.json` from `pyproject.toml` before
+packaging so the extension version always matches the daemon protocol it
+was built against.
+
+### Install paths
+
+The full per-browser steps live in
+[`browser-extension/README.md`](../browser-extension/README.md#install). At
+a glance:
+
+1. **Start the receiver.** `polylogued browser-capture serve` (or
+   `polylogued run` for the full daemon). Default endpoint
+   `http://127.0.0.1:8765`.
+2. **Chrome / Chromium (unpacked from clone).** `chrome://extensions` →
+   Developer mode → Load unpacked → select `browser-extension/`.
+3. **Chrome / Chromium (packed `.zip`).** Download the release `.zip`,
+   extract, then Load unpacked against the extracted directory.
+4. **Firefox.** Download the release `.xpi`. Visit
+   `about:debugging#/runtime/this-firefox` → Load Temporary Add-on → select
+   the `.xpi`.
+
+### Distribution status
+
+| Channel | Status | Tracking |
+| --- | --- | --- |
+| Packed `.zip` on GitHub Releases | shipped | this doc |
+| Packed `.xpi` on GitHub Releases | shipped | this doc |
+| Chrome Web Store | not submitted (store sign-up + review have non-engineering blockers) | follow-up |
+| Mozilla AMO | not submitted (same blockers) | follow-up |
+
+The extension is local-only by design — it talks to `127.0.0.1:8765` and
+nothing else. See [docs/browser-capture.md](browser-capture.md) for the
+receiver protocol and `docs/daemon-threat-model.md` for the security model.
+
+### Local rebuild
+
+```bash
+cd browser-extension
+npm install
+npm run validate    # in-tree manifest validator
+npm run build       # → dist/polylogue-browser-capture-*-{chrome.zip,firefox.xpi}
+npm run screenshots # optional; needs Playwright Chromium
+```
+
+`scripts/build.mjs --version X.Y.Z` overrides the autodetected version when
+producing a one-off bundle.

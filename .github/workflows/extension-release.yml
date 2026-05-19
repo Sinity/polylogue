@@ -1,0 +1,155 @@
+name: Extension Release
+
+# Packages the browser-extension/ Manifest V3 source into Chrome (.zip) and
+# Firefox (.xpi) artifacts, runs web-ext lint and the in-tree manifest
+# validator, captures store-submission screenshots via headless Playwright,
+# and uploads the bundle to the corresponding GitHub Release.
+#
+# Trigger surface:
+#   - tag push v*.*.*    → builds, lints, screenshots, attaches to release
+#   - workflow_dispatch  → dry-run build, uploads only as workflow artifacts
+#   - pull_request paths → build + validate only (no upload), smoke gate
+#
+# Versioning: the build script reads `version` from the [project] table of
+# pyproject.toml and rewrites browser-extension/{manifest.json,package.json}
+# to match. The committed sources are normally kept in sync by the
+# release-please bump PR, but a tag push will re-sync defensively before
+# packaging.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  pull_request:
+    paths:
+      - browser-extension/**
+      - .github/workflows/extension-release.yml
+  workflow_dispatch:
+    inputs:
+      upload-release:
+        description: "Upload artifacts to an existing release tag (e.g. v0.2.0)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build-validate-screenshot
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: browser-extension
+    outputs:
+      version: ${{ steps.summary.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: browser-extension/package-lock.json
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+      - name: Validate manifest (in-tree, fast)
+        run: npm run validate
+      - name: Lint sources
+        run: npm run lint
+      - name: Unit tests
+        run: npm test
+      - name: Build Chrome zip + Firefox xpi
+        run: npm run build
+      - name: Web-ext lint Firefox xpi
+        run: |
+          set -euo pipefail
+          xpi=$(ls dist/polylogue-browser-capture-*-firefox.xpi | head -n1)
+          npx --yes web-ext@8 lint --self-hosted --source-dir <(unzip -p "$xpi" /dev/null 2>/dev/null || true) || true
+          # web-ext lint actually wants a directory; unpack the xpi.
+          mkdir -p dist/firefox-unpacked
+          unzip -qo "$xpi" -d dist/firefox-unpacked
+          npx --yes web-ext@8 lint --source-dir dist/firefox-unpacked
+      - name: Install Playwright Chromium
+        run: npx --yes playwright@1 install --with-deps chromium
+      - name: Capture submission screenshots
+        run: |
+          npm install --no-save playwright@1
+          npm run screenshots
+      - name: Summarize artifacts
+        id: summary
+        run: |
+          set -euo pipefail
+          version=$(node -e "console.log(require('./dist/build-manifest.json').version)")
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "Built artifacts for version ${version}:"
+          ls -la dist/
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-extension-${{ steps.summary.outputs.version }}
+          path: |
+            browser-extension/dist/polylogue-browser-capture-*-chrome.zip
+            browser-extension/dist/polylogue-browser-capture-*-firefox.xpi
+            browser-extension/dist/build-manifest.json
+            browser-extension/dist/screenshots/**
+          if-no-files-found: error
+
+  attach-to-release:
+    name: attach-to-release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.upload-release != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download workflow artifacts
+        uses: actions/download-artifact@v6
+        with:
+          name: browser-extension-${{ needs.build.outputs.version }}
+          path: artifacts/
+      - name: Resolve target tag
+        id: tag
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            tag="${{ github.event.inputs.upload-release }}"
+          fi
+          if [ -z "${tag}" ]; then
+            echo "no target tag — skipping upload" >&2
+            exit 0
+          fi
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+      - name: Upload artifacts to release
+        if: steps.tag.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # `gh release upload --clobber` overwrites identically-named
+          # assets so a retried workflow does not 422 on duplicates.
+          gh release upload "${TAG}" \
+            artifacts/polylogue-browser-capture-*-chrome.zip \
+            artifacts/polylogue-browser-capture-*-firefox.xpi \
+            artifacts/build-manifest.json \
+            --clobber --repo "${GITHUB_REPOSITORY}"
+          # Screenshots are uploaded as a tar.gz so the release page does
+          # not balloon with 18 individual PNGs.
+          tar -C artifacts/screenshots -czf store-screenshots-${TAG}.tar.gz .
+          gh release upload "${TAG}" "store-screenshots-${TAG}.tar.gz" \
+            --clobber --repo "${GITHUB_REPOSITORY}"

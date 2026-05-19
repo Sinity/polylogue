@@ -103,6 +103,28 @@ artifacts:
       verify-distribution-surface gate exercises the same wheel that
       the Containerfile installs.
 
+  browser_extension:
+    description: Manifest V3 browser extension (Chrome .zip + Firefox .xpi)
+    build_system: node scripts/build.mjs (pure-JS, zip(1) or python zipfile fallback)
+    config_location: browser-extension/manifest.json + browser-extension/scripts/build.mjs
+    build_command: npm run build
+    install_command: chrome://extensions Load unpacked / about:debugging Load Temporary
+    verification_command: npm run validate
+    ci_build: true
+    ci_test: true
+    notes: >
+      Packed Chrome .zip and Firefox .xpi attached to GitHub Releases by
+      .github/workflows/extension-release.yml on vX.Y.Z tag push. The
+      build script reads the canonical project version from the [project]
+      table of pyproject.toml and rewrites browser-extension/manifest.json
+      + package.json to match before packaging. Firefox manifest is a
+      generated variant with browser_specific_settings.gecko populated.
+      web-ext lint runs against the unpacked Firefox bundle as a CI gate.
+      Playwright captures store-submission screenshots at the Chrome Web
+      Store and AMO required aspect ratios. Store submission itself
+      (Chrome Web Store + Mozilla AMO) is tracked separately under
+      coverage_gaps.browser-extension-store.
+
   devshell:
     description: Nix development shell
     build_system: nix flake (devShells.default)
@@ -184,7 +206,7 @@ coverage_gaps:
     next_evidence: devtools verify-distribution-surface
   - id: distribution.browser-extension-store
     artifact: browser_extension
-    gap: Browser extension is unpacked-install only — no Chrome Web Store / AMO submission yet (issue #953 phase 4).
+    gap: Packed .zip/.xpi ship on GitHub releases (#1238), but Chrome Web Store / Mozilla AMO submission still requires non-engineering store sign-up + review.
     owner: distribution
     severity: minor
     declared_at: "2026-05-17"
