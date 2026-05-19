@@ -341,12 +341,93 @@ def test_daemon_status_flags_stale_live_ingest_attempts(tmp_path: Path, frozen_c
     latest = recent[0]
     assert isinstance(latest, dict)
     assert latest["stale"] is True
+    # #1246: ``stale`` (legacy) and the typed ``progress_classification``
+    # together encode the same condition for an attempt that has not made
+    # progress for at least ``STUCK_AFTER_S``.
+    assert latest["progress_classification"] == "stuck"
     updated_age_s = latest["updated_age_s"]
     assert isinstance(updated_age_s, int | float)
     assert updated_age_s >= 600
+    assert attempts["stuck_running_count"] == 1
+    assert attempts["slow_running_count"] == 0
     lines = format_daemon_status_lines(payload)
-    assert "Live ingest attempts: 1 running, 1 stale" in lines
-    assert "  latest: running stale planning 0/1 files" in lines
+    assert "Live ingest attempts: 1 running, 1 stuck" in lines
+    assert "  latest: running stuck planning 0/1 files" in lines
+
+
+@pytest.mark.frozen_clock_modules("polylogue.daemon.status")
+def test_daemon_status_flags_slow_but_progressing_live_ingest_attempt(
+    tmp_path: Path, frozen_clock: FrozenClock
+) -> None:
+    """Running attempts that exceed p95 historical duration but still
+    report fresh progress are reported as ``slow``, not ``stuck`` (#1246)."""
+
+    db = tmp_path / "polylogue.db"
+    source = tmp_path / "session.jsonl"
+    source.write_text('{"a":1}\n')
+    cursor = CursorStore(db)
+    # Seed completed attempts with short, uniform durations so the p95
+    # baseline is well below the running attempt's elapsed time.
+    base = frozen_clock.now() - timedelta(hours=1)
+    with sqlite3.connect(db) as conn:
+        for i in range(8):
+            start = (base + timedelta(minutes=i)).isoformat()
+            end = (base + timedelta(minutes=i, seconds=2)).isoformat()
+            conn.execute(
+                """
+                INSERT INTO live_ingest_attempt (
+                    attempt_id, started_at, updated_at, completed_at,
+                    status, phase, input_bytes
+                ) VALUES (?, ?, ?, ?, 'completed', 'convergence', 0)
+                """,
+                (f"hist-{i}", start, end, end),
+            )
+        conn.commit()
+
+    attempt_id = cursor.begin_ingest_attempt(
+        paths=[source],
+        input_bytes=source.stat().st_size,
+        queued_file_count=1,
+    )
+    # Make the running attempt look like it has been ticking for 90s —
+    # well above the 2-second historical p95, but well under the 180s
+    # stuck threshold. Set updated_at to "now" so it is not stale.
+    started_at = (frozen_clock.now() - timedelta(seconds=90)).isoformat()
+    updated_at = frozen_clock.now().isoformat()
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE live_ingest_attempt SET started_at = ?, updated_at = ? WHERE attempt_id = ?",
+            (started_at, updated_at, attempt_id),
+        )
+        conn.commit()
+
+    with (
+        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+        patch("polylogue.daemon.status._blob_size_info", return_value=0),
+        patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+    ):
+        payload = daemon_status_payload(sources=())
+
+    attempts = payload["live_ingest_attempts"]
+    assert isinstance(attempts, dict)
+    assert attempts["running_count"] == 1
+    assert attempts["slow_running_count"] == 1
+    assert attempts["stuck_running_count"] == 0
+    assert attempts["stale_running_count"] == 0
+    threshold = attempts["slow_threshold_s"]
+    assert isinstance(threshold, int | float)
+    assert threshold < 90.0
+    recent = attempts["recent"]
+    assert isinstance(recent, list)
+    latest = recent[0]
+    assert isinstance(latest, dict)
+    assert latest["progress_classification"] == "slow"
+    assert latest["stale"] is False
+    lines = format_daemon_status_lines(payload)
+    assert "Live ingest attempts: 1 running, 1 slow" in lines
+    assert any(line.startswith("  latest: running slow ") for line in lines)
 
 
 def test_daemon_status_summarizes_retry_due_and_excluded_live_cursor_files(tmp_path: Path) -> None:

@@ -19,6 +19,11 @@ from polylogue.daemon.convergence_debt_status import ConvergenceDebtSummary, con
 from polylogue.daemon.cursor_lag_status import CursorLagSummary, cursor_lag_summary_info
 from polylogue.daemon.health import DaemonHealth, check_health
 from polylogue.daemon.live_ingest_attempt_models import LiveIngestAttemptState, LiveIngestAttemptSummary
+from polylogue.daemon.live_ingest_attempt_progress import (
+    STUCK_AFTER_S,
+    classify_attempt_progress,
+    compute_slow_threshold_s,
+)
 from polylogue.daemon.live_ingest_attempt_workload import (
     LiveIngestStageEventInfo,
     latest_stage_events,
@@ -29,7 +34,11 @@ from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-_LIVE_INGEST_ATTEMPT_STALE_AFTER_S = 180.0
+# Backwards-compatible alias for the stuck threshold (#1246). The "stale"
+# rollup field stays in the typed status payload to avoid breaking
+# downstream consumers, but the threshold itself is owned by
+# ``live_ingest_attempt_progress``.
+_LIVE_INGEST_ATTEMPT_STALE_AFTER_S = STUCK_AFTER_S
 _LIVE_CURSOR_FAILURE_SAMPLE_LIMIT = 50
 
 # ---------------------------------------------------------------------------
@@ -697,8 +706,13 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
                 [_required_str(row[0]) for row in rows],
             )
             running_rows = conn.execute(
-                "SELECT updated_at FROM live_ingest_attempt WHERE status = 'running'"
+                """
+                SELECT updated_at, started_at, completed_at
+                FROM live_ingest_attempt
+                WHERE status = 'running'
+                """
             ).fetchall()
+            slow_threshold_s = compute_slow_threshold_s(conn)
         finally:
             conn.close()
     except sqlite3.Error:
@@ -706,18 +720,57 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
 
     now = datetime.now(UTC)
     recent_attempts = [
-        _live_ingest_attempt_state_from_row(row, now=now, stage_event=stage_events.get(_required_str(row[0])))
+        _live_ingest_attempt_state_from_row(
+            row,
+            now=now,
+            stage_event=stage_events.get(_required_str(row[0])),
+            slow_threshold_s=slow_threshold_s,
+        )
         for row in rows
     ]
-    stale_running_count = sum(
-        1
-        for row in running_rows
-        if (age_s := _attempt_updated_age_s(_required_str(row[0]), now=now)) is not None
-        and age_s >= _LIVE_INGEST_ATTEMPT_STALE_AFTER_S
-    )
+    stale_running_count = 0
+    slow_running_count = 0
+    stuck_running_count = 0
+    for running_row in running_rows:
+        updated_at = _required_str(running_row[0])
+        age_s = _attempt_updated_age_s(updated_at, now=now)
+        if age_s is not None and age_s >= _LIVE_INGEST_ATTEMPT_STALE_AFTER_S:
+            stale_running_count += 1
+            stuck_running_count += 1
+            continue
+        # ``total_time_s`` for a running attempt approximates as wall-clock
+        # elapsed since ``started_at`` (the per-attempt rollup that the
+        # operator already sees in ``recent``). The rollup only needs
+        # slow/stuck counts; the full workload bundle stays on the
+        # per-attempt path.
+        started_at = _required_str(running_row[1])
+        ended_at = _optional_str(running_row[2]) or updated_at
+        try:
+            started = datetime.fromisoformat(started_at)
+            ended = datetime.fromisoformat(ended_at)
+        except ValueError:
+            continue
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=UTC)
+        if ended.tzinfo is None:
+            ended = ended.replace(tzinfo=UTC)
+        total_time_s = max(0.0, (ended.astimezone(UTC) - started.astimezone(UTC)).total_seconds())
+        classification = classify_attempt_progress(
+            status="running",
+            updated_age_s=age_s,
+            total_time_s=total_time_s,
+            slow_threshold_s=slow_threshold_s,
+        )
+        if classification == "slow":
+            slow_running_count += 1
+        elif classification == "stuck":
+            stuck_running_count += 1
     return LiveIngestAttemptSummary(
         running_count=len(running_rows),
         stale_running_count=stale_running_count,
+        slow_running_count=slow_running_count,
+        stuck_running_count=stuck_running_count,
+        slow_threshold_s=slow_threshold_s,
         recent=recent_attempts,
     )
 
@@ -727,15 +780,21 @@ def _live_ingest_attempt_state_from_row(
     *,
     now: datetime,
     stage_event: LiveIngestStageEventInfo | None = None,
+    slow_threshold_s: float | None = None,
 ) -> LiveIngestAttemptState:
     updated_at = _required_str(row[2])
     updated_age_s = _attempt_updated_age_s(updated_at, now=now)
+    status_value = _required_str(row[4])
     stale = (
-        _required_str(row[4]) == "running"
-        and updated_age_s is not None
-        and updated_age_s >= _LIVE_INGEST_ATTEMPT_STALE_AFTER_S
+        status_value == "running" and updated_age_s is not None and updated_age_s >= _LIVE_INGEST_ATTEMPT_STALE_AFTER_S
     )
     workload = workload_fields(row, stage_event=stage_event)
+    progress_classification = classify_attempt_progress(
+        status=status_value,
+        updated_age_s=updated_age_s,
+        total_time_s=_safe_float(workload["total_time_s"]),
+        slow_threshold_s=slow_threshold_s,
+    )
     return LiveIngestAttemptState(
         attempt_id=_required_str(row[0]),
         started_at=_required_str(row[1]),
@@ -775,6 +834,8 @@ def _live_ingest_attempt_state_from_row(
         stale_cursor_write_count=_row_int(row[28]) if len(row) > 28 else 0,
         updated_age_s=updated_age_s,
         stale=stale,
+        progress_classification=progress_classification,
+        slow_threshold_s=slow_threshold_s,
     )
 
 
@@ -1138,17 +1199,37 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
         recent = attempts.get("recent", [])
         running_count = attempts.get("running_count", 0)
         stale_count = attempts.get("stale_running_count", 0)
-        if stale_count:
-            lines.append(f"Live ingest attempts: {running_count} running, {stale_count} stale")
-        else:
-            lines.append(f"Live ingest attempts: {running_count} running")
+        slow_count = attempts.get("slow_running_count", 0)
+        stuck_count = attempts.get("stuck_running_count", 0)
+        # The slow/stuck split (#1246) distinguishes the operator-actionable
+        # case (stuck = no progress at all) from the
+        # informational-but-not-urgent case (slow = still ticking but
+        # exceeding p95 historical duration). The legacy ``stale`` label is
+        # kept as a synonym when a writer has not populated the typed
+        # ``stuck_running_count``.
+        summary_parts = [f"{running_count} running"]
+        if stuck_count:
+            summary_parts.append(f"{stuck_count} stuck")
+        elif stale_count:
+            summary_parts.append(f"{stale_count} stale")
+        if slow_count:
+            summary_parts.append(f"{slow_count} slow")
+        lines.append("Live ingest attempts: " + ", ".join(summary_parts))
         if isinstance(recent, list) and recent:
             latest = recent[0]
             if isinstance(latest, dict):
-                stale_marker = " stale" if latest.get("stale") else ""
+                classification = str(latest.get("progress_classification", "healthy"))
+                if classification == "stuck":
+                    progress_marker = " stuck"
+                elif classification == "slow":
+                    progress_marker = " slow"
+                elif latest.get("stale"):
+                    progress_marker = " stale"
+                else:
+                    progress_marker = ""
                 lines.append(
                     "  latest: "
-                    f"{latest.get('status')}{stale_marker} {latest.get('phase')} "
+                    f"{latest.get('status')}{progress_marker} {latest.get('phase')} "
                     f"{latest.get('succeeded_file_count', 0)}/{latest.get('needed_file_count', 0)} files"
                 )
                 read_amp = _safe_float(latest.get("read_amplification"))
