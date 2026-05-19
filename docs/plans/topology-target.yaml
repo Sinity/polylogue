@@ -67,7 +67,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/insights.py
-    loc: 277
+    loc: 358
     target: polylogue/api/insights.py
     owner: stable
     cross_cut: { api: async }
@@ -560,7 +560,7 @@ files:
     target: polylogue/archive/topology/__init__.py
     owner: stable
   - path: polylogue/archive/topology/edge.py
-    loc: 146
+    loc: 155
     target: polylogue/archive/topology/edge.py
     owner: stable
   - path: polylogue/archive/viewport/__init__.py
@@ -1132,10 +1132,14 @@ files:
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_models.py
-    loc: 52
+    loc: 59
     target: polylogue/daemon/live_ingest_attempt_models.py
     owner: stable
     cross_cut: { lifecycle: model }
+  - path: polylogue/daemon/live_ingest_attempt_progress.py
+    loc: 198
+    target: polylogue/daemon/live_ingest_attempt_progress.py
+    owner: stable
   - path: polylogue/daemon/live_ingest_attempt_workload.py
     loc: 137
     target: polylogue/daemon/live_ingest_attempt_workload.py
@@ -1177,7 +1181,7 @@ files:
     target: polylogue/daemon/similarity.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 1283
+    loc: 1364
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/thread_continue.py
@@ -1331,7 +1335,7 @@ files:
     target: polylogue/insights/tool_usage.py
     owner: stable
   - path: polylogue/insights/topology.py
-    loc: 196
+    loc: 285
     target: polylogue/insights/topology.py
     owner: stable
   - path: polylogue/logging.py
@@ -1408,7 +1412,7 @@ files:
     target: polylogue/mcp/insight_tool_contracts.py
     owner: stable
   - path: polylogue/mcp/payloads.py
-    loc: 644
+    loc: 725
     target: polylogue/mcp/payloads.py
     owner: stable
   - path: polylogue/mcp/query_contracts.py
@@ -1448,7 +1452,7 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 375
+    loc: 397
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
@@ -3331,7 +3335,7 @@ files:
     target: polylogue/storage/sqlite/queries/tool_usage.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/topology_edges.py
-    loc: 274
+    loc: 458
     target: polylogue/storage/sqlite/queries/topology_edges.py
     owner: stable
   - path: polylogue/storage/sqlite/query_store.py
