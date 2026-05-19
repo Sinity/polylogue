@@ -220,6 +220,20 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         description="Run a SQLite WAL checkpoint/truncate maintenance pass.",
     ),
     MaintenanceTargetSpec(
+        name="source_replay",
+        mode=MaintenanceTargetMode.REPAIR,
+        category=MaintenanceCategory.SOURCE_INGEST,
+        destructive=False,
+        description=(
+            "Re-acquire raw artifacts from configured sources. Idempotent by "
+            "content hash — unchanged artifacts produce zero new raw rows. "
+            "Scope narrowing is honored via --source-root, --source-family, "
+            "--provider, and --raw-artifact filters."
+        ),
+        aliases=("source-replay",),
+        invalidation_keys=("raw_conversations",),
+    ),
+    MaintenanceTargetSpec(
         name="orphaned_messages",
         mode=MaintenanceTargetMode.CLEANUP,
         category=MaintenanceCategory.ARCHIVE_CLEANUP,
@@ -274,7 +288,19 @@ def build_maintenance_target_catalog() -> MaintenanceTargetCatalog:
     return MaintenanceTargetCatalog(specs=MAINTENANCE_TARGET_SPECS)
 
 
-SAFE_REPAIR_TARGETS = build_maintenance_target_catalog().names_for_mode(MaintenanceTargetMode.REPAIR)
+#: Targets the doctor's ``--repair`` umbrella iterates by default. The
+#: ``source_replay`` target is intentionally excluded: re-acquiring raw
+#: artifacts is an opt-in maintenance operation that re-scans every
+#: configured source root and is too heavy for the default repair pass.
+#: Operators explicitly request it via
+#: ``polylogue maintenance run --target source_replay``.
+_DEFAULT_REPAIR_EXCLUSIONS = frozenset({"source_replay"})
+
+SAFE_REPAIR_TARGETS = tuple(
+    name
+    for name in build_maintenance_target_catalog().names_for_mode(MaintenanceTargetMode.REPAIR)
+    if name not in _DEFAULT_REPAIR_EXCLUSIONS
+)
 CLEANUP_TARGETS = build_maintenance_target_catalog().names_for_mode(MaintenanceTargetMode.CLEANUP)
 MAINTENANCE_TARGET_NAMES = build_maintenance_target_catalog().names()
 

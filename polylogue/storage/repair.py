@@ -1104,6 +1104,24 @@ _PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "orphaned_blobs": preview_orphaned_blobs,
 }
 
+
+def _repair_source_replay_shim(config: Config, dry_run: bool = False) -> RepairResult:
+    """Adapter so ``source_replay`` participates in :data:`_REPAIR_HANDLERS`.
+
+    The orchestrated ``check --repair`` path expects a uniform
+    ``(config, dry_run) -> RepairResult`` signature. SOURCE_REPLAY's
+    native implementation lives in :mod:`polylogue.maintenance.source_replay`
+    and additionally accepts a scope filter and a per-artifact resume
+    cursor; this shim hides those parameters for the unscoped check
+    path. Callers that want scope narrowing (CLI ``maintenance run``)
+    invoke ``execute_replay`` instead.
+    """
+    from polylogue.maintenance.source_replay import repair_source_replay
+
+    outcome = repair_source_replay(config, dry_run=dry_run)
+    return outcome.result
+
+
 _REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": repair_session_insights,
     "action_event_read_model": repair_action_event_read_model,
@@ -1111,6 +1129,7 @@ _REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "message_type_backfill": repair_message_type_backfill,
     "message_embeddings": repair_message_embeddings,
     "wal_checkpoint": repair_wal_checkpoint,
+    "source_replay": _repair_source_replay_shim,
     "orphaned_messages": repair_orphaned_messages,
     "orphaned_content_blocks": repair_orphaned_content_blocks,
     "empty_conversations": repair_empty_conversations,
