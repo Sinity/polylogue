@@ -14,6 +14,22 @@ documentation polish do not require an entry.
 
 ### Added
 
+- Non-log notification backends for the daemon health loop (#1233).
+  `notification_backend` now accepts `"webhook"`, `"journald"`,
+  `"email"`, `"apprise"`, and lists/comma-separated fan-out specs
+  (e.g. `notification_backend = ["log", "apprise"]`). The webhook
+  backend signs the JSON envelope with HMAC-SHA256 in
+  `X-Polylogue-Signature` when `notification_webhook_secret` is set,
+  and uses exponential backoff across up to three attempts. The email
+  backend (`[notifications.email]` TOML table or
+  `POLYLOGUE_NOTIFICATION_EMAIL_*` env vars) speaks SMTP with
+  STARTTLS / implicit-TLS on port 465 and rate-limits to N
+  messages/hour. The Apprise backend reads
+  `notification_apprise_urls` and dispatches to 100+ services
+  (Pushover, Discord, Slack, ntfy, Matrix, Telegram, …) through one
+  adapter. Per-backend failures in fan-out mode are isolated so one
+  broken destination does not silence the rest.
+
 - Cycle outlook reaches the CLI and MCP surfaces (#1138). New
   `polylogue cost outlook --plan <name>` subcommand renders the typed
   `CycleOutlook` payload from #1137 — cycle window, burn rate,

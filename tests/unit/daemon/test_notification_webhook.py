@@ -1,8 +1,10 @@
 """Tests for the webhook notification backend.
 
-Covers issue #1150 acceptance criteria:
-- POST shape (URL, method, payload, timeout) asserted with a stub client.
-- Transient 5xx retried exactly once; persistent failure raises.
+Covers issue #1150 + #1233 acceptance criteria:
+- POST shape (URL, method, payload, timeout, headers) asserted with a stub
+  client. HMAC-SHA256 signature header is emitted when a secret is set.
+- Transient 5xx retried with exponential backoff up to ``WEBHOOK_MAX_RETRIES``;
+  persistent failure raises.
 - Missing/invalid URL when ``"webhook"`` is selected raises a typed config
   error at resolve time (not a silent fallback to log).
 - ``_resolve_backend("webhook")`` returns the backend; unknown names still
@@ -11,6 +13,9 @@ Covers issue #1150 acceptance criteria:
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 from typing import Any
 
 import httpx
@@ -49,8 +54,23 @@ class _StubClient:
         self._scripted = list(scripted)
         self.calls: list[dict[str, Any]] = []
 
-    def post(self, url: str, *, json: dict[str, object], timeout: float) -> httpx.Response:
-        self.calls.append({"url": url, "json": json, "timeout": timeout})
+    def post(
+        self,
+        url: str,
+        *,
+        content: bytes,
+        headers: dict[str, str],
+        timeout: float,
+    ) -> httpx.Response:
+        self.calls.append(
+            {
+                "url": url,
+                "content": content,
+                "headers": dict(headers),
+                "timeout": timeout,
+                "json": json.loads(content.decode("utf-8")),
+            }
+        )
         if not self._scripted:
             raise AssertionError("StubClient ran out of scripted responses")
         item = self._scripted.pop(0)
@@ -72,7 +92,7 @@ def _server_error(status: int = 503) -> httpx.Response:
 
 def test_webhook_posts_typed_envelope_to_configured_url() -> None:
     stub = _StubClient([_ok(202)])
-    backend = WebhookNotificationBackend("https://example/notify", client=stub, backoff_s=0)
+    backend = WebhookNotificationBackend("https://example/notify", client=stub, backoff_s=0, max_retries=1)
     alerts = [_alert(), _alert("wal_size", HealthSeverity.WARNING)]
 
     backend.notify(alerts)
@@ -104,7 +124,7 @@ def test_webhook_empty_alert_list_is_noop() -> None:
 
 def test_webhook_transient_5xx_retried_once_then_succeeds() -> None:
     stub = _StubClient([_server_error(502), _ok(200)])
-    backend = WebhookNotificationBackend("https://example/notify", client=stub, backoff_s=0)
+    backend = WebhookNotificationBackend("https://example/notify", client=stub, backoff_s=0, max_retries=1)
 
     backend.notify([_alert()])
 
@@ -113,7 +133,7 @@ def test_webhook_transient_5xx_retried_once_then_succeeds() -> None:
 
 def test_webhook_transient_network_error_retried_once_then_succeeds() -> None:
     stub = _StubClient([httpx.ConnectError("dns broke"), _ok(204)])
-    backend = WebhookNotificationBackend("https://example/notify", client=stub, backoff_s=0)
+    backend = WebhookNotificationBackend("https://example/notify", client=stub, backoff_s=0, max_retries=1)
 
     backend.notify([_alert()])
 
@@ -122,7 +142,7 @@ def test_webhook_transient_network_error_retried_once_then_succeeds() -> None:
 
 def test_webhook_persistent_5xx_raises_after_single_retry() -> None:
     stub = _StubClient([_server_error(503), _server_error(503)])
-    backend = WebhookNotificationBackend("https://example/notify", client=stub, backoff_s=0)
+    backend = WebhookNotificationBackend("https://example/notify", client=stub, backoff_s=0, max_retries=1)
 
     with pytest.raises(httpx.HTTPError):
         backend.notify([_alert()])
@@ -132,7 +152,7 @@ def test_webhook_persistent_5xx_raises_after_single_retry() -> None:
 
 def test_webhook_persistent_network_error_raises_after_single_retry() -> None:
     stub = _StubClient([httpx.ConnectError("nope"), httpx.ConnectError("still nope")])
-    backend = WebhookNotificationBackend("https://example/notify", client=stub, backoff_s=0)
+    backend = WebhookNotificationBackend("https://example/notify", client=stub, backoff_s=0, max_retries=1)
 
     with pytest.raises(httpx.HTTPError):
         backend.notify([_alert()])
@@ -143,7 +163,7 @@ def test_webhook_persistent_network_error_raises_after_single_retry() -> None:
 def test_webhook_4xx_is_not_retried_and_surfaces() -> None:
     """A 4xx response is a permanent client error; do not waste a retry on it."""
     stub = _StubClient([httpx.Response(status_code=400, text="bad shape")])
-    backend = WebhookNotificationBackend("https://example/notify", client=stub, backoff_s=0)
+    backend = WebhookNotificationBackend("https://example/notify", client=stub, backoff_s=0, max_retries=1)
 
     with pytest.raises(httpx.HTTPStatusError):
         backend.notify([_alert()])
@@ -180,7 +200,7 @@ def test_resolve_backend_unknown_name_still_raises_value_error() -> None:
 def test_send_notifications_dispatches_through_webhook_from_config() -> None:
     """send_notifications honours config-driven webhook selection end-to-end."""
     stub = _StubClient([_ok(200)])
-    backend = WebhookNotificationBackend("https://example/notify", client=stub, backoff_s=0)
+    backend = WebhookNotificationBackend("https://example/notify", client=stub, backoff_s=0, max_retries=1)
 
     send_notifications(
         [_alert()],
@@ -201,3 +221,72 @@ def test_send_notifications_webhook_missing_url_raises_at_resolve_time() -> None
             [_alert()],
             config={"notification_backend": "webhook"},
         )
+
+
+# ---------------------------------------------------------------------------
+# #1233: HMAC signature + exponential backoff
+# ---------------------------------------------------------------------------
+
+
+def test_webhook_emits_hmac_sha256_signature_header_when_secret_set() -> None:
+    """A configured secret signs the body and surfaces in X-Polylogue-Signature."""
+    stub = _StubClient([_ok(200)])
+    secret = "s3cret"
+    backend = WebhookNotificationBackend("https://example/notify", secret=secret, client=stub, backoff_s=0)
+
+    backend.notify([_alert()])
+
+    assert len(stub.calls) == 1
+    call = stub.calls[0]
+    sent_signature = call["headers"]["X-Polylogue-Signature"]
+    expected_hex = hmac.new(secret.encode("utf-8"), call["content"], hashlib.sha256).hexdigest()
+    assert sent_signature == f"sha256={expected_hex}"
+    assert call["headers"]["Content-Type"] == "application/json"
+
+
+def test_webhook_omits_signature_header_when_secret_not_set() -> None:
+    stub = _StubClient([_ok(200)])
+    backend = WebhookNotificationBackend("https://example/notify", client=stub, backoff_s=0)
+
+    backend.notify([_alert()])
+
+    assert "X-Polylogue-Signature" not in stub.calls[0]["headers"]
+
+
+def test_webhook_resolve_propagates_secret_from_config() -> None:
+    backend = _resolve_backend(
+        "webhook",
+        config={
+            "notification_backend": "webhook",
+            "notification_webhook_url": "https://example/notify",
+            "notification_webhook_secret": "shh",
+        },
+    )
+    assert isinstance(backend, WebhookNotificationBackend)
+
+
+def test_webhook_exponential_backoff_between_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Retry attempts use exponential backoff (0.2, 0.4, ...)."""
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "polylogue.daemon.notification_backends.webhook.time.sleep",
+        sleeps.append,
+    )
+
+    stub = _StubClient([_server_error(503), _server_error(503), _ok(200)])
+    backend = WebhookNotificationBackend("https://example/notify", client=stub, max_retries=2, backoff_s=0.2)
+    backend.notify([_alert()])
+
+    assert sleeps == pytest.approx([0.2, 0.4])
+    assert len(stub.calls) == 3
+
+
+def test_webhook_max_retries_total_attempts() -> None:
+    """``max_retries=2`` -> three total attempts before raising."""
+    stub = _StubClient([_server_error(503), _server_error(503), _server_error(503)])
+    backend = WebhookNotificationBackend("https://example/notify", client=stub, max_retries=2, backoff_s=0)
+
+    with pytest.raises(httpx.HTTPError):
+        backend.notify([_alert()])
+
+    assert len(stub.calls) == 3

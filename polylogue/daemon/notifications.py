@@ -1,56 +1,64 @@
-"""Notification backends for daemon health alerts and operational events.
+"""Notification dispatch for daemon health alerts and operational events.
 
-Two backends ship today:
+This module is the routing layer; the concrete adapters live under
+:mod:`polylogue.daemon.notification_backends`. Five backends ship:
 
-- ``"log"`` (default) — writes alerts to the structured logger.
-- ``"webhook"`` — POSTs a typed JSON envelope to a user-configured URL.
+- ``"log"`` (default) — structured logger.
+- ``"webhook"`` — POST a typed JSON envelope (HMAC signed when a secret is set).
+- ``"journald"`` — ``systemd.journal.send()`` with severity-priority mapping.
+- ``"email"`` — SMTP/TLS with token-bucket rate limiting.
+- ``"apprise"`` — fan-out to 100+ services via the Apprise library.
 
-Backend selection is driven by the runtime config's ``notification_backend``
-key. The webhook backend reads ``notification_webhook_url`` from the same
-config dict.
+The runtime config key ``notification_backend`` accepts either a single
+name or a list/comma-separated string of names. When more than one backend
+is configured, the dispatcher wraps them in :class:`FanOutNotificationBackend`
+so a failure in one does not abort the others.
 
-Backends are intentionally fire-and-forget per dispatch call. Dedup,
-rate-limiting, and severity-routing live in sibling concerns; the periodic
-health loop's ``except Exception`` boundary catches persistent failures.
+The periodic health loop's ``except Exception`` boundary catches persistent
+single-backend failures; the fan-out wrapper logs and isolates failures
+per-backend so multi-destination configurations stay resilient.
 """
 
 from __future__ import annotations
 
-import time
-from typing import Protocol
-
-import httpx
+from collections.abc import Callable
 
 from polylogue.daemon.health import HealthAlert, HealthSeverity
+from polylogue.daemon.notification_backends import (
+    BackendConfigError,
+    BackendUnavailableError,
+    NotificationBackend,
+    build_envelope,
+)
+from polylogue.daemon.notification_backends.apprise_backend import (
+    AppriseConfigError,
+    AppriseNotificationBackend,
+    build_apprise_backend,
+)
+from polylogue.daemon.notification_backends.email import (
+    EmailConfigError,
+    EmailNotificationBackend,
+    build_email_backend,
+)
+from polylogue.daemon.notification_backends.journald import (
+    JournaldNotificationBackend,
+    build_journald_backend,
+)
+from polylogue.daemon.notification_backends.webhook import (
+    WEBHOOK_RETRY_BACKOFF_S,
+    WEBHOOK_TIMEOUT_S,
+    WebhookConfigError,
+    WebhookNotificationBackend,
+    build_webhook_backend,
+)
 from polylogue.logging import get_logger
-from polylogue.version import POLYLOGUE_VERSION
 
 logger = get_logger(__name__)
 
 
-WEBHOOK_TIMEOUT_S = 5.0
-"""Per-attempt HTTP timeout for the webhook backend."""
-
-WEBHOOK_RETRY_BACKOFF_S = 0.5
-"""Backoff between the initial attempt and the single retry."""
-
-
-class NotificationBackend(Protocol):
-    """Protocol for notification backends."""
-
-    def notify(self, alerts: list[HealthAlert], *, config: dict[str, object] | None = None) -> None:
-        """Deliver one or more health alerts."""
-        ...
-
-
-class _HTTPPoster(Protocol):
-    """Minimal client surface used by :class:`WebhookNotificationBackend`.
-
-    ``httpx.Client`` satisfies this protocol structurally; tests inject
-    lightweight stubs without depending on the full client surface.
-    """
-
-    def post(self, url: str, *, json: dict[str, object], timeout: float) -> httpx.Response: ...
+# ---------------------------------------------------------------------------
+# Built-in backends
+# ---------------------------------------------------------------------------
 
 
 class LogNotificationBackend:
@@ -82,136 +90,98 @@ class LogNotificationBackend:
                 )
 
 
-class WebhookConfigError(ValueError):
-    """Raised when the webhook backend is selected without a valid URL."""
+# ---------------------------------------------------------------------------
+# Fan-out wrapper
+# ---------------------------------------------------------------------------
 
 
-class WebhookNotificationBackend:
-    """POSTs a typed JSON envelope to a user-configured URL.
+class FanOutNotificationBackend:
+    """Dispatch alerts to multiple backends; isolate per-backend failures.
 
-    Envelope shape:
-
-    .. code-block:: json
-
-        {
-          "alerts": [{"check_name": "...", "tier": "...", "severity": "...",
-                       "message": "...", "checked_at": "...",
-                       "consecutive_failures": N}, ...],
-          "emitted_at": "<unix epoch seconds, float>",
-          "daemon_version": "<polylogue version string>"
-        }
-
-    The backend uses a single bounded-timeout HTTP POST. On transient
-    failure (network error or HTTP 5xx), it retries exactly once after a
-    short backoff. Persistent failure raises ``httpx.HTTPError``; callers
-    are expected to swallow the exception at the periodic-loop boundary
-    (see ``polylogue/daemon/cli.py`` health loop).
-
-    The HTTP client is injected for tests; production uses
-    :class:`httpx.Client`.
+    Each child backend's ``notify`` is invoked in declaration order. A
+    raised exception is logged with the backend's class name and the loop
+    continues so a single broken destination does not block the others.
+    The first observed exception is re-raised after all backends have been
+    given a chance, so callers (and the periodic health loop) still see
+    that *something* failed.
     """
 
-    def __init__(
-        self,
-        url: str,
-        *,
-        timeout: float = WEBHOOK_TIMEOUT_S,
-        max_retries: int = 1,
-        backoff_s: float = WEBHOOK_RETRY_BACKOFF_S,
-        client: _HTTPPoster | None = None,
-    ) -> None:
-        if not url or not isinstance(url, str):
-            raise WebhookConfigError(
-                "notification_webhook_url must be a non-empty string when notification_backend='webhook'"
-            )
-        self._url = url
-        self._timeout = float(timeout)
-        self._max_retries = int(max_retries)
-        self._backoff_s = float(backoff_s)
-        self._client = client
+    def __init__(self, backends: list[NotificationBackend]) -> None:
+        if not backends:
+            raise ValueError("FanOutNotificationBackend requires at least one backend")
+        self._backends = list(backends)
+
+    @property
+    def backends(self) -> tuple[NotificationBackend, ...]:
+        return tuple(self._backends)
 
     def notify(self, alerts: list[HealthAlert], *, config: dict[str, object] | None = None) -> None:
-        if not alerts:
-            return
-        envelope = _build_envelope(alerts)
-        attempts = self._max_retries + 1
-        last_error: Exception | None = None
-        for attempt in range(attempts):
+        first_error: BaseException | None = None
+        for backend in self._backends:
             try:
-                response = self._post(envelope)
-            except httpx.HTTPError as err:
-                last_error = err
+                backend.notify(alerts, config=config)
+            except Exception as err:  # per-backend isolation is the point of fan-out
                 logger.warning(
-                    "daemon.notifications.webhook: transient error on attempt %d/%d: %s",
-                    attempt + 1,
-                    attempts,
+                    "daemon.notifications.fanout: %s failed: %s",
+                    type(backend).__name__,
                     err,
                 )
-            else:
-                if response.status_code < 500:
-                    response.raise_for_status()
-                    logger.debug(
-                        "daemon.notifications.webhook: delivered %d alert(s) (status=%d)",
-                        len(alerts),
-                        response.status_code,
-                    )
-                    return
-                last_error = httpx.HTTPStatusError(
-                    f"server error {response.status_code}", request=response.request, response=response
-                )
-                logger.warning(
-                    "daemon.notifications.webhook: server %d on attempt %d/%d",
-                    response.status_code,
-                    attempt + 1,
-                    attempts,
-                )
-            if attempt < attempts - 1 and self._backoff_s > 0:
-                time.sleep(self._backoff_s)
-        assert last_error is not None  # one of the branches above set it
-        raise last_error
-
-    def _post(self, envelope: dict[str, object]) -> httpx.Response:
-        if self._client is not None:
-            return self._client.post(self._url, json=envelope, timeout=self._timeout)
-        with httpx.Client(timeout=self._timeout) as client:
-            return client.post(self._url, json=envelope)
+                if first_error is None:
+                    first_error = err
+        if first_error is not None:
+            raise first_error
 
 
-def _build_envelope(alerts: list[HealthAlert]) -> dict[str, object]:
-    """Build the JSON envelope POSTed by :class:`WebhookNotificationBackend`."""
-    return {
-        "alerts": [alert.model_dump(mode="json") for alert in alerts],
-        "emitted_at": time.time(),
-        "daemon_version": POLYLOGUE_VERSION,
-    }
+# ---------------------------------------------------------------------------
+# Backend registry
+# ---------------------------------------------------------------------------
+
+
+_BackendBuilder = Callable[[dict[str, object] | None], NotificationBackend]
+
+_BUILDERS: dict[str, _BackendBuilder] = {
+    "log": lambda _config: LogNotificationBackend(),
+    "webhook": build_webhook_backend,
+    "journald": build_journald_backend,
+    "email": build_email_backend,
+    "apprise": build_apprise_backend,
+}
+
+
+def supported_backends() -> tuple[str, ...]:
+    """Return the registered backend names in declaration order."""
+    return tuple(_BUILDERS.keys())
+
+
+def _parse_backend_spec(spec: object) -> list[str]:
+    """Normalize the ``notification_backend`` config value into a name list."""
+    if isinstance(spec, str):
+        return [s.strip() for s in spec.split(",") if s.strip()]
+    if isinstance(spec, (list, tuple)):
+        return [str(s).strip() for s in spec if str(s).strip()]
+    raise TypeError(f"notification_backend must be a string or list, got {type(spec).__name__}")
 
 
 def _resolve_backend(backend_name: str, config: dict[str, object] | None = None) -> NotificationBackend:
-    """Resolve a notification backend name to an instance.
+    """Resolve a single backend name to an instance.
 
-    Args:
-        backend_name: Backend identifier (e.g. ``"log"`` or ``"webhook"``).
-        config: Optional runtime config dict, consulted by backends that
-            require additional keys (the webhook backend reads
-            ``notification_webhook_url``).
-
-    Returns:
-        An instance of the requested backend.
-
-    Raises:
-        ValueError: If the backend name is unknown.
-        WebhookConfigError: If ``"webhook"`` is selected without a usable
-            ``notification_webhook_url`` value.
+    Accepts a comma-separated string or a single name; if more than one
+    name resolves, returns a :class:`FanOutNotificationBackend`. Kept as a
+    private name for back-compat with existing test imports.
     """
-    if backend_name == "log":
-        return LogNotificationBackend()
-    if backend_name == "webhook":
-        url_value: object = (config or {}).get("notification_webhook_url")
-        if not isinstance(url_value, str) or not url_value:
-            raise WebhookConfigError("notification_backend='webhook' requires notification_webhook_url in config")
-        return WebhookNotificationBackend(url_value)
-    supported = ["log", "webhook"]
-    raise ValueError(f"unknown notification backend: {backend_name!r}. Supported backends: {', '.join(supported)}")
+    names = _parse_backend_spec(backend_name)
+    if not names:
+        raise ValueError("notification_backend resolved to an empty list")
+    instances: list[NotificationBackend] = []
+    for name in names:
+        builder = _BUILDERS.get(name)
+        if builder is None:
+            supported = ", ".join(_BUILDERS.keys())
+            raise ValueError(f"unknown notification backend: {name!r}. Supported backends: {supported}")
+        instances.append(builder(config))
+    if len(instances) == 1:
+        return instances[0]
+    return FanOutNotificationBackend(instances)
 
 
 def send_notifications(
@@ -220,19 +190,27 @@ def send_notifications(
     backend: NotificationBackend | None = None,
     config: dict[str, object] | None = None,
 ) -> None:
-    """Send health alert notifications through the configured backend.
+    """Send health alert notifications through the configured backend(s).
 
     Args:
         alerts: Health alerts to deliver.
-        backend: Notification backend. If None, resolved from config or
-                 defaults to ``LogNotificationBackend``.
-        config: Optional runtime config dict (forwarded to the resolved
-                backend; required for the webhook backend to read its URL).
+        backend: Optional pre-built backend instance. When provided, it is
+            used verbatim and ``config`` is forwarded to ``notify``.
+        config: Runtime config dict. The ``notification_backend`` key may be
+            a name, comma-separated names, or a list; backend-specific keys
+            (e.g. ``notification_webhook_url``,
+            ``notification_apprise_urls``) are consumed during construction.
     """
     if backend is not None:
-        _backend = backend
-    elif config is not None and isinstance(config.get("notification_backend"), str):
-        _backend = _resolve_backend(str(config["notification_backend"]), config=config)
+        _backend: NotificationBackend = backend
+    elif config is not None and "notification_backend" in config:
+        spec = config["notification_backend"]
+        if isinstance(spec, (str, list, tuple)):
+            _backend = _resolve_backend(
+                spec if isinstance(spec, str) else ",".join(str(s) for s in spec), config=config
+            )
+        else:
+            _backend = LogNotificationBackend()
     else:
         _backend = LogNotificationBackend()
 
@@ -243,6 +221,14 @@ def send_notifications(
 
 
 __all__ = [
+    "AppriseConfigError",
+    "AppriseNotificationBackend",
+    "BackendConfigError",
+    "BackendUnavailableError",
+    "EmailConfigError",
+    "EmailNotificationBackend",
+    "FanOutNotificationBackend",
+    "JournaldNotificationBackend",
     "LogNotificationBackend",
     "NotificationBackend",
     "WEBHOOK_RETRY_BACKOFF_S",
@@ -250,5 +236,7 @@ __all__ = [
     "WebhookConfigError",
     "WebhookNotificationBackend",
     "_resolve_backend",
+    "build_envelope",
     "send_notifications",
+    "supported_backends",
 ]

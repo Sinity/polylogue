@@ -281,6 +281,43 @@ class PolylogueConfig:
         return v if isinstance(v, str) and v else None
 
     @property
+    def notification_webhook_secret(self) -> str | None:
+        v = self._data.get("notification_webhook_secret")
+        return v if isinstance(v, str) and v else None
+
+    @property
+    def notification_apprise_urls(self) -> tuple[str, ...]:
+        v = self._data.get("notification_apprise_urls")
+        if isinstance(v, (list, tuple)):
+            return tuple(str(s) for s in v if str(s).strip())
+        if isinstance(v, str) and v.strip():
+            return tuple(s.strip() for s in v.split(",") if s.strip())
+        return ()
+
+    @property
+    def notification_email_host(self) -> str | None:
+        v = self._data.get("notification_email_host")
+        return v if isinstance(v, str) and v else None
+
+    @property
+    def notification_email_port(self) -> int:
+        return int(str(self._data.get("notification_email_port", 587)))
+
+    @property
+    def notification_email_from(self) -> str | None:
+        v = self._data.get("notification_email_from")
+        return v if isinstance(v, str) and v else None
+
+    @property
+    def notification_email_to(self) -> tuple[str, ...]:
+        v = self._data.get("notification_email_to")
+        if isinstance(v, (list, tuple)):
+            return tuple(str(s) for s in v if str(s).strip())
+        if isinstance(v, str) and v.strip():
+            return tuple(s.strip() for s in v.split(",") if s.strip())
+        return ()
+
+    @property
     def health_check_interval_s(self) -> int:
         return int(str(self._data.get("health_check_interval_s", 300)))
 
@@ -476,6 +513,18 @@ def _default_config_values() -> dict[str, object]:
         "schema_validation": "advisory",
         "notification_backend": "log",
         "notification_webhook_url": None,
+        "notification_webhook_secret": None,
+        "notification_apprise_urls": (),
+        "notification_email_host": None,
+        "notification_email_port": 587,
+        "notification_email_username": None,
+        "notification_email_password": None,
+        "notification_email_from": None,
+        "notification_email_to": (),
+        "notification_email_subject_prefix": "[polylogue]",
+        "notification_email_use_tls": True,
+        "notification_email_use_starttls": True,
+        "notification_email_max_per_hour": 12,
         "health_check_interval_s": 300,
         "health_check_tiers": "fast,medium",
         "health_fts_auto_restore": False,
@@ -638,6 +687,20 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
         "notifications": {
             "backend": "notification_backend",
             "webhook_url": "notification_webhook_url",
+            "webhook_secret": "notification_webhook_secret",
+            "apprise_urls": "notification_apprise_urls",
+        },
+        "notifications.email": {
+            "host": "notification_email_host",
+            "port": "notification_email_port",
+            "username": "notification_email_username",
+            "password": "notification_email_password",
+            "from": "notification_email_from",
+            "to": "notification_email_to",
+            "subject_prefix": "notification_email_subject_prefix",
+            "use_tls": "notification_email_use_tls",
+            "use_starttls": "notification_email_use_starttls",
+            "max_per_hour": "notification_email_max_per_hour",
         },
         "health": {
             "check_interval_s": "health_check_interval_s",
@@ -696,6 +759,14 @@ def _apply_env_overrides(cfg: dict[str, object]) -> None:
         "POLYLOGUE_SCHEMA_VALIDATION": "schema_validation",
         "POLYLOGUE_NOTIFICATION_BACKEND": "notification_backend",
         "POLYLOGUE_NOTIFICATION_WEBHOOK_URL": "notification_webhook_url",
+        "POLYLOGUE_NOTIFICATION_WEBHOOK_SECRET": "notification_webhook_secret",
+        "POLYLOGUE_NOTIFICATION_APPRISE_URLS": "notification_apprise_urls",
+        "POLYLOGUE_NOTIFICATION_EMAIL_HOST": "notification_email_host",
+        "POLYLOGUE_NOTIFICATION_EMAIL_PORT": "notification_email_port",
+        "POLYLOGUE_NOTIFICATION_EMAIL_USERNAME": "notification_email_username",
+        "POLYLOGUE_NOTIFICATION_EMAIL_PASSWORD": "notification_email_password",
+        "POLYLOGUE_NOTIFICATION_EMAIL_FROM": "notification_email_from",
+        "POLYLOGUE_NOTIFICATION_EMAIL_TO": "notification_email_to",
         "POLYLOGUE_HEALTH_CHECK_INTERVAL_S": "health_check_interval_s",
         "POLYLOGUE_HEALTH_CHECK_TIERS": "health_check_tiers",
         "POLYLOGUE_HEALTH_FTS_AUTO_RESTORE": "health_fts_auto_restore",
@@ -707,7 +778,14 @@ def _apply_env_overrides(cfg: dict[str, object]) -> None:
         "POLYLOGUE_WATCH_DEBOUNCE_S": "watch_debounce_s",
     }
     # Keys that must be stored as int
-    _int_keys = {"api_port", "daemon_port", "browser_capture_port", "health_check_interval_s"}
+    _int_keys = {
+        "api_port",
+        "daemon_port",
+        "browser_capture_port",
+        "health_check_interval_s",
+        "notification_email_port",
+        "notification_email_max_per_hour",
+    }
     for env_var, cfg_key in env_map.items():
         value = os.environ.get(env_var)
         if value is not None:
@@ -788,6 +866,23 @@ def format_config_toml(cfg: dict[str, object]) -> str:
             [
                 ("backend", "notification_backend"),
                 ("webhook_url", "notification_webhook_url"),
+                ("webhook_secret", "notification_webhook_secret"),
+                ("apprise_urls", "notification_apprise_urls"),
+            ],
+        ),
+        (
+            "notifications.email",
+            [
+                ("host", "notification_email_host"),
+                ("port", "notification_email_port"),
+                ("username", "notification_email_username"),
+                ("password", "notification_email_password"),
+                ("from", "notification_email_from"),
+                ("to", "notification_email_to"),
+                ("subject_prefix", "notification_email_subject_prefix"),
+                ("use_tls", "notification_email_use_tls"),
+                ("use_starttls", "notification_email_use_starttls"),
+                ("max_per_hour", "notification_email_max_per_hour"),
             ],
         ),
         (
