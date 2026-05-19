@@ -42,9 +42,11 @@ def fresh_schema_db() -> Generator[Mapping[str, sqlite3.Connection], None, None]
 # ---------------------------------------------------------------------------
 
 
-def test_schema_version_is_4() -> None:
-    # Bumped from 3 → 4 by #1241 (action_events_fts external-content).
-    assert SCHEMA_VERSION == 4
+def test_schema_version_is_5() -> None:
+    # Bumped from 3 → 4 by #1241 (action_events_fts external-content),
+    # then 4 → 5 by #1252 (first-class attachment native identifiers
+    # + upload_origin column for the #1199 attachment library).
+    assert SCHEMA_VERSION == 5
 
 
 def test_content_blocks_table_has_no_media_type_column(fresh_schema_db: Mapping[str, sqlite3.Connection]) -> None:

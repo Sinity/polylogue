@@ -67,6 +67,20 @@ class ParsedMessage(BaseModel):
 
 
 class ParsedAttachment(BaseModel):
+    """Parsed attachment shape with first-class native identifiers (#1252).
+
+    Native identifiers used for lookups — `provider_attachment_id`,
+    `provider_file_id`, `provider_drive_id` — and the origin classification
+    `upload_origin` are typed top-level fields. They live alongside
+    `provider_meta` for narrative content; downstream storage promotes them
+    into stored columns so attachment lookups never JSON-extract on the hot
+    path. See `polylogue/storage/sqlite/schema_ddl_archive.py:attachments`.
+
+    `upload_origin` is a closed vocabulary ({"drive","paste","url","oauth"}
+    or None); the attachment-library UI (#1199) groups by `(provider_name,
+    upload_origin)` without scanning JSON.
+    """
+
     provider_attachment_id: str
     message_provider_id: str | None = None
     name: str | None = None
@@ -74,6 +88,9 @@ class ParsedAttachment(BaseModel):
     size_bytes: int | None = None
     path: str | None = None
     provider_meta: dict[str, object] | None = None
+    provider_file_id: str | None = None
+    provider_drive_id: str | None = None
+    upload_origin: str | None = None
 
     @field_validator("path")
     @classmethod

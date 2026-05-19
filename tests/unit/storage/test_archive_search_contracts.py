@@ -209,7 +209,7 @@ async def test_repository_search_summary_hits_prioritize_attachment_identity_evi
         conversation_id="conv-a",
         rank=1,
         message_id="msg-attachment",
-        snippet="attachment identity provider_meta.fileId=drive-file-1",
+        snippet="attachment identity attachment.provider_file_id=drive-file-1",
         match_surface="attachment",
         retrieval_lane="attachment",
     )
@@ -238,9 +238,9 @@ async def test_repository_search_summary_hits_prioritize_attachment_identity_evi
 @pytest.mark.parametrize(
     ("query", "expected_snippet"),
     [
-        ("provider-attachment-218", "provider_meta.provider_id=provider-attachment-218"),
-        ("drive-file-218", "provider_meta.fileId=drive-file-218"),
-        ("drive-root-218", "provider_meta.driveId=drive-root-218"),
+        ("provider-attachment-218", "attachment.provider_attachment_id=provider-attachment-218"),
+        ("drive-file-218", "attachment.provider_file_id=drive-file-218"),
+        ("drive-root-218", "attachment.provider_drive_id=drive-root-218"),
     ],
     ids=["provider-attachment-id", "drive-file-id", "drive-id"],
 )

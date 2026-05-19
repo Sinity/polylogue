@@ -266,7 +266,7 @@ def _make_attachment_search_hit(conversation: Conversation) -> ConversationSearc
         retrieval_lane="attachment",
         match_surface="attachment",
         message_id="msg-doc",
-        snippet='attachment identity provider_meta.fileId=drive-file-1 name="Project Plan"',
+        snippet='attachment identity attachment.provider_file_id=drive-file-1 name="Project Plan"',
     )
 
 
@@ -482,7 +482,7 @@ class TestQueryTools:
         assert hits[0]["match"]["match_surface"] == "attachment"
         assert hits[0]["match"]["retrieval_lane"] == "attachment"
         assert hits[0]["match"]["message_id"] == "msg-doc"
-        assert "provider_meta.fileId=drive-file-1" in hits[0]["match"]["snippet"]
+        assert "attachment.provider_file_id=drive-file-1" in hits[0]["match"]["snippet"]
         mock_ops.search_conversation_hits.assert_awaited_once()
         mock_ops.diagnose_query_miss.assert_not_called()
 

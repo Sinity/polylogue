@@ -252,6 +252,7 @@ def _attachment_tuple(attachment_id: str, *, mime_type: str = "image/png") -> At
         None,
         None,
         None,
+        None,  # #1252: upload_origin
     )
 
 
@@ -272,6 +273,7 @@ def _attachment_ref_tuple(
         None,
         None,
         None,
+        None,  # #1252: upload_origin
     )
 
 

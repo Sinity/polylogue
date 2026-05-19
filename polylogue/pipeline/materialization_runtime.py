@@ -88,6 +88,10 @@ class MaterializedAttachment:
     source_path: str | None
     path: str | None
     provider_meta: ProviderMetadata
+    provider_attachment_id: str | None = None
+    provider_file_id: str | None = None
+    provider_drive_id: str | None = None
+    upload_origin: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -387,6 +391,10 @@ def materialize_conversation(
                     dict(updated_meta or {}),
                     provider_attachment_id=attachment.provider_attachment_id,
                 ),
+                provider_attachment_id=attachment.provider_attachment_id,
+                provider_file_id=attachment.provider_file_id,
+                provider_drive_id=attachment.provider_drive_id,
+                upload_origin=attachment.upload_origin,
             )
         )
 

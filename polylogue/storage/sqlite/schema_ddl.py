@@ -67,7 +67,7 @@ from polylogue.storage.sqlite.schema_ddl_provider_events import (
 )
 
 SCHEMA_VERSION = (
-    4  # Canonical schema. No migration chain: mismatch → re-ingest from source (#1212, #1190, #1240, #1241).
+    5  # Canonical schema. No migration chain: mismatch → re-ingest from source (#1212, #1190, #1240, #1241, #1252).
 )
 
 

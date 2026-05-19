@@ -161,6 +161,12 @@ def enrich_bundle_from_db(
         att_message_id: MessageId | None = None
         if attachment.message_id is not None:
             att_message_id = reverse_mid.get(attachment.message_id, attachment.message_id)
+        # #1252: typed native identifiers flow from ParsedAttachment →
+        # MaterializedAttachment → AttachmentRecord without re-reading
+        # provider_meta. Fall back to the JSON envelope only for AttachmentRecords
+        # constructed by legacy code paths that have not yet been migrated to
+        # populate the typed surface (the daemon ingest path always populates
+        # the typed fields).
         patched_attachments.append(
             AttachmentRecord(
                 attachment_id=attachment.attachment_id,
@@ -171,8 +177,9 @@ def enrich_bundle_from_db(
                 path=attachment.path,
                 provider_meta=attachment.provider_meta,
                 provider_attachment_id=attachment.provider_attachment_id,
-                provider_file_id=_str_from_meta(attachment.provider_meta, "fileId"),
-                provider_drive_id=_str_from_meta(attachment.provider_meta, "driveId"),
+                provider_file_id=(attachment.provider_file_id or _str_from_meta(attachment.provider_meta, "fileId")),
+                provider_drive_id=(attachment.provider_drive_id or _str_from_meta(attachment.provider_meta, "driveId")),
+                upload_origin=attachment.upload_origin,
             )
         )
 

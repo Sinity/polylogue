@@ -168,6 +168,7 @@ class AttachmentRecord(BaseModel):
     provider_attachment_id: str | None = None
     provider_file_id: str | None = None
     provider_drive_id: str | None = None
+    upload_origin: str | None = None
 
     @field_validator("attachment_id", "conversation_id")
     @classmethod
