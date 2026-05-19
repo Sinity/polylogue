@@ -215,3 +215,106 @@ def test_hypothesis_arbitrary_lifecycle_recoverable(
         assert not unexpected, f"unexpected FTS triggers leaked: {unexpected}"
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# #1242: commit-ordering and SIGKILL-safety regression tests.
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_side_effects_run_in_try_block_not_finally() -> None:
+    """Side effects must NOT be in a finally block (#1242 bug A).
+
+    The previous arrangement ran ``_commit_sync_ingest_side_effects`` in
+    a ``finally`` block, so it fired even after the try block had
+    rolled back — silently restoring triggers on top of nothing, AFTER
+    the data commit had already happened. The regression here is a
+    structural assertion against that shape: the side-effects call must
+    appear inside the try (not the finally) so an exception during the
+    write window propagates without committing.
+    """
+    import ast
+    import inspect
+
+    from polylogue.pipeline.services.ingest_batch import _core
+
+    src = inspect.getsource(_core._process_ingest_batch_sync)
+    tree = ast.parse(src)
+    func = tree.body[0]
+    assert isinstance(func, ast.FunctionDef), "expected a function definition"
+
+    # Find the outer Try in the function body.
+    outer_try: ast.Try | None = None
+    for node in func.body:
+        if isinstance(node, ast.Try):
+            outer_try = node
+            break
+    assert outer_try is not None, "expected an outer try block"
+
+    def _calls_side_effects(stmts: list[ast.stmt]) -> bool:
+        for stmt in stmts:
+            for sub in ast.walk(stmt):
+                if (
+                    isinstance(sub, ast.Call)
+                    and isinstance(sub.func, ast.Name)
+                    and sub.func.id == "_commit_sync_ingest_side_effects"
+                ):
+                    return True
+        return False
+
+    assert _calls_side_effects(outer_try.body), "side effects must run inside try (before commit boundary)"
+    assert not _calls_side_effects(outer_try.finalbody), (
+        "side effects must NOT run in finally (would fire after rollback / after commit)"
+    )
+
+
+def test_sigkill_mid_bulk_recovery_via_daemon_startup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bulk-write killed between suspend and restore is recovered on next daemon startup (#1242 bug B).
+
+    Simulates the SIGKILL-during-suspend signature: triggers are dropped
+    and committed, then the "process" dies before restore. The next
+    daemon startup readiness check must detect the missing triggers and
+    rebuild both triggers and the FTS index, restoring the search
+    invariant without operator intervention.
+    """
+    import asyncio
+
+    db_file = tmp_path / "fts_sigkill.db"
+    conn = _bootstrap_fts_db(db_file)
+    try:
+        # Seed two messages so the FTS index has content to rebuild.
+        conn.execute(
+            "INSERT INTO messages (rowid, message_id, conversation_id, text) VALUES (?, ?, ?, ?)",
+            (1, "m1", "c1", "alpha bravo"),
+        )
+        conn.execute(
+            "INSERT INTO messages (rowid, message_id, conversation_id, text) VALUES (?, ?, ?, ?)",
+            (2, "m2", "c1", "charlie delta"),
+        )
+        conn.commit()
+
+        # SIGKILL signature: drop triggers and commit, never restore.
+        suspend_fts_triggers_sync(conn)
+        conn.commit()
+        assert _trigger_names(conn).isdisjoint(_EXPECTED_TRIGGERS)
+    finally:
+        conn.close()
+
+    # New process: daemon startup readiness check must heal the drift.
+    from polylogue.daemon import cli as daemon_cli
+
+    monkeypatch.setattr("polylogue.paths.db_path", lambda: db_file)
+
+    asyncio.run(daemon_cli._ensure_fts_startup_readiness())
+
+    final = sqlite3.connect(str(db_file))
+    try:
+        present = _trigger_names(final)
+        assert set(_EXPECTED_TRIGGERS).issubset(present), (
+            f"daemon startup did not restore all FTS triggers: still missing {set(_EXPECTED_TRIGGERS) - present}"
+        )
+        # FTS index was rebuilt from the persisted messages.
+        indexed = final.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
+        assert indexed >= 2, f"FTS index not repopulated after recovery: {indexed} rows"
+    finally:
+        final.close()
