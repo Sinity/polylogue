@@ -13,7 +13,8 @@ TRACEBACK_SENTINEL = "Traceback (most recent call last)"
 def test_run_machine_entry_plain_polylogue_error_emits_click_style_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    def boom() -> None:
+    def boom(*, standalone_mode: bool = False) -> None:
+        del standalone_mode
         raise DatabaseError("Database schema version 0 is incompatible with expected version 1.")
 
     with pytest.raises(SystemExit) as exc_info:

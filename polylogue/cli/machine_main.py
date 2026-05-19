@@ -14,6 +14,55 @@ def extract_option(message: str) -> str | None:
     return None
 
 
+def actionable_hint_for_usage_error(message: str) -> str | None:
+    """Return a one- or two-line actionable hint for a Click ``UsageError`` message.
+
+    The returned hint is appended after Click's own error line so the user
+    always gets a concrete next step. Returns ``None`` when no specific
+    hint applies (the generic ``--help`` hint is added by the caller).
+    """
+    msg = message.strip()
+    if "No such option:" in msg:
+        bad = extract_option(msg)
+        if bad:
+            return (
+                f"Hint: `{bad}` is not a recognized option. "
+                "Run `polylogue --help` for the full option list, or "
+                f'`polylogue "{bad}"` if you meant to search for that string.'
+            )
+        return "Hint: run `polylogue --help` to list available options."
+    if "Missing argument" in msg or "Missing option" in msg:
+        return "Hint: run the command with `--help` to see required arguments."
+    if "No such command" in msg:
+        # Extract the offending token if Click formatted it.
+        bad = msg.split("No such command")[-1].strip().strip("'\".:")
+        bad = bad.split("'")[1] if "'" in bad else bad.split()[0]
+        return (
+            f"Hint: `{bad}` is not a registered subcommand. "
+            f'Did you mean to search? Try `polylogue "{bad}"` '
+            "(query-first dispatch interprets unrecognized tokens as search queries), "
+            "or run `polylogue --help` for the full subcommand list."
+        )
+    if "Invalid value" in msg or "is not a valid" in msg:
+        return "Hint: run the command with `--help` to see accepted values for this option."
+    if "Query filters and root output flags must appear before the verb" in msg:
+        return (
+            "Hint: root filters (e.g. `-p claude-ai`, `--since`) and root output flags "
+            "must precede the verb. Example: `polylogue -p claude-ai list --format json`, "
+            "not `polylogue list -p claude-ai --format json`."
+        )
+    return None
+
+
+def _show_usage_with_hint(exc: click.UsageError) -> None:
+    """Show Click's own usage error, then append our actionable hint to stderr."""
+    exc.show()
+    hint = actionable_hint_for_usage_error(exc.format_message())
+    if hint is None:
+        hint = "Hint: run `polylogue --help` for usage, or `polylogue --diagnose <args>` to debug dispatch."
+    click.echo(hint, err=True)
+
+
 def run_machine_entry(
     cli: Callable[..., object],
     argv: list[str],
@@ -29,12 +78,19 @@ def run_machine_entry(
 
     if not wants_json(argv):
         try:
-            cli()
-        except click.ClickException:
-            raise
+            cli(standalone_mode=False)
+        except click.UsageError as exc:
+            _show_usage_with_hint(exc)
+            raise SystemExit(getattr(exc, "exit_code", 2)) from exc
+        except click.ClickException as exc:
+            exc.show()
+            raise SystemExit(exc.exit_code) from exc
         except PolylogueError as exc:
             click.ClickException(str(exc)).show()
             raise SystemExit(1) from exc
+        except SystemExit:
+            # ``--help`` and ``--version`` reach here via Click's ctx.exit(0).
+            raise
         except Exception as exc:
             click.ClickException(f"unexpected error: {type(exc).__name__}: {exc}").show()
             raise SystemExit(1) from exc

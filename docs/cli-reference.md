@@ -13,6 +13,14 @@ Usage: polylogue [OPTIONS] COMMAND [ARGS]...
 
   Polylogue - AI conversation archive.
 
+  Dispatch model (query-first):
+      Any positional token that is NOT a registered subcommand or verb is
+      treated as a search query against the archive. So `polylogue foo`
+      searches for `foo` — it does NOT raise "unknown subcommand".
+      Run `polylogue --help` to see the full subcommand list, or
+      `polylogue --diagnose <args>` to have the parser explain how it
+      routed your invocation.
+
   Query mode (default):
       polylogue "search terms"
       polylogue -p claude-ai --since "last week"
@@ -41,7 +49,10 @@ Usage: polylogue [OPTIONS] COMMAND [ARGS]...
   Modifiers (write operations):
       polylogue "urgent" --add-tag review
 
-  Run `polylogue <command> --help` for subcommand details.
+  See also:
+      polylogue --help                  # this screen
+      polylogue <subcommand> --help     # per-subcommand help
+      polylogue --diagnose <args>       # explain parser decisions
 
 Options:
   -i, --id TEXT                   Conversation ID (exact or prefix match)
@@ -134,6 +145,11 @@ Options:
   --add-tag TEXT                  Add tags (comma-separated)
   --plain                         Force non-interactive plain output
   -v, --verbose                   Verbose output
+  --diagnose                      Explain CLI parser decisions on stderr
+                                  before running. Useful when query-first
+                                  dispatch surprises you: shows whether a bare
+                                  token was routed to a subcommand or
+                                  interpreted as a search query.
   --version                       Show the version and exit.
   --help                          Show this message and exit.
 

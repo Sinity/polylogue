@@ -103,8 +103,23 @@ def test_main_wraps_unexpected_exception_as_runtime_json(
     assert payload["details"] == {"exception_type": "RuntimeError"}
 
 
-def test_main_without_json_preserves_normal_click_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_without_json_converts_click_usage_to_systemexit(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``main()`` traps Click ``UsageError``, prints an actionable hint, and exits 2 (#1273).
+
+    Previously the human path let ``click.NoSuchOption`` propagate so Click's
+    own ``standalone_mode`` machinery would print and exit. With #1273 the
+    human path runs in ``standalone_mode=False`` so we can decorate every
+    Click ``UsageError`` with an actionable next-step hint; the resulting
+    behavior is ``SystemExit(2)`` plus an extra ``Hint:`` line on stderr.
+    """
     monkeypatch.setattr(sys, "argv", ["polylogue", "doctor", "--bad-flag"])
     with patch("polylogue.cli.click_app.cli", side_effect=click.NoSuchOption("--bad-flag")):
-        with pytest.raises(click.NoSuchOption):
+        with pytest.raises(SystemExit) as excinfo:
             main()
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert "No such option: --bad-flag" in captured.err
+    assert "Hint:" in captured.err

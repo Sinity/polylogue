@@ -133,8 +133,18 @@ def cli(
     # Global
     plain: bool,
     verbose: bool,
+    diagnose: bool,
 ) -> None:
     """Polylogue - AI conversation archive.
+
+    \b
+    Dispatch model (query-first):
+        Any positional token that is NOT a registered subcommand or verb is
+        treated as a search query against the archive. So `polylogue foo`
+        searches for `foo` — it does NOT raise "unknown subcommand".
+        Run `polylogue --help` to see the full subcommand list, or
+        `polylogue --diagnose <args>` to have the parser explain how it
+        routed your invocation.
 
     \b
     Query mode (default):
@@ -168,7 +178,11 @@ def cli(
     Modifiers (write operations):
         polylogue "urgent" --add-tag review
 
-    Run `polylogue <command> --help` for subcommand details.
+    \b
+    See also:
+        polylogue --help                  # this screen
+        polylogue <subcommand> --help     # per-subcommand help
+        polylogue --diagnose <args>       # explain parser decisions
     """
     # Set up logging early so all output goes to stderr
     configure_logging(verbose=verbose)
