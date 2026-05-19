@@ -376,6 +376,43 @@ def test_insights_status_plain(cli_workspace: CliWorkspace) -> None:
     assert "session_profiles: ready" in result.output
 
 
+def test_insights_audit_json(cli_workspace: CliWorkspace) -> None:
+    """``insights audit`` returns the per-product rigor profile (#1275)."""
+
+    _seed_products(cli_workspace)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["insights", "audit", "--format", "json"], catch_exceptions=False)
+
+    assert result.exit_code == 0, _exception_message(result)
+    payload = extract_json_result(result.output)
+    entries = {item["insight_name"]: item for item in json_object_list(payload["entries"])}
+    assert "session_profiles" in entries
+    assert "session_work_events" in entries
+    profiles = entries["session_profiles"]
+    assert profiles["has_evidence_payload"] is True
+    assert profiles["has_inference_payload"] is True
+    assert json_int(profiles["sample_size"]) >= 1
+    assert json_int(profiles["evidence_count"]) >= 1
+    # Fallback markers are declared for work events.
+    we = entries["session_work_events"]
+    assert we["has_fallback_markers"] is True
+    assert "confidence_distribution" in we
+    assert "version_targets" in profiles
+
+
+def test_insights_audit_plain_renders_summary(cli_workspace: CliWorkspace) -> None:
+    _seed_products(cli_workspace)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["insights", "audit"], catch_exceptions=False)
+
+    assert result.exit_code == 0, _exception_message(result)
+    assert "Insight Rigor Audit" in result.output
+    assert "session_profiles" in result.output
+    assert "evidence:" in result.output
+
+
 def test_insights_export_json(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
     target = cli_workspace["archive_root"] / "exports" / "insights-bundle"

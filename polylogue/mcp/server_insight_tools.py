@@ -187,6 +187,25 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("cost_outlook", run)
 
     @mcp.tool()
+    async def insight_rigor_audit(sample_limit: int = 500) -> str:
+        """Per-product rigor profile across materialized insights (#1275).
+
+        Returns the JSON-serialized :class:`InsightRigorAuditReport`. For
+        each contracted insight product, reports the share of rows that
+        carry evidence/inference/fallback markers, the stale-version row
+        count, and a confidence-bucket distribution.
+        """
+
+        async def run() -> str:
+            from polylogue.insights.audit import InsightRigorAuditQuery
+
+            poly = hooks.get_polylogue()
+            report = await poly.insight_rigor_audit(InsightRigorAuditQuery(sample_limit=sample_limit))
+            return hooks.json_payload(report, exclude_none=True)
+
+        return await hooks.async_safe_call("insight_rigor_audit", run)
+
+    @mcp.tool()
     async def archive_coverage() -> str:
         """Show archive coverage statistics."""
 

@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from polylogue.archive.filter.filters import ConversationFilter
     from polylogue.archive.message.models import Message
     from polylogue.config import Config
+    from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
     from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport
     from polylogue.insights.resume import ResumeBrief
@@ -202,6 +203,13 @@ class PolylogueArchiveMixin:
     ) -> InsightReadinessReport:
         """Return insight materialization readiness for downstream consumers."""
         return await self.operations.get_insight_readiness_report(query)
+
+    async def insight_rigor_audit(
+        self,
+        query: InsightRigorAuditQuery | None = None,
+    ) -> InsightRigorAuditReport:
+        """Per-product rigor profile across materialized insights (#1275)."""
+        return await self.operations.audit_insight_rigor(query)
 
     async def get_messages_paginated(
         self,

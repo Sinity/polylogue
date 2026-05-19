@@ -23,6 +23,11 @@ from polylogue.cli.shared.insight_command_contracts import (
 from polylogue.cli.shared.machine_errors import emit_success
 from polylogue.cli.shared.types import AppEnv
 from polylogue.insights.archive import ArchiveInsightUnavailableError
+from polylogue.insights.audit import (
+    DEFAULT_AUDIT_SAMPLE_LIMIT,
+    InsightRigorAuditQuery,
+    InsightRigorAuditReport,
+)
 from polylogue.insights.export_bundles import (
     InsightExportBundleError,
     InsightExportBundleRequest,
@@ -292,6 +297,85 @@ def insights_export_command(
         emit_success(result.model_dump(mode="json"))
         return
     _render_export_plain(result)
+
+
+def _format_pct(count: int, sample: int) -> str:
+    if sample <= 0:
+        return "-"
+    return f"{(count * 100) // sample}%"
+
+
+def _render_audit_plain(report: InsightRigorAuditReport) -> None:
+    click.echo(f"Insight Rigor Audit (sample_limit={report.sample_limit})")
+    click.echo("")
+    for entry in report.entries:
+        sample = entry.sample_size
+        click.echo(f"{entry.insight_name} ({entry.display_name})")
+        if entry.error is not None:
+            click.echo(f"  error: {entry.error}")
+            continue
+        if sample == 0:
+            click.echo("  sample=0 (no rows materialized)")
+            continue
+
+        click.echo(f"  sample={sample}")
+        if entry.has_evidence_payload:
+            click.echo(f"  evidence:  {entry.evidence_count} ({_format_pct(entry.evidence_count, sample)})")
+        if entry.has_inference_payload:
+            click.echo(f"  inference: {entry.inference_count} ({_format_pct(entry.inference_count, sample)})")
+        if entry.has_fallback_markers:
+            click.echo(f"  fallback:  {entry.fallback_count} ({_format_pct(entry.fallback_count, sample)})")
+        click.echo(f"  stale-version rows: {entry.stale_version_count}")
+        if entry.has_confidence_field:
+            dist = entry.confidence_distribution
+            click.echo(f"  confidence: low={dist.low} mid={dist.mid} high={dist.high} unknown={dist.unknown}")
+        if entry.version_targets:
+            versions = ", ".join(f"{name}={value}" for name, value in sorted(entry.version_targets.items()))
+            click.echo(f"  version targets: {versions}")
+        for note in entry.notes:
+            click.echo(f"  note: {note}")
+
+
+@insights_command.command("audit")
+@click.option(
+    "--insight",
+    "insights",
+    multiple=True,
+    help="Limit the audit to one or more registered insight names. Default: every contracted product.",
+)
+@click.option(
+    "--sample-limit",
+    type=int,
+    default=DEFAULT_AUDIT_SAMPLE_LIMIT,
+    show_default=True,
+    help="Maximum rows per product to sample for the rigor profile.",
+)
+@click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
+@click.pass_context
+def insights_audit_command(
+    ctx: click.Context,
+    insights: tuple[str, ...],
+    sample_limit: int,
+    output_format: str | None,
+) -> None:
+    """Report per-product rigor profile across materialized insights (#1275).
+
+    For each contracted product, reports the share of rows that carry an
+    evidence payload, an inference payload, and a fallback marker, plus
+    the stale-version row count and a confidence-bucket distribution.
+    """
+
+    env: AppEnv = ctx.obj
+    try:
+        query = InsightRigorAuditQuery(insights=insights, sample_limit=sample_limit)
+        report = run_coroutine_sync(env.operations.audit_insight_rigor(query))
+    except ArchiveInsightUnavailableError as exc:
+        fail("insights audit", str(exc))
+    wants_json = output_format == "json" or ctx.find_root().params.get("output_format") == "json"
+    if wants_json:
+        emit_success(report.model_dump(mode="json"))
+        return
+    _render_audit_plain(report)
 
 
 @insights_command.command("timeline")

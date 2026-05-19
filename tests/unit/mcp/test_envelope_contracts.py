@@ -71,6 +71,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "stats": "single_object",
     "build_context_pack": "single_object",
     "readiness_check": "single_object",
+    "insight_rigor_audit": "single_object",
     # ------- stats / map -------
     "get_stats_by": "stats_map",
     # ------- mutation tools -------

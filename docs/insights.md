@@ -26,6 +26,10 @@ subcommand group.
 All insight commands support `--limit`, `--offset`, `--format json`, and
 inherit root-level filters (`--provider`, `--since`, `--until`).
 
+The per-product evidence / inference / fallback semantics, plus the
+`polylogue insights audit` CLI, are documented in
+[insights-rigor-matrix.md](insights-rigor-matrix.md).
+
 ## Session Profiles
 
 Per-session derived aggregates. Materialized in the `session_profiles` table.

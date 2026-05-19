@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `5`
 - synthetic benchmark campaigns: `7`
-- scenario projections: `266`
+- scenario projections: `267`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `5`
-  - exercise: `159`
+  - exercise: `160`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `7`
@@ -354,6 +354,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-init` | `conversation-query-loop` | `message_fts`<br>`conversation_query_results` | `cli.help`<br>`query-conversations` | — | `generated`<br>`help`<br>`structural` | init help |
 | `exercise` | `help-insights` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | insights help |
 | `exercise` | `help-insights-analytics` | `provider-analytics-query-loop` | `session_insight_rows`<br>`provider_analytics_results` | `cli.help`<br>`query-provider-analytics` | — | `generated`<br>`help`<br>`structural` | insights analytics help |
+| `exercise` | `help-insights-audit` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | insights audit help |
 | `exercise` | `help-insights-cost-rollups` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | insights cost-rollups help |
 | `exercise` | `help-insights-costs` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | insights costs help |
 | `exercise` | `help-insights-day-summaries` | `day-summary-query-loop` | `day_session_summary_rows`<br>`day_session_summary_results` | `cli.help`<br>`query-day-session-summaries` | — | `generated`<br>`help`<br>`structural` | insights day-summaries help |

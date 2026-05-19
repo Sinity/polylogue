@@ -85,6 +85,10 @@ exceptions:
     ceiling: 1160
     reason: "live ingestion batch processor with metrics, fingerprinting, multi-stage progress tracking, and conversation-scoped convergence dispatch"
 
+  - path: polylogue/api/archive.py
+    ceiling: 1150
+    reason: "archive facade for read/query/insight/maintenance surfaces; added audit_insights_rigor entrypoint (#1275); split candidate: extract per-domain facades (insights, maintenance) under polylogue/api/"
+
   - path: tests/unit/storage/test_backend.py
     ceiling: 1750
     reason: "added FK integrity, quarantine regression, FTS commit-ordering tests (#820/#844/#817)"

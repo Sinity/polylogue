@@ -1006,6 +1006,20 @@
     }
   },
   {
+    "name": "insight_rigor_audit",
+    "parameters": {
+      "properties": {
+        "sample_limit": {
+          "default": 500,
+          "title": "Sample Limit",
+          "type": "integer"
+        }
+      },
+      "title": "insight_rigor_auditArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "list_annotations",
     "parameters": {
       "properties": {
