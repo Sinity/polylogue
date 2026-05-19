@@ -177,6 +177,7 @@ _RECOGNIZED_PARAMS: frozenset[str] = frozenset(
         "since_session",
         "message_type",
         "offset",
+        "cursor",
     }
 )
 
@@ -291,6 +292,7 @@ def build_query_spec_from_params(
         since_session_id=since_session_id,
         message_type=optional_message_type(params.get("message_type")),
         offset=optional_int(params.get("offset")) or 0,
+        cursor=optional_text(params.get("cursor")),
     )
 
 

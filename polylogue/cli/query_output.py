@@ -482,6 +482,7 @@ def format_search_envelope(
     offset: int,
     sort: str | None,
     message_counts: dict[str, int] | None = None,
+    cursor: object | None = None,
 ) -> str:
     """Render the canonical :class:`SearchEnvelope` JSON for ranked search.
 
@@ -508,6 +509,7 @@ def format_search_envelope(
         query=query,
         retrieval_lane=resolved_lane,
         sort=sort,
+        cursor=cursor,  # type: ignore[arg-type]
     )
     return envelope.model_dump_json(indent=2, exclude_none=True)
 
@@ -517,8 +519,16 @@ async def output_search_hits(
     hits: list[ConversationSearchHit],
     output: QueryOutputSpec,
     repo: ConversationOutputStore | None = None,
+    *,
+    cursor: object | None = None,
 ) -> None:
-    """Output evidence-bearing search hits with optional rich table rendering."""
+    """Output evidence-bearing search hits with optional rich table rendering.
+
+    ``cursor`` carries a previously-decoded :class:`SearchCursor` when the
+    request is a paginated follow-up (#1268); JSON envelope output uses
+    it to drop hits up to and including the anchor and to mint a fresh
+    ``next_cursor`` from the page tail.
+    """
     msg_counts: dict[str, int] = {}
     if repo:
         ids = [hit.conversation_id for hit in hits]
@@ -541,6 +551,7 @@ async def output_search_hits(
                 offset=offset_value,
                 sort=sort_value,
                 message_counts=msg_counts,
+                cursor=cursor,
             )
         )
         return

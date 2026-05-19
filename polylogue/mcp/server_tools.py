@@ -46,10 +46,28 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         request = build_conversation_query_request(**kwargs)
 
         async def run() -> str:
+            from dataclasses import replace as dc_replace
+
+            from polylogue.surfaces.payloads import InvalidSearchCursorError, decode_search_cursor
+
             ops = hooks.get_archive_ops()
             clamped_limit = hooks.clamp_limit(request.limit)
             clamped_offset = max(0, request.offset)
+            decoded_cursor = None
+            if request.cursor:
+                try:
+                    decoded_cursor = decode_search_cursor(request.cursor)
+                except InvalidSearchCursorError as exc:
+                    return hooks.error_json(str(exc), code="invalid_cursor")
             spec = request.build_spec(hooks.clamp_limit)
+            if decoded_cursor is not None:
+                # Advance fetch past the anchor and buffer the window so
+                # post-fetch trim cannot starve the response.
+                spec = dc_replace(
+                    spec,
+                    offset=decoded_cursor.r,
+                    limit=(spec.limit or clamped_limit) + clamped_limit,
+                )
             results = await ops.search_conversation_hits(spec)
             total = await spec.count(hooks.get_query_store())
             diagnostics = await ops.diagnose_query_miss(spec) if not results else None
@@ -63,6 +81,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     query=request.query or "",
                     retrieval_lane=request.retrieval_lane or "auto",
                     sort=request.sort,
+                    cursor=decoded_cursor,
                 )
             )
 

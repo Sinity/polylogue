@@ -85,6 +85,7 @@ class MCPConversationQueryRequest:
     message_type: str | None = None
     offset: MCPToolOffset = 0
     limit: MCPToolLimit = 10
+    cursor: str | None = None
 
     def build_spec(self, clamp_limit: Callable[[int | object], int]) -> ConversationQuerySpec:
         """Build a ConversationQuerySpec from this request using the given clamp helper."""
@@ -128,6 +129,7 @@ class MCPConversationQueryRequest:
             since_session_id=self.since_session_id,
             message_type=self.message_type,
             offset=self.offset,
+            cursor=self.cursor,
         )
 
 
