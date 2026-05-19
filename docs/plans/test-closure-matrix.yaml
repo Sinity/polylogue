@@ -300,6 +300,13 @@ rows:
       - tests/unit/daemon/test_convergence_stages.py
     gate: required
 
+  - domain: daemon.user_state
+    target_files:
+      - polylogue/daemon/user_state_http.py
+    representative_tests:
+      - tests/unit/daemon/test_user_state_http.py
+    gate: required
+
   - domain: rendering.markdown
     target_files:
       - polylogue/rendering/
