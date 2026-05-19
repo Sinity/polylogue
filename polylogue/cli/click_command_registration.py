@@ -107,6 +107,7 @@ _SHORT_HELP: dict[str, str] = {
     "schema": "Inspect and audit provider schemas.",
     "status": "Show daemon and archive status.",
     "tags": "Manage conversation tags.",
+    "tutorial": "Interactive first-run walk-through.",
     "user_state": "Manage durable reader user state.",
 }
 
@@ -160,6 +161,7 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("diagnostics"),
     _L("embed"),
     _L("maintenance"),
+    _L("tutorial"),
 )
 
 

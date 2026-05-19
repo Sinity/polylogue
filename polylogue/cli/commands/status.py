@@ -173,19 +173,23 @@ def _show_status_json(env: AppEnv, status: dict[str, Any]) -> None:
 def _show_direct_json(env: AppEnv) -> None:
     """Machine-readable JSON fallback when daemon is not running."""
     from polylogue.cli.commands.init import starter_config_path
+    from polylogue.cli.commands.status_diagnostics import (
+        diagnose_first_run,
+        diagnostic_payload,
+    )
     from polylogue.paths import archive_root, db_path
 
     db = db_path()
     config_path = starter_config_path()
+    diag = diagnose_first_run(daemon_alive=False)
     payload: dict[str, Any] = {
         "daemon_liveness": False,
         "archive_root": str(archive_root()),
         "db_exists": db.exists(),
         "config_exists": config_path.exists(),
         "config_path": str(config_path),
-        "next_action": (
-            "polylogued run" if db.exists() else ("polylogued run" if config_path.exists() else "polylogue init")
-        ),
+        "next_action": diag.next_action,
+        "diagnostic": diagnostic_payload(diag),
     }
     if db.exists():
         try:
@@ -203,24 +207,31 @@ def _show_direct_json(env: AppEnv) -> None:
     env.ui.console.print(json.dumps(payload, indent=2, default=str))
 
 
+def _render_diagnostic(env: AppEnv, diag: Any) -> None:
+    """Render a ``StatusDiagnostic`` with rich tags but no traceback."""
+    color = "red" if diag.kind in {"schema_mismatch", "locked_db", "unknown_db_error"} else "yellow"
+    env.ui.console.print(f"\n[{color}]{diag.headline}[/{color}]")
+    if diag.detail:
+        env.ui.console.print(f"  {diag.detail}")
+
+
 def _show_direct_status(env: AppEnv, *, compact: bool = False) -> None:
     """Fallback status when daemon is not running."""
+    from polylogue.cli.commands.status_diagnostics import diagnose_first_run
     from polylogue.paths import archive_root, db_path
 
     db = db_path()
     if not db.exists():
-        from polylogue.cli.commands.init import starter_config_path
+        diag = diagnose_first_run(daemon_alive=False)
+        _render_diagnostic(env, diag)
+        return
 
-        config_path = starter_config_path()
-        env.ui.console.print("\n[yellow]No archive found.[/yellow]")
-        if not config_path.exists():
-            env.ui.console.print(
-                "  First-run setup: run [bold]polylogue init[/bold]"
-                " to detect chat sources and write a starter config,"
-                " then [bold]polylogued run[/bold] to start ingestion."
-            )
-        else:
-            env.ui.console.print("  Start the daemon with [bold]polylogued run[/bold] to begin ingestion.")
+    # Pre-flight: detect schema mismatch / locked db / stale pidfile
+    # before attempting row counts. Short-circuits with actionable text
+    # rather than a Python traceback (#1263).
+    diag = diagnose_first_run(daemon_alive=False)
+    if diag.kind in {"schema_mismatch", "locked_db", "stale_pidfile"}:
+        _render_diagnostic(env, diag)
         return
 
     try:
@@ -257,6 +268,17 @@ def _show_direct_status(env: AppEnv, *, compact: bool = False) -> None:
                 )
         except Exception:
             pass
+        # When the archive is empty (no ingest has run yet), surface the
+        # most relevant first-run diagnostic so the operator knows what to
+        # do next — typically `no_sources` or `no_daemon` (#1263).
+        if msgs == 0 and convs == 0:
+            from polylogue.cli.commands.status_diagnostics import diagnose_first_run
+
+            diag = diagnose_first_run(daemon_alive=False)
+            if diag.kind in {"no_sources", "no_daemon", "missing_optional_dep"}:
+                _render_diagnostic(env, diag)
+                return
+
         if not compact:
             env.ui.console.print("\n  [dim]Run [bold]polylogued run[/bold] to start the daemon.[/dim]")
     except Exception:

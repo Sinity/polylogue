@@ -132,6 +132,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue stats` | `polylogue/cli/click_app.py` `polylogue stats` |
 | `polylogue status` | `polylogue/cli/click_app.py` `polylogue status` |
 | `polylogue tags` | `polylogue/cli/click_app.py` `polylogue tags` |
+| `polylogue tutorial` | `polylogue/cli/click_app.py` `polylogue tutorial` |
 | `polylogue user-state` | `polylogue/cli/click_app.py` `polylogue user-state` |
 
 ## Schema Annotation Subjects

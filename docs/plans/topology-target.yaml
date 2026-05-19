@@ -637,7 +637,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 172
+    loc: 174
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -733,12 +733,20 @@ files:
     target: polylogue/cli/commands/schema.py
     owner: stable
   - path: polylogue/cli/commands/status.py
-    loc: 274
+    loc: 296
     target: polylogue/cli/commands/status.py
+    owner: stable
+  - path: polylogue/cli/commands/status_diagnostics.py
+    loc: 337
+    target: polylogue/cli/commands/status_diagnostics.py
     owner: stable
   - path: polylogue/cli/commands/tags.py
     loc: 114
     target: polylogue/cli/commands/tags.py
+    owner: stable
+  - path: polylogue/cli/commands/tutorial.py
+    loc: 192
+    target: polylogue/cli/commands/tutorial.py
     owner: stable
   - path: polylogue/cli/commands/user_state.py
     loc: 501
