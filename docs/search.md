@@ -184,11 +184,17 @@ Implementation: `polylogue/storage/search_providers/fts5.py`,
 - Reported `score_kind` is `"rrf"`. Higher fused scores indicate stronger
   cross-lane consensus.
 - **Lane contributions** (per-lane rank and per-lane RRF contribution)
-  are tracked internally; surfacing them in `score_components` on each
-  hit is owned by [#1267](https://github.com/Sinity/polylogue/issues/1267)
-  (slice B — per-hit "why this matched" payload). Until that lands,
-  hybrid hits carry `score_kind="rrf"` and a single `score` value
-  without lane-decomposed evidence.
+  are preserved end-to-end on each hit's `score_components`
+  ([#1267](https://github.com/Sinity/polylogue/issues/1267)): every lane
+  that contributed adds a `<lane>_rank` (1-based rank within that lane)
+  and a matching `<lane>_rrf` (the `1 / (k + rank)` contribution that was
+  summed into the fused score). Lane names are `text` (FTS5 dialogue),
+  `action` (FTS5 action events), and `vector` (semantic). A hit that
+  appeared only in the lexical lane carries `{text_rank, text_rrf}` and
+  nothing else; a hit that survived both lanes carries the full
+  `(text|action|vector)_(rank|rrf)` set, so consumers can show "ranked
+  high in both lexical and semantic lanes" without re-running the
+  search.
 
 #### `semantic` (vector-only)
 
@@ -274,7 +280,7 @@ Each hit's `match` (a `ConversationSearchMatchPayload`) carries:
 | `match_surface` | Indexed surface that matched — e.g. `message_text`, `action_event_text`, `attachment_identity`. |
 | `score` | Raw lane score (semantics depend on `score_kind`). |
 | `score_kind` | One of `"bm25"`, `"rrf"`, `"vector_distance"`, or `null` for identity-only lanes. **Always check this before comparing or ordering by `score` directly.** |
-| `score_components` | Map of per-component contributions (e.g. per-lane RRF contributions). Populated as [#1267](https://github.com/Sinity/polylogue/issues/1267) lands; today this is `{}` for most lanes. |
+| `score_components` | Map of per-component contributions explaining the rank. Dialogue (FTS5) hits carry `{"bm25_raw": <relevance>}`; hybrid hits carry per-lane `<lane>_rank` and `<lane>_rrf` entries summed into `score` ([#1267](https://github.com/Sinity/polylogue/issues/1267)). Identity-only lanes (e.g. attachment) carry `{}`. |
 | `matched_terms` | FTS terms that triggered the match. |
 | `snippet` | Highlighted excerpt around the match (FTS5 snippet). |
 | `message_id` / `target_ref` / `anchor` | Stable identifiers pointing the reader at the matching message or sub-block. |
@@ -286,8 +292,10 @@ Each hit's `match` (a `ConversationSearchMatchPayload`) carries:
   **Never display raw BM25 as a percent or compare across queries**;
   rank position is the durable signal.
 - `rrf` — higher = better; bounded by `Σ 1/(k+1)` over contributing
-  lanes. Useful for explaining "this hit appeared in both lexical and
-  semantic lanes" once `score_components` is populated.
+  lanes. Per-lane decomposition lives in `score_components` as
+  `<lane>_rank` / `<lane>_rrf` pairs, so consumers can explain "this
+  hit appeared in both lexical and semantic lanes" without re-running
+  the query (#1267).
 - `vector_distance` — lower = closer in embedding space. Not comparable
   across different query embeddings.
 - `null` — identity-bearing match (e.g. attachment identity lane); no
@@ -295,13 +303,41 @@ Each hit's `match` (a `ConversationSearchMatchPayload`) carries:
 
 ### Per-hit explanations ([#1267](https://github.com/Sinity/polylogue/issues/1267))
 
-The envelope fields above are stable. The richer per-hit "why this
-matched" payload — populating `score_components` with lane-decomposed
-RRF contributions for hybrid hits, and ensuring every ranked hit has
-deterministic evidence rather than just BM25 score + snippet — is
-tracked separately as #1267 (slice B of #873). Documentation here will
-be expanded to describe the additional fields once that PR lands; the
-envelope shape itself does not need to change.
+Every ranked hit carries deterministic why-this-matched evidence on its
+`match` payload. The exact field set depends on the lane that produced
+the hit:
+
+| Lane | `matched_terms` | `score_kind` | `score_components` |
+|------|-----------------|--------------|--------------------|
+| `dialogue` (FTS5 over messages) | tokenized query terms (lowercased, FTS5 operators stripped) | `bm25` | `{"bm25_raw": <relevance>}` |
+| `actions` (FTS5 over action events) | tokenized query terms | `bm25` | `{"bm25_raw": <relevance>}` when surfaced via the evidence path; `{}` for legacy id-only paths |
+| `hybrid` (RRF fusion) | tokenized query terms | `rrf` | `<lane>_rank` and `<lane>_rrf` for every contributing lane (`text` / `action` / `vector`); `score` equals the sum of `*_rrf` |
+| `semantic` (vector-only) | the query string passed to `--similar` / `--semantic` (single term) | `vector_distance` | `{}` (raw distance lives in `score`) |
+| `attachment` (identity lookup) | the matched identifier (single term) | `null` | `{}` (identity hits have no numeric rank) |
+
+Tokenization for `matched_terms` strips FTS5 boolean operators
+(`AND` / `OR` / `NOT` / `NEAR`), quote/colon/paren punctuation, and
+trailing `*` prefix markers, then deduplicates case-insensitively. The
+result is the literal set of tokens a reader can expect to see
+highlighted in the `snippet`.
+
+Hybrid `score_components` are the load-bearing surface: each
+contributing lane adds two entries that explain its share of the fused
+score. For example, a hit at lexical rank 1 and vector rank 2 carries:
+
+```json
+"score_components": {
+  "text_rank": 1.0,
+  "text_rrf": 0.0163934426,
+  "vector_rank": 2.0,
+  "vector_rrf": 0.0161290323
+},
+"score": 0.0325224749
+```
+
+Consumers can read `score_components` directly to render a "matched in
+both lanes" badge or to debug ranking drift without re-running the
+search.
 
 ### Pagination
 

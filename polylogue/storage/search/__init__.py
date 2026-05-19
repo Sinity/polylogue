@@ -10,7 +10,12 @@ from polylogue.storage.search.query_builders import (
     build_ranked_action_search_query,
     build_ranked_conversation_search_query,
 )
-from polylogue.storage.search.query_support import _FTS5_SPECIAL, escape_fts5_query, normalize_fts5_query
+from polylogue.storage.search.query_support import (
+    _FTS5_SPECIAL,
+    escape_fts5_query,
+    extract_match_terms,
+    normalize_fts5_query,
+)
 from polylogue.storage.sqlite.connection import open_read_connection as open_connection
 
 
@@ -42,6 +47,7 @@ __all__ = [
     "build_ranked_action_search_query",
     "build_ranked_conversation_search_query",
     "escape_fts5_query",
+    "extract_match_terms",
     "normalize_fts5_query",
     "open_connection",
     "search_messages",
