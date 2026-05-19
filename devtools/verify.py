@@ -311,6 +311,7 @@ def build_verify_steps(
                 ),
                 ("verify-manifests", _devtools_cmd("verify-manifests")),
                 ("verify-ci-workflows", _devtools_cmd("verify-ci-workflows")),
+                ("verify-doc-commands", _devtools_cmd("verify-doc-commands")),
                 ("verify-witness-lifecycle", _devtools_cmd("verify-witness-lifecycle")),
                 # Recommended (not required): runs in soft mode so missing
                 # witnesses on merged fix PRs are reported without blocking

@@ -28,7 +28,7 @@ machine, against your data.
 ```bash
 pip install polylogue                 # also installs polylogued, polylogue-mcp
 polylogue init                        # autodetect chat session roots
-polylogued run --enable-api &         # start the ingest daemon + web reader
+polylogued run &                      # start the ingest daemon + web reader
 polylogue "rate limiter"              # search every provider at once
 polylogue --latest open               # open the most recent conversation
 ```
@@ -111,9 +111,9 @@ Pipeline and maintenance verbs are explicit:
 ```bash
 polylogue init                       # first-run setup (writes polylogue.toml)
 polylogue doctor                     # FTS coverage, blob store, daemon liveness
-polylogued run                       # daemon: convergence + insights
-polylogued run --enable-api          # daemon + web reader on 127.0.0.1
-polylogued browser-capture serve     # local receiver for the browser extension
+polylogued run                       # daemon: convergence + insights + web reader + browser capture
+polylogued run --no-api              # daemon without the HTTP API / web reader
+polylogued browser-capture serve     # standalone browser-capture receiver (without the full daemon)
 polylogue-mcp --role read            # MCP stdio bridge for AI assistants
 ```
 
@@ -125,7 +125,7 @@ narrative first-run walkthrough.
 
 ### Daemon web reader
 
-`polylogued run --enable-api` starts an HTTP reader at `127.0.0.1` that
+`polylogued run` starts an HTTP reader at `127.0.0.1` (enabled by default; opt out with `--no-api`) that
 serves live archive search, conversation rendering, and session insight
 views. The reader uses the same query layer as the CLI, so any filter you
 construct on the command line works in the web UI.
@@ -190,7 +190,7 @@ eval "$(devtools lab-corpus seed --count 8 --env-only)"
 
 polylogue list --limit 5
 polylogue insights profiles --limit 5
-polylogued run --enable-api
+polylogued run
 ```
 
 `devtools` is the repository control-plane CLI (it ships in source checkouts
