@@ -8,8 +8,9 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from polylogue.archive.session.documents import SessionPhaseDocument, WorkEventDocument
+from polylogue.insights.fallback import FallbackReason
 
-ARCHIVE_INSIGHT_CONTRACT_VERSION = 6
+ARCHIVE_INSIGHT_CONTRACT_VERSION = 7
 
 
 class ArchiveInsightModel(BaseModel):
@@ -97,6 +98,7 @@ class SessionInferencePayload(ArchiveInsightModel):
     auto_tags: tuple[str, ...] = ()
     work_events: tuple[WorkEventDocument, ...] = ()
     phases: tuple[SessionPhaseDocument, ...] = ()
+    fallback_reasons: tuple[FallbackReason, ...] = ()
 
     @field_validator("work_events", mode="before")
     @classmethod
@@ -130,6 +132,7 @@ class WorkEventInferencePayload(ArchiveInsightModel):
     support_level: str = "weak"
     support_signals: tuple[str, ...] = ()
     fallback_inference: bool = False
+    fallback_reasons: tuple[FallbackReason, ...] = ()
 
 
 class SessionPhaseEvidencePayload(ArchiveInsightModel):
@@ -150,6 +153,7 @@ class SessionPhaseInferencePayload(ArchiveInsightModel):
     support_level: str = "weak"
     support_signals: tuple[str, ...] = ()
     fallback_inference: bool = False
+    fallback_reasons: tuple[FallbackReason, ...] = ()
 
 
 class SessionEnrichmentPayload(ArchiveInsightModel):
@@ -160,6 +164,7 @@ class SessionEnrichmentPayload(ArchiveInsightModel):
     support_level: str = "weak"
     support_signals: tuple[str, ...] = ()
     input_band_summary: dict[str, int] = Field(default_factory=dict)
+    fallback_reasons: tuple[FallbackReason, ...] = ()
 
 
 def _normalize_timed_documents(value: object) -> object:
@@ -260,6 +265,7 @@ __all__ = [
     "ArchiveInsightModel",
     "ArchiveInsightProvenance",
     "DaySessionSummaryPayload",
+    "FallbackReason",
     "SessionEnrichmentPayload",
     "SessionEvidencePayload",
     "SessionInferencePayload",
