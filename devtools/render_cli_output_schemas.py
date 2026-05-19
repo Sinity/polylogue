@@ -30,6 +30,7 @@ from polylogue.surfaces.payloads import (
     ConversationSummaryPayload,
     MachineErrorPayload,
     MachineSuccessPayload,
+    SearchEnvelope,
 )
 
 DEFAULT_OUTPUT_DIR = Path("docs/schemas/cli-output")
@@ -86,6 +87,22 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         surfaces=(
             "polylogue --format json <query>",
             "polylogue --format ndjson <query>",
+        ),
+    ),
+    CliOutputSchema(
+        name="search-envelope",
+        title="Search Envelope",
+        description=(
+            "Typed ranked-result envelope (#1266) shared across CLI JSON, "
+            "MCP, Python API, and daemon HTTP. Wraps the per-hit "
+            "`ConversationSearchHit` array with `total`, `limit`, "
+            "`offset`, `next_cursor`, `query`, `retrieval_lane`, and the "
+            "`ranking_policy`/`ranking_policy_version` declaration."
+        ),
+        model=SearchEnvelope,
+        surfaces=(
+            "polylogue --format json <query>",
+            "GET /api/conversations?query=...",
         ),
     ),
     CliOutputSchema(

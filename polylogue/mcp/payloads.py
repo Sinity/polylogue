@@ -53,7 +53,9 @@ from polylogue.surfaces.payloads import (
 )
 from polylogue.surfaces.payloads import (
     MutationResultPayload,
+    SearchEnvelope,
     SurfacePayloadModel,
+    build_search_envelope,
     model_json_document,
     normalize_role,
 )
@@ -168,16 +170,11 @@ class MCPPaginatedQueryResultPayload(SurfacePayloadModel):
     diagnostics: MCPQueryMissDiagnosticsPayload | None = None
 
 
-class MCPPaginatedSearchResultPayload(SurfacePayloadModel):
-    """Paginated search result envelope for search."""
-
-    hits: tuple[MCPConversationSearchHitPayload, ...]
-    total: int
-    limit: int
-    offset: int
-    next_offset: int | None = None
-    next_cursor: str | None = None
-    diagnostics: MCPQueryMissDiagnosticsPayload | None = None
+#: MCP search uses the canonical :class:`~polylogue.surfaces.payloads.SearchEnvelope`
+#: shape (#1266). The legacy alias is retained so existing call sites keep
+#: working; new code should import :class:`SearchEnvelope` directly from
+#: ``polylogue.surfaces.payloads``.
+MCPPaginatedSearchResultPayload = SearchEnvelope
 
 
 class MCPSessionTreePayload(SurfacePayloadModel):
@@ -270,17 +267,6 @@ def neighbor_candidates_payload(
     return MCPNeighborCandidatesPayload(items=items, total=len(items), limit=limit)
 
 
-def _build_search_cursor(hits: Sequence[ConversationSearchHit]) -> str | None:
-    """Build an opaque cursor from the last hit for keyset pagination."""
-    if not hits:
-        return None
-    import base64
-
-    last = hits[-1]
-    payload = f"{last.rank}:{last.conversation_id}"
-    return base64.b64encode(payload.encode()).decode()
-
-
 def conversation_search_result_payload(
     hits: Sequence[ConversationSearchHit],
     *,
@@ -288,23 +274,40 @@ def conversation_search_result_payload(
     limit: int,
     offset: int,
     diagnostics: QueryMissDiagnostics | None = None,
-) -> MCPPaginatedSearchResultPayload:
-    next_offset = offset + len(hits) if len(hits) == limit and offset + limit < total else None
-    next_cursor = _build_search_cursor(hits) if len(hits) == limit else None
-    return MCPPaginatedSearchResultPayload(
-        hits=tuple(
-            MCPConversationSearchHitPayload.from_search_hit(
-                hit,
-                message_count=hit.summary.message_count,
-            )
-            for hit in hits
-        ),
+    query: str = "",
+    retrieval_lane: str = "auto",
+    sort: str | None = None,
+) -> SearchEnvelope:
+    """Build the canonical :class:`SearchEnvelope` for an MCP search call.
+
+    Delegates to :func:`polylogue.surfaces.payloads.build_search_envelope`
+    so the cursor/next_offset/ranking-policy fields match CLI, daemon HTTP,
+    and the Python API. ``retrieval_lane`` falls back to ``"auto"`` when the
+    caller does not know which lane ran; downstream surfaces SHOULD pass the
+    resolved lane (from the first hit, or from the query spec).
+    """
+    from polylogue.surfaces.payloads import QueryMissDiagnosticsPayload
+
+    resolved_lane = retrieval_lane
+    if resolved_lane in {"", "auto"} and hits:
+        resolved_lane = hits[0].retrieval_lane
+    hit_payloads = [
+        MCPConversationSearchHitPayload.from_search_hit(
+            hit,
+            message_count=hit.summary.message_count,
+        )
+        for hit in hits
+    ]
+    diag_payload = QueryMissDiagnosticsPayload.from_diagnostics(diagnostics) if diagnostics else None
+    return build_search_envelope(
+        hit_payloads,
         total=total,
         limit=limit,
         offset=offset,
-        next_offset=next_offset,
-        next_cursor=next_cursor,
-        diagnostics=(MCPQueryMissDiagnosticsPayload.from_diagnostics(diagnostics) if diagnostics else None),
+        query=query,
+        retrieval_lane=resolved_lane,
+        sort=sort,
+        diagnostics=diag_payload,
     )
 
 

@@ -1,0 +1,541 @@
+{
+  "$defs": {
+    "ConversationSearchHitPayload": {
+      "additionalProperties": false,
+      "description": "Search-hit payload with summary identity and match evidence.",
+      "properties": {
+        "conversation": {
+          "$ref": "#/$defs/ConversationSummaryPayload"
+        },
+        "match": {
+          "$ref": "#/$defs/ConversationSearchMatchPayload"
+        }
+      },
+      "required": [
+        "conversation",
+        "match"
+      ],
+      "title": "ConversationSearchHitPayload",
+      "type": "object"
+    },
+    "ConversationSearchMatchPayload": {
+      "additionalProperties": false,
+      "description": "Evidence explaining why a conversation appeared in search results.\n\n``score_kind`` describes the meaning of ``score`` so consumers don't\nhave to guess at ordering or comparability:\n\n- ``\"bm25\"`` \u2014 SQLite FTS5 raw BM25 (lower magnitude = better match;\n  values typically negative; never comparable across queries).\n- ``\"rrf\"`` \u2014 Reciprocal Rank Fusion (higher = stronger consensus;\n  ``score_components`` carries per-lane ``*_rank`` and ``*_rrf``\n  contributions).\n- ``\"vector_distance\"`` \u2014 semantic distance (lower = closer).\n- ``None`` \u2014 no numeric score (e.g. attachment-identity lane).",
+      "properties": {
+        "actions": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ReaderActionAvailabilityPayload"
+          },
+          "title": "Actions",
+          "type": "object"
+        },
+        "anchor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Anchor"
+        },
+        "match_surface": {
+          "title": "Match Surface",
+          "type": "string"
+        },
+        "matched_terms": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Matched Terms",
+          "type": "array"
+        },
+        "message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message Id"
+        },
+        "rank": {
+          "title": "Rank",
+          "type": "integer"
+        },
+        "retrieval_lane": {
+          "title": "Retrieval Lane",
+          "type": "string"
+        },
+        "score": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Score"
+        },
+        "score_components": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Score Components",
+          "type": "object"
+        },
+        "score_kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Score Kind"
+        },
+        "snippet": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Snippet"
+        },
+        "target_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TargetRefPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "rank",
+        "retrieval_lane",
+        "match_surface"
+      ],
+      "title": "ConversationSearchMatchPayload",
+      "type": "object"
+    },
+    "ConversationSummaryPayload": {
+      "additionalProperties": false,
+      "description": "Compact conversation summary payload used by MCP/search surfaces.",
+      "properties": {
+        "actions": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ReaderActionAvailabilityPayload"
+          },
+          "title": "Actions",
+          "type": "object"
+        },
+        "anchor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Anchor"
+        },
+        "created_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created At"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "message_count": {
+          "title": "Message Count",
+          "type": "integer"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "target_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TargetRefPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "updated_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updated At"
+        }
+      },
+      "required": [
+        "id",
+        "provider",
+        "title",
+        "message_count"
+      ],
+      "title": "ConversationSummaryPayload",
+      "type": "object"
+    },
+    "QueryMissDiagnosticsPayload": {
+      "additionalProperties": false,
+      "description": "Shared diagnostics payload for zero-result queries.",
+      "properties": {
+        "archive_conversation_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Archive Conversation Count"
+        },
+        "filters": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Filters",
+          "type": "array"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "raw_conversation_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Conversation Count"
+        },
+        "reasons": {
+          "items": {
+            "$ref": "#/$defs/QueryMissReasonPayload"
+          },
+          "title": "Reasons",
+          "type": "array"
+        }
+      },
+      "required": [
+        "message",
+        "filters",
+        "reasons"
+      ],
+      "title": "QueryMissDiagnosticsPayload",
+      "type": "object"
+    },
+    "QueryMissReasonPayload": {
+      "additionalProperties": false,
+      "description": "Shared reason entry explaining why a query produced no results.",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Count"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "severity": {
+          "title": "Severity",
+          "type": "string"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "severity",
+        "summary"
+      ],
+      "title": "QueryMissReasonPayload",
+      "type": "object"
+    },
+    "ReaderActionAvailabilityPayload": {
+      "additionalProperties": false,
+      "description": "Per-target reader action availability with explicit disabled reason.",
+      "properties": {
+        "disabled_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Disabled Reason"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "title": "ReaderActionAvailabilityPayload",
+      "type": "object"
+    },
+    "TargetRefPayload": {
+      "additionalProperties": false,
+      "description": "Stable reader target reference for selectable archive objects.",
+      "properties": {
+        "block_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Index"
+        },
+        "conversation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Conversation Id"
+        },
+        "identity_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Identity Key"
+        },
+        "message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message Id"
+        },
+        "target_id": {
+          "title": "Target Id",
+          "type": "string"
+        },
+        "target_type": {
+          "enum": [
+            "conversation",
+            "message"
+          ],
+          "title": "Target Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_type",
+        "target_id"
+      ],
+      "title": "TargetRefPayload",
+      "type": "object"
+    }
+  },
+  "$id": "https://polylogue.dev/schemas/cli-output/search-envelope.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Typed ranked-result envelope (#1266) shared across CLI JSON, MCP, Python API, and daemon HTTP. Wraps the per-hit `ConversationSearchHit` array with `total`, `limit`, `offset`, `next_cursor`, `query`, `retrieval_lane`, and the `ranking_policy`/`ranking_policy_version` declaration.\n\nGenerated from `polylogue.surfaces.payloads.SearchEnvelope` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "properties": {
+    "diagnostics": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/QueryMissDiagnosticsPayload"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "hits": {
+      "items": {
+        "$ref": "#/$defs/ConversationSearchHitPayload"
+      },
+      "title": "Hits",
+      "type": "array"
+    },
+    "limit": {
+      "title": "Limit",
+      "type": "integer"
+    },
+    "next_cursor": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Next Cursor"
+    },
+    "next_offset": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Next Offset"
+    },
+    "offset": {
+      "title": "Offset",
+      "type": "integer"
+    },
+    "query": {
+      "title": "Query",
+      "type": "string"
+    },
+    "ranking_policy": {
+      "default": "mixed-bm25-rrf-vector",
+      "title": "Ranking Policy",
+      "type": "string"
+    },
+    "ranking_policy_version": {
+      "default": "1",
+      "title": "Ranking Policy Version",
+      "type": "string"
+    },
+    "retrieval_lane": {
+      "title": "Retrieval Lane",
+      "type": "string"
+    },
+    "sort": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sort"
+    },
+    "total": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Total"
+    }
+  },
+  "required": [
+    "hits",
+    "total",
+    "limit",
+    "offset",
+    "query",
+    "retrieval_lane"
+  ],
+  "title": "Search Envelope",
+  "type": "object",
+  "x-polylogue-cli-surfaces": [
+    "polylogue --format json <query>",
+    "GET /api/conversations?query=..."
+  ],
+  "x-polylogue-source-model": "SearchEnvelope"
+}

@@ -60,6 +60,9 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     limit=clamped_limit,
                     offset=clamped_offset,
                     diagnostics=diagnostics,
+                    query=request.query or "",
+                    retrieval_lane=request.retrieval_lane or "auto",
+                    sort=request.sort,
                 )
             )
 

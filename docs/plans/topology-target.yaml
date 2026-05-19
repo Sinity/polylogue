@@ -17,7 +17,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 1068
+    loc: 1097
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -69,6 +69,11 @@ files:
   - path: polylogue/api/insights.py
     loc: 277
     target: polylogue/api/insights.py
+    owner: stable
+    cross_cut: { api: async }
+  - path: polylogue/api/search_envelope_builder.py
+    loc: 85
+    target: polylogue/api/search_envelope_builder.py
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/sync/__init__.py
@@ -780,7 +785,7 @@ files:
     target: polylogue/cli/query_group.py
     owner: stable
   - path: polylogue/cli/query_output.py
-    loc: 967
+    loc: 1033
     target: polylogue/cli/query_output.py
     owner: stable
   - path: polylogue/cli/query_output_contracts.py
@@ -1090,7 +1095,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 2062
+    loc: 2034
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_models.py
@@ -1346,7 +1351,7 @@ files:
     target: polylogue/mcp/insight_tool_contracts.py
     owner: stable
   - path: polylogue/mcp/payloads.py
-    loc: 638
+    loc: 641
     target: polylogue/mcp/payloads.py
     owner: stable
   - path: polylogue/mcp/query_contracts.py
@@ -1386,7 +1391,7 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 326
+    loc: 329
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
@@ -3341,7 +3346,7 @@ files:
     target: polylogue/surfaces/__init__.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 802
+    loc: 933
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/types.py
