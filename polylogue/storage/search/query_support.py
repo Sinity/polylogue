@@ -8,6 +8,35 @@ from datetime import datetime, timezone
 _FTS5_SPECIAL = re.compile(r"""['":*^(){}\[\]|&!+\-\\;%=$,<>@#`~./?]""")
 _FTS5_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
 _ASTERISK_ONLY = re.compile(r"^\*+$")
+_TERM_TOKEN = re.compile(r"[\w*]+", re.UNICODE)
+
+
+def extract_match_terms(query: str) -> tuple[str, ...]:
+    """Extract user-facing match terms from a raw FTS query string.
+
+    Strips FTS5 boolean operators (``AND``/``OR``/``NOT``/``NEAR``),
+    quote/colon/paren punctuation, and prefix asterisks so the returned
+    tuple represents the literal tokens a reader should expect to see
+    highlighted in a hit. Preserves order, deduplicates case-insensitively,
+    and lowercases for stable consumer comparisons.
+
+    Used by ``ConversationSearchHit.matched_terms`` to populate per-hit
+    why-this-matched evidence on lexical (FTS5) search paths (#1267).
+    """
+    if not query or not query.strip():
+        return ()
+    tokens = _TERM_TOKEN.findall(query)
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in tokens:
+        token = raw.lower().rstrip("*")
+        if not token or token.upper() in _FTS5_OPERATORS:
+            continue
+        if token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return tuple(out)
 
 
 def sort_key_to_iso(sort_key: object) -> str | None:
@@ -60,4 +89,9 @@ def escape_fts5_query(query: str) -> str:
     return query
 
 
-__all__ = ["escape_fts5_query", "normalize_fts5_query", "sort_key_to_iso"]
+__all__ = [
+    "escape_fts5_query",
+    "extract_match_terms",
+    "normalize_fts5_query",
+    "sort_key_to_iso",
+]

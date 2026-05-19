@@ -71,6 +71,9 @@ async def search_conversation_evidence_hits(
 
     cursor = await conn.execute(query_spec.sql, query_spec.params)
     rows = await cursor.fetchall()
+    from polylogue.storage.search.query_support import extract_match_terms
+
+    matched_terms = extract_match_terms(query)
     return [
         ConversationSearchEvidenceHit(
             conversation_id=str(row["conversation_id"]),
@@ -80,6 +83,9 @@ async def search_conversation_evidence_hits(
             snippet=str(row["snippet"]) if row["snippet"] is not None else None,
             match_surface="message",
             retrieval_lane="dialogue",
+            matched_terms=matched_terms,
+            score_components=({"bm25_raw": float(row["relevance"])} if row["relevance"] is not None else {}),
+            score_kind="bm25" if row["relevance"] is not None else None,
         )
         for rank, row in enumerate(rows, start=1)
     ]
