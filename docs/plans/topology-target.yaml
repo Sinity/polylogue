@@ -221,7 +221,7 @@ files:
     owner: archive-filter
     reason: archive-domain filter semantics
   - path: polylogue/archive/filter/builder.py
-    loc: 228
+    loc: 238
     target: polylogue/archive/filter/builder.py
     owner: archive-filter
     reason: archive-domain filter semantics
@@ -709,7 +709,7 @@ files:
     target: polylogue/cli/commands/feedback.py
     owner: stable
   - path: polylogue/cli/commands/ingest.py
-    loc: 99
+    loc: 157
     target: polylogue/cli/commands/ingest.py
     owner: stable
   - path: polylogue/cli/commands/init.py
@@ -1241,7 +1241,7 @@ files:
     target: polylogue/insights/archive.py
     owner: stable
   - path: polylogue/insights/archive_models.py
-    loc: 273
+    loc: 279
     target: polylogue/insights/archive_models.py
     owner: stable
     cross_cut: { lifecycle: model }
@@ -1269,6 +1269,10 @@ files:
     loc: 328
     target: polylogue/insights/export_bundles.py
     owner: stable
+  - path: polylogue/insights/fallback.py
+    loc: 66
+    target: polylogue/insights/fallback.py
+    owner: stable
   - path: polylogue/insights/feedback.py
     loc: 286
     target: polylogue/insights/feedback.py
@@ -1282,7 +1286,7 @@ files:
     target: polylogue/insights/provenance.py
     owner: stable
   - path: polylogue/insights/readiness.py
-    loc: 555
+    loc: 627
     target: polylogue/insights/readiness.py
     owner: stable
   - path: polylogue/insights/registry.py
@@ -2835,7 +2839,7 @@ files:
     target: polylogue/storage/insights/session/aggregates.py
     owner: stable
   - path: polylogue/storage/insights/session/profiles.py
-    loc: 683
+    loc: 715
     target: polylogue/storage/insights/session/profiles.py
     owner: stable
   - path: polylogue/storage/insights/session/rebuild.py
@@ -3155,7 +3159,6 @@ files:
     loc: 66
     target: polylogue/storage/sqlite/queries/_bulk_replace.py
     owner: stable
-    cross_cut: { layer: write }
   - path: polylogue/storage/sqlite/queries/action_events.py
     loc: 101
     target: polylogue/storage/sqlite/queries/action_events.py
@@ -3347,7 +3350,7 @@ files:
     target: polylogue/storage/sqlite/schema_bootstrap.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl.py
-    loc: 124
+    loc: 122
     target: polylogue/storage/sqlite/schema_ddl.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_actions.py
@@ -3472,7 +3475,7 @@ files:
     target: polylogue/verification/manifests/__init__.py
     owner: stable
   - path: polylogue/verification/manifests/models.py
-    loc: 833
+    loc: 883
     target: polylogue/verification/manifests/models.py
     owner: stable
   - path: polylogue/version.py
