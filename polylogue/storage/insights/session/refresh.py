@@ -245,6 +245,10 @@ async def _apply_session_insight_conversation_update_async(
     hydrated = hydrate_conversations(batch)
     if not hydrated:
         await conn.execute("DELETE FROM session_profiles WHERE conversation_id = ?", (conversation_id,))
+        await conn.execute(
+            "DELETE FROM conversation_repo_observations WHERE conversation_id = ?",
+            (conversation_id,),
+        )
         await replace_session_work_events(conn, conversation_id, [], transaction_depth)
         await replace_session_phases(conn, conversation_id, [], transaction_depth)
         old_group = (
@@ -273,6 +277,13 @@ async def _apply_session_insight_conversation_update_async(
         record_bundle.phase_records,
         transaction_depth,
     )
+    from polylogue.storage.insights.session.repo_identity import (
+        RepoObservation,
+        refresh_conversation_repo_observations,
+    )
+
+    repo_observations = tuple(obs for obs in record_bundle.repo_observations if isinstance(obs, RepoObservation))
+    await refresh_conversation_repo_observations(conn, conversation_id, repo_observations)
 
     affected_groups = {
         group
@@ -510,6 +521,25 @@ async def _apply_session_insight_conversation_updates_async(
             phase_records_to_write,
             transaction_depth,
         )
+        from polylogue.storage.insights.session.repo_identity import (
+            RepoObservation,
+            refresh_conversation_repo_observations,
+        )
+
+        hydrated_ids: set[str] = set()
+        for bundle in record_bundles:
+            bundle_conv_id = str(bundle.profile_record.conversation_id)
+            hydrated_ids.add(bundle_conv_id)
+            bundle_observations = tuple(obs for obs in bundle.repo_observations if isinstance(obs, RepoObservation))
+            await refresh_conversation_repo_observations(conn, bundle_conv_id, bundle_observations)
+        # Conversations dropped from this chunk still need observation cleanup.
+        for conversation_id in chunk.conversation_ids:
+            if conversation_id in hydrated_ids:
+                continue
+            await conn.execute(
+                "DELETE FROM conversation_repo_observations WHERE conversation_id = ?",
+                (conversation_id,),
+            )
         write_elapsed_ms = round((time.perf_counter() - write_started) * 1000.0, 1)
         chunk_total_ms = round((time.perf_counter() - chunk_started) * 1000.0, 1)
         chunk_observations.append(

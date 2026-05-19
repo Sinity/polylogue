@@ -132,6 +132,13 @@ class SessionInsightRecordBundle:
     profile_record: SessionProfileRecord
     work_event_records: list[SessionWorkEventRecord]
     phase_records: list[SessionPhaseRecord]
+    repo_observations: tuple[object, ...] = ()
+    """Repo identity observations for ``conversation_repo_observations`` (#1253).
+
+    Typed as ``RepoObservation`` from
+    ``polylogue.storage.insights.session.repo_identity``; kept as
+    ``object`` here to avoid a circular import at module load time.
+    """
 
     @property
     def conversation_id(self) -> ConversationId:
@@ -473,9 +480,24 @@ def build_session_insight_records(
     *,
     compaction_count: int | None = None,
 ) -> SessionInsightRecordBundle:
+    from polylogue.storage.insights.session.repo_identity import attribution_to_observations
+
     analysis = build_session_analysis(conversation)
     profile = build_session_profile(conversation, analysis=analysis, compaction_count=compaction_count)
     materialized_at = now_iso()
+    provider_meta: dict[str, object] = (
+        conversation.provider_meta if isinstance(conversation.provider_meta, dict) else {}
+    )
+    git_meta = provider_meta.get("git")
+    git_repository_url: str | None = None
+    if isinstance(git_meta, dict):
+        repository_url = git_meta.get("repository_url")
+        if isinstance(repository_url, str) and repository_url.strip():
+            git_repository_url = repository_url.strip()
+    repo_observations = attribution_to_observations(
+        analysis.attribution,
+        git_repository_url=git_repository_url,
+    )
     return SessionInsightRecordBundle(
         profile_record=build_session_profile_record(
             profile,
@@ -484,6 +506,7 @@ def build_session_insight_records(
         ),
         work_event_records=build_session_work_event_records(profile, materialized_at=materialized_at),
         phase_records=build_session_phase_records(profile, materialized_at=materialized_at),
+        repo_observations=repo_observations,
     )
 
 
@@ -587,6 +610,8 @@ def rebuild_session_insights_sync(
         conn.execute("DELETE FROM session_profiles")
         conn.execute("DELETE FROM session_tag_rollups")
         conn.execute("DELETE FROM day_session_summaries")
+        conn.execute("DELETE FROM conversation_repo_observations")
+        conn.execute("DELETE FROM repo_identities")
         conversation_chunks = iter_conversation_id_pages_sync(conn, page_size=page_size)
     else:
         conversation_ids = tuple(dict.fromkeys(str(conversation_id) for conversation_id in conversation_ids))
@@ -631,6 +656,19 @@ def rebuild_session_insights_sync(
             conn,
             {bundle.conversation_id: bundle.phase_records for bundle in record_bundles},
         )
+        from polylogue.storage.insights.session.repo_identity import (
+            RepoObservation as _RepoObservationSync,
+        )
+        from polylogue.storage.insights.session.repo_identity import (
+            refresh_conversation_repo_observations_sync as _refresh_repo_obs_sync,
+        )
+
+        for bundle in record_bundles:
+            _refresh_repo_obs_sync(
+                conn,
+                str(bundle.conversation_id),
+                tuple(obs for obs in bundle.repo_observations if isinstance(obs, _RepoObservationSync)),
+            )
         for bundle in record_bundles:
             group = profile_provider_day(bundle.profile_record)
             if group is not None:
@@ -725,6 +763,8 @@ async def rebuild_session_insights_async(
         await conn.execute("DELETE FROM session_profiles")
         await conn.execute("DELETE FROM session_tag_rollups")
         await conn.execute("DELETE FROM day_session_summaries")
+        await conn.execute("DELETE FROM conversation_repo_observations")
+        await conn.execute("DELETE FROM repo_identities")
     elif not conversation_ids:
         await conn.execute("DELETE FROM work_threads")
         await conn.execute("DELETE FROM session_phases")
@@ -756,6 +796,18 @@ async def rebuild_session_insights_async(
                     bundle.conversation_id,
                     bundle.phase_records,
                     transaction_depth,
+                )
+                from polylogue.storage.insights.session.repo_identity import (
+                    RepoObservation as _RepoObservation,
+                )
+                from polylogue.storage.insights.session.repo_identity import (
+                    refresh_conversation_repo_observations as _refresh_repo_obs,
+                )
+
+                await _refresh_repo_obs(
+                    conn,
+                    str(bundle.conversation_id),
+                    tuple(obs for obs in bundle.repo_observations if isinstance(obs, _RepoObservation)),
                 )
             profile_count += chunk_profiles
             work_event_count += chunk_work_events
@@ -789,6 +841,18 @@ async def rebuild_session_insights_async(
                     bundle.conversation_id,
                     bundle.phase_records,
                     transaction_depth,
+                )
+                from polylogue.storage.insights.session.repo_identity import (
+                    RepoObservation as _RepoObservation,
+                )
+                from polylogue.storage.insights.session.repo_identity import (
+                    refresh_conversation_repo_observations as _refresh_repo_obs,
+                )
+
+                await _refresh_repo_obs(
+                    conn,
+                    str(bundle.conversation_id),
+                    tuple(obs for obs in bundle.repo_observations if isinstance(obs, _RepoObservation)),
                 )
             profile_count += chunk_profiles
             work_event_count += chunk_work_events
