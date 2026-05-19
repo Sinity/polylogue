@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 
 from polylogue.archive.conversation.models import Conversation
 from polylogue.archive.provider.events import ProviderEvent
+from polylogue.archive.topology.edge import TopologyEdgeRecord
 from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONValue, json_document, loads
 from polylogue.pipeline.ids import _content_block_payload, _conversation_hash_payload, _normalize_for_hash
@@ -68,6 +69,7 @@ from polylogue.storage.sqlite.queries import conversations as conversations_q
 from polylogue.storage.sqlite.queries import messages as messages_q
 from polylogue.storage.sqlite.queries import provider_events as provider_events_q
 from polylogue.storage.sqlite.queries import stats as stats_q
+from polylogue.storage.sqlite.queries import topology_edges as topology_edges_q
 from polylogue.storage.sqlite.queries.conversations_identity import repoint_user_state_by_identity
 
 
@@ -316,6 +318,7 @@ async def save_via_backend(
     attachments: builtins.list[AttachmentRecord],
     content_blocks: builtins.list[ContentBlockRecord] | None = None,
     provider_events: builtins.list[ProviderEventRecord] | None = None,
+    topology_edges: builtins.list[TopologyEdgeRecord] | None = None,
 ) -> dict[str, int]:
     import time as _time
 
@@ -463,6 +466,24 @@ async def save_via_backend(
         t0 = _time.perf_counter()
         await repoint_user_state_by_identity(conn, conversation.conversation_id)
         timings["repoint_user_state"] = _time.perf_counter() - t0
+
+        # Persist any topology edges asserted by this conversation, then run
+        # the resolver helper so out-of-order children that were waiting on
+        # this conversation's native id get backfilled to status=resolved
+        # (#1258 / #866 slice A).
+        t0 = _time.perf_counter()
+        if topology_edges:
+            await topology_edges_q.upsert_topology_edges(conn, topology_edges)
+        # Resolve previously-unresolved edges that point at this conversation.
+        now_iso = datetime.now(timezone.utc).isoformat()
+        await topology_edges_q.resolve_topology_edges_for_conversation(
+            conn,
+            conversation_id=str(conversation.conversation_id),
+            provider_name=conversation.provider_name,
+            provider_conversation_id=conversation.provider_conversation_id,
+            resolved_at=now_iso,
+        )
+        timings["topology_edges"] = _time.perf_counter() - t0
 
     total = _time.perf_counter() - t_start
     if total > 2.0:

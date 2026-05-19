@@ -485,6 +485,77 @@ USER_CORRECTIONS_DDL = """
             ON user_corrections(insight_kind);
 """
 
+# ---------------------------------------------------------------------------
+# topology_edges (#1258 / #866 slice A)
+#
+# Persists every parent reference emitted by a parser as a typed row, including
+# references whose parent has not yet been ingested (out-of-order ingestion) or
+# never will be. The pre-existing fast path
+# (``conversations.parent_conversation_id``) is preserved unchanged; this table
+# is the durable record that always carries the original provider-native parent
+# id alongside the edge kind.
+#
+# Columns
+#   edge_id                       Synthetic primary key.
+#   src_conversation_id           The child conversation that asserted the
+#                                 parent reference. FK CASCADE: deleting the
+#                                 child drops the edge.
+#   dst_provider_native_id        The parent identifier as emitted by the
+#                                 provider (provider's native conversation id,
+#                                 not a polylogue conversation_id). Required.
+#   dst_provider_name             The provider name on which the resolver
+#                                 should look up dst_provider_native_id.
+#   edge_type                     Closed enum, see polylogue/archive/topology/
+#                                 edge.py::TopologyEdgeType.
+#   resolved_dst_conversation_id  When the parent has been ingested, the
+#                                 polylogue conversation_id. FK SET NULL so a
+#                                 parent hard-delete demotes the edge to
+#                                 unresolved rather than dropping it.
+#   raw_evidence                  JSON blob of parsing-time evidence
+#                                 (record uuid, sidechain/subagent flag, ...).
+#   confidence                    [0, 1]. Slice A always writes 1.0.
+#   status                        Closed enum: unresolved | resolved | repaired.
+#   observed_at                   ISO-8601 timestamp of the edge's first ingest.
+#   resolved_at                   ISO-8601 timestamp set on the unresolved →
+#                                 resolved transition.
+#
+# Uniqueness: (src_conversation_id, dst_provider_native_id, edge_type).
+# Re-ingesting the same child twice produces exactly one row.
+
+TOPOLOGY_EDGES_DDL = """
+        CREATE TABLE IF NOT EXISTS topology_edges (
+            edge_id                      TEXT PRIMARY KEY,
+            src_conversation_id          TEXT NOT NULL
+                REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            dst_provider_native_id       TEXT NOT NULL,
+            dst_provider_name            TEXT NOT NULL,
+            edge_type                    TEXT NOT NULL
+                CHECK (edge_type IN (
+                    'continuation', 'sidechain', 'subagent',
+                    'branch', 'fork', 'resume', 'repaired'
+                )),
+            resolved_dst_conversation_id TEXT
+                REFERENCES conversations(conversation_id) ON DELETE SET NULL,
+            raw_evidence                 TEXT,
+            confidence                   REAL NOT NULL DEFAULT 1.0,
+            status                       TEXT NOT NULL
+                CHECK (status IN ('unresolved', 'resolved', 'repaired')),
+            observed_at                  TEXT NOT NULL,
+            resolved_at                  TEXT,
+            UNIQUE (src_conversation_id, dst_provider_native_id, edge_type)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_topology_edges_resolver
+            ON topology_edges(status, dst_provider_name, dst_provider_native_id);
+
+        CREATE INDEX IF NOT EXISTS idx_topology_edges_resolved_dst
+            ON topology_edges(resolved_dst_conversation_id)
+            WHERE resolved_dst_conversation_id IS NOT NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_topology_edges_src
+            ON topology_edges(src_conversation_id);
+"""
+
 
 __all__ = [
     "ARCHIVE_STORAGE_DDL",
@@ -495,6 +566,7 @@ __all__ = [
     "RECALL_PACKS_DDL",
     "SAVED_VIEWS_DDL",
     "TAGS_M2M_DDL",
+    "TOPOLOGY_EDGES_DDL",
     "USER_ANNOTATIONS_DDL",
     "USER_CORRECTIONS_DDL",
     "USER_MARKS_DDL",

@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from polylogue.archive.topology.edge import (
+    TopologyEdgeRecord,
+    TopologyEdgeStatus,
+    branch_type_to_edge_type,
+)
 from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.ids import provider_event_id
 from polylogue.pipeline.prepare_models import (
@@ -50,11 +55,31 @@ def enrich_bundle_from_db(
         cid = candidate_cid
         changed = False
 
+    # Resolve parent fast-path (conversations.parent_conversation_id) AND
+    # always record an explicit topology edge when the parser asserted a
+    # parent reference, so out-of-order ingest does not silently lose the
+    # edge (#1258). The fast-path semantics are preserved: parent_conversation_id
+    # is set only when the parent is in cache; the topology edge is written
+    # unconditionally.
     parent_conversation_id: ConversationId | None = None
+    topology_edges: list[TopologyEdgeRecord] = []
     if convo.parent_conversation_provider_id:
         candidate_parent = make_conversation_id(convo.provider_name, convo.parent_conversation_provider_id)
-        if candidate_parent in cache.known_ids:
+        parent_known = candidate_parent in cache.known_ids
+        if parent_known:
             parent_conversation_id = candidate_parent
+        edge_type = branch_type_to_edge_type(convo.branch_type)
+        topology_edges.append(
+            TopologyEdgeRecord(
+                src_conversation_id=cid,
+                dst_provider_native_id=convo.parent_conversation_provider_id,
+                dst_provider_name=convo.provider_name,
+                edge_type=edge_type,
+                resolved_dst_conversation_id=candidate_parent if parent_known else None,
+                status=(TopologyEdgeStatus.RESOLVED if parent_known else TopologyEdgeStatus.UNRESOLVED),
+                resolved_at=(transform.bundle.conversation.updated_at if parent_known else None),
+            )
+        )
 
     existing_message_ids = cache.message_ids.get(cid, {})
     stable_message_id_map: dict[str, MessageId] = {}
@@ -211,6 +236,7 @@ def enrich_bundle_from_db(
             attachments=patched_attachments,
             content_blocks=patched_blocks,
             provider_events=patched_provider_events,
+            topology_edges=topology_edges,
         ),
         materialization_plan=transform.materialization_plan,
         cid=cid,

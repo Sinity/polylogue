@@ -1,0 +1,348 @@
+"""Tests for the ``topology_edges`` table and resolver (#1258 / #866 slice A).
+
+Covers all four ACs from #1258:
+
+1. Claude Code subagent fixture: parent absent → ``unresolved`` row with
+   ``edge_type=subagent``.
+2. Claude Code sidechain fixture: parent absent → ``unresolved`` row with
+   ``edge_type=sidechain``.
+3. Codex continuation fixture: parent absent → ``unresolved`` row with
+   ``edge_type=continuation``.
+4. ChatGPT branched conversation referencing an unimported parent
+   conversation → ``unresolved`` row.
+
+Plus the structural invariants the issue calls out:
+
+- Fast-path preservation: when the parent IS already ingested, the
+  conversation's ``parent_conversation_id`` is still set AND a corresponding
+  ``topology_edges`` row exists with ``status=resolved``.
+- Out-of-order resolve: ingest child first, then parent → edge flips to
+  ``resolved`` and ``resolved_dst_conversation_id`` / ``resolved_at`` are
+  populated.
+- Idempotency: re-ingesting the same child twice produces exactly one
+  ``topology_edges`` row.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from polylogue.archive.conversation.branch_type import BranchType
+from polylogue.archive.message.roles import Role
+from polylogue.archive.topology.edge import TopologyEdgeStatus, TopologyEdgeType
+from polylogue.pipeline.prepare import prepare_records
+from polylogue.sources import iter_source_conversations
+from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
+from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.connection import open_connection
+from polylogue.types import Provider
+from tests.infra.storage_records import db_setup
+
+WorkspaceEnv = dict[str, Path]
+
+
+def _make_repository(db_path: Path) -> ConversationRepository:
+    return ConversationRepository(backend=SQLiteBackend(db_path=db_path))
+
+
+def _write_payload(tmp_path: Path, filename: str, payload: object) -> Path:
+    path = tmp_path / filename
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _parse_single(source_name: str, source_path: Path) -> ParsedConversation:
+    from polylogue.config import Source
+
+    conversations = list(iter_source_conversations(Source(name=source_name, path=source_path)))
+    assert len(conversations) == 1
+    return conversations[0]
+
+
+def _fetch_edges(db_path: Path) -> list[sqlite3.Row]:
+    with open_connection(db_path) as conn:
+        cursor = conn.execute(
+            "SELECT src_conversation_id, dst_provider_native_id, dst_provider_name, "
+            "edge_type, resolved_dst_conversation_id, status, resolved_at "
+            "FROM topology_edges ORDER BY src_conversation_id, edge_type"
+        )
+        return list(cursor.fetchall())
+
+
+async def _ingest_synthetic_child(
+    *,
+    repo: ConversationRepository,
+    tmp_path: Path,
+    provider: Provider,
+    source_name: str,
+    child_id: str,
+    parent_id: str,
+    branch_type: BranchType,
+) -> str:
+    parsed = ParsedConversation(
+        provider_name=provider,
+        provider_conversation_id=child_id,
+        title=f"Child {child_id}",
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hi")],
+        parent_conversation_provider_id=parent_id,
+        branch_type=branch_type,
+    )
+    result = await prepare_records(
+        parsed,
+        source_name=source_name,
+        archive_root=tmp_path,
+        backend=repo.backend,
+        repository=repo,
+    )
+    return result.conversation_id
+
+
+class TestTopologyEdgeUnresolvedAC:
+    """The four acceptance-criteria fixtures from #1258."""
+
+    @pytest.mark.asyncio
+    async def test_claude_code_subagent_parent_absent_unresolved(
+        self,
+        workspace_env: WorkspaceEnv,
+        tmp_path: Path,
+    ) -> None:
+        db_path = db_setup(workspace_env)
+        async with _make_repository(db_path) as repo:
+            await _ingest_synthetic_child(
+                repo=repo,
+                tmp_path=tmp_path,
+                provider=Provider.CLAUDE_CODE,
+                source_name="claude-code",
+                child_id="subagent-sess",
+                parent_id="missing-parent-sess",
+                branch_type=BranchType.SUBAGENT,
+            )
+
+        edges = _fetch_edges(db_path)
+        assert len(edges) == 1
+        edge = edges[0]
+        assert edge["dst_provider_native_id"] == "missing-parent-sess"
+        assert edge["dst_provider_name"] == str(Provider.CLAUDE_CODE)
+        assert edge["edge_type"] == TopologyEdgeType.SUBAGENT.value
+        assert edge["status"] == TopologyEdgeStatus.UNRESOLVED.value
+        assert edge["resolved_dst_conversation_id"] is None
+        assert edge["resolved_at"] is None
+
+    @pytest.mark.asyncio
+    async def test_claude_code_sidechain_parent_absent_unresolved(
+        self,
+        workspace_env: WorkspaceEnv,
+        tmp_path: Path,
+    ) -> None:
+        db_path = db_setup(workspace_env)
+        async with _make_repository(db_path) as repo:
+            await _ingest_synthetic_child(
+                repo=repo,
+                tmp_path=tmp_path,
+                provider=Provider.CLAUDE_CODE,
+                source_name="claude-code",
+                child_id="side-child",
+                parent_id="missing-main-sess",
+                branch_type=BranchType.SIDECHAIN,
+            )
+
+        edges = _fetch_edges(db_path)
+        assert len(edges) == 1
+        assert edges[0]["edge_type"] == TopologyEdgeType.SIDECHAIN.value
+        assert edges[0]["status"] == TopologyEdgeStatus.UNRESOLVED.value
+
+    @pytest.mark.asyncio
+    async def test_codex_continuation_parent_absent_unresolved(
+        self,
+        workspace_env: WorkspaceEnv,
+        tmp_path: Path,
+    ) -> None:
+        db_path = db_setup(workspace_env)
+        async with _make_repository(db_path) as repo:
+            await _ingest_synthetic_child(
+                repo=repo,
+                tmp_path=tmp_path,
+                provider=Provider.CODEX,
+                source_name="codex",
+                child_id="cont-child",
+                parent_id="missing-codex-parent",
+                branch_type=BranchType.CONTINUATION,
+            )
+
+        edges = _fetch_edges(db_path)
+        assert len(edges) == 1
+        assert edges[0]["edge_type"] == TopologyEdgeType.CONTINUATION.value
+        assert edges[0]["status"] == TopologyEdgeStatus.UNRESOLVED.value
+        assert edges[0]["dst_provider_native_id"] == "missing-codex-parent"
+
+    @pytest.mark.asyncio
+    async def test_chatgpt_branch_parent_conversation_absent_unresolved(
+        self,
+        workspace_env: WorkspaceEnv,
+        tmp_path: Path,
+    ) -> None:
+        db_path = db_setup(workspace_env)
+        async with _make_repository(db_path) as repo:
+            parsed = ParsedConversation(
+                provider_name=Provider.CHATGPT,
+                provider_conversation_id="forked-chat",
+                title="Forked Chat",
+                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hi")],
+                parent_conversation_provider_id="orig-chat",
+                branch_type=BranchType.FORK,
+            )
+            await prepare_records(
+                parsed,
+                source_name="chatgpt",
+                archive_root=tmp_path,
+                backend=repo.backend,
+                repository=repo,
+            )
+
+        edges = _fetch_edges(db_path)
+        assert len(edges) == 1
+        # FORK maps via branch_type_to_edge_type to FORK; if the test intent is
+        # specifically a BRANCH edge type, a parser-level classification would
+        # need to emit BranchType.FORK or a future BRANCH branch_type. For
+        # slice A we assert the round-trip is preserved.
+        assert edges[0]["edge_type"] == TopologyEdgeType.FORK.value
+        assert edges[0]["status"] == TopologyEdgeStatus.UNRESOLVED.value
+
+
+class TestTopologyEdgeFastPathPreserved:
+    @pytest.mark.asyncio
+    async def test_parent_first_ingest_fast_path_and_resolved_edge(
+        self,
+        workspace_env: WorkspaceEnv,
+        tmp_path: Path,
+    ) -> None:
+        db_path = db_setup(workspace_env)
+        async with _make_repository(db_path) as repo:
+            parent_parsed = ParsedConversation(
+                provider_name=Provider.CODEX,
+                provider_conversation_id="parent-id",
+                title="Parent",
+                messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
+            )
+            parent_result = await prepare_records(
+                parent_parsed,
+                source_name="codex",
+                archive_root=tmp_path,
+                backend=repo.backend,
+                repository=repo,
+            )
+            child_cid = await _ingest_synthetic_child(
+                repo=repo,
+                tmp_path=tmp_path,
+                provider=Provider.CODEX,
+                source_name="codex",
+                child_id="child-id",
+                parent_id="parent-id",
+                branch_type=BranchType.CONTINUATION,
+            )
+
+        # Fast-path: parent_conversation_id on the conversations row is set.
+        with open_connection(db_path) as conn:
+            row = conn.execute(
+                "SELECT parent_conversation_id FROM conversations WHERE conversation_id = ?",
+                (child_cid,),
+            ).fetchone()
+        assert row["parent_conversation_id"] == parent_result.conversation_id
+
+        edges = _fetch_edges(db_path)
+        assert len(edges) == 1
+        edge = edges[0]
+        assert edge["status"] == TopologyEdgeStatus.RESOLVED.value
+        assert edge["resolved_dst_conversation_id"] == parent_result.conversation_id
+
+
+class TestTopologyEdgeOutOfOrderResolve:
+    @pytest.mark.asyncio
+    async def test_child_first_then_parent_flips_to_resolved(
+        self,
+        workspace_env: WorkspaceEnv,
+        tmp_path: Path,
+    ) -> None:
+        db_path = db_setup(workspace_env)
+        async with _make_repository(db_path) as repo:
+            # Child ingested before parent → unresolved.
+            child_cid = await _ingest_synthetic_child(
+                repo=repo,
+                tmp_path=tmp_path,
+                provider=Provider.CODEX,
+                source_name="codex",
+                child_id="ooo-child",
+                parent_id="ooo-parent",
+                branch_type=BranchType.CONTINUATION,
+            )
+
+            edges_before = _fetch_edges(db_path)
+            assert len(edges_before) == 1
+            assert edges_before[0]["status"] == TopologyEdgeStatus.UNRESOLVED.value
+            assert edges_before[0]["resolved_dst_conversation_id"] is None
+
+            # Now the parent lands.
+            parent_parsed = ParsedConversation(
+                provider_name=Provider.CODEX,
+                provider_conversation_id="ooo-parent",
+                title="Parent (late)",
+                messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
+            )
+            parent_result = await prepare_records(
+                parent_parsed,
+                source_name="codex",
+                archive_root=tmp_path,
+                backend=repo.backend,
+                repository=repo,
+            )
+
+        edges_after = _fetch_edges(db_path)
+        # The edge should flip; there should still be one row for the child.
+        child_edges = [e for e in edges_after if e["src_conversation_id"] == child_cid]
+        assert len(child_edges) == 1
+        assert child_edges[0]["status"] == TopologyEdgeStatus.RESOLVED.value
+        assert child_edges[0]["resolved_dst_conversation_id"] == parent_result.conversation_id
+        assert child_edges[0]["resolved_at"] is not None
+
+        # Intentional: the child's conversations.parent_conversation_id is NOT
+        # backfilled — the fast path is set at child-write time only. The
+        # topology_edges table is the durable record.
+        with open_connection(db_path) as conn:
+            row = conn.execute(
+                "SELECT parent_conversation_id FROM conversations WHERE conversation_id = ?",
+                (child_cid,),
+            ).fetchone()
+        assert row["parent_conversation_id"] is None
+
+
+class TestTopologyEdgeIdempotency:
+    @pytest.mark.asyncio
+    async def test_reingesting_child_produces_one_row(
+        self,
+        workspace_env: WorkspaceEnv,
+        tmp_path: Path,
+    ) -> None:
+        db_path = db_setup(workspace_env)
+        async with _make_repository(db_path) as repo:
+            for _ in range(2):
+                await _ingest_synthetic_child(
+                    repo=repo,
+                    tmp_path=tmp_path,
+                    provider=Provider.CODEX,
+                    source_name="codex",
+                    child_id="idem-child",
+                    parent_id="idem-parent",
+                    branch_type=BranchType.CONTINUATION,
+                )
+
+        edges = _fetch_edges(db_path)
+        assert len(edges) == 1
+        assert edges[0]["status"] == TopologyEdgeStatus.UNRESOLVED.value
+
+
+__all__: tuple[str, ...] = ()

@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from polylogue.archive.conversation.models import Conversation
+from polylogue.archive.topology.edge import TopologyEdgeRecord
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.insights.feedback import LearningCorrection
 from polylogue.storage.repository.archive.writes.conversations import (
@@ -38,6 +39,7 @@ class RepositoryWriteMixin:
         attachments: builtins.list[AttachmentRecord],
         content_blocks: builtins.list[ContentBlockRecord] | None = None,
         provider_events: builtins.list[ProviderEventRecord] | None = None,
+        topology_edges: builtins.list[TopologyEdgeRecord] | None = None,
     ) -> dict[str, int]:
         if isinstance(conversation, Conversation):
             if conversation.messages and not messages:
@@ -57,6 +59,7 @@ class RepositoryWriteMixin:
             attachments,
             content_blocks or [],
             provider_events,
+            topology_edges,
         )
 
     def _conversation_to_record(self, conversation: Conversation) -> ConversationRecord:
@@ -69,6 +72,7 @@ class RepositoryWriteMixin:
         attachments: builtins.list[AttachmentRecord],
         content_blocks: builtins.list[ContentBlockRecord] | None = None,
         provider_events: builtins.list[ProviderEventRecord] | None = None,
+        topology_edges: builtins.list[TopologyEdgeRecord] | None = None,
     ) -> dict[str, int]:
         backend = self._backend
         if backend is None:
@@ -80,6 +84,7 @@ class RepositoryWriteMixin:
             attachments,
             content_blocks,
             provider_events,
+            topology_edges,
         )
 
     async def get_metadata(self, conversation_id: str) -> JSONDocument:

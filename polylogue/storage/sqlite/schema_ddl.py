@@ -33,6 +33,9 @@ from polylogue.storage.sqlite.schema_ddl_archive import (
     TAGS_M2M_DDL as _TAGS_M2M_DDL,
 )
 from polylogue.storage.sqlite.schema_ddl_archive import (
+    TOPOLOGY_EDGES_DDL as _TOPOLOGY_EDGES_DDL,
+)
+from polylogue.storage.sqlite.schema_ddl_archive import (
     USER_ANNOTATIONS_DDL as _USER_ANNOTATIONS_DDL,
 )
 from polylogue.storage.sqlite.schema_ddl_archive import (
@@ -66,9 +69,7 @@ from polylogue.storage.sqlite.schema_ddl_provider_events import (
     PROVIDER_EVENT_DDL as _PROVIDER_EVENT_DDL,
 )
 
-SCHEMA_VERSION = (
-    5  # Canonical schema. No migration chain: mismatch → re-ingest from source (#1212, #1190, #1240, #1241, #1252).
-)
+SCHEMA_VERSION = 6  # Canonical schema. No migration chain: mismatch → re-ingest from source (#1212, #1190, #1240, #1241, #1252, #1258).
 
 
 # Complete target schema applied to fresh databases.
@@ -89,6 +90,7 @@ SCHEMA_DDL += "\n\n" + _SAVED_VIEWS_DDL
 SCHEMA_DDL += "\n\n" + _RECALL_PACKS_DDL
 SCHEMA_DDL += "\n\n" + _READER_WORKSPACES_DDL
 SCHEMA_DDL += "\n\n" + _USER_CORRECTIONS_DDL
+SCHEMA_DDL += "\n\n" + _TOPOLOGY_EDGES_DDL
 
 _SESSION_INSIGHT_DDL = _SESSION_INSIGHT_PROFILE_DDL + _SESSION_INSIGHT_TIMELINE_DDL + _SESSION_INSIGHT_AGGREGATE_DDL
 
@@ -112,6 +114,7 @@ __all__ = [
     "_RECALL_PACKS_DDL",
     "_SAVED_VIEWS_DDL",
     "_TAGS_M2M_DDL",
+    "_TOPOLOGY_EDGES_DDL",
     "_USER_ANNOTATIONS_DDL",
     "_USER_CORRECTIONS_DDL",
     "_USER_MARKS_DDL",

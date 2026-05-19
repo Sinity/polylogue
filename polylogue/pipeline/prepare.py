@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from polylogue.archive.topology.edge import TopologyEdgeRecord
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import (
     conversation_id as make_conversation_id,
@@ -53,6 +54,7 @@ class PrepareRepository(Protocol):
         attachments: list[AttachmentRecord],
         content_blocks: list[ContentBlockRecord] | None = None,
         provider_events: list[ProviderEventRecord] | None = None,
+        topology_edges: list[TopologyEdgeRecord] | None = None,
     ) -> dict[str, int]: ...
 
 
@@ -63,6 +65,7 @@ async def save_bundle(bundle: RecordBundle, repository: PrepareRepository) -> Sa
         attachments=bundle.attachments,
         content_blocks=bundle.content_blocks,
         provider_events=bundle.provider_events,
+        topology_edges=bundle.topology_edges,
     )
     return SaveResult(**counts)
 
