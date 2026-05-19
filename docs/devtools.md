@@ -131,6 +131,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify-schema-roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
 | `devtools verify-slos` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
 | `devtools verify-suppressions` | Enforce suppression registry expiry dates from docs/plans/suppressions.yaml. |
+| `devtools verify-test-clock-hygiene` | Verify test files use the frozen_clock fixture instead of reading the host wall clock (#1300). |
 | `devtools verify-test-infra-currency` | Verify tests/infra/ helpers reference only tables that exist in the current SCHEMA_VERSION. |
 | `devtools verify-test-ownership` | Verify each production module is imported by at least one unit test. |
 | `devtools verify-topology` | Verify the realized polylogue tree against the topology projection. |

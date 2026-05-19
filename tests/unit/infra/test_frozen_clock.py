@@ -53,8 +53,8 @@ def test_marker_patches_datetime_in_target_module(frozen_clock: FrozenClock) -> 
     """``frozen_clock_modules`` marker makes ``module.datetime.now`` deterministic."""
     from polylogue.daemon import health
 
-    captured_a = health.datetime.now(UTC)
-    captured_b = health.datetime.now(UTC)
+    captured_a = health.datetime.now(UTC)  # type: ignore[attr-defined]
+    captured_b = health.datetime.now(UTC)  # type: ignore[attr-defined]
     assert captured_a == captured_b == frozen_clock.now()
 
 
@@ -63,7 +63,7 @@ def test_freeze_clock_context_manager_patches_named_module() -> None:
     with freeze_clock(patch_datetime_in_modules=["polylogue.daemon.health"]) as clock:
         from polylogue.daemon import health
 
-        assert health.datetime.now(UTC) == clock.now()
+        assert health.datetime.now(UTC) == clock.now()  # type: ignore[attr-defined]
 
 
 def test_unknown_module_raises_attribute_error() -> None:

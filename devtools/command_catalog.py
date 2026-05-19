@@ -477,6 +477,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-test-infra-currency", "devtools verify-test-infra-currency --json"),
     ),
     CommandSpec(
+        "verify-test-clock-hygiene",
+        "verification",
+        "Verify test files use the frozen_clock fixture instead of reading the host wall clock (#1300).",
+        "devtools.verify_test_clock_hygiene",
+        use_when=(
+            "Block new direct calls to datetime.now / datetime.utcnow / "
+            "time.time / time.monotonic from test files outside the "
+            "allowlist in docs/plans/test-clock-allowlist.yaml. Tests that "
+            "genuinely need the host clock add their path to the allowlist "
+            "with a one-line rationale."
+        ),
+        examples=("devtools verify-test-clock-hygiene", "devtools verify-test-clock-hygiene --json"),
+    ),
+    CommandSpec(
         "verify-distribution-surface",
         "verification",
         "Verify wheel/sdist installed artifacts expose only supported runtime entrypoints.",
