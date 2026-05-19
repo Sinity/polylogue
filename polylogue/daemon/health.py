@@ -271,6 +271,209 @@ def _check_source_availability_fast() -> HealthAlert:
         )
 
 
+_EXPECTED_FTS_TRIGGERS: tuple[str, ...] = (
+    "messages_fts_ai",
+    "messages_fts_ad",
+    "messages_fts_au",
+    "action_events_fts_ai",
+    "action_events_fts_ad",
+    "action_events_fts_au",
+)
+"""Six canonical FTS sync triggers (#1229).
+
+Three for ``messages_fts`` + three for ``action_events_fts``. These are
+restored after every bulk-write window by
+``polylogue/storage/fts/fts_lifecycle.py::restore_fts_triggers_sync``;
+their absence after a SIGKILL during a suspension window leaves the FTS
+indexes silently out of sync with the source tables.
+"""
+
+
+def _find_missing_fts_triggers(conn: sqlite3.Connection) -> list[str]:
+    """Return the names of expected FTS triggers that do not exist."""
+    placeholders = ",".join("?" for _ in _EXPECTED_FTS_TRIGGERS)
+    rows = conn.execute(
+        f"SELECT name FROM sqlite_schema WHERE type='trigger' AND name IN ({placeholders})",
+        _EXPECTED_FTS_TRIGGERS,
+    ).fetchall()
+    present = {row[0] for row in rows}
+    return [name for name in _EXPECTED_FTS_TRIGGERS if name not in present]
+
+
+def _auto_restore_fts_triggers(dbf: object) -> tuple[list[str], bool, str]:
+    """Restore missing FTS triggers and rebuild the FTS index.
+
+    Used by :func:`_check_fts_trigger_drift_fast` when
+    ``health.fts_auto_restore = true``. Restore is metadata-only (drops
+    and re-creates triggers from the canonical DDL in
+    ``polylogue.storage.fts.fts_lifecycle``) and the subsequent rebuild
+    reconstructs the FTS index from the persisted ``messages`` and
+    ``action_events`` rows. Both operations are read-only in the sense
+    that they do not modify user-visible archive data.
+
+    Returns:
+        ``(restored, success, detail)`` — list of trigger names restored,
+        whether the operation succeeded, and an operator-facing detail.
+    """
+    from polylogue.storage.fts.fts_lifecycle import (
+        rebuild_fts_index_sync,
+        restore_fts_triggers_sync,
+    )
+
+    conn = sqlite3.connect(str(dbf), timeout=5.0)
+    try:
+        missing_before = _find_missing_fts_triggers(conn)
+        if not missing_before:
+            return [], True, "no missing triggers to restore"
+        restore_fts_triggers_sync(conn)
+        rebuild_fts_index_sync(conn)
+        conn.commit()
+        missing_after = _find_missing_fts_triggers(conn)
+        if missing_after:
+            return (
+                missing_before,
+                False,
+                (f"restore attempted but {len(missing_after)} trigger(s) still missing: {', '.join(missing_after)}"),
+            )
+        return (
+            missing_before,
+            True,
+            (f"restored {len(missing_before)} trigger(s) and rebuilt FTS index: {', '.join(missing_before)}"),
+        )
+    finally:
+        conn.close()
+
+
+def _check_fts_trigger_drift_fast() -> HealthAlert:
+    """Detect missing FTS sync triggers; auto-restore when configured.
+
+    The six canonical triggers in :data:`_EXPECTED_FTS_TRIGGERS` keep
+    ``messages_fts`` and ``action_events_fts`` in sync with their source
+    tables. A SIGKILL during the bulk-write trigger-suspension window
+    (see ``docs/internals.md`` "FTS5 Model") leaves them dropped, which
+    silently corrupts search results until the next bulk operation
+    restores them.
+
+    Behavior:
+
+    - Missing triggers raise CRITICAL — silent search corruption is a
+      semantic regression, not a perf wart.
+    - When ``health.fts_auto_restore = true`` (env
+      ``POLYLOGUE_HEALTH_FTS_AUTO_RESTORE``) and triggers are missing,
+      the check restores them and rebuilds the FTS index in place. The
+      alert then carries severity WARNING (still surfaced so the
+      operator knows recovery happened) with a ``recovery=`` detail.
+    - Restore failures fall back to CRITICAL with the restore-error
+      detail appended so the operator can intervene.
+    """
+    from polylogue.config import load_polylogue_config
+
+    now = datetime.now(UTC).isoformat()
+    dbf = db_path()
+    if not dbf.exists():
+        return HealthAlert(
+            check_name="fts_trigger_drift",
+            tier=HealthTier.FAST,
+            severity=HealthSeverity.OK,
+            message="no database yet (FTS triggers will be installed at fresh-init)",
+            checked_at=now,
+            consecutive_failures=_record_failure("fts_trigger_drift", True),
+        )
+
+    try:
+        # Read-only inspection first so the cheap healthy path never
+        # opens a writable connection.
+        conn = sqlite3.connect(f"file:{dbf}?mode=ro", uri=True, timeout=2.0)
+        try:
+            missing = _find_missing_fts_triggers(conn)
+        finally:
+            conn.close()
+
+        if not missing:
+            return HealthAlert(
+                check_name="fts_trigger_drift",
+                tier=HealthTier.FAST,
+                severity=HealthSeverity.OK,
+                message=f"all {len(_EXPECTED_FTS_TRIGGERS)} FTS triggers present",
+                checked_at=now,
+                consecutive_failures=_record_failure("fts_trigger_drift", True),
+            )
+
+        restore_cmd = "polylogue check --repair-fts"
+        missing_text = ", ".join(missing)
+        try:
+            cfg = load_polylogue_config()
+            auto_restore = bool(cfg.health_fts_auto_restore)
+        except Exception:
+            auto_restore = False
+
+        if not auto_restore:
+            message = (
+                f"FTS trigger drift: {len(missing)}/{len(_EXPECTED_FTS_TRIGGERS)} missing "
+                f"({missing_text}); restore with `{restore_cmd}` "
+                "(rebuild ~O(messages))"
+            )
+            return HealthAlert(
+                check_name="fts_trigger_drift",
+                tier=HealthTier.FAST,
+                severity=HealthSeverity.CRITICAL,
+                message=message,
+                checked_at=now,
+                consecutive_failures=_record_failure("fts_trigger_drift", False),
+            )
+
+        try:
+            restored, success, detail = _auto_restore_fts_triggers(dbf)
+        except Exception as exc:
+            return HealthAlert(
+                check_name="fts_trigger_drift",
+                tier=HealthTier.FAST,
+                severity=HealthSeverity.CRITICAL,
+                message=(
+                    f"FTS trigger drift: {len(missing)} missing ({missing_text}); "
+                    f"auto-restore failed: {exc}; restore manually with `{restore_cmd}`"
+                ),
+                checked_at=now,
+                consecutive_failures=_record_failure("fts_trigger_drift", False),
+            )
+
+        if success:
+            logger.info(
+                "daemon.health.fts_trigger_drift: auto-restored %d trigger(s): %s",
+                len(restored),
+                ", ".join(restored),
+            )
+            # Surface a WARNING-level recovery event so the notification
+            # backend forwards it to the operator — silent self-heal
+            # would hide the precipitating SIGKILL/suspension-leak.
+            return HealthAlert(
+                check_name="fts_trigger_drift",
+                tier=HealthTier.FAST,
+                severity=HealthSeverity.WARNING,
+                message=f"FTS trigger drift auto-recovered: {detail}",
+                checked_at=now,
+                consecutive_failures=_record_failure("fts_trigger_drift", True),
+            )
+
+        return HealthAlert(
+            check_name="fts_trigger_drift",
+            tier=HealthTier.FAST,
+            severity=HealthSeverity.CRITICAL,
+            message=(f"FTS trigger drift: {detail}; restore manually with `{restore_cmd}`"),
+            checked_at=now,
+            consecutive_failures=_record_failure("fts_trigger_drift", False),
+        )
+    except Exception as exc:
+        return HealthAlert(
+            check_name="fts_trigger_drift",
+            tier=HealthTier.FAST,
+            severity=HealthSeverity.ERROR,
+            message=f"FTS trigger drift check failed: {exc}",
+            checked_at=now,
+            consecutive_failures=_record_failure("fts_trigger_drift", False),
+        )
+
+
 def _check_schema_version_fast() -> HealthAlert:
     """Compare the on-disk ``PRAGMA user_version`` to the runtime ``SCHEMA_VERSION``.
 
@@ -362,6 +565,7 @@ def _run_fast_checks() -> list[HealthAlert]:
         _check_disk_space_fast(),
         _check_wal_size_fast(),
         _check_source_availability_fast(),
+        _check_fts_trigger_drift_fast(),
     ]
 
 
@@ -965,7 +1169,10 @@ __all__ = [
     "HealthAlert",
     "HealthSeverity",
     "HealthTier",
+    "_EXPECTED_FTS_TRIGGERS",
+    "_check_fts_trigger_drift_fast",
     "_check_schema_version_fast",
+    "_find_missing_fts_triggers",
     "check_health",
     "format_health_lines",
 ]

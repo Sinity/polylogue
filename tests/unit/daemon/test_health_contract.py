@@ -57,6 +57,7 @@ EXPECTED_FAST_CHECKS: frozenset[str] = frozenset(
         "disk_space",
         "wal_size",
         "source_availability",
+        "fts_trigger_drift",
     }
 )
 EXPECTED_MEDIUM_CHECKS: frozenset[str] = frozenset(

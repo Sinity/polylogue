@@ -289,6 +289,19 @@ class PolylogueConfig:
         return str(self._data.get("health_check_tiers", "fast,medium"))
 
     @property
+    def health_fts_auto_restore(self) -> bool:
+        """Whether the daemon health loop should auto-restore missing FTS triggers (#1229).
+
+        When true, :func:`polylogue.daemon.health._check_fts_trigger_drift_fast`
+        drops/re-creates the six canonical FTS sync triggers and runs the
+        FTS5 ``rebuild`` command in place when drift is detected. The
+        check still emits a WARNING-level alert so the operator is told
+        the recovery happened. When false (default), drift surfaces as
+        CRITICAL with an operator-facing restore command.
+        """
+        return bool(self._data.get("health_fts_auto_restore", False))
+
+    @property
     def health_convergence_debt(self) -> dict[str, object]:
         """Raw ``[health.convergence_debt]`` table from polylogue.toml.
 
@@ -451,6 +464,7 @@ def _default_config_values() -> dict[str, object]:
         "notification_webhook_url": None,
         "health_check_interval_s": 300,
         "health_check_tiers": "fast,medium",
+        "health_fts_auto_restore": False,
         "watch_debounce_s": 2.0,
         "browser_capture_host": "127.0.0.1",
         "browser_capture_spool_path": "",
@@ -614,6 +628,7 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
         "health": {
             "check_interval_s": "health_check_interval_s",
             "check_tiers": "health_check_tiers",
+            "fts_auto_restore": "health_fts_auto_restore",
         },
     }
     for section, key_map in section_keys.items():
@@ -663,6 +678,7 @@ def _apply_env_overrides(cfg: dict[str, object]) -> None:
         "POLYLOGUE_NOTIFICATION_WEBHOOK_URL": "notification_webhook_url",
         "POLYLOGUE_HEALTH_CHECK_INTERVAL_S": "health_check_interval_s",
         "POLYLOGUE_HEALTH_CHECK_TIERS": "health_check_tiers",
+        "POLYLOGUE_HEALTH_FTS_AUTO_RESTORE": "health_fts_auto_restore",
         "POLYLOGUE_API_HOST": "api_host",
         "POLYLOGUE_API_PORT": "api_port",
         "POLYLOGUE_API_AUTH_TOKEN": "api_auth_token",
@@ -759,6 +775,7 @@ def format_config_toml(cfg: dict[str, object]) -> str:
             [
                 ("check_interval_s", "health_check_interval_s"),
                 ("check_tiers", "health_check_tiers"),
+                ("fts_auto_restore", "health_fts_auto_restore"),
             ],
         ),
     ]
