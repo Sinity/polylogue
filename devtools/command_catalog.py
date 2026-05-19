@@ -324,6 +324,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-file-budgets", "devtools verify-file-budgets --json"),
     ),
     CommandSpec(
+        "verify-provider-meta-policy",
+        "verification",
+        "Enforce the provider_meta classification policy declared in docs/plans/provider-meta-policy.yaml.",
+        "devtools.verify_provider_meta_policy",
+        use_when=(
+            "Block undeclared provider_meta keys and revived tombstones in parsers, "
+            "source-assembly, and insight-rebuild paths. Forces a manifest row whenever "
+            "a new key is written by production code."
+        ),
+        examples=(
+            "devtools verify-provider-meta-policy",
+            "devtools verify-provider-meta-policy --json",
+        ),
+    ),
+    CommandSpec(
         "verify-test-ownership",
         "verification",
         "Verify each production module is imported by at least one unit test.",
