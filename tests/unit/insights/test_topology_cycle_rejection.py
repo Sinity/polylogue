@@ -28,7 +28,6 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterator
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -45,10 +44,12 @@ from polylogue.storage.sqlite.queries.topology_edges import (
     upsert_topology_edges,
 )
 from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL, SCHEMA_VERSION
+from polylogue.types import ConversationId
+from tests.infra.frozen_clock import fixed_now
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return fixed_now().isoformat()
 
 
 def _bootstrap_db(path: Path) -> None:
@@ -101,7 +102,7 @@ class _AsyncSqliteAdapter:
         conn.row_factory = sqlite3.Row
         self._conn = conn
 
-    async def execute(self, sql: str, params: tuple = ()) -> _AsyncCursorAdapter:
+    async def execute(self, sql: str, params: tuple[object, ...] = ()) -> _AsyncCursorAdapter:
         cursor = self._conn.execute(sql, params)
         return _AsyncCursorAdapter(cursor)
 
@@ -117,7 +118,8 @@ class _AsyncCursorAdapter:
         return list(self._cursor.fetchall())
 
     async def fetchone(self) -> sqlite3.Row | None:
-        return self._cursor.fetchone()
+        result: sqlite3.Row | None = self._cursor.fetchone()
+        return result
 
     @property
     def rowcount(self) -> int:
@@ -149,7 +151,7 @@ def _seed_edge(
     import asyncio
 
     edge = TopologyEdgeRecord(
-        src_conversation_id=src_conversation_id,
+        src_conversation_id=ConversationId(src_conversation_id),
         dst_provider_native_id=dst_provider_native_id,
         dst_provider_name=dst_provider_name,
         edge_type=edge_type,
