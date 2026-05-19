@@ -20,6 +20,7 @@ from collections.abc import Iterable
 
 import aiosqlite
 
+from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.topology.edge import TopologyEdgeRecord, TopologyEdgeStatus
 
 
@@ -104,8 +105,37 @@ async def resolve_topology_edges_for_conversation(
     ingested before its parent, its edge is written ``unresolved``; this
     helper runs after the parent's row hits ``conversations`` and flips
     every dangling edge that was waiting for that parent's native id.
+
+    Slice B (#1259 / #866) — also backfills the resolved children's
+    ``conversations.parent_conversation_id`` (and ``branch_type``, where the
+    edge type maps to a valid ``BranchType``) so the fast-path ancestry
+    walk used by ``derive_session_topology_async``, ``thread_root_id`` and
+    other downstream readers benefits from late-parent arrival without
+    requiring the child to be re-ingested. The backfill is conservative:
+    it only writes ``parent_conversation_id`` when the column is NULL and
+    only writes ``branch_type`` when the column is NULL and the edge type
+    is a member of ``BranchType``. This keeps the operation idempotent —
+    running the resolver twice for the same parent produces no further
+    changes after the first pass.
     """
+    # Collect the children that the upcoming UPDATE will flip, *before*
+    # the UPDATE runs, so we can use them to backfill the conversations
+    # rows in the same transaction. Selecting child IDs + edge types lets
+    # us avoid issuing one UPDATE per child while still classifying the
+    # branch type per row.
     cursor = await conn.execute(
+        """
+        SELECT src_conversation_id, edge_type
+          FROM topology_edges
+         WHERE status = 'unresolved'
+           AND dst_provider_name = ?
+           AND dst_provider_native_id = ?
+        """,
+        (provider_name, provider_conversation_id),
+    )
+    pending_rows = list(await cursor.fetchall())
+
+    update_cursor = await conn.execute(
         """
         UPDATE topology_edges
            SET resolved_dst_conversation_id = ?,
@@ -117,7 +147,102 @@ async def resolve_topology_edges_for_conversation(
         """,
         (conversation_id, resolved_at, provider_name, provider_conversation_id),
     )
-    return cursor.rowcount or 0
+    flipped = update_cursor.rowcount or 0
+
+    if flipped == 0 or not pending_rows:
+        return flipped
+
+    # Backfill the resolved fast-path on each child conversation. The
+    # ``parent_conversation_id IS NULL`` guard preserves whatever was set
+    # at the child's original write time and makes the backfill idempotent;
+    # the ``branch_type`` guard mirrors the same constraint and restricts
+    # writes to the closed ``BranchType`` vocabulary so the CHECK constraint
+    # on ``conversations.branch_type`` cannot be violated by future
+    # ``RESUME`` / ``BRANCH`` / ``REPAIRED`` edge types.
+    valid_branch_types: set[str] = {bt.value for bt in BranchType}
+    for row in pending_rows:
+        child_id = row["src_conversation_id"]
+        edge_type = row["edge_type"]
+        branch_type: str | None = edge_type if edge_type in valid_branch_types else None
+        await conn.execute(
+            """
+            UPDATE conversations
+               SET parent_conversation_id = COALESCE(parent_conversation_id, ?),
+                   branch_type = COALESCE(branch_type, ?)
+             WHERE conversation_id = ?
+            """,
+            (conversation_id, branch_type, child_id),
+        )
+
+    return flipped
+
+
+async def resolve_unresolved_edges_for_child(
+    conn: aiosqlite.Connection,
+    *,
+    src_conversation_id: str,
+    resolved_at: str,
+) -> int:
+    """Resolve any of ``src_conversation_id``'s own unresolved edges whose
+    parent is already in ``conversations``.
+
+    Closes the concurrent-ingest race where the parent's
+    :func:`resolve_topology_edges_for_conversation` pass ran before the
+    child's edge was upserted. After the child's edge lands, this helper
+    sweeps every unresolved edge it just wrote, joins against
+    ``conversations`` on ``(provider_name, provider_conversation_id)``,
+    and flips the edge if a matching parent row now exists.
+
+    Backfills the same ``conversations.parent_conversation_id`` /
+    ``branch_type`` fast-path columns as
+    :func:`resolve_topology_edges_for_conversation`, with the same
+    conservative ``COALESCE`` guards so the operation is idempotent.
+    """
+    cursor = await conn.execute(
+        """
+        SELECT te.edge_id, te.edge_type, c.conversation_id AS parent_cid
+          FROM topology_edges AS te
+          JOIN conversations  AS c
+            ON c.provider_name = te.dst_provider_name
+           AND c.provider_conversation_id = te.dst_provider_native_id
+         WHERE te.src_conversation_id = ?
+           AND te.status = 'unresolved'
+        """,
+        (src_conversation_id,),
+    )
+    rows = list(await cursor.fetchall())
+    if not rows:
+        return 0
+
+    valid_branch_types: set[str] = {bt.value for bt in BranchType}
+    resolved = 0
+    for row in rows:
+        edge_id = row["edge_id"]
+        edge_type = row["edge_type"]
+        parent_cid = row["parent_cid"]
+        await conn.execute(
+            """
+            UPDATE topology_edges
+               SET resolved_dst_conversation_id = ?,
+                   status = 'resolved',
+                   resolved_at = ?
+             WHERE edge_id = ?
+               AND status = 'unresolved'
+            """,
+            (parent_cid, resolved_at, edge_id),
+        )
+        branch_type: str | None = edge_type if edge_type in valid_branch_types else None
+        await conn.execute(
+            """
+            UPDATE conversations
+               SET parent_conversation_id = COALESCE(parent_conversation_id, ?),
+                   branch_type = COALESCE(branch_type, ?)
+             WHERE conversation_id = ?
+            """,
+            (parent_cid, branch_type, src_conversation_id),
+        )
+        resolved += 1
+    return resolved
 
 
 async def list_topology_edges_for_conversation(
@@ -144,5 +269,6 @@ __all__ = [
     "TopologyEdgeStatus",
     "list_topology_edges_for_conversation",
     "resolve_topology_edges_for_conversation",
+    "resolve_unresolved_edges_for_child",
     "upsert_topology_edges",
 ]
