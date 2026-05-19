@@ -483,6 +483,18 @@ async def save_via_backend(
             provider_conversation_id=conversation.provider_conversation_id,
             resolved_at=now_iso,
         )
+        # Slice B race closure (#1259): if the parent was committed *after*
+        # the in-memory ``PrepareCache`` for this child was built but
+        # *before* this child's save_via_backend ran, the upsert above wrote
+        # the edge as ``unresolved`` even though the parent now exists. Sweep
+        # the child's own unresolved edges and resolve any whose parent is
+        # already in ``conversations``.
+        if topology_edges:
+            await topology_edges_q.resolve_unresolved_edges_for_child(
+                conn,
+                src_conversation_id=str(conversation.conversation_id),
+                resolved_at=now_iso,
+            )
         timings["topology_edges"] = _time.perf_counter() - t0
 
     total = _time.perf_counter() - t_start

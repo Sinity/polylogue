@@ -625,5 +625,68 @@ class TestTopologyLateParentRepair:
         assert row["parent_conversation_id"] == parent_result.conversation_id
         assert row["branch_type"] == BranchType.FORK.value
 
+    @pytest.mark.asyncio
+    async def test_concurrent_parent_and_child_ingest_resolves(
+        self,
+        workspace_env: WorkspaceEnv,
+        tmp_path: Path,
+    ) -> None:
+        """Concurrent ingest of parent + child must converge to a resolved edge.
+
+        SQLite serializes writes per connection, so the two ``prepare_records``
+        coroutines below execute in some interleaved order. Regardless of which
+        one wins the race, the post-condition is the same: the topology edge
+        is resolved, ``resolved_dst_conversation_id`` points at the parent,
+        and the child's ``parent_conversation_id`` is backfilled.
+        """
+        import asyncio
+
+        db_path = db_setup(workspace_env)
+        async with _make_repository(db_path) as repo:
+            child_parsed = ParsedConversation(
+                provider_name=Provider.CODEX,
+                provider_conversation_id="race-child",
+                title="Race child",
+                messages=[ParsedMessage(provider_message_id="cm1", role=Role.USER, text="c")],
+                parent_conversation_provider_id="race-parent",
+                branch_type=BranchType.CONTINUATION,
+            )
+            parent_parsed = ParsedConversation(
+                provider_name=Provider.CODEX,
+                provider_conversation_id="race-parent",
+                title="Race parent",
+                messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
+            )
+
+            child_task = prepare_records(
+                child_parsed,
+                source_name="codex",
+                archive_root=tmp_path,
+                backend=repo.backend,
+                repository=repo,
+            )
+            parent_task = prepare_records(
+                parent_parsed,
+                source_name="codex",
+                archive_root=tmp_path,
+                backend=repo.backend,
+                repository=repo,
+            )
+            child_result, parent_result = await asyncio.gather(child_task, parent_task)
+
+        edges = _fetch_edges(db_path)
+        child_edges = [e for e in edges if e["src_conversation_id"] == child_result.conversation_id]
+        assert len(child_edges) == 1
+        assert child_edges[0]["status"] == TopologyEdgeStatus.RESOLVED.value
+        assert child_edges[0]["resolved_dst_conversation_id"] == parent_result.conversation_id
+
+        with open_connection(db_path) as conn:
+            row = conn.execute(
+                "SELECT parent_conversation_id, branch_type FROM conversations WHERE conversation_id = ?",
+                (child_result.conversation_id,),
+            ).fetchone()
+        assert row["parent_conversation_id"] == parent_result.conversation_id
+        assert row["branch_type"] == BranchType.CONTINUATION.value
+
 
 __all__: tuple[str, ...] = ()

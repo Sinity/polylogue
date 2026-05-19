@@ -177,6 +177,74 @@ async def resolve_topology_edges_for_conversation(
     return flipped
 
 
+async def resolve_unresolved_edges_for_child(
+    conn: aiosqlite.Connection,
+    *,
+    src_conversation_id: str,
+    resolved_at: str,
+) -> int:
+    """Resolve any of ``src_conversation_id``'s own unresolved edges whose
+    parent is already in ``conversations``.
+
+    Closes the concurrent-ingest race where the parent's
+    :func:`resolve_topology_edges_for_conversation` pass ran before the
+    child's edge was upserted. After the child's edge lands, this helper
+    sweeps every unresolved edge it just wrote, joins against
+    ``conversations`` on ``(provider_name, provider_conversation_id)``,
+    and flips the edge if a matching parent row now exists.
+
+    Backfills the same ``conversations.parent_conversation_id`` /
+    ``branch_type`` fast-path columns as
+    :func:`resolve_topology_edges_for_conversation`, with the same
+    conservative ``COALESCE`` guards so the operation is idempotent.
+    """
+    cursor = await conn.execute(
+        """
+        SELECT te.edge_id, te.edge_type, c.conversation_id AS parent_cid
+          FROM topology_edges AS te
+          JOIN conversations  AS c
+            ON c.provider_name = te.dst_provider_name
+           AND c.provider_conversation_id = te.dst_provider_native_id
+         WHERE te.src_conversation_id = ?
+           AND te.status = 'unresolved'
+        """,
+        (src_conversation_id,),
+    )
+    rows = await cursor.fetchall()
+    if not rows:
+        return 0
+
+    valid_branch_types: set[str] = {bt.value for bt in BranchType}
+    resolved = 0
+    for row in rows:
+        edge_id = row["edge_id"]
+        edge_type = row["edge_type"]
+        parent_cid = row["parent_cid"]
+        await conn.execute(
+            """
+            UPDATE topology_edges
+               SET resolved_dst_conversation_id = ?,
+                   status = 'resolved',
+                   resolved_at = ?
+             WHERE edge_id = ?
+               AND status = 'unresolved'
+            """,
+            (parent_cid, resolved_at, edge_id),
+        )
+        branch_type: str | None = edge_type if edge_type in valid_branch_types else None
+        await conn.execute(
+            """
+            UPDATE conversations
+               SET parent_conversation_id = COALESCE(parent_conversation_id, ?),
+                   branch_type = COALESCE(branch_type, ?)
+             WHERE conversation_id = ?
+            """,
+            (parent_cid, branch_type, src_conversation_id),
+        )
+        resolved += 1
+    return resolved
+
+
 async def list_topology_edges_for_conversation(
     conn: aiosqlite.Connection,
     conversation_id: str,
@@ -201,5 +269,6 @@ __all__ = [
     "TopologyEdgeStatus",
     "list_topology_edges_for_conversation",
     "resolve_topology_edges_for_conversation",
+    "resolve_unresolved_edges_for_child",
     "upsert_topology_edges",
 ]
