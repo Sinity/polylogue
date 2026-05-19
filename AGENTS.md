@@ -1233,6 +1233,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools build-topology-projection` | Generate docs/plans/topology-target.yaml from the current tree using placement rules. |
 | `devtools render-agents` | Render AGENTS.md from CLAUDE.md and its included files. |
 | `devtools render-all` | Refresh or verify generated docs and agent files. |
+| `devtools render-cli-output-schemas` | Render JSON Schema artifacts for stable CLI output payloads under docs/schemas/cli-output/. |
 | `devtools render-cli-reference` | Render docs/cli-reference.md from live CLI help. |
 | `devtools render-devtools-reference` | Render the command catalog inside docs/devtools.md. |
 | `devtools render-docs-surface` | Render docs/README.md and the README documentation table. |

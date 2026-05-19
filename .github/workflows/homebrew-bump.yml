@@ -1,0 +1,210 @@
+name: Homebrew Bump
+
+# Auto-bumps the polylogue formula in the separate `Sinity/homebrew-tap`
+# repository whenever a `vX.Y.Z` tag is pushed in this repo. The PyPI
+# publish in `.github/workflows/release.yml` runs first (this workflow
+# blocks on the sdist being downloadable from PyPI), then this workflow
+# rewrites url/sha256/version in `Formula/polylogue.rb` and opens a PR
+# against the tap.
+#
+# Trigger surface:
+# - `push` on a `vX.Y.Z` tag                       — normal release path
+# - `workflow_dispatch` with a manual `version`    — recovery / backfill
+#
+# Required secrets:
+# - `HOMEBREW_TAP_TOKEN`: a GitHub fine-grained PAT with `contents: write`
+#   + `pull-requests: write` on `Sinity/homebrew-tap`. Set in repo settings
+#   under "Secrets and variables" → "Actions". See docs/release.md for the
+#   one-time setup checklist.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to bump to (e.g. 0.2.3). Omit when triggered by a tag push."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: bump-tap-formula
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Resolve target version
+        id: version
+        env:
+          MANUAL_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${MANUAL_VERSION}" ]]; then
+            version="${MANUAL_VERSION}"
+          else
+            # Tag refs look like `refs/tags/v0.2.3`; strip the leading `v`.
+            tag="${GITHUB_REF_NAME}"
+            version="${tag#v}"
+          fi
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid version '${version}'. Expected X.Y.Z."
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "Bumping homebrew formula to polylogue ${version}"
+
+      - name: Check out upstream repo (for the template + README links)
+        uses: actions/checkout@v6
+        with:
+          path: upstream
+
+      - name: Check out homebrew tap repo
+        uses: actions/checkout@v6
+        with:
+          repository: Sinity/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Wait for PyPI sdist availability and resolve sha256
+        id: pypi
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          sdist="polylogue-${VERSION}.tar.gz"
+          url="https://files.pythonhosted.org/packages/source/p/polylogue/${sdist}"
+          echo "Resolving ${url}"
+
+          # PyPI propagation can lag the GitHub release by a couple of
+          # minutes. Poll every 30s for up to 10 minutes before giving up.
+          attempts=20
+          for i in $(seq 1 "${attempts}"); do
+            if curl -fsSLo "${sdist}" "${url}"; then
+              echo "Downloaded sdist on attempt ${i}"
+              break
+            fi
+            if [[ "${i}" -eq "${attempts}" ]]; then
+              echo "::error::sdist still unavailable on PyPI after ${attempts} attempts"
+              exit 1
+            fi
+            echo "Attempt ${i} failed; sleeping 30s"
+            sleep 30
+          done
+
+          sha256=$(sha256sum "${sdist}" | awk '{print $1}')
+          echo "sha256=${sha256}" >> "${GITHUB_OUTPUT}"
+          echo "url=${url}" >> "${GITHUB_OUTPUT}"
+
+      - name: Rewrite formula placeholders
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          URL: ${{ steps.pypi.outputs.url }}
+          SHA256: ${{ steps.pypi.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p tap/Formula
+          # Start from the upstream-tracked template so future shape edits
+          # in this repo flow into the tap automatically.
+          cp upstream/nix/homebrew-tap-template/Formula/polylogue.rb tap/Formula/polylogue.rb
+
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+
+          path = pathlib.Path("tap/Formula/polylogue.rb")
+          text = path.read_text()
+          text = re.sub(
+              r'url ".*"',
+              f'url "{os.environ["URL"]}"',
+              text,
+              count=1,
+          )
+          text = re.sub(
+              r'sha256 ".*"',
+              f'sha256 "{os.environ["SHA256"]}"',
+              text,
+              count=1,
+          )
+          path.write_text(text)
+          PY
+
+          diff -u upstream/nix/homebrew-tap-template/Formula/polylogue.rb tap/Formula/polylogue.rb || true
+
+      - name: Set up Homebrew for resource regeneration
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Regenerate Python resource blocks from the bumped sdist
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_FROM_API: "1"
+        run: |
+          set -euo pipefail
+          # `brew update-python-resources` rewrites the `resource "..." do`
+          # block in-place by walking the PyPI dependency closure with pip.
+          brew update-python-resources tap/Formula/polylogue.rb
+
+      - name: Audit candidate formula
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          set -euo pipefail
+          # Run `brew audit` from inside the tap repo so the formula is on
+          # the audit path. `--strict` + `--online` together cover the same
+          # gate the AC list calls for.
+          (
+            cd tap
+            brew audit --strict --online ./Formula/polylogue.rb
+          )
+
+      - name: Open / refresh tap PR
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd tap
+
+          branch="bump/polylogue-${VERSION}"
+          git config user.name "polylogue-bot"
+          git config user.email "polylogue-bot@users.noreply.github.com"
+
+          if git ls-remote --exit-code --heads origin "${branch}"; then
+            git fetch origin "${branch}"
+            git switch "${branch}"
+            git rebase origin/main || git rebase --abort
+          else
+            git switch -c "${branch}"
+          fi
+
+          git add Formula/polylogue.rb
+          if git diff --staged --quiet; then
+            echo "No changes to commit; formula is already at ${VERSION}."
+            exit 0
+          fi
+
+          git commit -m "polylogue ${VERSION}"
+          git push --force-with-lease origin "${branch}"
+
+          # Open or refresh the PR via the gh CLI; idempotent across reruns.
+          if ! gh pr view "${branch}" --repo Sinity/homebrew-tap >/dev/null 2>&1; then
+            gh pr create \
+              --repo Sinity/homebrew-tap \
+              --head "${branch}" \
+              --base main \
+              --title "polylogue ${VERSION}" \
+              --body "Automated bump from upstream tag \`v${VERSION}\`. See https://github.com/Sinity/polylogue/releases/tag/v${VERSION} for release notes."
+          else
+            gh pr edit "${branch}" \
+              --repo Sinity/homebrew-tap \
+              --title "polylogue ${VERSION}" \
+              --body "Automated bump from upstream tag \`v${VERSION}\`. See https://github.com/Sinity/polylogue/releases/tag/v${VERSION} for release notes."
+          fi

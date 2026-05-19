@@ -73,6 +73,19 @@ anything different; release-please consumes the existing history.
      as the `signing-artifacts-publish-pypi` workflow artifact.
    - `publish-container` — builds + pushes the OCI image to
      `ghcr.io/sinity/polylogue`.
+   - [`homebrew-bump.yml`](../.github/workflows/homebrew-bump.yml) — runs in
+     parallel on the same tag, polls PyPI for the freshly-published sdist,
+     rewrites `url` / `sha256` / `version` in the formula at
+     [`nix/homebrew-tap-template/Formula/polylogue.rb`](../nix/homebrew-tap-template/Formula/polylogue.rb),
+     regenerates resource blocks via `brew update-python-resources`, runs
+     `brew audit --strict --online`, and opens / refreshes a PR against
+     [`Sinity/homebrew-tap`](https://github.com/Sinity/homebrew-tap).
+
+The Homebrew bump workflow needs a `HOMEBREW_TAP_TOKEN` secret in this repo
+— a fine-grained GitHub PAT with `contents: write` + `pull-requests: write`
+on the tap repository. Configure it once under "Secrets and variables" →
+"Actions" → "Repository secrets". Without it, the workflow logs a 404 when
+checking out the tap and the bump PR is not opened.
 
 If the release PR looks wrong (missing entries, wrong bump, stale title),
 close it without merging and adjust the source commits — release-please will
