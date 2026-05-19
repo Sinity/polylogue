@@ -273,6 +273,7 @@ Options:
 
 Commands:
   analytics       List provider-level analytics insights.
+  audit           Report per-product rigor profile across materialized...
   cost-rollups    List provider/model cost rollups.
   costs           List session-level cost estimates.
   day-summaries   List durable day-level session summary insights.

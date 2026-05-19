@@ -51,6 +51,11 @@ from polylogue.insights.archive_summaries import (
     aggregate_day_session_summary_insights,
     aggregate_week_session_summary_insights,
 )
+from polylogue.insights.audit import (
+    InsightRigorAuditQuery,
+    InsightRigorAuditReport,
+    build_insight_rigor_audit_report,
+)
 from polylogue.insights.export_bundles import (
     InsightExportBundleRequest,
     InsightExportBundleResult,
@@ -955,6 +960,14 @@ class ArchiveInsightAggregateMixin:
         status = await _read_session_insight_status(self.backend)
         async with self.backend.connection() as conn:
             return await build_insight_readiness_report(conn, status, query)
+
+    async def audit_insight_rigor(
+        self,
+        query: InsightRigorAuditQuery | None = None,
+    ) -> InsightRigorAuditReport:
+        """Audit per-product rigor profile across materialized insights (#1275)."""
+
+        return await build_insight_rigor_audit_report(self, query)
 
     async def export_insight_bundle(
         self,
