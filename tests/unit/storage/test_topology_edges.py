@@ -309,15 +309,17 @@ class TestTopologyEdgeOutOfOrderResolve:
         assert child_edges[0]["resolved_dst_conversation_id"] == parent_result.conversation_id
         assert child_edges[0]["resolved_at"] is not None
 
-        # Intentional: the child's conversations.parent_conversation_id is NOT
-        # backfilled — the fast path is set at child-write time only. The
-        # topology_edges table is the durable record.
+        # Slice B (#1259 / #866): the late-arriving parent now backfills
+        # the child's ``conversations.parent_conversation_id`` and
+        # ``branch_type`` columns, so the fast-path ancestry walk benefits
+        # without requiring re-ingest of the child.
         with open_connection(db_path) as conn:
             row = conn.execute(
-                "SELECT parent_conversation_id FROM conversations WHERE conversation_id = ?",
+                "SELECT parent_conversation_id, branch_type FROM conversations WHERE conversation_id = ?",
                 (child_cid,),
             ).fetchone()
-        assert row["parent_conversation_id"] is None
+        assert row["parent_conversation_id"] == parent_result.conversation_id
+        assert row["branch_type"] == BranchType.CONTINUATION.value
 
 
 class TestTopologyEdgeIdempotency:
@@ -343,6 +345,285 @@ class TestTopologyEdgeIdempotency:
         edges = _fetch_edges(db_path)
         assert len(edges) == 1
         assert edges[0]["status"] == TopologyEdgeStatus.UNRESOLVED.value
+
+
+class TestTopologyLateParentRepair:
+    """Slice B (#1259 / #866): late-parent arrival deterministic edge repair.
+
+    Covers the slice B acceptance criteria:
+
+    - On insert of the parent conversation, the previously-unresolved edge is
+      repaired (resolved_dst_conversation_id set, status=resolved,
+      resolved_at populated) AND the child conversation's
+      ``parent_conversation_id`` + ``branch_type`` columns are backfilled.
+    - Running the resolver twice produces the same result (idempotent).
+    - When the parent never arrives, the edge stays unresolved and the
+      child's parent_conversation_id stays NULL.
+    - Multiple unresolved children pointing at the same absent parent are
+      all repaired by a single parent ingest.
+    - When the child's ``parent_conversation_id`` was already populated
+      (parent-first fast path), the repair pass does not overwrite it on
+      a subsequent re-ingest of the parent.
+    """
+
+    @pytest.mark.asyncio
+    async def test_late_parent_arrival_backfills_fast_path(
+        self,
+        workspace_env: WorkspaceEnv,
+        tmp_path: Path,
+    ) -> None:
+        db_path = db_setup(workspace_env)
+        async with _make_repository(db_path) as repo:
+            child_cid = await _ingest_synthetic_child(
+                repo=repo,
+                tmp_path=tmp_path,
+                provider=Provider.CODEX,
+                source_name="codex",
+                child_id="late-child",
+                parent_id="late-parent",
+                branch_type=BranchType.SIDECHAIN,
+            )
+
+            # Before parent arrives: fast-path NULL, edge unresolved. The
+            # ``branch_type`` is set on the child at its original write time
+            # from the parser-asserted classification — it does not depend on
+            # the parent being present.
+            with open_connection(db_path) as conn:
+                row = conn.execute(
+                    "SELECT parent_conversation_id, branch_type FROM conversations WHERE conversation_id = ?",
+                    (child_cid,),
+                ).fetchone()
+            assert row["parent_conversation_id"] is None
+            assert row["branch_type"] == BranchType.SIDECHAIN.value
+
+            parent_parsed = ParsedConversation(
+                provider_name=Provider.CODEX,
+                provider_conversation_id="late-parent",
+                title="Late parent",
+                messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
+            )
+            parent_result = await prepare_records(
+                parent_parsed,
+                source_name="codex",
+                archive_root=tmp_path,
+                backend=repo.backend,
+                repository=repo,
+            )
+
+        # After parent arrives: fast-path AND branch_type backfilled.
+        with open_connection(db_path) as conn:
+            row = conn.execute(
+                "SELECT parent_conversation_id, branch_type FROM conversations WHERE conversation_id = ?",
+                (child_cid,),
+            ).fetchone()
+        assert row["parent_conversation_id"] == parent_result.conversation_id
+        assert row["branch_type"] == BranchType.SIDECHAIN.value
+
+    @pytest.mark.asyncio
+    async def test_repair_is_idempotent_across_parent_reingest(
+        self,
+        workspace_env: WorkspaceEnv,
+        tmp_path: Path,
+    ) -> None:
+        db_path = db_setup(workspace_env)
+        async with _make_repository(db_path) as repo:
+            child_cid = await _ingest_synthetic_child(
+                repo=repo,
+                tmp_path=tmp_path,
+                provider=Provider.CODEX,
+                source_name="codex",
+                child_id="idem-repair-child",
+                parent_id="idem-repair-parent",
+                branch_type=BranchType.SUBAGENT,
+            )
+
+            parent_parsed = ParsedConversation(
+                provider_name=Provider.CODEX,
+                provider_conversation_id="idem-repair-parent",
+                title="Idem parent",
+                messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
+            )
+            # Ingest the parent twice.
+            for _ in range(2):
+                parent_result = await prepare_records(
+                    parent_parsed,
+                    source_name="codex",
+                    archive_root=tmp_path,
+                    backend=repo.backend,
+                    repository=repo,
+                )
+
+        edges_after = _fetch_edges(db_path)
+        child_edges = [e for e in edges_after if e["src_conversation_id"] == child_cid]
+        assert len(child_edges) == 1
+        assert child_edges[0]["status"] == TopologyEdgeStatus.RESOLVED.value
+        assert child_edges[0]["resolved_dst_conversation_id"] == parent_result.conversation_id
+
+        with open_connection(db_path) as conn:
+            row = conn.execute(
+                "SELECT parent_conversation_id, branch_type FROM conversations WHERE conversation_id = ?",
+                (child_cid,),
+            ).fetchone()
+        assert row["parent_conversation_id"] == parent_result.conversation_id
+        assert row["branch_type"] == BranchType.SUBAGENT.value
+
+    @pytest.mark.asyncio
+    async def test_parent_never_arrives_keeps_edge_unresolved(
+        self,
+        workspace_env: WorkspaceEnv,
+        tmp_path: Path,
+    ) -> None:
+        db_path = db_setup(workspace_env)
+        async with _make_repository(db_path) as repo:
+            child_cid = await _ingest_synthetic_child(
+                repo=repo,
+                tmp_path=tmp_path,
+                provider=Provider.CODEX,
+                source_name="codex",
+                child_id="orphan-child",
+                parent_id="never-arrives",
+                branch_type=BranchType.CONTINUATION,
+            )
+
+            # Ingest a different conversation — its arrival must not
+            # spuriously repair the unrelated unresolved edge.
+            unrelated = ParsedConversation(
+                provider_name=Provider.CODEX,
+                provider_conversation_id="unrelated-parent",
+                title="Unrelated",
+                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="x")],
+            )
+            await prepare_records(
+                unrelated,
+                source_name="codex",
+                archive_root=tmp_path,
+                backend=repo.backend,
+                repository=repo,
+            )
+
+        edges = _fetch_edges(db_path)
+        child_edges = [e for e in edges if e["src_conversation_id"] == child_cid]
+        assert len(child_edges) == 1
+        assert child_edges[0]["status"] == TopologyEdgeStatus.UNRESOLVED.value
+        assert child_edges[0]["resolved_dst_conversation_id"] is None
+
+        with open_connection(db_path) as conn:
+            row = conn.execute(
+                "SELECT parent_conversation_id FROM conversations WHERE conversation_id = ?",
+                (child_cid,),
+            ).fetchone()
+        assert row["parent_conversation_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_multiple_pending_children_repaired_by_single_parent(
+        self,
+        workspace_env: WorkspaceEnv,
+        tmp_path: Path,
+    ) -> None:
+        db_path = db_setup(workspace_env)
+        async with _make_repository(db_path) as repo:
+            child_a = await _ingest_synthetic_child(
+                repo=repo,
+                tmp_path=tmp_path,
+                provider=Provider.CODEX,
+                source_name="codex",
+                child_id="shared-parent-child-a",
+                parent_id="shared-parent",
+                branch_type=BranchType.SIDECHAIN,
+            )
+            child_b = await _ingest_synthetic_child(
+                repo=repo,
+                tmp_path=tmp_path,
+                provider=Provider.CODEX,
+                source_name="codex",
+                child_id="shared-parent-child-b",
+                parent_id="shared-parent",
+                branch_type=BranchType.SUBAGENT,
+            )
+
+            parent_parsed = ParsedConversation(
+                provider_name=Provider.CODEX,
+                provider_conversation_id="shared-parent",
+                title="Shared parent",
+                messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
+            )
+            parent_result = await prepare_records(
+                parent_parsed,
+                source_name="codex",
+                archive_root=tmp_path,
+                backend=repo.backend,
+                repository=repo,
+            )
+
+        edges = _fetch_edges(db_path)
+        repaired = [e for e in edges if e["src_conversation_id"] in (child_a, child_b)]
+        assert len(repaired) == 2
+        assert all(e["status"] == TopologyEdgeStatus.RESOLVED.value for e in repaired)
+        assert all(e["resolved_dst_conversation_id"] == parent_result.conversation_id for e in repaired)
+
+        with open_connection(db_path) as conn:
+            rows = conn.execute(
+                "SELECT conversation_id, parent_conversation_id, branch_type "
+                "FROM conversations WHERE conversation_id IN (?, ?) "
+                "ORDER BY conversation_id",
+                (child_a, child_b),
+            ).fetchall()
+
+        by_id = {row["conversation_id"]: row for row in rows}
+        assert by_id[child_a]["parent_conversation_id"] == parent_result.conversation_id
+        assert by_id[child_a]["branch_type"] == BranchType.SIDECHAIN.value
+        assert by_id[child_b]["parent_conversation_id"] == parent_result.conversation_id
+        assert by_id[child_b]["branch_type"] == BranchType.SUBAGENT.value
+
+    @pytest.mark.asyncio
+    async def test_repair_does_not_overwrite_existing_fast_path(
+        self,
+        workspace_env: WorkspaceEnv,
+        tmp_path: Path,
+    ) -> None:
+        """Parent-first fast path is preserved when the parent is re-ingested."""
+        db_path = db_setup(workspace_env)
+        async with _make_repository(db_path) as repo:
+            parent_parsed = ParsedConversation(
+                provider_name=Provider.CODEX,
+                provider_conversation_id="preserve-parent",
+                title="Parent",
+                messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
+            )
+            parent_result = await prepare_records(
+                parent_parsed,
+                source_name="codex",
+                archive_root=tmp_path,
+                backend=repo.backend,
+                repository=repo,
+            )
+            child_cid = await _ingest_synthetic_child(
+                repo=repo,
+                tmp_path=tmp_path,
+                provider=Provider.CODEX,
+                source_name="codex",
+                child_id="preserve-child",
+                parent_id="preserve-parent",
+                branch_type=BranchType.FORK,
+            )
+
+            # Re-ingest the parent — repair pass must be a no-op on the
+            # already-resolved child.
+            await prepare_records(
+                parent_parsed,
+                source_name="codex",
+                archive_root=tmp_path,
+                backend=repo.backend,
+                repository=repo,
+            )
+
+        with open_connection(db_path) as conn:
+            row = conn.execute(
+                "SELECT parent_conversation_id, branch_type FROM conversations WHERE conversation_id = ?",
+                (child_cid,),
+            ).fetchone()
+        assert row["parent_conversation_id"] == parent_result.conversation_id
+        assert row["branch_type"] == BranchType.FORK.value
 
 
 __all__: tuple[str, ...] = ()
