@@ -34,6 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from polylogue.archive.conversation.extraction import WorkEvent, WorkEventKind
 from polylogue.archive.session.session_profile import SessionProfile
+from polylogue.insights.confidence import ConfidenceBand
 
 # ---------------------------------------------------------------------------
 # Versioning
@@ -156,8 +157,8 @@ class SessionClassification(BaseModel):
     confidence reflects within-classifier vote margin; support_level
     summarizes evidence breadth."""
 
-    support_level: str
-    """Coarse evidence-strength tag: 'strong', 'moderate', or 'weak'."""
+    support_level: ConfidenceBand
+    """Coarse evidence-strength tag from the shared ConfidenceBand vocab (#1277)."""
 
     evidence: tuple[EvidenceCite, ...]
     """Ordered evidence citations (highest-weight first). Always non-empty
@@ -182,14 +183,14 @@ class SessionClassification(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _support_for(confidence: float, evidence_count: int) -> str:
-    """Map (confidence, evidence breadth) to a coarse support tag."""
+def _support_for(confidence: float, evidence_count: int) -> ConfidenceBand:
+    """Map (confidence, evidence breadth) to a shared ConfidenceBand (#1277)."""
 
     if confidence >= 0.75 and evidence_count >= 3:
-        return "strong"
+        return ConfidenceBand.STRONG
     if confidence >= 0.5 and evidence_count >= 2:
-        return "moderate"
-    return "weak"
+        return ConfidenceBand.MODERATE
+    return ConfidenceBand.WEAK
 
 
 def _work_event_votes(work_events: Iterable[WorkEvent]) -> dict[SessionCategory, float]:
