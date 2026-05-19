@@ -17,6 +17,8 @@ Quick links:
 - [SearchEnvelope Contract](#searchenvelope-contract) — the typed
   response shape shared across surfaces ([#1266](https://github.com/Sinity/polylogue/issues/1266)).
 - [FTS5 Syntax](#fts5-syntax) — boolean, phrase, and prefix queries.
+- [Facets (Scoped vs Global)](#facets-scoped-vs-global) — aggregate
+  counts with both views ([#1269](https://github.com/Sinity/polylogue/issues/1269)).
 
 ## Grammar
 
@@ -422,6 +424,37 @@ Set format with `-f` / `--format` on a verb:
 ```bash
 polylogue "sqlite locking" list --format json
 polylogue --since yesterday bulk-export --format jsonl
+```
+
+## Facets (Scoped vs Global)
+
+Facets summarize the archive as aggregate counts. Polylogue exposes the
+same shape across daemon HTTP (`GET /api/facets`), MCP (`facets`), CLI
+(`polylogue facets`), and the Python API (`Polylogue.facets`); see
+[#1269](https://github.com/Sinity/polylogue/issues/1269) (slice D of
+[#873](https://github.com/Sinity/polylogue/issues/873)).
+
+A facets response carries both views explicitly:
+
+- `scoped` — counts rolled from the current query/filter set. Empty
+  buckets if the filter chain narrows away every value.
+- `global` — counts over the unfiltered archive. Always populated.
+- `scoped_to_query` — `true` whenever any filter narrowed the view.
+- `idf` — inverse-document-frequency per facet value, computed against
+  the global universe. Higher = rarer = stronger signal; near zero =
+  value appears in almost every conversation. Disable with
+  `--no-idf` on the CLI.
+
+Top-level fields (`providers`, `tags`, `total_conversations` etc.)
+mirror the *active* view (scoped when filtered, global otherwise) for
+backward compatibility with surfaces written before #1269. Consumers
+that need both views should read `scoped` and `global` directly.
+
+```bash
+polylogue facets                     # global only (no filters)
+polylogue facets -p chatgpt          # scoped to ChatGPT + global side-by-side
+polylogue facets -q "vector store"   # scoped to FTS hits
+polylogue facets -f json --no-idf    # FacetsResponse, no IDF weighting
 ```
 
 ## Empty Result Diagnostics

@@ -173,6 +173,7 @@ Commands:
   doctor        Run archive health checks and repairs.
   embed         Enable, preflight, and backfill the embedding pipeline.
   export        Export conversations.
+  facets
   feedback      Record learning corrections for derived insights.
   ingest        Import conversations from configured sources.
   init          Detect chat sources and write a starter polylogue.toml.
@@ -509,6 +510,7 @@ Published JSON Schemas live under [`docs/schemas/cli-output/`](./schemas/cli-out
 | `context-pack` | yes | no | yes | no | — | Provenance-rich JSON document; downstream agent surface. |
 | `count` | no | yes | yes | no | — | Single integer to stdout; no JSON envelope. |
 | `delete` | no | yes | yes | no | — | Side-effect command; --dry-run prints affected IDs. |
+| `facets` | yes | no | yes | no | — | Scoped vs global facet aggregates over the archive (#1269 / slice D of #873); ``--format json`` emits FacetsResponse. |
 | `feedback` | yes | yes | yes | no | — | record/list/clear subgroup; --machine wraps output in MachineSuccessPayload. |
 | `messages` | yes | yes | yes | yes | — | --format jsonl emits one message JSON per line. |
 | `neighbors` | yes | yes | yes | no | [`conversation-neighbor-candidate.schema.json`](./schemas/cli-output/conversation-neighbor-candidate.schema.json) |  |
@@ -518,6 +520,7 @@ Published JSON Schemas live under [`docs/schemas/cli-output/`](./schemas/cli-out
 | `select` | no | yes | yes | no | — | Selects one match and prints chosen field; single-line output. |
 | `show` | no | yes | yes | no | — | Renders full conversation in markdown/plaintext/html; not a stable JSON surface. |
 | `tags` | no | yes | yes | no | — | Tag-management subgroup; mutation-side commands. |
+| `tutorial` | no | yes | yes | no | — | Interactive first-run walkthrough; output is operator-facing prose and not contracted as machine-readable. |
 
 ### Family: `list`
 

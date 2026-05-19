@@ -949,8 +949,30 @@ class FacetTimeRange(SurfacePayloadModel):
     max: str | None = None
 
 
+class FacetBucketsPayload(SurfacePayloadModel):
+    """Bucket counts for one facet scope (scoped or global).
+
+    Carries the same shape as the legacy top-level facet fields on
+    :class:`FacetsResponse` so a reader can render scoped and global
+    side by side without having to interpret ``scoped_to_query``.
+    See #1269 (slice D of #873).
+    """
+
+    providers: dict[str, int] = Field(default_factory=dict)
+    tags: dict[str, int] = Field(default_factory=dict)
+    total_conversations: int = 0
+    total_messages: int = 0
+
+
 class FacetsResponse(SurfacePayloadModel):
-    """Shared facets response envelope with scope semantics."""
+    """Shared facets response envelope with scope semantics.
+
+    Top-level fields (``providers``, ``tags`` etc.) carry the *active*
+    view — scoped when ``scoped_to_query`` is true, global otherwise —
+    and exist for backward compatibility with surfaces written before
+    #1269 landed.  Consumers that need both views read the explicit
+    :attr:`scoped` and :attr:`global_` payloads.
+    """
 
     scoped_to_query: bool = False
     providers: dict[str, int] = Field(default_factory=dict)
@@ -963,6 +985,18 @@ class FacetsResponse(SurfacePayloadModel):
     time_range: FacetTimeRange | None = None
     total_conversations: int = 0
     total_messages: int = 0
+    # #1269: scoped/global pair plus optional IDF weighting. The global
+    # field is named ``global_`` in Python (``global`` is a reserved word)
+    # but serializes as ``global`` over JSON via the field alias.
+    scoped: FacetBucketsPayload = Field(default_factory=FacetBucketsPayload)
+    global_: FacetBucketsPayload = Field(
+        default_factory=FacetBucketsPayload,
+        alias="global",
+        serialization_alias="global",
+    )
+    idf: dict[str, dict[str, float]] = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
 
 class MutationResultPayload(SurfacePayloadModel):
@@ -1052,6 +1086,7 @@ __all__ = [
     "ConversationSearchHitPayload",
     "ConversationSearchMatchPayload",
     "ConversationSummaryPayload",
+    "FacetBucketsPayload",
     "FacetTimeRange",
     "FacetsResponse",
     "MachineErrorPayload",

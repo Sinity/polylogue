@@ -350,7 +350,14 @@ def _render_audit_plain(report: InsightRigorAuditReport) -> None:
     show_default=True,
     help="Maximum rows per product to sample for the rigor profile.",
 )
-@click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["json"]),
+    default=None,
+    help="Output format.",
+)
 @click.pass_context
 def insights_audit_command(
     ctx: click.Context,

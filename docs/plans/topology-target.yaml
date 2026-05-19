@@ -17,7 +17,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 1105
+    loc: 1184
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -340,6 +340,11 @@ files:
     target: polylogue/archive/query/__init__.py
     owner: archive-query
     reason: archive-domain query semantics
+  - path: polylogue/archive/query/facets.py
+    loc: 123
+    target: polylogue/archive/query/facets.py
+    owner: archive-query
+    reason: archive-domain query semantics
   - path: polylogue/archive/query/fields.py
     loc: 923
     target: polylogue/archive/query/fields.py
@@ -645,7 +650,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 174
+    loc: 175
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -704,6 +709,10 @@ files:
     loc: 56
     target: polylogue/cli/commands/export.py
     owner: stable
+  - path: polylogue/cli/commands/facets.py
+    loc: 111
+    target: polylogue/cli/commands/facets.py
+    owner: stable
   - path: polylogue/cli/commands/feedback.py
     loc: 183
     target: polylogue/cli/commands/feedback.py
@@ -717,7 +726,7 @@ files:
     target: polylogue/cli/commands/init.py
     owner: stable
   - path: polylogue/cli/commands/insights.py
-    loc: 428
+    loc: 435
     target: polylogue/cli/commands/insights.py
     owner: stable
   - path: polylogue/cli/commands/maintenance.py
@@ -773,7 +782,7 @@ files:
     target: polylogue/cli/messages.py
     owner: stable
   - path: polylogue/cli/output_assurance.py
-    loc: 475
+    loc: 499
     target: polylogue/cli/output_assurance.py
     owner: stable
   - path: polylogue/cli/parser_diagnostics.py
@@ -1119,7 +1128,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 2052
+    loc: 2020
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_models.py
@@ -1435,7 +1444,7 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 329
+    loc: 356
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
@@ -3402,7 +3411,7 @@ files:
     target: polylogue/surfaces/__init__.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 933
+    loc: 968
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/types.py

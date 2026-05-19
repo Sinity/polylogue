@@ -86,8 +86,12 @@ exceptions:
     reason: "live ingestion batch processor with metrics, fingerprinting, multi-stage progress tracking, and conversation-scoped convergence dispatch"
 
   - path: polylogue/api/archive.py
-    ceiling: 1150
-    reason: "archive facade for read/query/insight/maintenance surfaces; added audit_insights_rigor entrypoint (#1275); split candidate: extract per-domain facades (insights, maintenance) under polylogue/api/"
+    ceiling: 1200
+    reason: "archive facade for read/query/insight/maintenance surfaces; added audit_insights_rigor entrypoint (#1275) and scoped/global facets entrypoint (#1269); split candidate: extract per-domain facades (insights, maintenance) under polylogue/api/"
+
+  - path: polylogue/surfaces/payloads.py
+    ceiling: 1200
+    reason: "typed payload models for CLI/MCP/daemon surfaces; added FacetTimeRange + scoped/global facet envelopes (#1269); split candidate: per-domain payload modules under polylogue/surfaces/"
 
   - path: tests/unit/storage/test_backend.py
     ceiling: 1750

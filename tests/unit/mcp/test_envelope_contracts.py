@@ -69,6 +69,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "archive_coverage": "single_object",
     "cost_outlook": "single_object",
     "stats": "single_object",
+    "facets": "single_object",
     "build_context_pack": "single_object",
     "readiness_check": "single_object",
     "insight_rigor_audit": "single_object",
