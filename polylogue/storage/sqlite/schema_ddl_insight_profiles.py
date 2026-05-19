@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-SESSION_INSIGHT_PROFILE_DDL = """
+from polylogue.storage.sqlite.schema_ddl_insight_common import (
+    MATERIALIZATION_COLUMNS_SQL,
+)
+
+SESSION_INSIGHT_PROFILE_DDL = (
+    """
         CREATE TABLE IF NOT EXISTS session_profiles (
-            conversation_id TEXT PRIMARY KEY REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-            materializer_version INTEGER NOT NULL DEFAULT 5,
-            materialized_at TEXT NOT NULL,
-            source_updated_at TEXT,
-            source_sort_key REAL,
-            input_high_water_mark TEXT,
-            input_high_water_mark_source TEXT,
-            input_row_count INTEGER NOT NULL DEFAULT 0,
+            conversation_id TEXT PRIMARY KEY REFERENCES conversations(conversation_id) ON DELETE CASCADE,"""
+    + MATERIALIZATION_COLUMNS_SQL
+    + """
             provider_name TEXT NOT NULL,
             title TEXT,
             first_message_at TEXT,
@@ -72,3 +72,4 @@ SESSION_INSIGHT_PROFILE_DDL = """
         CREATE INDEX IF NOT EXISTS idx_session_profiles_canonical_date
         ON session_profiles(canonical_session_date DESC);
 """
+)

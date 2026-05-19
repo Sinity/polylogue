@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-SESSION_INSIGHT_AGGREGATE_DDL = """
+from polylogue.storage.sqlite.schema_ddl_insight_common import (
+    MATERIALIZATION_COLUMNS_SQL,
+    MATERIALIZATION_COLUMNS_SQL_NO_SORT_KEY,
+)
+
+SESSION_INSIGHT_AGGREGATE_DDL = (
+    """
         CREATE TABLE IF NOT EXISTS work_threads (
             thread_id TEXT PRIMARY KEY,
-            root_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-            materializer_version INTEGER NOT NULL DEFAULT 5,
-            materialized_at TEXT NOT NULL,
-            source_updated_at TEXT,
-            input_high_water_mark TEXT,
-            input_high_water_mark_source TEXT,
-            input_row_count INTEGER NOT NULL DEFAULT 0,
+            root_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,"""
+    + MATERIALIZATION_COLUMNS_SQL_NO_SORT_KEY
+    + """
             start_time TEXT,
             end_time TEXT,
             dominant_repo TEXT,
@@ -61,14 +63,9 @@ SESSION_INSIGHT_AGGREGATE_DDL = """
         CREATE TABLE IF NOT EXISTS session_tag_rollups (
             tag TEXT NOT NULL,
             bucket_day TEXT NOT NULL,
-            provider_name TEXT NOT NULL,
-            materializer_version INTEGER NOT NULL DEFAULT 5,
-            materialized_at TEXT NOT NULL,
-            source_updated_at TEXT,
-            source_sort_key REAL,
-            input_high_water_mark TEXT,
-            input_high_water_mark_source TEXT,
-            input_row_count INTEGER NOT NULL DEFAULT 0,
+            provider_name TEXT NOT NULL,"""
+    + MATERIALIZATION_COLUMNS_SQL
+    + """
             conversation_count INTEGER NOT NULL DEFAULT 0,
             explicit_count INTEGER NOT NULL DEFAULT 0,
             auto_count INTEGER NOT NULL DEFAULT 0,
@@ -85,14 +82,9 @@ SESSION_INSIGHT_AGGREGATE_DDL = """
 
         CREATE TABLE IF NOT EXISTS day_session_summaries (
             day TEXT NOT NULL,
-            provider_name TEXT NOT NULL,
-            materializer_version INTEGER NOT NULL DEFAULT 5,
-            materialized_at TEXT NOT NULL,
-            source_updated_at TEXT,
-            source_sort_key REAL,
-            input_high_water_mark TEXT,
-            input_high_water_mark_source TEXT,
-            input_row_count INTEGER NOT NULL DEFAULT 0,
+            provider_name TEXT NOT NULL,"""
+    + MATERIALIZATION_COLUMNS_SQL
+    + """
             conversation_count INTEGER NOT NULL DEFAULT 0,
             total_cost_usd REAL NOT NULL DEFAULT 0,
             total_duration_ms INTEGER NOT NULL DEFAULT 0,
@@ -109,3 +101,4 @@ SESSION_INSIGHT_AGGREGATE_DDL = """
         CREATE INDEX IF NOT EXISTS idx_day_session_summaries_day
         ON day_session_summaries(day DESC, provider_name);
 """
+)

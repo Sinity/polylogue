@@ -3359,15 +3359,19 @@ files:
     target: polylogue/storage/sqlite/schema_ddl_identity.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_insight_aggregates.py
-    loc: 111
+    loc: 104
     target: polylogue/storage/sqlite/schema_ddl_insight_aggregates.py
     owner: stable
+  - path: polylogue/storage/sqlite/schema_ddl_insight_common.py
+    loc: 51
+    target: polylogue/storage/sqlite/schema_ddl_insight_common.py
+    owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_insight_profiles.py
-    loc: 74
+    loc: 75
     target: polylogue/storage/sqlite/schema_ddl_insight_profiles.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_insight_timelines.py
-    loc: 116
+    loc: 112
     target: polylogue/storage/sqlite/schema_ddl_insight_timelines.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_provider_events.py

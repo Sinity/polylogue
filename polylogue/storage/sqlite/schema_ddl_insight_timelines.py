@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-SESSION_INSIGHT_TIMELINE_DDL = """
+from polylogue.storage.sqlite.schema_ddl_insight_common import (
+    MATERIALIZATION_COLUMNS_SQL,
+)
+
+SESSION_INSIGHT_TIMELINE_DDL = (
+    """
         CREATE TABLE IF NOT EXISTS session_work_events (
             event_id TEXT PRIMARY KEY,
-            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-            materializer_version INTEGER NOT NULL DEFAULT 5,
-            materialized_at TEXT NOT NULL,
-            source_updated_at TEXT,
-            source_sort_key REAL,
-            input_high_water_mark TEXT,
-            input_high_water_mark_source TEXT,
-            input_row_count INTEGER NOT NULL DEFAULT 0,
+            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,"""
+    + MATERIALIZATION_COLUMNS_SQL
+    + """
             provider_name TEXT NOT NULL,
             event_index INTEGER NOT NULL,
             kind TEXT NOT NULL,
@@ -62,14 +62,9 @@ SESSION_INSIGHT_TIMELINE_DDL = """
 
         CREATE TABLE IF NOT EXISTS session_phases (
             phase_id TEXT PRIMARY KEY,
-            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-            materializer_version INTEGER NOT NULL DEFAULT 5,
-            materialized_at TEXT NOT NULL,
-            source_updated_at TEXT,
-            source_sort_key REAL,
-            input_high_water_mark TEXT,
-            input_high_water_mark_source TEXT,
-            input_row_count INTEGER NOT NULL DEFAULT 0,
+            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,"""
+    + MATERIALIZATION_COLUMNS_SQL
+    + """
             provider_name TEXT NOT NULL,
             phase_index INTEGER NOT NULL,
             kind TEXT NOT NULL,
@@ -114,3 +109,4 @@ SESSION_INSIGHT_TIMELINE_DDL = """
             VALUES (new.event_id, new.conversation_id, new.provider_name, new.kind, new.search_text);
         END;
 """
+)
