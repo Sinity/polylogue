@@ -382,9 +382,46 @@ def _acquire_pidfile(pidfile: Path) -> int:
 
 
 def _emit_live_batch_event(kind: str, payload: dict[str, object]) -> None:
-    from polylogue.daemon.events import emit_daemon_event
+    """Persist a live-ingest batch event and fan out granular #1204 topics.
+
+    The legacy ``ingestion_batch`` kind is preserved verbatim for existing
+    consumers (status views, polling fallback). When the batch payload
+    carries succeeded counts we additionally emit per-topic events
+    (``conversation.appended`` / ``message.appended``) so the reader can
+    subscribe selectively and animate just-touched rows.
+    """
+    from polylogue.daemon.events import (
+        emit_conversation_appended,
+        emit_daemon_event,
+        emit_message_appended,
+    )
 
     emit_daemon_event(kind, payload=payload)
+
+    if kind != "ingestion_batch":
+        return
+
+    succeeded_raw = payload.get("succeeded_file_count", 0)
+    failed_raw = payload.get("failed_file_count", 0)
+    succeeded = int(succeeded_raw) if isinstance(succeeded_raw, int | float) else 0
+    failed = int(failed_raw) if isinstance(failed_raw, int | float) else 0
+    if succeeded <= 0:
+        return
+
+    # ``source_group_count`` is the only per-source breakdown the batch
+    # payload carries today. Emit one aggregate granular event per batch;
+    # source-level fan-out can be added once the metrics payload exposes
+    # per-source success counts (deferred — tracked under #1204 follow-ups).
+    emit_conversation_appended(
+        source_name=None,
+        succeeded_file_count=succeeded,
+        failed_file_count=failed,
+    )
+    emit_message_appended(
+        conversation_id=None,
+        source_name=None,
+        appended_count=succeeded,
+    )
 
 
 async def run_live_watcher(

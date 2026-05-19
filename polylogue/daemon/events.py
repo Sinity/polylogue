@@ -219,6 +219,142 @@ def emit_catch_up_cycle(
     emit_daemon_event("catch_up_cycle", operation_id=operation_id, payload=payload)
 
 
+# --------------------------------------------------------------------------
+# Granular event kinds (#1204)
+# --------------------------------------------------------------------------
+#
+# These constants name the per-topic SSE events the reader subscribes to.
+# Older opaque kinds (``ingestion_batch``/``ingest``/``reset``/``operation``)
+# remain on the wire for backwards compatibility with existing consumers
+# (status views, polling fallback). The granular kinds below split the
+# realtime channel so the reader can subscribe selectively by view and
+# animate just-appended rows without rerendering the full list.
+
+EVENT_CONVERSATION_APPENDED = "conversation.appended"
+EVENT_CONVERSATION_UPDATED = "conversation.updated"
+EVENT_MESSAGE_APPENDED = "message.appended"
+EVENT_INSIGHT_UPDATED = "insight.updated"
+EVENT_PROGRESS_UPDATE = "progress.update"
+EVENT_PROGRESS_COMPLETE = "progress.complete"
+
+GRANULAR_EVENT_KINDS: frozenset[str] = frozenset(
+    {
+        EVENT_CONVERSATION_APPENDED,
+        EVENT_CONVERSATION_UPDATED,
+        EVENT_MESSAGE_APPENDED,
+        EVENT_INSIGHT_UPDATED,
+        EVENT_PROGRESS_UPDATE,
+        EVENT_PROGRESS_COMPLETE,
+    }
+)
+
+
+def emit_conversation_appended(
+    *,
+    source_name: str | None,
+    succeeded_file_count: int,
+    failed_file_count: int = 0,
+    source_paths: Sequence[str] | None = None,
+) -> None:
+    """Emit a ``conversation.appended`` event for newly-arrived conversations.
+
+    Fired once per live-ingest batch summarising the touched source group.
+    Carries enough for the reader to animate new rows without rerendering
+    the whole list; the reader still calls ``/api/conversations`` to
+    materialise the rows.
+    """
+    payload: dict[str, object] = {
+        "source_name": source_name,
+        "succeeded_file_count": int(succeeded_file_count),
+        "failed_file_count": int(failed_file_count),
+    }
+    if source_paths is not None:
+        payload["source_paths"] = list(source_paths)
+    emit_daemon_event(EVENT_CONVERSATION_APPENDED, payload=payload)
+
+
+def emit_message_appended(
+    *,
+    conversation_id: str | None,
+    source_name: str | None = None,
+    appended_count: int = 0,
+    source_path: str | None = None,
+) -> None:
+    """Emit a ``message.appended`` event for live-tail consumers.
+
+    The reader subscribes to this topic only for the currently-open
+    conversation; subscription is encoded via ``?kinds=message.appended``
+    plus filtering by ``conversation_id`` on the client.
+    """
+    payload: dict[str, object] = {
+        "conversation_id": conversation_id,
+        "source_name": source_name,
+        "appended_count": int(appended_count),
+    }
+    if source_path is not None:
+        payload["source_path"] = source_path
+    emit_daemon_event(EVENT_MESSAGE_APPENDED, payload=payload)
+
+
+def emit_insight_updated(
+    *,
+    insight_kind: str,
+    conversation_id: str | None = None,
+) -> None:
+    """Emit an ``insight.updated`` event when a derived insight rebuilds."""
+    payload: dict[str, object] = {
+        "insight_kind": insight_kind,
+        "conversation_id": conversation_id,
+    }
+    emit_daemon_event(EVENT_INSIGHT_UPDATED, payload=payload)
+
+
+def emit_progress_update(
+    *,
+    operation_id: str,
+    operation_kind: str,
+    completed: int,
+    total: int | None = None,
+    detail: str | None = None,
+    eta_seconds: float | None = None,
+) -> None:
+    """Emit a ``progress.update`` event for long-running maintenance ops (#996).
+
+    Consumers: web reader status chip; ``status --convergence --watch`` (#1218).
+    Coalescing-friendly — the snapshot path collapses bursts into one
+    summary frame, so emitters do not need to throttle themselves.
+    """
+    payload: dict[str, object] = {
+        "operation_kind": operation_kind,
+        "completed": int(completed),
+    }
+    if total is not None:
+        payload["total"] = int(total)
+        payload["fraction"] = round(completed / total, 6) if total > 0 else None
+    if detail is not None:
+        payload["detail"] = detail
+    if eta_seconds is not None:
+        payload["eta_seconds"] = round(float(eta_seconds), 3)
+    emit_daemon_event(EVENT_PROGRESS_UPDATE, operation_id=operation_id, payload=payload)
+
+
+def emit_progress_complete(
+    *,
+    operation_id: str,
+    operation_kind: str,
+    status: str = "completed",
+    detail: str | None = None,
+) -> None:
+    """Emit a terminal ``progress.complete`` event for a long-running op."""
+    payload: dict[str, object] = {
+        "operation_kind": operation_kind,
+        "status": status,
+    }
+    if detail is not None:
+        payload["detail"] = detail
+    emit_daemon_event(EVENT_PROGRESS_COMPLETE, operation_id=operation_id, payload=payload)
+
+
 def get_daemon_event_counts() -> dict[str, int]:
     """Return event counts by kind."""
     conn = _ensure_events_db()
@@ -230,8 +366,20 @@ def get_daemon_event_counts() -> dict[str, int]:
 
 
 __all__ = [
+    "EVENT_CONVERSATION_APPENDED",
+    "EVENT_CONVERSATION_UPDATED",
+    "EVENT_INSIGHT_UPDATED",
+    "EVENT_MESSAGE_APPENDED",
+    "EVENT_PROGRESS_COMPLETE",
+    "EVENT_PROGRESS_UPDATE",
+    "GRANULAR_EVENT_KINDS",
     "emit_catch_up_cycle",
+    "emit_conversation_appended",
     "emit_daemon_event",
+    "emit_insight_updated",
+    "emit_message_appended",
+    "emit_progress_complete",
+    "emit_progress_update",
     "get_daemon_event_counts",
     "get_last_ingestion_batch",
     "get_latest_event_id",
