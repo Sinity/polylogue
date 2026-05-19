@@ -55,6 +55,8 @@ Usage: polylogue [OPTIONS] COMMAND [ARGS]...
       polylogue --diagnose <args>       # explain parser decisions
 
 Options:
+  --help-markdown                 Emit the full --help tree (root + every
+                                  subcommand) as Markdown and exit.
   -i, --id TEXT                   Conversation ID (exact or prefix match)
   -c, --contains TEXT             FTS term (repeatable = AND)
   --exclude-text TEXT             Exclude FTS term
@@ -110,7 +112,7 @@ Options:
                                   conversation ID
   --since TEXT                    After date (ISO, 'yesterday', 'last week')
   --until TEXT                    Before date
-  -n, --limit INTEGER             Max results
+  -l, -n, --limit INTEGER         Max results
   --offset INTEGER                Offset for paginated results
   --latest                        Most recent (= --sort date --limit 1)
   --sort [date|tokens|messages|words|longest|random]
@@ -202,7 +204,7 @@ Options:
                                   per line, streaming-friendly)
   --fields TEXT                   Fields: id, title, provider, date, messages,
                                   words, tags, summary
-  -n, --limit INTEGER             Max results
+  -l, -n, --limit INTEGER         Max results
   --help                          Show this message and exit.
 ```
 
@@ -219,7 +221,7 @@ Options:
   -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|plaintext|csv]
                                   Output format (ndjson = one JSON document
                                   per row, streaming-friendly)
-  -n, --limit INTEGER             Max matched conversations before grouping
+  -l, -n, --limit INTEGER         Max matched conversations before grouping
   --help                          Show this message and exit.
 ```
 
@@ -297,7 +299,7 @@ Usage: polylogue doctor [OPTIONS]
   Health check with optional maintenance and cleanup previews.
 
 Options:
-  --format [json]                 Output format
+  -f, --format [json]             Output format
   -v, --verbose                   Show breakdown by provider
   --repair                        Run safe derived-data and database
                                   maintenance repairs

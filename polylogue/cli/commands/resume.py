@@ -21,7 +21,7 @@ def _wants_json(ctx: click.Context, *, output_format: str | None) -> bool:
 @click.command("resume")
 @click.argument("session_id")
 @click.option("--related-limit", type=int, default=6, show_default=True, help="Maximum related sessions to include.")
-@click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
+@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
 @click.pass_context
 def resume_command(
     ctx: click.Context,

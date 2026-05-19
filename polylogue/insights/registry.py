@@ -597,7 +597,7 @@ register(
                 show_default=True,
                 help="Bucket granularity: ISO day, ISO week, or project (cwd_path).",
             ),
-            CliOption("provider", ("--provider",), help="Only sessions from this provider"),
+            CliOption("provider", ("--provider", "-p"), help="Only sessions from this provider"),
             CliOption("since", ("--since",), help="Only sessions on/after this ISO date"),
             CliOption("until", ("--until",), help="Only sessions on/before this ISO date"),
         ),

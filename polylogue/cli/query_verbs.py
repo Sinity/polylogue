@@ -71,7 +71,7 @@ _complete_message_type = _lazy_shell_complete("message_type")
     help="Output format (ndjson = one JSON document per line, streaming-friendly)",
 )
 @click.option("--fields", help="Fields: id, title, provider, date, messages, words, tags, summary")
-@click.option("--limit", "-n", type=int, help="Max results")
+@click.option("--limit", "-l", "-n", type=int, help="Max results")
 @click.pass_context
 def list_verb(ctx: click.Context, output_format: str | None, fields: str | None, limit: int | None) -> None:
     """List matched conversations."""
@@ -106,7 +106,7 @@ def count_verb(ctx: click.Context) -> None:
     type=click.Choice(["markdown", "json", "ndjson", "html", "obsidian", "org", "yaml", "plaintext", "csv"]),
     help="Output format (ndjson = one JSON document per row, streaming-friendly)",
 )
-@click.option("--limit", "-n", type=int, help="Max matched conversations before grouping")
+@click.option("--limit", "-l", "-n", type=int, help="Max matched conversations before grouping")
 @click.pass_context
 def stats_verb(ctx: click.Context, stats_by: str | None, output_format: str | None, limit: int | None) -> None:
     """Show statistics for matched conversations."""
@@ -229,7 +229,7 @@ def _execute_query_verb(
     shell_complete=_complete_message_type,
     help="Filter by message content type",
 )
-@click.option("--limit", "-n", type=int, default=50, help="Max messages to return")
+@click.option("--limit", "-l", "-n", type=int, default=50, help="Max messages to return")
 @click.option("--offset", type=int, default=0, help="Offset for pagination")
 @click.option("--no-code-blocks", is_flag=True, help="Exclude code blocks")
 @click.option("--no-tool-calls", is_flag=True, help="Exclude tool calls")
@@ -286,7 +286,7 @@ def messages_verb(
 
 @click.command("raw")
 @click.argument("conversation_id", required=False, shell_complete=_complete_conversation_id)
-@click.option("--limit", "-n", type=int, default=50, help="Max raw artifacts to return")
+@click.option("--limit", "-l", "-n", type=int, default=50, help="Max raw artifacts to return")
 @click.option("--offset", type=int, default=0, help="Offset for pagination")
 @click.option(
     "--format", "-f", "output_format", type=click.Choice(["json", "yaml"]), default="json", help="Output format"
@@ -330,7 +330,7 @@ def raw_verb(
     type=click.Choice(["conversation"]),
 )
 @click.option("--print", "print_field", type=click.Choice(["id", "title", "provider", "json"]), default="id")
-@click.option("--limit", "-n", type=int, default=50, help="Max candidates to offer")
+@click.option("--limit", "-l", "-n", type=int, default=50, help="Max candidates to offer")
 @click.pass_context
 def select_verb(ctx: click.Context, selector_kind: str, print_field: str, limit: int) -> None:
     """Select one matched conversation and print a field."""

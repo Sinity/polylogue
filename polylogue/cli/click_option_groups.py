@@ -266,7 +266,7 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
     ),
     click.option("--since", help="After date (ISO, 'yesterday', 'last week')"),
     click.option("--until", help="Before date"),
-    click.option("--limit", "-n", type=int, help="Max results"),
+    click.option("--limit", "-l", "-n", type=int, help="Max results"),
     click.option("--offset", type=int, default=0, help="Offset for paginated results"),
     click.option("--latest", is_flag=True, help="Most recent (= --sort date --limit 1)"),
     click.option(

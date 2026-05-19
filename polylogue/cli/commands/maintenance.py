@@ -72,7 +72,7 @@ _SCOPE_FILTER_OPTIONS = [
         multiple=True,
         help="Restrict scope to one or more conversation ids (repeatable).",
     ),
-    click.option("--provider", type=str, default=None, help="Restrict scope to one provider name."),
+    click.option("--provider", "-p", type=str, default=None, help="Restrict scope to one provider name."),
     click.option(
         "--source-family",
         type=str,
@@ -422,6 +422,7 @@ def preview_command(
 @maintenance_group.command("gc-history")
 @click.option(
     "--limit",
+    "-l",
     type=int,
     default=20,
     show_default=True,

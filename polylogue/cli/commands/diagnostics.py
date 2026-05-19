@@ -19,7 +19,7 @@ def diagnostics_group() -> None:
 
 @diagnostics_group.command("pace")
 @click.argument("conversation_id", required=False)
-@click.option("--limit", "-n", type=int, default=10, help="Number of recent conversations to analyze")
+@click.option("--limit", "-l", "-n", type=int, default=10, help="Number of recent conversations to analyze")
 @click.option("--threshold", type=int, default=60, help="Gap threshold in seconds for classification")
 @click.pass_context
 def pace_command(
@@ -91,7 +91,7 @@ async def _pace(env: AppEnv, conversation_id: str | None, limit: int, threshold:
 
 @diagnostics_group.command("turns")
 @click.argument("conversation_id")
-@click.option("--limit", "-n", type=int, default=20, help="Max turns to show")
+@click.option("--limit", "-l", "-n", type=int, default=20, help="Max turns to show")
 @click.pass_context
 def turns_command(ctx: click.Context, conversation_id: str, limit: int) -> None:
     """Show per-turn cost and duration for one conversation."""
@@ -138,7 +138,7 @@ async def _turns(env: AppEnv, conversation_id: str, limit: int) -> None:
 
 @diagnostics_group.command("tools")
 @click.option("--provider", "-p", help="Filter by provider")
-@click.option("--limit", "-n", type=int, default=20, help="Max tools to show")
+@click.option("--limit", "-l", "-n", type=int, default=20, help="Max tools to show")
 @click.pass_context
 def tools_command(ctx: click.Context, provider: str | None, limit: int) -> None:
     """Show top tools by invocation count across filtered conversations."""

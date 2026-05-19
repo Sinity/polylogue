@@ -3,13 +3,30 @@
 Single source of truth for provider brand colors, role colors,
 status colors, and UI theme tokens used across CLI, HTML rendering,
 and daemon web surfaces.
+
+Theme mode resolution (#1274):
+
+The active theme — ``"dark"``, ``"light"``, or auto-detected — is resolved
+via :func:`resolve_theme_mode`. Precedence (highest first):
+
+1. ``POLYLOGUE_THEME`` environment variable (``dark``/``light``/``auto``).
+2. ``[ui] theme`` in ``polylogue.toml`` (same values).
+3. ``COLORFGBG`` / ``TERM_BACKGROUND`` hints when set to ``auto``.
+4. Default: ``"dark"``.
+
+``POLYLOGUE_FORCE_PLAIN`` is orthogonal — plain mode strips Rich layout
+entirely, independent of the resolved theme.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+from typing import Literal
 
 from polylogue.archive.message.roles import Role
+
+ThemeMode = Literal["dark", "light"]
 
 # =============================================================================
 # Provider brand colors
@@ -182,27 +199,127 @@ THINKING_STYLE = {
 # =============================================================================
 
 
-def rich_theme_styles() -> dict[str, str]:
-    """Build Rich Theme style dict incorporating role and provider colors."""
+# =============================================================================
+# Semantic style tokens (#1274)
+#
+# These are the canonical names every CLI surface should reach for when
+# rendering severity-coded output. They map to Rich Theme style keys via
+# ``semantic_style(token, mode)`` so light/dark resolutions stay consistent.
+# =============================================================================
+
+SEMANTIC_TOKENS: tuple[str, ...] = ("error", "warning", "ok", "dim", "info")
+
+
+def _semantic_style_map(mode: ThemeMode) -> dict[str, str]:
+    if mode == "light":
+        # On light terminals, "dim" needs more contrast than the dark default.
+        return {
+            "error": f"bold {STATUS_COLORS['error']}",
+            "warning": f"bold {STATUS_COLORS['warning']}",
+            "ok": f"bold {STATUS_COLORS['success']}",
+            "info": f"bold {STATUS_COLORS['info']}",
+            "dim": "#6b7280",
+        }
+    return {
+        "error": f"bold {STATUS_COLORS['error']}",
+        "warning": f"bold {STATUS_COLORS['warning']}",
+        "ok": f"bold {STATUS_COLORS['success']}",
+        "info": f"bold {STATUS_COLORS['info']}",
+        "dim": "dim #94a3b8",
+    }
+
+
+def semantic_style(token: str, mode: ThemeMode | None = None) -> str:
+    """Return the Rich style string for a semantic token under ``mode``.
+
+    ``token`` must be one of :data:`SEMANTIC_TOKENS`. ``mode`` defaults to
+    the active theme resolved via :func:`resolve_theme_mode`.
+    """
+    if token not in SEMANTIC_TOKENS:
+        raise KeyError(f"unknown semantic token: {token!r}")
+    active = mode if mode is not None else resolve_theme_mode()
+    return _semantic_style_map(active)[token]
+
+
+def resolve_theme_mode() -> ThemeMode:
+    """Resolve the active theme mode honoring env, config, and auto-detection.
+
+    See module docstring for precedence rules. Returns ``"dark"`` on
+    indeterminate auto-detection so the historical default is preserved.
+    """
+    env_value = os.environ.get("POLYLOGUE_THEME", "").strip().lower()
+    if env_value == "dark":
+        return "dark"
+    if env_value == "light":
+        return "light"
+    if env_value == "" or env_value == "auto":
+        # Try config layer; importing lazily keeps the theme module
+        # importable from anywhere without circular dependency risk.
+        try:
+            from polylogue.config import load_polylogue_config
+
+            configured = (load_polylogue_config().theme or "").strip().lower()
+            if configured == "dark":
+                return "dark"
+            if configured == "light":
+                return "light"
+            if configured and configured != "auto":
+                return "dark"
+        except Exception:
+            pass
+        # Auto-detection: COLORFGBG="<fg>;<bg>" — bg index <8 → dark, else light.
+        fgbg = os.environ.get("COLORFGBG", "")
+        if fgbg:
+            parts = fgbg.split(";")
+            if len(parts) >= 2:
+                try:
+                    bg = int(parts[-1])
+                    return "light" if bg >= 8 else "dark"
+                except ValueError:
+                    pass
+    return "dark"
+
+
+def rich_theme_styles(mode: ThemeMode | None = None) -> dict[str, str]:
+    """Build Rich Theme style dict for ``mode`` (defaults to resolved mode)."""
+    active = mode if mode is not None else resolve_theme_mode()
+    sem = _semantic_style_map(active)
+    if active == "light":
+        banner_title = "bold #134e4a"
+        banner_subtitle = "#0f766e"
+        banner_icon = "bold #0d9488"
+        panel_text = "#111827"
+        summary_title = "bold #1e3a8a"
+        summary_text = "#1f2937"
+        status_message = "#111827"
+    else:
+        banner_title = "bold #e0f2f1"
+        banner_subtitle = "#cdecef"
+        banner_icon = "bold #7fdbca"
+        panel_text = "#e5e7eb"
+        summary_title = "bold #c4e0ff"
+        summary_text = "#d6dee8"
+        status_message = "#e5e7eb"
+
     styles: dict[str, str] = {
         # Banner
-        "banner.icon": "bold #7fdbca",
-        "banner.title": "bold #e0f2f1",
-        "banner.subtitle": "#cdecef",
+        "banner.icon": banner_icon,
+        "banner.title": banner_title,
+        "banner.subtitle": banner_subtitle,
         "banner.border": "#14b8a6",
         # Panels
         "panel.border": "#3b82f6",
-        "panel.text": "#e5e7eb",
+        "panel.text": panel_text,
         # Summary
-        "summary.title": "bold #c4e0ff",
+        "summary.title": summary_title,
         "summary.bullet": "bold #34d399",
-        "summary.text": "#d6dee8",
+        "summary.text": summary_text,
         # Status
-        "status.icon.error": f"bold {STATUS_COLORS['error']}",
-        "status.icon.warning": f"bold {STATUS_COLORS['warning']}",
-        "status.icon.success": f"bold {STATUS_COLORS['success']}",
-        "status.icon.info": f"bold {STATUS_COLORS['info']}",
-        "status.message": "#e5e7eb",
+        "status.icon.error": sem["error"],
+        "status.icon.warning": sem["warning"],
+        "status.icon.success": sem["ok"],
+        "status.icon.info": sem["info"],
+        "status.message": status_message,
         # Code
         "code.border": "#4c1d95",
         "markdown.border": "#475569",
@@ -210,6 +327,12 @@ def rich_theme_styles() -> dict[str, str]:
         "thinking.text": THINKING_STYLE["rich_style"],
         "thinking.border": THINKING_STYLE["border_color"],
         "thinking.label": THINKING_STYLE["label"],
+        # Semantic tokens (canonical names — prefer these in new code).
+        "semantic.error": sem["error"],
+        "semantic.warning": sem["warning"],
+        "semantic.ok": sem["ok"],
+        "semantic.info": sem["info"],
+        "semantic.dim": sem["dim"],
     }
 
     # Role styles

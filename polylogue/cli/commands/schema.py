@@ -43,8 +43,8 @@ def schema_command(ctx: click.Context) -> None:
 
 
 @schema_command.command("list")
-@click.option("--provider", default=None, help="Filter to specific provider")
-@click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format")
+@click.option("--provider", "-p", default=None, help="Filter to specific provider")
+@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format")
 @click.pass_obj
 def schema_list(env: AppEnv, provider: str | None, output_format: str | None) -> None:
     """List available schema packages, versions, and evidence manifests."""
@@ -54,11 +54,13 @@ def schema_list(env: AppEnv, provider: str | None, output_format: str | None) ->
 
 
 @schema_command.command("compare")
-@click.option("--provider", required=True, help="Provider name")
+@click.option("--provider", "-p", required=True, help="Provider name")
 @click.option("--from", "from_version", required=True, help="Source version (e.g., v1)")
 @click.option("--to", "to_version", required=True, help="Target version (e.g., v2)")
 @click.option("--element", "element_kind", default=None, help="Element kind inside the package")
-@click.option("--format", "output_format", type=click.Choice(["json", "markdown"]), default=None, help="Output format")
+@click.option(
+    "--format", "-f", "output_format", type=click.Choice(["json", "markdown"]), default=None, help="Output format"
+)
 @click.option("--markdown", "md_output", is_flag=True, help="Output as Markdown")
 @click.pass_obj
 def schema_compare(
@@ -92,10 +94,10 @@ def schema_compare(
 
 
 @schema_command.command("explain")
-@click.option("--provider", required=True, help="Provider name")
+@click.option("--provider", "-p", required=True, help="Provider name")
 @click.option("--version", default="latest", help="Schema version (default: latest)")
 @click.option("--element", "element_kind", default=None, help="Element kind inside the package")
-@click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format")
+@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format")
 @click.option("--verbose", "-v", is_flag=True, help="Show semantic roles and coverage")
 @click.option("--proof", is_flag=True, help="Show proof surface for role assignment decisions")
 @click.pass_obj
