@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from polylogue.daemon.live_ingest_attempt_progress import ProgressClassification
+
 
 class LiveIngestAttemptState(BaseModel):
     attempt_id: str
@@ -43,10 +45,15 @@ class LiveIngestAttemptState(BaseModel):
     stale_cursor_write_count: int = 0
     updated_age_s: float | None = None
     stale: bool = False
+    progress_classification: ProgressClassification = "healthy"
+    slow_threshold_s: float | None = None
     completed_at: str | None = None
 
 
 class LiveIngestAttemptSummary(BaseModel):
     running_count: int = 0
     stale_running_count: int = 0
+    slow_running_count: int = 0
+    stuck_running_count: int = 0
+    slow_threshold_s: float | None = None
     recent: list[LiveIngestAttemptState] = Field(default_factory=list)
