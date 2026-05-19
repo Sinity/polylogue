@@ -78,4 +78,23 @@ def format_timestamp(ts: int | float | datetime) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds")
 
 
-__all__ = ["parse_timestamp", "format_timestamp"]
+def parse_timestamp_pair(
+    value: str | int | float | None,
+) -> tuple[datetime, str] | None:
+    """Parse a timestamp and return both the datetime and an ISO-style string.
+
+    If ``value`` is already a string, the original string is preserved verbatim
+    (so any on-disk representation round-trips unchanged). For numeric inputs,
+    the canonical ISO 8601 string from :func:`format_timestamp` is returned.
+
+    Returns ``None`` when the value cannot be parsed.
+    """
+    parsed = parse_timestamp(value)
+    if parsed is None:
+        return None
+    if isinstance(value, str):
+        return (parsed, value)
+    return (parsed, format_timestamp(parsed))
+
+
+__all__ = ["parse_timestamp", "parse_timestamp_pair", "format_timestamp"]
