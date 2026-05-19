@@ -194,6 +194,33 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("stats", run)
 
+    async def _facets(**kwargs: object) -> str:
+        # Reuse the conversation query request so MCP facets share the
+        # same filter vocabulary as ``search``/``list_conversations``
+        # (#1269). When called with no filters the response carries
+        # ``scoped_to_query=False`` and the global archive view.
+        request = build_conversation_query_request(**kwargs)
+
+        async def run() -> str:
+            built = request.build_spec(hooks.clamp_limit)
+            spec = built if built.has_filters() else None
+            poly = hooks.get_polylogue()
+            response = await poly.facets(spec)
+            return hooks.json_payload(response)
+
+        return await hooks.async_safe_call("facets", run)
+
+    cast(Any, _facets).__signature__ = conversation_query_request_signature(include_query=False)
+    _facets.__name__ = "facets"
+    _facets.__doc__ = (
+        "Compute scoped and global facet aggregates over the archive. "
+        "Filter parameters mirror ``MCPConversationQueryRequest`` fields; "
+        "when any filter narrows the result set the response carries "
+        "``scoped_to_query=true`` with both ``scoped`` and ``global`` bucket "
+        "counts plus inverse-document-frequency weights for each value."
+    )
+    mcp.tool()(_facets)
+
 
 def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()

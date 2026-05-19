@@ -8,7 +8,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `611`
+- subjects: `612`
 - claims: `37`
 - runner bindings: `37`
 - proof obligations: `477`
@@ -40,7 +40,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 20 |
 | `assurance.coverage_item` | 107 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 75 |
+| `cli.command` | 76 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -85,6 +85,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue embed preflight` | `polylogue/cli/commands/embed.py:323` `polylogue.cli.commands.embed.preflight_subcommand` |
 | `polylogue embed status` | `polylogue/cli/commands/embed.py:437` `polylogue.cli.commands.embed.status_subcommand` |
 | `polylogue export` | `polylogue/cli/click_app.py` `polylogue export` |
+| `polylogue facets` | `polylogue/cli/click_app.py` `polylogue facets` |
 | `polylogue feedback` | `polylogue/cli/click_app.py` `polylogue feedback` |
 | `polylogue feedback clear` | `polylogue/cli/commands/feedback.py:143` `polylogue.cli.commands.feedback.clear_corrections_cmd` |
 | `polylogue feedback list` | `polylogue/cli/commands/feedback.py:110` `polylogue.cli.commands.feedback.list_corrections_cmd` |
@@ -106,7 +107,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue insights status` | `polylogue/cli/commands/insights.py:199` `polylogue.cli.commands.insights.insights_status_command` |
 | `polylogue insights tags` | `polylogue/cli/commands/insights.py:110` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue insights threads` | `polylogue/cli/commands/insights.py:110` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights timeline` | `polylogue/cli/commands/insights.py:381` `polylogue.cli.commands.insights.insights_timeline_command` |
+| `polylogue insights timeline` | `polylogue/cli/commands/insights.py:388` `polylogue.cli.commands.insights.insights_timeline_command` |
 | `polylogue insights tool-usage` | `polylogue/cli/commands/insights.py:110` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue insights week-summaries` | `polylogue/cli/commands/insights.py:110` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue insights work-events` | `polylogue/cli/commands/insights.py:110` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |

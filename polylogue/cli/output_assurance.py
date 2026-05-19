@@ -182,6 +182,29 @@ ASSURANCE_REGISTRY: tuple[OutputAssurance, ...] = (
         notes="Tag-management subgroup; mutation-side commands.",
     ),
     OutputAssurance(
+        command="tutorial",
+        family=QUERY_FAMILY,
+        json_contract=False,
+        snapshot=True,
+        plain=True,
+        streaming=False,
+        notes=(
+            "Interactive first-run walkthrough; output is operator-facing prose and not contracted as machine-readable."
+        ),
+    ),
+    OutputAssurance(
+        command="facets",
+        family=QUERY_FAMILY,
+        json_contract=True,
+        snapshot=False,
+        plain=True,
+        streaming=False,
+        notes=(
+            "Scoped vs global facet aggregates over the archive (#1269 / "
+            "slice D of #873); ``--format json`` emits FacetsResponse."
+        ),
+    ),
+    OutputAssurance(
         command="neighbors",
         family=QUERY_FAMILY,
         json_contract=True,

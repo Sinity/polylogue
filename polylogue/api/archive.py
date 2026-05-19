@@ -25,6 +25,8 @@ if TYPE_CHECKING:
     from polylogue.archive.conversation.neighbor_candidates import ConversationNeighborCandidate
     from polylogue.archive.filter.filters import ConversationFilter
     from polylogue.archive.message.models import Message
+    from polylogue.archive.query.facets import FacetBuckets
+    from polylogue.archive.query.spec import ConversationQuerySpec
     from polylogue.config import Config
     from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
@@ -38,6 +40,7 @@ if TYPE_CHECKING:
     from polylogue.surfaces.payloads import (
         BulkTagMutationResult,
         DeleteConversationResult,
+        FacetsResponse,
         MetadataMutationResult,
         SearchEnvelope,
         TagMutationResult,
@@ -182,6 +185,82 @@ class PolylogueArchiveMixin:
 
     async def stats(self) -> ArchiveStats:
         return await self.operations.summary_stats()
+
+    async def facets(
+        self,
+        spec: ConversationQuerySpec | None = None,
+        *,
+        include_idf: bool = True,
+    ) -> FacetsResponse:
+        """Compute scoped + global facet aggregates over the archive.
+
+        When ``spec`` carries any active filter, the scoped buckets are
+        rolled from that filter's summary list and ``scoped_to_query``
+        becomes true.  The global buckets always reflect the
+        unfiltered archive.  Surfaces (daemon HTTP, MCP, CLI) call into
+        this method so the scope vocabulary stays in one place
+        (#1269 / slice D of #873).
+        """
+        from polylogue.archive.query.facets import (
+            FacetBuckets as _FacetBuckets,
+        )
+        from polylogue.archive.query.facets import (
+            compute_facets,
+            compute_idf,
+        )
+        from polylogue.surfaces.payloads import (
+            FacetBucketsPayload,
+            FacetsResponse,
+        )
+
+        scoped_to_query = spec is not None and spec.has_filters()
+        global_buckets = await self._compute_global_facets()
+        if scoped_to_query:
+            assert spec is not None
+            filter_obj = spec.build_filter(self.repository)
+            scoped_summaries = await filter_obj.list_summaries()
+            scoped_buckets = compute_facets(scoped_summaries)
+        else:
+            scoped_buckets = global_buckets
+
+        idf_map = compute_idf(global_buckets) if include_idf else {}
+        active = scoped_buckets if scoped_to_query else global_buckets
+
+        def _payload(b: _FacetBuckets) -> FacetBucketsPayload:
+            return FacetBucketsPayload(
+                providers=dict(b.providers),
+                tags=dict(b.tags),
+                total_conversations=b.total_conversations,
+                total_messages=b.total_messages,
+            )
+
+        return FacetsResponse.model_validate(
+            {
+                "scoped_to_query": scoped_to_query,
+                "providers": dict(active.providers),
+                "tags": dict(active.tags),
+                "total_conversations": active.total_conversations,
+                "total_messages": active.total_messages,
+                "scoped": _payload(scoped_buckets),
+                "global": _payload(global_buckets),
+                "idf": idf_map,
+            }
+        )
+
+    async def _compute_global_facets(self) -> FacetBuckets:
+        """Compute global facet buckets from the unfiltered archive.
+
+        Uses the same fluent filter machinery as the scoped path with
+        no active predicates so both buckets are derived from one code
+        path.
+        """
+        from polylogue.archive.query.facets import compute_facets
+        from polylogue.archive.query.spec import ConversationQuerySpec
+
+        empty_spec = ConversationQuerySpec()
+        filter_obj = empty_spec.build_filter(self.repository)
+        summaries = await filter_obj.list_summaries()
+        return compute_facets(summaries)
 
     async def health_check(self) -> ReadinessReport:
         """Return the canonical archive readiness report."""
