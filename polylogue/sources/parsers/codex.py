@@ -13,7 +13,7 @@ from polylogue.archive.message.artifacts import classify_text_message_type
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.provider.semantics import extract_codex_text
-from polylogue.core.timestamps import format_timestamp, parse_timestamp
+from polylogue.core.timestamps import parse_timestamp_pair
 from polylogue.logging import get_logger
 from polylogue.sources.providers.codex import CodexRecord
 from polylogue.types import ContentBlockType, Provider
@@ -30,18 +30,8 @@ logger = get_logger(__name__)
 _TimestampPair = tuple[datetime, str]
 
 
-def _timestamp_pair(value: str | int | float | None) -> _TimestampPair | None:
-    if isinstance(value, str):
-        parsed = parse_timestamp(value)
-        return (parsed, value) if parsed is not None else None
-    parsed = parse_timestamp(value)
-    if parsed is None:
-        return None
-    return (parsed, format_timestamp(parsed))
-
-
-def _normalize_timestamp(value: str | int | float | None) -> str | None:
-    pair = _timestamp_pair(value)
+def _iso_or_none(value: str | int | float | None) -> str | None:
+    pair = parse_timestamp_pair(value)
     return pair[1] if pair is not None else None
 
 
@@ -51,7 +41,7 @@ def _newer_timestamp(
 ) -> _TimestampPair | None:
     if not isinstance(value, str) or not value:
         return current
-    return _newer_timestamp_pair(current, _timestamp_pair(value))
+    return _newer_timestamp_pair(current, parse_timestamp_pair(value))
 
 
 def _newer_timestamp_pair(
@@ -200,7 +190,7 @@ def _tool_input_from_arguments(value: object) -> dict[str, object]:
 def _codex_tool_message(record: dict[str, object], *, index: int) -> ParsedMessage | None:
     payload = _record_payload(record)
     record_type = _record_type(record)
-    timestamp = _normalize_timestamp(_record_timestamp(record))
+    timestamp = _iso_or_none(_record_timestamp(record))
     if record_type == "function_call":
         tool_name = payload.get("name")
         if not isinstance(tool_name, str) or not tool_name:
@@ -325,7 +315,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
 
         # Handle compaction events (before message check so they don't fall through)
         if _record_type(record) == "compacted":
-            timestamp = _normalize_timestamp(_record_timestamp(record))
+            timestamp = _iso_or_none(_record_timestamp(record))
             payload = _payload_record(record) or {}
             history = payload.get("replacement_history")
             event_payload: dict[str, object] = {
@@ -345,7 +335,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
 
         # Handle turn-context events
         if _record_type(record) == "turn_context":
-            timestamp = _normalize_timestamp(_record_timestamp(record))
+            timestamp = _iso_or_none(_record_timestamp(record))
             tc_payload: dict[str, object] = {}
             turn_payload = _payload_record(record)
             if turn_payload:
@@ -370,7 +360,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
                 provider_events.append(
                     ParsedProviderEvent(
                         event_type=_record_type(inner) or "response_item",
-                        timestamp=_normalize_timestamp(_record_timestamp(inner) or _record_timestamp(record)),
+                        timestamp=_iso_or_none(_record_timestamp(inner) or _record_timestamp(record)),
                         payload={"raw": event_payload},
                     )
                 )
@@ -390,7 +380,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
                 session_metas_seen.append(meta_id)
                 if len(session_metas_seen) == 1:
                     session_id = meta_id
-                    session_timestamp_pair = _timestamp_pair(_record_timestamp(session_meta))
+                    session_timestamp_pair = parse_timestamp_pair(_record_timestamp(session_meta))
                     session_timestamp = session_timestamp_pair[1] if session_timestamp_pair is not None else None
             git_context = _git_context(session_meta)
             if git_context and not session_git:
@@ -405,7 +395,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
             raw_role = _effective_role(message_record)
             content = _effective_content(message_record)
             text = extract_codex_text(content)
-            timestamp_pair = _timestamp_pair(_record_timestamp(message_record))
+            timestamp_pair = parse_timestamp_pair(_record_timestamp(message_record))
             timestamp = timestamp_pair[1] if timestamp_pair is not None else None
 
             content_blocks = content_blocks_from_segments(content)

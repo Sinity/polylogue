@@ -1013,7 +1013,7 @@ files:
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/timestamps.py
-    loc: 81
+    loc: 100
     target: polylogue/core/timestamps.py
     owner: core-primitive
     reason: core primitive
@@ -2529,7 +2529,7 @@ files:
     target: polylogue/sources/parsers/chatgpt.py
     owner: stable
   - path: polylogue/sources/parsers/claude/__init__.py
-    loc: 93
+    loc: 60
     target: polylogue/sources/parsers/claude/__init__.py
     owner: stable
   - path: polylogue/sources/parsers/claude/ai_parser.py
@@ -2553,7 +2553,7 @@ files:
     target: polylogue/sources/parsers/claude/index.py
     owner: stable
   - path: polylogue/sources/parsers/codex.py
-    loc: 488
+    loc: 478
     target: polylogue/sources/parsers/codex.py
     owner: stable
   - path: polylogue/sources/parsers/drive.py
