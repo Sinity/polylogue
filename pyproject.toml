@@ -49,7 +49,7 @@ dependencies = [
   "nh3>=0.2.18",  # Rust-backed HTML sanitizer (ammonia bindings) for defense-in-depth
   # Transitive constraints to avoid known CVEs surfaced by pip-audit:
   "cryptography>=48.0.0",  # CVE-2026-39892 (transitive via google-auth)
-  "python-multipart>=0.0.28",  # CVE-2026-40347 (transitive via mcp)
+  "python-multipart>=0.0.29",  # CVE-2026-40347 (transitive via mcp)
 ]
 
 [project.optional-dependencies]
@@ -63,7 +63,7 @@ dev = [
   "pytest-json-report>=1.5.0",  # Structured JSON report for verify pipeline + dashboard (#1026, #998)
   "pytest-benchmark>=5.0",  # Microbenchmark suite (run with --benchmark-enable -p no:xdist)
   "coverage[toml]>=7.14.0",
-  "hypothesis>=6.152.7",
+  "hypothesis>=6.152.8",
   "hypothesis-jsonschema>=0.23.0",  # Generate test data from JSON schemas
   "genson>=1.2.0",  # Infer JSON schemas from samples
   "jsonschema>=4.0.0",  # Validate JSON against schemas
