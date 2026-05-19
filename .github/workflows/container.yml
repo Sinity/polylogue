@@ -110,8 +110,13 @@ jobs:
           load: ${{ steps.decide.outputs.push != 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          provenance: true
-          sbom: true
+          # Attestations produce a manifest list even on single-platform builds,
+          # which the classic docker image store cannot import via --load. Only
+          # emit them on push paths (master / tag / opt-in workflow_dispatch),
+          # where the image is pushed to ghcr.io and never loaded locally.
+          # See #1373.
+          provenance: ${{ steps.decide.outputs.push == 'true' }}
+          sbom: ${{ steps.decide.outputs.push == 'true' }}
           cache-from: type=gha,scope=container-${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=container-${{ matrix.target }}
 
