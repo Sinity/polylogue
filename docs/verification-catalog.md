@@ -8,7 +8,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `608`
+- subjects: `609`
 - claims: `37`
 - runner bindings: `37`
 - proof obligations: `477`
@@ -40,7 +40,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 20 |
 | `assurance.coverage_item` | 107 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 72 |
+| `cli.command` | 73 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -111,10 +111,11 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue insights work-events` | `polylogue/cli/commands/insights.py:105` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue list` | `polylogue/cli/click_app.py` `polylogue list` |
 | `polylogue maintenance` | `polylogue/cli/click_app.py` `polylogue maintenance` |
-| `polylogue maintenance gc-history` | `polylogue/cli/commands/maintenance.py:424` `polylogue.cli.commands.maintenance.gc_history_command` |
-| `polylogue maintenance plan` | `polylogue/cli/commands/maintenance.py:129` `polylogue.cli.commands.maintenance.plan_command` |
-| `polylogue maintenance preview` | `polylogue/cli/commands/maintenance.py:356` `polylogue.cli.commands.maintenance.preview_command` |
-| `polylogue maintenance run` | `polylogue/cli/commands/maintenance.py:212` `polylogue.cli.commands.maintenance.run_command` |
+| `polylogue maintenance gc-history` | `polylogue/cli/commands/maintenance.py:425` `polylogue.cli.commands.maintenance.gc_history_command` |
+| `polylogue maintenance plan` | `polylogue/cli/commands/maintenance.py:130` `polylogue.cli.commands.maintenance.plan_command` |
+| `polylogue maintenance preview` | `polylogue/cli/commands/maintenance.py:357` `polylogue.cli.commands.maintenance.preview_command` |
+| `polylogue maintenance run` | `polylogue/cli/commands/maintenance.py:213` `polylogue.cli.commands.maintenance.run_command` |
+| `polylogue maintenance status` | `polylogue/cli/commands/maintenance.py:502` `polylogue.cli.commands.maintenance.status_command` |
 | `polylogue messages` | `polylogue/cli/click_app.py` `polylogue messages` |
 | `polylogue neighbors` | `polylogue/cli/click_app.py` `polylogue neighbors` |
 | `polylogue open` | `polylogue/cli/click_app.py` `polylogue open` |

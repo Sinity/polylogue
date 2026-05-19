@@ -6,7 +6,7 @@ import click
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli as root_cli
-from polylogue.cli.commands.maintenance import plan_command, run_command
+from polylogue.cli.commands.maintenance import plan_command, run_command, status_command
 
 
 def _registered_maintenance_command() -> click.Command:
@@ -69,3 +69,25 @@ def test_maintenance_run_help_output() -> None:
     result = runner.invoke(root_cli, ["maintenance", "run", "--help"])
     assert result.exit_code == 0
     assert "--dry-run" in result.output
+
+
+def test_maintenance_status_is_click_command() -> None:
+    """status is a Click Command on the maintenance group (#1197)."""
+    assert isinstance(status_command, click.Command)
+
+
+def test_maintenance_group_has_status() -> None:
+    """maintenance group lists status as a subcommand (#1197)."""
+    maintenance_group = _registered_maintenance_command()
+    ctx = click.Context(maintenance_group)
+    cmds = maintenance_group.list_commands(ctx)  # type: ignore[attr-defined]
+    assert "status" in cmds
+
+
+def test_maintenance_status_help_output() -> None:
+    """polylogue maintenance status --help shows the status help."""
+    runner = CliRunner()
+    result = runner.invoke(root_cli, ["maintenance", "status", "--help"])
+    assert result.exit_code == 0
+    assert "--operation-id" in result.output
+    assert "--all" in result.output

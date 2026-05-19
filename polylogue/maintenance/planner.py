@@ -55,6 +55,41 @@ logger = get_logger(__name__)
 MAX_FAILURE_SAMPLES = 50
 
 
+def _coerce_float(value: object) -> float | None:
+    """Best-effort projection of a JSON value onto ``float`` (or ``None``).
+
+    Used by :meth:`BackfillOperation.from_dict` to rehydrate numeric
+    fields from untrusted JSON without scattering bracketed mypy
+    suppression directives across the payload-coercion paths.
+    """
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _coerce_int(value: object) -> int | None:
+    """Best-effort projection of a JSON value onto ``int`` (or ``None``)."""
+    if isinstance(value, bool):
+        # bool is a subclass of int but we don't want True / False
+        # silently becoming 1 / 0 in user-visible row counts.
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
 class BackfillKind(str, Enum):
     """What kind of maintenance operation this is.
 
@@ -241,6 +276,108 @@ class BackfillOperation:
                 "failure_samples": self.failure_samples.to_dict(),
                 "metrics": dict(self.metrics),
             }
+        )
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, object]) -> BackfillOperation:
+        """Reconstruct a :class:`BackfillOperation` from its ``to_dict`` form.
+
+        Used by :mod:`polylogue.maintenance.registry` to rehydrate
+        persisted operation snapshots from
+        ``<archive_root>/.maintenance-state/*.json``. Unknown enum values
+        round-trip through their literal string form so a snapshot
+        written by an older or newer build is still readable.
+        """
+
+        op_id = str(payload.get("operation_id", ""))
+        kind_raw = str(payload.get("kind", BackfillKind.DERIVED_REBUILD.value))
+        try:
+            kind = BackfillKind(kind_raw)
+        except ValueError:
+            kind = BackfillKind.DERIVED_REBUILD
+        status_raw = str(payload.get("status", BackfillStatus.PENDING.value))
+        try:
+            status = BackfillStatus(status_raw)
+        except ValueError:
+            status = BackfillStatus.PENDING
+        targets_raw = payload.get("targets") or ()
+        if not isinstance(targets_raw, (list, tuple)):
+            targets_raw = ()
+        targets = tuple(str(t) for t in targets_raw)
+        results_raw = payload.get("results") or []
+        results: list[JSONDocument] = []
+        if isinstance(results_raw, (list, tuple)):
+            for entry in results_raw:
+                if isinstance(entry, dict):
+                    results.append(json_document(entry))
+        scope_raw = payload.get("scope")
+        scope_obj: MaintenanceScope | None
+        if isinstance(scope_raw, dict):
+            try:
+                scope_obj = MaintenanceScope.from_dict(scope_raw)
+            except (TypeError, ValueError):
+                scope_obj = None
+        else:
+            scope_obj = None
+        reason_raw = payload.get("reason")
+        reason_obj: InvalidationReason | None
+        if isinstance(reason_raw, str):
+            try:
+                reason_obj = InvalidationReason(reason_raw)
+            except ValueError:
+                reason_obj = None
+        else:
+            reason_obj = None
+        resume_cursor_raw = payload.get("resume_cursor")
+        resume_cursor = resume_cursor_raw if isinstance(resume_cursor_raw, str) else None
+        failure_raw = payload.get("failure_samples")
+        if isinstance(failure_raw, dict):
+            samples_raw = failure_raw.get("samples") or ()
+            truncated = bool(failure_raw.get("truncated", False))
+            samples: list[FailureSample] = []
+            if isinstance(samples_raw, (list, tuple)):
+                for entry in samples_raw:
+                    if isinstance(entry, dict):
+                        samples.append(
+                            FailureSample(
+                                kind=str(entry.get("kind", "")),
+                                locator=str(entry.get("locator", "")),
+                                message=str(entry.get("message", "")),
+                            )
+                        )
+            failure_samples = BoundedFailureSamples(samples=tuple(samples), truncated=truncated)
+        else:
+            failure_samples = BoundedFailureSamples()
+        metrics_raw = payload.get("metrics") or {}
+        metrics: dict[str, float] = {}
+        if isinstance(metrics_raw, dict):
+            for key, value in metrics_raw.items():
+                coerced = _coerce_float(value)
+                if coerced is not None:
+                    metrics[str(key)] = coerced
+        progress = _coerce_float(payload.get("progress", 0.0)) or 0.0
+        affected_rows = _coerce_int(payload.get("affected_rows", 0)) or 0
+        estimated_time_s = _coerce_float(payload.get("estimated_time_s", 0.0)) or 0.0
+        started_raw = payload.get("started_at")
+        completed_raw = payload.get("completed_at")
+        error_raw = payload.get("error")
+        return cls(
+            operation_id=op_id,
+            kind=kind,
+            targets=targets,
+            status=status,
+            progress=progress,
+            started_at=started_raw if isinstance(started_raw, str) else None,
+            completed_at=completed_raw if isinstance(completed_raw, str) else None,
+            error=error_raw if isinstance(error_raw, str) else None,
+            affected_rows=affected_rows,
+            estimated_time_s=estimated_time_s,
+            results=results,
+            scope=scope_obj,
+            reason=reason_obj,
+            resume_cursor=resume_cursor,
+            failure_samples=failure_samples,
+            metrics=metrics,
         )
 
 

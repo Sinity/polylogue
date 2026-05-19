@@ -713,7 +713,7 @@ files:
     target: polylogue/cli/commands/insights.py
     owner: stable
   - path: polylogue/cli/commands/maintenance.py
-    loc: 507
+    loc: 641
     target: polylogue/cli/commands/maintenance.py
     owner: stable
   - path: polylogue/cli/commands/neighbors.py
@@ -1103,7 +1103,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 2034
+    loc: 2052
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_models.py
@@ -1114,6 +1114,10 @@ files:
   - path: polylogue/daemon/live_ingest_attempt_workload.py
     loc: 137
     target: polylogue/daemon/live_ingest_attempt_workload.py
+    owner: stable
+  - path: polylogue/daemon/maintenance_registry_http.py
+    loc: 83
+    target: polylogue/daemon/maintenance_registry_http.py
     owner: stable
   - path: polylogue/daemon/notification_backends/__init__.py
     loc: 65
@@ -1319,15 +1323,19 @@ files:
     target: polylogue/maintenance/models.py
     owner: stable
   - path: polylogue/maintenance/planner.py
-    loc: 505
+    loc: 642
     target: polylogue/maintenance/planner.py
     owner: stable
   - path: polylogue/maintenance/preview.py
     loc: 453
     target: polylogue/maintenance/preview.py
     owner: stable
+  - path: polylogue/maintenance/registry.py
+    loc: 277
+    target: polylogue/maintenance/registry.py
+    owner: stable
   - path: polylogue/maintenance/replay.py
-    loc: 690
+    loc: 773
     target: polylogue/maintenance/replay.py
     owner: stable
   - path: polylogue/maintenance/scope.py
@@ -1379,7 +1387,7 @@ files:
     target: polylogue/mcp/server_insight_tools.py
     owner: stable
   - path: polylogue/mcp/server_maintenance_tools.py
-    loc: 337
+    loc: 418
     target: polylogue/mcp/server_maintenance_tools.py
     owner: stable
   - path: polylogue/mcp/server_mutation_tools.py

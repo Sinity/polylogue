@@ -1768,6 +1768,14 @@
     }
   },
   {
+    "name": "maintenance_list",
+    "parameters": {
+      "properties": {},
+      "title": "maintenance_listArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "maintenance_preview",
     "parameters": {
       "properties": {
@@ -1899,6 +1907,22 @@
         }
       },
       "title": "maintenance_previewArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "maintenance_status",
+    "parameters": {
+      "properties": {
+        "operation_id": {
+          "title": "Operation Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation_id"
+      ],
+      "title": "maintenance_statusArguments",
       "type": "object"
     }
   },
