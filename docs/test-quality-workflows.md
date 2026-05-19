@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `5`
 - synthetic benchmark campaigns: `7`
-- scenario projections: `267`
+- scenario projections: `269`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `5`
-  - exercise: `160`
+  - exercise: `162`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `7`

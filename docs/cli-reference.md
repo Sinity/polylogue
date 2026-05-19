@@ -571,7 +571,6 @@ Published JSON Schemas live under [`docs/schemas/cli-output/`](./schemas/cli-out
 | Command | JSON contract | Snapshot | `--plain` | NDJSON | Schema | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | `completions` | no | yes | yes | no | — | Emits shell-specific completion script; covered by completion contract tests. |
-| `tutorial` | no | no | yes | no | — | Interactive first-run walkthrough; --non-interactive for scripts. |
 
 ### Family: `maintenance`
 
