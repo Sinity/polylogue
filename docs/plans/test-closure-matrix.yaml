@@ -144,10 +144,9 @@ rows:
     representative_tests:
       - tests/unit/pipeline/test_stage_independence.py
       - tests/unit/pipeline/test_resilience.py
+      - tests/unit/pipeline/test_validation_parallelism_contracts.py
     gate: required
-    known_gaps:
-      - batch-ingest validation parallelism (services/validation.py two-phase
-        executor) has no direct concurrency test
+    known_gaps: []
 
   - domain: storage.crud
     target_files:
