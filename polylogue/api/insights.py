@@ -38,6 +38,7 @@ from polylogue.insights.productivity import (
     ProductivityRollupInsightQuery,
 )
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
+from polylogue.insights.topology import ConversationRef, SessionTopology
 
 if TYPE_CHECKING:
 
@@ -124,6 +125,10 @@ if TYPE_CHECKING:
 
 class _RepositorySurface(Protocol):
     async def get_session_profile(self, conversation_id: str) -> SessionProfile | None: ...
+
+    async def get_session_topology(self, conversation_id: str) -> SessionTopology | None: ...
+
+    async def resolve_id(self, conversation_id: str, *, strict: bool = False) -> object: ...
 
 
 class PolylogueInsightsMixin:
@@ -275,3 +280,79 @@ class PolylogueInsightsMixin:
         if not corrections:
             return base
         return apply_correction_to_classification(base, corrections)
+
+    # ------------------------------------------------------------------
+    # Topology read API (#1261 / #866 slice D)
+    #
+    # Surface the derived ``SessionTopology`` graph as a typed Python API
+    # so MCP, future reader panes, and context packs consume one read
+    # model instead of re-walking parent pointers. Each helper accepts a
+    # short or full conversation ID and resolves it before delegating.
+    # ------------------------------------------------------------------
+
+    async def _resolve_for_topology(self, conversation_id: str) -> str | None:
+        resolved = await self.repository.resolve_id(conversation_id, strict=True)
+        if resolved is None:
+            return None
+        return str(resolved)
+
+    async def get_session_topology(self, conversation_id: str) -> SessionTopology | None:
+        """Return the typed :class:`SessionTopology` for ``conversation_id``.
+
+        Returns ``None`` when the conversation is unknown. Cycles and
+        unresolved native parent edges are surfaced via the topology
+        object itself; see :class:`SessionTopology`.
+        """
+
+        resolved = await self._resolve_for_topology(conversation_id)
+        if resolved is None:
+            return None
+        return await self.repository.get_session_topology(resolved)
+
+    async def get_ancestors(self, conversation_id: str) -> list[ConversationRef]:
+        """Return ancestor refs ordered root → parent.
+
+        Empty list when the conversation is its own topology root, when
+        it is unknown, or when no resolved ancestors exist.
+        """
+
+        resolved = await self._resolve_for_topology(conversation_id)
+        if resolved is None:
+            return []
+        topology = await self.repository.get_session_topology(resolved)
+        if topology is None:
+            return []
+        return topology.ancestor_refs(resolved)
+
+    async def get_descendants(self, conversation_id: str) -> list[ConversationRef]:
+        """Return descendant refs in BFS order."""
+
+        resolved = await self._resolve_for_topology(conversation_id)
+        if resolved is None:
+            return []
+        topology = await self.repository.get_session_topology(resolved)
+        if topology is None:
+            return []
+        return topology.descendant_refs(resolved)
+
+    async def get_siblings(self, conversation_id: str) -> list[ConversationRef]:
+        """Return sibling refs (other children of the resolved parent)."""
+
+        resolved = await self._resolve_for_topology(conversation_id)
+        if resolved is None:
+            return []
+        topology = await self.repository.get_session_topology(resolved)
+        if topology is None:
+            return []
+        return topology.sibling_refs(resolved)
+
+    async def get_thread(self, conversation_id: str) -> list[ConversationRef]:
+        """Return the full lineage thread ordered ancestors → self → descendants."""
+
+        resolved = await self._resolve_for_topology(conversation_id)
+        if resolved is None:
+            return []
+        topology = await self.repository.get_session_topology(resolved)
+        if topology is None:
+            return []
+        return topology.thread_refs(resolved)

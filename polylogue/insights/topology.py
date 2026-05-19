@@ -62,6 +62,26 @@ class TopologyEdgeKind(str, Enum):
         return cls(branch_type.value)
 
 
+class ConversationRef(BaseModel):
+    """Typed reference to a conversation, returned by topology read APIs.
+
+    Carries the minimal projection that lineage consumers need (id +
+    provider + title + depth) without forcing them to hydrate the full
+    :class:`~polylogue.archive.conversation.models.Conversation`. Slice D
+    of #866: surfaces such as the MCP topology tool, future reader panes,
+    and context packs consume this ref instead of re-walking parent
+    pointers.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    conversation_id: ConversationId
+    provider_name: str = ""
+    title: str | None = None
+    depth: int = 0
+    """Distance from the topology root (root has depth 0)."""
+
+
 class TopologyNode(BaseModel):
     """One conversation in the topology graph."""
 
@@ -74,6 +94,16 @@ class TopologyNode(BaseModel):
     """Distance from the topology root (root has depth 0)."""
 
     is_root: bool = False
+
+    def as_ref(self) -> ConversationRef:
+        """Project this node into a :class:`ConversationRef`."""
+
+        return ConversationRef(
+            conversation_id=self.conversation_id,
+            provider_name=self.provider_name,
+            title=self.title,
+            depth=self.depth,
+        )
 
 
 class TopologyEdge(BaseModel):
@@ -187,8 +217,67 @@ class SessionTopology(BaseModel):
 
         return tuple(edge for edge in self.edges if not edge.resolved)
 
+    # ------------------------------------------------------------------
+    # Typed projection surface (#1261 / #866 slice D)
+    #
+    # These methods return :class:`ConversationRef` lists rather than raw
+    # ``ConversationId`` tuples so callers (Python API, MCP, future reader
+    # panes) get title/provider context without re-fetching conversation
+    # rows. They are layered on top of the existing structural helpers so
+    # ordering semantics stay identical.
+    # ------------------------------------------------------------------
+
+    def _node_index(self) -> dict[str, TopologyNode]:
+        return {str(node.conversation_id): node for node in self.nodes}
+
+    def _refs_for(self, ids: tuple[ConversationId, ...]) -> list[ConversationRef]:
+        index = self._node_index()
+        refs: list[ConversationRef] = []
+        for conv_id in ids:
+            node = index.get(str(conv_id))
+            if node is not None:
+                refs.append(node.as_ref())
+        return refs
+
+    def ancestor_refs(self, conversation_id: str) -> list[ConversationRef]:
+        """Return ancestor :class:`ConversationRef`s ordered root → parent."""
+
+        return self._refs_for(self.ancestors(conversation_id))
+
+    def descendant_refs(self, conversation_id: str) -> list[ConversationRef]:
+        """Return descendant :class:`ConversationRef`s in BFS order."""
+
+        return self._refs_for(self.descendants(conversation_id))
+
+    def sibling_refs(self, conversation_id: str) -> list[ConversationRef]:
+        """Return sibling :class:`ConversationRef`s (shared resolved parent)."""
+
+        return self._refs_for(self.siblings(conversation_id))
+
+    def thread_refs(self, conversation_id: str) -> list[ConversationRef]:
+        """Return the full lineage thread ordered ancestors → self → descendants.
+
+        Use this when the consumer wants a single linearization of the
+        whole sub-lineage rooted at the topology root and reaching every
+        descendant of ``conversation_id``. The self node is included
+        between the ancestors and the descendants — this preserves the
+        topological order ancestors → self → descendants that
+        chronological readers expect.
+        """
+
+        index = self._node_index()
+        target_node = index.get(str(conversation_id))
+        if target_node is None:
+            return []
+        thread: list[ConversationRef] = []
+        thread.extend(self._refs_for(self.ancestors(conversation_id)))
+        thread.append(target_node.as_ref())
+        thread.extend(self._refs_for(self.descendants(conversation_id)))
+        return thread
+
 
 __all__ = [
+    "ConversationRef",
     "SessionTopology",
     "TopologyEdge",
     "TopologyEdgeKind",

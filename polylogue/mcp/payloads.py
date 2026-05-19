@@ -191,6 +191,44 @@ class MCPSessionTreePayload(SurfacePayloadModel):
     total: int
 
 
+class MCPConversationRefPayload(SurfacePayloadModel):
+    """One conversation reference inside a topology payload (#1261)."""
+
+    conversation_id: str
+    provider_name: str = ""
+    title: str | None = None
+    depth: int = 0
+
+
+class MCPTopologyEdgePayload(SurfacePayloadModel):
+    """One resolved or unresolved-native edge inside a topology payload."""
+
+    child_id: str
+    parent_id: str | None
+    parent_native_id: str | None
+    kind: str
+    resolved: bool
+
+
+class MCPSessionTopologyPayload(SurfacePayloadModel):
+    """Typed envelope for ``get_session_topology`` (#1261 / #866 slice D).
+
+    The four ref lists mirror the helper methods on
+    :class:`~polylogue.insights.topology.SessionTopology` so callers do
+    not have to re-derive lineage from the raw node/edge tuples.
+    """
+
+    target_id: str
+    root_id: str
+    cycle_detected: bool
+    nodes: tuple[MCPConversationRefPayload, ...]
+    edges: tuple[MCPTopologyEdgePayload, ...]
+    ancestors: tuple[MCPConversationRefPayload, ...]
+    descendants: tuple[MCPConversationRefPayload, ...]
+    siblings: tuple[MCPConversationRefPayload, ...]
+    thread: tuple[MCPConversationRefPayload, ...]
+
+
 class MCPNeighborCandidatesPayload(SurfacePayloadModel):
     """Bounded envelope for ``neighbor_candidates``.
 
@@ -257,6 +295,49 @@ def session_tree_payload(
 ) -> MCPSessionTreePayload:
     items = tuple(MCPConversationSummaryPayload.from_conversation(conv) for conv in conversations)
     return MCPSessionTreePayload(items=items, total=len(items))
+
+
+def _ref_payload(ref: object) -> MCPConversationRefPayload:
+    # Imported lazily to avoid pulling insights/topology into the module
+    # import graph at module load time.
+    from polylogue.insights.topology import ConversationRef
+
+    assert isinstance(ref, ConversationRef)
+    return MCPConversationRefPayload(
+        conversation_id=str(ref.conversation_id),
+        provider_name=ref.provider_name,
+        title=ref.title,
+        depth=ref.depth,
+    )
+
+
+def session_topology_payload(topology: object, *, conversation_id: str) -> MCPSessionTopologyPayload:
+    """Build the typed MCP payload for ``get_session_topology`` (#1261)."""
+    from polylogue.insights.topology import SessionTopology
+
+    assert isinstance(topology, SessionTopology)
+    nodes = tuple(_ref_payload(node.as_ref()) for node in topology.nodes)
+    edges = tuple(
+        MCPTopologyEdgePayload(
+            child_id=str(edge.child_id),
+            parent_id=str(edge.parent_id) if edge.parent_id is not None else None,
+            parent_native_id=edge.parent_native_id,
+            kind=str(edge.kind.value),
+            resolved=edge.resolved,
+        )
+        for edge in topology.edges
+    )
+    return MCPSessionTopologyPayload(
+        target_id=str(topology.target_id),
+        root_id=str(topology.root_id),
+        cycle_detected=topology.cycle_detected,
+        nodes=nodes,
+        edges=edges,
+        ancestors=tuple(_ref_payload(ref) for ref in topology.ancestor_refs(conversation_id)),
+        descendants=tuple(_ref_payload(ref) for ref in topology.descendant_refs(conversation_id)),
+        siblings=tuple(_ref_payload(ref) for ref in topology.sibling_refs(conversation_id)),
+        thread=tuple(_ref_payload(ref) for ref in topology.thread_refs(conversation_id)),
+    )
 
 
 def neighbor_candidates_payload(

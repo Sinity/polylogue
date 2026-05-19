@@ -50,6 +50,10 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "list_conversations": ("envelope", frozenset({"items", "total"})),
     "neighbor_candidates": ("envelope", frozenset({"items", "total", "limit"})),
     "get_session_tree": ("envelope", frozenset({"items", "total"})),
+    "get_session_topology": (
+        "envelope",
+        frozenset({"target_id", "root_id", "nodes", "edges", "ancestors", "descendants", "siblings", "thread"}),
+    ),
     "get_messages": ("envelope", frozenset({"messages", "total"})),
     "raw_artifacts": ("envelope", frozenset({"raw_artifacts", "total"})),
     # ------- mutation list -------
@@ -180,6 +184,7 @@ def _build_typed_envelope_classes() -> dict[str, type[BaseModel]]:
         MCPPaginatedQueryResultPayload,
         MCPPaginatedSearchResultPayload,
         MCPRawArtifactsListPayload,
+        MCPSessionTopologyPayload,
         MCPSessionTreePayload,
     )
 
@@ -188,6 +193,7 @@ def _build_typed_envelope_classes() -> dict[str, type[BaseModel]]:
         "list_conversations": MCPPaginatedQueryResultPayload,
         "neighbor_candidates": MCPNeighborCandidatesPayload,
         "get_session_tree": MCPSessionTreePayload,
+        "get_session_topology": MCPSessionTopologyPayload,
         "get_messages": MCPMessagesListPayload,
         "raw_artifacts": MCPRawArtifactsListPayload,
     }

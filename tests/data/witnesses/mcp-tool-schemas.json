@@ -1389,6 +1389,22 @@
     }
   },
   {
+    "name": "get_session_topology",
+    "parameters": {
+      "properties": {
+        "conversation_id": {
+          "title": "Conversation Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation_id"
+      ],
+      "title": "get_session_topologyArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "get_session_tree",
     "parameters": {
       "properties": {
