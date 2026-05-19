@@ -385,6 +385,19 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-manifests",),
     ),
     CommandSpec(
+        "verify-doc-commands",
+        "verification",
+        "Verify README/docs command examples resolve to live polylogue, polylogued, and devtools commands.",
+        "devtools.verify_doc_commands",
+        use_when=(
+            "Catch doc drift away from the daemon-first command surface. "
+            "Fails when README.md or any docs/**/*.md references a subcommand "
+            "that is not registered, or a stale invocation like "
+            "'polylogued run --enable-api' / 'polylogue run --source'."
+        ),
+        examples=("devtools verify-doc-commands", "devtools verify-doc-commands --json"),
+    ),
+    CommandSpec(
         "verify-ci-workflows",
         "verification",
         "Verify CI workflow files reference locally-known devtools commands and existing paths.",

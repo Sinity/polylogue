@@ -5,7 +5,7 @@ After=default.target
 
 [Service]
 Type=simple
-ExecStart=polylogued run --enable-api --api-host 127.0.0.1 --api-port 8766 --no-browser-capture
+ExecStart=polylogued run --api-host 127.0.0.1 --api-port 8766 --no-browser-capture
 Restart=on-failure
 RestartSec=5s
 Nice=10

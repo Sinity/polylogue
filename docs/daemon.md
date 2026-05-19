@@ -356,7 +356,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=%h/.nix-profile/bin/polylogued run --enable-api --api-port 8766
+ExecStart=%h/.nix-profile/bin/polylogued run --api-port 8766
 Restart=on-failure
 RestartSec=5
 

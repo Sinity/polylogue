@@ -6,7 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/polylogued run --enable-api
+ExecStart=%h/.local/bin/polylogued run
 Restart=on-failure
 RestartSec=5
 WorkingDirectory=%h
