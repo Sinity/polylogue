@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from polylogue.archive.session.documents import SessionPhaseDocument, WorkEventDocument
+from polylogue.insights.confidence import ConfidenceBand
 from polylogue.insights.fallback import FallbackReason
 
 ARCHIVE_INSIGHT_CONTRACT_VERSION = 7
@@ -91,10 +92,10 @@ class SessionInferencePayload(ArchiveInsightModel):
     phase_count: int = 0
     engaged_duration_ms: int = 0
     engaged_minutes: float = 0.0
-    support_level: str = "weak"
+    support_level: ConfidenceBand = ConfidenceBand.WEAK
     support_signals: tuple[str, ...] = ()
     engaged_duration_source: str = "session_total_fallback"
-    repo_inference_strength: str = "weak"
+    repo_inference_strength: ConfidenceBand = ConfidenceBand.WEAK
     auto_tags: tuple[str, ...] = ()
     work_events: tuple[WorkEventDocument, ...] = ()
     phases: tuple[SessionPhaseDocument, ...] = ()
@@ -129,7 +130,7 @@ class WorkEventInferencePayload(ArchiveInsightModel):
     summary: str
     confidence: float
     evidence: tuple[str, ...] = ()
-    support_level: str = "weak"
+    support_level: ConfidenceBand = ConfidenceBand.WEAK
     support_signals: tuple[str, ...] = ()
     fallback_inference: bool = False
     fallback_reasons: tuple[FallbackReason, ...] = ()
@@ -150,7 +151,7 @@ class SessionPhaseEvidencePayload(ArchiveInsightModel):
 class SessionPhaseInferencePayload(ArchiveInsightModel):
     confidence: float = 0.0
     evidence: tuple[str, ...] = ()
-    support_level: str = "weak"
+    support_level: ConfidenceBand = ConfidenceBand.WEAK
     support_signals: tuple[str, ...] = ()
     fallback_inference: bool = False
     fallback_reasons: tuple[FallbackReason, ...] = ()
@@ -161,7 +162,7 @@ class SessionEnrichmentPayload(ArchiveInsightModel):
     outcome_summary: str | None = None
     blockers: tuple[str, ...] = ()
     confidence: float = 0.0
-    support_level: str = "weak"
+    support_level: ConfidenceBand = ConfidenceBand.WEAK
     support_signals: tuple[str, ...] = ()
     input_band_summary: dict[str, int] = Field(default_factory=dict)
     fallback_reasons: tuple[FallbackReason, ...] = ()
@@ -231,7 +232,7 @@ class WorkThreadPayload(ArchiveInsightModel):
     provider_breakdown: dict[str, int] = Field(default_factory=dict)
     work_event_breakdown: dict[str, int] = Field(default_factory=dict)
     confidence: float = 0.0
-    support_level: str = "weak"
+    support_level: ConfidenceBand = ConfidenceBand.WEAK
     support_signals: tuple[str, ...] = ()
     member_evidence: tuple[WorkThreadMemberEvidencePayload, ...] = ()
 

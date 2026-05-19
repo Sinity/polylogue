@@ -21,6 +21,7 @@ from polylogue.insights.classification import (
     SessionClassification,
     classify_session,
 )
+from polylogue.insights.confidence import ConfidenceBand
 
 # ---------------------------------------------------------------------------
 # Profile + work-event factories
@@ -120,7 +121,7 @@ def test_classification_rejects_unknown_label_at_type_level() -> None:
         SessionClassification(
             category="not_a_real_category",  # type: ignore[arg-type]
             confidence=0.5,
-            support_level="weak",
+            support_level=ConfidenceBand.WEAK,
             evidence=(),
         )
 
@@ -132,14 +133,14 @@ def test_confidence_is_bounded() -> None:
         SessionClassification(
             category=SessionCategory.DEBUGGING,
             confidence=1.5,
-            support_level="strong",
+            support_level=ConfidenceBand.STRONG,
             evidence=(),
         )
     with pytest.raises(ValidationError):
         SessionClassification(
             category=SessionCategory.DEBUGGING,
             confidence=-0.1,
-            support_level="strong",
+            support_level=ConfidenceBand.STRONG,
             evidence=(),
         )
 

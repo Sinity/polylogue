@@ -29,6 +29,7 @@ from polylogue.insights.archive_models import (
     SessionEvidencePayload,
     SessionInferencePayload,
 )
+from polylogue.insights.confidence import ConfidenceBand, from_signals
 from polylogue.insights.fallback import FallbackReason
 from polylogue.insights.temporal_source import classify_profile_hwm_source
 from polylogue.storage.runtime import (
@@ -476,12 +477,15 @@ def event_summary(event: WorkEvent) -> str:
     return summary or event.kind.value
 
 
-def support_level(confidence: float, *, support_signals: tuple[str, ...], fallback: bool = False) -> str:
-    if fallback or confidence < 0.55 or not support_signals:
-        return "weak"
-    if confidence >= 0.78 and len(support_signals) >= 2:
-        return "strong"
-    return "moderate"
+def support_level(
+    confidence: float,
+    *,
+    support_signals: tuple[str, ...],
+    fallback: bool = False,
+) -> ConfidenceBand:
+    """Map a confidence + supporting signals into the shared ConfidenceBand vocab (#1277)."""
+
+    return from_signals(confidence, support_signals=support_signals, fallback=fallback)
 
 
 def event_support_signals(event: WorkEvent) -> tuple[str, ...]:
@@ -545,14 +549,20 @@ def engaged_duration_source(profile: SessionProfile) -> str:
     return "phase_sum" if any(int(phase.duration_ms or 0) > 0 for phase in profile.phases) else "session_total_fallback"
 
 
-def repo_inference_strength(profile: SessionProfile) -> str:
+def repo_inference_strength(profile: SessionProfile) -> ConfidenceBand:
+    """Score repo-detection rigor using the shared vocab (#1277).
+
+    ``NONE`` distinguishes "no repo evidence at all" from ``WEAK`` (we
+    detected a name but nothing corroborating).
+    """
+
     if profile.repo_paths and profile.repo_names:
-        return "strong"
+        return ConfidenceBand.STRONG
     if profile.repo_names and (profile.file_paths_touched or profile.cwd_paths):
-        return "moderate"
+        return ConfidenceBand.MODERATE
     if profile.repo_names:
-        return "weak"
-    return "none"
+        return ConfidenceBand.WEAK
+    return ConfidenceBand.NONE
 
 
 def profile_support_signals(profile: SessionProfile) -> tuple[str, ...]:
@@ -572,7 +582,7 @@ def profile_support_signals(profile: SessionProfile) -> tuple[str, ...]:
     return tuple(signals)
 
 
-def profile_support_level(profile: SessionProfile) -> str:
+def profile_support_level(profile: SessionProfile) -> ConfidenceBand:
     signals = profile_support_signals(profile)
     work_confidence = max((float(event.confidence or 0.0) for event in profile.work_events), default=0.0)
     phase_confidence = max((float(phase.confidence or 0.0) for phase in profile.phases), default=0.0)

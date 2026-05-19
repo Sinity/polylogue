@@ -24,6 +24,7 @@ from polylogue.insights.classification import (
     SessionCategory,
     SessionClassification,
 )
+from polylogue.insights.confidence import ConfidenceBand
 from polylogue.insights.feedback import (
     CorrectionKind,
     LearningCorrection,
@@ -48,7 +49,7 @@ def _heuristic_classification() -> SessionClassification:
     return SessionClassification(
         category=SessionCategory.DEBUGGING,
         confidence=0.6,
-        support_level="moderate",
+        support_level=ConfidenceBand.MODERATE,
         evidence=(EvidenceCite(field="work_events", value="debugging:weight=1.2", weight=0.4),),
     )
 

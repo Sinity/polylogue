@@ -43,6 +43,8 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from polylogue.insights.confidence import ConfidenceBand
+
 if TYPE_CHECKING:
     from polylogue.insights.classification import SessionClassification
 
@@ -226,7 +228,7 @@ def apply_correction_to_classification(
     return SessionClassification(
         category=chosen,
         confidence=1.0,
-        support_level="strong",
+        support_level=ConfidenceBand.STRONG,
         evidence=(sentinel, *base.evidence),
         classifier_version=base.classifier_version,
         classifier_family=base.classifier_family,

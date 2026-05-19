@@ -46,6 +46,7 @@ from polylogue.insights.archive_models import (
     WorkThreadMemberEvidencePayload,
     WorkThreadPayload,
 )
+from polylogue.insights.confidence import ConfidenceBand
 from polylogue.surfaces.payloads import TagMutationResult
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg
@@ -641,7 +642,7 @@ class TestInsightTools:
                 intent_summary="Plan the refactor",
                 outcome_summary="Ran tests",
                 confidence=0.72,
-                support_level="moderate",
+                support_level=ConfidenceBand.MODERATE,
             ),
         )
         work_event = SessionWorkEventInsight(
@@ -675,7 +676,7 @@ class TestInsightTools:
                 session_ids=("conv-1", "conv-2"),
                 session_count=2,
                 confidence=1.0,
-                support_level="strong",
+                support_level=ConfidenceBand.STRONG,
                 support_signals=("explicit_lineage",),
                 member_evidence=(
                     WorkThreadMemberEvidencePayload(
