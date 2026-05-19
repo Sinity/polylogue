@@ -66,8 +66,8 @@ exceptions:
     reason: "shared operation contracts for ingest/maintenance/mutation/insight aggregation routes (#861, #862, #1134); split candidate: per-domain operation modules under operations/"
 
   - path: polylogue/daemon/status.py
-    ceiling: 1150
-    reason: "typed status payloads for failure samples, embedding readiness, tier/notify (#844, #898, #915); split candidate: payload modules per status section"
+    ceiling: 1200
+    reason: "typed status payloads for failure samples, embedding readiness, tier/notify (#844, #898, #915), cursor-lag projection (#1232); split candidate: payload modules per status section"
 
   - path: polylogue/daemon/health.py
     ceiling: 1250

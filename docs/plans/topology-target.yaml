@@ -922,7 +922,7 @@ files:
     target: polylogue/cli/verb_names.py
     owner: stable
   - path: polylogue/config.py
-    loc: 807
+    loc: 844
     target: polylogue/config.py
     owner: kernel
     reason: kernel root rule
@@ -1057,6 +1057,14 @@ files:
     loc: 801
     target: polylogue/daemon/convergence_stages.py
     owner: stable
+  - path: polylogue/daemon/cursor_lag_alert.py
+    loc: 409
+    target: polylogue/daemon/cursor_lag_alert.py
+    owner: stable
+  - path: polylogue/daemon/cursor_lag_status.py
+    loc: 235
+    target: polylogue/daemon/cursor_lag_status.py
+    owner: stable
   - path: polylogue/daemon/events.py
     loc: 241
     target: polylogue/daemon/events.py
@@ -1066,7 +1074,7 @@ files:
     target: polylogue/daemon/events_http.py
     owner: stable
   - path: polylogue/daemon/health.py
-    loc: 971
+    loc: 1226
     target: polylogue/daemon/health.py
     owner: stable
   - path: polylogue/daemon/healthz.py
@@ -1099,7 +1107,7 @@ files:
     target: polylogue/daemon/similarity.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 1146
+    loc: 1168
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/thread_continue.py
