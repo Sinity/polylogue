@@ -66,12 +66,12 @@ exceptions:
     reason: "shared operation contracts for ingest/maintenance/mutation/insight aggregation routes (#861, #862, #1134); split candidate: per-domain operation modules under operations/"
 
   - path: polylogue/daemon/status.py
-    ceiling: 1200
-    reason: "typed status payloads for failure samples, embedding readiness, tier/notify (#844, #898, #915), cursor-lag projection (#1232); split candidate: payload modules per status section"
+    ceiling: 1280
+    reason: "typed status payloads for failure samples, embedding readiness, tier/notify (#844, #898, #915), cursor-lag projection (#1232), maintenance failure routing (#1198); split candidate: payload modules per status section"
 
   - path: polylogue/daemon/health.py
-    ceiling: 1250
-    reason: "tiered health checks (fast/medium/expensive) with typed alerts, including FTS-trigger drift detection + auto-restore (#1229); split candidate: per-tier modules under daemon/health/"
+    ceiling: 1280
+    reason: "tiered health checks (fast/medium/expensive) with typed alerts, including FTS-trigger drift detection + auto-restore (#1229) and maintenance failure escalation (#1198); split candidate: per-tier modules under daemon/health/"
 
   - path: tests/unit/sources/test_live_watcher.py
     ceiling: 1600

@@ -633,7 +633,15 @@ def _check_fts_readiness_medium() -> HealthAlert:
 
 
 def _check_raw_failures_medium() -> HealthAlert:
-    """Check raw conversation parse/validation failure counts."""
+    """Check raw conversation parse/validation/maintenance failure counts.
+
+    Maintenance failures routed via
+    :func:`polylogue.maintenance.failure_routing.route_failure_sample`
+    (#1198) participate in the same alert ladder as ingest failures.
+    When the maintenance bucket dominates, the message names a
+    representative ``operation_id`` so the operator can pull the
+    originating replay state file directly.
+    """
     now = datetime.now(UTC).isoformat()
     try:
         from polylogue.daemon.status import _raw_failure_info
@@ -644,20 +652,46 @@ def _check_raw_failures_medium() -> HealthAlert:
         raw_val = info.get("validation_failures", 0)
         validation = int(raw_val) if isinstance(raw_val, (int, float)) else 0
         quarantined = info.get("quarantined", 0) if isinstance(info.get("quarantined"), int) else 0
-        total_failures = parse + validation
+        raw_maint = info.get("maintenance_failures", 0)
+        maintenance = int(raw_maint) if isinstance(raw_maint, (int, float)) else 0
+        total_failures = parse + validation + maintenance
+
+        op_hint = ""
+        if maintenance > 0:
+            samples = info.get("samples", [])
+            if isinstance(samples, list):
+                for sample in samples:
+                    op_id = getattr(sample, "operation_id", None)
+                    src = getattr(sample, "source", None)
+                    if src == "maintenance" and op_id:
+                        op_hint = f" (op={str(op_id)[:8]})"
+                        break
 
         if total_failures == 0:
             severity = HealthSeverity.OK
             message = "no raw failures"
         elif total_failures <= _RAW_FAILURE_WARN_COUNT:
             severity = HealthSeverity.WARNING
-            message = f"{total_failures} raw failures ({quarantined} quarantined)"
+            message = (
+                f"{total_failures} raw failures ({quarantined} quarantined, {maintenance} maintenance){op_hint}"
+                if maintenance
+                else f"{total_failures} raw failures ({quarantined} quarantined)"
+            )
         elif total_failures <= _RAW_FAILURE_ERROR_COUNT:
             severity = HealthSeverity.ERROR
-            message = f"{total_failures} raw failures ({quarantined} quarantined)"
+            message = (
+                f"{total_failures} raw failures ({quarantined} quarantined, {maintenance} maintenance){op_hint}"
+                if maintenance
+                else f"{total_failures} raw failures ({quarantined} quarantined)"
+            )
         else:
             severity = HealthSeverity.CRITICAL
-            message = f"{total_failures} raw failures ({quarantined} quarantined) — investigation needed"
+            base = (
+                f"{total_failures} raw failures ({quarantined} quarantined, {maintenance} maintenance){op_hint}"
+                if maintenance
+                else f"{total_failures} raw failures ({quarantined} quarantined)"
+            )
+            message = f"{base} — investigation needed"
         return HealthAlert(
             check_name="raw_failures",
             tier=HealthTier.MEDIUM,

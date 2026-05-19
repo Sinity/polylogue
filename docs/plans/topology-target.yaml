@@ -1042,7 +1042,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 910
+    loc: 1006
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1074,15 +1074,15 @@ files:
     target: polylogue/daemon/cursor_lag_status.py
     owner: stable
   - path: polylogue/daemon/events.py
-    loc: 241
+    loc: 389
     target: polylogue/daemon/events.py
     owner: stable
   - path: polylogue/daemon/events_http.py
-    loc: 110
+    loc: 181
     target: polylogue/daemon/events_http.py
     owner: stable
   - path: polylogue/daemon/health.py
-    loc: 1226
+    loc: 1260
     target: polylogue/daemon/health.py
     owner: stable
   - path: polylogue/daemon/healthz.py
@@ -1135,7 +1135,7 @@ files:
     target: polylogue/daemon/similarity.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 1168
+    loc: 1261
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/thread_continue.py
@@ -1151,7 +1151,7 @@ files:
     target: polylogue/daemon/user_state_http.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
-    loc: 1514
+    loc: 1463
     target: polylogue/daemon/web_shell.py
     owner: stable
   - path: polylogue/daemon/web_shell_attachments.py
@@ -1289,6 +1289,10 @@ files:
     loc: 211
     target: polylogue/maintenance/envelope.py
     owner: stable
+  - path: polylogue/maintenance/failure_routing.py
+    loc: 384
+    target: polylogue/maintenance/failure_routing.py
+    owner: stable
   - path: polylogue/maintenance/invalidation.py
     loc: 54
     target: polylogue/maintenance/invalidation.py
@@ -1306,7 +1310,7 @@ files:
     target: polylogue/maintenance/preview.py
     owner: stable
   - path: polylogue/maintenance/replay.py
-    loc: 655
+    loc: 690
     target: polylogue/maintenance/replay.py
     owner: stable
   - path: polylogue/maintenance/scope.py
@@ -1512,7 +1516,7 @@ files:
     target: polylogue/pipeline/services/ingest_batch/__init__.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_core.py
-    loc: 1472
+    loc: 1486
     target: polylogue/pipeline/services/ingest_batch/_core.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_models.py
@@ -2431,7 +2435,7 @@ files:
     target: polylogue/sources/live/batch_observability.py
     owner: stable
   - path: polylogue/sources/live/batch_support.py
-    loc: 324
+    loc: 348
     target: polylogue/sources/live/batch_support.py
     owner: stable
   - path: polylogue/sources/live/convergence_debt.py
@@ -3366,7 +3370,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/ui/theme.py
-    loc: 362
+    loc: 366
     target: polylogue/ui/theme.py
     owner: stable
   - path: polylogue/ui/tui/__init__.py

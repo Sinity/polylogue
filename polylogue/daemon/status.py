@@ -24,7 +24,7 @@ from polylogue.daemon.live_ingest_attempt_workload import (
     latest_stage_events,
     workload_fields,
 )
-from polylogue.paths import db_path
+from polylogue.paths import archive_root, db_path
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -101,11 +101,25 @@ class RawFailureSample(BaseModel):
     Constructed by ``_raw_failure_info()`` from the ``raw_conversations``
     table and consumed by the typed ``DaemonStatus`` model. Every surface
     (CLI, MCP, daemon HTTP) receives the same structured taxonomy.
+
+    Two failure surfaces share this envelope:
+
+    * ``source == "ingest"`` (default) — failures observed on
+      :mod:`polylogue.pipeline` parse/validate paths; the ``raw_id``
+      and provider-specific signals come from ``raw_conversations``.
+    * ``source == "maintenance"`` — failures observed on
+      :mod:`polylogue.maintenance.replay` per-record paths, routed via
+      :func:`polylogue.maintenance.failure_routing.route_failure_sample`
+      and reattached to status here. They carry the originating
+      :attr:`operation_id` and the typed planner :attr:`locator`.
     """
 
-    failure_kind: Literal["decode_error", "parse_error", "schema_violation", "unknown"]
+    failure_kind: Literal["decode_error", "parse_error", "schema_violation", "maintenance", "unknown"]
     provider_hint: str | None = None
     redacted_error: str = ""
+    source: Literal["ingest", "maintenance"] = "ingest"
+    operation_id: str | None = None
+    locator: str | None = None
 
     @field_validator("redacted_error", mode="before")
     @classmethod
@@ -177,6 +191,7 @@ class DaemonStatus(BaseModel):
     raw_parse_failures: int = 0
     raw_validation_failures: int = 0
     raw_quarantined: int = 0
+    raw_maintenance_failures: int = 0
     raw_failure_samples: list[RawFailureSample] = Field(default_factory=list)
     raw_detection_warnings: int = 0
     health: DaemonHealth = Field(default_factory=DaemonHealth)
@@ -316,10 +331,32 @@ def _insight_freshness_info() -> dict[str, object]:
 
 
 def _raw_failure_info() -> dict[str, object]:
-    """Query raw_conversations for parse/validation failure counts and bounded samples."""
+    """Query raw_conversations + maintenance routing for failure counts and samples.
+
+    The payload merges two failure surfaces (#1198):
+
+    * ``parse_failures`` / ``validation_failures`` / ``quarantined`` /
+      ``detection_warnings`` come from the ``raw_conversations`` table
+      (ingest path);
+    * ``maintenance_failures`` comes from the JSONL file written by
+      :func:`polylogue.maintenance.failure_routing.route_failure_sample`
+      (replay path).
+
+    ``samples`` interleaves both surfaces — newest first — capped at
+    50 entries total. Each sample carries ``source`` so consumers can
+    distinguish ``"ingest"`` rows from ``"maintenance"`` rows without
+    re-querying.
+    """
     dbf = db_path()
+    maintenance_samples, maintenance_count = _maintenance_failure_info()
     if not dbf.exists():
-        return {"parse_failures": 0, "validation_failures": 0, "quarantined": 0, "samples": []}
+        return {
+            "parse_failures": 0,
+            "validation_failures": 0,
+            "quarantined": 0,
+            "maintenance_failures": maintenance_count,
+            "samples": maintenance_samples,
+        }
 
     try:
         conn = open_readonly_connection(dbf)
@@ -336,7 +373,8 @@ def _raw_failure_info() -> dict[str, object]:
                     "validation_failures": 0,
                     "quarantined": 0,
                     "detection_warnings": 0,
-                    "samples": [],
+                    "maintenance_failures": maintenance_count,
+                    "samples": maintenance_samples,
                 }
 
             parse_fail = int(
@@ -398,15 +436,61 @@ def _raw_failure_info() -> dict[str, object]:
                 )
         finally:
             conn.close()
+        combined: list[RawFailureSample] = list(samples)
+        combined.extend(maintenance_samples)
+        if len(combined) > 50:
+            combined = combined[:50]
         return {
             "parse_failures": parse_fail,
             "validation_failures": validation_fail,
             "quarantined": quarantined,
             "detection_warnings": detection_warnings_count,
-            "samples": samples,
+            "maintenance_failures": maintenance_count,
+            "samples": combined,
         }
     except sqlite3.Error:
-        return {"parse_failures": 0, "validation_failures": 0, "quarantined": 0, "detection_warnings": 0, "samples": []}
+        return {
+            "parse_failures": 0,
+            "validation_failures": 0,
+            "quarantined": 0,
+            "detection_warnings": 0,
+            "maintenance_failures": maintenance_count,
+            "samples": maintenance_samples,
+        }
+
+
+def _maintenance_failure_info() -> tuple[list[RawFailureSample], int]:
+    """Read routed maintenance failures into typed daemon samples (#1198).
+
+    Returns a ``(samples, total_count)`` pair so the caller can both
+    surface bounded samples and report the absolute count to the
+    raw-failures health check.
+    """
+    from polylogue.maintenance.failure_routing import (
+        count_maintenance_failures,
+        read_maintenance_failures,
+    )
+
+    try:
+        root = archive_root()
+        records = read_maintenance_failures(root)
+        total = count_maintenance_failures(root)
+    except Exception:
+        return [], 0
+
+    samples: list[RawFailureSample] = []
+    for record in records:
+        samples.append(
+            RawFailureSample(
+                failure_kind="maintenance",
+                provider_hint=record.target or None,
+                redacted_error=f"{record.kind}: {record.message}" if record.kind else record.message,
+                source="maintenance",
+                operation_id=record.operation_id or None,
+                locator=record.locator or None,
+            )
+        )
+    return samples, total
 
 
 def _typed_failure_samples(value: object) -> list[RawFailureSample]:
@@ -889,6 +973,7 @@ def build_daemon_status(
         raw_parse_failures=_safe_int(raw_failures.get("parse_failures", 0)),
         raw_validation_failures=_safe_int(raw_failures.get("validation_failures", 0)),
         raw_quarantined=_safe_int(raw_failures.get("quarantined", 0)),
+        raw_maintenance_failures=_safe_int(raw_failures.get("maintenance_failures", 0)),
         raw_failure_samples=_typed_failure_samples(raw_failures.get("samples")),
         raw_detection_warnings=_safe_int(raw_failures.get("detection_warnings", 0)),
         daemon_liveness=_check_daemon_liveness(),
@@ -1002,6 +1087,7 @@ def daemon_status_payload(
             "raw_parse_failures": status.raw_parse_failures,
             "raw_validation_failures": status.raw_validation_failures,
             "raw_quarantined": status.raw_quarantined,
+            "raw_maintenance_failures": status.raw_maintenance_failures,
             "raw_detection_warnings": status.raw_detection_warnings,
             "raw_failure_samples": [s.model_dump() for s in status.raw_failure_samples],
         }
@@ -1135,11 +1221,13 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     raw_parse = _safe_int(payload.get("raw_parse_failures"))
     raw_val = _safe_int(payload.get("raw_validation_failures"))
     raw_quarantined = _safe_int(payload.get("raw_quarantined"))
-    total_raw = raw_parse + raw_val
+    raw_maintenance = _safe_int(payload.get("raw_maintenance_failures"))
+    total_raw = raw_parse + raw_val + raw_maintenance
     if total_raw > 0:
-        lines.append(
-            f"Raw failures: {total_raw} total ({raw_quarantined} quarantined), {raw_parse} parse + {raw_val} validation"
-        )
+        breakdown = f"{raw_parse} parse + {raw_val} validation"
+        if raw_maintenance > 0:
+            breakdown += f" + {raw_maintenance} maintenance"
+        lines.append(f"Raw failures: {total_raw} total ({raw_quarantined} quarantined), {breakdown}")
         samples = payload.get("raw_failure_samples")
         if isinstance(samples, list) and samples:
             for s in samples[:5]:
@@ -1147,7 +1235,12 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                     kind = s.get("failure_kind", "unknown")
                     hint = s.get("provider_hint") or "?"
                     error_text = str(s.get("redacted_error", ""))
-                    lines.append(f"  [{kind}] {hint}: {error_text[:120]}")
+                    source = s.get("source", "ingest")
+                    op_id = s.get("operation_id")
+                    suffix = ""
+                    if source == "maintenance" and op_id:
+                        suffix = f" (op={str(op_id)[:8]})"
+                    lines.append(f"  [{kind}] {hint}: {error_text[:120]}{suffix}")
     # Embedding readiness
     embedding = payload.get("embedding_readiness")
     if isinstance(embedding, dict):
