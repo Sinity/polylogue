@@ -922,7 +922,7 @@ files:
     target: polylogue/cli/verb_names.py
     owner: stable
   - path: polylogue/config.py
-    loc: 844
+    loc: 939
     target: polylogue/config.py
     owner: kernel
     reason: kernel root rule
@@ -1094,8 +1094,28 @@ files:
     loc: 137
     target: polylogue/daemon/live_ingest_attempt_workload.py
     owner: stable
+  - path: polylogue/daemon/notification_backends/__init__.py
+    loc: 65
+    target: polylogue/daemon/notification_backends/__init__.py
+    owner: stable
+  - path: polylogue/daemon/notification_backends/apprise_backend.py
+    loc: 136
+    target: polylogue/daemon/notification_backends/apprise_backend.py
+    owner: stable
+  - path: polylogue/daemon/notification_backends/email.py
+    loc: 255
+    target: polylogue/daemon/notification_backends/email.py
+    owner: stable
+  - path: polylogue/daemon/notification_backends/journald.py
+    loc: 98
+    target: polylogue/daemon/notification_backends/journald.py
+    owner: stable
+  - path: polylogue/daemon/notification_backends/webhook.py
+    loc: 161
+    target: polylogue/daemon/notification_backends/webhook.py
+    owner: stable
   - path: polylogue/daemon/notifications.py
-    loc: 254
+    loc: 242
     target: polylogue/daemon/notifications.py
     owner: stable
   - path: polylogue/daemon/provenance.py

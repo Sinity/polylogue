@@ -171,3 +171,23 @@ suppressions:
     issue: "#1062"
     paths:
       - "polylogue/operations/archive.py"
+
+  # ---------------------------------------------------------------------------
+  # Daemon notification backends: optional-dependency ImportError fallbacks
+  # ---------------------------------------------------------------------------
+  # apprise_backend.py and journald.py wrap their optional third-party imports
+  # (apprise, systemd) so the ImportError path raises BackendUnavailableError
+  # at construction time. Exercising the fallback requires uninstalling the
+  # package in CI; the unit suite covers the visible behaviour via stubs.
+  - id: notification-backends-optional-deps
+    reason: >
+      Optional-dependency ImportError fallbacks for apprise and systemd
+      bindings (#1233). The ImportError branch only fires when the package
+      is genuinely absent from the environment; backend behaviour under both
+      install and missing-install is exercised via injected stubs in
+      tests/unit/daemon/test_notification_backends.py.
+    expires_at: "2027-01-01"
+    issue: "#1233"
+    paths:
+      - "polylogue/daemon/notification_backends/apprise_backend.py"
+      - "polylogue/daemon/notification_backends/journald.py"
