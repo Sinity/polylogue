@@ -14,6 +14,20 @@ documentation polish do not require an entry.
 
 ### Added
 
+- Maintenance replay failures now surface in `polylogue status` and the
+  daemon raw-failure health check (#1198). Per-record failures from
+  `repair_session_insights`, `repair_action_event_read_model`, and
+  `source_replay` are routed through
+  `polylogue.maintenance.failure_routing.route_failure_sample` into an
+  append-only JSONL file at
+  `<archive_root>/.maintenance-state/failures.jsonl`, then merged into
+  the existing `_raw_failure_info()` payload with `source="maintenance"`
+  and the originating `operation_id`. The `raw_failures` health alert
+  escalates through the existing WARNING / ERROR / CRITICAL ladder and
+  cites a representative `op=<short_id>` so operators can pull the
+  failing replay's resume state file directly. Absolute paths in
+  routed messages and locators are redacted at write time.
+
 - Non-log notification backends for the daemon health loop (#1233).
   `notification_backend` now accepts `"webhook"`, `"journald"`,
   `"email"`, `"apprise"`, and lists/comma-separated fan-out specs

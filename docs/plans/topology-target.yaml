@@ -1082,7 +1082,7 @@ files:
     target: polylogue/daemon/events_http.py
     owner: stable
   - path: polylogue/daemon/health.py
-    loc: 1226
+    loc: 1260
     target: polylogue/daemon/health.py
     owner: stable
   - path: polylogue/daemon/healthz.py
@@ -1135,7 +1135,7 @@ files:
     target: polylogue/daemon/similarity.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 1168
+    loc: 1261
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/thread_continue.py
@@ -1293,6 +1293,10 @@ files:
     loc: 211
     target: polylogue/maintenance/envelope.py
     owner: stable
+  - path: polylogue/maintenance/failure_routing.py
+    loc: 384
+    target: polylogue/maintenance/failure_routing.py
+    owner: stable
   - path: polylogue/maintenance/invalidation.py
     loc: 54
     target: polylogue/maintenance/invalidation.py
@@ -1310,7 +1314,7 @@ files:
     target: polylogue/maintenance/preview.py
     owner: stable
   - path: polylogue/maintenance/replay.py
-    loc: 655
+    loc: 690
     target: polylogue/maintenance/replay.py
     owner: stable
   - path: polylogue/maintenance/scope.py

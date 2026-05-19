@@ -41,7 +41,7 @@ class TestRawFailureSampleModel:
             RawFailureSample(failure_kind="invalid_kind")  # type: ignore[arg-type]
 
     def test_all_valid_failure_kinds(self) -> None:
-        for kind in ("decode_error", "parse_error", "schema_violation", "unknown"):
+        for kind in ("decode_error", "parse_error", "schema_violation", "maintenance", "unknown"):
             sample = RawFailureSample(failure_kind=kind)
             assert sample.failure_kind == kind
 

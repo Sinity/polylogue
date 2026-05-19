@@ -45,6 +45,7 @@ from typing import Final
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument, dumps, json_document, loads
 from polylogue.logging import get_logger
+from polylogue.maintenance.failure_routing import route_failure_sample
 from polylogue.maintenance.invalidation import InvalidationReason
 from polylogue.maintenance.planner import (
     BackfillKind,
@@ -521,6 +522,32 @@ def _artifact_failure_to_sample(failure: ArtifactFailure) -> FailureSample:
     )
 
 
+def _record_failure(
+    state: _ReplayState,
+    sample: FailureSample,
+    *,
+    target: str,
+    config: Config,
+) -> None:
+    """Append a failure sample and route it to the daemon raw-failure surface.
+
+    The in-memory ``state.failures`` envelope continues to back the
+    returned :class:`BackfillOperation`'s
+    :class:`BoundedFailureSamples`, so existing callers see the same
+    shape; the side effect of :func:`route_failure_sample` is the new
+    daemon-visible JSONL append handled by
+    :mod:`polylogue.maintenance.failure_routing`.
+    """
+
+    state.failures.append(sample)
+    route_failure_sample(
+        sample,
+        operation_id=state.operation_id,
+        archive_root=Path(config.archive_root),
+        target=target,
+    )
+
+
 def _run_one_target(
     state: _ReplayState,
     spec: MaintenanceTargetSpec,
@@ -543,7 +570,7 @@ def _run_one_target(
                 "Add an entry to polylogue.maintenance.replay._REPLAY_DISPATCH to enable it."
             ),
         )
-        state.failures.append(sample)
+        _record_failure(state, sample, target=target_name, config=config)
         logger.warning(
             "replay_target_unsupported",
             operation_id=state.operation_id,
@@ -566,7 +593,12 @@ def _run_one_target(
             )
             result = outcome.result
             for failure in outcome.failures:
-                state.failures.append(_artifact_failure_to_sample(failure))
+                _record_failure(
+                    state,
+                    _artifact_failure_to_sample(failure),
+                    target=target_name,
+                    config=config,
+                )
             if outcome.last_artifact_index >= 0:
                 state.artifact_resume_index = outcome.last_artifact_index + 1
         elif target_name == "session_insights" and scope_filter.conversation_ids is not None:
@@ -589,7 +621,7 @@ def _run_one_target(
             locator=f"target:{target_name}",
             message=str(exc),
         )
-        state.failures.append(sample)
+        _record_failure(state, sample, target=target_name, config=config)
         logger.exception(
             "replay_target_failed",
             operation_id=state.operation_id,
@@ -604,12 +636,15 @@ def _run_one_target(
         # Repair functions can report failure without raising. Surface
         # that as a typed sample too so the FAILED state carries a
         # locator and a message instead of an empty samples list.
-        state.failures.append(
+        _record_failure(
+            state,
             FailureSample(
                 kind="RepairReportedFailure",
                 locator=f"target:{target_name}",
                 message=result.detail or "Repair returned success=False",
-            )
+            ),
+            target=target_name,
+            config=config,
         )
 
 
