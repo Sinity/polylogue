@@ -710,6 +710,53 @@ class TestOwnershipManifest(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Provider-meta policy manifest  (provider-meta-policy.yaml)
+# ──────────────────────────────────────────────────────────────────────
+
+
+class ProviderMetaField(BaseModel):
+    """A single classified provider_meta key.
+
+    Backs ``devtools verify-provider-meta-policy`` (#1255 / #864 slice E).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    key: str
+    classification: str
+    scope: str | None = None
+    providers: list[str] = Field(default_factory=list)
+    promoted_column: str | None = None
+    note: str | None = None
+
+    VALID_CLASSIFICATIONS: ClassVar[frozenset[str]] = frozenset(
+        {"provider-specific-retained", "raw-only", "promoted", "removed"}
+    )
+    VALID_SCOPES: ClassVar[frozenset[str]] = frozenset({"conversation", "message", "attachment"})
+
+    @field_validator("classification")
+    @classmethod
+    def _check_classification(cls, v: str) -> str:
+        if v not in cls.VALID_CLASSIFICATIONS:
+            raise ValueError(f"classification must be one of {sorted(cls.VALID_CLASSIFICATIONS)}, got {v!r}")
+        return v
+
+    @field_validator("scope")
+    @classmethod
+    def _check_scope(cls, v: str | None) -> str | None:
+        if v is not None and v not in cls.VALID_SCOPES:
+            raise ValueError(f"scope must be one of {sorted(cls.VALID_SCOPES)} or null, got {v!r}")
+        return v
+
+
+class ProviderMetaPolicyManifest(BaseModel):
+    """Root of provider-meta-policy.yaml."""
+
+    model_config = ConfigDict(extra="forbid")
+    description: str | None = None
+    fields: list[ProviderMetaField]
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Manifest-type dispatch table
 # ──────────────────────────────────────────────────────────────────────
 
@@ -732,6 +779,7 @@ MANIFEST_MODELS: dict[str, type[BaseModel]] = {
     "docs-media-coverage.yaml": DocsMediaCoverageManifest,
     "test-quality-coverage.yaml": TestQualityCoverageManifest,
     "test-ownership.yaml": TestOwnershipManifest,
+    "provider-meta-policy.yaml": ProviderMetaPolicyManifest,
 }
 
 
@@ -812,6 +860,8 @@ __all__ = [
     "ParityCheckEntry",
     "PerPackageBudget",
     "PlatformCoverage",
+    "ProviderMetaField",
+    "ProviderMetaPolicyManifest",
     "ScenarioCoverageManifest",
     "ScenarioFamily",
     "SecurityControl",

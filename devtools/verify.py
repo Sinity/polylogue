@@ -302,6 +302,10 @@ def build_verify_steps(
                 ("verify-topology", _devtools_cmd("verify-topology")),
                 ("verify-layering", _devtools_cmd("verify-layering")),
                 ("verify-file-budgets", _devtools_cmd("verify-file-budgets")),
+                (
+                    "verify-provider-meta-policy",
+                    _devtools_cmd("verify-provider-meta-policy"),
+                ),
                 ("verify-test-ownership", _devtools_cmd("verify-test-ownership")),
                 ("verify-closure-matrix", _devtools_cmd("verify-closure-matrix")),
                 ("verify-schema-roundtrip", _devtools_cmd("verify-schema-roundtrip", "--all")),
