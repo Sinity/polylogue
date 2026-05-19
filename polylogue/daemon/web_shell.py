@@ -660,6 +660,12 @@ function renderMain() {
   if (c.branch_type && c.branch_type !== 'main') {
     headerHtml += '<span class="chip q-inferred" title="Branch type">' + esc(c.branch_type) + '</span>';
   }
+  // 3b. Topology branch chip (#1203). The chip is rendered against the
+  // lazily-loaded lineage envelope; when lineage is not yet cached we
+  // trigger the fetch and fall back to a placeholder. The chip click
+  // opens the Lineage inspector tab as the popover surface.
+  headerHtml += renderTopologyBranchChip(c);
+  headerHtml += renderOpenParentChainButton(c);
   // 4. counts
   if (c.message_count !== undefined) headerHtml += '<span>' + c.message_count + ' messages</span>';
   if (c.word_count) headerHtml += '<span>' + c.word_count.toLocaleString() + ' words</span>';
@@ -705,6 +711,73 @@ function messageBlocksHtml(messages) {
   // keyboard-focused message card. Defined in web_shell_reader.py.
   return renderMessageBlocks(messages);
 }
+
+// --- Topology branch chip + parent-chain stack (#1203) ----------------
+// The branch chip is rendered on the conversation header and reflects
+// the resolved incoming edge kind (continuation / sidechain / fork /
+// subagent). Clicking it opens the Lineage inspector tab as the
+// "branch popover" — siblings, parent, and descendants are already
+// projected there from the lineage envelope.
+function renderTopologyBranchChip(c) {
+  if (!c || !c.id) return '';
+  var data = state.lineage;
+  if (data === undefined) {
+    // Trigger a lazy load and render a placeholder so the chip becomes
+    // accurate on the next render pass without blocking initial paint.
+    if (typeof loadLineage === 'function') loadLineage(c.id);
+    return '<span class="chip q-unavailable" title="Loading lineage..." onclick="openLineageInspector()">branch: ?</span>';
+  }
+  if (data && data.error) {
+    return '<span class="chip q-unresolved" title="Lineage unavailable" onclick="openLineageInspector()">branch: ?</span>';
+  }
+  // Find the resolved incoming edge to determine the branch kind.
+  var branchKind = null;
+  (data.edges || []).forEach(function(edge) {
+    if (edge.resolved && edge.child_id === c.id && edge.parent_id && !branchKind) {
+      branchKind = edge.kind;
+    }
+  });
+  if (!branchKind) {
+    // No resolved parent — surface root vs isolated based on node count.
+    if ((data.nodes || []).length > 1) {
+      return '<span class="chip q-canonical" title="Topology root — has descendants" onclick="openLineageInspector()">root</span>';
+    }
+    return ''; // Isolated leaf: no branch chip.
+  }
+  var cls;
+  if (branchKind === 'subagent' || branchKind === 'sidechain') cls = 'q-heuristic';
+  else if (branchKind === 'fork') cls = 'q-estimated';
+  else cls = 'q-canonical';
+  return '<span class="chip ' + esc(cls) + '" title="Branch type — click for siblings/parent" '
+    + 'onclick="openLineageInspector()">' + esc(branchKind) + '</span>';
+}
+
+function renderOpenParentChainButton(c) {
+  if (!c || !c.id) return '';
+  var data = state.lineage;
+  if (data === undefined || !data || data.error) {
+    // The button is only meaningful when we know the chain is non-trivial.
+    return '';
+  }
+  // Only show when there is at least one ancestor — otherwise the stack
+  // would degenerate to the same conversation.
+  var hasAncestor = (data.edges || []).some(function(edge) {
+    return edge.resolved && edge.child_id === c.id && edge.parent_id;
+  });
+  if (!hasAncestor && (data.nodes || []).length <= 1) return '';
+  return '<button class="chip accent" style="cursor:pointer;border:1px solid var(--accent-soft);background:var(--accent-bg);color:var(--accent)" '
+    + 'title="Open the root \u2192 sub-agent \u2192 continuation chain as a stack workspace" '
+    + 'onclick="openParentChainAsStack(\'' + escAttr(c.id) + '\')">open chain</button>';
+}
+
+function openLineageInspector() {
+  state.inspectorTab = 'lineage';
+  document.querySelectorAll('#inspector-tabs button').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.tab === 'lineage');
+  });
+  renderInspector();
+}
+
 
 function markButtonHtml(conversationId, markType, label, title) {
   var active = hasMark(conversationId, markType) ? ' active' : '';

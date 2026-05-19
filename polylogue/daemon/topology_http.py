@@ -160,12 +160,77 @@ def build_topology_envelope(
     }
 
 
+def build_parent_chain_envelope(
+    topology: SessionTopology,
+    *,
+    include_descendants: bool = True,
+) -> dict[str, object]:
+    """Project a :class:`SessionTopology` into a stack-ready chain envelope.
+
+    Returns the ordered chain of conversation IDs from the topology root
+    down to ``topology.target_id``, optionally followed by the BFS-ordered
+    descendants of the target. The returned envelope is shaped to seed
+    the reader's stack workspace route:
+
+    - ``chain_ids`` is the canonical oldest-to-newest list the stack
+      workspace consumes via ``/w/stack?ids=...``;
+    - ``focus_id`` is the conversation the operator clicked from (the
+      target), so the stack view auto-scrolls to it;
+    - ``ancestors`` / ``descendants`` are split out so the popover can
+      label the chain segments distinctly;
+    - ``branch_kind`` carries the resolved edge kind incoming to the
+      target (continuation / sidechain / fork / subagent / unknown), so
+      the reader can pick the right chip vocabulary without re-walking
+      the edges.
+
+    When the target is the root and has no descendants, ``chain_ids`` is
+    a single-element list. Isolated leaves still produce a valid
+    envelope so the UI never has to special-case the empty state.
+    """
+
+    target_id = str(topology.target_id)
+    ancestors = [str(node_id) for node_id in topology.ancestors(target_id)]
+    chain_ids: list[str] = [*ancestors, target_id]
+    descendants_ordered: list[str] = []
+    if include_descendants:
+        descendants_ordered = [str(node_id) for node_id in topology.descendants(target_id)]
+        chain_ids.extend(descendants_ordered)
+
+    # Resolved incoming edge kind (if any) for the target conversation.
+    branch_kind: str | None = None
+    parent_id: str | None = None
+    for edge in topology.edges:
+        if str(edge.child_id) != target_id or not edge.resolved:
+            continue
+        branch_kind = edge.kind.value
+        parent_id = str(edge.parent_id) if edge.parent_id is not None else None
+        break
+
+    # Sibling lookup so a popover can render "compare with sibling N".
+    siblings = [str(sid) for sid in topology.siblings(target_id)]
+
+    return {
+        "target_id": target_id,
+        "root_id": str(topology.root_id),
+        "parent_id": parent_id,
+        "branch_kind": branch_kind,
+        "chain_ids": chain_ids,
+        "ancestors": ancestors,
+        "descendants": descendants_ordered,
+        "siblings": siblings,
+        "focus_id": target_id,
+        "node_count": len(topology.nodes),
+        "cycle_detected": topology.cycle_detected,
+    }
+
+
 __all__ = [
     "DEFAULT_NODE_LIMIT",
     "MAX_NODE_LIMIT",
     "READINESS_EMPTY",
     "READINESS_OK",
     "READINESS_PARTIAL",
+    "build_parent_chain_envelope",
     "build_topology_envelope",
     "coerce_node_limit",
 ]

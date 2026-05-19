@@ -158,8 +158,111 @@ function _polyActionRailHtml(m, conversationId) {
     +           'onclick="openProvenanceTab()">prov</button>'
     +   '<button class="act-btn" data-act="jump-anchor" title="Jump to anchor in URL" '
     +           'onclick="jumpToAnchor(\'' + escAttr(anchor) + '\')">#</button>'
+    +   '<button class="act-btn" data-act="continue-thread" title="Continue this thread in another agent (#1203)" '
+    +           'onclick="openThreadContinueMenu(\'' + escAttr(conversationId) + '\', \'' + escAttr(String(m.id || '')) + '\', this)">continue</button>'
     +   (typeof _polyCopyActionRailHtml === 'function' ? _polyCopyActionRailHtml(m) : '')
     + '</div>';
+}
+
+// --- Thread-continue shortcuts (#1203) ---------------------------------
+// Builds per-agent deep-link URLs from the templates served at
+// ``/api/thread-continue-templates``. The reader caches the template
+// registry once per session and substitutes locally so the daemon never
+// observes a copy of every message the operator "continues" in another
+// agent.
+var _threadContinueTemplates = null;
+var _threadContinueLoading = null;
+
+async function ensureThreadContinueTemplates() {
+  if (_threadContinueTemplates) return _threadContinueTemplates;
+  if (_threadContinueLoading) return _threadContinueLoading;
+  _threadContinueLoading = fetchJSON('/api/thread-continue-templates').then(function(data) {
+    _threadContinueTemplates = (data && data.templates) || [];
+    return _threadContinueTemplates;
+  }).catch(function() {
+    _threadContinueTemplates = [];
+    return _threadContinueTemplates;
+  });
+  return _threadContinueLoading;
+}
+
+function _threadContinueFillTemplate(template, prompt, conversationId, messageId) {
+  var encoded = encodeURIComponent(prompt);
+  return (template || '')
+    .replace(/\{prompt\}/g, encoded)
+    .replace(/\{prompt_plain\}/g, prompt)
+    .replace(/\{conversation_id\}/g, encodeURIComponent(conversationId || ''))
+    .replace(/\{message_id\}/g, encodeURIComponent(messageId || ''));
+}
+
+function _threadContinuePromptForMessage(messageId) {
+  if (!state.selected || !state.selected.messages) return '';
+  var msg = null;
+  for (var i = 0; i < state.selected.messages.length; i++) {
+    if (String(state.selected.messages[i].id || '') === String(messageId)) {
+      msg = state.selected.messages[i];
+      break;
+    }
+  }
+  return (msg && (msg.text || '')) || '';
+}
+
+async function openThreadContinueMenu(conversationId, messageId, anchorEl) {
+  var templates = await ensureThreadContinueTemplates();
+  // Clear any existing menu before opening a new one.
+  var existing = document.getElementById('thread-continue-menu');
+  if (existing) existing.parentNode.removeChild(existing);
+  if (!templates.length) return;
+  var prompt = _threadContinuePromptForMessage(messageId);
+  var menu = document.createElement('div');
+  menu.id = 'thread-continue-menu';
+  menu.style.cssText = 'position:absolute;z-index:50;background:var(--panel-elevated);'
+    + 'border:1px solid var(--border-strong);border-radius:4px;padding:4px;'
+    + 'box-shadow:0 4px 12px rgba(0,0,0,0.5);min-width:180px;font-size:var(--small)';
+  menu.innerHTML = templates.map(function(t) {
+    var url = _threadContinueFillTemplate(t.url_template, prompt, conversationId, messageId);
+    return '<button class="act-btn" style="display:block;width:100%;text-align:left;margin:2px 0" '
+      + 'data-agent-id="' + escAttr(t.agent_id) + '" '
+      + 'data-resolved-url="' + escAttr(url) + '" '
+      + 'onclick="activateThreadContinue(this)">' + esc(t.label) + '</button>';
+  }).join('');
+  document.body.appendChild(menu);
+  var rect = anchorEl.getBoundingClientRect();
+  menu.style.top = (rect.bottom + window.scrollY + 4) + 'px';
+  menu.style.left = (rect.left + window.scrollX) + 'px';
+  // Click-outside to dismiss.
+  setTimeout(function() {
+    document.addEventListener('click', function _dismiss(ev) {
+      if (!menu.contains(ev.target)) {
+        if (menu.parentNode) menu.parentNode.removeChild(menu);
+        document.removeEventListener('click', _dismiss, true);
+      }
+    }, true);
+  }, 0);
+}
+
+function activateThreadContinue(btn) {
+  var url = btn.dataset.resolvedUrl;
+  var agentId = btn.dataset.agentId;
+  if (!url) return;
+  // Special-case the built-in clipboard fallback so it doesn't try to
+  // open a navigation URL (no scheme handler exists for it).
+  if (url.indexOf('polylogue:copy-prompt') === 0) {
+    var promptMatch = url.match(/prompt=([^&]*)/);
+    var prompt = promptMatch ? decodeURIComponent(promptMatch[1]) : '';
+    if (navigator.clipboard) navigator.clipboard.writeText(prompt);
+    btn.textContent = 'copied';
+    setTimeout(function() {
+      var menu = document.getElementById('thread-continue-menu');
+      if (menu && menu.parentNode) menu.parentNode.removeChild(menu);
+    }, 600);
+    return;
+  }
+  // Normal URL scheme: hand off to the OS / scheme handler.
+  window.location.href = url;
+  // Best-effort dismiss; some schemes never trigger a navigation event.
+  var menu = document.getElementById('thread-continue-menu');
+  if (menu && menu.parentNode) menu.parentNode.removeChild(menu);
 }
 
 function _polyToolFoldHtml(m) {

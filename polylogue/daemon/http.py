@@ -764,6 +764,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_get_conversation_provenance(path[2], params)
         elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "topology":
             self._handle_get_conversation_topology(path[2], params)
+        elif (
+            len(path) == 5
+            and path[:2] == ["api", "conversations"]
+            and path[3] == "topology"
+            and path[4] == "parent-chain"
+        ):
+            self._handle_get_conversation_parent_chain(path[2], params)
+        elif path == ["api", "thread-continue-templates"]:
+            self._handle_get_thread_continue_templates()
         elif len(path) == 4 and path[:3] == ["api", "insights", "sessions"]:
             self._handle_get_session_insights(path[3], params)
         elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "similar":
@@ -1615,6 +1624,57 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.NOT_FOUND, "not_found")
             return
         self._send_json(HTTPStatus.OK, result)
+
+    # ------------------------------------------------------------------
+    # Handlers: parent-chain stack envelope + thread-continue templates (#1203)
+    # ------------------------------------------------------------------
+
+    @daemon_safe_handler
+    def _handle_get_conversation_parent_chain(
+        self,
+        conv_id: str,
+        params: dict[str, list[str]],
+    ) -> None:
+        """``GET /api/conversations/{id}/topology/parent-chain``.
+
+        Returns the stack-ready chain envelope shaped by
+        :func:`polylogue.daemon.topology_http.build_parent_chain_envelope`.
+        The envelope's ``chain_ids`` seed the stack workspace route
+        (``/w/stack?ids=...``); ``focus_id`` keeps the operator anchored
+        at the conversation they invoked the action from.
+
+        Query parameters:
+        - ``descendants=0`` — omit descendant conversations and return
+          only the ancestor chain (root → target).
+        """
+        from polylogue.daemon.topology_http import build_parent_chain_envelope
+
+        include_descendants_raw = self._get_param(params, "descendants", "1") or "1"
+        include_descendants = include_descendants_raw not in ("0", "false", "no")
+
+        async def _get(poly: Polylogue) -> object:
+            topology = await poly.repository.get_session_topology(conv_id)
+            if topology is None:
+                return None
+            return build_parent_chain_envelope(topology, include_descendants=include_descendants)
+
+        result = self._sync_run(_get)
+        if result is None:
+            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
+            return
+        self._send_json(HTTPStatus.OK, result)
+
+    @daemon_safe_handler
+    def _handle_get_thread_continue_templates(self) -> None:
+        """``GET /api/thread-continue-templates``.
+
+        Returns the active agent URL-template registry. Templates are
+        substituted client-side so the daemon never sees the messages
+        the operator is "continuing" in another agent.
+        """
+        from polylogue.daemon.thread_continue import build_templates_envelope
+
+        self._send_json(HTTPStatus.OK, build_templates_envelope())
 
     # ------------------------------------------------------------------
     # Handlers: per-conversation embedding similarity (#1123)
