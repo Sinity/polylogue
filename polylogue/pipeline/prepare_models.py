@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
+from polylogue.archive.topology.edge import TopologyEdgeRecord
 from polylogue.pipeline.materialization_runtime import _timestamp_sort_key
 from polylogue.storage.archive_views import ExistingConversation
 from polylogue.storage.runtime import (
@@ -29,6 +30,7 @@ class RecordBundle(BaseModel):
     attachments: list[AttachmentRecord]
     content_blocks: list[ContentBlockRecord] = Field(default_factory=list)
     provider_events: list[ProviderEventRecord] = Field(default_factory=list)
+    topology_edges: list[TopologyEdgeRecord] = Field(default_factory=list)
 
 
 class SaveResult(BaseModel):

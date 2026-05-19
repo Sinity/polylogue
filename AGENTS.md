@@ -692,6 +692,7 @@ back to the existing brain-artifact metadata walk. Both paths emit normalized
 | `ContentHash` | `pipeline/ids.py` | SHA-256 over NFC-normalized conversation payload. Title, timestamps, messages, attachments are hashed. User metadata (tags, summaries) is excluded — editable metadata doesn't trigger re-import. |
 | `Provider` enum | `types.py` | Legacy source identifier — 9 known providers + UNKNOWN. Public surfaces still flow through this enum during the dual-vocabulary period. |
 | `Source` dataclass | `core/sources.py` | Source-centered identity (`family`, `runtime_root`, `originating_lab`). Parallel to `Provider`; see "Dual Vocabulary Period" above. |
+| `TopologyEdgeRecord` | `archive/topology/edge.py` | Typed cross-conversation parent reference. Persisted in `topology_edges` even when the parent has not yet been ingested (#1258) so out-of-order ingest and sidechain/subagent edges are durable. Closed `TopologyEdgeType` / `TopologyEdgeStatus` enums centralize the vocabulary. |
 
 ## Artifact Taxonomy
 
@@ -952,6 +953,29 @@ of requiring users with out-of-band archives to re-ingest. The recent
 session-loss audit (`MEMORY.md` § Claude Session Loss Incident
 2026-03-21) confirmed that no relevant legacy DB instances exist in
 practice, so the trade is decisively in favour of the simpler runtime.
+
+## Topology Edges (#1258)
+
+`topology_edges` persists every parent reference asserted by a parser as a
+typed row, including references whose parent has not yet been ingested
+(out-of-order ingestion) or has been hard-deleted. The pre-existing fast
+path (`conversations.parent_conversation_id` set when the parent is in the
+prepare cache) is unchanged; the topology table is an additional durable
+record that always carries the original provider-native parent id.
+
+- **Identity:** `(src_conversation_id, dst_provider_native_id, edge_type)`
+  with `UNIQUE`. Re-ingesting the same child is idempotent.
+- **Closed enums:** `polylogue/archive/topology/edge.py` defines
+  `TopologyEdgeType` (continuation / sidechain / subagent / branch / fork /
+  resume / repaired) and `TopologyEdgeStatus` (unresolved / resolved /
+  repaired). Slice A emits `unresolved` and `resolved` only.
+- **Resolve:** every conversation save runs
+  `resolve_topology_edges_for_conversation` so that an out-of-order child's
+  edge flips to `resolved` the moment its parent's native id appears in
+  `conversations`.
+- **Hash boundary:** topology edges are derived per ingest and are NOT part
+  of `conversations.content_hash` — mirrors the same boundary as
+  `user_corrections` (#1131) and the blob lease tables.
 
 ## Learning Corrections (Feedback Loop)
 
