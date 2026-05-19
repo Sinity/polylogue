@@ -25,7 +25,7 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
-REPORT_VERSION = 2  # v2 adds top-level `cursor_lag_baselines` (#1349)
+REPORT_VERSION = 3  # v3 adds top-level `topology_quarantine_state` (#1260)
 
 # Tables whose row counts form the convergence "boundary" — daemon work moves
 # rows into and out of these tables, so the deltas describe convergence shape.
@@ -43,6 +43,7 @@ _BOUNDARY_TABLES: tuple[str, ...] = (
     "live_ingest_attempt",
     "live_convergence_debt",
     "pending_blob_refs",
+    "topology_edges",
 )
 
 # Expected FTS-sync triggers.  A missing trigger means the FTS index can drift
@@ -340,6 +341,44 @@ def _boundary_table_counts(conn: sqlite3.Connection) -> dict[str, int]:
     return counts
 
 
+def _topology_quarantine_state(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Report the state of the topology-edge cycle quarantine (#1260).
+
+    Surfaces:
+    - ``table_present`` — is ``topology_edges`` materialized in the database
+    - ``unresolved_count`` — edges still awaiting their parent
+    - ``resolved_count`` — edges whose parent has been ingested
+    - ``quarantined_count`` — edges rejected because they would create a
+      cycle in ``conversations.parent_conversation_id``
+    - ``oldest_quarantined_at`` — oldest ``resolved_at`` timestamp on a
+      quarantined edge (the field is repurposed as the
+      "decision-recorded-at" timestamp for non-resolved terminal states)
+
+    Operators monitor ``quarantined_count`` as a health indicator — a
+    non-zero value means at least one source emitted a cycle and the
+    fast-path graph was prevented from entering it.
+    """
+
+    if not _table_exists(conn, "topology_edges"):
+        return {
+            "table_present": False,
+            "unresolved_count": 0,
+            "resolved_count": 0,
+            "quarantined_count": 0,
+            "oldest_quarantined_at": None,
+        }
+    rows = conn.execute("SELECT status, COUNT(*) AS n FROM topology_edges GROUP BY status").fetchall()
+    status_counts = {str(row[0]): int(row[1]) for row in rows}
+    oldest_row = conn.execute("SELECT MIN(resolved_at) FROM topology_edges WHERE status = 'quarantined'").fetchone()
+    return {
+        "table_present": True,
+        "unresolved_count": int(status_counts.get("unresolved", 0)),
+        "resolved_count": int(status_counts.get("resolved", 0)),
+        "quarantined_count": int(status_counts.get("quarantined", 0)),
+        "oldest_quarantined_at": oldest_row[0] if oldest_row else None,
+    }
+
+
 def _blob_lease_state(conn: sqlite3.Connection) -> dict[str, Any]:
     if not _table_exists(conn, "pending_blob_refs"):
         return {
@@ -627,6 +666,7 @@ def probe(db: Path, *, limit: int = 5) -> dict[str, Any]:
             "recent_attempts": recent_attempts,
             "convergence_stage_timings": _convergence_stage_timings(recent_attempts, conn),
             "boundary_table_counts": _boundary_table_counts(conn),
+            "topology_quarantine_state": _topology_quarantine_state(conn),
             "blob_lease_state": _blob_lease_state(conn),
             "gc_state": _gc_state(conn),
             "fts_trigger_state": _fts_trigger_state(conn),

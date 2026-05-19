@@ -539,7 +539,7 @@ TOPOLOGY_EDGES_DDL = """
             raw_evidence                 TEXT,
             confidence                   REAL NOT NULL DEFAULT 1.0,
             status                       TEXT NOT NULL
-                CHECK (status IN ('unresolved', 'resolved', 'repaired')),
+                CHECK (status IN ('unresolved', 'resolved', 'repaired', 'quarantined')),
             observed_at                  TEXT NOT NULL,
             resolved_at                  TEXT,
             UNIQUE (src_conversation_id, dst_provider_native_id, edge_type)

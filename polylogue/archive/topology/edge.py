@@ -63,11 +63,20 @@ class TopologyEdgeType(str, Enum):
 
 
 class TopologyEdgeStatus(str, Enum):
-    """Closed lifecycle vocabulary for a topology edge."""
+    """Closed lifecycle vocabulary for a topology edge.
+
+    ``QUARANTINED`` (#1260 / #866 slice C) marks an edge whose resolution
+    would introduce a cycle (e.g. A → B → A) into the
+    ``conversations.parent_conversation_id`` fast-path graph. The resolver
+    refuses to backfill the cycle-creating edge; the edge row is preserved
+    so the operator can audit the cycle path that was rejected. The cycle
+    path is recorded in ``raw_evidence`` as JSON.
+    """
 
     UNRESOLVED = "unresolved"
     RESOLVED = "resolved"
     REPAIRED = "repaired"
+    QUARANTINED = "quarantined"
 
     def __str__(self) -> str:
         return self.value

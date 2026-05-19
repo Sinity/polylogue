@@ -11,11 +11,25 @@ Two operations are exposed:
   to ``resolved`` once their parent has been ingested. Used by
   ``save_via_backend`` so out-of-order ingest backfills the resolver state
   the moment the parent lands.
+
+Cycle quarantine (#1260 / #866 slice C)
+---------------------------------------
+Both resolver paths refuse to backfill a child's
+``conversations.parent_conversation_id`` when doing so would introduce a
+cycle into the resolved-parent graph (A→B→A, 3-node, etc., including
+the self-cycle A→A). The offending edge is left in the
+``topology_edges`` table with ``status='quarantined'`` and a
+``raw_evidence`` JSON document recording the detected cycle path so the
+operator can audit which conversation chain was rejected. The child's
+``parent_conversation_id`` is NOT written for quarantined edges — the
+fast-path ancestry walk therefore continues to terminate at the child
+rather than enter the cycle.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Iterable
 
 import aiosqlite
@@ -90,6 +104,132 @@ async def upsert_topology_edges(
     return written
 
 
+_CYCLE_WALK_BUDGET = 1024
+"""Hard cap on the resolved-parent ancestry walk used by cycle detection.
+
+Any conversation chain longer than this is treated as cyclic regardless
+of whether the actual cycle was reached, because no legitimate
+conversation lineage is expected to exceed it and a runaway walk would
+otherwise pin the resolver."""
+
+
+async def _would_create_cycle(
+    conn: aiosqlite.Connection,
+    *,
+    child_id: str,
+    proposed_parent_id: str,
+) -> list[str] | None:
+    """Return the cycle path if making ``proposed_parent_id`` the parent
+    of ``child_id`` would create a cycle in ``conversations.parent_conversation_id``.
+
+    A cycle exists when ``proposed_parent_id == child_id`` (self-cycle) or
+    when walking ``proposed_parent_id``'s existing ancestry via
+    ``parent_conversation_id`` reaches ``child_id``. Returns ``None`` if no
+    cycle would form. The returned list is the chain
+    ``[child_id, proposed_parent_id, ..., child_id]`` so the operator can
+    see exactly which edge would have closed the loop.
+    """
+
+    # Self-cycle: child claiming itself as parent.
+    if proposed_parent_id == child_id:
+        return [child_id, child_id]
+
+    path: list[str] = [child_id, proposed_parent_id]
+    current = proposed_parent_id
+    steps = 0
+    while True:
+        if steps >= _CYCLE_WALK_BUDGET:
+            # Treat budget-exceeded as cyclic; legitimate chains do not
+            # reach this length and continuing risks a runaway walk.
+            path.append("...budget-exceeded")
+            return path
+        row = await (
+            await conn.execute(
+                "SELECT parent_conversation_id FROM conversations WHERE conversation_id = ?",
+                (current,),
+            )
+        ).fetchone()
+        if row is None:
+            return None
+        next_parent = row["parent_conversation_id"]
+        if next_parent is None:
+            return None
+        if next_parent == child_id:
+            path.append(child_id)
+            return path
+        path.append(next_parent)
+        current = next_parent
+        steps += 1
+
+
+async def _quarantine_edge(
+    conn: aiosqlite.Connection,
+    *,
+    edge_id: str | None,
+    src_conversation_id: str,
+    dst_provider_name: str | None,
+    dst_provider_native_id: str | None,
+    cycle_path: list[str],
+    observed_at: str,
+) -> None:
+    """Mark an edge as quarantined and record the cycle path in raw_evidence.
+
+    If ``edge_id`` is given the update targets that row directly; otherwise
+    the ``(dst_provider_name, dst_provider_native_id)`` lookup is used,
+    matching the resolver-by-parent code path.
+    """
+
+    evidence = json.dumps(
+        {
+            "reason": "cycle_rejected",
+            "cycle_path": cycle_path,
+            "detected_at": observed_at,
+        },
+        sort_keys=True,
+    )
+    if edge_id is not None:
+        await conn.execute(
+            """
+            UPDATE topology_edges
+               SET status = 'quarantined',
+                   raw_evidence = ?,
+                   resolved_at = ?
+             WHERE edge_id = ?
+            """,
+            (evidence, observed_at, edge_id),
+        )
+        return
+    await conn.execute(
+        """
+        UPDATE topology_edges
+           SET status = 'quarantined',
+               raw_evidence = ?,
+               resolved_at = ?
+         WHERE src_conversation_id = ?
+           AND dst_provider_name = ?
+           AND dst_provider_native_id = ?
+        """,
+        (
+            evidence,
+            observed_at,
+            src_conversation_id,
+            dst_provider_name,
+            dst_provider_native_id,
+        ),
+    )
+
+
+async def count_quarantined_topology_edges(conn: aiosqlite.Connection) -> int:
+    """Return the number of topology edges currently in ``quarantined`` state.
+
+    Surfaced through the diagnostic/readiness report (#1260) so cycle
+    rejections are visible to the operator rather than silently absorbed.
+    """
+
+    row = await (await conn.execute("SELECT COUNT(*) AS n FROM topology_edges WHERE status = 'quarantined'")).fetchone()
+    return int(row["n"]) if row is not None else 0
+
+
 async def resolve_topology_edges_for_conversation(
     conn: aiosqlite.Connection,
     *,
@@ -118,11 +258,11 @@ async def resolve_topology_edges_for_conversation(
     running the resolver twice for the same parent produces no further
     changes after the first pass.
     """
-    # Collect the children that the upcoming UPDATE will flip, *before*
-    # the UPDATE runs, so we can use them to backfill the conversations
-    # rows in the same transaction. Selecting child IDs + edge types lets
-    # us avoid issuing one UPDATE per child while still classifying the
-    # branch type per row.
+    # Collect the children that would be flipped, *before* any UPDATE runs,
+    # so we can partition them into (resolved, quarantined) buckets based
+    # on whether backfilling their ``parent_conversation_id`` would create
+    # a cycle (#1260). Per-row processing lets the cycle detector walk the
+    # ancestry of ``conversation_id`` (the proposed parent) for each child.
     cursor = await conn.execute(
         """
         SELECT src_conversation_id, edge_type
@@ -135,34 +275,56 @@ async def resolve_topology_edges_for_conversation(
     )
     pending_rows = list(await cursor.fetchall())
 
-    update_cursor = await conn.execute(
-        """
-        UPDATE topology_edges
-           SET resolved_dst_conversation_id = ?,
-               status = 'resolved',
-               resolved_at = ?
-         WHERE status = 'unresolved'
-           AND dst_provider_name = ?
-           AND dst_provider_native_id = ?
-        """,
-        (conversation_id, resolved_at, provider_name, provider_conversation_id),
-    )
-    flipped = update_cursor.rowcount or 0
+    if not pending_rows:
+        return 0
 
-    if flipped == 0 or not pending_rows:
-        return flipped
-
-    # Backfill the resolved fast-path on each child conversation. The
-    # ``parent_conversation_id IS NULL`` guard preserves whatever was set
-    # at the child's original write time and makes the backfill idempotent;
-    # the ``branch_type`` guard mirrors the same constraint and restricts
-    # writes to the closed ``BranchType`` vocabulary so the CHECK constraint
-    # on ``conversations.branch_type`` cannot be violated by future
-    # ``RESUME`` / ``BRANCH`` / ``REPAIRED`` edge types.
     valid_branch_types: set[str] = {bt.value for bt in BranchType}
+    flipped = 0
     for row in pending_rows:
         child_id = row["src_conversation_id"]
         edge_type = row["edge_type"]
+
+        cycle_path = await _would_create_cycle(
+            conn,
+            child_id=child_id,
+            proposed_parent_id=conversation_id,
+        )
+        if cycle_path is not None:
+            # Quarantine the offending edge instead of resolving it. Leave
+            # ``conversations.parent_conversation_id`` untouched so the
+            # fast-path ancestry walk does not enter the cycle.
+            await _quarantine_edge(
+                conn,
+                edge_id=None,
+                src_conversation_id=child_id,
+                dst_provider_name=provider_name,
+                dst_provider_native_id=provider_conversation_id,
+                cycle_path=cycle_path,
+                observed_at=resolved_at,
+            )
+            continue
+
+        await conn.execute(
+            """
+            UPDATE topology_edges
+               SET resolved_dst_conversation_id = ?,
+                   status = 'resolved',
+                   resolved_at = ?
+             WHERE status = 'unresolved'
+               AND src_conversation_id = ?
+               AND dst_provider_name = ?
+               AND dst_provider_native_id = ?
+            """,
+            (conversation_id, resolved_at, child_id, provider_name, provider_conversation_id),
+        )
+        flipped += 1
+        # Backfill the resolved fast-path on the child conversation. The
+        # ``parent_conversation_id IS NULL`` guard preserves whatever was set
+        # at the child's original write time and makes the backfill idempotent;
+        # the ``branch_type`` guard mirrors the same constraint and restricts
+        # writes to the closed ``BranchType`` vocabulary so the CHECK constraint
+        # on ``conversations.branch_type`` cannot be violated by future
+        # ``RESUME`` / ``BRANCH`` / ``REPAIRED`` edge types.
         branch_type: str | None = edge_type if edge_type in valid_branch_types else None
         await conn.execute(
             """
@@ -220,6 +382,27 @@ async def resolve_unresolved_edges_for_child(
         edge_id = row["edge_id"]
         edge_type = row["edge_type"]
         parent_cid = row["parent_cid"]
+
+        cycle_path = await _would_create_cycle(
+            conn,
+            child_id=src_conversation_id,
+            proposed_parent_id=parent_cid,
+        )
+        if cycle_path is not None:
+            # Quarantine the offending edge (#1260). Do not flip to resolved
+            # and do not backfill the conversations row, so the fast-path
+            # ancestry walk does not enter the cycle.
+            await _quarantine_edge(
+                conn,
+                edge_id=edge_id,
+                src_conversation_id=src_conversation_id,
+                dst_provider_name=None,
+                dst_provider_native_id=None,
+                cycle_path=cycle_path,
+                observed_at=resolved_at,
+            )
+            continue
+
         await conn.execute(
             """
             UPDATE topology_edges
@@ -267,6 +450,7 @@ async def list_topology_edges_for_conversation(
 
 __all__ = [
     "TopologyEdgeStatus",
+    "count_quarantined_topology_edges",
     "list_topology_edges_for_conversation",
     "resolve_topology_edges_for_conversation",
     "resolve_unresolved_edges_for_child",
