@@ -76,8 +76,8 @@ class TestMaintenanceAPIRoutes:
             handler.do_POST()
             mock.assert_called_once()
 
-    def test_unknown_maintenance_route_404(self) -> None:
-        """POST /api/maintenance/status returns 404."""
+    def test_unknown_maintenance_post_route_404(self) -> None:
+        """POST /api/maintenance/status returns 404 — status is GET-only."""
         handler = _make_handler("/api/maintenance/status/x")
         with patch.object(handler, "_send_error") as mock:
             handler.do_POST()
@@ -149,3 +149,81 @@ class TestMaintenanceAPIRoutes:
             with patch.object(handler, "_send_json"):
                 handler._handle_maintenance_run()
                 mock.assert_called_once_with(HTTPStatus.BAD_REQUEST, "invalid_request")
+
+
+class TestMaintenanceRegistryEndpoints:
+    """GET /api/maintenance/status/<op_id> and /api/maintenance/operations (#1197)."""
+
+    def test_status_route_dispatched(self) -> None:
+        """GET /api/maintenance/status/<op_id> routes to _handle_maintenance_status."""
+        handler = _make_handler("/api/maintenance/status/op-1")
+        with patch.object(handler, "_handle_maintenance_status") as mock:
+            handler._dispatch_get(["api", "maintenance", "status", "op-1"], {})
+            mock.assert_called_once_with("op-1")
+
+    def test_operations_route_dispatched(self) -> None:
+        """GET /api/maintenance/operations routes to _handle_maintenance_operations."""
+        handler = _make_handler("/api/maintenance/operations")
+        with patch.object(handler, "_handle_maintenance_operations") as mock:
+            handler._dispatch_get(["api", "maintenance", "operations"], {})
+            mock.assert_called_once_with()
+
+    def test_status_not_found_returns_404(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        """A missing op-id returns 404."""
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+        handler = _make_handler("/api/maintenance/status/missing")
+        with patch.object(handler, "_send_error") as mock_err:
+            handler._handle_maintenance_status("missing")
+            mock_err.assert_called_once_with(HTTPStatus.NOT_FOUND, "not_found")
+
+    def test_status_returns_envelope_with_metadata(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        """A persisted op returns the shared envelope plus updated_at / state_path."""
+        from polylogue.config import Config
+        from polylogue.core.json import dumps as json_dumps
+        from polylogue.maintenance.planner import (
+            BackfillKind,
+            BackfillOperation,
+            BackfillStatus,
+            MaintenanceScope,
+        )
+        from polylogue.maintenance.replay import state_path_for
+
+        archive_root_path = tmp_path / "archive"
+        archive_root_path.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root_path))
+        config = Config(archive_root=archive_root_path, render_root=tmp_path / "render", sources=[])
+        op = BackfillOperation(
+            operation_id="op-h1",
+            kind=BackfillKind.DERIVED_REBUILD,
+            targets=("session_insights",),
+            status=BackfillStatus.RUNNING,
+            scope=MaintenanceScope(targets=("session_insights",)),
+        )
+        path = state_path_for(config, "op-h1")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json_dumps(
+                {
+                    "operation_id": "op-h1",
+                    "targets": ["session_insights"],
+                    "cursor": "target:0",
+                    "started_at": "2026-05-17T00:00:00+00:00",
+                    "updated_at": "2026-05-17T00:00:01+00:00",
+                    "dry_run": False,
+                    "repaired_count": 0,
+                    "failure_count": 0,
+                    "results": [],
+                    "operation": op.to_dict(),
+                }
+            )
+        )
+
+        handler = _make_handler("/api/maintenance/status/op-h1")
+        with patch.object(handler, "_send_json") as mock_json:
+            handler._handle_maintenance_status("op-h1")
+            mock_json.assert_called_once()
+            body = mock_json.call_args[0][1]
+            assert body["envelope"]["operation_id"] == "op-h1", f"unexpected body: {body}"
+            assert body["envelope"]["status"] == "running"
+            assert body["updated_at"] == "2026-05-17T00:00:01+00:00"
+            assert body["state_path"].endswith("op-h1.json")

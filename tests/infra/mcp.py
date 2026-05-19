@@ -47,6 +47,8 @@ EXPECTED_TOOL_NAMES = {
     "rebuild_session_insights",
     "maintenance_preview",
     "maintenance_execute",
+    "maintenance_status",
+    "maintenance_list",
     "session_profile",
     "session_classification",
     "get_resume_brief",

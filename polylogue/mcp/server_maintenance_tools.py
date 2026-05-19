@@ -168,6 +168,87 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("maintenance_execute", run)
 
     @mcp.tool()
+    async def maintenance_status(operation_id: str) -> str:
+        """Return one persisted maintenance operation snapshot by id (#1197).
+
+        Wraps the shared
+        :class:`~polylogue.maintenance.envelope.MaintenanceOperationEnvelope`
+        with the state-file ``updated_at`` and ``state_path`` so the
+        result is byte-shape-identical to the daemon HTTP
+        ``GET /api/maintenance/status/<id>`` response.
+        """
+
+        async def run() -> str:
+            from polylogue.config import Config
+            from polylogue.maintenance.envelope import envelope_from_operation
+            from polylogue.maintenance.registry import MaintenanceOperationRegistry
+            from polylogue.paths import archive_root, render_root
+
+            config = Config(
+                archive_root=archive_root(),
+                render_root=render_root(),
+                sources=[],
+            )
+            registry = MaintenanceOperationRegistry(config=config)
+            record = registry.get_operation(operation_id)
+            if record is None:
+                return hooks.error_json(f"Operation not found: {operation_id}", code="not_found")
+            envelope = envelope_from_operation(record.operation, origin="mcp", mode="execute")
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "envelope": envelope.to_dict(),
+                        "updated_at": record.updated_at,
+                        "state_path": str(record.state_path),
+                    }
+                )
+            )
+
+        return await hooks.async_safe_call("maintenance_status", run)
+
+    @mcp.tool()
+    async def maintenance_list() -> str:
+        """List every persisted maintenance operation snapshot (#1197).
+
+        Returns a bounded envelope ``{"items": [...], "total": N}`` where
+        each item is the same shape as :func:`maintenance_status`. Use
+        when the operator (or another agent) needs to see in-flight and
+        recently failed operations without knowing their ids.
+        """
+
+        async def run() -> str:
+            from polylogue.config import Config
+            from polylogue.maintenance.envelope import envelope_from_operation
+            from polylogue.maintenance.registry import MaintenanceOperationRegistry
+            from polylogue.paths import archive_root, render_root
+
+            config = Config(
+                archive_root=archive_root(),
+                render_root=render_root(),
+                sources=[],
+            )
+            registry = MaintenanceOperationRegistry(config=config)
+            records = registry.list_operations()
+            items = [
+                {
+                    "envelope": envelope_from_operation(r.operation, origin="mcp", mode="execute").to_dict(),
+                    "updated_at": r.updated_at,
+                    "state_path": str(r.state_path),
+                }
+                for r in records
+            ]
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "items": items,
+                        "total": len(items),
+                    }
+                )
+            )
+
+        return await hooks.async_safe_call("maintenance_list", run)
+
+    @mcp.tool()
     async def rebuild_index() -> str:
         async def run() -> str:
             ops = hooks.get_archive_ops()

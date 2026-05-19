@@ -476,9 +476,6 @@ def execute_replay(
     successful = not state.failures
     status = BackfillStatus.COMPLETED if successful else BackfillStatus.FAILED
 
-    if persist_state and successful:
-        clear_state(config, op_id)
-
     progress = (len(resolved_names) - start_index) / len(resolved_names)
     logger.info(
         "replay_completed",
@@ -491,7 +488,7 @@ def execute_replay(
     )
 
     kind = BackfillKind.SOURCE_REPLAY if SOURCE_REPLAY_TARGET in resolved_names else BackfillKind.DERIVED_REBUILD
-    return BackfillOperation(
+    final = BackfillOperation(
         operation_id=op_id,
         kind=kind,
         targets=resolved_names,
@@ -507,6 +504,26 @@ def execute_replay(
         failure_samples=BoundedFailureSamples.from_samples(state.failures),
         metrics={"repaired_count": float(state.repaired_total)},
     )
+
+    if persist_state:
+        if successful:
+            # Success path: drop the state file. The registry's
+            # default TTL prune will never see this op_id again.
+            clear_state(config, op_id)
+        else:
+            # Failure path: write the final snapshot through the
+            # checkpoint so operators can inspect a failed run via
+            # the registry surface without rerunning anything.
+            _checkpoint_state(
+                config=config,
+                operation_id=op_id,
+                state=state,
+                started_at=started_at,
+                dry_run=dry_run,
+                operation_snapshot=final,
+            )
+
+    return final
 
 
 def _artifact_failure_to_sample(failure: ArtifactFailure) -> FailureSample:
@@ -655,9 +672,27 @@ def _checkpoint_state(
     state: _ReplayState,
     started_at: str,
     dry_run: bool,
+    operation_snapshot: BackfillOperation | None = None,
 ) -> None:
-    """Persist the running operation state so a kill-mid-run can resume."""
+    """Persist the running operation state so a kill-mid-run can resume.
 
+    The payload carries two layers:
+
+    * legacy top-level fields (``operation_id``/``targets``/``cursor``/
+      ``started_at``/``updated_at``/``dry_run``/``repaired_count``/
+      ``failure_count``/``results``) so the existing resume path keeps
+      working without conditionals;
+    * a full :meth:`BackfillOperation.to_dict` snapshot under the
+      ``operation`` key (issue #1197) so the
+      :class:`~polylogue.maintenance.registry.MaintenanceOperationRegistry`
+      can rehydrate the operation envelope without re-running anything.
+    """
+
+    snapshot = operation_snapshot or _build_in_progress_snapshot(
+        operation_id=operation_id,
+        state=state,
+        started_at=started_at,
+    )
     payload = json_document(
         {
             "operation_id": operation_id,
@@ -669,9 +704,57 @@ def _checkpoint_state(
             "repaired_count": state.repaired_total,
             "failure_count": len(state.failures),
             "results": list(state.results),
+            "operation": snapshot.to_dict(),
         }
     )
     _write_state(state_path_for(config, operation_id), payload)
+
+
+def _build_in_progress_snapshot(
+    *,
+    operation_id: str,
+    state: _ReplayState,
+    started_at: str,
+) -> BackfillOperation:
+    """Project the in-flight :class:`_ReplayState` onto a :class:`BackfillOperation`.
+
+    Used by :func:`_checkpoint_state` to make sure every state file
+    carries a rehydratable snapshot even mid-run (before
+    :func:`execute_replay` has assembled its final return value). The
+    snapshot status is :data:`BackfillStatus.RUNNING` unless the
+    executor has finished all targets, in which case it surfaces as
+    :data:`BackfillStatus.COMPLETED` / :data:`BackfillStatus.FAILED`
+    based on the in-flight failure count.
+    """
+
+    total = len(state.targets)
+    cursor = state.cursor
+    if cursor == CURSOR_DONE:
+        status = BackfillStatus.FAILED if state.failures else BackfillStatus.COMPLETED
+        progress = 1.0
+        completed_at: str | None = datetime.now(timezone.utc).isoformat()
+    else:
+        status = BackfillStatus.RUNNING
+        processed = _decode_cursor(cursor, total_targets=total)
+        progress = processed / total if total > 0 else 0.0
+        completed_at = None
+
+    kind = BackfillKind.SOURCE_REPLAY if SOURCE_REPLAY_TARGET in state.targets else BackfillKind.DERIVED_REBUILD
+    return BackfillOperation(
+        operation_id=operation_id,
+        kind=kind,
+        targets=state.targets,
+        status=status,
+        progress=progress,
+        started_at=started_at,
+        completed_at=completed_at,
+        affected_rows=state.repaired_total,
+        results=list(state.results),
+        scope=MaintenanceScope(targets=state.targets),
+        resume_cursor=cursor,
+        failure_samples=BoundedFailureSamples.from_samples(state.failures),
+        metrics={"repaired_count": float(state.repaired_total)},
+    )
 
 
 __all__ = [

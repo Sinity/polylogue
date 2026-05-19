@@ -783,6 +783,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_get_conversation_attachments(path[2])
         elif len(path) == 4 and path[:3] == ["api", "raw_artifacts"]:
             self._handle_get_raw_artifact(path[3])
+        elif path == ["api", "maintenance", "operations"]:
+            self._handle_maintenance_operations()
+        elif len(path) == 4 and path[:3] == ["api", "maintenance", "status"]:
+            self._handle_maintenance_status(path[3])
         else:
             self._send_error(HTTPStatus.NOT_FOUND, "not_found")
 
@@ -2013,6 +2017,20 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         result = execute_backfill(config, targets=targets, dry_run=dry_run, scope_filter=scope_filter)
         envelope = envelope_from_operation(result, origin="daemon", mode="execute")
         self._send_json(HTTPStatus.OK, envelope.to_dict())
+
+    @daemon_safe_handler
+    def _handle_maintenance_status(self, operation_id: str) -> None:
+        """GET /api/maintenance/status/<op_id> — delegate to maintenance_registry_http."""
+        from polylogue.daemon.maintenance_registry_http import handle_status
+
+        handle_status(self, operation_id)
+
+    @daemon_safe_handler
+    def _handle_maintenance_operations(self) -> None:
+        """GET /api/maintenance/operations — delegate to maintenance_registry_http."""
+        from polylogue.daemon.maintenance_registry_http import handle_operations
+
+        handle_operations(self)
 
 
 class DaemonAPIHTTPServer(ThreadingHTTPServer):
