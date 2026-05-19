@@ -17,7 +17,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 1068
+    loc: 1097
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -69,6 +69,11 @@ files:
   - path: polylogue/api/insights.py
     loc: 277
     target: polylogue/api/insights.py
+    owner: stable
+    cross_cut: { api: async }
+  - path: polylogue/api/search_envelope_builder.py
+    loc: 85
+    target: polylogue/api/search_envelope_builder.py
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/sync/__init__.py
@@ -780,7 +785,7 @@ files:
     target: polylogue/cli/query_group.py
     owner: stable
   - path: polylogue/cli/query_output.py
-    loc: 967
+    loc: 1033
     target: polylogue/cli/query_output.py
     owner: stable
   - path: polylogue/cli/query_output_contracts.py
@@ -1042,7 +1047,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 910
+    loc: 1006
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1074,11 +1079,11 @@ files:
     target: polylogue/daemon/cursor_lag_status.py
     owner: stable
   - path: polylogue/daemon/events.py
-    loc: 241
+    loc: 389
     target: polylogue/daemon/events.py
     owner: stable
   - path: polylogue/daemon/events_http.py
-    loc: 110
+    loc: 181
     target: polylogue/daemon/events_http.py
     owner: stable
   - path: polylogue/daemon/health.py
@@ -1090,7 +1095,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 2062
+    loc: 2034
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_models.py
@@ -1151,7 +1156,7 @@ files:
     target: polylogue/daemon/user_state_http.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
-    loc: 1514
+    loc: 1463
     target: polylogue/daemon/web_shell.py
     owner: stable
   - path: polylogue/daemon/web_shell_attachments.py
@@ -1338,7 +1343,7 @@ files:
     target: polylogue/mcp/insight_tool_contracts.py
     owner: stable
   - path: polylogue/mcp/payloads.py
-    loc: 638
+    loc: 641
     target: polylogue/mcp/payloads.py
     owner: stable
   - path: polylogue/mcp/query_contracts.py
@@ -1378,7 +1383,7 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 326
+    loc: 329
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
@@ -1512,7 +1517,7 @@ files:
     target: polylogue/pipeline/services/ingest_batch/__init__.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_core.py
-    loc: 1472
+    loc: 1486
     target: polylogue/pipeline/services/ingest_batch/_core.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_models.py
@@ -2431,7 +2436,7 @@ files:
     target: polylogue/sources/live/batch_observability.py
     owner: stable
   - path: polylogue/sources/live/batch_support.py
-    loc: 324
+    loc: 348
     target: polylogue/sources/live/batch_support.py
     owner: stable
   - path: polylogue/sources/live/convergence_debt.py
@@ -3333,7 +3338,7 @@ files:
     target: polylogue/surfaces/__init__.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 802
+    loc: 933
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/types.py
@@ -3366,7 +3371,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/ui/theme.py
-    loc: 362
+    loc: 366
     target: polylogue/ui/theme.py
     owner: stable
   - path: polylogue/ui/tui/__init__.py

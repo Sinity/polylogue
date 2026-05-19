@@ -257,16 +257,23 @@ class TestReaderSearchState:
         assert isinstance(payload, dict)
         assert payload["total"] == 3
         assert len(payload["hits"]) == 3
-        hit = next(item for item in payload["hits"] if item["id"] == "c1")
-        assert hit["target_ref"]["identity_key"] == "conversation:c1"
-        assert hit["anchor"] == "conversation-c1"
-        assert hit["match"]["target_ref"] == {
-            "target_type": "message",
-            "target_id": "m-c1",
-            "conversation_id": "c1",
-            "message_id": "m-c1",
-            "identity_key": "message:c1:m-c1",
-        }
+        # SearchEnvelope contract (#1266): every hit carries a `conversation`
+        # identity payload and a `match` evidence payload.
+        assert payload["query"] == "Hello"
+        assert payload["retrieval_lane"] in {"dialogue", "auto"}
+        assert payload["ranking_policy"] == "mixed-bm25-rrf-vector"
+        assert payload["ranking_policy_version"] == "1"
+        hit = next(item for item in payload["hits"] if item["conversation"]["id"] == "c1")
+        assert hit["conversation"]["target_ref"]["identity_key"] == "conversation:c1"
+        assert hit["conversation"]["anchor"] == "conversation-c1"
+        # The typed TargetRefPayload includes block_index (defaulting to None)
+        # for message targets; we assert the load-bearing identity fields.
+        target_ref = hit["match"]["target_ref"]
+        assert target_ref["target_type"] == "message"
+        assert target_ref["target_id"] == "m-c1"
+        assert target_ref["conversation_id"] == "c1"
+        assert target_ref["message_id"] == "m-c1"
+        assert target_ref["identity_key"] == "message:c1:m-c1"
         assert hit["match"]["anchor"] == "message-m-c1"
         assert hit["match"]["actions"]["copy_text"]["enabled"] is True
 

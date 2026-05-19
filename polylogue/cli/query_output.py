@@ -41,7 +41,12 @@ from polylogue.cli.query_stats import (
 from polylogue.core.json import JSONDocument
 from polylogue.logging import get_logger
 from polylogue.rendering.formatting import format_conversation
-from polylogue.surfaces.payloads import ConversationListRowPayload, ConversationSearchHitPayload, model_json_document
+from polylogue.surfaces.payloads import (
+    ConversationListRowPayload,
+    ConversationSearchHitPayload,
+    build_search_envelope,
+    model_json_document,
+)
 
 logger = get_logger(__name__)
 
@@ -468,6 +473,45 @@ def format_search_hit_list(
     return document.with_selected_fields(fields).render(output_format)
 
 
+def format_search_envelope(
+    hits: list[ConversationSearchHit],
+    *,
+    query: str,
+    retrieval_lane: str,
+    limit: int,
+    offset: int,
+    sort: str | None,
+    message_counts: dict[str, int] | None = None,
+) -> str:
+    """Render the canonical :class:`SearchEnvelope` JSON for ranked search.
+
+    Used for ``--format json`` so CLI JSON output matches MCP, daemon HTTP,
+    and the Python API's ``Polylogue.search_envelope()`` shape (#1266).
+    The CLI does not query the archive for ``total`` independently, so
+    the envelope reports ``total=None`` ("unknown total") unless the
+    caller threads in a count.
+    """
+    counts = message_counts or {}
+    hit_payloads = [
+        ConversationSearchHitPayload.from_search_hit(
+            hit,
+            message_count=counts.get(hit.conversation_id, hit.summary.message_count or 0),
+        )
+        for hit in hits
+    ]
+    resolved_lane = hits[0].retrieval_lane if hits else (retrieval_lane or "auto")
+    envelope = build_search_envelope(
+        hit_payloads,
+        total=None,
+        limit=limit,
+        offset=offset,
+        query=query,
+        retrieval_lane=resolved_lane,
+        sort=sort,
+    )
+    return envelope.model_dump_json(indent=2, exclude_none=True)
+
+
 async def output_search_hits(
     env: AppEnv,
     hits: list[ConversationSearchHit],
@@ -479,6 +523,27 @@ async def output_search_hits(
     if repo:
         ids = [hit.conversation_id for hit in hits]
         msg_counts = await repo.get_message_counts_batch(ids)
+
+    if output.output_format == "json":
+        # JSON format uses the typed SearchEnvelope shared across surfaces (#1266).
+        # ndjson/yaml/csv keep emitting one-per-row for streaming-friendly use.
+        query_text = getattr(output, "search_query", "") or ""
+        retrieval_lane = getattr(output, "retrieval_lane", "") or "auto"
+        limit_value = getattr(output, "limit", None) or len(hits)
+        offset_value = getattr(output, "offset", 0) or 0
+        sort_value = getattr(output, "sort", None)
+        click.echo(
+            format_search_envelope(
+                hits,
+                query=query_text,
+                retrieval_lane=retrieval_lane,
+                limit=limit_value,
+                offset=offset_value,
+                sort=sort_value,
+                message_counts=msg_counts,
+            )
+        )
+        return
 
     if output.output_format in MACHINE_OUTPUT_FORMATS or env.ui.plain:
         click.echo(
@@ -945,6 +1010,7 @@ __all__ = [
     "open_in_browser",
     "open_result",
     "output_results",
+    "format_search_envelope",
     "output_search_hits",
     "output_stats_by_conversations",
     "output_stats_by_profile_ids",

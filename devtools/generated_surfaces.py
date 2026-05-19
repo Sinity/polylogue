@@ -11,6 +11,7 @@ from devtools import (
     render_cli_reference,
     render_devtools_reference,
     render_docs_surface,
+    render_openapi,
     render_pages,
     render_quality_reference,
     render_topology_status,
@@ -62,6 +63,14 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         command=control_plane_argv("render-cli-output-schemas"),
         main=render_cli_output_schemas.main,
         inputs=("polylogue/surfaces/payloads.py", "devtools/render_cli_output_schemas.py"),
+    ),
+    GeneratedSurface(
+        name="openapi",
+        label="OpenAPI schema",
+        description="Render docs/openapi/search.yaml from the SearchEnvelope Pydantic models (#1266).",
+        command=control_plane_argv("render-openapi"),
+        main=render_openapi.main,
+        inputs=("polylogue/surfaces/payloads.py", "devtools/render_openapi.py"),
     ),
     GeneratedSurface(
         name="devtools-reference",

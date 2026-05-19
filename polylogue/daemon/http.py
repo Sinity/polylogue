@@ -38,6 +38,7 @@ from polylogue.errors import PolylogueError
 from polylogue.logging import get_logger
 from polylogue.paths import db_path
 from polylogue.surfaces.payloads import (
+    ConversationSearchHitPayload,
     MutationResultPayload,
     QueryErrorPayload,
     QueryMissDiagnosticsPayload,
@@ -46,6 +47,7 @@ from polylogue.surfaces.payloads import (
     _build_flags_from_conversation,
     _extract_cwd,
     _extract_repo,
+    build_search_envelope,
     reader_anchor,
     reader_conversation_actions,
     reader_message_actions,
@@ -1205,7 +1207,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit: int,
         offset: int,
     ) -> object:
-        """Return ranked search hits with match evidence for queries with search terms."""
+        """Return the canonical :class:`SearchEnvelope` for ranked queries.
+
+        The same envelope ships across CLI JSON, MCP, Python API, and daemon
+        HTTP (#1266). Construction goes through ``build_search_envelope`` so
+        the cursor / next_offset / ranking-policy fields stay aligned with
+        the other surfaces.
+        """
         from polylogue.archive.query.search_hits import search_hits_for_plan
 
         plan = spec.to_plan()
@@ -1221,62 +1229,26 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
-        hit_dicts: list[dict[str, object]] = []
-        for hit in hits:
-            flags = _build_flags_from_conversation(hit.summary)
-            conversation_id = str(hit.conversation_id)
-            target_ref = TargetRefPayload.conversation(conversation_id)
-            if hit.message_id is not None:
-                match_target_ref = TargetRefPayload.message(conversation_id=conversation_id, message_id=hit.message_id)
-                match_anchor = reader_anchor("message", hit.message_id)
-                match_actions = reader_message_actions()
-            else:
-                match_target_ref = target_ref
-                match_anchor = reader_anchor("conversation", conversation_id)
-                match_actions = reader_conversation_actions()
-            hit_dicts.append(
-                {
-                    "id": conversation_id,
-                    "title": hit.summary.display_title,
-                    "provider": str(hit.summary.provider) if hit.summary.provider else None,
-                    "target_ref": _dump_target_ref(target_ref),
-                    "anchor": reader_anchor("conversation", conversation_id),
-                    "actions": _dump_actions(reader_conversation_actions()),
-                    "date": hit.summary.display_date.isoformat() if hit.summary.display_date else None,
-                    "created_at": hit.summary.created_at.isoformat() if hit.summary.created_at else None,
-                    "updated_at": hit.summary.updated_at.isoformat() if hit.summary.updated_at else None,
-                    "message_count": hit.summary.message_count,
-                    "word_count": getattr(hit.summary, "word_count", None),
-                    "repo": _extract_repo(hit.summary.provider_meta),
-                    "cwd_display": _extract_cwd(hit.summary.provider_meta),
-                    "tags": hit.summary.tags,
-                    "flags": flags.model_dump(mode="json") if flags else None,
-                    "summary": hit.summary.summary,
-                    "match": {
-                        "rank": hit.rank,
-                        "retrieval_lane": hit.retrieval_lane,
-                        "match_surface": hit.match_surface,
-                        "target_ref": _dump_target_ref(match_target_ref),
-                        "anchor": match_anchor,
-                        "actions": _dump_actions(match_actions),
-                        "message_id": hit.message_id,
-                        "snippet": hit.snippet,
-                        "score": hit.score,
-                        "matched_terms": list(hit.matched_terms),
-                        "score_components": hit.score_components,
-                    },
-                }
-            )
-
-        result: dict[str, object] = {
-            "hits": hit_dicts,
-            "total": total,
-            "limit": limit,
-            "offset": offset,
-        }
-        if diagnostics is not None:
-            result["diagnostics"] = diagnostics.model_dump(mode="json")
-        return result
+        hit_payloads = [
+            ConversationSearchHitPayload.from_search_hit(hit, message_count=hit.summary.message_count) for hit in hits
+        ]
+        query_text = ""
+        if plan.fts_terms:
+            query_text = " ".join(plan.fts_terms)
+        elif plan.similar_text:
+            query_text = plan.similar_text
+        resolved_lane = hits[0].retrieval_lane if hits else (plan.retrieval_lane or "auto")
+        envelope = build_search_envelope(
+            hit_payloads,
+            total=total,
+            limit=limit,
+            offset=offset,
+            query=query_text,
+            retrieval_lane=resolved_lane,
+            sort=plan.sort,
+            diagnostics=diagnostics,
+        )
+        return envelope.model_dump(mode="json")
 
     # ------------------------------------------------------------------
     # Handlers: get conversation

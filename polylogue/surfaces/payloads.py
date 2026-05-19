@@ -577,6 +577,132 @@ class ConversationListResponse(SurfacePayloadModel):
     diagnostics: QueryMissDiagnosticsPayload | None = None
 
 
+# ---------------------------------------------------------------------------
+# Ranked search envelope (#1266, #873 slice A)
+# ---------------------------------------------------------------------------
+
+#: Canonical ranking policy identifier exposed in the search envelope.
+#: When the per-hit lane is ``hybrid`` the fused score is RRF (Reciprocal
+#: Rank Fusion); for ``dialogue``/``auto`` it is BM25; for ``semantic`` it
+#: is vector distance. ``mixed`` is the umbrella policy that selects per
+#: retrieval lane.
+RANKING_POLICY_MIXED: Literal["mixed-bm25-rrf-vector"] = "mixed-bm25-rrf-vector"
+
+#: Version of the ranking policy implementation. Bump on semantic changes
+#: to BM25/RRF/vector ordering; consumers can pin a known good version.
+RANKING_POLICY_VERSION: Literal["1"] = "1"
+
+
+class SearchEnvelope(SurfacePayloadModel):
+    """Typed ranked-result envelope shared across CLI, MCP, API, and daemon HTTP.
+
+    This is the canonical search response shape (#1266). The same envelope
+    is emitted from every read surface so downstream consumers — shell
+    pipelines, LLM tool-use harnesses, web clients — see one stable
+    contract regardless of which surface produced the result.
+
+    Fields:
+
+    - ``hits``: ordered tuple of :class:`ConversationSearchHitPayload`
+      (already evidence-bearing — see #873).
+    - ``total``: total number of matching conversations when known,
+      ``None`` when the underlying lane cannot compute it cheaply.
+    - ``limit``: applied page size.
+    - ``offset``: applied byte/row offset (offset-based pagination is
+      "best-effort, not stable" for ranked results; prefer ``next_cursor``).
+    - ``next_offset``: convenience pointer for offset-based clients; only
+      set when more results are likely available.
+    - ``next_cursor``: opaque keyset cursor encoding (rank, conversation_id)
+      for stable rank-first pagination. Pass back unchanged in the
+      following request.
+    - ``query``: the search query text actually applied (after CLI/MCP/HTTP
+      coercion). Empty string when there is no FTS query.
+    - ``sort``: applied sort field, e.g. ``"rank"`` (default for ranked
+      search), ``"date"``, ``"messages"``. ``None`` when no explicit sort
+      was requested and the underlying lane order is preserved.
+    - ``retrieval_lane``: resolved lane name — one of ``"dialogue"``,
+      ``"actions"``, ``"hybrid"``, ``"semantic"``, ``"auto"``. ``auto``
+      means the surface left the lane to the planner.
+    - ``ranking_policy``: policy identifier the lane used to order hits.
+      Currently always :data:`RANKING_POLICY_MIXED`.
+    - ``ranking_policy_version``: numeric version of the ranking policy
+      so external consumers can detect ordering changes.
+    - ``diagnostics``: optional zero-result explanation when the query
+      produced no hits but filters were applied.
+    """
+
+    hits: tuple[ConversationSearchHitPayload, ...]
+    total: int | None
+    limit: int
+    offset: int
+    next_offset: int | None = None
+    next_cursor: str | None = None
+    query: str
+    sort: str | None = None
+    retrieval_lane: str
+    ranking_policy: str = RANKING_POLICY_MIXED
+    ranking_policy_version: str = RANKING_POLICY_VERSION
+    diagnostics: QueryMissDiagnosticsPayload | None = None
+
+
+def build_search_cursor(hits: Sequence[ConversationSearchHitPayload]) -> str | None:
+    """Build an opaque keyset cursor from the last hit.
+
+    The cursor encodes ``(rank, conversation_id)`` of the final hit so the
+    server can resume scanning at the next position even if the underlying
+    archive grew between requests. Returns ``None`` when ``hits`` is empty.
+    """
+    if not hits:
+        return None
+    import base64
+
+    last = hits[-1]
+    payload = f"{last.match.rank}:{last.conversation.id}"
+    return base64.b64encode(payload.encode()).decode()
+
+
+def build_search_envelope(
+    hits: Sequence[ConversationSearchHitPayload],
+    *,
+    total: int | None,
+    limit: int,
+    offset: int,
+    query: str,
+    retrieval_lane: str,
+    sort: str | None = None,
+    diagnostics: QueryMissDiagnosticsPayload | None = None,
+    ranking_policy: str = RANKING_POLICY_MIXED,
+    ranking_policy_version: str = RANKING_POLICY_VERSION,
+) -> SearchEnvelope:
+    """Construct a :class:`SearchEnvelope` with the canonical cursor logic.
+
+    This is the one builder all four surfaces should call so the envelope
+    field shape — and the cursor/next_offset semantics in particular —
+    stay aligned.
+    """
+    hits_tuple = tuple(hits)
+    next_offset: int | None = None
+    next_cursor: str | None = None
+    if hits_tuple and len(hits_tuple) == limit and (total is None or offset + limit < total):
+        # More results likely available; expose both pagination handles.
+        next_offset = offset + limit
+        next_cursor = build_search_cursor(hits_tuple)
+    return SearchEnvelope(
+        hits=hits_tuple,
+        total=total,
+        limit=limit,
+        offset=offset,
+        next_offset=next_offset,
+        next_cursor=next_cursor,
+        query=query,
+        sort=sort,
+        retrieval_lane=retrieval_lane,
+        ranking_policy=ranking_policy,
+        ranking_policy_version=ranking_policy_version,
+        diagnostics=diagnostics,
+    )
+
+
 TagMutationOutcome: TypeAlias = Literal["added", "no_op", "removed", "not_present"]
 """Tag idempotency outcome exposed by all mutation surfaces."""
 
@@ -785,13 +911,18 @@ __all__ = [
     "QueryErrorPayload",
     "QueryMissDiagnosticsPayload",
     "QueryMissReasonPayload",
+    "RANKING_POLICY_MIXED",
+    "RANKING_POLICY_VERSION",
     "ReaderActionAvailabilityPayload",
+    "SearchEnvelope",
     "SurfacePayloadModel",
     "TagMutationOutcome",
     "TagMutationResult",
     "TargetRefPayload",
     "JSONDocument",
     "JSONValue",
+    "build_search_cursor",
+    "build_search_envelope",
     "model_json_document",
     "normalize_role",
     "reader_anchor",

@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         BulkTagMutationResult,
         DeleteConversationResult,
         MetadataMutationResult,
+        SearchEnvelope,
         TagMutationResult,
     )
 
@@ -101,6 +102,34 @@ class PolylogueArchiveMixin:
             limit=limit,
             source=source,
             since=since,
+        )
+
+    async def search_envelope(
+        self,
+        query: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        provider: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        retrieval_lane: str = "auto",
+        sort: str | None = None,
+    ) -> SearchEnvelope:
+        """Return the canonical :class:`SearchEnvelope` for a query (#1266)."""
+        from polylogue.api.search_envelope_builder import build_archive_search_envelope
+
+        return await build_archive_search_envelope(
+            self.operations,
+            self.repository,
+            query=query,
+            limit=limit,
+            offset=offset,
+            provider=provider,
+            since=since,
+            until=until,
+            retrieval_lane=retrieval_lane,
+            sort=sort,
         )
 
     async def get_session_insight_status(self) -> SessionInsightStatusSnapshot:

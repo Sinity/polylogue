@@ -117,6 +117,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "render-openapi",
+        "generated surfaces",
+        "Render docs/openapi/search.yaml from the typed SearchEnvelope Pydantic models (#1266).",
+        "devtools.render_openapi",
+        use_when=(
+            "Refresh or verify the published OpenAPI schema for the daemon HTTP search surface "
+            "after changing SearchEnvelope or its referenced models."
+        ),
+        examples=(
+            "devtools render-openapi",
+            "devtools render-openapi --check",
+        ),
+    ),
+    CommandSpec(
         "render-devtools-reference",
         "generated surfaces",
         "Render the command catalog inside docs/devtools.md.",
