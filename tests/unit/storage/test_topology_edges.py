@@ -444,14 +444,20 @@ class TestTopologyLateParentRepair:
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
             )
             # Ingest the parent twice.
-            for _ in range(2):
-                parent_result = await prepare_records(
-                    parent_parsed,
-                    source_name="codex",
-                    archive_root=tmp_path,
-                    backend=repo.backend,
-                    repository=repo,
-                )
+            parent_result = await prepare_records(
+                parent_parsed,
+                source_name="codex",
+                archive_root=tmp_path,
+                backend=repo.backend,
+                repository=repo,
+            )
+            parent_result = await prepare_records(
+                parent_parsed,
+                source_name="codex",
+                archive_root=tmp_path,
+                backend=repo.backend,
+                repository=repo,
+            )
 
         edges_after = _fetch_edges(db_path)
         child_edges = [e for e in edges_after if e["src_conversation_id"] == child_cid]

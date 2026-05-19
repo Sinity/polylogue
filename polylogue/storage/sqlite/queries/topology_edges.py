@@ -133,7 +133,7 @@ async def resolve_topology_edges_for_conversation(
         """,
         (provider_name, provider_conversation_id),
     )
-    pending_rows = await cursor.fetchall()
+    pending_rows = list(await cursor.fetchall())
 
     update_cursor = await conn.execute(
         """
@@ -210,7 +210,7 @@ async def resolve_unresolved_edges_for_child(
         """,
         (src_conversation_id,),
     )
-    rows = await cursor.fetchall()
+    rows = list(await cursor.fetchall())
     if not rows:
         return 0
 
