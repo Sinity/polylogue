@@ -36,11 +36,19 @@ from typing import Protocol
 
 
 class HasProvenance(Protocol):
-    """Structural type for any insight record exposing provenance fields."""
+    """Structural type for any insight record exposing provenance fields.
+
+    ``input_high_water_mark_source`` (added in #1276) names the temporal
+    source the HWM was sampled from (see
+    :mod:`polylogue.insights.temporal_source`). It is optional only
+    because legacy rows materialized before that taxonomy existed do not
+    carry the tag; all freshly materialized rows must set it.
+    """
 
     materialized_at: str
     materializer_version: int
     input_high_water_mark: str | None
+    input_high_water_mark_source: str | None
     input_row_count: int
 
 

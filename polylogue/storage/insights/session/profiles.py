@@ -29,6 +29,7 @@ from polylogue.insights.archive_models import (
     SessionEvidencePayload,
     SessionInferencePayload,
 )
+from polylogue.insights.temporal_source import classify_profile_hwm_source
 from polylogue.storage.runtime import (
     SESSION_ENRICHMENT_FAMILY,
     SESSION_ENRICHMENT_VERSION,
@@ -238,6 +239,7 @@ def build_session_profile_record(
         source_updated_at=source_updated_at,
         source_sort_key=profile.updated_at.timestamp() if profile.updated_at else None,
         input_high_water_mark=source_updated_at,
+        input_high_water_mark_source=classify_profile_hwm_source(profile.updated_at),
         input_row_count=profile.message_count,
         provider_name=profile.provider,
         title=profile.title,

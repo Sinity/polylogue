@@ -72,6 +72,7 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
         source_updated_at=_row_text(row, "source_updated_at"),
         source_sort_key=_row_float(row, "source_sort_key"),
         input_high_water_mark=_row_text(row, "input_high_water_mark"),
+        input_high_water_mark_source=_row_text(row, "input_high_water_mark_source"),
         input_row_count=int(_row_int(row, "input_row_count", 0) or 0),
         provider_name=row["provider_name"],
         title=_row_text(row, "title"),

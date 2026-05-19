@@ -15,6 +15,7 @@ from polylogue.insights.archive_models import (
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
 )
+from polylogue.insights.temporal_source import classify_profile_hwm_source
 from polylogue.storage.insights.session.profiles import (
     event_fallback,
     event_summary,
@@ -133,6 +134,7 @@ def build_session_work_event_records(
     built_at = materialized_at or now_iso()
     source_updated_at = profile.updated_at.isoformat() if profile.updated_at else None
     source_sort_key = profile.updated_at.timestamp() if profile.updated_at else None
+    input_hwm_source = classify_profile_hwm_source(profile.updated_at)
     input_row_count = len(profile.work_events)
     records: list[SessionWorkEventRecord] = []
     for index, event in enumerate(profile.work_events):
@@ -151,6 +153,7 @@ def build_session_work_event_records(
                 source_updated_at=source_updated_at,
                 source_sort_key=source_sort_key,
                 input_high_water_mark=source_updated_at,
+                input_high_water_mark_source=input_hwm_source,
                 input_row_count=input_row_count,
                 provider_name=profile.provider,
                 event_index=index,
@@ -277,6 +280,7 @@ def build_session_phase_records(
     built_at = materialized_at or now_iso()
     source_updated_at = profile.updated_at.isoformat() if profile.updated_at else None
     source_sort_key = profile.updated_at.timestamp() if profile.updated_at else None
+    input_hwm_source = classify_profile_hwm_source(profile.updated_at)
     input_row_count = len(profile.phases)
     records: list[SessionPhaseRecord] = []
     for index, phase in enumerate(profile.phases):
@@ -294,6 +298,7 @@ def build_session_phase_records(
                 source_updated_at=source_updated_at,
                 source_sort_key=source_sort_key,
                 input_high_water_mark=source_updated_at,
+                input_high_water_mark_source=input_hwm_source,
                 input_row_count=input_row_count,
                 provider_name=profile.provider,
                 phase_index=index,

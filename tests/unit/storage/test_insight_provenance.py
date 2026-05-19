@@ -100,12 +100,14 @@ class TestStalenessDetection:
             materialized_at: str
             materializer_version: int
             input_high_water_mark: str | None
+            input_high_water_mark_source: str | None
             input_row_count: int
 
         return _R(
             materialized_at="2026-01-01T00:00:00+00:00",
             materializer_version=5,
             input_high_water_mark=hwm,
+            input_high_water_mark_source="provider_ts" if hwm else None,
             input_row_count=rows,
         )
 

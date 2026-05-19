@@ -10,6 +10,7 @@ import aiosqlite
 from polylogue.archive.conversation.threads import WorkThread, WorkThreadPayload, build_session_threads
 from polylogue.archive.session.documents import WorkThreadDocument
 from polylogue.insights.archive_models import WorkThreadPayload as ArchivedWorkThreadPayload
+from polylogue.insights.temporal_source import classify_thread_hwm_source
 from polylogue.storage.insights.session.profiles import hydrate_session_profile, now_iso
 from polylogue.storage.runtime import (
     SESSION_INSIGHT_MATERIALIZER_VERSION,
@@ -122,6 +123,7 @@ def build_work_thread_record(
         materialized_at=built_at,
         source_updated_at=source_updated_at,
         input_high_water_mark=source_updated_at,
+        input_high_water_mark_source=classify_thread_hwm_source(thread.end_time),
         input_row_count=len(thread.session_ids),
         start_time=thread.start_time.isoformat() if thread.start_time else None,
         end_time=thread.end_time.isoformat() if thread.end_time else None,

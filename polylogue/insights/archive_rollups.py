@@ -23,6 +23,7 @@ from polylogue.insights.archive import (
     profile_timestamp_values,
     records_provenance,
 )
+from polylogue.insights.temporal_source import classify_aggregate_hwm_source
 from polylogue.storage.runtime import SessionTagRollupRecord
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 
@@ -92,6 +93,7 @@ def build_session_tag_rollup_records(
                 source_updated_at=hwm,
                 source_sort_key=max(bucket.source_sort_key) if bucket.source_sort_key else None,
                 input_high_water_mark=hwm,
+                input_high_water_mark_source=classify_aggregate_hwm_source(bucket.source_updated_at),
                 input_row_count=bucket.conversation_count,
                 conversation_count=bucket.conversation_count,
                 explicit_count=bucket.explicit_count,

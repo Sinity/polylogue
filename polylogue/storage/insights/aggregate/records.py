@@ -17,6 +17,7 @@ class SessionTagRollupRecord(BaseModel):
     source_updated_at: str | None = None
     source_sort_key: float | None = None
     input_high_water_mark: str | None = None
+    input_high_water_mark_source: str | None = None
     input_row_count: int = 0
     conversation_count: int = 0
     explicit_count: int = 0
@@ -40,6 +41,7 @@ class DaySessionSummaryRecord(BaseModel):
     source_updated_at: str | None = None
     source_sort_key: float | None = None
     input_high_water_mark: str | None = None
+    input_high_water_mark_source: str | None = None
     input_row_count: int = 0
     conversation_count: int = 0
     total_cost_usd: float = 0.0
