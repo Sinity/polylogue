@@ -131,6 +131,27 @@ CREATE TABLE IF NOT EXISTS live_convergence_debt (
 )
 """
 
+# Per-source-family cursor-lag sample history (#1349). The table feeds the
+# anomaly-band rolling baseline computed by
+# :mod:`polylogue.daemon.cursor_lag_baseline`. Daemon-runtime state, not
+# part of SCHEMA_VERSION — same lifecycle as live_cursor / live_convergence_debt.
+_LAG_SAMPLE_DDL = """
+CREATE TABLE IF NOT EXISTS live_cursor_lag_sample (
+    sample_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    family TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    max_lag_s REAL NOT NULL,
+    stuck_file_count INTEGER NOT NULL,
+    p50_lag_s REAL NOT NULL,
+    p95_lag_s REAL NOT NULL
+)
+"""
+
+_LAG_SAMPLE_INDEX_DDL = """
+CREATE INDEX IF NOT EXISTS idx_lag_sample_family_time
+ON live_cursor_lag_sample(family, observed_at DESC)
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class CursorRecord:
@@ -259,6 +280,8 @@ class CursorStore:
             conn.execute(_ATTEMPT_DDL)
             conn.execute(_STAGE_EVENT_DDL)
             conn.execute(_CONVERGENCE_DEBT_DDL)
+            conn.execute(_LAG_SAMPLE_DDL)
+            conn.execute(_LAG_SAMPLE_INDEX_DDL)
             self._ensure_columns(conn)
             self._mark_interrupted_attempts(conn)
 

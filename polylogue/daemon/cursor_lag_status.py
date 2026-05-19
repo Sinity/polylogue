@@ -37,6 +37,24 @@ from pydantic import BaseModel, Field
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 
+class CursorLagBaselineState(BaseModel):
+    """Per-family rolling-window baseline snapshot (#1349 anomaly band).
+
+    Populated by :mod:`polylogue.daemon.cursor_lag_baseline` and joined into
+    the cursor-lag projection so ``polylogue status`` and ``/health`` show
+    the same auto-calibration evidence the anomaly check evaluated against.
+    """
+
+    sample_count: int = 0
+    rolling_median_lag_s: float = 0.0
+    rolling_p95_lag_s: float = 0.0
+    confident: bool = False
+    current_multiplier: float = 0.0
+    """``max_lag_s / rolling_p95_lag_s`` at projection time; 0 when baseline is zero or no current lag."""
+    anomaly_severity: str = "ok"
+    """Resolved anomaly-band severity for this family at projection time (ok|warning|error)."""
+
+
 class CursorLagFamilySummary(BaseModel):
     """Per-source-family cursor-lag rollup."""
 
@@ -46,6 +64,7 @@ class CursorLagFamilySummary(BaseModel):
     idle_file_count: int = 0
     max_lag_s: float = 0.0
     """Maximum ``now - updated_at`` across stuck files in this family (0 if none)."""
+    baseline: CursorLagBaselineState = Field(default_factory=CursorLagBaselineState)
 
 
 class CursorLagItem(BaseModel):
@@ -99,7 +118,76 @@ def cursor_lag_summary_info(dbf: Path, *, now: datetime | None = None) -> Cursor
     except sqlite3.Error:
         return CursorLagSummary()
 
-    return _project_rows(rows, now=now or datetime.now(UTC))
+    summary = _project_rows(rows, now=now or datetime.now(UTC))
+    return _decorate_with_baselines(summary, dbf, now=now or datetime.now(UTC))
+
+
+def _decorate_with_baselines(
+    summary: CursorLagSummary,
+    dbf: Path,
+    *,
+    now: datetime,
+) -> CursorLagSummary:
+    """Attach baseline + anomaly state to each family summary (#1349).
+
+    Lazy import to avoid a config-load cycle when projection is invoked
+    from non-daemon paths (e.g. CLI status against a read-only archive).
+    The decoration is a pure read against ``live_cursor_lag_sample`` plus
+    the same config the anomaly check uses; when either is unavailable
+    the family carries its default ``CursorLagBaselineState()``.
+    """
+    if not summary.family_summaries:
+        return summary
+    try:
+        from polylogue.config import load_polylogue_config
+        from polylogue.daemon.cursor_lag_anomaly import (
+            load_anomaly_thresholds_from_config,
+        )
+        from polylogue.daemon.cursor_lag_baseline import load_family_baselines
+
+        cfg = load_polylogue_config()
+        thresholds = load_anomaly_thresholds_from_config(cfg)
+        baselines = load_family_baselines(
+            dbf,
+            [fs.family for fs in summary.family_summaries],
+            window_days=thresholds.baseline_window_days,
+            min_samples=thresholds.baseline_min_samples,
+            now=now,
+        )
+    except Exception:
+        return summary
+
+    decorated: list[CursorLagFamilySummary] = []
+    for fs in summary.family_summaries:
+        baseline = baselines.get(fs.family)
+        if baseline is None:
+            decorated.append(fs)
+            continue
+        enabled, warn_mul, err_mul, min_lag, _window, _min_samples = thresholds.for_family(fs.family)
+        multiplier = fs.max_lag_s / baseline.rolling_p95_lag_s if baseline.rolling_p95_lag_s > 0 else 0.0
+        if not enabled or not baseline.confident or fs.stuck_file_count == 0 or fs.max_lag_s < min_lag:
+            severity = "ok"
+        elif multiplier >= err_mul:
+            severity = "error"
+        elif multiplier >= warn_mul:
+            severity = "warning"
+        else:
+            severity = "ok"
+        decorated.append(
+            fs.model_copy(
+                update={
+                    "baseline": CursorLagBaselineState(
+                        sample_count=baseline.sample_count,
+                        rolling_median_lag_s=baseline.rolling_median_lag_s,
+                        rolling_p95_lag_s=baseline.rolling_p95_lag_s,
+                        confident=baseline.confident,
+                        current_multiplier=round(multiplier, 3),
+                        anomaly_severity=severity,
+                    )
+                }
+            )
+        )
+    return summary.model_copy(update={"family_summaries": decorated})
 
 
 def _project_rows(

@@ -25,7 +25,7 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
-REPORT_VERSION = 1
+REPORT_VERSION = 2  # v2 adds top-level `cursor_lag_baselines` (#1349)
 
 # Tables whose row counts form the convergence "boundary" — daemon work moves
 # rows into and out of these tables, so the deltas describe convergence shape.
@@ -233,6 +233,83 @@ def _source_path_churn(conn: sqlite3.Connection, *, attempts: list[dict[str, Any
             }
         )
     return items
+
+
+def _cursor_lag_baselines(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Rolling-window cursor-lag baseline state per source family (#1349).
+
+    Reads ``live_cursor_lag_sample`` and returns the same per-family
+    snapshot the anomaly check uses: sample-count, time range, p50, p95.
+    Stable JSON shape so before/after probes can detect baseline drift in
+    convergence proofs (e.g. *"after this run, claude-code-session's
+    rolling p95 dropped from 600s to 12s — convergence is healthy"*).
+    """
+    if not _table_exists(conn, "live_cursor_lag_sample"):
+        return {"table_present": False, "family_count": 0, "total_sample_count": 0, "families": []}
+    rows = conn.execute(
+        """
+        SELECT family,
+               COUNT(*),
+               MIN(observed_at),
+               MAX(observed_at),
+               MAX(max_lag_s),
+               AVG(max_lag_s),
+               SUM(stuck_file_count)
+        FROM live_cursor_lag_sample
+        GROUP BY family
+        ORDER BY COUNT(*) DESC, family
+        """
+    ).fetchall()
+    families: list[dict[str, Any]] = []
+    for row in rows:
+        family = str(row[0])
+        sample_count = int(row[1] or 0)
+        # Compute p50/p95 per family with a small follow-up read; bounded
+        # at ~200K rows total across families this stays under a second.
+        per_family = [
+            float(r[0])
+            for r in conn.execute(
+                "SELECT max_lag_s FROM live_cursor_lag_sample WHERE family = ? ORDER BY max_lag_s",
+                (family,),
+            ).fetchall()
+        ]
+        p50 = _percentile_from_sorted(per_family, 0.5)
+        p95 = _percentile_from_sorted(per_family, 0.95)
+        families.append(
+            {
+                "family": family,
+                "sample_count": sample_count,
+                "first_observed_at": row[2],
+                "last_observed_at": row[3],
+                "max_lag_s_seen": round(float(row[4] or 0.0), 3),
+                "mean_lag_s": round(float(row[5] or 0.0), 3),
+                "stuck_file_total": int(row[6] or 0),
+                "p50_lag_s": round(p50, 3),
+                "p95_lag_s": round(p95, 3),
+            }
+        )
+    return {
+        "table_present": True,
+        "family_count": len(families),
+        "total_sample_count": sum(f["sample_count"] for f in families),
+        "families": families,
+    }
+
+
+def _percentile_from_sorted(sorted_values: list[float], q: float) -> float:
+    if not sorted_values:
+        return 0.0
+    if len(sorted_values) == 1:
+        return float(sorted_values[0])
+    if q <= 0:
+        return float(sorted_values[0])
+    if q >= 1:
+        return float(sorted_values[-1])
+    position = q * (len(sorted_values) - 1)
+    lo = int(position)
+    hi = min(lo + 1, len(sorted_values) - 1)
+    frac = position - lo
+    return float(sorted_values[lo]) * (1.0 - frac) + float(sorted_values[hi]) * frac
 
 
 def _convergence_debt(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -556,6 +633,7 @@ def probe(db: Path, *, limit: int = 5) -> dict[str, Any]:
             "daemon_resource_signal": _daemon_resource_signal(recent_attempts, conn),
             "source_path_churn": _source_path_churn(conn, attempts=recent_attempts, limit=limit),
             "convergence_debt": _convergence_debt(conn),
+            "cursor_lag_baselines": _cursor_lag_baselines(conn),
             "query_plans": _query_plans(conn),
         }
     finally:
