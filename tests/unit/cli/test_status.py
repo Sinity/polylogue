@@ -121,6 +121,82 @@ class TestNoArchiveStatus:
         assert "no archive" in output_lower or "polylogued" in output_lower
 
 
+class TestStatusDiagnosticIntegration:
+    """End-to-end coverage that the new diagnostics never leak tracebacks (#1263)."""
+
+    def _xdg_env(self, tmp_path: Path) -> dict[str, str]:
+        return {
+            **os.environ,
+            "POLYLOGUE_ARCHIVE_ROOT": str(tmp_path / "polylogue"),
+            "XDG_DATA_HOME": str(tmp_path / "data"),
+            "XDG_CONFIG_HOME": str(tmp_path / "config"),
+            "XDG_STATE_HOME": str(tmp_path / "state"),
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+            "HOME": str(tmp_path),
+            "POLYLOGUE_DAEMON_URL": "http://127.0.0.1:1",
+        }
+
+    @pytest.mark.integration
+    def test_status_subprocess_schema_mismatch(self, tmp_path: Path) -> None:
+        """A db with the wrong PRAGMA user_version yields actionable text, no traceback."""
+        import sqlite3
+
+        from tests.infra.cli_subprocess import run_cli
+
+        data_home = tmp_path / "data" / "polylogue"
+        data_home.mkdir(parents=True, exist_ok=True)
+        db = data_home / "polylogue.db"
+        conn = sqlite3.connect(db)
+        conn.execute("PRAGMA user_version = 99")
+        conn.commit()
+        conn.close()
+
+        result = run_cli(["--plain", "status"], env=self._xdg_env(tmp_path))
+        output_lower = result.output.lower()
+        assert result.exit_code == 0
+        assert "traceback" not in output_lower
+        assert "schema" in output_lower or "polylogue reset" in output_lower
+
+    @pytest.mark.integration
+    def test_status_subprocess_stale_pidfile(self, tmp_path: Path) -> None:
+        """A stale pidfile yields actionable text, no traceback."""
+        import sqlite3
+
+        from tests.infra.cli_subprocess import run_cli
+
+        data_home = tmp_path / "data" / "polylogue"
+        data_home.mkdir(parents=True, exist_ok=True)
+        sqlite3.connect(data_home / "polylogue.db").close()
+        archive = tmp_path / "polylogue"
+        archive.mkdir(parents=True, exist_ok=True)
+        (archive / "daemon.pid").write_text("99999999\n")
+
+        result = run_cli(["--plain", "status"], env=self._xdg_env(tmp_path))
+        output_lower = result.output.lower()
+        assert result.exit_code == 0
+        assert "traceback" not in output_lower
+        assert "pidfile" in output_lower or "polylogued" in output_lower
+
+    @pytest.mark.integration
+    def test_status_subprocess_no_sources(self, tmp_path: Path) -> None:
+        """An empty roots config surfaces the no-sources hint."""
+        import sqlite3
+
+        from tests.infra.cli_subprocess import run_cli
+
+        data_home = tmp_path / "data" / "polylogue"
+        data_home.mkdir(parents=True, exist_ok=True)
+        sqlite3.connect(data_home / "polylogue.db").close()
+        config_home = tmp_path / "config" / "polylogue"
+        config_home.mkdir(parents=True, exist_ok=True)
+        (config_home / "polylogue.toml").write_text("[sources]\nroots = []\n")
+
+        result = run_cli(["--plain", "status"], env=self._xdg_env(tmp_path))
+        output_lower = result.output.lower()
+        assert result.exit_code == 0
+        assert "traceback" not in output_lower
+
+
 class TestEnvIsolation:
     """Regression coverage for #1325: workspace_env strips host POLYLOGUE_* env vars."""
 

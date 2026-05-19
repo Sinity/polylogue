@@ -188,6 +188,7 @@ Commands:
   stats         Show statistics for matched conversations.
   status        Show daemon and archive status.
   tags          Manage conversation tags.
+  tutorial      Interactive first-run walk-through.
   user-state    Manage durable reader user state.
 ```
 
