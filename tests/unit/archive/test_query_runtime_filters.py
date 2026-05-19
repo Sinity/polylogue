@@ -180,7 +180,7 @@ def test_apply_full_filters_handles_content_word_branch_predicate_and_action_fil
             id="a1",
             role="assistant",
             text="Thinking out loud",
-            provider_meta={"content_blocks": [{"type": "thinking", "text": "step"}]},
+            content_blocks=[{"type": "thinking", "text": "step"}],
             timestamp=datetime(2026, 4, 23, 10, 1, tzinfo=timezone.utc),
         ),
         make_msg(

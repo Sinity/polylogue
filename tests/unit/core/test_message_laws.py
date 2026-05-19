@@ -117,17 +117,3 @@ def test_without_noise_idempotent(conv: Conversation) -> None:
 def test_extract_thinking_never_empty_string(msg: Message) -> None:
     result = msg.extract_thinking()
     assert result is None or len(result.strip()) > 0
-
-
-@given(message_model_strategy())
-@settings(suppress_health_check=[HealthCheck.too_slow])
-def test_cost_usd_none_or_positive(msg: Message) -> None:
-    if msg.cost_usd is not None:
-        assert msg.cost_usd > 0
-
-
-@given(message_model_strategy())
-@settings(suppress_health_check=[HealthCheck.too_slow])
-def test_duration_ms_none_or_positive(msg: Message) -> None:
-    if msg.duration_ms is not None:
-        assert msg.duration_ms > 0

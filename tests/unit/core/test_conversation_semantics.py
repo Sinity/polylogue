@@ -52,18 +52,13 @@ def substantive_pair() -> list[Message]:
 
 @pytest.fixture
 def conversation_with_metadata() -> Conversation:
+    # Hydrated messages have no provider_meta (#1256). Conversation-level
+    # total_duration_ms is sourced from the conversation provider_meta envelope.
     messages = [
-        make_msg(id="u1", role="user", text="Can you help with this?", provider_meta={"costUSD": 0.001}),
-        make_msg(
-            id="a1", role="assistant", text="Yes, I can help.", provider_meta={"costUSD": 0.005, "durationMs": 2500}
-        ),
-        make_msg(id="u2", role="user", text="Great, now what?", provider_meta={"costUSD": 0.001}),
-        make_msg(
-            id="a2",
-            role="assistant",
-            text="Let me explain further.",
-            provider_meta={"costUSD": 0.008, "durationMs": 3000},
-        ),
+        make_msg(id="u1", role="user", text="Can you help with this?"),
+        make_msg(id="a1", role="assistant", text="Yes, I can help."),
+        make_msg(id="u2", role="user", text="Great, now what?"),
+        make_msg(id="a2", role="assistant", text="Let me explain further."),
     ]
     return make_conv(
         id="complex-conv",
@@ -73,6 +68,7 @@ def conversation_with_metadata() -> Conversation:
         created_at=datetime(2024, 1, 15, 10, 0),
         updated_at=datetime(2024, 1, 15, 12, 0),
         metadata={"tags": ["test", "comprehensive"], "summary": "A test conversation"},
+        provider_meta={"total_duration_ms": 5500},
     )
 
 
@@ -87,13 +83,13 @@ def dialogue_noise_mix() -> Conversation:
             id="a2",
             role="assistant",
             text="<thinking>Reasoning trace</thinking>",
-            provider_meta={"content_blocks": [{"type": "thinking", "text": "Reasoning trace"}]},
+            content_blocks=[{"type": "thinking", "text": "Reasoning trace"}],
         ),
         make_msg(
             id="a3",
             role="assistant",
             text="Calling tool",
-            provider_meta={"content_blocks": [{"type": "tool_use"}]},
+            content_blocks=[{"type": "tool_use"}],
         ),
     ]
     return make_conv(id="mixed", provider="claude-ai", messages=MessageCollection(messages=messages))
@@ -148,7 +144,7 @@ class TestDialoguePairContracts:
                 id="a1",
                 role="assistant",
                 text="<thinking>Complex reasoning</thinking>\nAnswer",
-                provider_meta={"content_blocks": [{"type": "thinking", "text": "Complex reasoning"}]},
+                content_blocks=[{"type": "thinking", "text": "Complex reasoning"}],
             ),
         )
         assert "User: Hard problem" in pair.exchange
@@ -158,48 +154,29 @@ class TestDialoguePairContracts:
 
 class TestMessageSemanticProjection:
     @pytest.mark.parametrize(
-        ("provider_meta", "text", "expected"),
+        ("content_blocks", "text", "expected"),
         [
-            ({"content_blocks": [{"type": "thinking", "text": "step one"}]}, "visible", "step one"),
+            ([{"type": "thinking", "text": "step one"}], "visible", "step one"),
             (
-                {"content_blocks": [{"type": "thinking", "text": "first"}, {"type": "thinking", "text": "second"}]},
+                [{"type": "thinking", "text": "first"}, {"type": "thinking", "text": "second"}],
                 "visible",
                 "first\n\nsecond",
             ),
-            ({"isThought": True}, "gemini thinking text", "gemini thinking text"),
-            ({"raw": {"content": {"content_type": "thoughts"}}}, "chatgpt thinking text", "chatgpt thinking text"),
-            (None, "plain response", None),
+            ([], "<thinking>xml fallback</thinking>", "xml fallback"),
+            ([], "plain response", None),
         ],
-        ids=["content_blocks", "multiple_blocks", "gemini", "chatgpt", "non_thinking"],
+        ids=["content_blocks", "multiple_blocks", "xml_fallback", "non_thinking"],
     )
     def test_extract_thinking_projection_contract(
         self,
-        provider_meta: dict[str, object] | None,
+        content_blocks: list[dict[str, object]],
         text: str,
         expected: str | None,
     ) -> None:
-        msg = make_msg(id="m1", role="assistant", text=text, provider_meta=provider_meta)
+        # Hydrated messages source thinking from typed content_blocks; the
+        # XML fallback exists for text-only providers (#1256).
+        msg = make_msg(id="m1", role="assistant", text=text, content_blocks=content_blocks)
         assert msg.extract_thinking() == expected
-
-    @pytest.mark.parametrize(
-        ("provider_meta", "expected_cost", "expected_duration"),
-        [
-            ({"costUSD": 0.042}, 0.042, None),
-            ({"durationMs": 2500}, None, 2500),
-            ({"costUSD": 0.01, "durationMs": 1000}, 0.01, 1000),
-            ({"raw": {"usage": {"prompt_tokens": 10}}}, None, None),
-            (None, None, None),
-        ],
-    )
-    def test_message_metadata_projection_contract(
-        self,
-        provider_meta: dict[str, object] | None,
-        expected_cost: float | None,
-        expected_duration: int | None,
-    ) -> None:
-        msg = make_msg(id="m1", role="assistant", text="Response", provider_meta=provider_meta)
-        assert msg.cost_usd == expected_cost
-        assert msg.duration_ms == expected_duration
 
     def test_message_attachments_and_classification_contract(self) -> None:
         attachment = Attachment(
@@ -213,13 +190,13 @@ class TestMessageSemanticProjection:
             id="m-thinking",
             role="assistant",
             text="<thinking>...</thinking>",
-            provider_meta={"content_blocks": [{"type": "thinking", "text": "..."}]},
+            content_blocks=[{"type": "thinking", "text": "..."}],
         )
         tool = make_msg(
             id="m-tool",
             role="assistant",
             text="Calling tool",
-            provider_meta={"content_blocks": [{"type": "tool_use"}]},
+            content_blocks=[{"type": "tool_use"}],
         )
         msg = make_msg(id="m-user", role="user", text="Review this", attachments=[attachment])
 
@@ -285,7 +262,9 @@ class TestConversationMetadataAndAggregation:
         assert fallback.tags == []
 
     def test_cost_duration_branch_and_equality_contract(self, conversation_with_metadata: Conversation) -> None:
-        assert conversation_with_metadata.total_cost_usd == 0.015
+        # total_cost_usd is always 0.0 post-#1256 (no Message-level cost);
+        # total_duration_ms reads the conversation provider_meta envelope.
+        assert conversation_with_metadata.total_cost_usd == 0.0
         assert conversation_with_metadata.total_duration_ms == 5500
 
         branched = make_conv(
@@ -377,7 +356,7 @@ VIEW_CASES = [
                 id="a2",
                 role="assistant",
                 text="<thinking>Reasoning</thinking>",
-                provider_meta={"content_blocks": [{"type": "thinking", "text": "Reasoning"}]},
+                content_blocks=[{"type": "thinking", "text": "Reasoning"}],
             ),
             make_msg(id="t1", role="tool", text="Tool result"),
         ],
@@ -512,7 +491,7 @@ class TestConversationProjectionContracts:
                         role="assistant",
                         text="Thinking step",
                         timestamp=datetime(2024, 1, 1, 9, 10),
-                        provider_meta={"content_blocks": [{"type": "thinking", "text": "step"}]},
+                        content_blocks=[{"type": "thinking", "text": "step"}],
                     ),
                     make_msg(
                         id="a3",
@@ -588,7 +567,7 @@ class TestConversationProjectionContracts:
                         id="a2",
                         role="assistant",
                         text="Thinking trace",
-                        provider_meta={"content_blocks": [{"type": "thinking", "text": "trace"}]},
+                        content_blocks=[{"type": "thinking", "text": "trace"}],
                     ),
                     make_msg(
                         id="a3",

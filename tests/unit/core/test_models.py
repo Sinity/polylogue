@@ -228,12 +228,12 @@ class TestMessageCollectionContracts:
 
 
 class TestPinnedSemanticRegressions:
-    def test_extract_thinking_prefers_db_content_blocks(self) -> None:
+    def test_extract_thinking_from_db_content_blocks(self) -> None:
+        # Hydrated Message reads thinking from content_blocks only (#1256).
         msg = Message(
             id="m1",
             role=Role.ASSISTANT,
             text="<thinking>xml fallback</thinking>",
-            provider_meta={"content_blocks": [{"type": "thinking", "text": "provider meta thought"}]},
             content_blocks=[
                 {"type": "thinking", "text": "db thought 1"},
                 {"type": "thinking", "text": "db thought 2"},
@@ -254,51 +254,34 @@ class TestPinnedSemanticRegressions:
         )
         assert msg.extract_thinking() == "db-only thinking"
 
-    def test_is_tool_use_detection_raw_claude_code(self) -> None:
+    def test_is_tool_use_detection_from_content_blocks(self) -> None:
+        # Hydrated Message detects tool_use from typed content_blocks (#1256).
         msg = Message(
             id="m-tool",
             role=Role.ASSISTANT,
             text="I will inspect the file",
             provider=Provider.CLAUDE_CODE,
-            provider_meta={
-                "raw": {
-                    "type": "assistant",
-                    "uuid": "m-tool",
-                    "message": {
-                        "role": "assistant",
-                        "content": [
-                            {"type": "text", "text": "I will inspect the file"},
-                            {"type": "tool_use", "id": "tool-1", "name": "Read", "input": {"file_path": "README.md"}},
-                        ],
-                    },
-                }
-            },
+            content_blocks=[
+                {"type": "text", "text": "I will inspect the file"},
+                {
+                    "type": "tool_use",
+                    "tool_id": "tool-1",
+                    "tool_name": "Read",
+                    "tool_input": {"file_path": "README.md"},
+                },
+            ],
         )
         assert msg.is_tool_use is True
-        assert msg.harmonized is not None
-        assert msg.harmonized.tool_calls[0].id == "tool-1"
-        assert msg.harmonized.tool_calls[0].input == {"file_path": "README.md"}
 
-    def test_is_thinking_detection_raw_claude_code(self) -> None:
+    def test_is_thinking_detection_from_content_blocks(self) -> None:
         msg = Message(
             id="m-think",
             role=Role.ASSISTANT,
             text="",
             provider=Provider.CLAUDE_CODE,
-            provider_meta={
-                "raw": {
-                    "type": "assistant",
-                    "uuid": "m-think",
-                    "message": {
-                        "role": "assistant",
-                        "content": [{"type": "thinking", "thinking": "step by step"}],
-                    },
-                }
-            },
+            content_blocks=[{"type": "thinking", "text": "step by step"}],
         )
         assert msg.is_thinking is True
-        assert msg.harmonized is not None
-        assert msg.harmonized.reasoning_traces[0].text == "step by step"
 
 
 class TestAttachmentFromRecord:

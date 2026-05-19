@@ -199,26 +199,43 @@ class ConversationRuntimeMixin:
     def total_cost_usd(self) -> float:
         """Sum of per-message ``cost_usd`` values.
 
-        This is the parser/runtime view, derived only from message-level data.
-        Conversation-level cost facts in ``provider_meta`` are extracted by
-        ``polylogue.archive.semantic.pricing`` into the typed
-        ``CostEstimatePayload`` model; downstream readers (insights, session
-        summaries, threads) consume the typed model, not ``provider_meta``.
-        See issue #1139.
+        Hydrated ``Message`` instances no longer carry ``provider_meta``
+        (#1256), and message-level cost/duration is sourced through the
+        typed cost projection (``polylogue.archive.semantic.pricing``) per
+        #803/#1139. This property is retained for legacy callers and
+        always returns ``0.0`` for hydrated conversations; downstream
+        readers consume ``CostEstimatePayload`` from the typed insight
+        layer instead.
         """
 
-        return sum((message.cost_usd or 0.0) for message in self.messages)
+        return 0.0
 
     @property
     def total_duration_ms(self) -> int:
-        from polylogue.archive.message.model_runtime import _coerce_optional_int
+        """Total duration of the conversation in milliseconds.
 
-        message_total = sum((message.duration_ms or 0) for message in self.messages)
-        if message_total > 0:
-            return message_total
+        Falls back to ``provider_meta['total_duration_ms']`` on the
+        ``Conversation`` envelope when present (conversation-level
+        provider metadata is still persisted). Per-message duration was
+        previously sourced from ``Message.provider_meta`` which no longer
+        exists (#1256); the typed cost projection now owns that data.
+        """
+
         if self.provider_meta is None:
             return 0
-        return _coerce_optional_int(self.provider_meta.get("total_duration_ms")) or 0
+        value = self.provider_meta.get("total_duration_ms")
+        if isinstance(value, bool):
+            return 0
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            try:
+                return int(float(value))
+            except ValueError:
+                return 0
+        return 0
 
     def project(self) -> ConversationProjection:
         from polylogue.archive.conversation.models import Conversation
