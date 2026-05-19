@@ -217,6 +217,144 @@ class TestStatusEventEtag:
         assert b"Content-Type: application/json" not in out
 
 
+class TestGranularEventKinds:
+    """#1204 — granular SSE topics for selective subscription and live tail."""
+
+    def test_emit_conversation_appended_payload_shape(self, empty_events_db: Path) -> None:
+        from polylogue.daemon.events import emit_conversation_appended, query_daemon_events
+
+        emit_conversation_appended(
+            source_name="claude-code-session",
+            succeeded_file_count=3,
+            failed_file_count=1,
+            source_paths=["/tmp/a.jsonl", "/tmp/b.jsonl"],
+        )
+        events = query_daemon_events(limit=10)
+        assert events[0]["kind"] == "conversation.appended"
+        payload = cast("dict[str, object]", events[0]["payload"])
+        assert payload["source_name"] == "claude-code-session"
+        assert payload["succeeded_file_count"] == 3
+        assert payload["failed_file_count"] == 1
+        assert payload["source_paths"] == ["/tmp/a.jsonl", "/tmp/b.jsonl"]
+
+    def test_emit_message_appended_payload_shape(self, empty_events_db: Path) -> None:
+        from polylogue.daemon.events import emit_message_appended, query_daemon_events
+
+        emit_message_appended(
+            conversation_id="conv-abc",
+            source_name="codex",
+            appended_count=4,
+            source_path="/tmp/session.json",
+        )
+        events = query_daemon_events(limit=10)
+        assert events[0]["kind"] == "message.appended"
+        payload = cast("dict[str, object]", events[0]["payload"])
+        assert payload["conversation_id"] == "conv-abc"
+        assert payload["appended_count"] == 4
+        assert payload["source_path"] == "/tmp/session.json"
+
+    def test_emit_progress_update_includes_fraction(self, empty_events_db: Path) -> None:
+        from polylogue.daemon.events import emit_progress_update, query_daemon_events
+
+        emit_progress_update(
+            operation_id="replay-42",
+            operation_kind="replay",
+            completed=47,
+            total=100,
+            eta_seconds=180.0,
+            detail="reapplying schema validation",
+        )
+        events = query_daemon_events(limit=10)
+        assert events[0]["kind"] == "progress.update"
+        assert events[0]["operation_id"] == "replay-42"
+        payload = cast("dict[str, object]", events[0]["payload"])
+        assert payload["completed"] == 47
+        assert payload["total"] == 100
+        assert payload["fraction"] == 0.47
+        assert payload["eta_seconds"] == 180.0
+
+    def test_emit_progress_complete(self, empty_events_db: Path) -> None:
+        from polylogue.daemon.events import emit_progress_complete, query_daemon_events
+
+        emit_progress_complete(operation_id="replay-42", operation_kind="replay", status="completed")
+        events = query_daemon_events(limit=10)
+        assert events[0]["kind"] == "progress.complete"
+        assert events[0]["operation_id"] == "replay-42"
+        assert cast("dict[str, object]", events[0]["payload"])["status"] == "completed"
+
+    def test_selective_subscription_via_kinds(self, empty_events_db: Path) -> None:
+        from polylogue.daemon.events import (
+            emit_conversation_appended,
+            emit_message_appended,
+            emit_progress_update,
+        )
+
+        emit_conversation_appended(source_name=None, succeeded_file_count=1)
+        emit_message_appended(conversation_id="c", appended_count=1)
+        emit_progress_update(operation_id="op", operation_kind="x", completed=1)
+
+        handler = _make_handler(
+            "GET",
+            "/api/events?poll=1&since=0&kinds=message.appended,progress.update",
+        )
+        send_json = _capture_json(handler)
+        handler.do_GET()
+        kinds = {e["kind"] for e in send_json.call_args.args[1]["events"]}
+        assert kinds == {"message.appended", "progress.update"}
+
+
+class TestBackpressureCoalescing:
+    """#1204 — bursts collapse into one ``snapshot`` envelope for slow clients."""
+
+    def test_poll_coalesces_burst_into_snapshot(self, empty_events_db: Path) -> None:
+        from polylogue.daemon.events import emit_message_appended
+
+        for _ in range(20):
+            emit_message_appended(conversation_id="c", appended_count=1)
+
+        handler = _make_handler("GET", "/api/events?poll=1&since=0&coalesce=5")
+        send_json = _capture_json(handler)
+        handler.do_GET()
+        payload = send_json.call_args.args[1]
+        assert payload["coalesced"] is True
+        assert payload["coalesced_count"] == 20
+        assert len(payload["events"]) == 1
+        snapshot = payload["events"][0]
+        assert snapshot["kind"] == "snapshot"
+        assert snapshot["payload"]["event_count"] == 20
+        assert snapshot["payload"]["kind_counts"] == {"message.appended": 20}
+        # last_event_id advances past every coalesced row so the next
+        # request doesn't replay the same burst.
+        assert payload["last_event_id"] == snapshot["id"]
+
+    def test_poll_below_threshold_returns_individual_events(self, empty_events_db: Path) -> None:
+        from polylogue.daemon.events import emit_message_appended
+
+        for _ in range(3):
+            emit_message_appended(conversation_id="c", appended_count=1)
+
+        handler = _make_handler("GET", "/api/events?poll=1&since=0&coalesce=10")
+        send_json = _capture_json(handler)
+        handler.do_GET()
+        payload = send_json.call_args.args[1]
+        assert payload.get("coalesced") is None
+        assert len(payload["events"]) == 3
+        assert all(e["kind"] == "message.appended" for e in payload["events"])
+
+    def test_sse_stream_coalesces_burst(self, empty_events_db: Path) -> None:
+        from polylogue.daemon.events import emit_message_appended
+
+        for _ in range(15):
+            emit_message_appended(conversation_id="c", appended_count=1)
+
+        handler = _make_handler("GET", "/api/events?since=0&max_seconds=1&coalesce=5")
+        handler.do_GET()
+        out = cast("BytesIO", handler.wfile).getvalue()
+        # A coalesced burst emits exactly one snapshot frame, not 15.
+        assert out.count(b"event: snapshot\n") == 1
+        assert b'"coalesced": true' in out or b'"coalesced":true' in out
+
+
 class TestAccessTokenQueryFallback:
     """When a token is configured, EventSource clients can use ``?access_token=``."""
 

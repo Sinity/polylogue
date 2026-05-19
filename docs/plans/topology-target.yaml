@@ -1174,6 +1174,10 @@ files:
     loc: 576
     target: polylogue/daemon/web_shell_reader.py
     owner: stable
+  - path: polylogue/daemon/web_shell_realtime.py
+    loc: 266
+    target: polylogue/daemon/web_shell_realtime.py
+    owner: stable
   - path: polylogue/daemon/web_shell_similar.py
     loc: 160
     target: polylogue/daemon/web_shell_similar.py

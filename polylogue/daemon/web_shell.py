@@ -13,6 +13,7 @@ from polylogue.daemon.web_shell_lineage import LINEAGE_JS
 from polylogue.daemon.web_shell_paste import PASTE_CSS, PASTE_JS
 from polylogue.daemon.web_shell_provenance import PROVENANCE_JS
 from polylogue.daemon.web_shell_reader import READER_CSS, READER_HELP_HTML, READER_JS
+from polylogue.daemon.web_shell_realtime import REALTIME_JS
 from polylogue.daemon.web_shell_similar import SIMILAR_JS
 from polylogue.daemon.web_shell_workspace import WORKSPACE_CSS, WORKSPACE_HTML, WORKSPACE_JS
 
@@ -110,6 +111,11 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
 .conv-item { padding: 7px 10px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background 0.1s; }
 .conv-item:hover { background: var(--panel-elevated); }
 .conv-item.selected { background: var(--panel-elevated); border-left: 2px solid var(--accent); padding-left: 8px; }
+/* #1204 — new-row / appended-message animations driven by SSE granular topics. */
+@keyframes pl-row-appended { 0% { background: var(--accent-bg); } 100% { background: transparent; } }
+@keyframes pl-message-appended { 0% { background: var(--accent-bg); } 100% { background: transparent; } }
+.conv-item.row-appended { animation: pl-row-appended 1.8s ease-out; }
+.msg-block.message-appended, [data-msg-id].message-appended { animation: pl-message-appended 1.8s ease-out; }
 .conv-item .conv-title { font-size: var(--base); color: var(--text); line-height: 1.3; display: -webkit-box;
   -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .conv-item .conv-meta { display: flex; gap: 6px; align-items: center; font-size: var(--small); color: var(--text-muted); margin-top: 3px; flex-wrap: wrap; }
@@ -391,12 +397,15 @@ window.addEventListener('popstate', function() {
   else { state.mode = 'single'; state.selected = null; state.selectedRaw = null; renderMain(); renderInspector(); renderConversations(); }
 });
 
-async function loadConversations() {
+async function loadConversations(opts) {
   var params = new URLSearchParams();
   params.set('limit', String(state.limit));
   params.set('offset', String(state.offset));
   if (state.provider) params.set('provider', state.provider);
   if (state.query) params.set('query', state.query);
+  // Capture pre-load id set so we can animate newly-arrived rows after render.
+  var beforeIds = {};
+  (state.conversations || []).forEach(function(c) { beforeIds[c.id] = true; });
   try {
     var data = await fetchJSON('/api/conversations?' + params);
     state.conversations = data.items || [];
@@ -409,6 +418,14 @@ async function loadConversations() {
     renderSidebarState('error', 'Failed to load conversations');
   }
   renderConversations();
+  // After render, animate rows that are newly present (either flagged by
+  // realtime or simply not in the previous snapshot at this offset).
+  var animateIds = (opts && opts.animateNewIds) || {};
+  state.conversations.forEach(function(c) {
+    if (animateIds[c.id] || !beforeIds[c.id]) {
+      maybeAnimateExistingRow(c.id);
+    }
+  });
 }
 
 async function loadUserState() {
@@ -1311,10 +1328,31 @@ async function loadRawData() {
   } catch(e) { area.innerHTML = '<div class="inspector-empty">Failed to load raw data</div>'; }
 }
 
-async function selectConversation(id, updateURL) {
-  document.getElementById('msg-list').innerHTML = '<div class="main-empty"><h3>Loading...</h3></div>';
-  document.getElementById('inspector-content').innerHTML = '<div class="inspector-empty">Loading...</div>';
+async function selectConversation(id, updateURL, opts) {
+  // ``opts.liveTail`` is set by the SSE handler when a message.appended
+  // event lands for the currently-open conversation. We skip the loading
+  // placeholder so the message list visibly stays put while the new
+  // message animates in, instead of flickering through an empty state.
+  var isLiveTail = !!(opts && opts.liveTail);
+  var priorMessageIds = {};
+  if (isLiveTail && state.selected && state.selected.messages) {
+    state.selected.messages.forEach(function(m) { priorMessageIds[m.id] = true; });
+  } else {
+    document.getElementById('msg-list').innerHTML = '<div class="main-empty"><h3>Loading...</h3></div>';
+    document.getElementById('inspector-content').innerHTML = '<div class="inspector-empty">Loading...</div>';
+  }
   await loadConversation(id, updateURL);
+  if (isLiveTail) {
+    // Animate any message rendered into the DOM whose id was not present
+    // before the live-tail reload — the per-row data-msg-id lookup mirrors
+    // the renderer in web_shell_reader.py.
+    var rows = document.querySelectorAll('#msg-list [data-msg-id]');
+    rows.forEach(function(row) {
+      var mid = row.getAttribute('data-msg-id');
+      if (mid && !priorMessageIds[mid]) animateAppendedMessage(row);
+    });
+  }
+  restartRealtimeForView();
 }
 
 document.addEventListener('keydown', function(e) {
@@ -1398,97 +1436,7 @@ loadFacets();
 loadUserState();
 loadStatus();
 
-// --- Realtime channel ----------------------------------------------------
-// Subscribe to /api/events (SSE) when available. On ingest/reset events the
-// conversation list, facets, and status chips reload. EventSource handles
-// reconnects automatically; on persistent failure we fall back to polling.
-var realtime = {
-  source: null,
-  lastEventId: 0,
-  pollTimer: null,
-  refreshTimer: null,
-  status: 'connecting'
-};
-
-function setLiveChip(status, lastSeen) {
-  var el = document.getElementById('status-live');
-  if (!el) return;
-  el.className = 'chip' + (status === 'live' ? ' accent' : '');
-  var label = 'live: ' + status;
-  if (lastSeen) label += ' \u00b7 #' + lastSeen;
-  el.textContent = label;
-}
-
-function scheduleRefresh() {
-  if (realtime.refreshTimer) return;
-  realtime.refreshTimer = setTimeout(function() {
-    realtime.refreshTimer = null;
-    loadConversations();
-    loadFacets();
-    loadStatus();
-  }, 250);
-}
-
-function handleRealtimeEvent(payload) {
-  if (!payload || typeof payload !== 'object') return;
-  if (typeof payload.id === 'number') realtime.lastEventId = payload.id;
-  setLiveChip('live', realtime.lastEventId);
-  var kind = payload.kind || '';
-  if (kind === 'ingestion_batch' || kind === 'ingest' || kind === 'reset' || kind === 'operation') {
-    scheduleRefresh();
-  }
-}
-
-function startPollingFallback() {
-  if (realtime.pollTimer) return;
-  setLiveChip('polling', realtime.lastEventId);
-  realtime.pollTimer = setInterval(async function() {
-    try {
-      var data = await fetchJSON('/api/events?poll=1&since=' + realtime.lastEventId);
-      var events = data.events || [];
-      events.forEach(handleRealtimeEvent);
-      if (typeof data.last_event_id === 'number') realtime.lastEventId = data.last_event_id;
-      loadStatus();
-    } catch(e) {
-      setLiveChip('offline', realtime.lastEventId);
-    }
-  }, 5000);
-}
-
-function startRealtimeChannel() {
-  if (typeof EventSource === 'undefined') { startPollingFallback(); return; }
-  try {
-    var url = '/api/events?since=' + realtime.lastEventId;
-    realtime.source = new EventSource(url);
-    setLiveChip('connecting', realtime.lastEventId);
-    realtime.source.onopen = function() { setLiveChip('live', realtime.lastEventId); };
-    var consumeMessage = function(e) {
-      var data = null;
-      try { data = JSON.parse(e.data); } catch(_) { return; }
-      handleRealtimeEvent(data);
-    };
-    realtime.source.onmessage = consumeMessage;
-    ['ingestion_batch', 'ingest', 'reset', 'operation'].forEach(function(kind) {
-      realtime.source.addEventListener(kind, consumeMessage);
-    });
-    realtime.source.onerror = function() {
-      setLiveChip('stale', realtime.lastEventId);
-      // EventSource retries automatically; if it never reopens within 15s,
-      // switch to polling fallback.
-      setTimeout(function() {
-        if (!realtime.source || realtime.source.readyState !== EventSource.OPEN) {
-          try { realtime.source && realtime.source.close(); } catch(_) {}
-          realtime.source = null;
-          startPollingFallback();
-        }
-      }, 15000);
-    };
-  } catch(e) {
-    startPollingFallback();
-  }
-}
-
-startRealtimeChannel();
+__REALTIME_JS__
 __READER_JS__
 __PASTE_JS__
 __ATTACHMENT_JS__
@@ -1507,6 +1455,7 @@ __ATTACHMENT_JS__
     .replace("__READER_CSS__", READER_CSS)
     .replace("__READER_HELP_HTML__", READER_HELP_HTML)
     .replace("__READER_JS__", READER_JS)
+    .replace("__REALTIME_JS__", REALTIME_JS)
     .replace("__PASTE_CSS__", PASTE_CSS)
     .replace("__PASTE_JS__", PASTE_JS)
     .replace("__ATTACHMENT_CSS__", ATTACHMENT_CSS)
