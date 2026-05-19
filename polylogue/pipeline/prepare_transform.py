@@ -117,6 +117,10 @@ def transform_to_records(convo: ParsedConversation, source_name: str, *, archive
                 size_bytes=attachment.size_bytes,
                 path=attachment.path,
                 provider_meta=attachment.provider_meta,
+                provider_attachment_id=attachment.provider_attachment_id,
+                provider_file_id=attachment.provider_file_id,
+                provider_drive_id=attachment.provider_drive_id,
+                upload_origin=attachment.upload_origin,
             )
         )
 

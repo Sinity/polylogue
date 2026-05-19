@@ -166,10 +166,27 @@ ProviderEventTuple = tuple[
 ]
 StatsTuple = tuple[ConversationId, str, int, int, int, int, int]
 AttachmentTuple = tuple[
-    AttachmentId, str | None, int | None, str | None, int, str | None, str | None, str | None, str | None
+    AttachmentId,
+    str | None,
+    int | None,
+    str | None,
+    int,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
 ]
 AttachmentRefTuple = tuple[
-    str, AttachmentId, ConversationId, MessageId | None, str | None, str | None, str | None, str | None
+    str,
+    AttachmentId,
+    ConversationId,
+    MessageId | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
 ]
 
 
@@ -948,6 +965,9 @@ def _attachment_tuples(
         provider_attachment_id = getattr(attachment, "provider_attachment_id", None) or None
         provider_file_id = getattr(attachment, "provider_file_id", None) or None
         provider_drive_id = getattr(attachment, "provider_drive_id", None) or None
+        # #1252: upload_origin is the closed vocabulary the #1199 attachment
+        # library uses to group attachments without scanning provider_meta.
+        upload_origin = getattr(attachment, "upload_origin", None) or None
         attachment_tuples.append(
             (
                 attachment.attachment_id,
@@ -959,6 +979,7 @@ def _attachment_tuples(
                 provider_attachment_id,
                 provider_file_id,
                 provider_drive_id,
+                upload_origin,
             )
         )
         attachment_ref_tuples.append(
@@ -975,6 +996,7 @@ def _attachment_tuples(
                 provider_attachment_id,
                 provider_file_id,
                 provider_drive_id,
+                upload_origin,
             )
         )
     return attachment_tuples, attachment_ref_tuples

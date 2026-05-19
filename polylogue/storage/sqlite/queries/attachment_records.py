@@ -13,6 +13,15 @@ from polylogue.storage.sqlite.queries.mappers import _json_object, _parse_json
 from polylogue.types import ConversationId
 
 
+def _row_value(row: aiosqlite.Row, key: str) -> object | None:
+    """Read an optional column from a row, returning None if the column is absent."""
+    try:
+        value: object = row[key]
+    except (IndexError, KeyError):
+        return None
+    return value
+
+
 def _build_attachment_record(row: aiosqlite.Row, *, conversation_id: str) -> AttachmentRecord:
     return AttachmentRecord(
         attachment_id=row["attachment_id"],
@@ -28,6 +37,12 @@ def _build_attachment_record(row: aiosqlite.Row, *, conversation_id: str) -> Att
                 record_id=row["attachment_id"],
             )
         ),
+        provider_attachment_id=(
+            value if isinstance((value := _row_value(row, "provider_attachment_id")), str) else None
+        ),
+        provider_file_id=(value if isinstance((value := _row_value(row, "provider_file_id")), str) else None),
+        provider_drive_id=(value if isinstance((value := _row_value(row, "provider_drive_id")), str) else None),
+        upload_origin=(value if isinstance((value := _row_value(row, "upload_origin")), str) else None),
     )
 
 
@@ -123,6 +138,12 @@ async def search_attachment_identity_evidence_hits(
     if not identity or limit <= 0:
         return []
 
+    # #1252: attachment identity lookup resolves against typed columns
+    # (provider_attachment_id, provider_file_id, provider_drive_id) on both
+    # `attachments` and `attachment_refs`. The previous implementation read
+    # the same identifiers through json_extract on `provider_meta`; the typed
+    # surface keeps the lookup on the hot path index-backed and removes the
+    # JSON parse per probed row.
     sql = """
         WITH base_attachments AS (
             SELECT
@@ -133,6 +154,12 @@ async def search_attachment_identity_evidence_hits(
                 a.path,
                 a.provider_meta AS attachment_meta,
                 r.provider_meta AS ref_meta,
+                a.provider_attachment_id AS a_provider_attachment_id,
+                a.provider_file_id AS a_provider_file_id,
+                a.provider_drive_id AS a_provider_drive_id,
+                r.provider_attachment_id AS r_provider_attachment_id,
+                r.provider_file_id AS r_provider_file_id,
+                r.provider_drive_id AS r_provider_drive_id,
                 c.provider_name,
                 COALESCE(m.sort_key, c.sort_key, 0) AS sort_key,
                 COALESCE(
@@ -164,28 +191,22 @@ async def search_attachment_identity_evidence_hits(
             SELECT *, 'attachment_id' AS identity_field, attachment_id AS identity_value, 0 AS identity_rank
             FROM base_attachments
             UNION ALL
-            SELECT *, 'provider_meta.provider_id', CAST(json_extract(attachment_meta, '$.provider_id') AS TEXT), 1
+            SELECT *, 'attachment.provider_attachment_id', a_provider_attachment_id, 1
             FROM base_attachments
             UNION ALL
-            SELECT *, 'provider_meta.id', CAST(json_extract(attachment_meta, '$.id') AS TEXT), 2
+            SELECT *, 'attachment.provider_file_id', a_provider_file_id, 2
             FROM base_attachments
             UNION ALL
-            SELECT *, 'provider_meta.fileId', CAST(json_extract(attachment_meta, '$.fileId') AS TEXT), 3
+            SELECT *, 'attachment.provider_drive_id', a_provider_drive_id, 3
             FROM base_attachments
             UNION ALL
-            SELECT *, 'provider_meta.driveId', CAST(json_extract(attachment_meta, '$.driveId') AS TEXT), 4
+            SELECT *, 'ref.provider_attachment_id', r_provider_attachment_id, 4
             FROM base_attachments
             UNION ALL
-            SELECT *, 'ref_meta.provider_id', CAST(json_extract(ref_meta, '$.provider_id') AS TEXT), 5
+            SELECT *, 'ref.provider_file_id', r_provider_file_id, 5
             FROM base_attachments
             UNION ALL
-            SELECT *, 'ref_meta.id', CAST(json_extract(ref_meta, '$.id') AS TEXT), 6
-            FROM base_attachments
-            UNION ALL
-            SELECT *, 'ref_meta.fileId', CAST(json_extract(ref_meta, '$.fileId') AS TEXT), 7
-            FROM base_attachments
-            UNION ALL
-            SELECT *, 'ref_meta.driveId', CAST(json_extract(ref_meta, '$.driveId') AS TEXT), 8
+            SELECT *, 'ref.provider_drive_id', r_provider_drive_id, 6
             FROM base_attachments
         ),
         matched AS (

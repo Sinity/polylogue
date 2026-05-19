@@ -170,16 +170,16 @@ Decision: These columns are useful provenance when available but their nullable 
 | `mime_type`, `size_bytes`, `path` | Universal attachment facts. |
 | `ref_count` | Reference counting for GC. |
 | `ref_id`, `attachment_id`, `conversation_id`, `message_id` (attachment_refs) | Relationship linking. |
+| `provider_attachment_id`, `provider_file_id`, `provider_drive_id` | First-class native identifier columns on both `attachments` and `attachment_refs`. Lookup queries resolve against these stored TEXT columns; no `json_extract` on the hot path. Landed by [#1252](https://github.com/Sinity/polylogue/issues/1252) (#864 slice B). |
+| `upload_origin` | Closed vocabulary classification of how the attachment entered the archive (`drive` / `paste` / `url` / `oauth`, or NULL). Indexed via `idx_attachment_refs_upload_origin` for the attachment-library UI ([#1199](https://github.com/Sinity/polylogue/issues/1199)) grouping. Landed by [#1252](https://github.com/Sinity/polylogue/issues/1252). |
 
 ### A2 — Trapped universal (in `provider_meta` JSON)
 
-| Factor | Detail | Issue |
-|--------|--------|-------|
-| Attachment native identity indexes | 8 JSON expression indexes over `provider_meta` fields (`$.id`, `$.provider_id`, `$.fileId`, `$.driveId`) on both `attachments` and `attachment_refs`. These are identity fields used for dedup and linking but stored as JSON extracts. | [#864](https://github.com/Sinity/polylogue/issues/864) |
+Native identity indexes were dropped in [#1240](https://github.com/Sinity/polylogue/issues/1240) (audit found zero SQL usage) and the typed columns were promoted in [#1252](https://github.com/Sinity/polylogue/issues/1252) so the hot-path identity lookup (`search_attachment_identity_evidence_hits`) reads stored columns instead of `json_extract` against `provider_meta`. Nothing remaining trapped in this section.
 
 ### A3 — Provider-specific attachment metadata
 
-The `provider_meta` column on attachments correctly holds provider-specific metadata (e.g. `attachment_kind`, raw provider document metadata from Drive). This is intentional.
+The `provider_meta` column on attachments correctly holds provider-specific metadata (e.g. `attachment_kind`, raw provider document metadata from Drive). This is intentional. Native identifiers (`id`, `provider_id`, `fileId`, `driveId`) may still be mirrored in `provider_meta` for rendering fallbacks, but the canonical lookup surface is the typed columns above.
 
 ---
 

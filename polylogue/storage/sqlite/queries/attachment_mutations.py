@@ -34,6 +34,7 @@ async def save_attachments(
                 record.provider_attachment_id,
                 record.provider_file_id,
                 record.provider_drive_id,
+                record.upload_origin,
             )
             for record in records
         ],
@@ -51,6 +52,7 @@ async def save_attachments(
                 record.provider_attachment_id,
                 record.provider_file_id,
                 record.provider_drive_id,
+                record.upload_origin,
             )
         )
     await conn.executemany(

@@ -93,6 +93,8 @@ def attachment_from_doc(doc: DriveDocSource, message_id: str | None) -> ParsedAt
             size_bytes=None,
             path=None,
             provider_meta=_as_document_metadata(meta),
+            provider_file_id=doc_id,
+            upload_origin="drive",
         )
     if not is_json_document(doc):
         return None
@@ -102,6 +104,11 @@ def attachment_from_doc(doc: DriveDocSource, message_id: str | None) -> ParsedAt
     size_bytes = _int_or_none(doc.get("sizeBytes") or doc.get("size"))
     name_val = _first_text(doc, "name", "title")
     mime_val = _first_text(doc, "mimeType", "mime_type")
+    # #1252: promote drive native IDs into typed fields. `id`/`fileId` is the
+    # Drive file identifier; `driveId` (when present) is the shared-drive
+    # container. Both are mirrored in provider_meta for rendering fallbacks.
+    file_id_val = _first_text(doc, "fileId", "id")
+    drive_id_val = _first_text(doc, "driveId")
     return ParsedAttachment(
         provider_attachment_id=doc_id_val,
         message_provider_id=message_id,
@@ -110,6 +117,9 @@ def attachment_from_doc(doc: DriveDocSource, message_id: str | None) -> ParsedAt
         size_bytes=size_bytes,
         path=None,
         provider_meta=_as_document_metadata(doc),
+        provider_file_id=file_id_val,
+        provider_drive_id=drive_id_val,
+        upload_origin="drive",
     )
 
 
@@ -138,6 +148,7 @@ def attachment_from_inline_file(
         size_bytes=size_bytes,
         path=None,
         provider_meta=provider_meta,
+        upload_origin="paste",
     )
 
 
@@ -167,6 +178,7 @@ def attachment_from_youtube_video(
         size_bytes=None,
         path=None,
         provider_meta=provider_meta,
+        upload_origin="url",
     )
 
 

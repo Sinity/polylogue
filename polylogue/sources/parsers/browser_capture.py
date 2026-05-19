@@ -67,6 +67,7 @@ def parse(payload: object, fallback_id: str) -> ParsedConversation:
                     provider_meta={**attachment.provider_meta, "url": attachment.url}
                     if attachment.url
                     else attachment.provider_meta or None,
+                    upload_origin="url" if attachment.url else "oauth",
                 )
             )
 
@@ -82,6 +83,7 @@ def parse(payload: object, fallback_id: str) -> ParsedConversation:
                 provider_meta={**attachment.provider_meta, "url": attachment.url}
                 if attachment.url
                 else attachment.provider_meta or None,
+                upload_origin="url" if attachment.url else "oauth",
             )
         )
 

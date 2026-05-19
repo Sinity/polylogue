@@ -87,6 +87,11 @@ def extract_messages_from_mapping(mapping: Mapping[str, object]) -> tuple[list[P
             if isinstance(msg_attachments, list):
                 for attach in msg_attachments:
                     if isinstance(attach, dict) and attach.get("id"):
+                        # #1252: ChatGPT attachments arrive through the OAuth-
+                        # authenticated export; the only native identifier is
+                        # `id`. file_id is recorded when the export carries one
+                        # (some private deployments surface it).
+                        file_id_raw = attach.get("file_id") or attach.get("fileId")
                         attachments.append(
                             ParsedAttachment(
                                 provider_attachment_id=str(attach["id"]),
@@ -97,6 +102,10 @@ def extract_messages_from_mapping(mapping: Mapping[str, object]) -> tuple[list[P
                                 if isinstance(attach.get("size"), (int, float))
                                 else None,
                                 provider_meta={"raw": attach},
+                                provider_file_id=str(file_id_raw)
+                                if isinstance(file_id_raw, str) and file_id_raw
+                                else None,
+                                upload_origin="oauth",
                             )
                         )
 

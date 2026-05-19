@@ -584,7 +584,7 @@ class TestListFormatting:
             retrieval_lane="attachment",
             match_surface="attachment",
             message_id="msg-doc",
-            snippet='attachment identity provider_meta.fileId=drive-file-1 name="Project Plan"',
+            snippet='attachment identity attachment.provider_file_id=drive-file-1 name="Project Plan"',
         )
 
         rendered = format_search_hit_list([hit], "json", None, message_counts={"conv-attachment-hit": 1})
@@ -593,7 +593,7 @@ class TestListFormatting:
         assert payload[0]["match"]["match_surface"] == "attachment"
         assert payload[0]["match"]["retrieval_lane"] == "attachment"
         assert payload[0]["match"]["message_id"] == "msg-doc"
-        assert "provider_meta.fileId=drive-file-1" in payload[0]["match"]["snippet"]
+        assert "attachment.provider_file_id=drive-file-1" in payload[0]["match"]["snippet"]
 
     def test_format_summary_and_search_use_provider_display_label(self) -> None:
         summary = ConversationSummary(

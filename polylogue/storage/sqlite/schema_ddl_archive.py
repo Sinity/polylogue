@@ -187,6 +187,13 @@ ARCHIVE_STORAGE_DDL = """
         CREATE INDEX IF NOT EXISTS idx_conv_stats_thinking
         ON conversation_stats(thinking_count);
 
+        -- Attachments carry first-class native identifier columns (#1252).
+        -- Lookups by `provider_attachment_id` / `provider_file_id` /
+        -- `provider_drive_id` resolve against stored TEXT columns; no
+        -- json_extract on the hot path. `upload_origin` is a closed
+        -- vocabulary ({"drive","paste","url","oauth"} or NULL) that lets the
+        -- attachment-library UI (#1199) group attachments by where they
+        -- entered the archive without scanning `provider_meta`.
         CREATE TABLE IF NOT EXISTS attachments (
             attachment_id TEXT PRIMARY KEY,
             mime_type TEXT,
@@ -197,6 +204,7 @@ ARCHIVE_STORAGE_DDL = """
             provider_attachment_id TEXT,
             provider_file_id TEXT,
             provider_drive_id TEXT,
+            upload_origin TEXT,
             UNIQUE (attachment_id)
         );
 
@@ -209,6 +217,7 @@ ARCHIVE_STORAGE_DDL = """
             provider_attachment_id TEXT,
             provider_file_id TEXT,
             provider_drive_id TEXT,
+            upload_origin TEXT,
             FOREIGN KEY (attachment_id)
                 REFERENCES attachments(attachment_id) ON DELETE CASCADE,
             FOREIGN KEY (conversation_id)
@@ -226,6 +235,14 @@ ARCHIVE_STORAGE_DDL = """
         CREATE INDEX IF NOT EXISTS idx_attachment_refs_message
         ON attachment_refs(message_id)
         WHERE message_id IS NOT NULL;
+
+        -- #1199 attachment-library: composite index over the conversation
+        -- provider plus the attachment origin so the UI's grouping query
+        -- "all attachments uploaded via drive in chatgpt sessions" answers
+        -- from index without scanning attachments.
+        CREATE INDEX IF NOT EXISTS idx_attachment_refs_upload_origin
+        ON attachment_refs(upload_origin, conversation_id)
+        WHERE upload_origin IS NOT NULL;
 
 """
 
