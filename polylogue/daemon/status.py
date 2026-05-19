@@ -1212,6 +1212,28 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                             f"{family.get('family')}: {_safe_int(family.get('stuck_file_count'))} stuck, "
                             f"worst lag {_safe_float(family.get('max_lag_s')):.0f}s"
                         )
+                        # Auto-calibration baseline state (#1349). Render only
+                        # when a baseline has been recorded; warm-up periods
+                        # stay quiet to avoid confusing operators with "0
+                        # samples" lines on a fresh archive.
+                        baseline = family.get("baseline")
+                        if isinstance(baseline, dict) and _safe_int(baseline.get("sample_count")) > 0:
+                            p95 = _safe_float(baseline.get("rolling_p95_lag_s"))
+                            baseline_sample_count = _safe_int(baseline.get("sample_count"))
+                            multiplier = _safe_float(baseline.get("current_multiplier"))
+                            severity = str(baseline.get("anomaly_severity", "ok"))
+                            confident = bool(baseline.get("confident", False))
+                            confidence_tag = "" if confident else " (baseline accruing)"
+                            anomaly_tag = ""
+                            if severity == "warning":
+                                anomaly_tag = " [ANOMALY warn]"
+                            elif severity == "error":
+                                anomaly_tag = " [ANOMALY err]"
+                            lines.append(
+                                "    "
+                                f"baseline p95 {p95:.0f}s over {baseline_sample_count} samples; "
+                                f"current {multiplier:.1f}x{confidence_tag}{anomaly_tag}"
+                            )
     # Health summary
     health = payload.get("health")
     if isinstance(health, dict):

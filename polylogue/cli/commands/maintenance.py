@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -109,7 +111,7 @@ _SCOPE_FILTER_OPTIONS = [
 ]
 
 
-def _apply_scope_filter_options(fn):  # type: ignore[no-untyped-def]
+def _apply_scope_filter_options(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator stacking the shared scope-filter options onto a command."""
     for option in reversed(_SCOPE_FILTER_OPTIONS):
         fn = option(fn)

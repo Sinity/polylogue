@@ -20,6 +20,7 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from polylogue.config import PolylogueConfig
 from polylogue.logging import get_logger
 from polylogue.paths import archive_root, db_path
 
@@ -938,13 +939,31 @@ def _check_convergence_debt_medium() -> list[HealthAlert]:
 
 
 def _check_cursor_lag_medium() -> list[HealthAlert]:
-    """Per-source-family cursor-lag SLO threshold alerts (#1232).
+    """Per-source-family cursor-lag SLO + anomaly-band alerts (#1232, #1349).
 
-    Projects ``live_cursor`` rows into a stuck-vs-idle per-family lag
-    summary and evaluates each family against its configured warning /
-    error / critical thresholds. Returns an empty list when no family
-    crosses a threshold and no resolution alert is pending — keeps the
-    periodic health loop quiet on a healthy archive.
+    Two layered checks against one shared lag projection:
+
+    1. **Static ladder** (#1232) — per-family hardcoded
+       warning/error/critical thresholds from
+       :mod:`polylogue.daemon.cursor_lag_alert`. This is the hard
+       page-me-now floor.
+    2. **Anomaly band** (#1349) — per-family "current lag is N× rolling
+       p95 baseline" thresholds from
+       :mod:`polylogue.daemon.cursor_lag_anomaly`. Additive: alerts use a
+       distinct ``check_name`` and a separate dedup state, so this layer
+       cannot suppress static escalations. Has no CRITICAL tier on
+       purpose — only the static ladder can page critical.
+
+    Side effects of the anomaly layer:
+
+    - Records one ``live_cursor_lag_sample`` row per stuck family per
+      tick (the periodic-loop cadence is determined by
+      ``health_check_interval_s``).
+    - GCs samples older than ``retention_days``.
+
+    Both side effects are no-ops when no family is stuck or when the
+    samples table cannot be opened. The static-ladder layer keeps working
+    in either case.
 
     Returns a list rather than a single :class:`HealthAlert` because
     multiple families may breach simultaneously; the calling tier
@@ -963,14 +982,17 @@ def _check_cursor_lag_medium() -> list[HealthAlert]:
         cfg = load_polylogue_config()
         thresholds = load_thresholds_from_config(cfg)
         summary = cursor_lag_summary_info(db_path())
-        alerts = evaluate_cursor_lag(
+        static_alerts = evaluate_cursor_lag(
             summary,
             thresholds=thresholds,
             state=get_default_dedup_state(),
         )
-        is_ok = not any(a.severity != HealthSeverity.OK for a in alerts)
+        is_ok = not any(a.severity != HealthSeverity.OK for a in static_alerts)
         _record_failure("cursor_lag", is_ok)
-        return alerts
+
+        anomaly_alerts = _check_cursor_lag_anomaly_layer(summary, cfg)
+
+        return [*static_alerts, *anomaly_alerts]
     except Exception as exc:
         return [
             HealthAlert(
@@ -980,6 +1002,97 @@ def _check_cursor_lag_medium() -> list[HealthAlert]:
                 message=f"cursor lag check failed: {exc}",
                 checked_at=now,
                 consecutive_failures=_record_failure("cursor_lag", False),
+            )
+        ]
+
+
+def _check_cursor_lag_anomaly_layer(
+    summary: object,
+    cfg: PolylogueConfig | None,
+) -> list[HealthAlert]:
+    """Run the anomaly-band layer on the shared lag summary.
+
+    Failure-isolated from the static-ladder layer: any exception here is
+    converted into a single ``cursor_lag_anomaly`` ERROR alert so the
+    static-ladder alerts still fire on the same tick.
+    """
+    now = datetime.now(UTC).isoformat()
+    try:
+        from polylogue.daemon.cursor_lag_anomaly import (
+            evaluate_cursor_lag_anomaly,
+            load_anomaly_thresholds_from_config,
+        )
+        from polylogue.daemon.cursor_lag_anomaly import (
+            get_default_dedup_state as get_anomaly_dedup_state,
+        )
+        from polylogue.daemon.cursor_lag_baseline import (
+            gc_cursor_lag_samples,
+            load_family_baselines,
+            record_cursor_lag_sample,
+        )
+        from polylogue.daemon.cursor_lag_status import CursorLagSummary
+
+        if not isinstance(summary, CursorLagSummary):
+            return []
+
+        anomaly_thresholds = load_anomaly_thresholds_from_config(cfg)
+        dbf = db_path()
+
+        # Load the baseline BEFORE recording the current moment's sample.
+        # This is load-bearing: if we wrote first, the current spike would
+        # be folded into its own p95 and the multiplier would collapse
+        # toward 1.0. Reading first means the alert evaluates against the
+        # pre-spike rolling baseline, which is the operator-visible
+        # "this lag is N× normal" semantics the SLO promises.
+        families_to_check = sorted({fs.family for fs in summary.family_summaries})
+        baselines = load_family_baselines(
+            dbf,
+            families_to_check,
+            window_days=anomaly_thresholds.baseline_window_days,
+            min_samples=anomaly_thresholds.baseline_min_samples,
+        )
+
+        # Record the current moment's sample after baseline read (no-op if
+        # no stuck files). Failure here is non-fatal: anomaly evaluation
+        # has already produced its baseline view.
+        try:
+            record_cursor_lag_sample(dbf, summary)
+        except Exception:
+            logger.warning("cursor_lag_anomaly: sample record failed", exc_info=True)
+
+        # GC old samples. Retention covers at least 2x the baseline window
+        # so a paused daemon does not starve its own baseline on restart.
+        try:
+            retention = max(
+                anomaly_thresholds.retention_days,
+                anomaly_thresholds.baseline_window_days * 2,
+            )
+            gc_cursor_lag_samples(dbf, retention_days=retention)
+        except Exception:
+            logger.warning("cursor_lag_anomaly: sample GC failed", exc_info=True)
+
+        if not anomaly_thresholds.enabled:
+            _record_failure("cursor_lag_anomaly", True)
+            return []
+
+        alerts = evaluate_cursor_lag_anomaly(
+            summary,
+            baselines,
+            thresholds=anomaly_thresholds,
+            state=get_anomaly_dedup_state(),
+        )
+        is_ok = not any(a.severity != HealthSeverity.OK for a in alerts)
+        _record_failure("cursor_lag_anomaly", is_ok)
+        return alerts
+    except Exception as exc:
+        return [
+            HealthAlert(
+                check_name="cursor_lag_anomaly",
+                tier=HealthTier.MEDIUM,
+                severity=HealthSeverity.ERROR,
+                message=f"cursor lag anomaly check failed: {exc}",
+                checked_at=now,
+                consecutive_failures=_record_failure("cursor_lag_anomaly", False),
             )
         ]
 
