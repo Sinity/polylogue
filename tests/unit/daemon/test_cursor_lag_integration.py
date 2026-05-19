@@ -10,7 +10,7 @@ issue #1349 are pinned here.
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -26,6 +26,19 @@ from polylogue.daemon.cursor_lag_status import (
     cursor_lag_summary_info,
 )
 from polylogue.daemon.health import HealthSeverity, _check_cursor_lag_medium
+from tests.infra.frozen_clock import FrozenClock
+
+# Pin ``datetime.now`` everywhere the cursor-lag stack reads it so the
+# test's "now" anchor and the production code's "now" anchor coincide.
+# Without this, sub-second drift between test setup and the health check
+# could shift lag calculations near threshold edges (#1300).
+pytestmark = pytest.mark.frozen_clock_modules(
+    "polylogue.daemon.health",
+    "polylogue.daemon.cursor_lag_status",
+    "polylogue.daemon.cursor_lag_baseline",
+    "polylogue.daemon.cursor_lag_alert",
+    "polylogue.daemon.cursor_lag_anomaly",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -130,7 +143,9 @@ def _sample_history(
 # ---------------------------------------------------------------------------
 
 
-def test_anomaly_disabled_leaves_static_ladder_behavior_intact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_anomaly_disabled_leaves_static_ladder_behavior_intact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: FrozenClock
+) -> None:
     cfg_text = """
 [health.cursor_lag]
 default_warning_s = 60
@@ -139,7 +154,7 @@ default_critical_s = 7200
 anomaly_enabled = false
 """
     db = _isolated_archive(tmp_path, monkeypatch, cfg_text)
-    now = datetime.now(UTC)
+    now = frozen_clock.now()
     _seed_live_cursor(
         db,
         rows=[
@@ -161,7 +176,9 @@ anomaly_enabled = false
 # ---------------------------------------------------------------------------
 
 
-def test_periodic_tick_records_sample_for_each_stuck_family(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_periodic_tick_records_sample_for_each_stuck_family(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: FrozenClock
+) -> None:
     cfg_text = """
 [health.cursor_lag]
 default_warning_s = 60
@@ -170,7 +187,7 @@ default_critical_s = 7200
 anomaly_enabled = true
 """
     db = _isolated_archive(tmp_path, monkeypatch, cfg_text)
-    now = datetime.now(UTC)
+    now = frozen_clock.now()
     _seed_live_cursor(
         db,
         rows=[
@@ -194,7 +211,9 @@ anomaly_enabled = true
 # ---------------------------------------------------------------------------
 
 
-def test_unconfident_baseline_does_not_emit_anomaly_alert(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unconfident_baseline_does_not_emit_anomaly_alert(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: FrozenClock
+) -> None:
     cfg_text = """
 [health.cursor_lag]
 # Static defaults relaxed so the static layer doesn't fire on the same lag
@@ -210,7 +229,7 @@ anomaly_error_multiplier = 5.0
 anomaly_min_lag_s = 10
 """
     db = _isolated_archive(tmp_path, monkeypatch, cfg_text)
-    now = datetime.now(UTC)
+    now = frozen_clock.now()
     _seed_live_cursor(
         db,
         rows=[
@@ -224,7 +243,9 @@ anomaly_min_lag_s = 10
     assert not any(a.check_name.startswith("cursor_lag_anomaly") for a in alerts)
 
 
-def test_anomaly_fires_when_baseline_confident_and_ratio_high(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_anomaly_fires_when_baseline_confident_and_ratio_high(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: FrozenClock
+) -> None:
     cfg_text = """
 [health.cursor_lag]
 default_warning_s = 10000  # static layer silent for this test
@@ -239,7 +260,7 @@ anomaly_error_multiplier = 5.0
 anomaly_min_lag_s = 10
 """
     db = _isolated_archive(tmp_path, monkeypatch, cfg_text)
-    now = datetime.now(UTC)
+    now = frozen_clock.now()
     _seed_live_cursor(
         db,
         rows=[
@@ -255,7 +276,9 @@ anomaly_min_lag_s = 10
     assert anomaly[0].severity == HealthSeverity.ERROR
 
 
-def test_below_absolute_floor_does_not_emit_anomaly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_below_absolute_floor_does_not_emit_anomaly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: FrozenClock
+) -> None:
     cfg_text = """
 [health.cursor_lag]
 default_warning_s = 10000
@@ -270,7 +293,7 @@ anomaly_error_multiplier = 5.0
 anomaly_min_lag_s = 30
 """
     db = _isolated_archive(tmp_path, monkeypatch, cfg_text)
-    now = datetime.now(UTC)
+    now = frozen_clock.now()
     _seed_live_cursor(
         db,
         rows=[
@@ -289,7 +312,9 @@ anomaly_min_lag_s = 30
 # ---------------------------------------------------------------------------
 
 
-def test_static_and_anomaly_alerts_can_fire_simultaneously(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_static_and_anomaly_alerts_can_fire_simultaneously(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: FrozenClock
+) -> None:
     cfg_text = """
 [health.cursor_lag]
 default_warning_s = 60
@@ -304,7 +329,7 @@ anomaly_error_multiplier = 5.0
 anomaly_min_lag_s = 30
 """
     db = _isolated_archive(tmp_path, monkeypatch, cfg_text)
-    now = datetime.now(UTC)
+    now = frozen_clock.now()
     _seed_live_cursor(
         db,
         rows=[
@@ -326,7 +351,7 @@ anomaly_min_lag_s = 30
 
 
 def test_status_projection_decorates_family_summaries_with_baseline(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: FrozenClock
 ) -> None:
     cfg_text = """
 [health.cursor_lag]
@@ -338,7 +363,7 @@ anomaly_error_multiplier = 5.0
 anomaly_min_lag_s = 30
 """
     db = _isolated_archive(tmp_path, monkeypatch, cfg_text)
-    now = datetime.now(UTC)
+    now = frozen_clock.now()
     _seed_live_cursor(
         db,
         rows=[

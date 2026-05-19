@@ -1,0 +1,69 @@
+# Test-clock allowlist (#1300)
+#
+# Files listed here are exempt from `devtools verify-test-clock-hygiene`,
+# which otherwise flags any direct call to `datetime.now`, `datetime.utcnow`,
+# `time.time`, `time.time_ns`, `time.monotonic`, or `time.monotonic_ns` in a
+# test file.
+#
+# A file belongs on this list when its host-clock read is the test target
+# itself (timing benchmarks, fuzz harnesses asserting on real wall progress,
+# fixture self-tests, etc.) — NOT just because migrating it would be tedious.
+# The default for a new timestamp-sensitive test is the `frozen_clock`
+# fixture; see TESTING.md "Time and clock" for the migration recipe.
+#
+# Schema: ``files`` is a list of {path, reason} entries.
+
+files:
+  # --- Fixture self-tests ---
+  - path: tests/unit/infra/test_frozen_clock.py
+    reason: "Verifies that the frozen_clock fixture actually pins time.time/datetime.now."
+
+  # --- Timing benchmarks (assert on real wall progress) ---
+  - path: tests/fuzz/fuzz_timestamp.py
+    reason: "Atheris fuzz harness measures real per-call latency for crash deadlines."
+  - path: tests/unit/storage/test_scale.py
+    reason: "Scale-tier benchmarks (#1183) measure real wall-clock to enforce growth-shape SLOs."
+  - path: tests/unit/security/test_path_sanitization.py
+    reason: "Path-sanitization timing guards assert no quadratic blow-up on real input lengths."
+  - path: tests/unit/cli/test_diagnose_and_error_discipline.py
+    reason: "Measures real subprocess startup latency for the diagnose CLI surface."
+
+  # --- Legitimate one-shot timestamp construction (no production read of now) ---
+  - path: tests/conftest_witness.py
+    reason: "Witness manifest writer records the actual file-discovery timestamp; no production code reads it back."
+  - path: tests/unit/cli/test_check.py
+    reason: "Constructs a wall-clock anchor for doctor envelope assertions; production envelope embeds the same now() within the same call."
+  - path: tests/unit/cli/test_query_exec_laws.py
+    reason: "Single ad-hoc datetime.now() used to label a captured row; not compared to a production timestamp."
+  - path: tests/unit/core/test_sampling.py
+    reason: "Reservoir sampling tests measure event clustering against a real epoch; production sampler uses the same wall clock by design."
+  - path: tests/unit/core/test_schema_registry_versions.py
+    reason: "Schema registry version comparison anchors on the real now to test ordering of generated artifacts."
+  - path: tests/unit/core/test_schema_validation.py
+    reason: "Schema validator timestamp parsing uses a real now to assert lenient ISO parsing."
+  - path: tests/unit/core/test_verification.py
+    reason: "Verification-report timestamps use real now to assert ordering across artifacts."
+  - path: tests/unit/devtools/test_verify_manifests.py
+    reason: "Manifest-suppression expiry checks intentionally read the host date to validate the live policy decision."
+  - path: tests/unit/proof/test_suppressions.py
+    reason: "Suppression-expiry tests read the host clock to assert that expired entries are rejected today."
+
+  # --- Pipeline / storage acquired_at timestamps (no production now() comparison) ---
+  - path: tests/unit/pipeline/test_async_index.py
+    reason: "RawConversationRecord.acquired_at uses now() as an opaque ISO field; storage does not compare it to production now()."
+  - path: tests/unit/pipeline/test_ingestion_chaos.py
+    reason: "Same as test_async_index: acquired_at is opaque metadata."
+  - path: tests/unit/pipeline/test_parsing_service.py
+    reason: "Same as test_async_index: acquired_at is opaque metadata."
+  - path: tests/unit/pipeline/test_quarantine_fixtures.py
+    reason: "Quarantine-fixture acquired_at is opaque metadata for the test corpus."
+  - path: tests/unit/pipeline/test_resilience.py
+    reason: "Resilience harness sets acquired_at to now() as opaque metadata; no production timing comparison."
+  - path: tests/unit/storage/test_backend.py
+    reason: "Backend round-trip tests use now() to label a row; storage echoes it back without comparison."
+  - path: tests/unit/storage/test_blob_gc_concurrency.py
+    reason: "Blob aging uses time.time() to backdate file mtime; production GC reads file mtime, not datetime.now."
+  - path: tests/unit/storage/test_blob_store_contracts.py
+    reason: "Same as test_blob_gc_concurrency: time.time() backdates file mtime."
+  - path: tests/unit/storage/test_raw_ingest_artifacts.py
+    reason: "Raw-ingest test uses now() as opaque acquired_at metadata."

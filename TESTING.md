@@ -86,6 +86,58 @@ fixture using the synthetic corpus generator. For tests needing a realistic arch
 generators. `schema_conformant_payload(provider)` produces payloads that match
 each provider's JSON schema.
 
+## Time and Clock
+
+Timestamp-sensitive tests opt into the `frozen_clock` fixture so the test's
+"now" and the production code's "now" coincide. Reading the host wall clock
+directly creates two failure modes: flakiness at threshold edges (cursor lag
+warning/error/critical bands, freshness windows, retry backoff) and snapshot
+churn that hides real regressions.
+
+`tests/infra/frozen_clock.py` exports:
+
+- `FrozenClock` — controlled clock with explicit `advance(seconds)` and
+  `set_time(epoch)` mutators. Reading the clock does not implicitly advance
+  it; a single `now()` read in production code stays stable across the
+  whole call.
+- `freeze_clock(start=..., patch_datetime_in_modules=[...])` — context
+  manager. Patches `time.time` and `time.monotonic` globally for the scope
+  and replaces `datetime` in each named production module with a frozen
+  subclass whose `.now()` reads the clock.
+- `frozen_clock` pytest fixture — yields a `FrozenClock` and honors
+  `@pytest.mark.frozen_clock_modules("polylogue.x.y", ...)` to extend the
+  `datetime.now` patching list per-test.
+- `fixed_now()` — returns a stable `datetime` anchor without patching
+  anything (use only when production code does NOT itself read the clock).
+
+Usage:
+
+```python
+import pytest
+from datetime import timedelta
+from tests.infra.frozen_clock import FrozenClock
+
+
+@pytest.mark.frozen_clock_modules("polylogue.daemon.health")
+def test_lag_alert(frozen_clock: FrozenClock, tmp_path):
+    now = frozen_clock.now()
+    seed_cursor(tmp_path, updated_at=(now - timedelta(seconds=120)).isoformat())
+    alerts = _check_cursor_lag_medium()   # production reads frozen now
+    assert alerts[0].severity == HealthSeverity.WARNING
+```
+
+For a single moment-in-time anchor without patching (e.g. when only
+constructing an opaque metadata timestamp), use `fixed_now()` instead of
+`datetime.now(UTC)`.
+
+The `devtools verify-test-clock-hygiene` lint runs in the default verify
+gate. It rejects any new direct call to `datetime.now`, `datetime.utcnow`,
+`time.time`, or `time.monotonic` from a test file outside the explicit
+allowlist in `docs/plans/test-clock-allowlist.yaml`. Tests that genuinely
+need the host clock (timing benchmarks, fuzz harnesses, the
+`frozen_clock` self-tests) add their path to the allowlist with a
+one-line rationale; everything else migrates to the fixture.
+
 ## QA Exercises
 
 ```bash

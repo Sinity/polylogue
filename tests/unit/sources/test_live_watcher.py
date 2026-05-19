@@ -8,7 +8,7 @@ import json
 import sqlite3
 import time
 from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -32,6 +32,7 @@ from polylogue.sources.live.batch import (
 )
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.storage.runtime import RawConversationRecord
+from tests.infra.frozen_clock import FrozenClock
 
 
 class _FullIngestMock:
@@ -1304,7 +1305,8 @@ def test_ingest_files_emits_observable_batch_metrics(tmp_path: Path) -> None:
     assert ("planning",) in events
 
 
-def test_parse_failure_retries_after_backoff(tmp_path: Path) -> None:
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.watcher", "polylogue.sources.live.cursor")
+def test_parse_failure_retries_after_backoff(tmp_path: Path, frozen_clock: FrozenClock) -> None:
     root = tmp_path / "src"
     root.mkdir()
     f = root / "session.jsonl"
@@ -1315,7 +1317,7 @@ def test_parse_failure_retries_after_backoff(tmp_path: Path) -> None:
     asyncio.run(_ingest_one(watcher, f))
     parse_sources.reset_mock()
     parse_sources.side_effect = None
-    past = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    past = (frozen_clock.now() - timedelta(seconds=1)).isoformat()
     with sqlite3.connect(tmp_path / "cursor.sqlite") as conn:
         conn.execute("UPDATE live_cursor SET next_retry_at = ? WHERE source_path = ?", (past, str(f)))
         conn.commit()
