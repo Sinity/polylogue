@@ -71,6 +71,14 @@ paths:
           - hybrid
           - semantic
           default: auto
+      - name: cursor
+        in: query
+        description: Opaque keyset cursor previously returned as ``next_cursor`` on a search response. Stable across archive
+          growth and daemon restart (#1268). MUST be passed back unchanged. Rejected with 400 when malformed or when the retrieval
+          lane no longer matches.
+        required: false
+        schema:
+          type: string
       responses:
         '200':
           description: Ranked search envelope (when ``query`` is supplied) or conversation list envelope.

@@ -268,6 +268,16 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
     click.option("--until", help="Before date"),
     click.option("--limit", "-l", "-n", type=int, help="Max results"),
     click.option("--offset", type=int, default=0, help="Offset for paginated results"),
+    click.option(
+        "--cursor",
+        "cursor",
+        type=str,
+        default=None,
+        help=(
+            "Opaque keyset cursor from a previous response's next_cursor. "
+            "Stable across archive growth for ranked search (#1268)."
+        ),
+    ),
     click.option("--latest", is_flag=True, help="Most recent (= --sort date --limit 1)"),
     click.option(
         "--sort",

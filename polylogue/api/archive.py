@@ -116,8 +116,15 @@ class PolylogueArchiveMixin:
         until: str | None = None,
         retrieval_lane: str = "auto",
         sort: str | None = None,
+        cursor: str | None = None,
     ) -> SearchEnvelope:
-        """Return the canonical :class:`SearchEnvelope` for a query (#1266)."""
+        """Return the canonical :class:`SearchEnvelope` for a query (#1266).
+
+        Pass ``cursor`` (an opaque token previously returned as
+        :attr:`SearchEnvelope.next_cursor`) to fetch the next page
+        without losing or duplicating hits even when the archive grew
+        between requests (#1268).
+        """
         from polylogue.api.search_envelope_builder import build_archive_search_envelope
 
         return await build_archive_search_envelope(
@@ -131,6 +138,7 @@ class PolylogueArchiveMixin:
             until=until,
             retrieval_lane=retrieval_lane,
             sort=sort,
+            cursor=cursor,
         )
 
     async def get_session_insight_status(self) -> SessionInsightStatusSnapshot:

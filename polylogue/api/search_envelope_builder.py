@@ -16,9 +16,11 @@ from typing import TYPE_CHECKING
 
 from polylogue.surfaces.payloads import (
     ConversationSearchHitPayload,
+    InvalidSearchCursorError,
     QueryMissDiagnosticsPayload,
     SearchEnvelope,
     build_search_envelope,
+    decode_search_cursor,
 )
 
 if TYPE_CHECKING:
@@ -38,14 +40,33 @@ async def build_archive_search_envelope(
     until: str | None = None,
     retrieval_lane: str = "auto",
     sort: str | None = None,
+    cursor: str | None = None,
 ) -> SearchEnvelope:
     """Build a :class:`SearchEnvelope` from an archive operations + repo pair.
 
     Centralised so CLI, MCP, daemon HTTP, and the Python API all assemble
     the envelope from the same primitives (#1266).
+
+    ``cursor`` is an opaque keyset token previously returned as
+    :attr:`SearchEnvelope.next_cursor` (#1268). When supplied, the
+    underlying fetch is advanced past the cursor anchor and the response
+    page begins strictly after it. The cursor's encoded rank is used as
+    the effective offset, so a follow-up call with the same query and
+    lane returns the contiguous successor page even if the archive has
+    grown between requests.
     """
     from polylogue.archive.query.spec import ConversationQuerySpec
 
+    decoded_cursor = decode_search_cursor(cursor) if cursor else None
+    if decoded_cursor is not None and decoded_cursor.lane not in {"", retrieval_lane}:
+        raise InvalidSearchCursorError(
+            f"cursor was minted for retrieval_lane={decoded_cursor.lane!r} but this request is {retrieval_lane!r}"
+        )
+
+    # Advance the SQL fetch past the cursor anchor; the builder will drop
+    # any straggler rows whose (score, conversation_id) sort at or before
+    # the anchor under the lane's natural ordering.
+    effective_offset = decoded_cursor.r if decoded_cursor is not None else offset
     spec = ConversationQuerySpec.from_params(
         {
             "query": query,
@@ -54,8 +75,11 @@ async def build_archive_search_envelope(
             "until": until,
             "retrieval_lane": retrieval_lane,
             "sort": sort,
-            "limit": limit,
-            "offset": offset,
+            # Fetch one extra page worth so the post-fetch cursor trim
+            # cannot starve the response when the anchor row drifts.
+            "limit": limit + (limit if decoded_cursor is not None else 0),
+            "offset": effective_offset,
+            "cursor": cursor,
         },
         strict=True,
     )
@@ -79,6 +103,7 @@ async def build_archive_search_envelope(
         retrieval_lane=resolved_lane,
         sort=sort,
         diagnostics=diagnostics_payload,
+        cursor=decoded_cursor,
     )
 
 

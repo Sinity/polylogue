@@ -645,20 +645,165 @@ class SearchEnvelope(SurfacePayloadModel):
     diagnostics: QueryMissDiagnosticsPayload | None = None
 
 
-def build_search_cursor(hits: Sequence[ConversationSearchHitPayload]) -> str | None:
-    """Build an opaque keyset cursor from the last hit.
+#: Cursor envelope version. Bump when the encoded shape changes in a way
+#: that earlier decoders cannot tolerate; consumers that pin a version
+#: can detect skew. v1 carries ``r`` (anchor rank within the current
+#: ranking pass), ``s`` (optional float score, ``None`` for lanes without
+#: a numeric score), ``c`` (conversation_id tie-break), and ``l`` (lane
+#: resolved at the time the cursor was minted).
+SEARCH_CURSOR_VERSION: Literal[1] = 1
 
-    The cursor encodes ``(rank, conversation_id)`` of the final hit so the
-    server can resume scanning at the next position even if the underlying
-    archive grew between requests. Returns ``None`` when ``hits`` is empty.
+
+class SearchCursor(BaseModel):
+    """Decoded, validated keyset cursor for ranked search pagination.
+
+    The cursor is an opaque base64-encoded JSON envelope as far as
+    callers are concerned (``SearchEnvelope.next_cursor`` is a ``str``);
+    this type is the typed in-process representation surfaces use after
+    :func:`decode_search_cursor` validates the token.
+
+    Fields are intentionally short single-letter keys so the encoded
+    form stays compact in URLs and JSON pipes:
+
+    - ``v``: cursor envelope version (always :data:`SEARCH_CURSOR_VERSION`
+      today). A token with an unknown version is rejected.
+    - ``r``: anchor rank (1-based position within the previous ranking
+      pass). The next page starts strictly after this position.
+    - ``s``: anchor score, when the lane emits a numeric score (BM25,
+      RRF, vector distance). ``None`` for lanes without a score.
+    - ``c``: anchor conversation id — deterministic tie-break when two
+      hits share the same score.
+    - ``l``: retrieval lane name resolved when the cursor was minted.
+      Surfaces SHOULD reject a cursor whose lane does not match the
+      current request so paginated state does not silently leak across
+      lane changes.
+    """
+
+    model_config = ConfigDict(frozen=True, populate_by_name=True)
+
+    v: int = Field(default=SEARCH_CURSOR_VERSION)
+    r: int
+    s: float | None = None
+    c: str
+    lane: str = Field(validation_alias="l", serialization_alias="l")
+
+
+class InvalidSearchCursorError(ValueError):
+    """Raised when a caller-provided cursor token cannot be decoded.
+
+    Surfaces should translate this into the surface-native error shape
+    (CLI usage error, MCP error envelope, daemon 400 response).
+    """
+
+
+def build_search_cursor(hits: Sequence[ConversationSearchHitPayload]) -> str | None:
+    """Build an opaque keyset cursor token from the last hit of a page.
+
+    Encodes ``(rank, score, conversation_id, lane)`` of the final hit so
+    a follow-up request can resume strictly after the anchor even when
+    the underlying archive grows between requests. Returns ``None`` when
+    ``hits`` is empty.
+
+    The token is a base64 JSON envelope (see :class:`SearchCursor`).
+    Consumers should treat it as opaque and pass it back unchanged.
     """
     if not hits:
         return None
     import base64
 
     last = hits[-1]
-    payload = f"{last.match.rank}:{last.conversation.id}"
-    return base64.b64encode(payload.encode()).decode()
+    cursor = SearchCursor(
+        v=SEARCH_CURSOR_VERSION,
+        r=last.match.rank,
+        s=last.match.score,
+        c=last.conversation.id,
+        lane=last.match.retrieval_lane,
+    )
+    payload = cursor.model_dump_json(by_alias=True)
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def decode_search_cursor(token: str) -> SearchCursor:
+    """Decode an opaque cursor token into a typed :class:`SearchCursor`.
+
+    Raises :class:`InvalidSearchCursorError` when the token is malformed,
+    base64-undecodable, JSON-invalid, missing fields, or carries an
+    unsupported version.
+    """
+    import base64
+
+    if not token:
+        raise InvalidSearchCursorError("cursor token is empty")
+    # urlsafe_b64decode tolerates missing padding when we re-add it.
+    padded = token + "=" * (-len(token) % 4)
+    try:
+        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+    except (ValueError, TypeError) as exc:
+        raise InvalidSearchCursorError(f"cursor token is not valid base64: {exc}") from exc
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise InvalidSearchCursorError(f"cursor token payload is not valid JSON: {exc}") from exc
+    if not isinstance(body, dict):
+        raise InvalidSearchCursorError("cursor token payload is not an object")
+    try:
+        cursor = SearchCursor.model_validate(body)
+    except Exception as exc:  # pydantic ValidationError
+        raise InvalidSearchCursorError(f"cursor token payload is invalid: {exc}") from exc
+    if cursor.v != SEARCH_CURSOR_VERSION:
+        raise InvalidSearchCursorError(
+            f"cursor version {cursor.v!r} is not supported (expected {SEARCH_CURSOR_VERSION!r})"
+        )
+    return cursor
+
+
+def apply_search_cursor(
+    hits: Sequence[ConversationSearchHitPayload],
+    cursor: SearchCursor,
+    *,
+    retrieval_lane: str | None = None,
+) -> tuple[ConversationSearchHitPayload, ...]:
+    """Drop hits up to and including the cursor anchor.
+
+    Stability rule: a hit survives iff its ``(score, conversation_id)``
+    sorts strictly *after* the cursor anchor under the lane's natural
+    ordering, or — when no score is available — its rank strictly
+    exceeds the anchor rank.
+
+    When ``retrieval_lane`` is supplied it is compared against the
+    cursor's lane field; mismatched lanes raise
+    :class:`InvalidSearchCursorError` so a paginated session cannot
+    silently switch ranking policy mid-walk.
+    """
+    if retrieval_lane is not None and cursor.lane and retrieval_lane != cursor.lane:
+        raise InvalidSearchCursorError(
+            f"cursor was minted for retrieval_lane={cursor.lane!r} but this request is {retrieval_lane!r}"
+        )
+    result: list[ConversationSearchHitPayload] = []
+    for hit in hits:
+        if _cursor_strictly_before(cursor, hit):
+            result.append(hit)
+    return tuple(result)
+
+
+def _cursor_strictly_before(cursor: SearchCursor, hit: ConversationSearchHitPayload) -> bool:
+    """Return True when ``hit`` is strictly after the cursor anchor.
+
+    Comparison uses lane-natural score ordering when both sides have a
+    numeric score, otherwise falls back to rank. ``conversation_id`` is
+    the deterministic tie-break.
+    """
+    anchor_score = cursor.s
+    hit_score = hit.match.score
+    score_kind = hit.match.score_kind
+    # bm25 and vector_distance: lower is better; rrf: higher is better.
+    lower_is_better = score_kind in {"bm25", "vector_distance"}
+    if anchor_score is not None and hit_score is not None and anchor_score != hit_score:
+        return (hit_score > anchor_score) if lower_is_better else (hit_score < anchor_score)
+    # Same score (or no score on one side) — use rank, then conv id.
+    if hit.match.rank != cursor.r:
+        return hit.match.rank > cursor.r
+    return hit.conversation.id > cursor.c
 
 
 def build_search_envelope(
@@ -673,14 +818,25 @@ def build_search_envelope(
     diagnostics: QueryMissDiagnosticsPayload | None = None,
     ranking_policy: str = RANKING_POLICY_MIXED,
     ranking_policy_version: str = RANKING_POLICY_VERSION,
+    cursor: SearchCursor | None = None,
 ) -> SearchEnvelope:
     """Construct a :class:`SearchEnvelope` with the canonical cursor logic.
 
     This is the one builder all four surfaces should call so the envelope
     field shape — and the cursor/next_offset semantics in particular —
     stay aligned.
+
+    When ``cursor`` is supplied the builder drops every supplied hit up
+    to and including the anchor (see :func:`apply_search_cursor`) before
+    truncating to ``limit``. This means surfaces can pass the raw
+    paginated fetch — typically ``offset = cursor.r`` plus ``limit`` of
+    rows — and the envelope handles the keyset trim.
     """
     hits_tuple = tuple(hits)
+    if cursor is not None:
+        hits_tuple = apply_search_cursor(hits_tuple, cursor, retrieval_lane=retrieval_lane)
+    if len(hits_tuple) > limit:
+        hits_tuple = hits_tuple[:limit]
     next_offset: int | None = None
     next_cursor: str | None = None
     if hits_tuple and len(hits_tuple) == limit and (total is None or offset + limit < total):
@@ -914,15 +1070,20 @@ __all__ = [
     "RANKING_POLICY_MIXED",
     "RANKING_POLICY_VERSION",
     "ReaderActionAvailabilityPayload",
+    "SEARCH_CURSOR_VERSION",
+    "SearchCursor",
     "SearchEnvelope",
+    "InvalidSearchCursorError",
     "SurfacePayloadModel",
     "TagMutationOutcome",
     "TagMutationResult",
     "TargetRefPayload",
     "JSONDocument",
     "JSONValue",
+    "apply_search_cursor",
     "build_search_cursor",
     "build_search_envelope",
+    "decode_search_cursor",
     "model_json_document",
     "normalize_role",
     "reader_anchor",

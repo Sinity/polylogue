@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TypeAlias
+from typing import Any, TypeAlias
 
 import click
 
@@ -60,7 +60,7 @@ class CliOption:
     param_name: str
     flags: tuple[str, ...]
     help: str = ""
-    type: click.ParamType | type[object] | None = None
+    type: click.ParamType[Any] | type[object] | None = None
     default: object | None = None
     show_default: bool = False
     is_flag: bool = False

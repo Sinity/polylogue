@@ -8,6 +8,7 @@ import functools
 import json
 import os
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePath
@@ -1128,9 +1129,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         query_params = _build_query_spec_params(params, self)
         limit = self._get_int(params, "limit", 50)
         offset = self._get_int(params, "offset", 0)
+        cursor_values = params.get("cursor") or []
+        cursor = cursor_values[0] if cursor_values else None
+        if cursor:
+            query_params["cursor"] = cursor
 
         async def _list(poly: Polylogue) -> object:
-            return await self._do_list(poly, query_params, limit, offset)
+            return await self._do_list(poly, query_params, limit, offset, cursor=cursor)
 
         result = self._sync_run(_list)
         self._send_json(HTTPStatus.OK, result)
@@ -1141,6 +1146,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         query_params: dict[str, object],
         limit: int,
         offset: int,
+        *,
+        cursor: str | None = None,
     ) -> object:
         from polylogue.archive.query.spec import ConversationQuerySpec
 
@@ -1152,7 +1159,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # When search terms are present, return ranked result envelope with
         # per-hit match evidence instead of plain row dicts.
         if query_text and not query_params.get("similar_text"):
-            return await self._do_search_list(poly, spec, limit, offset)
+            return await self._do_search_list(poly, spec, limit, offset, cursor=cursor)
 
         filter_obj = spec.build_filter(poly.repository)
         summaries = await filter_obj.list_summaries()
@@ -1210,15 +1217,37 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         spec: ConversationQuerySpec,
         limit: int,
         offset: int,
+        *,
+        cursor: str | None = None,
     ) -> object:
         """Return the canonical :class:`SearchEnvelope` for ranked queries.
 
         The same envelope ships across CLI JSON, MCP, Python API, and daemon
         HTTP (#1266). Construction goes through ``build_search_envelope`` so
         the cursor / next_offset / ranking-policy fields stay aligned with
-        the other surfaces.
+        the other surfaces. When ``cursor`` is supplied the response page
+        starts strictly after the anchor (#1268).
         """
         from polylogue.archive.query.search_hits import search_hits_for_plan
+        from polylogue.surfaces.payloads import InvalidSearchCursorError, decode_search_cursor
+
+        decoded_cursor = None
+        if cursor:
+            try:
+                decoded_cursor = decode_search_cursor(cursor)
+            except InvalidSearchCursorError as exc:
+                return {"ok": False, "error": "invalid_cursor", "detail": str(exc)}
+
+        if decoded_cursor is not None:
+            # Push effective offset forward so the underlying fetch starts
+            # past the anchor; fetch a buffered window so post-fetch trim
+            # cannot starve the response.
+            spec = replace(
+                spec,
+                offset=decoded_cursor.r,
+                limit=(spec.limit or limit) + limit,
+                cursor=cursor,
+            )
 
         plan = spec.to_plan()
         hits = await search_hits_for_plan(plan, poly.repository)
@@ -1251,6 +1280,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             retrieval_lane=resolved_lane,
             sort=plan.sort,
             diagnostics=diagnostics,
+            cursor=decoded_cursor,
         )
         return envelope.model_dump(mode="json")
 

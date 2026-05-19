@@ -342,10 +342,39 @@ search.
 ### Pagination
 
 For ranked queries, prefer `next_cursor` over `offset`. Cursor
-pagination encodes the rank tie-breaker (`(rank, conversation_id)`) and
-is stable under archive growth between page fetches. Offset pagination
-is supported for non-ranked list paths and as a best-effort fallback for
-ranked paths.
+pagination encodes the rank tie-breaker
+(`(rank, score, conversation_id, retrieval_lane)`) and is stable under
+archive growth between page fetches. Offset pagination is supported for
+non-ranked list paths and as a best-effort fallback for ranked paths.
+
+The cursor is an opaque URL-safe base64 token (a versioned JSON
+envelope; see :class:`polylogue.surfaces.payloads.SearchCursor`).
+Consumers MUST treat it as opaque and pass it back unchanged.
+
+```bash
+# Page 1
+polylogue "sqlite" list --format json --limit 25
+# Read .next_cursor from the response, then ask for page 2:
+polylogue "sqlite" list --format json --limit 25 \
+    --cursor "$NEXT_CURSOR"
+```
+
+MCP search and the daemon `/api/conversations` endpoint accept the same
+`cursor` parameter; the Python API exposes `Polylogue.search_envelope(
+query, cursor=...)`. The cursor carries the retrieval lane it was
+minted in, so a `dialogue` cursor passed back to a `hybrid` request is
+rejected up-front rather than silently changing ranking policy
+mid-walk.
+
+Stability guarantees (#1268):
+
+- **No duplicates**: any hit returned on page N is filtered out on page
+  N+1 even when new rows were ingested between requests.
+- **No gaps**: any hit that sorts strictly after the anchor (under the
+  lane's natural ordering: BM25 lower-is-better, RRF higher-is-better,
+  vector distance lower-is-better) survives the cursor trim.
+- **Restart-stable**: cursors are self-contained tokens with no
+  server-side state; they survive daemon restart.
 
 ## FTS5 Syntax
 

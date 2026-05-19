@@ -33,7 +33,7 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.json import JSONDocument
 from polylogue.logging import get_logger
-from polylogue.surfaces.payloads import ConversationListRowPayload
+from polylogue.surfaces.payloads import ConversationListRowPayload, SearchCursor
 
 logger = get_logger(__name__)
 
@@ -303,15 +303,54 @@ async def _observe_query_operation(
     )
 
 
+def _decode_cursor_or_none(token: str | None) -> SearchCursor | None:
+    """Decode a CLI ``--cursor`` token, or return ``None`` when absent.
+
+    Returns the decoded :class:`SearchCursor` so :func:`format_search_envelope`
+    can trim hits up to the anchor before emitting the JSON envelope. Errors
+    are surfaced by :func:`_search_hits_for_execution_plan`; this helper
+    intentionally swallows them here so JSON formatting never raises after
+    the fetch has succeeded.
+    """
+    if not token:
+        return None
+    try:
+        from polylogue.surfaces.payloads import decode_search_cursor
+
+        return decode_search_cursor(token)
+    except Exception:
+        return None
+
+
 async def _search_hits_for_execution_plan(
     repo: QueryExecutionStore,
     plan: QueryExecutionPlan,
     *,
     vector_provider: VectorProvider | None,
 ) -> list[ConversationSearchHit] | None:
-    from polylogue.archive.query.search_hits import plan_has_search_hit_evidence, search_hits_for_plan
+    from dataclasses import replace
 
-    query_plan = plan.selection.to_plan(vector_provider=vector_provider)
+    from polylogue.archive.query.search_hits import plan_has_search_hit_evidence, search_hits_for_plan
+    from polylogue.surfaces.payloads import InvalidSearchCursorError, decode_search_cursor
+
+    selection = plan.selection
+    decoded_cursor = None
+    if selection.cursor:
+        try:
+            decoded_cursor = decode_search_cursor(selection.cursor)
+        except InvalidSearchCursorError as exc:
+            import click as _click
+
+            raise _click.UsageError(f"invalid --cursor: {exc}") from exc
+    if decoded_cursor is not None:
+        # Push the underlying fetch past the anchor and over-fetch one
+        # extra page so the post-fetch keyset trim cannot starve the
+        # response. The envelope builder drops anything sorting at or
+        # before the cursor anchor and then truncates to the requested
+        # limit (#1268).
+        effective_limit = (selection.limit or 50) * 2
+        selection = replace(selection, offset=decoded_cursor.r, limit=effective_limit)
+    query_plan = selection.to_plan(vector_provider=vector_provider)
     if not plan_has_search_hit_evidence(query_plan):
         return None
     return await search_hits_for_plan(query_plan, repo)
@@ -472,7 +511,9 @@ async def _handle_summary_list(
         if not search_hits:
             summary_diagnostics = await _diagnose_query_miss(repo, plan.selection, config=config)
             no_results(env, params, diagnostics=summary_diagnostics)
-        await _query_output.output_search_hits(env, search_hits, plan.output, repo)
+        await _query_output.output_search_hits(
+            env, search_hits, plan.output, repo, cursor=_decode_cursor_or_none(plan.selection.cursor)
+        )
         return
 
     summary_results = await _observe_query_operation(repo, plan, QueryRoute.SUMMARY_LIST, filter_chain.list_summaries())
@@ -709,7 +750,9 @@ async def _handle_default(
     if output_diagnostics is None and (plan.output.list_mode or len(projected_results) > 1):
         search_hits = await _search_hits_for_execution_plan(repo, plan, vector_provider=vector_provider)
         if search_hits is not None:
-            await _query_output.output_search_hits(env, search_hits, plan.output, repo)
+            await _query_output.output_search_hits(
+                env, search_hits, plan.output, repo, cursor=_decode_cursor_or_none(plan.selection.cursor)
+            )
             return
     _query_output.output_results(
         env,
