@@ -17,7 +17,8 @@ def test_extract_option_returns_none_for_non_option_messages() -> None:
 def test_run_machine_entry_plain_success_calls_cli_once() -> None:
     called: list[str] = []
 
-    def cli() -> None:
+    def cli(*, standalone_mode: bool = False) -> None:
+        del standalone_mode
         called.append("plain")
 
     run_machine_entry(cli, ["stats"])

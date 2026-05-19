@@ -66,12 +66,21 @@
   Usage: polylogue [OPTIONS] COMMAND [ARGS]...
   Try 'polylogue -h' for help.
   Error: No such option: --bogus Did you mean --verbose?
+  Hint: `--bogus` is not a recognized option. Run `polylogue --help` for the full
+  option list, or `polylogue "--bogus"` if you meant to search for that string.
   '''
 # ---
 # name: TestHelpOutput.test_help_output_snapshot
   '''
   Usage: polylogue [OPTIONS] COMMAND [ARGS]...
     Polylogue - AI conversation archive.
+    Dispatch model (query-first):
+        Any positional token that is NOT a registered subcommand or verb is
+        treated as a search query against the archive. So `polylogue foo`
+        searches for `foo` — it does NOT raise "unknown subcommand".
+        Run `polylogue --help` to see the full subcommand list, or
+        `polylogue --diagnose <args>` to have the parser explain how it
+        routed your invocation.
     Query mode (default):
         polylogue "search terms"
         polylogue -p claude-ai --since "last week"
@@ -98,7 +107,10 @@
         polylogue --similar "sqlite locking bug in parser" --limit 5
     Modifiers (write operations):
         polylogue "urgent" --add-tag review
-    Run `polylogue <command> --help` for subcommand details.
+    See also:
+        polylogue --help                  # this screen
+        polylogue <subcommand> --help     # per-subcommand help
+        polylogue --diagnose <args>       # explain parser decisions
   Options:
     -i, --id TEXT                   Conversation ID (exact or prefix match)
     -c, --contains TEXT             FTS term (repeatable = AND)
@@ -190,6 +202,11 @@
     --add-tag TEXT                  Add tags (comma-separated)
     --plain                         Force non-interactive plain output
     -v, --verbose                   Verbose output
+    --diagnose                      Explain CLI parser decisions on stderr
+                                    before running. Useful when query-first
+                                    dispatch surprises you: shows whether a bare
+                                    token was routed to a subcommand or
+                                    interpreted as a search query.
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit.
   Commands:
@@ -232,6 +249,18 @@
   '''
   Usage: polylogue [OPTIONS] COMMAND [ARGS]...
     Polylogue - AI conversation archive.
+    Dispatch model (query-first):
+        Any positional token that is NOT a registered subcomma
+  nd or verb is
+        treated as a search query against the archive. So `pol
+  ylogue foo`
+        searches for `foo` — it does NOT raise "unknown subcom
+  mand".
+        Run `polylogue --help` to see the full subcommand list
+  , or
+        `polylogue --diagnose <args>` to have the parser expla
+  in how it
+        routed your invocation.
     Query mode (default):
         polylogue "search terms"
         polylogue -p claude-ai --since "last week"
@@ -261,7 +290,12 @@
   imit 5
     Modifiers (write operations):
         polylogue "urgent" --add-tag review
-    Run `polylogue <command> --help` for subcommand details.
+    See also:
+        polylogue --help                  # this screen
+        polylogue <subcommand> --help     # per-subcommand hel
+  p
+        polylogue --diagnose <args>       # explain parser dec
+  isions
   Options:
     -i, --id TEXT                   Conversation ID (exact or
   prefix match)
@@ -406,6 +440,16 @@
     --plain                         Force non-interactive plai
   n output
     -v, --verbose                   Verbose output
+    --diagnose                      Explain CLI parser decisio
+  ns on stderr
+                                    before running. Useful whe
+  n query-first
+                                    dispatch surprises you: sh
+  ows whether a bare
+                                    token was routed to a subc
+  ommand or
+                                    interpreted as a search qu
+  ery.
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit
   .
@@ -463,6 +507,13 @@
   '''
   Usage: polylogue [OPTIONS] COMMAND [ARGS]...
     Polylogue - AI conversation archive.
+    Dispatch model (query-first):
+        Any positional token that is NOT a registered subcommand or verb is
+        treated as a search query against the archive. So `polylogue foo`
+        searches for `foo` — it does NOT raise "unknown subcommand".
+        Run `polylogue --help` to see the full subcommand list, or
+        `polylogue --diagnose <args>` to have the parser explain how it
+        routed your invocation.
     Query mode (default):
         polylogue "search terms"
         polylogue -p claude-ai --since "last week"
@@ -487,7 +538,10 @@
         polylogue --similar "sqlite locking bug in parser" --limit 5
     Modifiers (write operations):
         polylogue "urgent" --add-tag review
-    Run `polylogue <command> --help` for subcommand details.
+    See also:
+        polylogue --help                  # this screen
+        polylogue <subcommand> --help     # per-subcommand help
+        polylogue --diagnose <args>       # explain parser decisions
   Options:
     -i, --id TEXT                   Conversation ID (exact or prefix match)
     -c, --contains TEXT             FTS term (repeatable = AND)
@@ -579,6 +633,11 @@
     --add-tag TEXT                  Add tags (comma-separated)
     --plain                         Force non-interactive plain output
     -v, --verbose                   Verbose output
+    --diagnose                      Explain CLI parser decisions on stderr
+                                    before running. Useful when query-first
+                                    dispatch surprises you: shows whether a bare
+                                    token was routed to a subcommand or
+                                    interpreted as a search query.
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit.
   Commands:

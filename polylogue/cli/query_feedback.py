@@ -13,6 +13,39 @@ if TYPE_CHECKING:
     from polylogue.cli.shared.types import AppEnv
 
 
+def _maybe_subcommand_typo_hint(selection: ConversationQuerySpec | None) -> str | None:
+    """Return a 'did you mean to run a subcommand?' hint when the query is a single bare token.
+
+    Query-first dispatch is surprising when a user types something like
+    ``polylogue stats-by-provider`` expecting a subcommand. If the query
+    text is a single token and matches a registered subcommand by Levenshtein
+    distance, we surface that explicitly in the no-results output.
+    """
+    if selection is None:
+        return None
+    raw_terms = getattr(selection, "query_terms", None) or ()
+    query_terms: tuple[str, ...] = tuple(str(t) for t in raw_terms)
+    if len(query_terms) != 1:
+        return None
+    token = query_terms[0].strip()
+    if not token or " " in token:
+        return None
+
+    # Lazy import to keep startup cheap.
+    from polylogue.cli.click_app import cli
+    from polylogue.cli.parser_diagnostics import looks_like_subcommand_typo
+
+    registered = sorted(cli.commands.keys())
+    suggestions = looks_like_subcommand_typo(token, registered)
+    if not suggestions:
+        return None
+    return (
+        "Note: query-first dispatch interpreted "
+        f"`{token}` as a search query. If you meant a subcommand, try: "
+        + ", ".join(f"`polylogue {s}`" for s in suggestions)
+    )
+
+
 def emit_no_results(
     env: AppEnv,
     *,
@@ -40,6 +73,10 @@ def emit_no_results(
         env.ui.console.print(hint or "Hint: try broadening your filters or use `list` to browse")
     else:
         env.ui.console.print(resolved_message)
+
+    typo_hint = _maybe_subcommand_typo_hint(selection)
+    if typo_hint is not None:
+        env.ui.console.print(typo_hint)
 
     if diagnostics is not None and diagnostics.reasons:
         env.ui.console.print("Why this may have missed:")

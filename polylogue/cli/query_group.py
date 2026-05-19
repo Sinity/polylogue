@@ -97,19 +97,47 @@ def _find_root_option_after_verb(group: click.Group, verb: str, remaining: list[
     return None
 
 
+def _detect_subcommand_and_verb(group: click.Group, args: list[str]) -> tuple[str | None, str | None]:
+    """Look at ``args`` and return the (subcommand, verb) the parser will dispatch to."""
+    from polylogue.cli.verb_names import VERB_NAMES
+
+    subcommand: str | None = None
+    verb: str | None = None
+    for arg in args:
+        if arg.startswith("-"):
+            continue
+        if arg in group.commands and arg not in VERB_NAMES:
+            subcommand = arg
+            break
+        if arg in VERB_NAMES:
+            verb = arg
+            break
+    return subcommand, verb
+
+
 class QueryFirstGroupBase(click.Group):
     """Custom Click group that routes to query mode by default."""
 
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
         """Parse args, preserving raw query terms."""
+        # Capture the raw argv slice up-front so ``--diagnose`` can show it
+        # exactly as the user typed it, before _split_query_mode_args mutates
+        # the list into per-mode buckets.
+        original_args = list(args)
+        ctx.meta["polylogue_raw_args"] = original_args
+
         parse_args, query_terms, has_subcommand = _split_query_mode_args(self, args)
         ctx.meta["polylogue_has_subcommand"] = has_subcommand
-        if not has_subcommand:
-            ctx.meta["polylogue_query_terms"] = query_terms
+        ctx.meta["polylogue_query_terms"] = query_terms if not has_subcommand else ()
+        subcommand, verb = _detect_subcommand_and_verb(self, original_args)
+        ctx.meta["polylogue_dispatch_subcommand"] = subcommand
+        ctx.meta["polylogue_dispatch_verb"] = verb
         return list(super().parse_args(ctx, parse_args))
 
     def invoke(self, ctx: click.Context) -> object:
         """Invoke the group, dispatching to query or stats mode if no subcommand."""
+        self._maybe_emit_diagnose(ctx)
+
         if ctx.meta.get("polylogue_has_subcommand", False):
             return super().invoke(ctx)
 
@@ -119,6 +147,27 @@ class QueryFirstGroupBase(click.Group):
 
         self.handle_default_mode(ctx)
         return None
+
+    def _maybe_emit_diagnose(self, ctx: click.Context) -> None:
+        """Emit parser-decision diagnostics on stderr when ``--diagnose`` is set."""
+        if not ctx.params.get("diagnose"):
+            return
+        # Guard against emitting the diagnose banner twice if ``invoke`` is
+        # called more than once (Click's testing harness sometimes does this).
+        if ctx.meta.get("polylogue_diagnose_emitted"):
+            return
+        ctx.meta["polylogue_diagnose_emitted"] = True
+
+        from polylogue.cli.parser_diagnostics import emit_parser_decision
+
+        emit_parser_decision(
+            ctx.meta.get("polylogue_raw_args") or [],
+            has_subcommand=bool(ctx.meta.get("polylogue_has_subcommand", False)),
+            subcommand=ctx.meta.get("polylogue_dispatch_subcommand"),
+            query_terms=ctx.meta.get("polylogue_query_terms") or (),
+            verb=ctx.meta.get("polylogue_dispatch_verb"),
+            registered_commands=sorted(self.commands.keys()),
+        )
 
     def handle_default_mode(self, ctx: click.Context) -> None:
         """Dispatch no-subcommand mode for subclasses."""

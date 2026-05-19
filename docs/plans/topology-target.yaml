@@ -628,7 +628,7 @@ files:
     target: polylogue/cli/bulk_export.py
     owner: stable
   - path: polylogue/cli/click_app.py
-    loc: 226
+    loc: 240
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
@@ -636,7 +636,7 @@ files:
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
-    loc: 368
+    loc: 378
     target: polylogue/cli/click_option_groups.py
     owner: stable
   - path: polylogue/cli/command_inventory.py
@@ -740,7 +740,7 @@ files:
     target: polylogue/cli/commands/user_state.py
     owner: stable
   - path: polylogue/cli/machine_main.py
-    loc: 86
+    loc: 142
     target: polylogue/cli/machine_main.py
     owner: stable
   - path: polylogue/cli/messages.py
@@ -750,6 +750,10 @@ files:
   - path: polylogue/cli/output_assurance.py
     loc: 475
     target: polylogue/cli/output_assurance.py
+    owner: stable
+  - path: polylogue/cli/parser_diagnostics.py
+    loc: 118
+    target: polylogue/cli/parser_diagnostics.py
     owner: stable
   - path: polylogue/cli/query.py
     loc: 782
@@ -764,11 +768,11 @@ files:
     target: polylogue/cli/query_contracts.py
     owner: stable
   - path: polylogue/cli/query_feedback.py
-    loc: 53
+    loc: 90
     target: polylogue/cli/query_feedback.py
     owner: stable
   - path: polylogue/cli/query_group.py
-    loc: 125
+    loc: 174
     target: polylogue/cli/query_group.py
     owner: stable
   - path: polylogue/cli/query_output.py
