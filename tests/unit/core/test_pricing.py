@@ -47,50 +47,52 @@ def test_token_usage_prices_known_model_with_catalog_provenance() -> None:
     assert estimate.price.source_url.endswith("model_prices_and_context_window.json")
 
 
-def test_partial_conversation_preserves_missing_reasons() -> None:
+def test_hydrated_messages_report_missing_model_when_no_envelope_cost() -> None:
+    """Per #1256, hydrated Message instances no longer carry
+    ``provider_meta``; per-message cost facts now flow through the typed
+    cost projection (#803). When neither conversation-level cost nor
+    per-message harmonized facts are present, the estimate reports
+    ``missing_model`` for each message.
+    """
+
     conversation = make_conv(
-        id="conv-partial-cost",
+        id="conv-hydrated-no-cost",
         provider="chatgpt",
         messages=MessageCollection(
             messages=[
-                make_msg(
-                    id="m-priced",
-                    role="assistant",
-                    provider="chatgpt",
-                    provider_meta={"model": "gpt-4o-mini", "usage": {"input_tokens": 100, "output_tokens": 50}},
-                ),
-                make_msg(id="m-missing", role="assistant", provider="chatgpt", provider_meta={"model": "gpt-4o"}),
+                make_msg(id="m1", role="assistant", provider="chatgpt"),
+                make_msg(id="m2", role="assistant", provider="chatgpt"),
             ]
         ),
     )
 
     estimate = estimate_conversation_cost(conversation)
 
-    assert estimate.status == "partial"
-    assert estimate.total_usd == pytest.approx(0.000045)
-    assert "missing_token_usage" in estimate.missing_reasons
+    assert estimate.status == "unavailable"
+    assert estimate.total_usd == 0.0
+    # Either missing_model or missing_token_usage is acceptable; hydrated
+    # messages contribute no model or usage facts.
+    assert estimate.missing_reasons
 
 
-def test_partial_conversation_with_exact_message_is_not_exact() -> None:
+def test_conversation_level_exact_cost_still_wins_for_hydrated_messages() -> None:
+    """Conversation-level provider_meta is still consumed for exact totals."""
+
     conversation = make_conv(
-        id="conv-exact-plus-missing",
+        id="conv-exact-from-envelope",
         provider="chatgpt",
+        provider_meta={"costUSD": 0.01, "model": "gpt-4o"},
         messages=MessageCollection(
             messages=[
-                make_msg(
-                    id="m-exact",
-                    role="assistant",
-                    provider="chatgpt",
-                    provider_meta={"costUSD": 0.01},
-                ),
-                make_msg(id="m-missing", role="assistant", provider="chatgpt"),
+                make_msg(id="m1", role="assistant", provider="chatgpt"),
+                make_msg(id="m2", role="assistant", provider="chatgpt"),
             ]
         ),
     )
 
     estimate = estimate_conversation_cost(conversation)
 
-    assert estimate.status == "partial"
+    assert estimate.status == "exact"
     assert estimate.total_usd == pytest.approx(0.01)
 
 

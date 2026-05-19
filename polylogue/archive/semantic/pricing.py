@@ -501,24 +501,17 @@ def estimate_message_cost(
     conversation_id: str | None = None,
     fallback_model: str | None = None,
 ) -> CostEstimatePayload:
-    """Estimate one message cost with explicit uncertainty."""
+    """Estimate one message cost with explicit uncertainty.
 
-    exact = message.cost_usd
-    provider_meta = _record(message.provider_meta)
-    raw = _record(provider_meta.get("raw")) or provider_meta
-    model_name = message_model_name(message) or str(raw.get("model") or fallback_model or "").strip() or None
+    Hydrated ``Message`` instances no longer carry ``provider_meta`` (#1256);
+    typed cost/usage facts come from the harmonized projection and the
+    ``message_token_usage`` provenance. Conversation-level provider metadata
+    is still consulted via ``_conversation_level_estimate`` for legacy
+    blob-shaped totals.
+    """
+
+    model_name = message_model_name(message) or (fallback_model.strip() if fallback_model else None) or None
     usage = _token_usage_payload(message_tokens(message))
-    if usage.billable_tokens <= 0:
-        usage = _usage_payload(raw.get("usage") or raw.get("tokens") or raw)
-    if exact is not None and exact > 0.0:
-        return _exact_estimate(
-            provider_name=provider_name,
-            conversation_id=conversation_id,
-            message_id=str(message.id),
-            model_name=model_name,
-            usage=usage,
-            total_usd=exact,
-        )
     return _estimate_from_usage(
         provider_name=provider_name,
         conversation_id=conversation_id,

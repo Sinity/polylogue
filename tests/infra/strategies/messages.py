@@ -213,39 +213,23 @@ def conversation_strategy(
 
 @st.composite
 def message_model_strategy(draw: st.DrawFn, *, role: str | None = None) -> Message:
-    """Generate a Message model instance with arbitrary content."""
+    """Generate a hydrated Message model instance (#1256: no provider_meta)."""
     from polylogue.archive.models import Message as MessageModel
 
     role_val = role or draw(st.sampled_from(["user", "assistant", "system", "tool"]))
     text = draw(st.one_of(st.none(), st.text(max_size=200)))
 
-    # Optionally add content_blocks in provider_meta
-    provider_meta: JSONRecord | None = None
+    content_blocks: list[dict[str, object]] = []
     block_type = draw(st.sampled_from(["text", "thinking", "tool_use", "none"]))
     if block_type != "none":
         block_text = draw(st.text(max_size=100))
-        provider_meta = {"content_blocks": [{"type": block_type, "text": block_text}]}
-
-    # Optionally add cost/duration via raw in provider_meta
-    cost = draw(
-        st.one_of(st.none(), st.floats(min_value=0.001, max_value=100.0, allow_nan=False, allow_infinity=False))
-    )
-    duration = draw(st.one_of(st.none(), st.integers(min_value=1, max_value=60000)))
-    if cost is not None or duration is not None:
-        raw: JSONRecord = {}
-        if cost is not None:
-            raw["costUSD"] = cost
-        if duration is not None:
-            raw["durationMs"] = duration
-        if provider_meta is None:
-            provider_meta = {}
-        provider_meta["raw"] = raw
+        content_blocks = [{"type": block_type, "text": block_text}]
 
     return MessageModel(
         id=draw(st.text(min_size=1, max_size=40, alphabet=st.characters(whitelist_categories=("L", "N")))),
         role=Role.normalize(role_val),
         text=text,
-        provider_meta=provider_meta,
+        content_blocks=content_blocks,
     )
 
 

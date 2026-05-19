@@ -554,10 +554,9 @@ def test_chatgpt_metadata_roundtrip_parser_to_hydration(tmp_path: Path) -> None:
     )
     hydrated = message_from_record(record, attachments=[], provider="chatgpt")
 
-    # Hydrated Message.provider_meta should be None (canonical storage contract).
-    assert hydrated.provider_meta is None, (
-        "Hydrated messages must not depend on provider_meta.raw; metadata is in content_blocks"
-    )
+    # Hydrated Message no longer carries provider_meta as a field (#1256);
+    # canonical metadata lives in content_blocks.
+    assert not hasattr(hydrated, "provider_meta")
 
     # Metadata should be accessible via content_blocks.
     assert len(hydrated.content_blocks) >= 1
@@ -794,7 +793,8 @@ def test_chatgpt_metadata_permutation_roundtrip(
     )
     hydrated = message_from_record(record, attachments=[], provider="chatgpt")
 
-    assert hydrated.provider_meta is None, "Hydrated messages must not depend on provider_meta.raw"
+    # Hydrated Message no longer has provider_meta (#1256).
+    assert not hasattr(hydrated, "provider_meta")
     assert len(hydrated.content_blocks) >= 1
     hydrated_meta = hydrated.content_blocks[0].get("metadata")
     assert isinstance(hydrated_meta, dict), f"Expected dict, got {type(hydrated_meta)}: {desc}"

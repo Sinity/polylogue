@@ -58,24 +58,15 @@ def _semantic_conversation() -> ConversationModel:
                     provider="claude-code",
                     text="I will inspect the file",
                     timestamp=datetime(2026, 3, 23, 9, 1, tzinfo=timezone.utc),
-                    provider_meta={
-                        "raw": {
-                            "type": "assistant",
-                            "uuid": "a1",
-                            "message": {
-                                "role": "assistant",
-                                "content": [
-                                    {"type": "text", "text": "I will inspect the file"},
-                                    {
-                                        "type": "tool_use",
-                                        "id": "tool-1",
-                                        "name": "Read",
-                                        "input": {"file_path": str(README_PATH)},
-                                    },
-                                ],
-                            },
-                        }
-                    },
+                    content_blocks=[
+                        {"type": "text", "text": "I will inspect the file"},
+                        {
+                            "type": "tool_use",
+                            "tool_id": "tool-1",
+                            "tool_name": "Read",
+                            "tool_input": {"file_path": str(README_PATH)},
+                        },
+                    ],
                 ),
                 make_msg(
                     id="a2",
@@ -85,16 +76,7 @@ def _semantic_conversation() -> ConversationModel:
                     timestamp=datetime(2026, 3, 23, 9, 4, tzinfo=timezone.utc),
                     branch_index=1,
                     attachments=[],
-                    provider_meta={
-                        "raw": {
-                            "type": "assistant",
-                            "uuid": "a2",
-                            "message": {
-                                "role": "assistant",
-                                "content": [{"type": "thinking", "thinking": "step by step"}],
-                            },
-                        }
-                    },
+                    content_blocks=[{"type": "thinking", "text": "step by step"}],
                 ),
             ]
         ),
@@ -124,24 +106,15 @@ def _protocol_summary_conversation() -> ConversationModel:
                     provider="claude-code",
                     text="I will inspect the file.",
                     timestamp=datetime(2026, 3, 23, 10, 1, tzinfo=timezone.utc),
-                    provider_meta={
-                        "raw": {
-                            "type": "assistant",
-                            "uuid": "a1",
-                            "message": {
-                                "role": "assistant",
-                                "content": [
-                                    {"type": "text", "text": "I will inspect the file."},
-                                    {
-                                        "type": "tool_use",
-                                        "id": "tool-1",
-                                        "name": "Read",
-                                        "input": {"file_path": str(README_PATH)},
-                                    },
-                                ],
-                            },
-                        }
-                    },
+                    content_blocks=[
+                        {"type": "text", "text": "I will inspect the file."},
+                        {
+                            "type": "tool_use",
+                            "tool_id": "tool-1",
+                            "tool_name": "Read",
+                            "tool_input": {"file_path": str(README_PATH)},
+                        },
+                    ],
                 ),
                 make_msg(
                     id="u2",
@@ -873,9 +846,18 @@ def test_build_mcp_summary_semantic_facts_uses_canonical_summary_shape() -> None
 
 
 def test_harmonize_session_cost_uses_canonical_harmonized_model_and_tokens() -> None:
+    # Per #1256, message-level provider_meta no longer exists; cost facts
+    # for hydrated conversations come from the conversation-level envelope.
     conversation = make_conv(
         id="conv-cost",
         provider="chatgpt",
+        provider_meta={
+            "model": "gpt-4o",
+            "usage": {
+                "input_tokens": 1000,
+                "output_tokens": 500,
+            },
+        },
         messages=MessageCollection(
             messages=[
                 make_msg(
@@ -883,13 +865,6 @@ def test_harmonize_session_cost_uses_canonical_harmonized_model_and_tokens() -> 
                     role="assistant",
                     provider="chatgpt",
                     text="Estimated response",
-                    provider_meta={
-                        "model": "gpt-4o",
-                        "usage": {
-                            "input_tokens": 1000,
-                            "output_tokens": 500,
-                        },
-                    },
                 )
             ]
         ),

@@ -126,12 +126,17 @@ def sparse_message(draw: st.DrawFn) -> Message:
     that look like real production data from older exports where fields
     may be missing, None, or have unexpected types.
     """
+    sparse_meta = draw(_provider_meta_or_none)
+    sparse_blocks = sparse_meta.get("content_blocks") if isinstance(sparse_meta, dict) else None
+    content_blocks: list[dict[str, object]] = []
+    if isinstance(sparse_blocks, list):
+        content_blocks = [block for block in sparse_blocks if isinstance(block, dict)]
     return Message(
         id=draw(st.text(min_size=1, max_size=20)),
         role=Role.normalize(draw(_valid_roles)),
         text=draw(_text_or_none),
         timestamp=draw(_timestamp_or_none),
-        provider_meta=draw(_provider_meta_or_none),
+        content_blocks=content_blocks,
     )
 
 
@@ -217,18 +222,6 @@ class TestMessageNoneGuardProperties:
         """extract_thinking must return str or None, never crash."""
         result = msg.extract_thinking()
         assert result is None or isinstance(result, str)
-
-    @given(msg=sparse_message())
-    @settings(max_examples=200, suppress_health_check=_SPARSE_MESSAGE_HEALTH_CHECKS)
-    def test_cost_usd_never_crashes(self, msg: Message) -> None:
-        result = msg.cost_usd
-        assert result is None or isinstance(result, float)
-
-    @given(msg=sparse_message())
-    @settings(max_examples=200, suppress_health_check=_SPARSE_MESSAGE_HEALTH_CHECKS)
-    def test_duration_ms_never_crashes(self, msg: Message) -> None:
-        result = msg.duration_ms
-        assert result is None or isinstance(result, int)
 
 
 # =============================================================================

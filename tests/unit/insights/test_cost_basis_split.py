@@ -29,23 +29,15 @@ def _msg_with_tokens(
     output_tokens: int,
     role: str = "assistant",
 ) -> Message:
-    """Build a Message whose provider_meta carries reported tokens and a model name.
+    """Build a hydrated Message (#1256 drops ``Message.provider_meta``).
 
-    The harmonized viewport extracts model + tokens from provider_meta at
-    estimate time, so populating provider_meta is sufficient to drive
-    per-message cost attribution in tests.
+    Per-message cost facts now flow through the typed cost projection (#803),
+    not through this helper. Callers that need a priced aggregate seed the
+    cost facts at the conversation level instead.
     """
 
-    return make_msg(
-        id=id,
-        role=role,
-        text="x",
-        provider="claude-code",
-        provider_meta={
-            "model": model,
-            "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
-        },
-    )
+    del model, input_tokens, output_tokens  # accepted for backcompat
+    return make_msg(id=id, role=role, text="x", provider="claude-code")
 
 
 def test_provider_reported_total_populates_provider_and_api_basis() -> None:
@@ -120,8 +112,17 @@ def test_unavailable_carries_explicit_reason() -> None:
     assert empty_estimate.unavailable_reason == "no_messages"
 
 
-def test_mixed_model_session_returns_per_model_breakdown() -> None:
-    """Sessions with multiple models surface one row per model, not a collapsed total."""
+def test_mixed_model_session_breakdown_is_empty_without_typed_per_message_cost() -> None:
+    """Per-#1256 + #803: per-model breakdown is empty without per-message cost.
+
+    Pre-#1256 message-level ``provider_meta.model`` + ``provider_meta.usage``
+    seeded the per-model breakdown. With hydrated messages no longer
+    carrying ``provider_meta``, the per-model breakdown surface requires
+    the typed cost projection (#803). Until #803 lands the breakdown is
+    empty and the aggregate reports ``status='unavailable'`` for messages
+    with no conversation-level fallback. This test pins the new contract
+    so future #803 work has a clear seam to flip the assertions through.
+    """
 
     conversation = make_conv(
         id="conv-mixed",
@@ -137,18 +138,8 @@ def test_mixed_model_session_returns_per_model_breakdown() -> None:
 
     estimate = estimate_conversation_cost(conversation)
 
-    assert estimate.status == "priced"
-    breakdown = estimate.per_model_breakdown
-    normalized_models = {row.normalized_model for row in breakdown}
-    assert "claude-sonnet-4-5" in normalized_models
-    assert "claude-opus-4-5" in normalized_models
-    # Opus is more expensive; ranked first by total_usd desc.
-    assert breakdown[0].normalized_model == "claude-opus-4-5"
-    # Sonnet rows are merged into one entry, not duplicated.
-    sonnet_rows = [row for row in breakdown if row.normalized_model == "claude-sonnet-4-5"]
-    assert len(sonnet_rows) == 1
-    assert sonnet_rows[0].usage.input_tokens == 1500
-    assert sonnet_rows[0].usage.output_tokens == 750
+    assert estimate.status == "unavailable"
+    assert estimate.per_model_breakdown == ()
 
 
 def test_provider_zero_cost_is_preserved_not_treated_as_free() -> None:

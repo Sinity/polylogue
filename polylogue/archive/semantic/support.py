@@ -17,26 +17,9 @@ class TextMessageLike(Protocol):
     def text(self) -> str | None: ...
 
 
-class HarmonizedMessageLike(Protocol):
-    @property
-    def tool_calls(self) -> Sequence[ToolCall] | None: ...
-
-    @property
-    def reasoning_traces(self) -> Sequence[ReasoningTrace] | None: ...
-
-    @property
-    def tokens(self) -> TokenUsage | None: ...
-
-    @property
-    def model(self) -> object | None: ...
-
-
 class SemanticMessageLike(TextMessageLike, Protocol):
     @property
     def provider(self) -> Provider | str | None: ...
-
-    @property
-    def harmonized(self) -> HarmonizedMessageLike | None: ...
 
     @property
     def content_blocks(self) -> ContentBlockSequence: ...
@@ -59,36 +42,44 @@ def message_has_text(message: TextMessageLike) -> bool:
 
 
 def message_tool_calls(message: SemanticMessageLike) -> tuple[ToolCall, ...]:
-    harmonized = message.harmonized
-    if harmonized is not None:
-        calls = harmonized.tool_calls
-        if calls:
-            return tuple(calls)
+    """Derive tool calls from hydrated message ``content_blocks`` (#1256).
+
+    Hydrated ``Message`` instances no longer carry ``provider_meta``;
+    canonical tool-call evidence lives in typed ``content_blocks`` rows.
+    Harmonized parser-level extraction now flows through the typed cost
+    projection (#803), not through this helper.
+    """
+
     return _message_content_block_tool_calls(message)
 
 
 def message_reasoning_traces(message: SemanticMessageLike) -> tuple[ReasoningTrace, ...]:
-    harmonized = message.harmonized
-    if harmonized is not None:
-        traces = harmonized.reasoning_traces
-        if traces:
-            return tuple(traces)
+    """Derive reasoning traces from hydrated ``content_blocks`` (#1256)."""
+
     return _message_content_block_reasoning_traces(message)
 
 
 def message_tokens(message: SemanticMessageLike) -> TokenUsage | None:
-    harmonized = message.harmonized
-    if harmonized is None:
-        return None
-    return harmonized.tokens
+    """Hydrated messages have no provider-meta token usage (#1256).
+
+    Token usage for hydrated reads is sourced through the typed cost
+    projection in ``polylogue.archive.semantic.pricing`` and the
+    per-message ``input_tokens``/``output_tokens`` columns on the
+    ``messages`` row, not through this helper.
+    """
+
+    return None
 
 
 def message_model_name(message: SemanticMessageLike) -> str | None:
-    harmonized = message.harmonized
-    if harmonized is None:
-        return None
-    model = harmonized.model
-    return str(model) if model else None
+    """Hydrated messages have no provider-meta model name (#1256).
+
+    Per-message model identity is sourced through the typed cost
+    projection in ``polylogue.archive.semantic.pricing`` and the
+    persisted ``model_name`` column, not through this helper.
+    """
+
+    return None
 
 
 def _message_content_block_tool_calls(message: SemanticMessageLike) -> tuple[ToolCall, ...]:
@@ -132,7 +123,6 @@ def _message_content_block_reasoning_traces(message: SemanticMessageLike) -> tup
 
 __all__ = [
     "ContentBlockSequence",
-    "HarmonizedMessageLike",
     "message_has_text",
     "message_model_name",
     "message_reasoning_traces",
