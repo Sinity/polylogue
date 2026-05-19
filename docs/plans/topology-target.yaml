@@ -1042,7 +1042,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 910
+    loc: 1006
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1074,11 +1074,11 @@ files:
     target: polylogue/daemon/cursor_lag_status.py
     owner: stable
   - path: polylogue/daemon/events.py
-    loc: 241
+    loc: 389
     target: polylogue/daemon/events.py
     owner: stable
   - path: polylogue/daemon/events_http.py
-    loc: 110
+    loc: 181
     target: polylogue/daemon/events_http.py
     owner: stable
   - path: polylogue/daemon/health.py
@@ -1151,7 +1151,7 @@ files:
     target: polylogue/daemon/user_state_http.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
-    loc: 1514
+    loc: 1463
     target: polylogue/daemon/web_shell.py
     owner: stable
   - path: polylogue/daemon/web_shell_attachments.py
@@ -1213,11 +1213,11 @@ files:
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/insights/archive_rollups.py
-    loc: 286
+    loc: 288
     target: polylogue/insights/archive_rollups.py
     owner: stable
   - path: polylogue/insights/archive_summaries.py
-    loc: 182
+    loc: 184
     target: polylogue/insights/archive_summaries.py
     owner: stable
   - path: polylogue/insights/authored_payloads.py
@@ -1241,7 +1241,7 @@ files:
     target: polylogue/insights/productivity.py
     owner: stable
   - path: polylogue/insights/provenance.py
-    loc: 122
+    loc: 130
     target: polylogue/insights/provenance.py
     owner: stable
   - path: polylogue/insights/readiness.py
@@ -1259,6 +1259,10 @@ files:
   - path: polylogue/insights/storage.py
     loc: 141
     target: polylogue/insights/storage.py
+    owner: stable
+  - path: polylogue/insights/temporal_source.py
+    loc: 124
+    target: polylogue/insights/temporal_source.py
     owner: stable
   - path: polylogue/insights/timeline_renderer.py
     loc: 316
@@ -1512,7 +1516,7 @@ files:
     target: polylogue/pipeline/services/ingest_batch/__init__.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_core.py
-    loc: 1472
+    loc: 1486
     target: polylogue/pipeline/services/ingest_batch/_core.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_models.py
@@ -2431,7 +2435,7 @@ files:
     target: polylogue/sources/live/batch_observability.py
     owner: stable
   - path: polylogue/sources/live/batch_support.py
-    loc: 324
+    loc: 348
     target: polylogue/sources/live/batch_support.py
     owner: stable
   - path: polylogue/sources/live/convergence_debt.py
@@ -2761,7 +2765,7 @@ files:
     target: polylogue/storage/insights/aggregate/__init__.py
     owner: stable
   - path: polylogue/storage/insights/aggregate/records.py
-    loc: 63
+    loc: 65
     target: polylogue/storage/insights/aggregate/records.py
     owner: stable
   - path: polylogue/storage/insights/feedback/__init__.py
@@ -2782,7 +2786,7 @@ files:
     target: polylogue/storage/insights/session/aggregates.py
     owner: stable
   - path: polylogue/storage/insights/session/profiles.py
-    loc: 681
+    loc: 683
     target: polylogue/storage/insights/session/profiles.py
     owner: stable
   - path: polylogue/storage/insights/session/rebuild.py
@@ -2790,7 +2794,7 @@ files:
     target: polylogue/storage/insights/session/rebuild.py
     owner: stable
   - path: polylogue/storage/insights/session/records.py
-    loc: 127
+    loc: 129
     target: polylogue/storage/insights/session/records.py
     owner: stable
   - path: polylogue/storage/insights/session/refresh.py
@@ -2806,15 +2810,15 @@ files:
     target: polylogue/storage/insights/session/status.py
     owner: stable
   - path: polylogue/storage/insights/session/storage.py
-    loc: 742
+    loc: 755
     target: polylogue/storage/insights/session/storage.py
     owner: stable
   - path: polylogue/storage/insights/session/threads.py
-    loc: 431
+    loc: 433
     target: polylogue/storage/insights/session/threads.py
     owner: stable
   - path: polylogue/storage/insights/session/timeline_rows.py
-    loc: 389
+    loc: 394
     target: polylogue/storage/insights/session/timeline_rows.py
     owner: stable
   - path: polylogue/storage/insights/timeline/__init__.py
@@ -2822,7 +2826,7 @@ files:
     target: polylogue/storage/insights/timeline/__init__.py
     owner: stable
   - path: polylogue/storage/insights/timeline/records.py
-    loc: 110
+    loc: 112
     target: polylogue/storage/insights/timeline/records.py
     owner: stable
   - path: polylogue/storage/insights/topology/__init__.py
@@ -3161,7 +3165,7 @@ files:
     target: polylogue/storage/sqlite/queries/mappers_archive.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/mappers_insight_aggregates.py
-    loc: 86
+    loc: 88
     target: polylogue/storage/sqlite/queries/mappers_insight_aggregates.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/mappers_insight_legacy.py
@@ -3169,11 +3173,11 @@ files:
     target: polylogue/storage/sqlite/queries/mappers_insight_legacy.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/mappers_insight_profiles.py
-    loc: 118
+    loc: 119
     target: polylogue/storage/sqlite/queries/mappers_insight_profiles.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/mappers_insight_timelines.py
-    loc: 174
+    loc: 177
     target: polylogue/storage/sqlite/queries/mappers_insight_timelines.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/mappers_support.py
@@ -3231,11 +3235,11 @@ files:
     owner: stable
     cross_cut: { layer: write }
   - path: polylogue/storage/sqlite/queries/session_insight_summary_queries.py
-    loc: 167
+    loc: 169
     target: polylogue/storage/sqlite/queries/session_insight_summary_queries.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/session_insight_thread_queries.py
-    loc: 104
+    loc: 105
     target: polylogue/storage/sqlite/queries/session_insight_thread_queries.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/session_insight_timeline_reads.py
@@ -3309,15 +3313,15 @@ files:
     target: polylogue/storage/sqlite/schema_ddl_identity.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_insight_aggregates.py
-    loc: 108
+    loc: 111
     target: polylogue/storage/sqlite/schema_ddl_insight_aggregates.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_insight_profiles.py
-    loc: 73
+    loc: 74
     target: polylogue/storage/sqlite/schema_ddl_insight_profiles.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_insight_timelines.py
-    loc: 114
+    loc: 116
     target: polylogue/storage/sqlite/schema_ddl_insight_timelines.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_provider_events.py
@@ -3366,7 +3370,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/ui/theme.py
-    loc: 362
+    loc: 366
     target: polylogue/ui/theme.py
     owner: stable
   - path: polylogue/ui/tui/__init__.py

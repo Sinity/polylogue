@@ -10,6 +10,7 @@ SESSION_INSIGHT_PROFILE_DDL = """
             source_updated_at TEXT,
             source_sort_key REAL,
             input_high_water_mark TEXT,
+            input_high_water_mark_source TEXT,
             input_row_count INTEGER NOT NULL DEFAULT 0,
             provider_name TEXT NOT NULL,
             title TEXT,

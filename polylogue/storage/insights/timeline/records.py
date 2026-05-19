@@ -26,6 +26,7 @@ class SessionWorkEventRecord(BaseModel):
     source_updated_at: str | None = None
     source_sort_key: float | None = None
     input_high_water_mark: str | None = None
+    input_high_water_mark_source: str | None = None
     input_row_count: int = 0
     provider_name: str
     event_index: int
@@ -71,6 +72,7 @@ class SessionPhaseRecord(BaseModel):
     source_updated_at: str | None = None
     source_sort_key: float | None = None
     input_high_water_mark: str | None = None
+    input_high_water_mark_source: str | None = None
     input_row_count: int = 0
     provider_name: str
     phase_index: int

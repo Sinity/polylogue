@@ -27,6 +27,7 @@ class SessionProfileRecord(BaseModel):
     source_updated_at: str | None = None
     source_sort_key: float | None = None
     input_high_water_mark: str | None = None
+    input_high_water_mark_source: str | None = None
     input_row_count: int = 0
     provider_name: str
     title: str | None = None
@@ -101,6 +102,7 @@ class WorkThreadRecord(BaseModel):
     materialized_at: str
     source_updated_at: str | None = None
     input_high_water_mark: str | None = None
+    input_high_water_mark_source: str | None = None
     input_row_count: int = 0
     start_time: str | None = None
     end_time: str | None = None

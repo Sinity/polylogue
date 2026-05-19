@@ -82,6 +82,7 @@ async def replace_work_thread(
                 materialized_at,
                 source_updated_at,
                 input_high_water_mark,
+                input_high_water_mark_source,
                 input_row_count,
                 start_time,
                 end_time,
@@ -96,7 +97,7 @@ async def replace_work_thread(
                 work_event_breakdown_json,
                 payload_json,
                 search_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             work_thread_insert_values(record),
         )

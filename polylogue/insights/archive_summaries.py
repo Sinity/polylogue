@@ -17,6 +17,7 @@ from polylogue.insights.archive import (
     records_provenance,
 )
 from polylogue.insights.archive_models import DaySessionSummaryPayload, WeekSessionSummaryPayload
+from polylogue.insights.temporal_source import classify_aggregate_hwm_source
 from polylogue.storage.runtime import DaySessionSummaryRecord
 
 
@@ -79,6 +80,7 @@ def build_day_session_summary_records(
                 source_updated_at=hwm,
                 source_sort_key=max(source_sorts) if source_sorts else None,
                 input_high_water_mark=hwm,
+                input_high_water_mark_source=classify_aggregate_hwm_source(source_updates),
                 input_row_count=summary.session_count,
                 conversation_count=summary.session_count,
                 total_cost_usd=summary.total_cost_usd,
