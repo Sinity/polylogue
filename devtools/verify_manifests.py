@@ -23,7 +23,18 @@ from polylogue.verification.manifests.models import validate_manifest
 
 _COVERAGE_AXIS_KEYS = ("domain", "subject", "area", "dimension", "artifact", "platform", "concern")
 _COVERAGE_GAP_SEVERITIES = {"info", "minor", "major", "serious"}
-_EVIDENCE_COMMANDS = {"pytest", "ruff", "mypy", "nix", "polylogue", "polylogued", "polylogue-mcp"}
+_EVIDENCE_COMMANDS = {
+    "pytest",
+    "ruff",
+    "mypy",
+    "nix",
+    "polylogue",
+    "polylogued",
+    "polylogue-mcp",
+    # Browser-extension build pipeline (browser-extension/scripts/*.mjs).
+    "npm",
+    "node",
+}
 _COVERAGE_COMMAND_FIELDS = {"generated_by", "verified_by", "verification_command"}
 _COVERAGE_PATH_FIELDS = {"config_location", "location", "path", "strategies_location"}
 _COVERAGE_PATH_LIST_FIELDS = {"locations", "paths_to_mutate", "tests"}
