@@ -50,15 +50,19 @@ ACTION_FTS_DDL = """
             message_id UNINDEXED,
             conversation_id UNINDEXED,
             action_kind UNINDEXED,
-            tool_name UNINDEXED,
-            text,
+            normalized_tool_name UNINDEXED,
+            search_text,
+            content='action_events',
+            content_rowid='rowid',
             tokenize='unicode61'
         );
 
         CREATE TRIGGER IF NOT EXISTS action_events_fts_ai
         AFTER INSERT ON action_events BEGIN
-            INSERT INTO action_events_fts (rowid, event_id, message_id, conversation_id, action_kind, tool_name, text)
-            VALUES (
+            INSERT INTO action_events_fts (
+                rowid, event_id, message_id, conversation_id,
+                action_kind, normalized_tool_name, search_text
+            ) VALUES (
                 new.rowid,
                 new.event_id,
                 new.message_id,
@@ -71,14 +75,40 @@ ACTION_FTS_DDL = """
 
         CREATE TRIGGER IF NOT EXISTS action_events_fts_ad
         AFTER DELETE ON action_events BEGIN
-            DELETE FROM action_events_fts WHERE rowid = old.rowid;
+            INSERT INTO action_events_fts (
+                action_events_fts, rowid, event_id, message_id, conversation_id,
+                action_kind, normalized_tool_name, search_text
+            ) VALUES (
+                'delete',
+                old.rowid,
+                old.event_id,
+                old.message_id,
+                old.conversation_id,
+                old.action_kind,
+                old.normalized_tool_name,
+                old.search_text
+            );
         END;
 
         CREATE TRIGGER IF NOT EXISTS action_events_fts_au
         AFTER UPDATE ON action_events BEGIN
-            DELETE FROM action_events_fts WHERE rowid = old.rowid;
-            INSERT INTO action_events_fts (rowid, event_id, message_id, conversation_id, action_kind, tool_name, text)
-            VALUES (
+            INSERT INTO action_events_fts (
+                action_events_fts, rowid, event_id, message_id, conversation_id,
+                action_kind, normalized_tool_name, search_text
+            ) VALUES (
+                'delete',
+                old.rowid,
+                old.event_id,
+                old.message_id,
+                old.conversation_id,
+                old.action_kind,
+                old.normalized_tool_name,
+                old.search_text
+            );
+            INSERT INTO action_events_fts (
+                rowid, event_id, message_id, conversation_id,
+                action_kind, normalized_tool_name, search_text
+            ) VALUES (
                 new.rowid,
                 new.event_id,
                 new.message_id,
