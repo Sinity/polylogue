@@ -8,6 +8,7 @@ import contextlib
 import faulthandler
 import fcntl
 import os
+import sqlite3
 import sys
 from contextlib import redirect_stdout
 from datetime import UTC, datetime
@@ -72,12 +73,47 @@ def _verify_pidfile(pidfile: Path) -> bool:
         return False
 
 
-async def _ensure_fts_startup_readiness() -> None:
-    """Ensure FTS exists on startup without scanning the full archive.
+_EXPECTED_FTS_TRIGGERS: tuple[str, ...] = (
+    "messages_fts_ai",
+    "messages_fts_ad",
+    "messages_fts_au",
+    "action_events_fts_ai",
+    "action_events_fts_ad",
+    "action_events_fts_au",
+)
+"""Canonical FTS sync triggers (#1242).
 
-    A complete gap can exist when historical rows predate FTS creation. Partial
-    gaps are repaired by conversation-scoped convergence; startup must not count
-    all messages on every daemon restart.
+Mirrors ``polylogue.daemon.health._EXPECTED_FTS_TRIGGERS``. Defined
+here to keep the daemon startup path independent of the health-check
+module's import surface.
+"""
+
+
+def _missing_fts_triggers_sync(conn: sqlite3.Connection) -> list[str]:
+    placeholders = ",".join("?" for _ in _EXPECTED_FTS_TRIGGERS)
+    rows = conn.execute(
+        f"SELECT name FROM sqlite_master WHERE type='trigger' AND name IN ({placeholders})",
+        _EXPECTED_FTS_TRIGGERS,
+    ).fetchall()
+    present = {row[0] for row in rows}
+    return [name for name in _EXPECTED_FTS_TRIGGERS if name not in present]
+
+
+async def _ensure_fts_startup_readiness() -> None:
+    """Ensure FTS triggers and index are healthy on daemon startup.
+
+    Three failure modes are recovered here:
+
+    1. FTS table missing entirely (historical rows pre-date FTS) →
+       rebuild from messages/action_events.
+    2. FTS table exists but is empty while messages exist → rebuild.
+    3. FTS triggers missing (the SIGKILL-during-bulk-suspend signature
+       called out in ``docs/internals.md`` "FTS5 Model → Risk") →
+       restore triggers and rebuild the FTS index. The bulk-ingest
+       path drops these triggers as DDL (auto-committed); a SIGKILL
+       between the drop and the matching restore leaves them gone
+       across process death, and subsequent writes silently bypass the
+       FTS index. See #1242.
     """
     from polylogue.paths import db_path
     from polylogue.storage.sqlite.connection_profile import open_connection
@@ -86,7 +122,7 @@ async def _ensure_fts_startup_readiness() -> None:
     if not db.exists():
         return
 
-    conn = None
+    conn: sqlite3.Connection | None = None
     try:
         conn = open_connection(db, timeout=10.0)
         row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
@@ -95,7 +131,11 @@ async def _ensure_fts_startup_readiness() -> None:
             conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1").fetchone() is not None
         )
 
-        from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_sync, rebuild_fts_index_sync
+        from polylogue.storage.fts.fts_lifecycle import (
+            ensure_fts_index_sync,
+            rebuild_fts_index_sync,
+            restore_fts_triggers_sync,
+        )
 
         if not has_fts_table:
             logger.warning("daemon: message FTS table missing. Rebuilding once.")
@@ -105,6 +145,25 @@ async def _ensure_fts_startup_readiness() -> None:
             return
 
         ensure_fts_index_sync(conn)
+        # SIGKILL recovery: if any of the six FTS triggers are absent,
+        # a previous bulk-write window was killed between suspend and
+        # restore. ensure_fts_index_sync above re-created them, but the
+        # index itself may have drifted while writes landed without the
+        # trigger sync — rebuild to bring index and source rows back
+        # into agreement.
+        missing_triggers = _missing_fts_triggers_sync(conn)
+        if missing_triggers:
+            logger.warning(
+                "daemon: FTS triggers missing on startup (%s). "
+                "SIGKILL-during-bulk-suspend signature; restoring and rebuilding FTS index.",
+                ", ".join(missing_triggers),
+            )
+            restore_fts_triggers_sync(conn)
+            rebuild_fts_index_sync(conn)
+            conn.commit()
+            logger.info("daemon: FTS trigger restore + rebuild complete.")
+            return
+
         has_indexed_messages = conn.execute("SELECT 1 FROM messages_fts_docsize LIMIT 1").fetchone() is not None
         if has_indexable_messages and not has_indexed_messages:
             logger.warning("daemon: message FTS is empty while archive has messages. Rebuilding once.")
@@ -118,7 +177,7 @@ async def _ensure_fts_startup_readiness() -> None:
         logger.warning("daemon: FTS startup check failed", exc_info=True)
     finally:
         if conn is not None:
-            with __import__("contextlib").suppress(Exception):
+            with contextlib.suppress(Exception):
                 conn.close()
 
 

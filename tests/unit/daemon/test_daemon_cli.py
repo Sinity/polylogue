@@ -266,11 +266,15 @@ def test_ensure_fts_startup_readiness_uses_bounded_probes(
     db.write_bytes(b"sqlite placeholder")
 
     class FakeCursor:
-        def __init__(self, row: tuple[object, ...] | None) -> None:
+        def __init__(self, row: tuple[object, ...] | None, rows: list[tuple[object, ...]] | None = None) -> None:
             self._row = row
+            self._rows = rows if rows is not None else ([] if row is None else [row])
 
         def fetchone(self) -> tuple[object, ...] | None:
             return self._row
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return self._rows
 
     class FakeConnection:
         def __init__(self) -> None:
@@ -283,6 +287,17 @@ def test_ensure_fts_startup_readiness_uses_bounded_probes(
             self.queries.append(query)
             if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'":
                 return FakeCursor(("messages_fts",))
+            if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
+                # All six FTS triggers present — no SIGKILL-drift recovery.
+                triggers: list[tuple[object, ...]] = [
+                    ("messages_fts_ai",),
+                    ("messages_fts_ad",),
+                    ("messages_fts_au",),
+                    ("action_events_fts_ai",),
+                    ("action_events_fts_ad",),
+                    ("action_events_fts_au",),
+                ]
+                return FakeCursor(triggers[0], rows=triggers)
             if query == "SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1":
                 return FakeCursor((1,))
             if query == "SELECT 1 FROM messages_fts_docsize LIMIT 1":
@@ -329,11 +344,15 @@ def test_ensure_fts_startup_readiness_rebuilds_empty_fts(
     db.write_bytes(b"sqlite placeholder")
 
     class FakeCursor:
-        def __init__(self, row: tuple[object, ...] | None) -> None:
+        def __init__(self, row: tuple[object, ...] | None, rows: list[tuple[object, ...]] | None = None) -> None:
             self._row = row
+            self._rows = rows if rows is not None else ([] if row is None else [row])
 
         def fetchone(self) -> tuple[object, ...] | None:
             return self._row
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return self._rows
 
     class FakeConnection:
         def __init__(self) -> None:
@@ -346,6 +365,16 @@ def test_ensure_fts_startup_readiness_rebuilds_empty_fts(
             self.queries.append(query)
             if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'":
                 return FakeCursor(("messages_fts",))
+            if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
+                triggers: list[tuple[object, ...]] = [
+                    ("messages_fts_ai",),
+                    ("messages_fts_ad",),
+                    ("messages_fts_au",),
+                    ("action_events_fts_ai",),
+                    ("action_events_fts_ad",),
+                    ("action_events_fts_au",),
+                ]
+                return FakeCursor(triggers[0], rows=triggers)
             if query == "SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1":
                 return FakeCursor((1,))
             if query == "SELECT 1 FROM messages_fts_docsize LIMIT 1":

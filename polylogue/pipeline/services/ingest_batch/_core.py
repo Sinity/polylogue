@@ -11,6 +11,7 @@ Replaces: parsing_batch.py, parsing_workflow.py, validation_flow.py.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import pickle
 import sqlite3
@@ -935,13 +936,22 @@ def _consume_ingest_results(
         )
 
 
-def _commit_ingest_results(
+def _flush_ingest_results(
     conn: sqlite3.Connection,
     *,
     summary: _IngestBatchSummary,
     materialized_ids: set[str],
     pending_by_parent: dict[str, list[_ConversationEntry]],
 ) -> None:
+    """Flush pending conversation entries without committing.
+
+    The commit + FTS trigger restore + FTS repair are deliberately
+    deferred to ``_commit_sync_ingest_side_effects`` so they land as a
+    single atomic write through the archive write gateway (#1242). This
+    closes the gap where row commit and post-commit FTS repair were two
+    separate transactions: if the repair failed, the data was already
+    committed and the FTS index drifted silently.
+    """
     flush_started = time.perf_counter()
     _flush_pending_conversation_entries(
         conn,
@@ -951,17 +961,6 @@ def _commit_ingest_results(
     )
     summary.flush_elapsed_s = time.perf_counter() - flush_started
     _observe_current_rss(summary)
-    # Restore FTS triggers BEFORE commit so they are durable with the data.
-    # CREATE TRIGGER is DDL and auto-commits the pending transaction, so the
-    # explicit conn.commit() below becomes a no-op. If restore fails, the
-    # exception propagates before we mark the batch as committed.
-    # See https://github.com/Sinity/polylogue/issues/817
-    from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync
-
-    restore_fts_triggers_sync(conn)
-    commit_started = time.perf_counter()
-    conn.commit()
-    summary.commit_elapsed_s = time.perf_counter() - commit_started
 
 
 def _commit_sync_ingest_side_effects(
@@ -1033,29 +1032,44 @@ def _process_ingest_batch_sync(
             progress=progress,
             ingest_result_chunk_size=ingest_result_chunk_size,
         )
-        _commit_ingest_results(
+        _flush_ingest_results(
             conn,
             summary=summary,
             materialized_ids=materialized_ids,
             pending_by_parent=pending_by_parent,
         )
         changed_ids = set(summary.changed_conversation_ids)
+        # Side effects (FTS trigger restore + FTS repair + commit) run
+        # BEFORE we release the connection so the data write and post-
+        # write effects share one transaction. The previous arrangement
+        # ran side effects in a `finally` block — they fired even after
+        # a rollback (silently restoring triggers on top of nothing) and
+        # ran AFTER the row commit, so a failure between commit and FTS
+        # repair would leave the index drifted. See #1242.
+        commit_started = time.perf_counter()
+        _commit_sync_ingest_side_effects(
+            conn,
+            db_path=db_path,
+            changed_conversation_ids=tuple(changed_ids),
+            repair_action_fts=repair_action_fts,
+        )
+        summary.commit_elapsed_s = time.perf_counter() - commit_started
     except Exception:
-        conn.rollback()
+        # Roll back the row writes. The suspend DROP TRIGGER auto-
+        # committed (DDL), so we must explicitly restore triggers so the
+        # database is not left in the SIGKILL-style drift state. If the
+        # restore itself fails, we propagate the original exception
+        # (the daemon startup readiness check is the next safety net).
+        with contextlib.suppress(Exception):
+            conn.rollback()
+        from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync
+
+        with contextlib.suppress(Exception):
+            restore_fts_triggers_sync(conn)
+            conn.commit()
         raise
     finally:
-        try:
-            _commit_sync_ingest_side_effects(
-                conn,
-                db_path=db_path,
-                changed_conversation_ids=tuple(changed_ids),
-                repair_action_fts=repair_action_fts,
-            )
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        conn.close()
     summary.worker_progress_in_flight = len(progress.in_flight_raw_ids)
     summary.worker_progress_completed = progress.completed_raw_count
     summary.worker_progress_total = progress.total_raw_count
