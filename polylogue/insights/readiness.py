@@ -18,7 +18,7 @@ from polylogue.storage.runtime.store_constants import (
     SESSION_INSIGHT_MATERIALIZER_VERSION,
 )
 
-InsightReadinessVerdict = Literal["ready", "partial", "empty", "missing", "stale", "legacy", "unknown"]
+InsightReadinessVerdict = Literal["ready", "partial", "empty", "missing", "stale", "legacy", "degraded", "unknown"]
 _REPAIR_HINT = build_maintenance_target_catalog().repair_hint(("session_insights",), include_run_all=True)
 
 
@@ -60,6 +60,8 @@ class InsightReadinessEntry(ArchiveInsightModel):
     stale_count: int = 0
     orphan_count: int = 0
     legacy_incompatible_count: int = 0
+    degraded_count: int = 0
+    fallback_reason_counts: dict[str, int] = Field(default_factory=dict)
     storage_artifacts: tuple[InsightStorageArtifact, ...] = ()
     ready_flags: dict[str, bool] = Field(default_factory=dict)
     provider_coverage: tuple[InsightProviderCoverage, ...] = ()
@@ -96,6 +98,7 @@ class InsightReadinessSpec:
     provider_column: str | None = "provider_name"
     time_column: str | None = "source_updated_at"
     version_fields: tuple[tuple[str, int], ...] = (("materializer_version", SESSION_INSIGHT_MATERIALIZER_VERSION),)
+    fallback_payload_columns: tuple[str, ...] = ()
 
 
 _SPECS: tuple[InsightReadinessSpec, ...] = (
@@ -115,6 +118,7 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
             ("materializer_version", SESSION_INSIGHT_MATERIALIZER_VERSION),
             ("inference_version", SESSION_INFERENCE_VERSION),
         ),
+        fallback_payload_columns=("inference_payload_json",),
     ),
     InsightReadinessSpec(
         insight_name="session_enrichments",
@@ -132,6 +136,7 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
             ("materializer_version", SESSION_INSIGHT_MATERIALIZER_VERSION),
             ("enrichment_version", SESSION_ENRICHMENT_VERSION),
         ),
+        fallback_payload_columns=("enrichment_payload_json",),
     ),
     InsightReadinessSpec(
         insight_name="session_work_events",
@@ -283,6 +288,7 @@ def _entry_verdict(
     stale_count: int,
     orphan_count: int,
     legacy_count: int,
+    degraded_count: int,
     ready_flags: dict[str, bool],
 ) -> InsightReadinessVerdict:
     if not table_present:
@@ -295,6 +301,8 @@ def _entry_verdict(
         return "partial"
     if row_count == 0:
         return "empty"
+    if degraded_count:
+        return "degraded"
     if ready_flags and all(ready_flags.values()):
         return "ready"
     if not ready_flags:
@@ -304,7 +312,15 @@ def _entry_verdict(
 
 def _aggregate_verdict(entries: tuple[InsightReadinessEntry, ...]) -> InsightReadinessVerdict:
     verdicts = {entry.verdict for entry in entries}
-    priority: tuple[InsightReadinessVerdict, ...] = ("legacy", "stale", "partial", "missing", "unknown", "empty")
+    priority: tuple[InsightReadinessVerdict, ...] = (
+        "legacy",
+        "stale",
+        "partial",
+        "missing",
+        "degraded",
+        "unknown",
+        "empty",
+    )
     for verdict in priority:
         if verdict in verdicts:
             return verdict
@@ -408,6 +424,49 @@ async def _version_coverage(
     return tuple(coverage)
 
 
+async def _fallback_coverage(
+    conn: aiosqlite.Connection,
+    spec: InsightReadinessSpec,
+    *,
+    table_present: bool,
+    columns: set[str],
+) -> tuple[int, dict[str, int]]:
+    """Count rows whose payload carries a non-empty ``fallback_reasons`` array.
+
+    Returns ``(degraded_row_count, reason_totals)``. The row count is the
+    number of rows where at least one declared payload column reports any
+    fallback reason. ``reason_totals`` sums occurrences per reason across
+    every inspected payload column. The query uses ``json_extract`` and
+    ``json_each`` so each row contributes at most one count to
+    ``degraded_row_count`` regardless of how many payload columns flag it.
+    """
+
+    if not table_present or spec.table_name is None or not spec.fallback_payload_columns:
+        return (0, {})
+    present_columns = tuple(column for column in spec.fallback_payload_columns if column in columns)
+    if not present_columns:
+        return (0, {})
+    any_terms = " OR ".join(
+        f"json_array_length(COALESCE(json_extract({column}, '$.fallback_reasons'), '[]')) > 0"
+        for column in present_columns
+    )
+    any_sql = f"SELECT COUNT(*) AS degraded FROM {spec.table_name} WHERE {any_terms}"
+    degraded_row = await (await conn.execute(any_sql)).fetchone()
+    degraded_row_count = int(degraded_row["degraded"]) if degraded_row is not None else 0
+
+    reason_totals: dict[str, int] = {}
+    for column in present_columns:
+        reason_sql = (
+            f"SELECT value AS reason, COUNT(*) AS occurrences FROM {spec.table_name}, "
+            f"json_each(COALESCE(json_extract({column}, '$.fallback_reasons'), '[]')) GROUP BY value"
+        )
+        rows = await (await conn.execute(reason_sql)).fetchall()
+        for row in rows:
+            reason = str(row["reason"])
+            reason_totals[reason] = reason_totals.get(reason, 0) + int(row["occurrences"])
+    return (degraded_row_count, dict(sorted(reason_totals.items())))
+
+
 def _schema_contract_issues(spec: InsightReadinessSpec, columns: set[str]) -> tuple[str, ...]:
     issues: list[str] = []
     if spec.provider_column is not None and spec.provider_column not in columns:
@@ -428,6 +487,8 @@ def _evidence(
     stale_count: int,
     orphan_count: int,
     legacy_count: int,
+    degraded_count: int,
+    fallback_reason_counts: dict[str, int],
     schema_contract_issues: tuple[str, ...],
     ready_flags: dict[str, bool],
 ) -> tuple[str, ...]:
@@ -442,6 +503,9 @@ def _evidence(
         values.append(f"orphan={orphan_count}")
     if legacy_count:
         values.append(f"legacy={legacy_count}")
+    if degraded_count:
+        values.append(f"degraded={degraded_count}")
+    values.extend(f"fallback_reason={reason}={count}" for reason, count in fallback_reason_counts.items())
     values.extend(f"schema_issue={issue}" for issue in schema_contract_issues)
     values.extend(f"{key}={value}" for key, value in sorted(ready_flags.items()))
     return tuple(values)
@@ -467,6 +531,9 @@ async def _entry(
     schema_legacy_count = row_count if schema_contract_issues else 0
     legacy_count = max(version_legacy_count, schema_legacy_count)
     provider_coverage = await _provider_coverage(conn, spec, query, table_present=table_present, columns=columns)
+    degraded_count, fallback_reason_counts = await _fallback_coverage(
+        conn, spec, table_present=table_present, columns=columns
+    )
     artifacts: list[InsightStorageArtifact] = []
     for artifact in spec.artifacts:
         artifacts.append(
@@ -486,6 +553,7 @@ async def _entry(
         stale_count=stale_count,
         orphan_count=orphan_count,
         legacy_count=legacy_count,
+        degraded_count=degraded_count,
         ready_flags=ready_flags,
     )
     return InsightReadinessEntry(
@@ -498,6 +566,8 @@ async def _entry(
         stale_count=stale_count,
         orphan_count=orphan_count,
         legacy_incompatible_count=legacy_count,
+        degraded_count=degraded_count,
+        fallback_reason_counts=fallback_reason_counts,
         storage_artifacts=tuple(artifacts),
         ready_flags=ready_flags,
         provider_coverage=provider_coverage,
@@ -512,6 +582,8 @@ async def _entry(
             stale_count=stale_count,
             orphan_count=orphan_count,
             legacy_count=legacy_count,
+            degraded_count=degraded_count,
+            fallback_reason_counts=fallback_reason_counts,
             schema_contract_issues=schema_contract_issues,
             ready_flags=ready_flags,
         ),

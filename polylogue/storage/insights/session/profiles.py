@@ -29,6 +29,7 @@ from polylogue.insights.archive_models import (
     SessionEvidencePayload,
     SessionInferencePayload,
 )
+from polylogue.insights.fallback import FallbackReason
 from polylogue.insights.temporal_source import classify_profile_hwm_source
 from polylogue.storage.runtime import (
     SESSION_ENRICHMENT_FAMILY,
@@ -145,6 +146,7 @@ def session_enrichment_payload(
     )
     intent_summary = user_turns[0] if user_turns else (profile.title or None)
     outcome_summary = assistant_turns[-1] if assistant_turns else (user_turns[-1] if user_turns else None)
+    fallback_reasons = enrichment_fallback_reasons(analysis, user_turns=user_turns)
     return SessionEnrichmentPayload(
         intent_summary=intent_summary,
         outcome_summary=outcome_summary,
@@ -153,7 +155,21 @@ def session_enrichment_payload(
         support_level=support_level(confidence, support_signals=support_signals_val),
         support_signals=support_signals_val,
         input_band_summary=input_band_summary,
+        fallback_reasons=fallback_reasons,
     )
+
+
+def enrichment_fallback_reasons(
+    analysis: SessionAnalysis | None,
+    *,
+    user_turns: tuple[str, ...],
+) -> tuple[FallbackReason, ...]:
+    reasons: list[FallbackReason] = []
+    if analysis is None:
+        reasons.append(FallbackReason.MISSING_SESSION_ANALYSIS)
+    if not user_turns:
+        reasons.append(FallbackReason.NO_USER_TURNS)
+    return tuple(reasons)
 
 
 def profile_evidence_payload(profile: SessionProfile) -> SessionEvidencePayload:
@@ -211,7 +227,21 @@ def profile_inference_payload(profile: SessionProfile) -> SessionInferencePayloa
         auto_tags=profile.auto_tags,
         work_events=tuple(_work_event_document(event.to_dict()) for event in profile.work_events),
         phases=tuple(_phase_document(_phase_payload_from_phase(phase)) for phase in profile.phases),
+        fallback_reasons=profile_inference_fallback_reasons(profile),
     )
+
+
+def profile_inference_fallback_reasons(profile: SessionProfile) -> tuple[FallbackReason, ...]:
+    reasons: list[FallbackReason] = []
+    if engaged_duration_source(profile) == "session_total_fallback":
+        reasons.append(FallbackReason.ENGAGED_DURATION_SESSION_TOTAL)
+    if not profile.work_events and not profile.phases:
+        reasons.append(FallbackReason.NO_WORK_EVENTS_AND_NO_PHASES)
+    elif profile.work_events and all(event_fallback(event) for event in profile.work_events):
+        reasons.append(FallbackReason.ALL_WORK_EVENTS_WEAK)
+    if profile.phases and all(phase_fallback(phase) for phase in profile.phases):
+        reasons.append(FallbackReason.ALL_PHASES_HEURISTIC)
+    return tuple(reasons)
 
 
 # ---------------------------------------------------------------------------
@@ -660,6 +690,7 @@ __all__ = [
     "build_session_profile_record",
     "dedupe_texts",
     "engaged_duration_source",
+    "enrichment_fallback_reasons",
     "enrichment_support_signals",
     "event_fallback",
     "event_summary",
@@ -671,6 +702,7 @@ __all__ = [
     "profile_enrichment_search_text",
     "profile_evidence_payload",
     "profile_evidence_search_text",
+    "profile_inference_fallback_reasons",
     "profile_inference_payload",
     "profile_inference_search_text",
     "profile_search_text",
