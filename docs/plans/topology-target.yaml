@@ -3143,6 +3143,11 @@ files:
     loc: 35
     target: polylogue/storage/sqlite/queries/__init__.py
     owner: stable
+  - path: polylogue/storage/sqlite/queries/_bulk_replace.py
+    loc: 66
+    target: polylogue/storage/sqlite/queries/_bulk_replace.py
+    owner: stable
+    cross_cut: { layer: write }
   - path: polylogue/storage/sqlite/queries/action_events.py
     loc: 101
     target: polylogue/storage/sqlite/queries/action_events.py
@@ -3271,7 +3276,7 @@ files:
     owner: stable
     cross_cut: { layer: read }
   - path: polylogue/storage/sqlite/queries/session_insight_profile_writes.py
-    loc: 73
+    loc: 64
     target: polylogue/storage/sqlite/queries/session_insight_profile_writes.py
     owner: stable
     cross_cut: { layer: write }
@@ -3289,7 +3294,7 @@ files:
     owner: stable
     cross_cut: { layer: read }
   - path: polylogue/storage/sqlite/queries/session_insight_timeline_writes.py
-    loc: 123
+    loc: 105
     target: polylogue/storage/sqlite/queries/session_insight_timeline_writes.py
     owner: stable
     cross_cut: { layer: write }

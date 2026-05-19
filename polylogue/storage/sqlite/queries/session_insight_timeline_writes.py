@@ -7,13 +7,13 @@ from collections.abc import Sequence
 import aiosqlite
 
 from polylogue.storage.insights.session.storage import (
-    build_insert_sql,
     session_phase_insert_columns,
     session_phase_insert_values,
     session_work_event_insert_columns,
     session_work_event_insert_values,
 )
 from polylogue.storage.runtime import SessionPhaseRecord, SessionWorkEventRecord
+from polylogue.storage.sqlite.queries._bulk_replace import replace_insight_rows
 
 __all__ = [
     "replace_session_phases",
@@ -57,27 +57,18 @@ async def replace_session_work_events_bulk(
     records: Sequence[SessionWorkEventRecord],
     transaction_depth: int,
 ) -> None:
-    if conversation_ids:
-        placeholders = ", ".join("?" for _ in conversation_ids)
-        await conn.execute(
-            f"DELETE FROM session_work_events WHERE conversation_id IN ({placeholders})",
-            tuple(conversation_ids),
-        )
-    if records:
-        has_legacy_payload = await _table_has_column(conn, "session_work_events", "payload_json")
-        columns = session_work_event_insert_columns(has_legacy_payload=has_legacy_payload)
-        await conn.executemany(
-            build_insert_sql("session_work_events", columns),
-            [
-                session_work_event_insert_values(
-                    record,
-                    has_legacy_payload=has_legacy_payload,
-                )
-                for record in records
-            ],
-        )
-    if transaction_depth == 0:
-        await conn.commit()
+    has_legacy_payload = await _table_has_column(conn, "session_work_events", "payload_json") if records else False
+    columns = session_work_event_insert_columns(has_legacy_payload=has_legacy_payload)
+    await replace_insight_rows(
+        conn,
+        table="session_work_events",
+        id_column="conversation_id",
+        id_values=conversation_ids,
+        columns=columns,
+        records=records,
+        extractor=lambda r: session_work_event_insert_values(r, has_legacy_payload=has_legacy_payload),
+        transaction_depth=transaction_depth,
+    )
 
 
 async def replace_session_phases(
@@ -100,24 +91,15 @@ async def replace_session_phases_bulk(
     records: Sequence[SessionPhaseRecord],
     transaction_depth: int,
 ) -> None:
-    if conversation_ids:
-        placeholders = ", ".join("?" for _ in conversation_ids)
-        await conn.execute(
-            f"DELETE FROM session_phases WHERE conversation_id IN ({placeholders})",
-            tuple(conversation_ids),
-        )
-    if records:
-        has_legacy_payload = await _table_has_column(conn, "session_phases", "payload_json")
-        columns = session_phase_insert_columns(has_legacy_payload=has_legacy_payload)
-        await conn.executemany(
-            build_insert_sql("session_phases", columns),
-            [
-                session_phase_insert_values(
-                    record,
-                    has_legacy_payload=has_legacy_payload,
-                )
-                for record in records
-            ],
-        )
-    if transaction_depth == 0:
-        await conn.commit()
+    has_legacy_payload = await _table_has_column(conn, "session_phases", "payload_json") if records else False
+    columns = session_phase_insert_columns(has_legacy_payload=has_legacy_payload)
+    await replace_insight_rows(
+        conn,
+        table="session_phases",
+        id_column="conversation_id",
+        id_values=conversation_ids,
+        columns=columns,
+        records=records,
+        extractor=lambda r: session_phase_insert_values(r, has_legacy_payload=has_legacy_payload),
+        transaction_depth=transaction_depth,
+    )
