@@ -92,6 +92,7 @@ def build_docs_readme(
                 docs_by_title,
                 (
                     "CLI Reference",
+                    "Search & Query",
                     "Library API",
                     "MCP Integration",
                     "Browser Capture",

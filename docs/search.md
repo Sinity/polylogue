@@ -3,7 +3,20 @@
 # Search & Query Reference
 
 Polylogue uses a query-first CLI grammar: bare tokens are search terms, flags
-are filters, and trailing subcommands are verbs.
+are filters, and trailing subcommands are verbs. The same query semantics —
+filters, retrieval lanes, ranking policy, and the typed `SearchEnvelope`
+response shape — apply across the CLI, MCP, Python API, and daemon HTTP
+surfaces.
+
+Quick links:
+
+- [Retrieval Lanes](#retrieval-lanes) — `dialogue`, `actions`, `hybrid`,
+  `semantic`, and how `auto` elevates.
+- [Ranking Policy](#ranking-policy) — current `mixed-bm25-rrf-vector`
+  policy and version contract.
+- [SearchEnvelope Contract](#searchenvelope-contract) — the typed
+  response shape shared across surfaces ([#1266](https://github.com/Sinity/polylogue/issues/1266)).
+- [FTS5 Syntax](#fts5-syntax) — boolean, phrase, and prefix queries.
 
 ## Grammar
 
@@ -120,12 +133,183 @@ Verbs determine the action applied to the matched conversation set.
 
 ## Retrieval Lanes
 
-| Lane | Description |
-|------|-------------|
-| `auto` | Chooses FTS5 or hybrid based on query and available indexes |
-| `dialogue` | FTS5 over message text (`messages_fts` virtual table, `unicode61` tokenizer) |
-| `actions` | FTS5 over action event text (`action_events_fts`) |
-| `hybrid` | Reciprocal Rank Fusion combining FTS5 and vector similarity (requires embeddings) |
+Lane selection lives on the query as `retrieval_lane`. The resolved value
+appears in the `SearchEnvelope.retrieval_lane` field on every response so
+consumers can tell what actually ran (which matters because `auto` may
+elevate — see below).
+
+| Lane | Description | Score kind |
+|------|-------------|------------|
+| `auto` | Surface left the lane to the planner. May elevate to `hybrid` when embeddings are enabled and an FTS query is present (see [Auto Elevation](#auto-elevation)). | depends on chosen lane |
+| `dialogue` | FTS5 over message text (`messages_fts` virtual table, `unicode61` tokenizer). Default lexical lane. | `bm25` |
+| `actions` | FTS5 over action event text (`action_events_fts`). Targets tool/file/shell evidence rather than prose. | `bm25` |
+| `hybrid` | Reciprocal Rank Fusion combining FTS5 and vector similarity (requires embeddings). | `rrf` |
+| `semantic` | Pure vector similarity over Voyage-4 embeddings via sqlite-vec. Triggered by `--similar` or `--semantic`. | `vector_distance` |
+
+Implementation: `polylogue/storage/search_providers/fts5.py`,
+`polylogue/storage/search_providers/hybrid.py`,
+`polylogue/storage/search_providers/sqlite_vec_support.py`.
+
+### Lane Semantics
+
+#### `dialogue` (FTS5 lexical)
+
+- Backed by SQLite FTS5's BM25 implementation against `messages_fts`.
+- Tokenizer is `unicode61` — case-insensitive for ASCII, Unicode-aware
+  tokenization. **Porter stemming is not available** in this SQLite build,
+  so `refactor` and `refactoring` are distinct tokens. Use prefix queries
+  (`refactor*`) when you want morphological breadth.
+- Raw score is **BM25**: lower magnitude is a better match, values are
+  typically negative, and they are **not comparable across queries**.
+- Match evidence: `matched_terms`, `snippet`, `match_surface=
+  "message_text"`, `message_id`, and `target_ref` point at the hit message.
+
+#### `actions` (FTS5 over action events)
+
+- Same FTS5 mechanics as `dialogue`, but the indexed surface is
+  `action_events_fts` — normalized records of file reads/writes/edits,
+  shell commands, web fetches, agent invocations, and other tool
+  evidence (see `--action` / `--tool` filters above).
+- Useful when you remember an action ("the conversation where I edited
+  `connection_profile.py`") rather than its prose.
+
+#### `hybrid` (RRF fusion)
+
+- Runs both `dialogue` (FTS5) and `semantic` (vector) lanes, then fuses
+  with **Reciprocal Rank Fusion** at `k=60`:
+  `fused_score = Σ 1 / (k + rank_in_lane)`.
+- Tie-breaking is deterministic: descending fused score, then ascending
+  `conversation_id`. This makes cursor and offset pagination stable
+  across runs even when scores tie.
+- Reported `score_kind` is `"rrf"`. Higher fused scores indicate stronger
+  cross-lane consensus.
+- **Lane contributions** (per-lane rank and per-lane RRF contribution)
+  are tracked internally; surfacing them in `score_components` on each
+  hit is owned by [#1267](https://github.com/Sinity/polylogue/issues/1267)
+  (slice B — per-hit "why this matched" payload). Until that lands,
+  hybrid hits carry `score_kind="rrf"` and a single `score` value
+  without lane-decomposed evidence.
+
+#### `semantic` (vector-only)
+
+- Pure k-nearest-neighbor over Voyage-4 1024-dim embeddings via
+  sqlite-vec's `vec0` virtual table.
+- Triggered by `--similar <text>` or `--semantic` (which promotes the
+  positional query string into `similar_text`; no FTS leg runs).
+- Score kind is `"vector_distance"` — lower means closer in embedding
+  space. Like BM25, distances are not directly comparable across
+  different query embeddings.
+- Requires embeddings to be enabled and populated; see
+  [docs/architecture.md § Embedding Pipeline](architecture.md#embedding-pipeline).
+
+### Auto Elevation
+
+When `retrieval_lane=auto` (the default), the planner picks a concrete
+lane based on archive state and the query shape:
+
+| Condition | Resolved lane |
+|-----------|---------------|
+| `--lexical` flag set | `dialogue` (forced FTS-only, even with embeddings enabled) |
+| `--semantic` flag set, or `--similar <text>` given | `semantic` (vector-only) |
+| Embeddings enabled + ≥1 message embedded + FTS query present | `hybrid` |
+| Otherwise | `dialogue` |
+
+The elevation rule lives in
+`polylogue/cli/query.py:_maybe_elevate_to_hybrid`. The resolved lane is
+always echoed back in `SearchEnvelope.retrieval_lane` so callers do not
+have to re-derive what ran.
+
+Two ergonomic overrides on the root CLI surface ([#1217](https://github.com/Sinity/polylogue/issues/1217)):
+
+- `--lexical` — force the FTS-only lane; useful when you want
+  deterministic keyword matches regardless of embedding state.
+- `--semantic` — promote the query string into a vector-only similarity
+  probe; no FTS leg, no boolean operators applied.
+
+## Ranking Policy
+
+Every `SearchEnvelope` declares its `ranking_policy` and
+`ranking_policy_version`. The current policy identifier is
+`mixed-bm25-rrf-vector` (version `1`):
+
+- `dialogue` and `actions` lanes order hits by FTS5 BM25 (best match
+  first; raw scores negative).
+- `hybrid` fuses dialogue + semantic with RRF at `k=60` and orders by
+  fused score, breaking ties on `(−fused_score, conversation_id)`.
+- `semantic` orders by ascending vector distance.
+
+Consumers should pin the `ranking_policy_version` they validate against
+and treat any change as a contract event. The version is intentionally
+exposed so external pipelines can detect ordering shifts without diffing
+raw scores. See `docs/openapi/search.yaml` (`x-polylogue-ranking-policy`)
+for the machine-readable declaration.
+
+## SearchEnvelope Contract
+
+All ranked surfaces (CLI `--format json`, MCP `search`/`list_conversations`,
+daemon `GET /api/conversations?query=…`, Python API) return the typed
+`SearchEnvelope` defined in `polylogue/surfaces/payloads.py` and emitted
+via the daemon under
+[`docs/openapi/search.yaml`](openapi/search.yaml) ([#1266](https://github.com/Sinity/polylogue/issues/1266)).
+
+| Field | Meaning |
+|-------|---------|
+| `hits` | Ordered list of `ConversationSearchHitPayload`. Each hit carries a `conversation` summary plus a `match` evidence block. |
+| `total` | Total matching conversations, or `null` when the lane cannot compute it cheaply. |
+| `limit` / `offset` | Applied page size and row offset. Offset-based pagination is **best-effort** for ranked results. |
+| `next_offset` | Convenience offset pointer; only set when more results are likely. |
+| `next_cursor` | Opaque keyset cursor encoding `(rank, conversation_id)`. **Preferred** for stable rank-first pagination across pages — pass it back unchanged in the next request. |
+| `query` | The FTS query text actually applied after CLI/MCP/HTTP coercion. Empty when no FTS query was given. |
+| `sort` | Applied sort field — `"rank"` (default for ranked search), `"date"`, `"messages"`, or `null` to preserve lane order. Ranked search will not silently fall back to date sort. |
+| `retrieval_lane` | Resolved lane that actually ran (`dialogue` / `actions` / `hybrid` / `semantic` / `auto`). |
+| `ranking_policy` / `ranking_policy_version` | Declared ordering semantics; see above. |
+| `diagnostics` | Optional `QueryMissDiagnosticsPayload` when the query produced zero hits but filters were applied. |
+
+Each hit's `match` (a `ConversationSearchMatchPayload`) carries:
+
+| Field | Meaning |
+|-------|---------|
+| `rank` | 1-based position in the result list. |
+| `retrieval_lane` | Lane that produced this hit (matches envelope, unless future per-hit attribution differs). |
+| `match_surface` | Indexed surface that matched — e.g. `message_text`, `action_event_text`, `attachment_identity`. |
+| `score` | Raw lane score (semantics depend on `score_kind`). |
+| `score_kind` | One of `"bm25"`, `"rrf"`, `"vector_distance"`, or `null` for identity-only lanes. **Always check this before comparing or ordering by `score` directly.** |
+| `score_components` | Map of per-component contributions (e.g. per-lane RRF contributions). Populated as [#1267](https://github.com/Sinity/polylogue/issues/1267) lands; today this is `{}` for most lanes. |
+| `matched_terms` | FTS terms that triggered the match. |
+| `snippet` | Highlighted excerpt around the match (FTS5 snippet). |
+| `message_id` / `target_ref` / `anchor` | Stable identifiers pointing the reader at the matching message or sub-block. |
+| `actions` | Per-target reader action availability (open, copy-link, etc.). |
+
+### Score-kind cheatsheet
+
+- `bm25` — lower magnitude = better match. Values are typically negative.
+  **Never display raw BM25 as a percent or compare across queries**;
+  rank position is the durable signal.
+- `rrf` — higher = better; bounded by `Σ 1/(k+1)` over contributing
+  lanes. Useful for explaining "this hit appeared in both lexical and
+  semantic lanes" once `score_components` is populated.
+- `vector_distance` — lower = closer in embedding space. Not comparable
+  across different query embeddings.
+- `null` — identity-bearing match (e.g. attachment identity lane); no
+  numeric score, only rank.
+
+### Per-hit explanations ([#1267](https://github.com/Sinity/polylogue/issues/1267))
+
+The envelope fields above are stable. The richer per-hit "why this
+matched" payload — populating `score_components` with lane-decomposed
+RRF contributions for hybrid hits, and ensuring every ranked hit has
+deterministic evidence rather than just BM25 score + snippet — is
+tracked separately as #1267 (slice B of #873). Documentation here will
+be expanded to describe the additional fields once that PR lands; the
+envelope shape itself does not need to change.
+
+### Pagination
+
+For ranked queries, prefer `next_cursor` over `offset`. Cursor
+pagination encodes the rank tie-breaker (`(rank, conversation_id)`) and
+is stable under archive growth between page fetches. Offset pagination
+is supported for non-ranked list paths and as a best-effort fallback for
+ranked paths.
 
 ## FTS5 Syntax
 
