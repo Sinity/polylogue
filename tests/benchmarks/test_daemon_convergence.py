@@ -78,6 +78,15 @@ _SCALE_TIERS = {
     "md-medium-corpus": {"files": 100, "msgs_per_file": 100},
     "lg-few-large": {"files": 5, "msgs_per_file": 1000},
     "xl-single-giant": {"files": 1, "msgs_per_file": 10000},
+    # ``xxl-mega-session`` covers the huge-single-session pathology from
+    # #1244 / #845 slice A: one Claude-Code / Codex session JSONL file
+    # containing ≥100k messages. The previous implementation of
+    # ``fingerprint_file`` read the entire file via ``Path.read_bytes()``
+    # for each successful full-ingest cursor write, producing an RSS peak
+    # proportional to file size. The streaming fingerprint now bounds the
+    # working set independent of session length; this tier is the
+    # before/after probe for that change.
+    "xxl-mega-session": {"files": 1, "msgs_per_file": 100_000},
 }
 
 
@@ -157,8 +166,25 @@ class _BenchmarkPolylogue:
 # ── Benchmark tests ─────────────────────────────────────────────────
 
 
+# Tiers whose per-iteration runtime exceeds the default benchmark budget
+# (multiple minutes per repeat in CI) are routed to the ``scale_large``
+# nightly marker. The xxl mega-session tier ingests 100k messages from a
+# single file and is the canonical regression probe for #1244 / #845-A.
+_NIGHTLY_TIERS = {"xxl-mega-session"}
+
+
+def _tier_params() -> list[Any]:
+    params: list[Any] = []
+    for tier in _SCALE_TIERS:
+        if tier in _NIGHTLY_TIERS:
+            params.append(pytest.param(tier, marks=[pytest.mark.scale_large]))
+        else:
+            params.append(pytest.param(tier))
+    return params
+
+
 @pytest.mark.benchmark
-@pytest.mark.parametrize("tier", list(_SCALE_TIERS))
+@pytest.mark.parametrize("tier", _tier_params())
 def test_convergence_scale_tier(benchmark, tier: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
     """Measure convergence throughput at each scale tier."""
     corpus_root = _generate_corpus(tmp_path, tier)
@@ -304,3 +330,47 @@ def test_convergence_large_session_memory(
             benchmark.extra_info.update(extras)
         assert result["failed_files"] == 0
         assert result["succeeded_files"] >= 1
+
+
+@pytest.mark.benchmark
+@pytest.mark.scale_large
+def test_convergence_huge_session_memory_bounded(
+    benchmark: BenchmarkFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Huge-session RSS regression probe for #1244 / #845-A.
+
+    Ingests a single Claude-Code-shaped JSONL file with 100k messages and
+    asserts that the daemon's peak RSS stays well below the file's
+    on-disk size. The streaming ``fingerprint_file`` (1 MiB chunks) keeps
+    the cursor-update working set bounded; the previous full-file
+    ``read_bytes`` produced RSS ≥ file size after every successful full
+    ingest.
+    """
+    root = tmp_path / "corpus" / "huge"
+    n_messages = 100_000
+    records = _make_claude_code_session("huge-session", n_messages)
+    target = root / "huge.jsonl"
+    _write_jsonl(target, records)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+
+    file_bytes = target.stat().st_size
+
+    result = benchmark(lambda: _run_convergence_memory_probe(root.parent, tmp_path))
+
+    rss_peak_mb = result["rss_peak_self_mb"] + result["rss_peak_children_mb"]
+    file_mb = file_bytes / (1024 * 1024)
+    extras = {
+        "n_messages": n_messages,
+        "total_s": result["total_s"],
+        "file_mb": round(file_mb, 1),
+        "rss_peak_mb": round(rss_peak_mb, 1),
+        "rss_per_file_mb_ratio": round(rss_peak_mb / max(file_mb, 0.001), 3),
+        "convergence_wall_s": result["convergence_wall_s"],
+        "source_payload_read_bytes": result["source_payload_read_bytes"],
+    }
+    if hasattr(benchmark, "extra_info"):
+        benchmark.extra_info.update(extras)
+    assert result["failed_files"] == 0
+    assert result["succeeded_files"] >= 1
+    # Sanity: the synthetic fixture is genuinely huge.
+    assert file_mb >= 50.0, f"100k-message session should produce ≥50MB JSONL, got {file_mb:.1f}MB"
