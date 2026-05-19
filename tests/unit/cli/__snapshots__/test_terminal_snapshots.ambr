@@ -4,7 +4,7 @@
   Usage: polylogue doctor [OPTIONS]
     Health check with optional maintenance and cleanup previews.
   Options:
-    --format [json]                 Output format
+    -f, --format [json]             Output format
     -v, --verbose                   Show breakdown by provider
     --repair                        Run safe derived-data and database
                                     maintenance repairs
@@ -112,6 +112,8 @@
         polylogue <subcommand> --help     # per-subcommand help
         polylogue --diagnose <args>       # explain parser decisions
   Options:
+    --help-markdown                 Emit the full --help tree (root + every
+                                    subcommand) as Markdown and exit.
     -i, --id TEXT                   Conversation ID (exact or prefix match)
     -c, --contains TEXT             FTS term (repeatable = AND)
     --exclude-text TEXT             Exclude FTS term
@@ -167,7 +169,7 @@
                                     conversation ID
     --since TEXT                    After date (ISO, 'yesterday', 'last week')
     --until TEXT                    Before date
-    -n, --limit INTEGER             Max results
+    -l, -n, --limit INTEGER         Max results
     --offset INTEGER                Offset for paginated results
     --latest                        Most recent (= --sort date --limit 1)
     --sort [date|tokens|messages|words|longest|random]
@@ -297,6 +299,10 @@
         polylogue --diagnose <args>       # explain parser dec
   isions
   Options:
+    --help-markdown                 Emit the full --help tree
+  (root + every
+                                    subcommand) as Markdown an
+  d exit.
     -i, --id TEXT                   Conversation ID (exact or
   prefix match)
     -c, --contains TEXT             FTS term (repeatable = AND
@@ -383,7 +389,7 @@
     --since TEXT                    After date (ISO, 'yesterda
   y', 'last week')
     --until TEXT                    Before date
-    -n, --limit INTEGER             Max results
+    -l, -n, --limit INTEGER         Max results
     --offset INTEGER                Offset for paginated resul
   ts
     --latest                        Most recent (= --sort date
@@ -543,6 +549,8 @@
         polylogue <subcommand> --help     # per-subcommand help
         polylogue --diagnose <args>       # explain parser decisions
   Options:
+    --help-markdown                 Emit the full --help tree (root + every
+                                    subcommand) as Markdown and exit.
     -i, --id TEXT                   Conversation ID (exact or prefix match)
     -c, --contains TEXT             FTS term (repeatable = AND)
     --exclude-text TEXT             Exclude FTS term
@@ -598,7 +606,7 @@
                                     conversation ID
     --since TEXT                    After date (ISO, 'yesterday', 'last week')
     --until TEXT                    Before date
-    -n, --limit INTEGER             Max results
+    -l, -n, --limit INTEGER         Max results
     --offset INTEGER                Offset for paginated results
     --latest                        Most recent (= --sort date --limit 1)
     --sort [date|tokens|messages|words|longest|random]

@@ -46,7 +46,7 @@ def _render_plain(candidates: list[ConversationNeighborCandidate]) -> None:
 @click.option("--id", "conversation_id", default=None, help="Known conversation id or prefix")
 @click.option("--query", "-q", default=None, help="Fuzzy query to seed candidate discovery")
 @click.option("--provider", "-p", default=None, help="Limit candidate scope to one provider")
-@click.option("--limit", "-n", type=int, default=10, show_default=True, help="Maximum candidates")
+@click.option("--limit", "-l", "-n", type=int, default=10, show_default=True, help="Maximum candidates")
 @click.option(
     "--window-hours",
     type=int,

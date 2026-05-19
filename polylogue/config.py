@@ -242,6 +242,16 @@ class PolylogueConfig:
         return bool(self._data.get("force_plain"))
 
     @property
+    def theme(self) -> str:
+        """Resolved CLI theme: ``"dark"``, ``"light"``, or ``"auto"`` (#1274).
+
+        Empty string means "not configured" and lets
+        :func:`polylogue.ui.theme.resolve_theme_mode` fall through to
+        environment/auto-detection.
+        """
+        return str(self._data.get("theme", "")).strip().lower()
+
+    @property
     def schema_validation(self) -> str:
         return str(self._data.get("schema_validation", "advisory"))
 
@@ -510,6 +520,7 @@ def _default_config_values() -> dict[str, object]:
         "embedding_max_cost_usd": 5.0,
         "log_level": "INFO",
         "force_plain": False,
+        "theme": "",
         "schema_validation": "advisory",
         "notification_backend": "log",
         "notification_webhook_url": None,
@@ -684,6 +695,9 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
             "level": "log_level",
             "force_plain": "force_plain",
         },
+        "ui": {
+            "theme": "theme",
+        },
         "notifications": {
             "backend": "notification_backend",
             "webhook_url": "notification_webhook_url",
@@ -755,6 +769,7 @@ def _apply_env_overrides(cfg: dict[str, object]) -> None:
         "POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS": "embedding_enabled",
         "VOYAGE_API_KEY": "voyage_api_key",
         "POLYLOGUE_FORCE_PLAIN": "force_plain",
+        "POLYLOGUE_THEME": "theme",
         "POLYLOGUE_SLOW_QUERY_NOTICE_SECONDS": "slow_query_notice_seconds",
         "POLYLOGUE_SCHEMA_VALIDATION": "schema_validation",
         "POLYLOGUE_NOTIFICATION_BACKEND": "notification_backend",
@@ -859,6 +874,12 @@ def format_config_toml(cfg: dict[str, object]) -> str:
             [
                 ("level", "log_level"),
                 ("force_plain", "force_plain"),
+            ],
+        ),
+        (
+            "ui",
+            [
+                ("theme", "theme"),
             ],
         ),
         (

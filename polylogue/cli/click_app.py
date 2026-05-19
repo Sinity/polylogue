@@ -14,6 +14,7 @@ import click
 
 from polylogue.cli.click_command_registration import _LazyCommand, register_root_commands
 from polylogue.cli.click_option_groups import apply_query_mode_options
+from polylogue.cli.help_markdown import render_help_markdown
 from polylogue.cli.machine_main import extract_option as _extract_option
 from polylogue.cli.machine_main import run_machine_entry
 from polylogue.cli.query_group import QueryFirstGroupBase
@@ -63,11 +64,26 @@ def create_ui(plain: bool) -> UI:
     return _create_ui(plain)
 
 
+def _emit_help_markdown(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
+    if not value or ctx.resilient_parsing:
+        return
+    click.echo(render_help_markdown(ctx.command, prog_name=ctx.info_name or "polylogue"), nl=False)
+    ctx.exit(0)
+
+
 # Main CLI group with query-mode options
 @click.group(
     cls=QueryFirstGroup,
     context_settings={"help_option_names": ["-h", "--help"]},
     invoke_without_command=True,
+)
+@click.option(
+    "--help-markdown",
+    is_flag=True,
+    is_eager=True,
+    expose_value=False,
+    callback=_emit_help_markdown,
+    help="Emit the full --help tree (root + every subcommand) as Markdown and exit.",
 )
 @apply_query_mode_options
 @click.version_option(version=POLYLOGUE_VERSION, prog_name="polylogue")

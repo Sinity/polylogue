@@ -65,7 +65,7 @@ def _build_click_params(pt: InsightType) -> list[click.Parameter]:
     # Standard options on every insight command
     params.append(
         click.Option(
-            ("--limit",),
+            ("--limit", "-l"),
             type=int,
             default=pt.mcp_default_limit,
             show_default=True,
@@ -83,7 +83,7 @@ def _build_click_params(pt: InsightType) -> list[click.Parameter]:
     )
     params.append(
         click.Option(
-            ("--format", "output_format"),
+            ("--format", "-f", "output_format"),
             type=click.Choice(["json"]),
             default=None,
             help="Output format",
@@ -193,10 +193,10 @@ def _render_export_plain(result: InsightExportBundleResult) -> None:
 
 @insights_command.command("status")
 @click.option("--insight", "insights", multiple=True, help="Insight readiness target. May be repeated.")
-@click.option("--provider", default=None, help="Limit provider coverage details to one provider.")
+@click.option("--provider", "-p", default=None, help="Limit provider coverage details to one provider.")
 @click.option("--since", default=None, help="Limit coverage details to rows at/after this timestamp or date.")
 @click.option("--until", default=None, help="Limit coverage details to rows at/before this timestamp or date.")
-@click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
+@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
 @click.pass_context
 def insights_status_command(
     ctx: click.Context,
@@ -239,11 +239,11 @@ def insights_status_command(
 @insights_command.command("export")
 @click.option("--out", "output_path", required=True, type=click.Path(path_type=Path), help="Output bundle directory.")
 @click.option("--insight", "insights", multiple=True, help="Insight to include. Defaults to all exportable insights.")
-@click.option("--provider", default=None, help="Limit supported insights to one provider.")
+@click.option("--provider", "-p", default=None, help="Limit supported insights to one provider.")
 @click.option("--since", default=None, help="Limit supported insights to rows at/after this timestamp or date.")
 @click.option("--until", default=None, help="Limit supported insights to rows at/before this timestamp or date.")
 @click.option("--bundle-format", type=click.Choice(["jsonl"]), default="jsonl", show_default=True)
-@click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
+@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
 @click.option(
     "--overwrite", is_flag=True, help="Replace an existing bundle directory after writing a complete new one."
 )
@@ -298,6 +298,7 @@ def insights_export_command(
 @click.argument("conversation_id")
 @click.option(
     "--format",
+    "-f",
     "output_format",
     type=click.Choice(["plain", "markdown", "json"]),
     default=None,

@@ -59,7 +59,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 | Command | Source |
 | --- | --- |
-| `polylogue` | `polylogue/cli/click_app.py:67` `polylogue.cli.click_app.cli` |
+| `polylogue` | `polylogue/cli/click_app.py:75` `polylogue.cli.click_app.cli` |
 | `polylogue auth` | `polylogue/cli/click_app.py` `polylogue auth` |
 | `polylogue backup` | `polylogue/cli/click_app.py` `polylogue backup` |
 | `polylogue bulk-export` | `polylogue/cli/click_app.py` `polylogue bulk-export` |
@@ -123,7 +123,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue resume` | `polylogue/cli/click_app.py` `polylogue resume` |
 | `polylogue schema` | `polylogue/cli/click_app.py` `polylogue schema` |
 | `polylogue schema compare` | `polylogue/cli/commands/schema.py:56` `polylogue.cli.commands.schema.schema_compare` |
-| `polylogue schema explain` | `polylogue/cli/commands/schema.py:94` `polylogue.cli.commands.schema.schema_explain` |
+| `polylogue schema explain` | `polylogue/cli/commands/schema.py:96` `polylogue.cli.commands.schema.schema_explain` |
 | `polylogue schema list` | `polylogue/cli/commands/schema.py:45` `polylogue.cli.commands.schema.schema_list` |
 | `polylogue select` | `polylogue/cli/click_app.py` `polylogue select` |
 | `polylogue show` | `polylogue/cli/click_app.py` `polylogue show` |
