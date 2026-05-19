@@ -357,6 +357,26 @@ async function openStackFromSelection() {
   await loadWorkspaceRoute({mode: 'stack', ids: ids, focus: ids[0]}, true);
 }
 
+async function openParentChainAsStack(conversationId) {
+  // #1203: turn topology shape into a stack workspace. Fetches the
+  // parent-chain envelope (root -> target -> descendants) and routes
+  // to the stack workspace with the chain pre-populated and ``focus``
+  // set to the conversation the operator invoked the action from.
+  if (!conversationId) return;
+  try {
+    var data = await fetchJSON('/api/conversations/' + encodeURIComponent(conversationId) + '/topology/parent-chain');
+    var chain = (data && data.chain_ids) || [];
+    if (!chain.length) return;
+    var focus = (data && data.focus_id) || conversationId;
+    await loadWorkspaceRoute({mode: 'stack', ids: chain, focus: focus}, true);
+  } catch(e) {
+    // Fallback: open the focused conversation as a single-element stack
+    // so the user sees explicit feedback that the chain action fired
+    // but the lineage walk failed.
+    await loadWorkspaceRoute({mode: 'stack', ids: [conversationId], focus: conversationId}, true);
+  }
+}
+
 async function openCompareFromSelection() {
   var ids = selectedConversationIds();
   if (ids.length < 2) ids = state.conversations.slice(0, 2).map(function(c) { return c.id; });

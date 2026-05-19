@@ -147,14 +147,22 @@ function renderInspectorLineage(el, c) {
     html += '</div>';
   }
 
-  // Open parent / Compare with parent actions — both delegate to existing
-  // reader entry points; this view stays read-only (#1121 out-of-scope).
+  // Open parent / Compare with parent / Open chain actions — all delegate
+  // to existing reader entry points; this view stays read-only (#1121
+  // out-of-scope). The "Open chain as stack" action is the #1203
+  // topology->workspace bridge: it pre-populates the stack workspace with
+  // the root \u2192 sub-agent \u2192 continuation chain.
   var parentId = findLineageParent(data, c.id);
+  var hasChain = (data.nodes || []).length > 1;
   html += '<div class="inspector-section"><h4>Actions</h4>';
   if (parentId) {
     html += '<button class="user-action" style="margin-right:6px" onclick="selectConversation(\'' + escAttr(parentId) + '\', true)">Open parent</button>';
-    html += '<button class="user-action" onclick="openCompareWithParent()">Compare with parent</button>';
-  } else {
+    html += '<button class="user-action" style="margin-right:6px" onclick="openCompareWithParent()">Compare with parent</button>';
+  }
+  if (hasChain) {
+    html += '<button class="user-action" onclick="openParentChainAsStack(\'' + escAttr(c.id) + '\')">Open chain as stack</button>';
+  }
+  if (!parentId && !hasChain) {
     html += '<div style="font-size:var(--small);color:var(--text-dim)">No resolved parent to open or compare against.</div>';
   }
   html += '</div>';
