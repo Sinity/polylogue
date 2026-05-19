@@ -28,7 +28,9 @@ def test_incremental_fts_repair_deletes_via_base_rowid(test_conn: sqlite3.Connec
     missing_action_sql = " ".join(insert_missing_action_rows_sql(1).split())
     assert "LEFT JOIN action_events_fts_docsize" in missing_action_sql
     assert "LEFT JOIN action_events_fts f" not in missing_action_sql
-    assert "INSERT INTO action_events_fts (rowid," in " ".join(ACTION_FTS_REBUILD_SQL.split())
+    # External-content FTS5 rebuild uses the 'rebuild' control insert
+    # rather than re-projecting every column from action_events (#1241).
+    assert "VALUES('rebuild')" in " ".join(ACTION_FTS_REBUILD_SQL.split())
 
     plan = "\n".join(
         row[3] for row in test_conn.execute(f"EXPLAIN QUERY PLAN {delete_conversation_rows_sql(1)}", ("conv1",))

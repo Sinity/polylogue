@@ -144,17 +144,19 @@ _MESSAGE_FTS_TRIGGER_DDL = [
 _ACTION_FTS_TRIGGER_DDL = [
     """CREATE TRIGGER IF NOT EXISTS action_events_fts_ai
        AFTER INSERT ON action_events BEGIN
-           INSERT INTO action_events_fts(rowid, event_id, message_id, conversation_id, action_kind, tool_name, text)
+           INSERT INTO action_events_fts(rowid, event_id, message_id, conversation_id, action_kind, normalized_tool_name, search_text)
            VALUES (new.rowid, new.event_id, new.message_id, new.conversation_id, new.action_kind, new.normalized_tool_name, new.search_text);
        END""",
     """CREATE TRIGGER IF NOT EXISTS action_events_fts_ad
        AFTER DELETE ON action_events BEGIN
-           DELETE FROM action_events_fts WHERE rowid = old.rowid;
+           INSERT INTO action_events_fts(action_events_fts, rowid, event_id, message_id, conversation_id, action_kind, normalized_tool_name, search_text)
+           VALUES ('delete', old.rowid, old.event_id, old.message_id, old.conversation_id, old.action_kind, old.normalized_tool_name, old.search_text);
        END""",
     """CREATE TRIGGER IF NOT EXISTS action_events_fts_au
        AFTER UPDATE ON action_events BEGIN
-           DELETE FROM action_events_fts WHERE rowid = old.rowid;
-           INSERT INTO action_events_fts(rowid, event_id, message_id, conversation_id, action_kind, tool_name, text)
+           INSERT INTO action_events_fts(action_events_fts, rowid, event_id, message_id, conversation_id, action_kind, normalized_tool_name, search_text)
+           VALUES ('delete', old.rowid, old.event_id, old.message_id, old.conversation_id, old.action_kind, old.normalized_tool_name, old.search_text);
+           INSERT INTO action_events_fts(rowid, event_id, message_id, conversation_id, action_kind, normalized_tool_name, search_text)
            VALUES (new.rowid, new.event_id, new.message_id, new.conversation_id, new.action_kind, new.normalized_tool_name, new.search_text);
        END""",
 ]
@@ -190,13 +192,13 @@ async def ensure_fts_index_async(conn: aiosqlite.Connection) -> None:
 def rebuild_fts_index_sync(conn: sqlite3.Connection) -> None:
     """Rebuild the full FTS index from persisted archive rows.
 
-    The messages FTS table is configured with ``content='messages'`` (external
-    content). Use the FTS5 'rebuild' control command directly; SQLite rejects
-    'delete-all' for non-contentless tables.
+    Both FTS tables are configured with ``content='<base table>'`` (external
+    content).  The FTS5 'rebuild' control command wipes the index and
+    re-tokenizes from the base table, so an explicit DELETE is unnecessary
+    (and 'delete-all' is rejected for non-contentless tables).
     """
     ensure_fts_index_sync(conn)
     conn.execute(FTS_REBUILD_SQL)
-    conn.execute("DELETE FROM action_events_fts")
     conn.execute(ACTION_FTS_REBUILD_SQL)
 
 
@@ -210,7 +212,6 @@ async def rebuild_fts_index_async(
     """Rebuild the full FTS index from persisted archive rows."""
     await ensure_fts_index_async(conn)
     await conn.execute(FTS_REBUILD_SQL)
-    await conn.execute("DELETE FROM action_events_fts")
     if conversation_ids is not None:
         await repair_fts_index_async(
             conn,
@@ -219,7 +220,6 @@ async def rebuild_fts_index_async(
             progress_desc=progress_desc,
         )
         return
-    await conn.execute(FTS_REBUILD_SQL)
     await conn.execute(ACTION_FTS_REBUILD_SQL)
 
 

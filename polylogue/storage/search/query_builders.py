@@ -94,7 +94,7 @@ def build_ranked_action_search_query(
         "action_events_fts.message_id",
         "action_events_fts.conversation_id",
         "action_events_fts.action_kind",
-        "action_events_fts.tool_name",
+        "action_events_fts.normalized_tool_name AS tool_name",
         "conversations.provider_name",
         "conversations.source_name",
         "conversations.title",

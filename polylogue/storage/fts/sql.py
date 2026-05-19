@@ -24,8 +24,10 @@ FTS_ACTIONS_TABLE_SQL = """
         message_id UNINDEXED,
         conversation_id UNINDEXED,
         action_kind UNINDEXED,
-        tool_name UNINDEXED,
-        text,
+        normalized_tool_name UNINDEXED,
+        search_text,
+        content='action_events',
+        content_rowid='rowid',
         tokenize='unicode61'
     );
 """
@@ -40,16 +42,7 @@ FTS_REBUILD_SQL = """
 """
 
 ACTION_FTS_REBUILD_SQL = """
-    INSERT INTO action_events_fts (rowid, event_id, message_id, conversation_id, action_kind, tool_name, text)
-    SELECT
-        ae.rowid,
-        ae.event_id,
-        ae.message_id,
-        ae.conversation_id,
-        ae.action_kind,
-        ae.normalized_tool_name,
-        ae.search_text
-    FROM action_events ae
+    INSERT INTO action_events_fts(action_events_fts) VALUES('rebuild')
 """
 
 
@@ -87,6 +80,9 @@ def insert_conversation_rows_sql(chunk_size: int) -> str:
 
 def delete_action_rows_sql(chunk_size: int) -> str:
     placeholders = ", ".join("?" for _ in range(chunk_size))
+    # External-content FTS5: DELETE only works when both the base-table row
+    # is reachable (for re-tokenization) AND the FTS rowid is actually
+    # indexed.  Filter against docsize so the statement is idempotent.
     return f"""
         DELETE FROM action_events_fts
         WHERE rowid IN (
@@ -94,13 +90,14 @@ def delete_action_rows_sql(chunk_size: int) -> str:
             FROM action_events ae
             WHERE ae.conversation_id IN ({placeholders})
         )
+        AND rowid IN (SELECT id FROM action_events_fts_docsize)
     """
 
 
 def insert_action_rows_sql(chunk_size: int) -> str:
     placeholders = ", ".join("?" for _ in range(chunk_size))
     return f"""
-        INSERT INTO action_events_fts (rowid, event_id, message_id, conversation_id, action_kind, tool_name, text)
+        INSERT INTO action_events_fts (rowid, event_id, message_id, conversation_id, action_kind, normalized_tool_name, search_text)
         SELECT
             ae.rowid,
             ae.event_id,
@@ -117,7 +114,7 @@ def insert_action_rows_sql(chunk_size: int) -> str:
 def insert_missing_action_rows_sql(chunk_size: int) -> str:
     placeholders = ", ".join("?" for _ in range(chunk_size))
     return f"""
-        INSERT INTO action_events_fts (rowid, event_id, message_id, conversation_id, action_kind, tool_name, text)
+        INSERT INTO action_events_fts (rowid, event_id, message_id, conversation_id, action_kind, normalized_tool_name, search_text)
         SELECT
             ae.rowid,
             ae.event_id,
