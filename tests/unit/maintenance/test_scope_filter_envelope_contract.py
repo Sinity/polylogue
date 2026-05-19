@@ -337,9 +337,12 @@ class TestEmptyFilterParity:
     """An empty filter must serialize identically across surfaces too."""
 
     def test_envelope_from_empty_operation_matches_canonical_empty(self) -> None:
-        envelope = envelope_from_operation(
-            _operation_for(MaintenanceScopeFilter()),
-            origin="cli",
-            mode="preview",
-        ).to_dict()
+        envelope = cast(
+            dict[str, Any],
+            envelope_from_operation(
+                _operation_for(MaintenanceScopeFilter()),
+                origin="cli",
+                mode="preview",
+            ).to_dict(),
+        )
         assert envelope["scope"]["filter"] == MaintenanceScopeFilter().to_dict()
