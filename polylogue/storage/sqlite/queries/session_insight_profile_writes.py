@@ -7,11 +7,11 @@ from collections.abc import Sequence
 import aiosqlite
 
 from polylogue.storage.insights.session.storage import (
-    build_insert_sql,
     session_profile_insert_columns,
     session_profile_insert_values,
 )
 from polylogue.storage.runtime import SessionProfileRecord
+from polylogue.storage.sqlite.queries._bulk_replace import replace_insight_rows
 
 _ASYNC_COLUMN_CACHE: dict[tuple[int, str], bool] = {}
 
@@ -37,27 +37,18 @@ async def replace_session_profiles_bulk(
     records: Sequence[SessionProfileRecord],
     transaction_depth: int,
 ) -> None:
-    if conversation_ids:
-        placeholders = ", ".join("?" for _ in conversation_ids)
-        await conn.execute(
-            f"DELETE FROM session_profiles WHERE conversation_id IN ({placeholders})",
-            tuple(conversation_ids),
-        )
-    if records:
-        has_legacy_payload = await _table_has_column(conn, "session_profiles", "payload_json")
-        columns = session_profile_insert_columns(has_legacy_payload=has_legacy_payload)
-        await conn.executemany(
-            build_insert_sql("session_profiles", columns),
-            [
-                session_profile_insert_values(
-                    record,
-                    has_legacy_payload=has_legacy_payload,
-                )
-                for record in records
-            ],
-        )
-    if transaction_depth == 0:
-        await conn.commit()
+    has_legacy_payload = await _table_has_column(conn, "session_profiles", "payload_json") if records else False
+    columns = session_profile_insert_columns(has_legacy_payload=has_legacy_payload)
+    await replace_insight_rows(
+        conn,
+        table="session_profiles",
+        id_column="conversation_id",
+        id_values=conversation_ids,
+        columns=columns,
+        records=records,
+        extractor=lambda r: session_profile_insert_values(r, has_legacy_payload=has_legacy_payload),
+        transaction_depth=transaction_depth,
+    )
 
 
 async def replace_session_profile(
