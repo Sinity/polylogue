@@ -1,10 +1,33 @@
-"""Ingest command — schedule source files for ingestion via the daemon."""
+"""Ingest command — schedule source files for ingestion via the daemon.
+
+Truthfulness contract (#1264 / #869 slice C):
+
+* ``polylogue ingest PATH`` either really stages the file into the daemon
+  inbox **and** confirms the daemon accepted scheduling, or it fails with
+  an actionable message. There is no silent success path.
+
+The three observable outcomes are:
+
+1. **accepted + observable** — the file was copied into
+   ``archive_root()/inbox`` and the running daemon returned an
+   ``ImportAck`` with status ``pending``/``accepted``. The user sees the
+   staged path, the operation id, and the next-step pointer
+   (``polylogue status``) so they can watch the work converge.
+2. **rejected (input)** — the supplied path does not exist, cannot be
+   read, or cannot be staged into the inbox. Click rejects missing paths
+   directly; staging errors raise a ``fail()`` with the offending path.
+3. **rejected (daemon)** — the daemon is not reachable, returned an HTTP
+   error, or returned a response with a failed status. The error message
+   names the daemon URL and points the user at ``polylogued`` so they
+   know which process to start or inspect.
+"""
 
 from __future__ import annotations
 
 import json
 import shutil
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import click
@@ -15,6 +38,10 @@ from polylogue.operations.import_contracts import ImportOperation
 from polylogue.paths import archive_root
 
 _DEFAULT_DAEMON_URL = "http://127.0.0.1:8766"
+
+# Statuses that mean the daemon accepted scheduling and the work is now
+# observable through the inbox / ``polylogue status`` surfaces.
+_ACCEPTED_STATUSES = frozenset({"accepted", "pending", "scheduled", "queued"})
 
 
 def _daemon_url(env: AppEnv) -> str:
@@ -45,6 +72,15 @@ def _stage_for_daemon(path: Path) -> Path:
     return dest
 
 
+def _daemon_unreachable_message(daemon_url: str, reason: str) -> str:
+    """Build an actionable error when the daemon is unreachable."""
+    return (
+        f"Could not reach daemon at {daemon_url} ({reason}).\n"
+        "  Is polylogued running? Start it with 'polylogued run' and re-try, "
+        "or pass --daemon-url to point at the correct API endpoint."
+    )
+
+
 @click.command("ingest")
 @click.argument("path", type=click.Path(exists=True, path_type=Path))
 @click.option(
@@ -59,12 +95,14 @@ def ingest_command(
     path: Path,
     daemon_url: str,
 ) -> None:
-    """Schedule a file or directory for ingestion by the daemon.
+    """Schedule a file or directory for ingestion by the running daemon.
 
-    Contacts the running polylogued daemon and requests ingestion of
-    PATH. The command stages the file into the archive inbox and the daemon
-    begins processing
-    asynchronously. Use 'polylogue status' to monitor progress.
+    Stages PATH into the archive inbox and asks the running polylogued
+    daemon to schedule it for processing. The command is truthful: it
+    either confirms the daemon accepted scheduling (with a pointer to
+    'polylogue status' for observable progress) or fails with an
+    actionable error. It never reports success without observable
+    processing.
     """
     staged = _stage_for_daemon(path)
 
@@ -79,21 +117,41 @@ def ingest_command(
     try:
         with urlopen(req, timeout=5) as resp:
             raw = json.loads(resp.read())
-    except OSError as exc:
+    except HTTPError as exc:
+        # Daemon responded but rejected the request. Surface the status
+        # code so the operator knows it's a contract problem, not a
+        # transport problem.
         fail(
             "ingest",
-            f"Could not reach daemon at {daemon_url}. Is polylogued running? ({exc})",
+            f"Daemon at {daemon_url} rejected /api/ingest with HTTP {exc.code}: {exc.reason}.\n"
+            "  Check the daemon log for the cause; the staged inbox file was "
+            f"left in place at {staged}.",
         )
+    except URLError as exc:
+        fail("ingest", _daemon_unreachable_message(daemon_url, str(exc.reason)))
+    except OSError as exc:
+        fail("ingest", _daemon_unreachable_message(daemon_url, str(exc)))
 
     operation = ImportOperation.from_dict(raw)
-    if operation.status not in ("failed", "error"):
-        env.ui.console.print(
-            f"[bold green]Scheduled:[/bold green] {operation.path}\n"
-            f"  Operation: {operation.operation_id}\n"
-            f"  {operation.message}"
+
+    if operation.status in ("failed", "error"):
+        fail("ingest", operation.error or operation.message or "Unknown error")
+
+    if operation.status not in _ACCEPTED_STATUSES:
+        # The daemon returned something we don't recognize as accepted
+        # *or* failed. Refuse to fabricate success.
+        fail(
+            "ingest",
+            f"Daemon returned unexpected status {operation.status!r}; refusing to claim success.",
         )
-    else:
-        fail("ingest", operation.error or "Unknown error")
+
+    env.ui.console.print(
+        f"[bold green]Scheduled:[/bold green] {operation.path or staged}\n"
+        f"  Staged file:  {staged}\n"
+        f"  Operation:    {operation.operation_id}\n"
+        f"  Daemon:       {daemon_url}\n"
+        f"  Next:         run 'polylogue status' to watch the daemon converge."
+    )
 
 
 __all__ = ["ingest_command"]

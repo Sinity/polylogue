@@ -545,6 +545,7 @@ class TestCliMetadata:
             "diagnostics",
             "embed",
             "maintenance",
+            "tutorial",
             # Query verbs
             "list",
             "count",
