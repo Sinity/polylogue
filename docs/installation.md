@@ -6,6 +6,7 @@ matches how you run other tools on the host.
 | Channel | Audience | Reference |
 | --- | --- | --- |
 | `pip install polylogue` | Python users on any OS | [PyPI](https://pypi.org/project/polylogue/) |
+| `brew install sinity/tap/polylogue` | macOS / Linuxbrew users | see below |
 | `nix run github:Sinity/polylogue` | NixOS / nix-darwin users | [`flake.nix`](../flake.nix) |
 | `ghcr.io/sinity/polylogue` | Container / Kubernetes / Compose | see below |
 
@@ -118,6 +119,66 @@ The archive lives entirely under `POLYLOGUE_ARCHIVE_ROOT`. Backups are file-
 level snapshots of the named volume / bind-mount target. Stop the daemon (or
 use the SQLite `.backup` command from inside the running container) before
 copying to avoid catching mid-checkpoint state.
+
+## Homebrew
+
+Polylogue ships through a dedicated tap at
+[`Sinity/homebrew-tap`](https://github.com/Sinity/homebrew-tap). The tap is
+auto-bumped from PyPI by
+[`.github/workflows/homebrew-bump.yml`](../.github/workflows/homebrew-bump.yml)
+on every `vX.Y.Z` tag push, so `brew upgrade polylogue` tracks the most
+recent release without manual formula edits. The formula shape itself is
+templated in [`nix/homebrew-tap-template/`](../nix/homebrew-tap-template/)
+so future edits flow through this repo.
+
+The formula installs into a private virtualenv under
+`$(brew --prefix)/Cellar/polylogue/X.Y.Z`, depending on `python@3.13`,
+and exposes three binaries on `PATH`:
+
+| Binary | Role |
+| --- | --- |
+| `polylogue` | Query CLI for the archive. |
+| `polylogued` | Local convergence + HTTP daemon. |
+| `polylogue-mcp` | MCP server for AI coding agents. |
+
+### One-shot install
+
+```bash
+brew tap sinity/tap
+brew install polylogue
+polylogue --version
+```
+
+### Daemon service (opt-in)
+
+The formula declares a `service` block, but Polylogue does not install a
+system service by default. Start the daemon explicitly:
+
+```bash
+brew services start polylogued
+brew services info polylogued
+```
+
+This wires a LaunchAgent on macOS and a systemd-user unit on Linuxbrew.
+First-run creates the XDG archive under
+`~/Library/Application Support/polylogue/` (macOS) or
+`${XDG_DATA_HOME:-~/.local/share}/polylogue/` (Linux). Override with
+`POLYLOGUE_ARCHIVE_ROOT` to relocate the database, FTS indexes, and blob
+store.
+
+### Local iteration on the formula
+
+When changing the template, verify the candidate before publishing:
+
+```bash
+brew install --build-from-source nix/homebrew-tap-template/Formula/polylogue.rb
+brew test polylogue
+brew audit --strict --online polylogue
+```
+
+The bump workflow runs `brew update-python-resources` followed by the
+same `brew audit --strict --online` gate before opening the PR against
+the tap.
 
 ## Nix flake
 
