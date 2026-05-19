@@ -1262,7 +1262,7 @@ files:
     target: polylogue/maintenance/invalidation.py
     owner: stable
   - path: polylogue/maintenance/models.py
-    loc: 58
+    loc: 59
     target: polylogue/maintenance/models.py
     owner: stable
   - path: polylogue/maintenance/planner.py
@@ -1274,15 +1274,19 @@ files:
     target: polylogue/maintenance/preview.py
     owner: stable
   - path: polylogue/maintenance/replay.py
-    loc: 547
+    loc: 655
     target: polylogue/maintenance/replay.py
     owner: stable
   - path: polylogue/maintenance/scope.py
     loc: 143
     target: polylogue/maintenance/scope.py
     owner: stable
+  - path: polylogue/maintenance/source_replay.py
+    loc: 346
+    target: polylogue/maintenance/source_replay.py
+    owner: stable
   - path: polylogue/maintenance/targets.py
-    loc: 291
+    loc: 317
     target: polylogue/maintenance/targets.py
     owner: stable
   - path: polylogue/mcp/__init__.py
@@ -2703,7 +2707,7 @@ files:
     target: polylogue/storage/fts/fts_lifecycle.py
     owner: stable
   - path: polylogue/storage/fts/sql.py
-    loc: 153
+    loc: 150
     target: polylogue/storage/fts/sql.py
     owner: stable
   - path: polylogue/storage/hydrators.py
@@ -2821,7 +2825,7 @@ files:
     target: polylogue/storage/raw/models.py
     owner: stable
   - path: polylogue/storage/repair.py
-    loc: 1251
+    loc: 1270
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -3249,11 +3253,11 @@ files:
     target: polylogue/storage/sqlite/schema_bootstrap.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl.py
-    loc: 117
+    loc: 119
     target: polylogue/storage/sqlite/schema_ddl.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_actions.py
-    loc: 94
+    loc: 124
     target: polylogue/storage/sqlite/schema_ddl_actions.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_archive.py

@@ -88,6 +88,7 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
         "orphaned_blobs",
         "orphaned_content_blocks",
         "orphaned_messages",
+        "source_replay",
         "wal_checkpoint",
     )
     assert all(name.startswith("mutate-") for name in coverage.uncovered_declared_operations)

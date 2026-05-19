@@ -13,6 +13,7 @@ class MaintenanceCategory(str, Enum):
     DERIVED_REPAIR = "derived_repair"
     ARCHIVE_CLEANUP = "archive_cleanup"
     DATABASE_MAINTENANCE = "database_maintenance"
+    SOURCE_INGEST = "source_ingest"
 
 
 @dataclass(frozen=True)
