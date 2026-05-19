@@ -242,6 +242,7 @@ Start with the generated command and architecture references; use [docs/README.m
 | [Execution Plan](docs/execution-plan.md) | Living sequencing plan — landed, in flight, queued, and frozen subsystems. |
 | [Design Direction](docs/design/README.md) | Canonical MK3 archive-workbench design pack and historical design handoffs. |
 | [CLI Reference](docs/cli-reference.md) | Generated command reference from live help output. |
+| [Search & Query](docs/search.md) | Query grammar, retrieval lanes, ranking policy, and the typed SearchEnvelope contract. |
 | [Browser Capture](docs/browser-capture.md) | Local browser extension capture for ChatGPT and Claude.ai sessions. |
 | [Library API](docs/library-api.md) | Async archive API, filters, and query patterns. |
 | [MCP Integration](docs/mcp-integration.md) | Model Context Protocol server setup and usage. |

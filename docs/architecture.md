@@ -279,6 +279,9 @@ overrides land on the root query surface:
 - `--semantic` — promote the query string into `similar_text` so the
   request runs as a vector-only similarity probe (no FTS leg).
 
+See [docs/search.md § Retrieval Lanes](search.md#retrieval-lanes) for the
+full lane semantics, ranking policy, and `SearchEnvelope` contract.
+
 `polylogue status` includes an `Embeddings:` line whenever any
 messages are embedded, so the operator can see coverage at a glance.
 

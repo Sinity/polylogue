@@ -17,6 +17,11 @@ class DocsEntry:
 DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     DocsEntry("CLI Reference", "docs/cli-reference.md", "Generated command reference from live help output."),
     DocsEntry(
+        "Search & Query",
+        "docs/search.md",
+        "Query grammar, retrieval lanes, ranking policy, and the typed SearchEnvelope contract.",
+    ),
+    DocsEntry(
         "Developer Tools",
         "docs/devtools.md",
         "`devtools` guide for generated surfaces, validation, and repo hygiene.",
@@ -93,6 +98,7 @@ README_DOC_TITLES: tuple[str, ...] = (
     "Execution Plan",
     "Design Direction",
     "CLI Reference",
+    "Search & Query",
     "Browser Capture",
     "Library API",
     "MCP Integration",

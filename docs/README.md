@@ -21,6 +21,7 @@ Use this map when you need the complete repository documentation surface. The to
 | Document | Description |
 |----------|-------------|
 | [CLI Reference](cli-reference.md) | Generated command reference from live help output. |
+| [Search & Query](search.md) | Query grammar, retrieval lanes, ranking policy, and the typed SearchEnvelope contract. |
 | [Library API](library-api.md) | Async archive API, filters, and query patterns. |
 | [MCP Integration](mcp-integration.md) | Model Context Protocol server setup and usage. |
 | [Browser Capture](browser-capture.md) | Local browser extension capture for ChatGPT and Claude.ai sessions. |
