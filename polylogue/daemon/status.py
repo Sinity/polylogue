@@ -16,6 +16,7 @@ from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig, rec
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.daemon.catchup_status import CatchupStatus, catchup_status_info, format_catchup_status_lines
 from polylogue.daemon.convergence_debt_status import ConvergenceDebtSummary, convergence_debt_summary_info
+from polylogue.daemon.cursor_lag_status import CursorLagSummary, cursor_lag_summary_info
 from polylogue.daemon.health import DaemonHealth, check_health
 from polylogue.daemon.live_ingest_attempt_models import LiveIngestAttemptState, LiveIngestAttemptSummary
 from polylogue.daemon.live_ingest_attempt_workload import (
@@ -164,6 +165,7 @@ class DaemonStatus(BaseModel):
     live_ingest_attempts: LiveIngestAttemptSummary = Field(default_factory=LiveIngestAttemptSummary)
     catchup: CatchupStatus = Field(default_factory=CatchupStatus)
     convergence: ConvergenceDebtSummary = Field(default_factory=ConvergenceDebtSummary)
+    cursor_lag: CursorLagSummary = Field(default_factory=CursorLagSummary)
     db_size_bytes: int = 0
     wal_size_bytes: int = 0
     blob_dir_size_bytes: int = 0
@@ -845,6 +847,7 @@ def build_daemon_status(
     live_cursor = _live_cursor_summary_info()
     live_ingest_attempts = _live_ingest_attempt_summary_info()
     convergence = convergence_debt_summary_info(db_path())
+    cursor_lag = cursor_lag_summary_info(db_path())
     catchup = catchup_status_info(
         db_path(),
         latest_attempt=live_ingest_attempts.recent[0] if live_ingest_attempts.recent else None,
@@ -900,6 +903,7 @@ def build_daemon_status(
         live_ingest_attempts=live_ingest_attempts,
         catchup=catchup,
         convergence=convergence,
+        cursor_lag=cursor_lag,
         db_size_bytes=_safe_int(db_info.get("db_size_bytes", 0)),
         wal_size_bytes=_safe_int(db_info.get("wal_size_bytes", 0)),
         blob_dir_size_bytes=_blob_size_info(),
@@ -1104,6 +1108,24 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
             for family in families[:5]:
                 if isinstance(family, dict):
                     lines.append(f"    {family.get('family')}: {family.get('failed_count', 0)} failed")
+    # Cursor lag summary (#1232) — show only when something is stuck so the
+    # quiet steady state stays quiet.
+    cursor_lag = payload.get("cursor_lag")
+    if isinstance(cursor_lag, dict):
+        stuck = _safe_int(cursor_lag.get("stuck_file_count"))
+        if stuck > 0:
+            idle = _safe_int(cursor_lag.get("idle_file_count"))
+            max_lag = _safe_float(cursor_lag.get("max_lag_s"))
+            lines.append(f"Cursor lag: {stuck} stuck file(s) ({idle} idle), worst lag {max_lag:.0f}s")
+            cursor_families = cursor_lag.get("family_summaries")
+            if isinstance(cursor_families, list):
+                for family in cursor_families[:5]:
+                    if isinstance(family, dict) and _safe_int(family.get("stuck_file_count")) > 0:
+                        lines.append(
+                            "  "
+                            f"{family.get('family')}: {_safe_int(family.get('stuck_file_count'))} stuck, "
+                            f"worst lag {_safe_float(family.get('max_lag_s')):.0f}s"
+                        )
     # Health summary
     health = payload.get("health")
     if isinstance(health, dict):

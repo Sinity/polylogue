@@ -903,6 +903,53 @@ def _check_convergence_debt_medium() -> list[HealthAlert]:
         ]
 
 
+def _check_cursor_lag_medium() -> list[HealthAlert]:
+    """Per-source-family cursor-lag SLO threshold alerts (#1232).
+
+    Projects ``live_cursor`` rows into a stuck-vs-idle per-family lag
+    summary and evaluates each family against its configured warning /
+    error / critical thresholds. Returns an empty list when no family
+    crosses a threshold and no resolution alert is pending — keeps the
+    periodic health loop quiet on a healthy archive.
+
+    Returns a list rather than a single :class:`HealthAlert` because
+    multiple families may breach simultaneously; the calling tier
+    aggregator flattens the result into the overall alert stream.
+    """
+    now = datetime.now(UTC).isoformat()
+    try:
+        from polylogue.config import load_polylogue_config
+        from polylogue.daemon.cursor_lag_alert import (
+            evaluate_cursor_lag,
+            get_default_dedup_state,
+            load_thresholds_from_config,
+        )
+        from polylogue.daemon.cursor_lag_status import cursor_lag_summary_info
+
+        cfg = load_polylogue_config()
+        thresholds = load_thresholds_from_config(cfg)
+        summary = cursor_lag_summary_info(db_path())
+        alerts = evaluate_cursor_lag(
+            summary,
+            thresholds=thresholds,
+            state=get_default_dedup_state(),
+        )
+        is_ok = not any(a.severity != HealthSeverity.OK for a in alerts)
+        _record_failure("cursor_lag", is_ok)
+        return alerts
+    except Exception as exc:
+        return [
+            HealthAlert(
+                check_name="cursor_lag",
+                tier=HealthTier.MEDIUM,
+                severity=HealthSeverity.ERROR,
+                message=f"cursor lag check failed: {exc}",
+                checked_at=now,
+                consecutive_failures=_record_failure("cursor_lag", False),
+            )
+        ]
+
+
 def _run_medium_checks() -> list[HealthAlert]:
     return [
         _check_fts_readiness_medium(),
@@ -911,6 +958,7 @@ def _run_medium_checks() -> list[HealthAlert]:
         _check_insight_freshness_medium(),
         _check_repeated_stage_failures_medium(),
         *_check_convergence_debt_medium(),
+        *_check_cursor_lag_medium(),
     ]
 
 

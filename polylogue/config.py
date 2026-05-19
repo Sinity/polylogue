@@ -316,6 +316,20 @@ class PolylogueConfig:
         return {}
 
     @property
+    def health_cursor_lag(self) -> dict[str, object]:
+        """Raw ``[health.cursor_lag]`` table from polylogue.toml (#1232).
+
+        Returned verbatim as the underlying TOML dict (with nested
+        ``families`` sub-table) so :mod:`polylogue.daemon.cursor_lag_alert`
+        can decode it into typed thresholds without the config layer
+        owning the alert vocabulary.
+        """
+        raw = self._data.get("health_cursor_lag")
+        if isinstance(raw, dict):
+            return dict(raw)
+        return {}
+
+    @property
     def watch_debounce_s(self) -> float:
         return float(str(self._data.get("watch_debounce_s", 2.0)))
 
@@ -656,6 +670,12 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
     if isinstance(debt_section, dict):
         # Stored as a nested dict on the flat config under a reserved key.
         cfg["health_convergence_debt"] = dict(debt_section)
+
+    # [health.cursor_lag] — per-source-family cursor-lag SLO thresholds (#1232).
+    # See polylogue/daemon/cursor_lag_alert.py for shape and semantics.
+    cursor_lag_section = health_section.get("cursor_lag") if isinstance(health_section, dict) else None
+    if isinstance(cursor_lag_section, dict):
+        cfg["health_cursor_lag"] = dict(cursor_lag_section)
 
     # Array-of-tables: [[cost.subscription.plans]].
     cost_section = toml_data.get("cost")
