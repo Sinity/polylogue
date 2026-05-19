@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
+
+import pytest
 
 from polylogue.daemon import status as status_module
 from polylogue.daemon.status import build_daemon_status, daemon_status_payload, format_daemon_status_lines
 from polylogue.sources.live.cursor import CursorStore
+from tests.infra.frozen_clock import FrozenClock
 
 
 def test_build_daemon_status_reports_failed_live_cursor_files(tmp_path: Path) -> None:
@@ -301,7 +304,8 @@ def test_daemon_status_insight_freshness_uses_lightweight_counts(tmp_path: Path)
     assert freshness == {"sessions_with_profiles": 1, "total_sessions": 2}
 
 
-def test_daemon_status_flags_stale_live_ingest_attempts(tmp_path: Path) -> None:
+@pytest.mark.frozen_clock_modules("polylogue.daemon.status")
+def test_daemon_status_flags_stale_live_ingest_attempts(tmp_path: Path, frozen_clock: FrozenClock) -> None:
     db = tmp_path / "polylogue.db"
     source = tmp_path / "session.jsonl"
     source.write_text('{"a":1}\n')
@@ -311,7 +315,7 @@ def test_daemon_status_flags_stale_live_ingest_attempts(tmp_path: Path) -> None:
         input_bytes=source.stat().st_size,
         queued_file_count=1,
     )
-    old_updated_at = (datetime.now(UTC) - timedelta(minutes=10)).isoformat()
+    old_updated_at = (frozen_clock.now() - timedelta(minutes=10)).isoformat()
     with sqlite3.connect(db) as conn:
         conn.execute(
             "UPDATE live_ingest_attempt SET updated_at = ? WHERE attempt_id = ?",
