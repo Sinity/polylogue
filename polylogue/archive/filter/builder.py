@@ -57,6 +57,15 @@ class ConversationFilterBuilderMixin:
         )
 
     def provider(self, *names: Provider | str) -> Self:
+        """Restrict results to one or more providers.
+
+        Multiple calls *accumulate* into a single IN-list with OR
+        semantics — ``.provider("chatgpt").provider("claude-ai")`` yields
+        rows whose provider is chatgpt OR claude-ai, not the empty set.
+        Callers that need replace-on-disagreement semantics must rewrite
+        the plan's ``providers`` field directly. The same OR-accumulation
+        rule applies to :meth:`exclude_provider`.
+        """
         providers = tuple(name if isinstance(name, Provider) else Provider.from_string(name) for name in names)
         return _replace_plan(
             self,
@@ -64,6 +73,7 @@ class ConversationFilterBuilderMixin:
         )
 
     def exclude_provider(self, *names: Provider | str) -> Self:
+        """Exclude one or more providers (OR-accumulating; see :meth:`provider`)."""
         providers = tuple(name if isinstance(name, Provider) else Provider.from_string(name) for name in names)
         return _replace_plan(
             self,

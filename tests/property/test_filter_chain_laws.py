@@ -17,7 +17,7 @@ main independently-testable filter dimensions.
 from __future__ import annotations
 
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -27,6 +27,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from polylogue import Polylogue
+from polylogue.types import Provider
 from tests.infra.storage_records import ConversationBuilder
 
 # ---------------------------------------------------------------------------
@@ -193,17 +194,24 @@ def _apply_params(filter_obj: Any, params: FilterParams) -> Any:
     """
     plan = filter_obj._plan
     if params.provider is not None:
-        # Provider on the builder replaces a prior provider rather than
-        # intersecting. The monotonicity / commutativity laws (more
-        # constraints → fewer results) only hold when a second provider
-        # filter that disagrees with the first becomes the empty set,
-        # not a different provider's results. Map disagreement to an
-        # impossible provider so the second filter strictly tightens.
-        current_providers = tuple(str(p) for p in plan.providers)
-        if current_providers and params.provider not in current_providers:
-            filter_obj = filter_obj.provider("__no_such_provider__")
+        # ``ConversationFilter.provider`` accumulates names into an IN-list
+        # (OR semantics across the tuple): a second call appends rather than
+        # replaces. The commutativity / monotonicity laws here treat the
+        # composition of two ``FilterParams`` as logical conjunction
+        # (matches A AND matches B). When two provider values disagree,
+        # that conjunction is the empty set. We achieve that by overwriting
+        # the plan's providers tuple with ``(Provider.UNKNOWN,)`` — no
+        # seeded conversation has ``provider == UNKNOWN``, so the predicate
+        # yields zero rows independent of what was there before. (Simply
+        # appending an extra provider name would *grow* the IN-list and
+        # leak rows from the first filter into the result.)
+        params_provider = Provider.from_string(params.provider)
+        current_providers = plan.providers
+        if current_providers and params_provider not in current_providers:
+            filter_obj._plan = replace(plan, providers=(Provider.UNKNOWN,))
+            plan = filter_obj._plan
         else:
-            filter_obj = filter_obj.provider(params.provider)
+            filter_obj = filter_obj.provider(params_provider)
     if params.has_tool_use:
         filter_obj = filter_obj.has_tool_use()
     if params.has_thinking:
