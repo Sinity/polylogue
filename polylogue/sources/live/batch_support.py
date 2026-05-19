@@ -79,11 +79,35 @@ class _FullIngestResult:
     worker_count: int = 0
 
 
-def fingerprint_file(path: Path) -> tuple[str, int]:
-    content = path.read_bytes()
-    newline_at = content.rfind(b"\n")
-    last_complete_newline = 0 if newline_at < 0 else newline_at + 1
-    return hashlib.sha256(content).hexdigest(), last_complete_newline
+_FINGERPRINT_STREAM_CHUNK = 1 << 20  # 1 MiB
+
+
+def fingerprint_file(path: Path, *, chunk_size: int = _FINGERPRINT_STREAM_CHUNK) -> tuple[str, int]:
+    """Return (sha256, last_complete_newline_offset) by streaming the file.
+
+    Streams the whole file once at ``chunk_size`` granularity rather than
+    loading the entire payload into memory. The previous implementation read
+    the whole file via ``Path.read_bytes()``, which produced a memory peak
+    proportional to file size — a 1 GiB JSONL session held ~1 GiB resident
+    just to compute its fingerprint after a successful full-ingest cursor
+    write. The streaming version keeps the working set bounded by
+    ``chunk_size`` independent of file size and is identical in output for
+    files of any size.
+    """
+    hasher = hashlib.sha256()
+    last_complete_newline = 0
+    offset = 0
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            hasher.update(chunk)
+            newline_at = chunk.rfind(b"\n")
+            if newline_at >= 0:
+                last_complete_newline = offset + newline_at + 1
+            offset += len(chunk)
+    return hasher.hexdigest(), last_complete_newline
 
 
 def tail_hash_from_path(path: Path, byte_size: int, *, chunk_size: int = 64 * 1024) -> tuple[str, int]:
