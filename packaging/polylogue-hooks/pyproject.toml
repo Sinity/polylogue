@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "polylogue-hooks"
+version = "0.1.0"  # x-release-please-version
+description = "Polylogue hook adapter for Claude Code / Codex session lifecycle capture"
+readme = "README.md"
+license = { text = "MIT" }
+keywords = ["polylogue", "claude-code", "codex", "hooks", "ai", "archive"]
+authors = [{ name = "Sinity" }]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries",
+]
+requires-python = ">=3.11"
+# Pure-stdlib implementation: zero runtime dependencies so the hook adapter can
+# be installed in environments that do not want the full polylogue runtime.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/sinity/polylogue"
+Repository = "https://github.com/sinity/polylogue"
+Issues = "https://github.com/sinity/polylogue/issues"
+Documentation = "https://github.com/sinity/polylogue/blob/master/docs/hooks.md"
+
+[project.scripts]
+polylogue-hook = "polylogue_hooks.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/polylogue_hooks"]
+
+[tool.hatch.build.targets.sdist]
+include = ["pyproject.toml", "README.md", "src/polylogue_hooks"]

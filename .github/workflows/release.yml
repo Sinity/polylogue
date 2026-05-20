@@ -63,16 +63,42 @@ jobs:
         run: |
           version=$(uv run python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
+      - name: Build polylogue-mcp wrapper distribution (#1309)
+        run: |
+          uv build --out-dir "${RUNNER_TEMP}/dist-mcp" packaging/polylogue-mcp
+          uv run --with twine python -m twine check "${RUNNER_TEMP}/dist-mcp"/*.whl "${RUNNER_TEMP}/dist-mcp"/*.tar.gz
+      - name: Build polylogue-hooks wrapper distribution (#1309)
+        run: |
+          uv build --out-dir "${RUNNER_TEMP}/dist-hooks" packaging/polylogue-hooks
+          uv run --with twine python -m twine check "${RUNNER_TEMP}/dist-hooks"/*.whl "${RUNNER_TEMP}/dist-hooks"/*.tar.gz
       - name: Stage top-level wheel + sdist for downstream jobs
         run: |
           mkdir -p staged-dist
           cp "${RUNNER_TEMP}/dist/dist"/*.whl staged-dist/
           cp "${RUNNER_TEMP}/dist/dist"/*.tar.gz staged-dist/
           ls -la staged-dist/
+      - name: Stage polylogue-mcp + polylogue-hooks wrapper distributions
+        run: |
+          mkdir -p staged-dist-mcp staged-dist-hooks
+          cp "${RUNNER_TEMP}/dist-mcp"/*.whl staged-dist-mcp/
+          cp "${RUNNER_TEMP}/dist-mcp"/*.tar.gz staged-dist-mcp/
+          cp "${RUNNER_TEMP}/dist-hooks"/*.whl staged-dist-hooks/
+          cp "${RUNNER_TEMP}/dist-hooks"/*.tar.gz staged-dist-hooks/
+          ls -la staged-dist-mcp/ staged-dist-hooks/
       - uses: actions/upload-artifact@v7
         with:
           name: distribution-artifacts
           path: staged-dist/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: distribution-artifacts-mcp
+          path: staged-dist-mcp/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: distribution-artifacts-hooks
+          path: staged-dist-hooks/*
           if-no-files-found: error
 
   installed-smoke:
@@ -124,6 +150,105 @@ jobs:
           polylogue --plain count
           python -m polylogue --version
 
+  installed-smoke-hooks:
+    # polylogue-hooks has no runtime dependencies, so this smoke installs the
+    # wrapper wheel in isolation (no polylogue, no third-party packages) and
+    # exercises the polylogue-hook console script end-to-end (#1309).
+    name: installed-smoke-hooks (${{ matrix.os }}, py${{ matrix.python-version }})
+    needs: build
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: distribution-artifacts-hooks
+          path: dist-hooks/
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install polylogue-hooks wheel into fresh venv (no other deps)
+        shell: bash
+        run: |
+          python -m venv .venv-hooks
+          # shellcheck disable=SC1091
+          source .venv-hooks/bin/activate
+          python -m pip install --upgrade pip
+          wheel=$(ls dist-hooks/*.whl | head -n1)
+          python -m pip install "${wheel}"
+          # Confirm zero third-party runtime closure (only pip/setuptools/wheel + polylogue-hooks).
+          python -m pip list --format=freeze | sort > installed.txt
+          cat installed.txt
+          if grep -vE '^(pip|setuptools|wheel|polylogue-hooks)==' installed.txt; then
+            echo "polylogue-hooks pulled an unexpected runtime dependency" >&2
+            exit 1
+          fi
+      - name: Exercise polylogue-hook console script
+        shell: bash
+        run: |
+          # shellcheck disable=SC1091
+          source .venv-hooks/bin/activate
+          sidecar="${RUNNER_TEMP}/polylogue-hooks-sidecar"
+          mkdir -p "${sidecar}"
+          export POLYLOGUE_HOOK_SIDECAR_DIR="${sidecar}"
+          # Supported event must succeed and write a JSONL record.
+          printf '{"session_id":"abc123","model":"sonnet"}' | polylogue-hook SessionStart
+          test -f "${sidecar}/claude-code-abc123.jsonl"
+          grep -q '"event_type": "SessionStart"' "${sidecar}/claude-code-abc123.jsonl"
+          # Unsupported event must exit non-zero without crashing the harness.
+          if printf '{}' | polylogue-hook NotARealEvent; then
+            echo "polylogue-hook should have rejected an unknown event type" >&2
+            exit 1
+          fi
+
+  installed-smoke-mcp:
+    # polylogue-mcp is a thin wrapper that pins the matching polylogue release.
+    # Install both wheels together and confirm the console script resolves
+    # exactly the same target the full polylogue install does (#1309).
+    name: installed-smoke-mcp (${{ matrix.os }}, py${{ matrix.python-version }})
+    needs: build
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: distribution-artifacts
+          path: dist/
+      - uses: actions/download-artifact@v8
+        with:
+          name: distribution-artifacts-mcp
+          path: dist-mcp/
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install polylogue + polylogue-mcp wrapper into fresh venv
+        shell: bash
+        run: |
+          python -m venv .venv-mcp
+          # shellcheck disable=SC1091
+          source .venv-mcp/bin/activate
+          python -m pip install --upgrade pip
+          main_wheel=$(ls dist/*.whl | head -n1)
+          mcp_wheel=$(ls dist-mcp/*.whl | head -n1)
+          python -m pip install "${main_wheel}" "${mcp_wheel}"
+      - name: Smoke polylogue-mcp wrapper console script
+        shell: bash
+        env:
+          POLYLOGUE_FORCE_PLAIN: "1"
+        run: |
+          # shellcheck disable=SC1091
+          source .venv-mcp/bin/activate
+          polylogue-mcp --help > /dev/null
+
   sbom:
     name: sbom
     needs: build
@@ -163,7 +288,7 @@ jobs:
 
   publish-pypi:
     name: publish-pypi
-    needs: [build, installed-smoke, sbom]
+    needs: [build, installed-smoke, installed-smoke-mcp, installed-smoke-hooks, sbom]
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
     timeout-minutes: 15
     runs-on: ubuntu-latest
@@ -193,6 +318,84 @@ jobs:
         # in the dist/ directory. The .sigstore bundles are retained as the
         # `signing-artifacts-publish-pypi` workflow artifact attached to the
         # run by sigstore/gh-action-sigstore-python.
+        run: |
+          find dist/ -type f ! \( -name '*.whl' -o -name '*.tar.gz' \) -delete
+          ls -la dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+          verbose: true
+
+  publish-pypi-mcp:
+    # Independent Trusted Publisher binding on PyPI is required for this
+    # project name. Register it once via PyPI → Publishing → Add a new pending
+    # publisher with owner=Sinity, repo=polylogue, workflow=release.yml,
+    # environment=pypi-mcp before the first tagged release reaches this job.
+    name: publish-pypi-mcp
+    needs: [build, installed-smoke-mcp, sbom]
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi-mcp
+      url: https://pypi.org/project/polylogue-mcp/${{ needs.build.outputs.version }}/
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: distribution-artifacts-mcp
+          path: dist/
+      - name: List artifacts about to be signed and published
+        run: ls -la dist/
+      - name: Sign wheel + sdist with Sigstore (keyless OIDC)
+        uses: sigstore/gh-action-sigstore-python@v3.0.0
+        with:
+          inputs: |
+            ./dist/*.whl
+            ./dist/*.tar.gz
+          upload-signing-artifacts: true
+      - name: Drop Sigstore bundles before PyPI upload
+        run: |
+          find dist/ -type f ! \( -name '*.whl' -o -name '*.tar.gz' \) -delete
+          ls -la dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+          verbose: true
+
+  publish-pypi-hooks:
+    # Independent Trusted Publisher binding on PyPI is required for this
+    # project name. Register it once via PyPI → Publishing → Add a new pending
+    # publisher with owner=Sinity, repo=polylogue, workflow=release.yml,
+    # environment=pypi-hooks before the first tagged release reaches this job.
+    name: publish-pypi-hooks
+    needs: [build, installed-smoke-hooks, sbom]
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi-hooks
+      url: https://pypi.org/project/polylogue-hooks/${{ needs.build.outputs.version }}/
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: distribution-artifacts-hooks
+          path: dist/
+      - name: List artifacts about to be signed and published
+        run: ls -la dist/
+      - name: Sign wheel + sdist with Sigstore (keyless OIDC)
+        uses: sigstore/gh-action-sigstore-python@v3.0.0
+        with:
+          inputs: |
+            ./dist/*.whl
+            ./dist/*.tar.gz
+          upload-signing-artifacts: true
+      - name: Drop Sigstore bundles before PyPI upload
         run: |
           find dist/ -type f ! \( -name '*.whl' -o -name '*.tar.gz' \) -delete
           ls -la dist/

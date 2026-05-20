@@ -108,6 +108,22 @@ sidecar_dir = "/home/user/.local/share/polylogue/hooks"
 | `hooks_enabled` | `bool` | `False` |
 | `hooks_sidecar_dir` | `str` | `~/.local/share/polylogue/hooks` |
 
+## Installation
+
+`polylogue-hook` is available in three forms:
+
+| Form | Install | Runtime deps |
+| --- | --- | --- |
+| Standalone PyPI package | `pip install polylogue-hooks` | none (stdlib only) |
+| Bundled in main package | `pip install polylogue` | full archive runtime |
+| Bash script | copy `contrib/polylogue-hook` from the repository | `bash`, `python3` |
+
+The `polylogue-hooks` package is the recommended path for environments where
+you do not want the full polylogue runtime closure (for example, inside the AI
+coding agent's own Python environment). The script behaviour is identical
+across all three forms and the version is kept in sync with the main package
+via release-please (#1309).
+
 ## Setup
 
 ### Claude Code
