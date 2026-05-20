@@ -323,13 +323,18 @@ rows:
 
   - domain: publication.site
     target_files:
+      - devtools/pages_builder.py
+      - devtools/pages_templates.py
+      - devtools/pages_style.py
+      - devtools/render_pages.py
       - polylogue/publication/
-    representative_tests: []
-    gate: absent
+    representative_tests:
+      - tests/unit/site/test_renderer_behavior.py
+    gate: required
     known_gaps:
-      - GitHub Pages site generator (`devtools render-pages`) has no behavioral
-        tests; output is verified manually
-      - site-publishing workflow is end-to-end and not exercised by unit lane
+      - end-to-end site-publishing workflow (Pagefind index + GitHub Pages
+        deploy) is exercised by CI in `.github/workflows/pages.yml`, not by
+        the unit lane
 
   # ── Verification & ops ──────────────────────────────────────────────────
   - domain: showcase
