@@ -79,10 +79,8 @@ rows:
     representative_tests:
       - tests/unit/sources/test_parsers_codex.py
       - tests/unit/sources/test_parsers_props.py
+      - tests/unit/sources/test_codex_event_stream_contract.py
     gate: required
-    known_gaps:
-      - codex event-stream (`response.completed`, tool deltas) lacks a dedicated
-        contract test; coverage is property-shape only
 
   - domain: sources.parsers.gemini
     target_files:
