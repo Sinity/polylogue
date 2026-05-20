@@ -282,10 +282,8 @@ rows:
     representative_tests:
       - tests/unit/core/test_facade_api.py
       - tests/unit/core/test_sync_surface_runtime.py
+      - tests/unit/api/test_facade_contracts.py
     gate: required
-    known_gaps:
-      - async Polylogue facade methods are exercised mostly through CLI/MCP
-        adapters; direct API contract tests are sparse
 
   - domain: daemon.convergence
     target_files:
