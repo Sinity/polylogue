@@ -269,7 +269,7 @@ def format_metrics(
     # Build info — version label so dashboards can break out per-release.
     try:
         from polylogue import __version__ as polylogue_version
-    except Exception:  # pragma: no cover - import surface should always succeed
+    except Exception:
         polylogue_version = "unknown"
     _emit_metric(
         lines,
@@ -429,7 +429,7 @@ def handle_metrics(responder: MetricsResponder, db: Path) -> None:
     """
     try:
         body = format_metrics(db)
-    except Exception as exc:  # pragma: no cover - defence in depth
+    except Exception as exc:
         logger.exception("metrics collection failed")
         body = (
             "# HELP polylogue_daemon_metrics_collection_error Metrics collection failed.\n"
