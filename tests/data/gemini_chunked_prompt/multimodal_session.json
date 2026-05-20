@@ -1,0 +1,48 @@
+{
+  "id": "gemini-multimodal-1",
+  "displayName": "Multimodal Gemini session",
+  "createTime": "2025-02-01T12:00:00Z",
+  "updateTime": "2025-02-01T12:00:30Z",
+  "chunkedPrompt": {
+    "chunks": [
+      {
+        "id": "chunk-user-1",
+        "role": "user",
+        "createTime": "2025-02-01T12:00:02Z",
+        "text": "Describe this document.",
+        "driveDocument": {
+          "id": "doc-attached-1",
+          "name": "spec.pdf",
+          "mimeType": "application/pdf",
+          "sizeBytes": "2048"
+        }
+      },
+      {
+        "id": "chunk-user-2",
+        "role": "user",
+        "createTime": "2025-02-01T12:00:05Z",
+        "inlineFile": {
+          "mimeType": "image/png",
+          "data": "iVBORw0KGgo="
+        }
+      },
+      {
+        "id": "chunk-user-3",
+        "role": "user",
+        "createTime": "2025-02-01T12:00:07Z",
+        "youtubeVideo": {"id": "abc123"}
+      },
+      {
+        "id": "chunk-model-1",
+        "role": "model",
+        "createTime": "2025-02-01T12:00:25Z",
+        "text": "Document, image, and video summarized.",
+        "tokenCount": 10,
+        "finishReason": "STOP",
+        "safetyRatings": [
+          {"category": "HARM_CATEGORY_DEROGATORY", "probability": "NEGLIGIBLE"}
+        ]
+      }
+    ]
+  }
+}

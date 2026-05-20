@@ -1,0 +1,48 @@
+{
+  "id": "gemini-code-1",
+  "displayName": "Code execution",
+  "createTime": "2025-02-01T11:00:00Z",
+  "updateTime": "2025-02-01T11:00:20Z",
+  "chunkedPrompt": {
+    "chunks": [
+      {
+        "id": "chunk-user-1",
+        "role": "user",
+        "createTime": "2025-02-01T11:00:02Z",
+        "parts": [
+          {"text": "Compute the sum of the first 10 integers."}
+        ]
+      },
+      {
+        "id": "chunk-thought-1",
+        "role": "model",
+        "createTime": "2025-02-01T11:00:05Z",
+        "isThought": true,
+        "thinkingBudget": 64,
+        "text": "I should call code execution and sum 1..10."
+      },
+      {
+        "id": "chunk-code-1",
+        "role": "model",
+        "createTime": "2025-02-01T11:00:08Z",
+        "parts": [{"text": "Here is the computation:"}],
+        "executableCode": {
+          "language": "python",
+          "code": "print(sum(range(1, 11)))"
+        },
+        "codeExecutionResult": {
+          "outcome": "OUTCOME_OK",
+          "output": "55"
+        }
+      },
+      {
+        "id": "chunk-model-final",
+        "role": "model",
+        "createTime": "2025-02-01T11:00:18Z",
+        "text": "The sum of 1..10 is 55.",
+        "tokenCount": 12,
+        "finishReason": "STOP"
+      }
+    ]
+  }
+}
