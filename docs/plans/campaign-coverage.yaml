@@ -4,9 +4,20 @@
 # and their coverage targets. Consumed by devtools mutmut-campaign
 # and devtools benchmark-campaign.
 #
-# Updated 2026-05-02 from the authored scenario catalog.
+# Each mutation_campaigns entry may carry:
+#   freshness_days  — Only declare per-entry when overriding the default.
+#                     verify-manifests treats a declared freshness_days as
+#                     a *hard* claim of a recent matching artifact, while
+#                     verify-mutation-freshness uses a 60-day default budget
+#                     as a soft warning when the entry omits freshness_days.
+#   artifact_glob   — glob (relative to repo root) where run artifacts land.
+#                     Defaults to .local/mutation-campaigns/<name>/*.json when
+#                     unset. Resolved by mutmut_campaign.default_artifact_paths
+#                     and the freshness lint.
+#
+# Updated 2026-05-19 — mutation-campaign discipline scaffolding for #1304.
 
-description: Mutation and benchmark campaign registry with covered paths and test targets.
+description: Mutation and benchmark campaign registry with covered paths, test targets, and freshness budgets.
 
 mutation_campaigns:
   - name: cli-query

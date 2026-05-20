@@ -399,10 +399,14 @@ def _check_campaign_freshness(
         glob = artifact_glob.strip()
     elif section == "benchmark_campaigns":
         glob = f".local/benchmark-campaigns/*-{name}.json"
+    elif section == "mutation_campaigns":
+        # Default mutation-campaign artifact layout (#1304). Matches
+        # devtools.mutmut_campaign.default_artifact_paths.
+        glob = f".local/mutation-campaigns/{name}/*.json"
     else:
         errors.append(
             f"{path}: {section} campaign {label_name} declares freshness_days without "
-            "an artifact_glob; only benchmark_campaigns have a default artifact location"
+            "an artifact_glob; only mutation_campaigns and benchmark_campaigns have a default location"
         )
         return errors
 

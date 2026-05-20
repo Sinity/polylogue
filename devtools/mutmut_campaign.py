@@ -18,6 +18,7 @@ import fnmatch
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 from collections import Counter
 from dataclasses import asdict, dataclass, field
@@ -28,9 +29,33 @@ from devtools import repo_root as _get_root
 
 from .authored_scenario_catalog import get_authored_scenario_catalog
 from .mutation_catalog import MutationCampaignEntry
+from .verify_mutation_freshness import (
+    MANIFEST as _FRESHNESS_MANIFEST,
+)
+from .verify_mutation_freshness import (
+    assess_campaign as _freshness_assess,
+)
+from .verify_mutation_freshness import (
+    load_manifest as _freshness_load_manifest,
+)
 
 ROOT = _get_root()
 CAMPAIGN_ARTIFACT_DIR = Path(".local/mutation-campaigns")
+
+
+def default_artifact_paths(campaign_name: str, created_at: datetime) -> tuple[Path, Path]:
+    """Default JSON/Markdown artifact paths for a campaign run.
+
+    Layout: ``.local/mutation-campaigns/<campaign>/<timestamp>.{json,md}``.
+    Used by ``mutmut-campaign run`` when ``--json-out`` / ``--markdown-out``
+    are not supplied, and consumed by ``verify-mutation-freshness`` and
+    ``mutmut-campaign status`` to locate the per-campaign artifact history.
+    """
+    stamp = created_at.strftime("%Y%m%dT%H%M%SZ")
+    base = CAMPAIGN_ARTIFACT_DIR / campaign_name / stamp
+    return base.with_suffix(".json"), base.with_suffix(".md")
+
+
 STATUS_IGNORE_PREFIXES = (f"{CAMPAIGN_ARTIFACT_DIR.as_posix()}/",)
 DEFAULT_IGNORE_PATTERNS = shutil.ignore_patterns(
     ".git",
@@ -557,6 +582,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run_parser.add_argument("--keep-workspace", action="store_true")
     run_parser.set_defaults(command_fn=cmd_run)
 
+    status_parser = subparsers.add_parser(
+        "status",
+        help="Show per-campaign last-run, kill rate, and freshness against docs/plans/campaign-coverage.yaml.",
+    )
+    status_parser.add_argument("--json", action="store_true")
+    status_parser.add_argument(
+        "--default-freshness-days",
+        type=int,
+        default=60,
+        help="Freshness budget for manifest entries without freshness_days (default 60).",
+    )
+    status_parser.set_defaults(command_fn=cmd_status)
+
     index_parser = subparsers.add_parser("index", help="Build an index over recorded campaign artifacts")
     index_parser.add_argument(
         "--campaign-dir",
@@ -586,14 +624,24 @@ def cmd_list(_args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     campaign = CAMPAIGNS[args.campaign]
-    json_out = (
-        None if args.json_out is None else (args.json_out if args.json_out.is_absolute() else ROOT / args.json_out)
-    )
-    markdown_out = (
-        None
-        if args.markdown_out is None
-        else (args.markdown_out if args.markdown_out.is_absolute() else ROOT / args.markdown_out)
-    )
+    json_out: Path | None
+    markdown_out: Path | None
+    if args.json_out is None and args.markdown_out is None:
+        # Default per-campaign artifact layout so freshness lint and status
+        # readouts always have something to discover. Operators can still
+        # override with explicit --json-out / --markdown-out.
+        default_json, default_md = default_artifact_paths(campaign.name, datetime.now(UTC))
+        json_out = ROOT / default_json
+        markdown_out = ROOT / default_md
+    else:
+        json_out = (
+            None if args.json_out is None else (args.json_out if args.json_out.is_absolute() else ROOT / args.json_out)
+        )
+        markdown_out = (
+            None
+            if args.markdown_out is None
+            else (args.markdown_out if args.markdown_out.is_absolute() else ROOT / args.markdown_out)
+        )
     result = run_campaign(
         campaign,
         repo_root=ROOT,
@@ -603,6 +651,40 @@ def cmd_run(args: argparse.Namespace) -> int:
     )
     print(format_markdown(result))
     return result.exit_code
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    manifest = _freshness_load_manifest(_FRESHNESS_MANIFEST)
+    raw_entries = manifest.get("mutation_campaigns") or []
+    entries: list[object] = list(raw_entries) if isinstance(raw_entries, list) else []
+    now = datetime.now(UTC)
+    assessments = [
+        _freshness_assess(
+            entry,
+            repo_root=ROOT,
+            now=now,
+            default_freshness_days=args.default_freshness_days,
+        )
+        for entry in entries
+        if isinstance(entry, dict) and "name" in entry
+    ]
+    if args.json:
+        json.dump(
+            {"campaigns": [a.__dict__ for a in assessments]},
+            sys.stdout,
+            indent=2,
+            default=str,
+        )
+        sys.stdout.write("\n")
+        return 0
+    print(f"{'campaign':<24} {'state':<8} {'age':>10} {'budget':>8} {'kill':>8} artifact")
+    for a in assessments:
+        age = "n/a" if a.newest_age_days is None else f"{a.newest_age_days:.1f}d"
+        budget = f"{a.freshness_days}d"
+        kill = "n/a" if a.kill_rate is None else f"{a.kill_rate * 100:.1f}%"
+        artifact = a.newest_artifact or "-"
+        print(f"{a.name:<24} {a.state:<8} {age:>10} {budget:>8} {kill:>8} {artifact}")
+    return 0
 
 
 def cmd_index(args: argparse.Namespace) -> int:
