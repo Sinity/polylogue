@@ -68,8 +68,11 @@ from polylogue.storage.sqlite.schema_ddl_insight_timelines import (
 from polylogue.storage.sqlite.schema_ddl_provider_events import (
     PROVIDER_EVENT_DDL as _PROVIDER_EVENT_DDL,
 )
+from polylogue.storage.sqlite.schema_ddl_repo_identity import (
+    REPO_IDENTITY_DDL as _REPO_IDENTITY_DDL,
+)
 
-SCHEMA_VERSION = 7  # Canonical schema. No migration chain: mismatch → re-ingest from source (#1212, #1190, #1240, #1241, #1252, #1258, #1260).
+SCHEMA_VERSION = 8  # Canonical schema. No migration chain: mismatch → re-ingest from source (#1212, #1190, #1240, #1241, #1252, #1258, #1260, #1253).
 
 
 # Complete target schema applied to fresh databases.
@@ -91,6 +94,7 @@ SCHEMA_DDL += "\n\n" + _RECALL_PACKS_DDL
 SCHEMA_DDL += "\n\n" + _READER_WORKSPACES_DDL
 SCHEMA_DDL += "\n\n" + _USER_CORRECTIONS_DDL
 SCHEMA_DDL += "\n\n" + _TOPOLOGY_EDGES_DDL
+SCHEMA_DDL += "\n\n" + _REPO_IDENTITY_DDL
 
 _SESSION_INSIGHT_DDL = _SESSION_INSIGHT_PROFILE_DDL + _SESSION_INSIGHT_TIMELINE_DDL + _SESSION_INSIGHT_AGGREGATE_DDL
 
@@ -108,6 +112,7 @@ __all__ = [
     "_MESSAGE_FTS_DDL",
     "_PROVIDER_EVENT_DDL",
     "_RAW_ARCHIVE_DDL",
+    "_REPO_IDENTITY_DDL",
     "_READER_WORKSPACES_DDL",
     "_SESSION_INSIGHT_DDL",
     "_SOURCE_FILE_CURSOR_DDL",

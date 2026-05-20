@@ -2860,7 +2860,7 @@ files:
     target: polylogue/storage/insights/session/profiles.py
     owner: stable
   - path: polylogue/storage/insights/session/rebuild.py
-    loc: 854
+    loc: 918
     target: polylogue/storage/insights/session/rebuild.py
     owner: stable
   - path: polylogue/storage/insights/session/records.py
@@ -2868,8 +2868,12 @@ files:
     target: polylogue/storage/insights/session/records.py
     owner: stable
   - path: polylogue/storage/insights/session/refresh.py
-    loc: 544
+    loc: 574
     target: polylogue/storage/insights/session/refresh.py
+    owner: stable
+  - path: polylogue/storage/insights/session/repo_identity.py
+    loc: 282
+    target: polylogue/storage/insights/session/repo_identity.py
     owner: stable
   - path: polylogue/storage/insights/session/runtime.py
     loc: 144
@@ -3367,7 +3371,7 @@ files:
     target: polylogue/storage/sqlite/schema_bootstrap.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl.py
-    loc: 122
+    loc: 127
     target: polylogue/storage/sqlite/schema_ddl.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_actions.py
@@ -3409,6 +3413,10 @@ files:
   - path: polylogue/storage/sqlite/schema_ddl_provider_events.py
     loc: 40
     target: polylogue/storage/sqlite/schema_ddl_provider_events.py
+    owner: stable
+  - path: polylogue/storage/sqlite/schema_ddl_repo_identity.py
+    loc: 56
+    target: polylogue/storage/sqlite/schema_ddl_repo_identity.py
     owner: stable
   - path: polylogue/storage/sqlite/sqlite_vec_extension.py
     loc: 40

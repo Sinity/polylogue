@@ -44,6 +44,8 @@ _BOUNDARY_TABLES: tuple[str, ...] = (
     "live_convergence_debt",
     "pending_blob_refs",
     "topology_edges",
+    "repo_identities",
+    "conversation_repo_observations",
 )
 
 # Expected FTS-sync triggers.  A missing trigger means the FTS index can drift
