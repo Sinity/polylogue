@@ -888,6 +888,18 @@
           "default": null,
           "title": "Conv Id"
         },
+        "cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cursor"
+        },
         "cwd_prefix": {
           "anyOf": [
             {
@@ -1573,6 +1585,18 @@
           ],
           "default": null,
           "title": "Conv Id"
+        },
+        "cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cursor"
         },
         "cwd_prefix": {
           "anyOf": [
@@ -2923,6 +2947,18 @@
           ],
           "default": null,
           "title": "Conv Id"
+        },
+        "cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cursor"
         },
         "cwd_prefix": {
           "anyOf": [

@@ -64,8 +64,8 @@
 # name: TestErrorOutput.test_invalid_option_error_output
   '''
   Usage: polylogue [OPTIONS] COMMAND [ARGS]...
-  Try 'polylogue -h' for help.
-  Error: No such option: --bogus Did you mean --verbose?
+  Try 'polylogue --help' for help.
+  Error: No such option '--bogus'. Did you mean '--verbose'?
   Hint: `--bogus` is not a recognized option. Run `polylogue --help` for the full
   option list, or `polylogue "--bogus"` if you meant to search for that string.
   '''
@@ -171,6 +171,9 @@
     --until TEXT                    Before date
     -l, -n, --limit INTEGER         Max results
     --offset INTEGER                Offset for paginated results
+    --cursor TEXT                   Opaque keyset cursor from a previous
+                                    response's next_cursor. Stable across
+                                    archive growth for ranked search (#1268).
     --latest                        Most recent (= --sort date --limit 1)
     --sort [date|tokens|messages|words|longest|random]
                                     Sort by field
@@ -394,6 +397,12 @@
     -l, -n, --limit INTEGER         Max results
     --offset INTEGER                Offset for paginated resul
   ts
+    --cursor TEXT                   Opaque keyset cursor from
+  a previous
+                                    response's next_cursor. St
+  able across
+                                    archive growth for ranked
+  search (#1268).
     --latest                        Most recent (= --sort date
    --limit 1)
     --sort [date|tokens|messages|words|longest|random]
@@ -612,6 +621,9 @@
     --until TEXT                    Before date
     -l, -n, --limit INTEGER         Max results
     --offset INTEGER                Offset for paginated results
+    --cursor TEXT                   Opaque keyset cursor from a previous
+                                    response's next_cursor. Stable across
+                                    archive growth for ranked search (#1268).
     --latest                        Most recent (= --sort date --limit 1)
     --sort [date|tokens|messages|words|longest|random]
                                     Sort by field

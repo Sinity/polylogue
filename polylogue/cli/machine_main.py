@@ -11,6 +11,12 @@ def extract_option(message: str) -> str | None:
     """Try to extract the option name from a Click error message."""
     if "No such option:" in message:
         return message.split("No such option:")[-1].strip().split()[0]
+    # Click 8.4+ uses quotes: "No such option '--flag'."
+    import re
+
+    m = re.search(r"No such option '([^']+)'", message)
+    if m:
+        return m.group(1)
     return None
 
 
@@ -22,7 +28,7 @@ def actionable_hint_for_usage_error(message: str) -> str | None:
     hint applies (the generic ``--help`` hint is added by the caller).
     """
     msg = message.strip()
-    if "No such option:" in msg:
+    if "No such option:" in msg or "No such option '" in msg:
         bad = extract_option(msg)
         if bad:
             return (

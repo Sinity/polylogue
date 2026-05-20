@@ -121,5 +121,5 @@ def test_main_without_json_converts_click_usage_to_systemexit(
             main()
     assert excinfo.value.code == 2
     captured = capsys.readouterr()
-    assert "No such option: --bad-flag" in captured.err
+    assert "No such option" in captured.err and "--bad-flag" in captured.err
     assert "Hint:" in captured.err

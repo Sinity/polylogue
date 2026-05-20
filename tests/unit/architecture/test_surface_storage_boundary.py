@@ -51,6 +51,7 @@ ALLOWED: frozenset[Path] = frozenset(
         REPO_ROOT / "polylogue" / "api" / "__init__.py",
         REPO_ROOT / "polylogue" / "api" / "archive.py",
         REPO_ROOT / "polylogue" / "api" / "ingest.py",
+        REPO_ROOT / "polylogue" / "api" / "search_envelope_builder.py",
         REPO_ROOT / "polylogue" / "api" / "user_state_resolver.py",
         REPO_ROOT / "polylogue" / "cli" / "shared" / "types.py",
         REPO_ROOT / "polylogue" / "mcp" / "server.py",
