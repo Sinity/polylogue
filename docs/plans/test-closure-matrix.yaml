@@ -366,3 +366,14 @@ rows:
       - tests/unit/devtools/test_validation_lanes.py
       - tests/unit/devtools/test_pipeline_probe.py
     gate: required
+
+  # ── Cross-cutting concerns ──────────────────────────────────────────────
+  - domain: cross_cutting.encoding
+    target_files:
+      - polylogue/core/hashing.py
+      - polylogue/sources/decoder_json.py
+      - polylogue/pipeline/ids.py
+      - polylogue/storage/search/query_support.py
+    representative_tests:
+      - tests/property/test_encoding_boundary_matrix.py
+    gate: required
