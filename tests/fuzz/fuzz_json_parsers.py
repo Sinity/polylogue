@@ -205,12 +205,159 @@ def fuzz_claude_ai_parser(data: bytes) -> None:
         raise AssertionError(f"Unexpected exception in claude.parse_ai: {type(e).__name__}: {e}") from e
 
 
+def fuzz_drive_parser(data: bytes) -> None:
+    """Fuzz the Drive / Gemini chunkedPrompt parser with arbitrary JSON data."""
+    from polylogue.sources.parsers import drive
+
+    try:
+        text = data.decode("utf-8", errors="replace")
+    except Exception:
+        return
+
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        return
+
+    if not isinstance(payload, dict):
+        return
+
+    try:
+        if not drive.looks_like(payload):
+            return
+        result = drive.parse_chunked_prompt("gemini", payload, "fuzz-fallback-id")
+        assert result is not None, "parse_chunked_prompt() returned None"
+        assert hasattr(result, "messages"), "Missing messages attribute"
+        assert hasattr(result, "provider_name"), "Missing provider_name attribute"
+    except (ValueError, TypeError, KeyError, AttributeError, UnicodeDecodeError):
+        pass
+    except RecursionError:
+        pass
+    except MemoryError:
+        pass
+    except Exception as e:
+        raise AssertionError(f"Unexpected exception in drive.parse_chunked_prompt: {type(e).__name__}: {e}") from e
+
+
+def fuzz_antigravity_parser(data: bytes) -> None:
+    """Fuzz the Antigravity markdown-export parser with arbitrary JSON data."""
+    from polylogue.sources.parsers import antigravity
+
+    try:
+        text = data.decode("utf-8", errors="replace")
+    except Exception:
+        return
+
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        return
+
+    if not isinstance(payload, dict):
+        return
+
+    try:
+        if not antigravity.looks_like_markdown_export(payload):
+            return
+        result = antigravity.parse_markdown_export_payload(payload, "fuzz-fallback-id")
+        assert result is not None, "parse_markdown_export_payload() returned None"
+        assert hasattr(result, "messages"), "Missing messages attribute"
+        assert hasattr(result, "provider_name"), "Missing provider_name attribute"
+    except (ValueError, TypeError, KeyError, AttributeError, UnicodeDecodeError):
+        pass
+    except RecursionError:
+        pass
+    except MemoryError:
+        pass
+    except antigravity.AntigravityExportError:
+        pass
+    except Exception as e:
+        raise AssertionError(
+            f"Unexpected exception in antigravity.parse_markdown_export_payload: {type(e).__name__}: {e}"
+        ) from e
+
+
+def fuzz_browser_capture_parser(data: bytes) -> None:
+    """Fuzz the browser_capture envelope parser with arbitrary JSON data."""
+    from pydantic import ValidationError
+
+    from polylogue.sources.parsers import browser_capture
+
+    try:
+        text = data.decode("utf-8", errors="replace")
+    except Exception:
+        return
+
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        return
+
+    try:
+        if not browser_capture.looks_like(payload):
+            return
+        result = browser_capture.parse(payload, "fuzz-fallback-id")
+        assert result is not None, "parse() returned None"
+        assert hasattr(result, "messages"), "Missing messages attribute"
+        assert hasattr(result, "provider_name"), "Missing provider_name attribute"
+    except (ValueError, TypeError, KeyError, AttributeError, UnicodeDecodeError, ValidationError):
+        pass
+    except RecursionError:
+        pass
+    except MemoryError:
+        pass
+    except Exception as e:
+        raise AssertionError(f"Unexpected exception in browser_capture.parse: {type(e).__name__}: {e}") from e
+
+
+def fuzz_local_agent_parser(data: bytes) -> None:
+    """Fuzz the local-agent (Gemini CLI / Hermes) parsers with arbitrary JSON data."""
+    from polylogue.sources.parsers import local_agent
+
+    try:
+        text = data.decode("utf-8", errors="replace")
+    except Exception:
+        return
+
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        return
+
+    if not isinstance(payload, dict):
+        return
+
+    try:
+        if local_agent.looks_like_gemini_cli(payload):
+            result = local_agent.parse_gemini_cli(payload, "fuzz-fallback-id")
+            assert result is not None, "parse_gemini_cli() returned None"
+            assert hasattr(result, "messages"), "Missing messages attribute"
+            assert hasattr(result, "provider_name"), "Missing provider_name attribute"
+        if local_agent.looks_like_hermes(payload):
+            result = local_agent.parse_hermes(payload, "fuzz-fallback-id")
+            assert result is not None, "parse_hermes() returned None"
+            assert hasattr(result, "messages"), "Missing messages attribute"
+            assert hasattr(result, "provider_name"), "Missing provider_name attribute"
+    except (ValueError, TypeError, KeyError, AttributeError, UnicodeDecodeError):
+        pass
+    except RecursionError:
+        pass
+    except MemoryError:
+        pass
+    except Exception as e:
+        raise AssertionError(f"Unexpected exception in local_agent parsers: {type(e).__name__}: {e}") from e
+
+
 def fuzz_all_parsers(data: bytes) -> None:
     """Combined fuzzer that tries all parsers."""
     fuzz_chatgpt_parser(data)
     fuzz_codex_parser(data)
     fuzz_claude_code_parser(data)
     fuzz_claude_ai_parser(data)
+    fuzz_drive_parser(data)
+    fuzz_antigravity_parser(data)
+    fuzz_browser_capture_parser(data)
+    fuzz_local_agent_parser(data)
 
 
 # =============================================================================
@@ -270,6 +417,63 @@ CLAUDE_CODE_CORPUS = [
     b'{"type":"user","uuid":"u1","message":null}',
     b'{"type":"assistant","uuid":"a1","message":{"content":null}}',
     b'{"parentUuid":"p1","leafUuid":"l1"}',
+]
+
+# Valid Drive / Gemini chunkedPrompt-like structures
+DRIVE_CORPUS = [
+    b'{"chunkedPrompt": {"chunks": []}}',
+    b'{"chunkedPrompt": {"chunks": [{"role": "user", "text": "hi"}]}}',
+    b'{"chunkedPrompt": {"chunks": [{"author": "user", "text": "hi"}]}}',
+    b'{"chunkedPrompt": {"chunks": [{"role": "user", "text": "hi", "id": "c1"}]}}',
+    b'{"chunkedPrompt": {"chunks": [{"role": "model", "text": "ok"}, {"role": "user", "text": "more"}]}}',
+    b'{"chunkedPrompt": {"chunks": "not-a-list"}}',
+    b'{"chunkedPrompt": null}',
+    b'{"chunkedPrompt": {}}',
+    b'{"chunkedPrompt": {"chunks": [null, 42, "string"]}}',
+    b'{"chunkedPrompt": {"chunks": [{}]}}',
+    b'{"chunkedPrompt": {"chunks": [{"role": "", "text": "x"}]}}',
+    b'{"chunkedPrompt": {"chunks": [{"role": "user"}]}}',
+    b'{"chunkedPrompt": {"chunks": [{"role": "user", "text": null}]}}',
+    b'{"chunkedPrompt": {"chunks": [{"role": "user", "text": "hi"}]}, "title": "Test", "createTime": "2024-01-01"}',
+    b'{"chunkedPrompt": {"chunks": [{"role": "user", "text": "hi"}]}, "displayName": "Display"}',
+]
+
+# Valid Antigravity markdown-export envelopes
+ANTIGRAVITY_CORPUS = [
+    b'{"source": "antigravity_language_server", "cascadeId": "c1", "markdown": "# user\\nhi"}',
+    b'{"source": "antigravity_language_server", "cascadeId": "c1", "markdown": ""}',
+    b'{"source": "antigravity_language_server", "cascadeId": "c1", "markdown": "# user\\nhi\\n# assistant\\nok"}',
+    b'{"source": "antigravity_language_server", "cascadeId": "c1", "markdown": "x", "title": "T"}',
+    b'{"source": "antigravity_language_server", "cascadeId": "c1", "markdown": "x", "workspaceName": "ws"}',
+    b'{"source": "antigravity_language_server", "cascadeId": "c1", "markdown": "x", "snippet": "s", "lastModifiedTime": "2024-01-01"}',
+    b'{"source": "other", "cascadeId": "c1", "markdown": "x"}',
+    b'{"source": "antigravity_language_server", "cascadeId": null, "markdown": "x"}',
+    b'{"source": "antigravity_language_server", "cascadeId": "c1", "markdown": null}',
+    b'{"source": "antigravity_language_server"}',
+]
+
+# Valid browser_capture envelope-like structures
+BROWSER_CAPTURE_CORPUS = [
+    b'{"source": "browser_capture", "captureId": "c1", "session": {"turns": []}, "provenance": {"capturedAt": "2024-01-01T00:00:00Z"}}',
+    b'{"source": "browser_capture", "captureId": "c1", "session": {"turns": [{"providerTurnId": "t1", "role": "user", "text": "hi"}]}, "provenance": {"capturedAt": "2024-01-01T00:00:00Z"}}',
+    b"{}",
+    b'{"source": "unknown"}',
+    b'{"source": "browser_capture", "captureId": "c1", "session": null, "provenance": {}}',
+    b'{"source": "browser_capture", "captureId": "c1", "session": {"turns": "not-a-list"}, "provenance": {}}',
+]
+
+# Valid local-agent (Gemini CLI / Hermes) structures
+LOCAL_AGENT_CORPUS = [
+    b'{"sessionId": "s1", "messages": [], "startTime": "2024-01-01"}',
+    b'{"sessionId": "s1", "messages": [{"role": "user", "content": "hi"}], "kind": "chat"}',
+    b'{"sessionId": "s1", "messages": [{"role": "assistant", "content": "ok"}], "lastUpdated": "2024-01-01"}',
+    b'{"session_id": "s1", "messages": [], "platform": "hermes"}',
+    b'{"session_id": "s1", "messages": [{"role": "user", "content": "hi"}], "session_start": "2024-01-01"}',
+    b'{"session_id": "s1", "messages": [{"role": "assistant", "content": "ok"}], "system_prompt": "be nice", "last_updated": "2024-01-01"}',
+    b'{"sessionId": "s1", "messages": null}',
+    b'{"session_id": "s1", "messages": [null, {}, {"role": null}]}',
+    b'{"sessionId": "", "messages": []}',
+    b"{}",
 ]
 
 # Malformed JSON
@@ -349,6 +553,62 @@ class TestParserFuzz:
             length = random.randint(1, 500)
             data = bytes(random.randint(0, 255) for _ in range(length))
             fuzz_claude_code_parser(data)
+
+    @pytest.mark.parametrize("data", DRIVE_CORPUS + MALFORMED_CORPUS)
+    def test_drive_parser_corpus(self, data: bytes) -> None:
+        """Run Drive / Gemini parser fuzz with seed corpus."""
+        fuzz_drive_parser(data)
+
+    @pytest.mark.parametrize("data", ANTIGRAVITY_CORPUS + MALFORMED_CORPUS)
+    def test_antigravity_parser_corpus(self, data: bytes) -> None:
+        """Run Antigravity parser fuzz with seed corpus."""
+        fuzz_antigravity_parser(data)
+
+    @pytest.mark.parametrize("data", BROWSER_CAPTURE_CORPUS + MALFORMED_CORPUS)
+    def test_browser_capture_parser_corpus(self, data: bytes) -> None:
+        """Run browser_capture parser fuzz with seed corpus."""
+        fuzz_browser_capture_parser(data)
+
+    @pytest.mark.parametrize("data", LOCAL_AGENT_CORPUS + MALFORMED_CORPUS)
+    def test_local_agent_parser_corpus(self, data: bytes) -> None:
+        """Run local-agent parser fuzz with seed corpus."""
+        fuzz_local_agent_parser(data)
+
+    def test_drive_parser_random(self) -> None:
+        """Run Drive parser with ≥1000 random byte inputs."""
+        import random
+
+        for _ in range(1000):
+            length = random.randint(1, 500)
+            data = bytes(random.randint(0, 255) for _ in range(length))
+            fuzz_drive_parser(data)
+
+    def test_antigravity_parser_random(self) -> None:
+        """Run Antigravity parser with ≥1000 random byte inputs."""
+        import random
+
+        for _ in range(1000):
+            length = random.randint(1, 500)
+            data = bytes(random.randint(0, 255) for _ in range(length))
+            fuzz_antigravity_parser(data)
+
+    def test_browser_capture_parser_random(self) -> None:
+        """Run browser_capture parser with ≥1000 random byte inputs."""
+        import random
+
+        for _ in range(1000):
+            length = random.randint(1, 500)
+            data = bytes(random.randint(0, 255) for _ in range(length))
+            fuzz_browser_capture_parser(data)
+
+    def test_local_agent_parser_random(self) -> None:
+        """Run local-agent parser with ≥1000 random byte inputs."""
+        import random
+
+        for _ in range(1000):
+            length = random.randint(1, 500)
+            data = bytes(random.randint(0, 255) for _ in range(length))
+            fuzz_local_agent_parser(data)
 
 
 # =============================================================================

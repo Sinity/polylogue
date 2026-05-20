@@ -29,6 +29,10 @@ _FUZZ_MODULES: dict[str, tuple[str, ...]] = {
         "fuzz_codex_parser",
         "fuzz_claude_code_parser",
         "fuzz_claude_ai_parser",
+        "fuzz_drive_parser",
+        "fuzz_antigravity_parser",
+        "fuzz_browser_capture_parser",
+        "fuzz_local_agent_parser",
         "fuzz_all_parsers",
     ),
     "tests.fuzz.fuzz_path_sanitizer": (
