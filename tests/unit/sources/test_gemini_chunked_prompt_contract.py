@@ -229,7 +229,9 @@ class TestPerChunkContentBlocks:
         ]
         assert len(result_blocks) == 1
         # The on-disk output ("4\n") is surfaced verbatim, not the outcome label.
-        assert result_blocks[0]["text"].strip() == "4"
+        result_text = result_blocks[0]["text"]
+        assert isinstance(result_text, str)
+        assert result_text.strip() == "4"
 
     def test_text_chunk_emits_single_text_block(self) -> None:
         payload = _load_catalog("text_only_prompt.json")
@@ -319,14 +321,14 @@ class TestMetadataRoundtrip:
         reconstructed_chunks = [(m.provider_meta or {}).get("raw") for m in original.messages]
         # No chunk should be missing its raw projection.
         assert all(isinstance(chunk, dict) for chunk in reconstructed_chunks)
-        synthetic_payload: JSONDocument = {
+        synthetic_payload: dict[str, Any] = {
             "id": payload["id"],
             "displayName": payload.get("displayName"),
             "createTime": payload.get("createTime"),
             "updateTime": payload.get("updateTime"),
             "chunkedPrompt": {"chunks": reconstructed_chunks},
         }
-        replay = _parse(synthetic_payload, "multi_turn_prompt")
+        replay = _parse(cast(JSONDocument, synthetic_payload), "multi_turn_prompt")
         assert [m.role for m in replay.messages] == [m.role for m in original.messages]
         assert [m.text for m in replay.messages] == [m.text for m in original.messages]
         assert [m.timestamp for m in replay.messages] == [m.timestamp for m in original.messages]

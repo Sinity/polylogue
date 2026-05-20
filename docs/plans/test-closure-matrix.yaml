@@ -92,10 +92,8 @@ rows:
     representative_tests:
       - tests/unit/sources/test_parsers_drive.py
       - tests/unit/sources/test_parsers_props.py
+      - tests/unit/sources/test_gemini_chunked_prompt_contract.py
     gate: required
-    known_gaps:
-      - Gemini chunkedPrompt message-extraction and metadata roundtrip lacks
-        dedicated assertions; format detection only
 
   - domain: sources.parsers.antigravity
     target_files:
