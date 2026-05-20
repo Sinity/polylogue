@@ -81,6 +81,31 @@ devtools run-validation-lanes --lane frontier-local
 devtools run-validation-lanes --lane live-exercises --dry-run
 ```
 
+### Schema upgrade lane (#1302)
+
+Polylogue intentionally has no schema migration chain — version mismatch is
+rejected and the operator re-ingests from source (see
+[Schema Versioning Model](internals.md#schema-versioning-model)).
+`devtools verify-schema-upgrade-lane` enforces that policy boundary:
+
+- It scans `polylogue/storage/sqlite/` for migration-shaped helpers
+  (`build_vN_to_vM`, `_apply_version_upgrade_plan`, `upgrade_vN_to_vM`,
+  `migrate_vN_*`, `ensure_schema_upgrades_vN`).
+- If any are found, it requires a driving test under
+  `tests/unit/storage/migrations/` that references the helper symbol by name.
+  The driving test must build a source-version fixture DB, apply the helper,
+  and assert the post-upgrade shape (see
+  `tests/unit/storage/migrations/README.md` for the full policy).
+- In the steady state (no helpers committed), the lint passes cleanly.
+
+The lint runs as part of `devtools verify --lab`, not the fast default path:
+the policy boundary is an architectural concern, not a per-edit gate.
+
+```bash
+devtools verify-schema-upgrade-lane
+devtools verify-schema-upgrade-lane --json
+```
+
 ### Mutation campaigns
 
 ```bash

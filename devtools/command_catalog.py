@@ -477,6 +477,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-test-infra-currency", "devtools verify-test-infra-currency --json"),
     ),
     CommandSpec(
+        "verify-schema-upgrade-lane",
+        "verification",
+        "Verify any in-place schema upgrade helper has a paired driving test under tests/unit/storage/migrations/ (#1302).",
+        "devtools.verify_schema_upgrade_lane",
+        use_when=(
+            "Enforce the policy boundary documented in docs/internals.md § "
+            "'Schema Versioning Model'. Polylogue intentionally has no "
+            "schema migration chain; any reviewed in-place upgrade helper "
+            "added under a PR exception must be exercised by a dedicated "
+            "test lane against a source-version fixture DB."
+        ),
+        examples=("devtools verify-schema-upgrade-lane", "devtools verify-schema-upgrade-lane --json"),
+    ),
+    CommandSpec(
         "verify-test-clock-hygiene",
         "verification",
         "Verify test files use the frozen_clock fixture instead of reading the host wall clock (#1300).",
@@ -489,25 +503,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "with a one-line rationale."
         ),
         examples=("devtools verify-test-clock-hygiene", "devtools verify-test-clock-hygiene --json"),
-    ),
-    CommandSpec(
-        "verify-mutation-freshness",
-        "verification",
-        "Verify per-module mutation-campaign artifact freshness against docs/plans/campaign-coverage.yaml (#1304).",
-        "devtools.verify_mutation_freshness",
-        use_when=(
-            "Catch mutation campaigns whose newest run artifact is older than the "
-            "campaign's freshness_days budget (default 60), or have no artifact "
-            "at all. Soft by default so devtools verify can surface drift "
-            "without gating on local mutation-run cadence; --strict turns "
-            "missing/stale into a hard fail for nightly jobs and "
-            "devtools verify --lab."
-        ),
-        examples=(
-            "devtools verify-mutation-freshness",
-            "devtools verify-mutation-freshness --strict",
-            "devtools verify-mutation-freshness --json",
-        ),
     ),
     CommandSpec(
         "verify-distribution-surface",

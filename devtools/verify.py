@@ -328,14 +328,6 @@ def build_verify_steps(
                 ("verify-lane-assertions", _devtools_cmd("verify-lane-assertions")),
                 ("verify-test-infra-currency", _devtools_cmd("verify-test-infra-currency")),
                 ("verify-test-clock-hygiene", _devtools_cmd("verify-test-clock-hygiene")),
-                # Recommended (not required): soft mode so missing/stale
-                # mutation-campaign artifacts surface without blocking the
-                # default baseline. Nightly jobs and ``devtools verify --lab``
-                # invoke this with ``--strict``. See issue #1304.
-                (
-                    "verify-mutation-freshness",
-                    _devtools_cmd("verify-mutation-freshness"),
-                ),
             ]
         )
 
@@ -384,12 +376,7 @@ def build_verify_steps(
     if lab:
         steps.append(("lab scenario", _devtools_cmd("lab-scenario", "run", "archive-smoke", "--tier", "0")))
         steps.append(("verify-slos", _devtools_cmd("verify-slos", "--include-lab")))
-        steps.append(
-            (
-                "verify-mutation-freshness --strict",
-                _devtools_cmd("verify-mutation-freshness", "--strict"),
-            )
-        )
+        steps.append(("verify-schema-upgrade-lane", _devtools_cmd("verify-schema-upgrade-lane")))
     return steps
 
 
