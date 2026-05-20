@@ -1,0 +1,45 @@
+{
+  "id": "gem-code-exec",
+  "title": "Code interpreter run",
+  "createTime": "2025-02-02T09:00:00Z",
+  "updateTime": "2025-02-02T09:00:45Z",
+  "chunkedPrompt": {
+    "chunks": [
+      {
+        "role": "user",
+        "text": "Compute 2+2 in python.",
+        "createTime": "2025-02-02T09:00:00Z"
+      },
+      {
+        "role": "model",
+        "isThought": true,
+        "text": "I should use code execution.",
+        "thinkingBudget": 256,
+        "createTime": "2025-02-02T09:00:05Z"
+      },
+      {
+        "role": "model",
+        "executableCode": {
+          "language": "PYTHON",
+          "code": "print(2+2)"
+        },
+        "createTime": "2025-02-02T09:00:10Z"
+      },
+      {
+        "role": "model",
+        "codeExecutionResult": {
+          "outcome": "OUTCOME_OK",
+          "output": "4\n"
+        },
+        "createTime": "2025-02-02T09:00:20Z"
+      },
+      {
+        "role": "model",
+        "text": "The answer is 4.",
+        "createTime": "2025-02-02T09:00:45Z",
+        "tokenCount": 5,
+        "finishReason": "STOP"
+      }
+    ]
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "id": "gem-multi-turn",
+  "displayName": "Drive doc summary",
+  "createTime": "2025-02-03T10:00:00Z",
+  "updateTime": "2025-02-03T10:02:00Z",
+  "chunkedPrompt": {
+    "chunks": [
+      {
+        "role": "user",
+        "text": "Summarize this doc.",
+        "createTime": "2025-02-03T10:00:00Z",
+        "driveDocument": {"id": "doc-abc", "name": "report.pdf"}
+      },
+      {
+        "role": "model",
+        "isThought": true,
+        "text": "Reading the document...",
+        "thinkingBudget": 1024,
+        "createTime": "2025-02-03T10:00:30Z"
+      },
+      {
+        "role": "model",
+        "text": "The document covers Q1 results.",
+        "createTime": "2025-02-03T10:01:00Z",
+        "tokenCount": 12,
+        "finishReason": "STOP",
+        "safetyRatings": [
+          {"category": "HARM_CATEGORY_HARASSMENT", "probability": "NEGLIGIBLE"}
+        ]
+      },
+      {
+        "role": "user",
+        "text": "And the risks?",
+        "createTime": "2025-02-03T10:01:30Z"
+      },
+      {
+        "role": "model",
+        "text": "Main risk is supply chain volatility.",
+        "createTime": "2025-02-03T10:02:00Z",
+        "tokenCount": 9,
+        "finishReason": "STOP"
+      }
+    ]
+  }
+}

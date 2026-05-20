@@ -1,0 +1,34 @@
+{
+  "id": "gem-text-only",
+  "title": "Capital trivia",
+  "createTime": "2025-02-01T08:00:00Z",
+  "updateTime": "2025-02-01T08:00:30Z",
+  "chunkedPrompt": {
+    "chunks": [
+      {
+        "role": "user",
+        "text": "What is the capital of France?",
+        "createTime": "2025-02-01T08:00:00Z"
+      },
+      {
+        "role": "model",
+        "text": "The capital of France is Paris.",
+        "createTime": "2025-02-01T08:00:05Z",
+        "tokenCount": 8,
+        "finishReason": "STOP"
+      },
+      {
+        "role": "user",
+        "text": "And of Germany?",
+        "createTime": "2025-02-01T08:00:20Z"
+      },
+      {
+        "role": "model",
+        "text": "Berlin.",
+        "createTime": "2025-02-01T08:00:30Z",
+        "tokenCount": 2,
+        "finishReason": "STOP"
+      }
+    ]
+  }
+}
