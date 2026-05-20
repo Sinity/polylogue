@@ -176,6 +176,28 @@ Pull requests should:
 Use `Ref #NNN` when the issue should stay open after merge, and `Closes #NNN`
 when the merge should close it.
 
+## Documentation Site Previews
+
+The documentation site (`devtools render-pages` → `.cache/site/`) is
+published to GitHub Pages on every push to `master` via
+`.github/workflows/pages.yml`.
+
+PRs that touch docs, render-pages helpers, or top-level Markdown files
+trigger `.github/workflows/pages-preview.yml`, which rebuilds the site
+and uploads it as a workflow artifact named
+`docs-site-preview-pr-<NNN>`. Download the artifact from the PR's
+Checks → Pages Preview run, extract, and serve locally:
+
+```bash
+unzip docs-site-preview-pr-*.zip -d /tmp/polylogue-docs
+python -m http.server --directory /tmp/polylogue-docs 8000
+```
+
+Per-PR live preview URLs (`/pr/NNN/`) and versioned release trees
+(`/vX.Y.Z/`, plus a `/latest/` alias) are deferred follow-ups under
+#1307 — both require migrating `pages.yml` from the single-target
+`actions/deploy-pages` flow to a branch-based deploy.
+
 ## Repository Settings
 
 The repository should stay aligned with the workflow above:
