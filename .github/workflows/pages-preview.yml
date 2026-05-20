@@ -1,0 +1,74 @@
+name: GitHub Pages Preview
+
+# Build the documentation site on every pull request that touches a docs or
+# render-pages surface, and upload the resulting site as a workflow artifact
+# so reviewers can download and inspect it locally.
+#
+# This is the per-PR artifact mode of #1307. Per-PR deployment to a real
+# preview URL (e.g. gh-pages /pr/NNN/) and versioned release trees
+# (/vX.Y.Z/) are deferred — both require switching the master pages.yml
+# from actions/deploy-pages (single-target Pages environment) to a
+# branch-based deploy. Tracked as follow-up issues.
+
+on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - "devtools/render_pages.py"
+      - "devtools/render_*"
+      - ".github/workflows/pages-preview.yml"
+      - ".github/workflows/pages.yml"
+      - "README.md"
+      - "CONTRIBUTING.md"
+      - "TESTING.md"
+      - "CLAUDE.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Build site
+        run: nix develop --command devtools render-pages
+
+      - name: Upload preview artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-site-preview-pr-${{ github.event.pull_request.number || github.run_id }}
+          path: .cache/site/
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Summary
+        run: |
+          {
+            echo "## Docs preview built"
+            echo ""
+            echo "The rendered site is uploaded as a workflow artifact:"
+            echo ""
+            echo "**docs-site-preview-pr-${{ github.event.pull_request.number || github.run_id }}**"
+            echo ""
+            echo "Download from the workflow run page, extract, and serve locally:"
+            echo ""
+            echo '```bash'
+            echo "unzip docs-site-preview-pr-*.zip -d /tmp/polylogue-docs"
+            echo "python -m http.server --directory /tmp/polylogue-docs 8000"
+            echo '```'
+            echo ""
+            echo "Per-PR live deployment and versioned /vX.Y.Z/ trees are tracked as"
+            echo "follow-ups to #1307."
+          } >> "$GITHUB_STEP_SUMMARY"
