@@ -196,7 +196,7 @@ files:
     owner: archive-conversation
     reason: archive-domain semantics
   - path: polylogue/archive/conversation/runtime.py
-    loc: 232
+    loc: 249
     target: polylogue/archive/conversation/runtime.py
     owner: archive-conversation
     reason: archive-domain semantics
@@ -251,13 +251,13 @@ files:
     owner: archive-message
     reason: archive-domain semantics
   - path: polylogue/archive/message/model_runtime.py
-    loc: 320
+    loc: 142
     target: polylogue/archive/message/model_runtime.py
     owner: archive-message
     reason: archive-domain semantics
     cross_cut: { lifecycle: runtime }
   - path: polylogue/archive/message/models.py
-    loc: 79
+    loc: 78
     target: polylogue/archive/message/models.py
     owner: archive-message
     reason: archive-domain semantics
@@ -491,7 +491,7 @@ files:
     owner: archive-semantic
     reason: archive-domain semantics
   - path: polylogue/archive/semantic/pricing.py
-    loc: 711
+    loc: 704
     target: polylogue/archive/semantic/pricing.py
     owner: archive-semantic
     reason: archive-domain semantics
@@ -507,7 +507,7 @@ files:
     owner: archive-semantic
     reason: archive-domain semantics
   - path: polylogue/archive/semantic/support.py
-    loc: 145
+    loc: 135
     target: polylogue/archive/semantic/support.py
     owner: archive-semantic
     reason: archive-domain semantics
@@ -1128,7 +1128,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 2050
+    loc: 2080
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_models.py
@@ -1147,6 +1147,10 @@ files:
   - path: polylogue/daemon/maintenance_registry_http.py
     loc: 83
     target: polylogue/daemon/maintenance_registry_http.py
+    owner: stable
+  - path: polylogue/daemon/metrics.py
+    loc: 447
+    target: polylogue/daemon/metrics.py
     owner: stable
   - path: polylogue/daemon/notification_backends/__init__.py
     loc: 65
@@ -2817,7 +2821,7 @@ files:
     target: polylogue/storage/fts/sql.py
     owner: stable
   - path: polylogue/storage/hydrators.py
-    loc: 218
+    loc: 217
     target: polylogue/storage/hydrators.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -2872,7 +2876,7 @@ files:
     target: polylogue/storage/insights/session/refresh.py
     owner: stable
   - path: polylogue/storage/insights/session/repo_identity.py
-    loc: 282
+    loc: 284
     target: polylogue/storage/insights/session/repo_identity.py
     owner: stable
   - path: polylogue/storage/insights/session/runtime.py
@@ -3427,7 +3431,7 @@ files:
     target: polylogue/surfaces/__init__.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 1129
+    loc: 1127
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/types.py

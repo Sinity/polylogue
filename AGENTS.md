@@ -1058,6 +1058,26 @@ content-hash boundary by construction (#1131):
   helpers) and `RepositoryWriteMixin.record_correction` /
   `list_corrections` / `delete_correction` / `clear_corrections`.
 
+## Text Handling Contracts
+
+Polylogue exposes several text-processing boundaries. Each declares one of
+three contracts per edge case; the matrix in
+`tests/property/test_encoding_boundary_matrix.py` (#1305) is the executable
+record of which contract applies where.
+
+| Boundary | Module | Contract for edge cases |
+| --- | --- | --- |
+| JSON byte decoding | `polylogue/sources/decoder_json.py:decode_json_bytes` | UTF-8 BOM and BOM-bearing UTF-16 are decoded and the BOM is stripped; raw UTF-16 without a BOM is unsupported by design. |
+| Content hash | `polylogue/core/hashing.py:hash_text`, `polylogue/pipeline/ids.py` | NFC normalization is applied to text fields (title, message text) before hashing, so NFC and NFD inputs produce identical `content_hash`. Lone surrogates raise `UnicodeEncodeError` (typed rejection — not silent corruption). |
+| FTS5 indexing | `polylogue/storage/sqlite/schema_ddl_archive.py` (unicode61) | Text is stored and indexed unchanged. RTL scripts (Arabic, Hebrew) and Latin-with-diacritics are word-tokenized; CJK runs index as a single token (substring queries against CJK are not supported). Zero-width and bidi characters pass through without crashing indexing. |
+| FTS5 query escaping | `polylogue/storage/search/query_support.py:escape_fts5_query` | Every edge-case input produces a `MATCH`-safe query — bidi, zero-width, RTL, CJK, surrogate-pair emoji never raise `OperationalError`. |
+| Terminal output | UTF-8 `TextIOWrapper` | All matrix strings pass through unchanged; lone surrogates raise `UnicodeEncodeError`. |
+
+Edge cases covered: UTF-8/UTF-16 BOM, NFC/NFD equivalence, combining marks,
+RTL (Arabic, Hebrew), bidi overrides, zero-width joiners and ZWNJ/ZWSP,
+non-BMP characters (CJK extension B), ZWJ emoji sequences with skin-tone
+modifiers, and unpaired surrogates.
+
 ## Content Hash Model
 
 Archive writes are idempotent by content hash:
@@ -1201,6 +1221,29 @@ requires both inputs to be `ok: True`.  Numeric fields produce
 `{before, after, delta}` triples; the FTS trigger section reports
 `regressed` (newly missing) and `restored` separately so trigger drift is
 attributable to a specific convergence cycle.
+
+## Daemon Metrics Endpoint (#1321)
+
+`GET /metrics` returns the Prometheus text exposition format
+(`text/plain; version=0.0.4`). Implementation lives in
+`polylogue/daemon/metrics.py`; the route is wired in
+`polylogue/daemon/http.py` alongside `/healthz/*` so all three scrape
+surfaces share the same unauthenticated posture (Prometheus and
+kubernetes/docker healthchecks cannot supply credentials, and the
+daemon binds to loopback by default).
+
+Series are derived from existing daemon state tables via
+`open_readonly_connection` — `live_ingest_attempt` (totals by status,
+in-flight gauge, recent-attempt duration min/mean/max), unresolved
+`live_convergence_debt` grouped by stage, `pending_blob_refs` (pending
+count, distinct operations), and the six expected FTS sync triggers
+from `_EXPECTED_FTS_TRIGGERS`. Missing tables degrade to zero samples
+rather than 5xx-ing, so a fresh archive still emits the discovery
+skeleton.
+
+Polylogue does not depend on `prometheus_client`; the exposition format
+is hand-rolled. The OTLP HTTP receiver from #1224's ambitious-move
+section is intentionally deferred and tracked under the same issue.
 
 ## Debugging Landmarks
 

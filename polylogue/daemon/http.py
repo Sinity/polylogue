@@ -638,6 +638,25 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def _send_text(
+        self,
+        status: HTTPStatus,
+        body: str,
+        *,
+        content_type: str = "text/plain; charset=utf-8",
+    ) -> None:
+        """Send a plain-text body with a caller-chosen ``Content-Type``.
+
+        Used by ``/metrics`` (#1321) to emit Prometheus exposition format
+        without piggy-backing on JSON or HTML helpers.
+        """
+        raw = body.encode("utf-8")
+        self.send_response(status.value)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
     def _send_error(self, status: HTTPStatus, code: str) -> None:
         self._send_json(status, {"ok": False, "error": code})
 
@@ -728,6 +747,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             from polylogue.daemon.healthz import handle_healthz_ready
 
             handle_healthz_ready(self)
+            return
+
+        # Prometheus scrape endpoint (#1321). Unauthenticated for the same
+        # reasons as /healthz/* — scrapers don't carry credentials and the
+        # daemon binds to loopback. Series are derived from the archive
+        # SQLite database via read-only connections; no archive content
+        # is exposed.
+        if path == ["metrics"]:
+            from polylogue.daemon.metrics import handle_metrics
+
+            handle_metrics(self, db_path())
             return
 
         if not self._check_auth():
