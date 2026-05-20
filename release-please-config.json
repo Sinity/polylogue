@@ -25,7 +25,11 @@
     ".": {
       "package-name": "polylogue",
       "changelog-path": "CHANGELOG.md",
-      "extra-files": []
+      "extra-files": [
+        "packaging/polylogue-mcp/pyproject.toml",
+        "packaging/polylogue-hooks/pyproject.toml",
+        "packaging/polylogue-hooks/src/polylogue_hooks/__init__.py"
+      ]
     }
   }
 }

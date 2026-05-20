@@ -97,6 +97,22 @@ PyPI Trusted Publishing requires a one-time registration on pypi.org under
 is missing the publish step fails with an OIDC error and the tag must be
 re-cut after re-running the workflow.
 
+The same release tag also publishes the wrapper distributions
+[`polylogue-mcp`](https://pypi.org/project/polylogue-mcp/) and
+[`polylogue-hooks`](https://pypi.org/project/polylogue-hooks/) (#1309). Each
+PyPI project needs its own Trusted Publisher binding:
+
+| PyPI project       | `environment`   | Wraps                                       |
+| ------------------ | --------------- | ------------------------------------------- |
+| `polylogue`        | `pypi`          | full archive runtime (CLI + daemon + MCP)   |
+| `polylogue-mcp`    | `pypi-mcp`      | `polylogue-mcp` console script (pins `polylogue==X.Y.Z`) |
+| `polylogue-hooks`  | `pypi-hooks`    | `polylogue-hook` console script (zero runtime deps) |
+
+Register all three pending publishers before the first tagged release reaches
+the `publish-pypi-mcp` / `publish-pypi-hooks` jobs. Each registration uses the
+same `owner = Sinity`, `repo = polylogue`, `workflow = release.yml` triple and
+differs only in the `environment` name.
+
 Sigstore keyless signing requires no project-side configuration; it derives
 identity from the workflow's `id-token: write` OIDC claim and publishes to
 the public Sigstore transparency log. Consumers can verify the bundle with
@@ -118,6 +134,11 @@ polylogue-X.Y.Z-py3-none-any.whl polylogue-X.Y.Z-py3-none-any.whl.sigstore`.
       `podman pull` succeeds.
 - [ ] Smoke `pip install polylogue==X.Y.Z` in a clean venv and run
       `polylogue --help`, `polylogued --help`, `polylogue-mcp --help`.
+- [ ] Smoke `pip install polylogue-mcp==X.Y.Z` in a clean venv and confirm
+      `polylogue-mcp --help` works (pins the matching `polylogue==X.Y.Z`).
+- [ ] Smoke `pip install polylogue-hooks==X.Y.Z` in a clean venv and confirm
+      `polylogue-hook SessionStart` accepts a sample JSON payload on stdin.
+      `pip list` should show only `polylogue-hooks` plus pip/setuptools/wheel.
 - [ ] Smoke the container: `podman run --rm
       ghcr.io/sinity/polylogue:X.Y.Z polylogue --version`.
 - [ ] Confirm the `signing-artifacts-publish-pypi` workflow artifact on the
