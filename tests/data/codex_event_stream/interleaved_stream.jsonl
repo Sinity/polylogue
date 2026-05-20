@@ -1,0 +1,13 @@
+{"type":"session_meta","payload":{"id":"interleaved-session-1","timestamp":"2025-01-15T12:00:00Z","git":{"branch":"feature/x"}}}
+{"type":"turn_context","payload":{"cwd":"/repo/polylogue"}}
+{"type":"response_item","payload":{"type":"message","id":"msg-user-1","role":"user","timestamp":"2025-01-15T12:00:03Z","content":[{"type":"input_text","text":"Check git status, then read README."}]}}
+{"type":"response_item","payload":{"type":"function_call","id":"fc_1","call_id":"call_git","name":"exec_command","arguments":"{\"cmd\": \"git status\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"call_git","output":"clean"}}
+{"type":"response_item","payload":{"type":"message","id":"msg-asst-1","role":"assistant","timestamp":"2025-01-15T12:00:08Z","content":[{"type":"output_text","text":"Working tree is clean."}]}}
+{"type":"response_item","payload":{"type":"function_call","id":"fc_2","call_id":"call_read","name":"read_file","arguments":"{\"path\": \"README.md\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"call_read","output":"# Polylogue\n"}}
+{"type":"response_item","payload":{"type":"message","id":"msg-asst-2","role":"assistant","timestamp":"2025-01-15T12:00:14Z","content":[{"type":"output_text","text":"README starts with the Polylogue heading."}]}}
+{"type":"response_item","payload":{"type":"message","id":"msg-user-2","role":"user","timestamp":"2025-01-15T12:01:00Z","content":[{"type":"input_text","text":"Thanks."}]}}
+{"type":"compacted","timestamp":"2025-01-15T12:05:00Z","payload":{"message":"Conversation compacted","replacement_history":[{"id":"summary-1"}]}}
+{"type":"turn_context","payload":{"turn_context":{"cwd":"/repo/other"}}}
+{"type":"response_item","payload":{"type":"token_count","input_tokens":120,"output_tokens":40}}
