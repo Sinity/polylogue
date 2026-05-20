@@ -187,6 +187,12 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "export_insight_bundle",
         "parse_file",
         "cost_outlook",
+        # Topology read methods exposed in tests/unit/api/test_topology_api.py.
+        "get_ancestors",
+        "get_descendants",
+        "get_session_topology",
+        "get_siblings",
+        "get_thread",
     }
 )
 
@@ -468,7 +474,7 @@ async def test_list_conversations_returns_seeded_rows(tmp_path: Path) -> None:
     db_path = archive.config.archive_root / "polylogue.db"
     # Ensure schema is initialized by touching the repository before seeding.
     _ = archive.repository
-    await _seed_two_conversations(tmp_path / "polylogue.db" if False else db_path)
+    await _seed_two_conversations(db_path)
     try:
         rows = await archive.list_conversations()
         assert isinstance(rows, list)
@@ -564,6 +570,7 @@ async def test_mutation_methods_raise_on_unknown_id(
     try:
         method = getattr(archive, method_name)
         # Construct the minimum-valid argument set per method shape.
+        coro: object
         if method_name in {"add_tag", "remove_tag"}:
             coro = method("does-not-exist", "some-tag")
         elif method_name in {"add_mark", "remove_mark"}:
@@ -576,10 +583,10 @@ async def test_mutation_methods_raise_on_unknown_id(
             coro = method("does-not-exist")
         elif method_name == "save_annotation":
             coro = method("note-1", "does-not-exist", "note text")
-        else:  # pragma: no cover - defensive
-            pytest.fail(f"Unhandled mutation method in parametrize set: {method_name}")
+        else:
+            raise AssertionError(f"Unhandled mutation method in parametrize set: {method_name}")
         with pytest.raises(ConversationNotFoundError):
-            await coro
+            await coro  # type: ignore[misc]
     finally:
         await archive.close()
 
