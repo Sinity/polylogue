@@ -491,6 +491,25 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-test-clock-hygiene", "devtools verify-test-clock-hygiene --json"),
     ),
     CommandSpec(
+        "verify-mutation-freshness",
+        "verification",
+        "Verify per-module mutation-campaign artifact freshness against docs/plans/campaign-coverage.yaml (#1304).",
+        "devtools.verify_mutation_freshness",
+        use_when=(
+            "Catch mutation campaigns whose newest run artifact is older than the "
+            "campaign's freshness_days budget (default 60), or have no artifact "
+            "at all. Soft by default so devtools verify can surface drift "
+            "without gating on local mutation-run cadence; --strict turns "
+            "missing/stale into a hard fail for nightly jobs and "
+            "devtools verify --lab."
+        ),
+        examples=(
+            "devtools verify-mutation-freshness",
+            "devtools verify-mutation-freshness --strict",
+            "devtools verify-mutation-freshness --json",
+        ),
+    ),
+    CommandSpec(
         "verify-distribution-surface",
         "verification",
         "Verify wheel/sdist installed artifacts expose only supported runtime entrypoints.",
