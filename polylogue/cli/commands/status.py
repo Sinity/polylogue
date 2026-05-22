@@ -13,7 +13,7 @@ from polylogue.cli.shared.types import AppEnv
 
 _BUILTIN_DAEMON_URL = "http://127.0.0.1:8766"
 _FAST_TIMEOUT_S = 1.0
-_FULL_TIMEOUT_S = 5.0
+_FULL_TIMEOUT_S = 30.0
 
 
 def _default_daemon_url() -> str:
