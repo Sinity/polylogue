@@ -316,8 +316,9 @@ def test_cursor_migrates_size_only_rows(tmp_path: Path) -> None:
     assert {"byte_offset", "content_fingerprint", "source_name"}.issubset(columns)
 
 
-def test_live_full_ingest_uses_shared_worker_count_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_live_full_ingest_caps_workers_below_batch_policy(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.os.cpu_count", lambda: 16)
+    monkeypatch.delenv("POLYLOGUE_LIVE_FULL_INGEST_WORKERS", raising=False)
     records = [
         RawConversationRecord(
             raw_id=f"raw-{index}",
@@ -336,8 +337,25 @@ def test_live_full_ingest_uses_shared_worker_count_policy(monkeypatch: pytest.Mo
         acquired_at="2026-05-01T00:00:00+00:00",
     )
 
-    assert _full_ingest_worker_count(records) == 16
+    assert _full_ingest_worker_count(records) == 2
     assert _full_ingest_worker_count([giant]) == 1
+
+
+def test_live_full_ingest_worker_cap_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.os.cpu_count", lambda: 16)
+    monkeypatch.setenv("POLYLOGUE_LIVE_FULL_INGEST_WORKERS", "4")
+    records = [
+        RawConversationRecord(
+            raw_id=f"raw-{index}",
+            provider_name="claude-code",
+            source_path=f"/tmp/session-{index}.jsonl",
+            blob_size=2 * 1024 * 1024,
+            acquired_at="2026-05-01T00:00:00+00:00",
+        )
+        for index in range(300)
+    ]
+
+    assert _full_ingest_worker_count(records) == 4
 
 
 @pytest.mark.asyncio

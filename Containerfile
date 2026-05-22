@@ -37,6 +37,20 @@ COPY . /src
 
 # Build wheel into /dist. Hatchling embeds polylogue/_build_info.py via
 # hatch_build.py, so the resulting wheel knows its own version + commit.
+ARG POLYLOGUE_BUILD_COMMIT=container-build
+ARG POLYLOGUE_BUILD_DIRTY=False
+RUN python - <<PY
+from pathlib import Path
+
+commit = "${POLYLOGUE_BUILD_COMMIT}"
+dirty = "${POLYLOGUE_BUILD_DIRTY}".strip().lower() in {"1", "true", "yes"}
+Path("polylogue/_build_info.py").write_text(
+    'from __future__ import annotations\n\n'
+    f'BUILD_COMMIT = "{commit}"\n'
+    f'BUILD_DIRTY = {dirty}\n',
+    encoding="utf-8",
+)
+PY
 RUN uv build --wheel --out-dir /dist /src
 
 # ---- runtime (default) --------------------------------------------------
@@ -139,6 +153,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # Copy the installed Python environment and the console scripts from the
 # runtime stage. site-packages lives under /usr/local/lib/python3.13.
+COPY --from=runtime /usr/local/bin/python        /usr/local/bin/python
+COPY --from=runtime /usr/local/bin/python3       /usr/local/bin/python3
+COPY --from=runtime /usr/local/bin/python3.13    /usr/local/bin/python3.13
+COPY --from=runtime /usr/local/lib/libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so.1.0
 COPY --from=runtime /usr/local/lib/python3.13 /usr/local/lib/python3.13
 COPY --from=runtime /usr/local/bin/polylogue       /usr/local/bin/polylogue
 COPY --from=runtime /usr/local/bin/polylogued      /usr/local/bin/polylogued
