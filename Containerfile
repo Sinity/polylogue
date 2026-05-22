@@ -153,6 +153,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # Copy the installed Python environment and the console scripts from the
 # runtime stage. site-packages lives under /usr/local/lib/python3.13.
+COPY --from=runtime /usr/local/bin/python        /usr/local/bin/python
+COPY --from=runtime /usr/local/bin/python3       /usr/local/bin/python3
+COPY --from=runtime /usr/local/bin/python3.13    /usr/local/bin/python3.13
+COPY --from=runtime /usr/local/lib/libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so.1.0
 COPY --from=runtime /usr/local/lib/python3.13 /usr/local/lib/python3.13
 COPY --from=runtime /usr/local/bin/polylogue       /usr/local/bin/polylogue
 COPY --from=runtime /usr/local/bin/polylogued      /usr/local/bin/polylogued
