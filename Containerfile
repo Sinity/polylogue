@@ -42,10 +42,11 @@ ARG POLYLOGUE_BUILD_DIRTY=False
 RUN python - <<PY
 from pathlib import Path
 
+commit = "${POLYLOGUE_BUILD_COMMIT}"
 dirty = "${POLYLOGUE_BUILD_DIRTY}".strip().lower() in {"1", "true", "yes"}
 Path("polylogue/_build_info.py").write_text(
     'from __future__ import annotations\n\n'
-    f'BUILD_COMMIT = "{POLYLOGUE_BUILD_COMMIT}"\n'
+    f'BUILD_COMMIT = "{commit}"\n'
     f'BUILD_DIRTY = {dirty}\n',
     encoding="utf-8",
 )
