@@ -37,6 +37,19 @@ COPY . /src
 
 # Build wheel into /dist. Hatchling embeds polylogue/_build_info.py via
 # hatch_build.py, so the resulting wheel knows its own version + commit.
+ARG POLYLOGUE_BUILD_COMMIT=container-build
+ARG POLYLOGUE_BUILD_DIRTY=False
+RUN python - <<PY
+from pathlib import Path
+
+dirty = "${POLYLOGUE_BUILD_DIRTY}".strip().lower() in {"1", "true", "yes"}
+Path("polylogue/_build_info.py").write_text(
+    'from __future__ import annotations\n\n'
+    f'BUILD_COMMIT = "{POLYLOGUE_BUILD_COMMIT}"\n'
+    f'BUILD_DIRTY = {dirty}\n',
+    encoding="utf-8",
+)
+PY
 RUN uv build --wheel --out-dir /dist /src
 
 # ---- runtime (default) --------------------------------------------------
