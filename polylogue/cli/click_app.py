@@ -124,6 +124,7 @@ def cli(
     since_session_id: str | None,
     since: str | None,
     until: str | None,
+    cursor: str | None,
     limit: int | None,
     offset: int,
     latest: bool,
