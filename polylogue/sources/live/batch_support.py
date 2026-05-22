@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -23,6 +24,7 @@ _LARGE_FULL_PARSE_PROGRESS_BYTES = 64 * 1024 * 1024
 _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES = 256 * 1024 * 1024
 _SMALL_FULL_PARSE_PROGRESS_MAX_FILES = 256
 _STREAMING_FULL_INGEST_BYTES = 8 * 1024 * 1024
+_DEFAULT_LIVE_FULL_INGEST_WORKERS = 2
 
 
 class _FullIngestHeartbeat(Protocol):
@@ -200,7 +202,17 @@ def _full_parse_progress_groups(paths: list[Path]) -> Iterable[list[Path]]:
 
 
 def _full_ingest_worker_count(records: list[RawConversationRecord]) -> int:
-    return _select_ingest_worker_count(records, None)
+    return _select_ingest_worker_count(records, _live_full_ingest_worker_limit())
+
+
+def _live_full_ingest_worker_limit() -> int:
+    raw_value = os.environ.get("POLYLOGUE_LIVE_FULL_INGEST_WORKERS")
+    if raw_value is None or raw_value.strip() == "":
+        return _DEFAULT_LIVE_FULL_INGEST_WORKERS
+    try:
+        return max(1, int(raw_value))
+    except ValueError:
+        return _DEFAULT_LIVE_FULL_INGEST_WORKERS
 
 
 def _blob_copy_heartbeat(
