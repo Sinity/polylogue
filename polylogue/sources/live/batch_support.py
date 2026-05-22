@@ -202,10 +202,12 @@ def _full_parse_progress_groups(paths: list[Path]) -> Iterable[list[Path]]:
 
 
 def _full_ingest_worker_count(records: list[RawConversationRecord]) -> int:
+    """Return the worker count for daemon live full-ingest batches."""
     return _select_ingest_worker_count(records, _live_full_ingest_worker_limit())
 
 
 def _live_full_ingest_worker_limit() -> int:
+    """Resolve the daemon live full-ingest worker cap from the environment."""
     raw_value = os.environ.get("POLYLOGUE_LIVE_FULL_INGEST_WORKERS")
     if raw_value is None or raw_value.strip() == "":
         return _DEFAULT_LIVE_FULL_INGEST_WORKERS
