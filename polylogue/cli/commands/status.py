@@ -12,8 +12,10 @@ import click
 from polylogue.cli.shared.types import AppEnv
 
 _BUILTIN_DAEMON_URL = "http://127.0.0.1:8766"
+# Bare `polylogue` uses this as a quick probe before falling back to SQLite.
 _FAST_TIMEOUT_S = 1.0
-_FULL_TIMEOUT_S = 5.0
+# Explicit status can wait for large archive health payloads (~20s observed).
+_FULL_TIMEOUT_S = 30.0
 
 
 def _default_daemon_url() -> str:
