@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 import aiosqlite
 
+from polylogue.core.memory import release_process_memory
 from polylogue.storage.insights.session.aggregates import (
     profile_provider_day,
     refresh_async_provider_day_aggregates,
@@ -35,6 +36,7 @@ from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_rec
 # Hydrating 100 conversations at once inflates RSS badly on pathological archives.
 _SESSION_INSIGHT_REFRESH_PAGE_SIZE = 10
 _SESSION_INSIGHT_REFRESH_MESSAGE_BUDGET = 5_000
+_SESSION_INSIGHT_RELEASE_MESSAGE_THRESHOLD = 1_000
 
 
 @dataclass(slots=True)
@@ -556,6 +558,19 @@ async def _apply_session_insight_conversation_updates_async(
                 total_ms=chunk_total_ms,
             )
         )
+        if chunk.estimated_message_count >= _SESSION_INSIGHT_RELEASE_MESSAGE_THRESHOLD:
+            del (
+                old_profile_records,
+                batch,
+                root_ids_by_conversation,
+                hydrated_by_id,
+                record_bundles,
+                profile_records_to_write,
+                work_event_records_to_write,
+                phase_records_to_write,
+                hydrated_ids,
+            )
+            release_process_memory()
 
     return _SessionInsightBulkRefreshUpdate(
         counts=counts,
