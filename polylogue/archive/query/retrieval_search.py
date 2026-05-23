@@ -117,21 +117,22 @@ async def search_action_results(
     limit: int,
 ) -> list[Conversation]:
     from polylogue.archive.query.retrieval_candidates import action_search_ready
+    from polylogue.errors import DatabaseError
 
     query = search_query_text(plan)
     provider_names = list(provider_values(plan.providers)) or None
     if not await action_search_ready(plan, repository):
-        return await search_action_results_fallback(plan, repository, limit=limit)
+        raise DatabaseError("Action search index is not fresh; daemon repair must complete before search.")
     try:
         return await repository.search_actions(query, limit=limit, providers=provider_names)
     except Exception as exc:
         logger.warning(
-            "action search failed; falling back to slower path",
+            "action search failed",
             error=str(exc),
             error_type=type(exc).__name__,
             query=query,
         )
-        return await search_action_results_fallback(plan, repository, limit=limit)
+        raise
 
 
 async def search_hybrid_results(

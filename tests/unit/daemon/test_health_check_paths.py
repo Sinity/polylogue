@@ -73,12 +73,15 @@ def _init_messages_db(path: Path, *, fts_rows: int = 0, message_rows: int = 0) -
     """
     conn = sqlite3.connect(str(path))
     try:
-        conn.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, body TEXT)")
-        conn.execute("CREATE VIRTUAL TABLE messages_fts USING fts5(body)")
+        conn.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, text TEXT)")
+        conn.execute("CREATE VIRTUAL TABLE messages_fts USING fts5(text)")
+        conn.execute("CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN SELECT 1; END")
+        conn.execute("CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN SELECT 1; END")
+        conn.execute("CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages BEGIN SELECT 1; END")
         for i in range(message_rows):
-            conn.execute("INSERT INTO messages(id, body) VALUES (?, ?)", (i + 1, f"body {i}"))
+            conn.execute("INSERT INTO messages(id, text) VALUES (?, ?)", (i + 1, f"body {i}"))
         for i in range(fts_rows):
-            conn.execute("INSERT INTO messages_fts(rowid, body) VALUES (?, ?)", (i + 1, f"body {i}"))
+            conn.execute("INSERT INTO messages_fts(rowid, text) VALUES (?, ?)", (i + 1, f"body {i}"))
         conn.commit()
     finally:
         conn.close()
@@ -276,7 +279,7 @@ def test_fts_readiness_error_when_large_gap(
     alert = _check_fts_readiness_medium()
     assert alert.severity == HealthSeverity.ERROR
     assert alert.consecutive_failures == 1
-    assert "FTS gap" in alert.message
+    assert "missing row" in alert.message
 
 
 def test_fts_readiness_counts_docsize_not_virtual_table(
@@ -316,7 +319,7 @@ def test_fts_readiness_counts_docsize_not_virtual_table(
     assert any("messages_fts_docsize" in query for query in queries)
 
 
-def test_fts_readiness_uses_stats_not_message_scan(
+def test_fts_readiness_does_not_accept_stats_when_messages_drift(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -355,8 +358,9 @@ def test_fts_readiness_uses_stats_not_message_scan(
 
     alert = _check_fts_readiness_medium()
 
-    assert alert.severity == HealthSeverity.OK
-    assert any("sum(message_count)" in query for query in queries)
+    assert alert.severity == HealthSeverity.ERROR
+    assert "missing row" in alert.message
+    assert all("sum(message_count)" not in query for query in queries)
 
 
 def test_fts_readiness_flags_stale_extra_rows(
@@ -376,7 +380,7 @@ def test_fts_readiness_flags_stale_extra_rows(
     alert = _check_fts_readiness_medium()
 
     assert alert.severity == HealthSeverity.ERROR
-    assert "stale rows" in alert.message
+    assert "stale row" in alert.message
 
 
 # ---------------------------------------------------------------------------

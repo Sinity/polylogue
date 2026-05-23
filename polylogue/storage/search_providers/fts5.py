@@ -8,11 +8,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.storage.fts.fts_lifecycle import replace_fts_rows_for_messages_sync
+from polylogue.maintenance.targets import build_maintenance_target_catalog
+from polylogue.storage.fts.fts_lifecycle import (
+    check_fts_readiness,
+    message_fts_readiness_sync,
+    replace_fts_rows_for_messages_sync,
+)
 from polylogue.storage.index import ensure_index
 from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.search.cache import invalidate_search_cache
 from polylogue.storage.sqlite.connection import connection_context, open_read_connection
+
+_MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
+_MESSAGE_SEARCH_REPAIR_HINT = _MAINTENANCE_TARGET_CATALOG.repair_hint(("dangling_fts",), include_run_all=True)
 
 
 class FTS5Provider:
@@ -77,11 +85,8 @@ class FTS5Provider:
             return []
 
         with open_read_connection(self.db_path) as conn:
-            # Check if index exists
-            row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
-
-            if not row:
-                return []
+            readiness = message_fts_readiness_sync(conn)
+            check_fts_readiness(readiness, _MESSAGE_SEARCH_REPAIR_HINT)
 
             # Search with relevance ranking
             sql = """

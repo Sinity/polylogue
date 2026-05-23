@@ -286,7 +286,7 @@ def _read_model_status(
         "orphan_tool_block_count": state.orphan_rows,
         "materialized_conversation_count": state.materialized_conversations,
         "rows_ready": state.rows_ready,
-        "action_fts_exists": bool(fts_status.get("exists", False)),
+        "action_fts_exists": bool(fts_status.get("action_exists", False)),
         "action_fts_count": state.fts_rows,
         "action_fts_pending_rows": state.pending_fts_rows,
         "action_fts_stale_rows": state.excess_fts_rows,

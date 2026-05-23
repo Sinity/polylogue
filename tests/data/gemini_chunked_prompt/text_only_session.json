@@ -1,0 +1,24 @@
+{
+  "id": "gemini-text-only-1",
+  "displayName": "Text-only Gemini session",
+  "createTime": "2025-02-01T10:00:00Z",
+  "updateTime": "2025-02-01T10:00:30Z",
+  "chunkedPrompt": {
+    "chunks": [
+      {
+        "id": "chunk-user-1",
+        "role": "user",
+        "createTime": "2025-02-01T10:00:05Z",
+        "text": "What is the capital of France?"
+      },
+      {
+        "id": "chunk-model-1",
+        "role": "model",
+        "createTime": "2025-02-01T10:00:08Z",
+        "text": "The capital of France is Paris.",
+        "tokenCount": 8,
+        "finishReason": "STOP"
+      }
+    ]
+  }
+}

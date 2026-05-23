@@ -514,8 +514,9 @@ async def test_query_plan_action_retrieval_lane_matches_tool_command_text() -> N
 
 
 @pytest.mark.asyncio
-async def test_query_plan_action_retrieval_lane_falls_back_when_action_read_model_unready() -> None:
+async def test_query_plan_action_retrieval_lane_rejects_unready_action_read_model() -> None:
     from polylogue.archive.query.spec import ConversationQuerySpec
+    from polylogue.errors import DatabaseError
 
     matching = make_conv(
         id="conv-actions-lane-fallback",
@@ -553,9 +554,8 @@ async def test_query_plan_action_retrieval_lane_falls_back_when_action_read_mode
         query_terms=("pytest", "semantic_facts.py"), retrieval_lane="actions", limit=10
     ).to_plan()
 
-    results = await plan.list(repo)
-
-    assert [conversation.id for conversation in results] == ["conv-actions-lane-fallback"]
+    with pytest.raises(DatabaseError, match="Action search index is not fresh"):
+        await plan.list(repo)
     repo.search_actions.assert_not_awaited()
 
 

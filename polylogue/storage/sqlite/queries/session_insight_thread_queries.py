@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
+from polylogue.errors import DatabaseError
 from polylogue.storage.insights.session.storage import work_thread_insert_values
 from polylogue.storage.query_models import WorkThreadListQuery
 from polylogue.storage.runtime import WorkThreadRecord
@@ -15,6 +16,58 @@ __all__ = [
     "list_work_threads",
     "replace_work_thread",
 ]
+
+
+async def _require_work_threads_fts_ready(conn: aiosqlite.Connection) -> None:
+    exists = bool(
+        await (
+            await conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_threads_fts'")
+        ).fetchone()
+    )
+    if not exists:
+        raise DatabaseError("Work-thread search index is missing.")
+    trigger_row = await (
+        await conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM sqlite_master
+            WHERE type='trigger'
+              AND name IN ('work_threads_fts_ai', 'work_threads_fts_ad', 'work_threads_fts_au')
+            """
+        )
+    ).fetchone()
+    if trigger_row is None or int(trigger_row[0] or 0) != 3:
+        raise DatabaseError("Work-thread search index triggers are missing.")
+    missing_row = await (
+        await conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM work_threads AS wt
+            LEFT JOIN work_threads_fts AS f ON f.thread_id = wt.thread_id
+            WHERE f.thread_id IS NULL
+            """
+        )
+    ).fetchone()
+    excess_row = await (
+        await conn.execute(
+            """
+            SELECT COUNT(DISTINCT f.thread_id)
+            FROM work_threads_fts AS f
+            LEFT JOIN work_threads AS wt ON wt.thread_id = f.thread_id
+            WHERE wt.thread_id IS NULL
+            """
+        )
+    ).fetchone()
+    duplicate_row = await (
+        await conn.execute("SELECT COUNT(*) - COUNT(DISTINCT thread_id) FROM work_threads_fts")
+    ).fetchone()
+    missing = int(missing_row[0] or 0) if missing_row else 0
+    excess = int(excess_row[0] or 0) if excess_row else 0
+    duplicate = int(duplicate_row[0] or 0) if duplicate_row else 0
+    if missing or excess or duplicate:
+        raise DatabaseError(
+            f"Work-thread search index is incomplete (missing={missing}, stale={excess}, duplicate={duplicate})."
+        )
 
 
 async def get_work_thread(
@@ -35,6 +88,7 @@ async def list_work_threads(
 ) -> list[WorkThreadRecord]:
     params: list[object] = []
     if query.query:
+        await _require_work_threads_fts_ready(conn)
         from_clause = """
             FROM work_threads wt
             JOIN work_threads_fts

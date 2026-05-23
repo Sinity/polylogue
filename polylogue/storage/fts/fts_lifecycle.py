@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
-from typing import TypeAlias, cast
+from dataclasses import dataclass
+from typing import TypeAlias
 
 import aiosqlite
 
@@ -78,7 +79,69 @@ _ACTION_EVENT_FTS_TRIGGER_NAMES = (
     "action_events_fts_au",
 )
 
-_FTS_TRIGGER_NAMES = _MESSAGE_FTS_TRIGGER_NAMES + _ACTION_EVENT_FTS_TRIGGER_NAMES
+_SESSION_WORK_EVENT_FTS_TRIGGER_NAMES = (
+    "session_work_events_fts_ai",
+    "session_work_events_fts_ad",
+    "session_work_events_fts_au",
+)
+
+_WORK_THREAD_FTS_TRIGGER_NAMES = (
+    "work_threads_fts_ai",
+    "work_threads_fts_ad",
+    "work_threads_fts_au",
+)
+
+_FTS_TRIGGER_NAMES = (
+    _MESSAGE_FTS_TRIGGER_NAMES
+    + _ACTION_EVENT_FTS_TRIGGER_NAMES
+    + _SESSION_WORK_EVENT_FTS_TRIGGER_NAMES
+    + _WORK_THREAD_FTS_TRIGGER_NAMES
+)
+
+
+@dataclass(frozen=True, slots=True)
+class FtsSurfaceInvariant:
+    """Exact freshness status for one FTS-backed surface."""
+
+    name: str
+    source_exists: bool
+    exists: bool
+    source_rows: int
+    indexed_rows: int
+    triggers_present: bool
+    missing_rows: int = 0
+    excess_rows: int = 0
+    duplicate_rows: int = 0
+
+    @property
+    def ready(self) -> bool:
+        if not self.source_exists:
+            return not self.exists
+        return (
+            self.exists
+            and self.triggers_present
+            and self.missing_rows == 0
+            and self.excess_rows == 0
+            and self.duplicate_rows == 0
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class FtsInvariantSnapshot:
+    """Exact freshness status for every active FTS-backed search surface."""
+
+    messages: FtsSurfaceInvariant
+    action_events: FtsSurfaceInvariant
+    session_work_events: FtsSurfaceInvariant
+    work_threads: FtsSurfaceInvariant
+
+    @property
+    def ready(self) -> bool:
+        return all(surface.ready for surface in self.surfaces)
+
+    @property
+    def surfaces(self) -> tuple[FtsSurfaceInvariant, ...]:
+        return (self.messages, self.action_events, self.session_work_events, self.work_threads)
 
 
 def _triggers_present_sync(conn: sqlite3.Connection, names: tuple[str, ...]) -> bool:
@@ -190,14 +253,15 @@ def ensure_fts_index_sync(conn: sqlite3.Connection) -> None:
     """Ensure the FTS5 tables and triggers exist on a sync SQLite connection."""
     conn.execute(FTS_MESSAGES_TABLE_SQL)
     conn.execute(FTS_ACTIONS_TABLE_SQL)
-    restore_fts_triggers_sync(conn)
+    ensure_fts_triggers_sync(conn)
 
 
 async def ensure_fts_index_async(conn: aiosqlite.Connection) -> None:
     """Ensure the FTS5 tables and triggers exist on an async SQLite connection."""
     await conn.execute(FTS_MESSAGES_TABLE_SQL)
     await conn.execute(FTS_ACTIONS_TABLE_SQL)
-    await restore_fts_triggers_async(conn)
+    for ddl in _MESSAGE_FTS_TRIGGER_DDL + _ACTION_FTS_TRIGGER_DDL:
+        await conn.execute(ddl)
 
 
 def rebuild_fts_index_sync(conn: sqlite3.Connection) -> None:
@@ -323,7 +387,7 @@ def replace_fts_rows_for_messages_sync(
     without_rowid: list[tuple[str, str, str]] = []
     for message in messages:
         payload_message_id, payload_conversation_id, payload_text = _indexed_message_parts(message)
-        if not payload_text:
+        if payload_text is None:
             continue
         rowid = rowids_by_message_id.get(payload_message_id)
         if rowid is not None:
@@ -354,13 +418,13 @@ def fts_index_status_sync(conn: sqlite3.Connection) -> dict[str, object]:
     row = conn.execute(FTS_INDEX_EXISTS_SQL).fetchone()
     exists = bool(row)
     count = 0
+    action_exists = bool(conn.execute(ACTION_FTS_INDEX_EXISTS_SQL).fetchone())
     action_count = 0
     if exists:
         count = _row_int(conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone(), 0)
-        action_row = conn.execute(ACTION_FTS_INDEX_EXISTS_SQL).fetchone()
-        if action_row:
-            action_count = _row_int(conn.execute(ACTION_FTS_INDEX_DOC_COUNT_SQL).fetchone(), 0)
-    return {"exists": exists, "count": int(count), "action_count": int(action_count)}
+    if action_exists:
+        action_count = _row_int(conn.execute(ACTION_FTS_INDEX_DOC_COUNT_SQL).fetchone(), 0)
+    return {"exists": exists, "count": int(count), "action_exists": action_exists, "action_count": int(action_count)}
 
 
 async def fts_index_status_async(conn: aiosqlite.Connection) -> dict[str, object]:
@@ -368,15 +432,15 @@ async def fts_index_status_async(conn: aiosqlite.Connection) -> dict[str, object
     row = await (await conn.execute(FTS_INDEX_EXISTS_SQL)).fetchone()
     exists = bool(row)
     count = 0
+    action_exists = bool(await (await conn.execute(ACTION_FTS_INDEX_EXISTS_SQL)).fetchone())
     action_count = 0
     if exists:
         count_row = await (await conn.execute(FTS_INDEX_DOC_COUNT_SQL)).fetchone()
         count = count_row[0] if count_row else 0
-        action_exists_row = await (await conn.execute(ACTION_FTS_INDEX_EXISTS_SQL)).fetchone()
-        if action_exists_row:
-            action_count_row = await (await conn.execute(ACTION_FTS_INDEX_DOC_COUNT_SQL)).fetchone()
-            action_count = action_count_row[0] if action_count_row else 0
-    return {"exists": exists, "count": int(count), "action_count": int(action_count)}
+    if action_exists:
+        action_count_row = await (await conn.execute(ACTION_FTS_INDEX_DOC_COUNT_SQL)).fetchone()
+        action_count = action_count_row[0] if action_count_row else 0
+    return {"exists": exists, "count": int(count), "action_exists": action_exists, "action_count": int(action_count)}
 
 
 def message_fts_readiness_sync(
@@ -452,43 +516,155 @@ async def message_fts_readiness_async(
     }
 
 
-FTS_GAP_THRESHOLD = 0.01
-
-
 def check_fts_readiness(readiness: Mapping[str, object], repair_hint: str = "") -> None:
-    """Raise DatabaseError if the FTS index doesn't exist.
-
-    Degrade gracefully on small gaps: if the gap is ≤ FTS_GAP_THRESHOLD
-    (default 1%), warn and return instead of raising.
-    """
+    """Raise DatabaseError unless the FTS index is exactly ready."""
     from polylogue.errors import DatabaseError
 
     if not bool(readiness["exists"]):
         raise DatabaseError(f"Search index not built. {repair_hint}")
     if bool(readiness["ready"]):
         return
-    indexed = int(cast(int, readiness.get("indexed_rows", 0)))
-    total = int(cast(int, readiness.get("total_rows", 0)))
-    if total > 0 and indexed > 0 and bool(readiness.get("triggers_present", False)):
-        gap_ratio = (total - indexed) / total
-        if 0 <= gap_ratio <= FTS_GAP_THRESHOLD:
-            missing = total - indexed
-            pct = gap_ratio * 100
-            import logging
-
-            logging.getLogger(__name__).warning(
-                "Search index is %d/%d messages behind (%.3f%%). "
-                "Results may be incomplete. Run `polylogue doctor --repair --target dangling_fts`.",
-                missing,
-                total,
-                pct,
-            )
-            return
     raise DatabaseError(f"Search index is incomplete. {repair_hint}")
 
 
+def _table_exists_sync(conn: sqlite3.Connection, table_name: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _trigger_invariant_sync(
+    conn: sqlite3.Connection,
+    *,
+    name: str,
+    source_table_name: str,
+    table_name: str,
+    source_sql: str,
+    indexed_sql: str,
+    trigger_names: tuple[str, ...],
+    missing_sql: str | None = None,
+    excess_sql: str | None = None,
+    duplicate_sql: str | None = None,
+) -> FtsSurfaceInvariant:
+    source_exists = _table_exists_sync(conn, source_table_name)
+    exists = _table_exists_sync(conn, table_name)
+    source_rows = _row_int(conn.execute(source_sql).fetchone(), 0) if source_exists else 0
+    indexed_rows = _row_int(conn.execute(indexed_sql).fetchone(), 0) if exists else 0
+    missing_rows = _row_int(conn.execute(missing_sql).fetchone(), 0) if source_exists and exists and missing_sql else 0
+    excess_rows = _row_int(conn.execute(excess_sql).fetchone(), 0) if source_exists and exists and excess_sql else 0
+    duplicate_rows = _row_int(conn.execute(duplicate_sql).fetchone(), 0) if exists and duplicate_sql else 0
+    return FtsSurfaceInvariant(
+        name=name,
+        source_exists=source_exists,
+        exists=exists,
+        source_rows=source_rows,
+        indexed_rows=indexed_rows,
+        triggers_present=exists and _triggers_present_sync(conn, trigger_names),
+        missing_rows=missing_rows,
+        excess_rows=excess_rows,
+        duplicate_rows=duplicate_rows,
+    )
+
+
+def fts_invariant_snapshot_sync(conn: sqlite3.Connection) -> FtsInvariantSnapshot:
+    """Return exact freshness status for every active FTS search surface."""
+    return FtsInvariantSnapshot(
+        messages=_trigger_invariant_sync(
+            conn,
+            name="messages_fts",
+            source_table_name="messages",
+            table_name="messages_fts",
+            source_sql=FTS_INDEXABLE_MESSAGE_COUNT_SQL,
+            indexed_sql=FTS_INDEX_DOC_COUNT_SQL,
+            trigger_names=_MESSAGE_FTS_TRIGGER_NAMES,
+            missing_sql="""
+                SELECT COUNT(*)
+                FROM messages AS m
+                LEFT JOIN messages_fts_docsize AS d ON d.id = m.rowid
+                WHERE m.text IS NOT NULL AND d.id IS NULL
+            """,
+            excess_sql="""
+                SELECT COUNT(*)
+                FROM messages_fts_docsize AS d
+                LEFT JOIN messages AS m ON m.rowid = d.id AND m.text IS NOT NULL
+                WHERE m.rowid IS NULL
+            """,
+        ),
+        action_events=_trigger_invariant_sync(
+            conn,
+            name="action_events_fts",
+            source_table_name="action_events",
+            table_name="action_events_fts",
+            source_sql="SELECT COUNT(*) FROM action_events",
+            indexed_sql=ACTION_FTS_INDEX_DOC_COUNT_SQL,
+            trigger_names=_ACTION_EVENT_FTS_TRIGGER_NAMES,
+            missing_sql="""
+                SELECT COUNT(*)
+                FROM action_events AS ae
+                LEFT JOIN action_events_fts_docsize AS d ON d.id = ae.rowid
+                WHERE d.id IS NULL
+            """,
+            excess_sql="""
+                SELECT COUNT(*)
+                FROM action_events_fts_docsize AS d
+                LEFT JOIN action_events AS ae ON ae.rowid = d.id
+                WHERE ae.rowid IS NULL
+            """,
+        ),
+        session_work_events=_trigger_invariant_sync(
+            conn,
+            name="session_work_events_fts",
+            source_table_name="session_work_events",
+            table_name="session_work_events_fts",
+            source_sql="SELECT COUNT(*) FROM session_work_events",
+            indexed_sql="SELECT COUNT(DISTINCT event_id) FROM session_work_events_fts",
+            trigger_names=_SESSION_WORK_EVENT_FTS_TRIGGER_NAMES,
+            missing_sql="""
+                SELECT COUNT(*)
+                FROM session_work_events AS swe
+                LEFT JOIN session_work_events_fts AS f ON f.event_id = swe.event_id
+                WHERE f.event_id IS NULL
+            """,
+            excess_sql="""
+                SELECT COUNT(DISTINCT f.event_id)
+                FROM session_work_events_fts AS f
+                LEFT JOIN session_work_events AS swe ON swe.event_id = f.event_id
+                WHERE swe.event_id IS NULL
+            """,
+            duplicate_sql="SELECT COUNT(*) - COUNT(DISTINCT event_id) FROM session_work_events_fts",
+        ),
+        work_threads=_trigger_invariant_sync(
+            conn,
+            name="work_threads_fts",
+            source_table_name="work_threads",
+            table_name="work_threads_fts",
+            source_sql="SELECT COUNT(*) FROM work_threads",
+            indexed_sql="SELECT COUNT(DISTINCT thread_id) FROM work_threads_fts",
+            trigger_names=_WORK_THREAD_FTS_TRIGGER_NAMES,
+            missing_sql="""
+                SELECT COUNT(*)
+                FROM work_threads AS wt
+                LEFT JOIN work_threads_fts AS f ON f.thread_id = wt.thread_id
+                WHERE f.thread_id IS NULL
+            """,
+            excess_sql="""
+                SELECT COUNT(DISTINCT f.thread_id)
+                FROM work_threads_fts AS f
+                LEFT JOIN work_threads AS wt ON wt.thread_id = f.thread_id
+                WHERE wt.thread_id IS NULL
+            """,
+            duplicate_sql="SELECT COUNT(*) - COUNT(DISTINCT thread_id) FROM work_threads_fts",
+        ),
+    )
+
+
 __all__ = [
-    "FTS_GAP_THRESHOLD",
+    "FtsInvariantSnapshot",
+    "FtsSurfaceInvariant",
     "_MESSAGE_FTS_TRIGGER_DDL",
     "_chunked",
     "check_fts_readiness",
@@ -497,6 +673,7 @@ __all__ = [
     "ensure_fts_triggers_sync",
     "fts_index_status_async",
     "fts_index_status_sync",
+    "fts_invariant_snapshot_sync",
     "message_fts_readiness_async",
     "message_fts_readiness_sync",
     "rebuild_fts_index_async",

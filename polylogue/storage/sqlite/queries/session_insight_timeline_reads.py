@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
+from polylogue.errors import DatabaseError
 from polylogue.storage.query_models import SessionTimelineListQuery
 from polylogue.storage.runtime import SessionPhaseRecord, SessionWorkEventRecord
 from polylogue.storage.search.query_support import escape_fts5_query
@@ -18,6 +19,58 @@ __all__ = [
     "list_session_phases",
     "list_work_events",
 ]
+
+
+async def _require_session_work_events_fts_ready(conn: aiosqlite.Connection) -> None:
+    exists = bool(
+        await (
+            await conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_work_events_fts'")
+        ).fetchone()
+    )
+    if not exists:
+        raise DatabaseError("Session work-event search index is missing.")
+    trigger_row = await (
+        await conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM sqlite_master
+            WHERE type='trigger'
+              AND name IN ('session_work_events_fts_ai', 'session_work_events_fts_ad', 'session_work_events_fts_au')
+            """
+        )
+    ).fetchone()
+    if trigger_row is None or int(trigger_row[0] or 0) != 3:
+        raise DatabaseError("Session work-event search index triggers are missing.")
+    missing_row = await (
+        await conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM session_work_events AS swe
+            LEFT JOIN session_work_events_fts AS f ON f.event_id = swe.event_id
+            WHERE f.event_id IS NULL
+            """
+        )
+    ).fetchone()
+    excess_row = await (
+        await conn.execute(
+            """
+            SELECT COUNT(DISTINCT f.event_id)
+            FROM session_work_events_fts AS f
+            LEFT JOIN session_work_events AS swe ON swe.event_id = f.event_id
+            WHERE swe.event_id IS NULL
+            """
+        )
+    ).fetchone()
+    duplicate_row = await (
+        await conn.execute("SELECT COUNT(*) - COUNT(DISTINCT event_id) FROM session_work_events_fts")
+    ).fetchone()
+    missing = int(missing_row[0] or 0) if missing_row else 0
+    excess = int(excess_row[0] or 0) if excess_row else 0
+    duplicate = int(duplicate_row[0] or 0) if duplicate_row else 0
+    if missing or excess or duplicate:
+        raise DatabaseError(
+            f"Session work-event search index is incomplete (missing={missing}, stale={excess}, duplicate={duplicate})."
+        )
 
 
 async def get_work_events(
@@ -60,6 +113,7 @@ async def list_work_events(
 ) -> list[SessionWorkEventRecord]:
     params: list[object] = []
     if query.query:
+        await _require_session_work_events_fts_ready(conn)
         from_clause = """
             FROM session_work_events swe
             JOIN session_work_events_fts

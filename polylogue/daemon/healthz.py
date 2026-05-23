@@ -89,6 +89,7 @@ def handle_healthz_ready(responder: ProbeResponder) -> None:
 
     - ``schema_incompatible`` — schema_version check is CRITICAL
     - ``critical_check_failed`` — some other FAST check is CRITICAL
+    - ``fts_not_fresh`` — archive FTS invariant is not ready
     - ``probe_error`` — internal failure executing the probe itself
     - any ``DegradedReason.code`` — process-local degraded flag is set
     """
@@ -125,18 +126,34 @@ def handle_healthz_ready(responder: ProbeResponder) -> None:
         )
         schema_ok = schema_alert is None or schema_alert.severity == HealthSeverity.OK
         critical = [a for a in health.alerts if a.severity == HealthSeverity.CRITICAL]
-        if schema_ok and not critical:
+        from polylogue.daemon.fts_status import fts_readiness_info
+        from polylogue.paths import db_path
+
+        dbf = db_path()
+        fts_ready = True
+        fts_payload: dict[str, object] | None = None
+        if dbf.exists():
+            fts_payload = fts_readiness_info(dbf)
+            fts_ready = bool(fts_payload.get("invariant_ready", False))
+
+        if schema_ok and not critical and fts_ready:
             responder._send_json(
                 HTTPStatus.OK,
                 {
                     "status": "ready",
                     "overall": health.overall_status.value,
                     "checks": checks,
+                    "fts": fts_payload,
                 },
             )
             return
 
-        reason_code = "schema_incompatible" if not schema_ok else "critical_check_failed"
+        if not schema_ok:
+            reason_code = "schema_incompatible"
+        elif critical:
+            reason_code = "critical_check_failed"
+        else:
+            reason_code = "fts_not_fresh"
         responder._send_json(
             HTTPStatus.SERVICE_UNAVAILABLE,
             {
@@ -144,6 +161,7 @@ def handle_healthz_ready(responder: ProbeResponder) -> None:
                 "reason": reason_code,
                 "overall": health.overall_status.value,
                 "checks": checks,
+                "fts": fts_payload,
             },
         )
     except Exception as exc:

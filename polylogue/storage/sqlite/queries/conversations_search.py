@@ -23,9 +23,9 @@ async def search_conversation_hits(
 ) -> ConversationSearchResult:
     from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_readiness_async
 
-    # Use the cheap LIMIT 1 probe instead of full COUNT(*) — daemon
-    # convergence (polylogue/daemon/convergence_stages.py) maintains the
-    # strict invariant; per-query verification is redundant (#1314).
+    # Search callers rely on the daemon readiness invariant for exact
+    # source/docsize parity. The hot query path keeps the bounded probe
+    # from #1314 so ordinary searches do not perform full FTS counts.
     readiness = await message_fts_readiness_async(conn, verify_total_rows=False)
     check_fts_readiness(readiness, _MESSAGE_SEARCH_REPAIR_HINT)
 
@@ -55,7 +55,8 @@ async def search_conversation_evidence_hits(
     from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_readiness_async
     from polylogue.storage.search import build_ranked_conversation_search_query
 
-    # Cheap LIMIT 1 probe; see search_conversation_hits for rationale (#1314).
+    # See search_conversation_hits: exact FTS parity is established by
+    # daemon readiness/repair, not by a full count on every query.
     readiness = await message_fts_readiness_async(conn, verify_total_rows=False)
     check_fts_readiness(readiness, _MESSAGE_SEARCH_REPAIR_HINT)
 
@@ -110,7 +111,7 @@ async def search_action_conversation_hits(
     from polylogue.storage.action_events.status import action_event_read_model_status_async
     from polylogue.storage.search import build_ranked_action_search_query
 
-    status = await action_event_read_model_status_async(conn, verify_source_alignment=False)
+    status = await action_event_read_model_status_async(conn)
     if not bool(status["action_fts_exists"]):
         raise DatabaseError(f"Action search index not built. {_ACTION_SEARCH_REPAIR_HINT}")
     if not bool(status["action_fts_ready"]):

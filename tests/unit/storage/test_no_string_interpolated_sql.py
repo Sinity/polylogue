@@ -103,6 +103,7 @@ _TRUSTED_IDENTIFIER_NAMES: frozenset[str] = frozenset(
         "column",
         "column_name",
         "columnname",
+        "id_column",  # compile-time PK column name (e.g. "conversation_id")
         "view",
         "view_name",
         "index",

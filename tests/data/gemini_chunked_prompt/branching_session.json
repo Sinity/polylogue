@@ -1,0 +1,51 @@
+{
+  "id": "gemini-branching-1",
+  "displayName": "Branching Gemini session",
+  "createTime": "2025-02-01T13:00:00Z",
+  "updateTime": "2025-02-01T13:00:40Z",
+  "chunkedPrompt": {
+    "chunks": [
+      {
+        "id": "chunk-user-1",
+        "role": "user",
+        "createTime": "2025-02-01T13:00:02Z",
+        "text": "Initial question."
+      },
+      {
+        "id": "chunk-model-edit-1",
+        "role": "model",
+        "createTime": "2025-02-01T13:00:08Z",
+        "text": "First (edited) answer.",
+        "isEdited": true,
+        "branchParent": {"id": "chunk-user-1"},
+        "branchChildren": [{"id": "chunk-model-edit-2"}]
+      },
+      {
+        "id": "chunk-model-edit-2",
+        "role": "model",
+        "createTime": "2025-02-01T13:00:12Z",
+        "text": "Second answer with grounding.",
+        "branchParent": {"id": "chunk-user-1"},
+        "grounding": {
+          "groundingChunks": [
+            {"web": {"uri": "https://example.com/source", "title": "Example"}}
+          ]
+        }
+      },
+      {
+        "id": "chunk-empty-1",
+        "role": "model",
+        "createTime": "2025-02-01T13:00:15Z",
+        "text": ""
+      },
+      {
+        "id": "chunk-error-1",
+        "role": "model",
+        "createTime": "2025-02-01T13:00:30Z",
+        "text": "Partial response cut off.",
+        "errorMessage": "Stream interrupted",
+        "finishReason": "OTHER"
+      }
+    ]
+  }
+}

@@ -213,6 +213,7 @@ def _mutation_spec(
 def _build_plan(case: str) -> QueryExecutionPlan:
     selection = MagicMock()
     selection.similar_text = None
+    selection.cursor = None
     selection.to_plan.return_value = ConversationQuerySpec().to_plan()
     action = QueryAction.SHOW
     output = _output_spec()
@@ -1325,7 +1326,7 @@ def test_async_execute_query_summary_list_uses_evidence_hits_for_search_contract
 
     repo.search_summary_hits.assert_awaited_once_with("needle", limit=5, providers=None, since=None)
     filter_chain.list_summaries.assert_not_called()
-    mock_output_search_hits.assert_awaited_once_with(env, [hit], plan.output, repo)
+    mock_output_search_hits.assert_awaited_once_with(env, [hit], plan.output, repo, cursor=None)
     mock_output_summary_list.assert_not_called()
 
 
@@ -1510,6 +1511,7 @@ def test_async_execute_query_show_projects_results_before_output_contract() -> N
     env = _make_env(repo=MagicMock(), config=MagicMock())
     selection = MagicMock()
     selection.similar_text = None
+    selection.cursor = None
     plan = QueryExecutionPlan(
         selection=selection,
         action=QueryAction.SHOW,
@@ -1537,6 +1539,7 @@ def test_async_execute_query_slow_human_query_emits_progress_note() -> None:
     env = _make_env(repo=MagicMock(), config=MagicMock())
     selection = MagicMock()
     selection.similar_text = None
+    selection.cursor = None
     plan = QueryExecutionPlan(
         selection=selection,
         action=QueryAction.SHOW,
@@ -1575,6 +1578,7 @@ def test_async_execute_query_slow_json_query_suppresses_progress_note() -> None:
     env = _make_env(repo=MagicMock(), config=MagicMock())
     selection = MagicMock()
     selection.similar_text = None
+    selection.cursor = None
     plan = QueryExecutionPlan(
         selection=selection,
         action=QueryAction.SHOW,
