@@ -122,6 +122,23 @@ class TestNoArchiveStatus:
         assert "FTS indexed" in combined
         assert any("messages_fts_docsize" in query for query in queries)
 
+    def test_daemon_status_uses_reported_fts_coverage_pct(self) -> None:
+        env = _make_app_env()
+
+        _show_daemon_status(
+            env,
+            {
+                "daemon_liveness": True,
+                "fts_readiness": {
+                    "messages_ready": False,
+                    "action_events_ready": True,
+                    "coverage_pct": 87.5,
+                },
+            },
+        )
+
+        assert "87.5% indexed" in _combined_calls(env)
+
     def test_direct_json_no_archive(self) -> None:
         """_show_direct_json when DB does not exist produces valid JSON."""
         env = _make_app_env()

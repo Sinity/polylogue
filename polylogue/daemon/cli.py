@@ -127,8 +127,8 @@ async def _ensure_fts_startup_readiness() -> None:
         conn = open_connection(db, timeout=10.0)
         row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
         has_fts_table = row is not None
-        has_indexable_messages = (
-            conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1").fetchone() is not None
+        indexable_messages = int(
+            conn.execute("SELECT COUNT(*) FROM messages WHERE text IS NOT NULL").fetchone()[0] or 0
         )
 
         from polylogue.storage.fts.fts_lifecycle import (
@@ -158,9 +158,13 @@ async def _ensure_fts_startup_readiness() -> None:
             return
 
         ensure_fts_index_sync(conn)
-        has_indexed_messages = conn.execute("SELECT 1 FROM messages_fts_docsize LIMIT 1").fetchone() is not None
-        if has_indexable_messages and not has_indexed_messages:
-            logger.warning("daemon: message FTS is empty while archive has messages. Rebuilding once.")
+        indexed_messages = int(conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] or 0)
+        if indexable_messages and indexed_messages != indexable_messages:
+            logger.warning(
+                "daemon: message FTS count mismatch on startup (%d/%d indexed). Rebuilding once.",
+                indexed_messages,
+                indexable_messages,
+            )
             rebuild_fts_index_sync(conn)
             conn.commit()
             logger.info("daemon: FTS rebuild complete.")
@@ -273,7 +277,7 @@ async def _periodic_convergence_check(
                 logger.info("convergence: retried %d derived debt item(s)", repaired)
             conn = open_connection(db, timeout=5.0)
             try:
-                total_msgs = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+                total_msgs = conn.execute("SELECT COUNT(*) FROM messages WHERE text IS NOT NULL").fetchone()[0]
                 if total_msgs == 0:
                     continue
                 fts_count = (
@@ -284,12 +288,12 @@ async def _periodic_convergence_check(
                     else 0
                 )
                 gap = total_msgs - fts_count
-                if gap > 0:
+                if gap != 0:
                     logger.warning(
-                        "convergence: FTS gap detected (%d/%d messages, %.1f%%). Rebuilding.",
+                        "convergence: FTS count mismatch detected (%d/%d messages, %.1f%%). Rebuilding.",
                         fts_count,
                         total_msgs,
-                        100 * gap / total_msgs,
+                        100 * abs(gap) / total_msgs,
                     )
                     from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
 
