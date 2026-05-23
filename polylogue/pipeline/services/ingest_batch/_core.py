@@ -981,6 +981,7 @@ def _commit_sync_ingest_side_effects(
     *,
     db_path: Path,
     changed_conversation_ids: Sequence[str],
+    repair_message_fts: bool = True,
     repair_action_fts: bool = True,
 ) -> None:
     """Run post-ingest side effects through the canonical write-effects path."""
@@ -989,6 +990,7 @@ def _commit_sync_ingest_side_effects(
         {
             "_connection": conn,
             "changed_conversation_ids": tuple(changed_conversation_ids),
+            "repair_message_fts": repair_message_fts,
             "repair_action_fts": repair_action_fts,
         },
     )
@@ -1004,6 +1006,7 @@ def _process_ingest_batch_sync(
     ingest_workers: int | None,
     measure_ingest_result_size: bool,
     force_write: bool = False,
+    repair_message_fts: bool = True,
     repair_action_fts: bool = True,
     heartbeat: IngestHeartbeat | None = None,
     progress: _WorkerProgress | None = None,
@@ -1028,11 +1031,11 @@ def _process_ingest_batch_sync(
     _observe_current_rss(summary)
     changed_ids: set[str] = set()
     try:
+        conn.execute("BEGIN IMMEDIATE")
         if suspend_fts_triggers:
             from polylogue.storage.fts.fts_lifecycle import suspend_fts_triggers_sync
 
-            suspend_fts_triggers_sync(conn)
-        conn.execute("BEGIN IMMEDIATE")
+            suspend_fts_triggers_sync(conn, mark_stale=False)
         _consume_ingest_results(
             conn,
             raw_artifacts,
@@ -1064,7 +1067,8 @@ def _process_ingest_batch_sync(
             conn,
             db_path=db_path,
             changed_conversation_ids=tuple(changed_ids),
-            repair_action_fts=repair_action_fts,
+            repair_message_fts=repair_message_fts or suspend_fts_triggers,
+            repair_action_fts=repair_action_fts or suspend_fts_triggers,
         )
         summary.commit_elapsed_s = time.perf_counter() - commit_started
         from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_wal

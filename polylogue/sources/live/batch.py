@@ -90,6 +90,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
+_FULL_INGEST_SUSPEND_FTS_TRIGGER_BYTES = 32 * 1024 * 1024
 
 
 class LiveBatchProcessor:
@@ -902,6 +903,9 @@ class LiveBatchProcessor:
         summary: _IngestBatchSummary | None = None
         if raw_records:
             self._persist_raw_records(raw_records)
+            suspend_fts_triggers = any(
+                record.blob_size >= _FULL_INGEST_SUSPEND_FTS_TRIGGER_BYTES for record in raw_records
+            )
             if heartbeat is not None:
                 heartbeat(
                     "full_worker_wait",
@@ -917,8 +921,10 @@ class LiveBatchProcessor:
                 validation_mode=str(getattr(getattr(self._polylogue, "config", None), "validation_mode", "advisory")),
                 ingest_workers=_full_ingest_worker_count(raw_records),
                 measure_ingest_result_size=False,
-                repair_action_fts=False,
+                repair_message_fts=suspend_fts_triggers,
+                repair_action_fts=suspend_fts_triggers,
                 ingest_result_chunk_size=_INGEST_RESULT_CHUNK_SIZE,
+                suspend_fts_triggers=suspend_fts_triggers,
                 heartbeat=None
                 if heartbeat is None
                 else lambda: heartbeat(

@@ -55,6 +55,39 @@ def test_write_gateway_normal_commit_does_not_drop_fts_triggers(
     assert ensured == [True]
 
 
+def test_write_gateway_can_skip_fts_repairs_when_triggers_maintained_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "archive.db"
+    repaired: list[str] = []
+
+    monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_triggers_sync", lambda _conn: None)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.repair_message_fts_index_sync",
+        lambda _conn, _ids: repaired.append("messages"),
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.repair_action_fts_index_sync",
+        lambda _conn, _ids: repaired.append("actions"),
+    )
+
+    with open_connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        result = ArchiveWriteGateway(db_path).commit_write_sync(
+            WriteOperation.INGEST,
+            {
+                "_connection": conn,
+                "changed_conversation_ids": ("c1",),
+                "repair_message_fts": False,
+                "repair_action_fts": False,
+            },
+        )
+
+    assert result.status == "committed"
+    assert repaired == []
+
+
 @pytest.mark.asyncio
 async def test_write_gateway_async_commit_uses_same_local_effects_path(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.db"

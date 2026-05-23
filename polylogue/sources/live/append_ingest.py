@@ -63,6 +63,7 @@ def ingest_append_plans(owner: _AppendIngestOwner, plans: list[_AppendPlan]) -> 
             validation_mode=str(getattr(getattr(owner._polylogue, "config", None), "validation_mode", "advisory")),
             ingest_workers=1,
             measure_ingest_result_size=False,
+            repair_message_fts=False,
             repair_action_fts=False,
             ingest_result_chunk_size=_INGEST_RESULT_CHUNK_SIZE,
         )
