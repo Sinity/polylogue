@@ -206,6 +206,7 @@ def test_supported_targets_cover_ac_required_set() -> None:
         "session_insights",
         "action_event_read_model",
         "dangling_fts",
+        "orphaned_blobs",
     }
     assert required.issubset(supported)
 

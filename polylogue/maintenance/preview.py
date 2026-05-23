@@ -48,6 +48,7 @@ from polylogue.storage.message_type_backfill import count_unclassified_message_t
 from polylogue.storage.repair import (
     count_empty_conversations_sync,
     count_orphaned_attachments_sync,
+    count_orphaned_blobs_sync,
     count_orphaned_content_blocks_sync,
     count_orphaned_messages_sync,
 )
@@ -285,8 +286,29 @@ _RETRIEVAL_MODEL_NAMES: frozenset[str] = frozenset(
 )
 
 
-def _archive_cleanup_items(conn: sqlite3.Connection) -> list[StalenessItem]:
+def _archive_cleanup_items(conn: sqlite3.Connection, *, include_expensive: bool) -> list[StalenessItem]:
     """Orphan-row counts for archive-cleanup scopes (read-only)."""
+
+    if not include_expensive:
+        return [
+            StalenessItem(
+                model=model,
+                scope=_ARCHIVE_CLEANUP_SCOPE,
+                reason=InvalidationReason.ORPHAN_ARCHIVE_ROW,
+                count=0,
+                source_total=0,
+                materialized_total=0,
+                detail="Exact archive-cleanup count skipped by shallow preview",
+                truncated=True,
+            )
+            for model in (
+                "orphaned_messages",
+                "orphaned_content_blocks",
+                "empty_conversations",
+                "orphaned_attachments",
+                "orphaned_blobs",
+            )
+        ]
 
     orphan_messages = count_orphaned_messages_sync(conn)
     orphan_content_blocks = count_orphaned_content_blocks_sync(conn)
@@ -315,6 +337,16 @@ def _archive_cleanup_items(conn: sqlite3.Connection) -> list[StalenessItem]:
             "attachment refs without parent rows",
         ),
     ]
+
+    if include_expensive:
+        orphan_blobs = count_orphaned_blobs_sync(conn)
+        rows.append(
+            (
+                "orphaned_blobs",
+                orphan_blobs,
+                "content-addressed blob files with no raw_conversations reference",
+            )
+        )
 
     items: list[StalenessItem] = []
     for model, count, label in rows:
@@ -395,15 +427,23 @@ def staleness_inventory(
     """
 
     from polylogue.storage.derived.derived_status import collect_derived_model_statuses_sync
-    from polylogue.storage.sqlite.connection import connection_context
+    from polylogue.storage.sqlite.connection import connection_context, open_read_connection
 
     selected_scopes = _coerce_scopes(scopes)
     _ = sample_limit  # reserved; see docstring.
 
     captured_at = datetime.now(timezone.utc).isoformat()
 
-    with connection_context(db_path) as conn:
-        statuses = collect_derived_model_statuses_sync(conn, verify_full=verify_full)
+    if isinstance(db_path, sqlite3.Connection):
+        connection_manager = connection_context(db_path)
+    else:
+        connection_manager = open_read_connection(db_path)
+
+    with connection_manager as conn:
+        if _DERIVED_MODEL_SCOPE in selected_scopes or _RETRIEVAL_MODEL_SCOPE in selected_scopes:
+            statuses = collect_derived_model_statuses_sync(conn, verify_full=verify_full)
+        else:
+            statuses = {}
         resolved_path = _resolve_db_path(conn)
 
         items: list[StalenessItem] = []
@@ -419,7 +459,7 @@ def staleness_inventory(
                     items.extend(_model_items(status, scope=_RETRIEVAL_MODEL_SCOPE))
 
         if _ARCHIVE_CLEANUP_SCOPE in selected_scopes:
-            items.extend(_archive_cleanup_items(conn))
+            items.extend(_archive_cleanup_items(conn, include_expensive=verify_full))
 
         if _BACKFILL_SCOPE in selected_scopes:
             items.extend(_backfill_items(conn))

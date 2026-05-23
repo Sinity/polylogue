@@ -256,6 +256,7 @@ def test_inventory_emits_zero_rows_for_clean_models(workspace_env: dict[str, Pat
             "orphaned_content_blocks",
             "empty_conversations",
             "orphaned_attachments",
+            "orphaned_blobs",
         }:
             # Archive-cleanup scopes report a single orphan_archive_row item.
             assert {item.reason for item in items} == {InvalidationReason.ORPHAN_ARCHIVE_ROW}

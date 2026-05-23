@@ -7,7 +7,7 @@ from typing import Any, cast
 import pytest
 
 from polylogue.sources.live import WatchSource
-from polylogue.sources.live.batch import LiveBatchProcessor
+from polylogue.sources.live.batch import _MAX_APPEND_PLAN_PAYLOAD_BYTES, LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 
 
@@ -125,3 +125,33 @@ def test_fingerprint_file_empty_file(tmp_path: Path) -> None:
     fp, last_nl = fingerprint_file(target)
     assert fp == hashlib.sha256(b"").hexdigest()
     assert last_nl == 0
+
+
+def test_append_plan_rejects_large_tail_for_streaming_full_ingest(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    path = root / "session.jsonl"
+    original = b'{"a":1}\n'
+    appended = b'{"b":"' + (b"x" * _MAX_APPEND_PLAN_PAYLOAD_BYTES) + b'"}\n'
+    path.write_bytes(original + appended)
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="claude-code", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+    stat = path.stat()
+    processor._cursor.set(
+        path,
+        len(original),
+        byte_offset=len(original),
+        last_complete_newline=len(original),
+        parser_fingerprint="test-parser",
+        content_fingerprint="base",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+    assert processor._append_plan(path) is None

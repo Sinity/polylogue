@@ -456,8 +456,7 @@ def gc_history_command(env: AppEnv, limit: int, output_format: str) -> None:
         render_root=render_root(),
         sources=[],
     )
-    db_path = config.archive_root / "archive.db"
-    history = read_gc_history(db_path, limit=limit)
+    history = read_gc_history(config.db_path, limit=limit)
 
     if output_format == "json":
         payload = [

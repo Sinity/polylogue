@@ -397,7 +397,7 @@ def preview_backfill(
         collect_archive_debt_statuses_sync,
         preview_counts_from_archive_debt,
     )
-    from polylogue.storage.sqlite.connection import connection_context
+    from polylogue.storage.sqlite.connection import open_read_connection
 
     operation_id = str(uuid.uuid4())
     catalog = build_maintenance_target_catalog()
@@ -415,14 +415,32 @@ def preview_backfill(
             scope=MaintenanceScope(targets=(), filter=effective_filter),
         )
 
+    if resolved_names == ("orphaned_blobs",):
+        from polylogue.storage.repair import repair_orphaned_blobs
+
+        preview_result = repair_orphaned_blobs(config, dry_run=True)
+        return BackfillOperation(
+            operation_id=operation_id,
+            kind=BackfillKind.ARCHIVE_SUBSET,
+            targets=resolved_names,
+            status=BackfillStatus.PENDING,
+            affected_rows=preview_result.repaired_count,
+            estimated_time_s=0.0,
+            results=[preview_result.to_dict()],
+            scope=MaintenanceScope(targets=resolved_names, filter=effective_filter),
+            reason=InvalidationReason.UNKNOWN if preview_result.repaired_count else None,
+            metrics={"repaired_count": float(preview_result.repaired_count)},
+        )
+
     # Thread the caller's archive db_path through the planner instead of
     # relying on ambient defaults. The original ``connection_context(None)``
     # call ignored ``config.db_path`` entirely, which made the planner
     # behave inconsistently in tests and multi-archive runtimes.
-    with connection_context(config.db_path) as conn:
+    include_expensive = any(spec.archive_readiness_requires_deep for spec in resolved)
+    with open_read_connection(config.db_path) as conn:
         debt_statuses = collect_archive_debt_statuses_sync(
             conn,
-            include_expensive=False,
+            include_expensive=include_expensive,
             probe_only=False,
         )
 
@@ -485,7 +503,7 @@ def execute_backfill(
         preview_counts_from_archive_debt,
         run_selected_maintenance,
     )
-    from polylogue.storage.sqlite.connection import connection_context
+    from polylogue.storage.sqlite.connection import open_read_connection
 
     operation_id = str(uuid.uuid4())
     catalog = build_maintenance_target_catalog()
@@ -512,7 +530,7 @@ def execute_backfill(
 
     # Thread the caller's archive db_path through the planner instead of
     # relying on ambient defaults. See ``preview_backfill`` above.
-    with connection_context(config.db_path) as conn:
+    with open_read_connection(config.db_path) as conn:
         debt_statuses = collect_archive_debt_statuses_sync(
             conn,
             include_expensive=False,

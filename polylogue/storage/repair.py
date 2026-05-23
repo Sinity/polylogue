@@ -653,6 +653,14 @@ def count_orphaned_blobs_sync(conn: sqlite3.Connection) -> int:
     return result.orphan_count
 
 
+def _orphaned_blob_hashes(db_raw_ids: set[str]) -> set[str]:
+    """Return the full orphan hash set for cleanup and exact dry-run accounting."""
+    from polylogue.storage.blob_store import get_blob_store
+
+    blob_store = get_blob_store()
+    return {h for h in blob_store.iter_all() if h not in db_raw_ids}
+
+
 def repair_orphaned_blobs(config: Config, dry_run: bool = False) -> RepairResult:
     """Delete blob files that are no longer referenced in the archive.
 
@@ -661,11 +669,11 @@ def repair_orphaned_blobs(config: Config, dry_run: bool = False) -> RepairResult
     and reports the aggregate result.
     """
     from polylogue.storage.blob_store import get_blob_store
-    from polylogue.storage.sqlite.connection import connection_context
+    from polylogue.storage.sqlite.connection import open_read_connection
 
     blob_store = get_blob_store()
     db_raw_ids: set[str] = set()
-    with connection_context(None) as conn:
+    with open_read_connection(config.db_path) as conn:
         for row in conn.execute("SELECT raw_id FROM raw_conversations"):
             db_raw_ids.add(row[0])
 
@@ -678,11 +686,10 @@ def repair_orphaned_blobs(config: Config, dry_run: bool = False) -> RepairResult
             detail="No orphaned blobs found",
         )
 
-    orphan_hashes = set(detect_result.orphan_samples)
-    # For the real cleanup we need all orphans, not just the sample.
-    # Re-walk to build the full set.
-    if not dry_run:
-        orphan_hashes = {h for h in blob_store.iter_all() if h not in db_raw_ids}
+    # ``detect_orphans`` intentionally returns only a bounded sample for
+    # operator display. Cleanup and dry-run accounting both need the exact
+    # set; otherwise a 20k-file orphan store can preview as ten files.
+    orphan_hashes = _orphaned_blob_hashes(db_raw_ids)
 
     cleanup_result = blob_store.cleanup_orphans(orphan_hashes, dry_run=dry_run)
 
