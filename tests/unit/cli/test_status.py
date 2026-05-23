@@ -81,6 +81,47 @@ class TestNoArchiveStatus:
         assert "Conversations: 0" in combined
         assert "polylogued run" in combined
 
+    def test_direct_status_counts_fts_docsize_not_virtual_table(self) -> None:
+        """Large archive fallback status must not run COUNT(*) on messages_fts."""
+        env = _make_app_env()
+        fake_root = Path("/tmp/archive-root")
+        fake_db = MagicMock()
+        fake_db.exists.return_value = True
+        queries: list[str] = []
+
+        class FakeCursor:
+            def __init__(self, value: int) -> None:
+                self._value = value
+
+            def fetchone(self) -> list[int]:
+                return [self._value]
+
+        class FakeConn:
+            def execute(self, sql: str) -> FakeCursor:
+                queries.append(sql)
+                assert "COUNT(*) FROM messages_fts" not in sql
+                if "conversations" in sql:
+                    return FakeCursor(7)
+                if "raw_conversations" in sql:
+                    return FakeCursor(9)
+                if "messages_fts_docsize" in sql:
+                    return FakeCursor(11)
+                if "messages" in sql:
+                    return FakeCursor(11)
+                return FakeCursor(0)
+
+            def close(self) -> None:
+                pass
+
+        with patch("polylogue.paths.db_path", return_value=fake_db):
+            with patch("polylogue.paths.archive_root", return_value=fake_root):
+                with patch("polylogue.storage.sqlite.connection_profile.open_connection", return_value=FakeConn()):
+                    _show_direct_status(env)
+
+        combined = _combined_calls(env)
+        assert "FTS indexed" in combined
+        assert any("messages_fts_docsize" in query for query in queries)
+
     def test_direct_json_no_archive(self) -> None:
         """_show_direct_json when DB does not exist produces valid JSON."""
         env = _make_app_env()

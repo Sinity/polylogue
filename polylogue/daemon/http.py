@@ -456,6 +456,8 @@ def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
                     field=field,
                 ).model_dump(mode="json"),
             )
+        except (BrokenPipeError, ConnectionResetError):
+            logger.debug("daemon http client disconnected in %s", fn.__name__)
         except Exception:
             logger.exception("unhandled error in %s", fn.__name__)
             self._send_json(

@@ -697,6 +697,30 @@ class TestJsonSerializationRobustness:
         assert isinstance(final_payload, dict)
         assert final_payload.get("error") == "internal_error"
 
+    def test_handler_ignores_client_disconnect_during_response(self) -> None:
+        """Client timeouts must not turn BrokenPipe into a noisy 500 path."""
+        from typing import Any
+
+        from polylogue.daemon.http import daemon_safe_handler
+
+        handler = _make_handler("GET", "/api/status", auth_header="Bearer secret")
+        call_count = 0
+
+        def _mock_send_json(status: HTTPStatus, payload: object, **kwargs: object) -> None:
+            nonlocal call_count
+            call_count += 1
+            raise BrokenPipeError("client disconnected")
+
+        handler._send_json = _mock_send_json  # type: ignore[method-assign]
+
+        @daemon_safe_handler
+        def _slow_handler(self: Any) -> None:
+            self._send_json(HTTPStatus.OK, {"ok": True})
+
+        _slow_handler(handler)
+
+        assert call_count == 1
+
 
 # ---------------------------------------------------------------------------
 # OPTIONS — documented as 405 by design (no CORS preflight)

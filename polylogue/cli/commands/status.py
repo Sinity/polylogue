@@ -35,6 +35,18 @@ def _default_daemon_url() -> str:
 _DEFAULT_DAEMON_URL = _BUILTIN_DAEMON_URL
 
 
+def _fast_count(conn: Any, sql: str) -> int:
+    row = conn.execute(sql).fetchone()
+    return int(row[0] or 0) if row is not None else 0
+
+
+def _fast_fts_doc_count(conn: Any) -> int:
+    try:
+        return _fast_count(conn, "SELECT COUNT(*) FROM messages_fts_docsize")
+    except Exception:
+        return 0
+
+
 @click.command("status")
 @click.option(
     "--daemon-url",
@@ -241,10 +253,10 @@ def _show_direct_status(env: AppEnv, *, compact: bool = False) -> None:
 
         conn = open_connection(db)
         try:
-            convs = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
-            msgs = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-            raw = conn.execute("SELECT COUNT(*) FROM raw_conversations").fetchone()[0]
-            fts = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+            convs = _fast_count(conn, "SELECT COUNT(*) FROM conversations")
+            msgs = _fast_count(conn, "SELECT COUNT(*) FROM messages")
+            raw = _fast_count(conn, "SELECT COUNT(*) FROM raw_conversations")
+            fts = _fast_fts_doc_count(conn)
         finally:
             conn.close()
 
