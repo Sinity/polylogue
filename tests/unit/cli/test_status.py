@@ -9,11 +9,14 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from click.testing import CliRunner
 
 from polylogue.cli.commands.status import (
+    _FULL_TIMEOUT_S,
     _show_daemon_status,
     _show_direct_json,
     _show_direct_status,
+    status_command,
 )
 from polylogue.cli.shared.types import AppEnv
 
@@ -72,7 +75,9 @@ class TestNoArchiveStatus:
 
         with patch("polylogue.paths.db_path", return_value=fake_db):
             with patch("polylogue.paths.archive_root", return_value=fake_root):
-                with patch("polylogue.storage.sqlite.connection_profile.open_connection", return_value=mock_conn):
+                with patch(
+                    "polylogue.storage.sqlite.connection_profile.open_readonly_connection", return_value=mock_conn
+                ):
                     _show_direct_status(env)
 
         combined = _combined_calls(env)
@@ -97,16 +102,19 @@ class TestNoArchiveStatus:
                 return [self._value]
 
         class FakeConn:
-            def execute(self, sql: str) -> FakeCursor:
+            def execute(self, sql: str, params: tuple[object, ...] | None = None) -> FakeCursor:
                 queries.append(sql)
+                if "sqlite_master" in sql and params == ("conversation_stats",):
+                    return FakeCursor(1)
                 assert "COUNT(*) FROM messages_fts" not in sql
+                assert "COUNT(*) FROM messages" not in sql
+                if "SUM(message_count)" in sql:
+                    return FakeCursor(11)
                 if "conversations" in sql:
                     return FakeCursor(7)
                 if "raw_conversations" in sql:
                     return FakeCursor(9)
                 if "messages_fts_docsize" in sql:
-                    return FakeCursor(11)
-                if "messages" in sql:
                     return FakeCursor(11)
                 return FakeCursor(0)
 
@@ -115,12 +123,30 @@ class TestNoArchiveStatus:
 
         with patch("polylogue.paths.db_path", return_value=fake_db):
             with patch("polylogue.paths.archive_root", return_value=fake_root):
-                with patch("polylogue.storage.sqlite.connection_profile.open_connection", return_value=FakeConn()):
+                with patch(
+                    "polylogue.storage.sqlite.connection_profile.open_readonly_connection", return_value=FakeConn()
+                ):
                     _show_direct_status(env)
 
         combined = _combined_calls(env)
         assert "FTS indexed" in combined
+        assert any("SUM(message_count)" in query for query in queries)
         assert any("messages_fts_docsize" in query for query in queries)
+
+    def test_explicit_status_has_short_daemon_timeout_before_direct_fallback(self) -> None:
+        """Explicit status must not hide behind a daemon blocked on ingest."""
+        env = _make_app_env()
+
+        def raise_timeout(_request: object, *, timeout: float) -> None:
+            assert timeout == _FULL_TIMEOUT_S
+            raise TimeoutError
+
+        with patch("polylogue.cli.commands.status.urlopen", side_effect=raise_timeout):
+            with patch("polylogue.cli.commands.status._show_direct_status") as show_direct:
+                result = CliRunner().invoke(status_command, ["--daemon-url", "http://127.0.0.1:8766"], obj=env)
+
+        assert result.exit_code == 0
+        show_direct.assert_called_once_with(env)
 
     def test_daemon_status_uses_reported_fts_coverage_pct(self) -> None:
         env = _make_app_env()
