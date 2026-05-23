@@ -166,14 +166,15 @@ async def _triggers_present_async(conn: aiosqlite.Connection, names: tuple[str, 
     return row is not None and row[0] == len(names)
 
 
-async def suspend_fts_triggers_async(conn: aiosqlite.Connection) -> None:
+async def suspend_fts_triggers_async(conn: aiosqlite.Connection, *, mark_stale: bool = True) -> None:
     """Drop FTS triggers to avoid per-row overhead during bulk inserts.
 
     Call rebuild_fts_index_async() after to repopulate the FTS index.
     """
-    from polylogue.storage.fts.freshness import mark_all_fts_stale_async
+    if mark_stale:
+        from polylogue.storage.fts.freshness import mark_all_fts_stale_async
 
-    await mark_all_fts_stale_async(conn, detail="FTS triggers suspended for bulk write")
+        await mark_all_fts_stale_async(conn, detail="FTS triggers suspended for bulk write")
     for name in _FTS_TRIGGER_NAMES:
         await conn.execute(f"DROP TRIGGER IF EXISTS {name}")
 
@@ -229,11 +230,12 @@ _ACTION_FTS_TRIGGER_DDL = [
 ]
 
 
-def suspend_fts_triggers_sync(conn: sqlite3.Connection) -> None:
+def suspend_fts_triggers_sync(conn: sqlite3.Connection, *, mark_stale: bool = True) -> None:
     """Drop FTS triggers for bulk sync operations."""
-    from polylogue.storage.fts.freshness import mark_all_fts_stale_sync
+    if mark_stale:
+        from polylogue.storage.fts.freshness import mark_all_fts_stale_sync
 
-    mark_all_fts_stale_sync(conn, detail="FTS triggers suspended for bulk write")
+        mark_all_fts_stale_sync(conn, detail="FTS triggers suspended for bulk write")
     for name in _FTS_TRIGGER_NAMES:
         conn.execute(f"DROP TRIGGER IF EXISTS {name}")
 

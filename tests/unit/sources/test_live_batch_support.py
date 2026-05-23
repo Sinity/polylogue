@@ -73,6 +73,48 @@ def test_full_ingest_heartbeats_small_file_groups_with_current_path(
     assert any(event == ("full_worker_wait", second, first.stat().st_size + second.stat().st_size) for event in events)
 
 
+def test_large_full_ingest_suspends_fts_triggers_and_repairs_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    source = root / "large.jsonl"
+    source.write_text('{"type":"session_meta","payload":{"id":"large"}}\n', encoding="utf-8")
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+    captured_kwargs: dict[str, object] = {}
+
+    monkeypatch.setattr("polylogue.sources.live.batch._FULL_INGEST_SUSPEND_FTS_TRIGGER_BYTES", 1)
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._jsonl_provider_and_conversation_artifact",
+        lambda _path, fallback_provider: (fallback_provider, True),
+    )
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch.BlobStore.write_from_bytes",
+        lambda _store, payload: ("a" * 64, len(payload)),
+    )
+
+    def fake_process_ingest_batch_sync(*args: object, **kwargs: object) -> SimpleNamespace:
+        del args
+        captured_kwargs.update(kwargs)
+        return SimpleNamespace(failed_raw_ids=set(), parse_failures=0, worker_count=1)
+
+    monkeypatch.setattr("polylogue.sources.live.batch._process_ingest_batch_sync", fake_process_ingest_batch_sync)
+
+    result = processor._ingest_full_paths_sync([source], source_name="codex")
+
+    assert result.succeeded == [source]
+    assert captured_kwargs["suspend_fts_triggers"] is True
+    assert captured_kwargs["repair_message_fts"] is True
+    assert captured_kwargs["repair_action_fts"] is True
+
+
 def test_fingerprint_file_streams_in_bounded_memory(tmp_path: Path) -> None:
     """``fingerprint_file`` must not load the whole file into memory.
 
@@ -262,13 +304,19 @@ def test_append_ingest_preserves_successes_when_other_plan_fails(
         ),
     ]
     raw_ids = iter(("raw-ok", "raw-bad"))
+    captured_kwargs: dict[str, object] = {}
     monkeypatch.setattr(
         "polylogue.sources.live.append_ingest.BlobStore.write_from_bytes",
         lambda _store, payload: (next(raw_ids), len(payload)),
     )
+
+    def fake_process_ingest_batch_sync(*args: object, **kwargs: object) -> SimpleNamespace:
+        del args
+        captured_kwargs.update(kwargs)
+        return SimpleNamespace(failed_raw_ids={"raw-bad"}, parse_failures=1, worker_count=1)
+
     monkeypatch.setattr(
-        "polylogue.sources.live.append_ingest._process_ingest_batch_sync",
-        lambda *args, **kwargs: SimpleNamespace(failed_raw_ids={"raw-bad"}, parse_failures=1, worker_count=1),
+        "polylogue.sources.live.append_ingest._process_ingest_batch_sync", fake_process_ingest_batch_sync
     )
 
     owner = Owner()
@@ -278,6 +326,8 @@ def test_append_ingest_preserves_successes_when_other_plan_fails(
     assert result.succeeded == [plans[0]]
     assert result.failed == [plans[1]]
     assert result.worker_count == 1
+    assert captured_kwargs["repair_message_fts"] is False
+    assert captured_kwargs["repair_action_fts"] is False
 
 
 @pytest.mark.asyncio
