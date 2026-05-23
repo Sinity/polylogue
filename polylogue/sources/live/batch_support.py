@@ -82,6 +82,50 @@ class _FullIngestResult:
     raw_fingerprints: dict[Path, str] = field(default_factory=dict)
     raw_byte_sizes: dict[Path, int] = field(default_factory=dict)
     worker_count: int = 0
+    ingested_conversation_count: int = 0
+    ingested_message_count: int = 0
+    changed_conversation_count: int = 0
+    wal_bytes_before_checkpoint: int = 0
+    wal_bytes_after_checkpoint: int = 0
+    wal_checkpointed_pages: int = 0
+    wal_busy_pages: int = 0
+    wal_checkpoint_elapsed_s: float = 0.0
+    wal_checkpoint_mode: str = "none"
+    wal_checkpoint_error: str | None = None
+
+
+def _full_ingest_result_from_summary(
+    *,
+    succeeded: list[Path],
+    failed: list[Path],
+    source_payload_read_bytes: int,
+    raw_fingerprints: dict[Path, str],
+    raw_byte_sizes: dict[Path, int],
+    summary: object | None,
+) -> _FullIngestResult:
+    error = getattr(summary, "wal_checkpoint_error", None) if summary is not None else None
+    return _FullIngestResult(
+        succeeded=succeeded,
+        failed=failed,
+        source_payload_read_bytes=source_payload_read_bytes,
+        raw_fingerprints=raw_fingerprints,
+        raw_byte_sizes=raw_byte_sizes,
+        worker_count=int(getattr(summary, "worker_count", 0)) if summary is not None else 0,
+        ingested_conversation_count=int(getattr(summary, "total_convos", 0)) if summary is not None else 0,
+        ingested_message_count=int(getattr(summary, "total_msgs", 0)) if summary is not None else 0,
+        changed_conversation_count=len(getattr(summary, "changed_conversation_ids", ())) if summary is not None else 0,
+        wal_bytes_before_checkpoint=int(getattr(summary, "wal_bytes_before_checkpoint", 0))
+        if summary is not None
+        else 0,
+        wal_bytes_after_checkpoint=int(getattr(summary, "wal_bytes_after_checkpoint", 0)) if summary is not None else 0,
+        wal_checkpointed_pages=int(getattr(summary, "wal_checkpointed_pages", 0)) if summary is not None else 0,
+        wal_busy_pages=int(getattr(summary, "wal_busy_pages", 0)) if summary is not None else 0,
+        wal_checkpoint_elapsed_s=float(getattr(summary, "wal_checkpoint_elapsed_s", 0.0))
+        if summary is not None
+        else 0.0,
+        wal_checkpoint_mode=str(getattr(summary, "wal_checkpoint_mode", "none")) if summary is not None else "none",
+        wal_checkpoint_error=str(error) if error is not None else None,
+    )
 
 
 _FINGERPRINT_STREAM_CHUNK = 1 << 20  # 1 MiB
