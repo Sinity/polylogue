@@ -169,17 +169,19 @@ def test_unclassified_large_non_jsonl_is_not_streamed_as_conversation_artifact(
     assert _parse_path_as_conversation_artifact(target, provider=Provider.UNKNOWN) is False
 
 
-def test_append_plan_rejects_large_tail_for_streaming_full_ingest(tmp_path: Path) -> None:
+def test_append_plan_chunks_large_tail_without_full_ingest(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
     path = root / "session.jsonl"
     original = b'{"a":1}\n'
-    appended = b'{"b":"' + (b"x" * _MAX_APPEND_PLAN_PAYLOAD_BYTES) + b'"}\n'
+    first_chunk = b'{"b":"' + (b"x" * (_MAX_APPEND_PLAN_PAYLOAD_BYTES - 128)) + b'"}\n'
+    second_chunk = b'{"c":"' + (b"y" * 512) + b'"}\n'
+    appended = first_chunk + second_chunk
     path.write_bytes(original + appended)
     db_path = tmp_path / "archive.sqlite"
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
-        (WatchSource(name="claude-code", root=root),),
+        (WatchSource(name="chatgpt", root=root),),
         cursor=CursorStore(db_path),
         parser_fingerprint="test-parser",
     )
@@ -196,7 +198,21 @@ def test_append_plan_rejects_large_tail_for_streaming_full_ingest(tmp_path: Path
         mtime_ns=stat.st_mtime_ns,
     )
 
-    assert processor._append_plan(path) is None
+    plan = processor._append_plan(path)
+
+    assert plan is not None
+    assert plan.start_offset == len(original)
+    assert plan.last_complete_newline == len(original) + len(first_chunk)
+    assert plan.stat_size == len(original) + len(appended)
+    assert plan.bytes_read == _MAX_APPEND_PLAN_PAYLOAD_BYTES
+    assert plan.payload == first_chunk
+
+    assert processor._record_append_cursor(plan) is True
+    next_plan = processor._append_plan(path)
+    assert next_plan is not None
+    assert next_plan.start_offset == len(original) + len(first_chunk)
+    assert next_plan.last_complete_newline == len(original) + len(appended)
+    assert next_plan.payload == second_chunk
 
 
 def test_append_ingest_preserves_successes_when_other_plan_fails(
