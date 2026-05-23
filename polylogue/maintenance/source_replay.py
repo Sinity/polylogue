@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.config import Config, Source
@@ -98,11 +99,8 @@ def _source_matches_filter(source: Source, scope_filter: MaintenanceScopeFilter)
     if scope_filter.source_root is not None:
         if source.path is None:
             return False
-        try:
-            source_path_resolved = source.path.expanduser().resolve()
-            filter_path_resolved = scope_filter.source_root.expanduser().resolve()
-        except (OSError, RuntimeError):
-            return False
+        source_path_resolved = _lexical_absolute_path(source.path)
+        filter_path_resolved = _lexical_absolute_path(scope_filter.source_root)
         # Honor either equality or "this source is rooted under the
         # filter root" — operators frequently pass a parent directory.
         if source_path_resolved != filter_path_resolved:
@@ -121,6 +119,22 @@ def _source_matches_filter(source: Source, scope_filter: MaintenanceScopeFilter)
     # the same way ``provider`` does. When the family rename lands the
     # comparison should switch to ``source.family.value``.
     return not (scope_filter.source_family is not None and source.name != scope_filter.source_family)
+
+
+def _lexical_absolute_path(path: Path) -> Path:
+    """Normalize a path without touching the filesystem.
+
+    Maintenance filters are applied to archived source paths. Some of those
+    paths point at old removable mounts or disk-image locations; resolving them
+    live can trigger autofs or block on unavailable media. For replay scoping,
+    lexical absolute normalization is enough: comparisons only need stable path
+    ancestry, not symlink truth in the current host namespace.
+    """
+
+    expanded = path.expanduser()
+    if not expanded.is_absolute():
+        expanded = Path.cwd() / expanded
+    return Path(str(expanded))
 
 
 def resolve_source_replay_sources(
