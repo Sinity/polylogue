@@ -34,6 +34,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+ROOT = Path(__file__).resolve().parents[1]
+
 # ── mypy daemon probe ──────────────────────────────────────────────
 
 
@@ -246,7 +248,8 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
     sys.stderr.flush()
     if label.startswith("pytest"):
         _clear_pytest_report()
-    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    env = _subprocess_env()
+    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env)
     elapsed = time.monotonic() - t0
     metadata: dict[str, Any] = {}
     if label.startswith("pytest"):
@@ -270,6 +273,14 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
         if result.stderr.strip():
             sys.stderr.write(result.stderr + "\n")
     return result.returncode, elapsed, metadata
+
+
+def _subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["POLYLOGUE_ROOT"] = str(ROOT)
+    env["POLYLOGUE_REPO_ROOT"] = str(ROOT)
+    env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
+    return env
 
 
 def _stop_after_failed_step(label: str) -> bool:

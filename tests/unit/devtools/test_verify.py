@@ -9,6 +9,7 @@ import pytest
 
 from devtools.verify import (
     PYTEST_REPORT_PATH,
+    ROOT,
     _format_completion_notification,
     _is_testmon_global_invalidator,
     _parse_pytest_test_count,
@@ -34,16 +35,19 @@ def test_quick_verify_omits_pytest() -> None:
         "verify-topology",
         "verify-layering",
         "verify-file-budgets",
+        "verify-provider-meta-policy",
         "verify-test-ownership",
         "verify-closure-matrix",
         "verify-schema-roundtrip",
         "verify-suppressions",
         "verify-manifests",
         "verify-ci-workflows",
+        "verify-doc-commands",
         "verify-witness-lifecycle",
         "verify-witness-coverage",
         "verify-lane-assertions",
         "verify-test-infra-currency",
+        "verify-test-clock-hygiene",
         "verification-impact check",
     ]
 
@@ -250,6 +254,22 @@ def test_run_records_pytest_count_metadata_from_terminal_fallback() -> None:
     assert rc == 0
     assert metadata["count"] == 4
     assert metadata["report_path"] is None
+
+
+def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POLYLOGUE_ROOT", "/stale/main")
+    monkeypatch.setenv("POLYLOGUE_REPO_ROOT", "/stale/main")
+    monkeypatch.setenv("PYTHONPYCACHEPREFIX", "/stale/main/.cache/pycache")
+    completed = subprocess.CompletedProcess(args=["devtools"], returncode=0, stdout="", stderr="")
+
+    with patch("devtools.verify.subprocess.run", return_value=completed) as run:
+        rc, _elapsed, _metadata = _run("render-all", ["devtools", "render-all", "--check"])
+
+    assert rc == 0
+    env = run.call_args.kwargs["env"]
+    assert env["POLYLOGUE_ROOT"] == str(ROOT)
+    assert env["POLYLOGUE_REPO_ROOT"] == str(ROOT)
+    assert env["PYTHONPYCACHEPREFIX"] == str(ROOT / ".cache" / "pycache")
 
 
 def test_run_reads_structured_pytest_report() -> None:
