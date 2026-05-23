@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from concurrent.futures import Future
 from pathlib import Path
+from unittest.mock import Mock
+
+import pytest
 
 from polylogue.daemon.convergence import ConvergenceStage, DaemonConverger
 
@@ -72,6 +76,32 @@ def test_converger_batches_stage_execution(tmp_path: Path) -> None:
     assert set(states) == set(paths)
     assert set(stage_times) == {"insights"}
     assert all(state.converged for state in states.values())
+    assert converger._file_states == {}
+
+
+def test_converger_retains_failed_batch_state_for_diagnostics(tmp_path: Path) -> None:
+    paths = [tmp_path / "a.jsonl", tmp_path / "b.jsonl"]
+    for path in paths:
+        path.write_text("{}\n", encoding="utf-8")
+
+    failed = paths[1]
+
+    converger = DaemonConverger(
+        [
+            ConvergenceStage(
+                name="insights",
+                description="test stage",
+                check=lambda _candidate: True,
+                execute=lambda candidate: candidate != failed,
+            )
+        ]
+    )
+
+    states, _stage_times = converger.converge_batch(paths)
+
+    assert states[paths[0]].converged
+    assert not states[failed].converged
+    assert set(converger._file_states) == {failed}
 
 
 def test_converger_batches_conversation_execution() -> None:
@@ -106,3 +136,64 @@ def test_converger_batches_conversation_execution() -> None:
     assert set(states) == {"conv-a", "conv-b"}
     assert set(stage_times) == {"insights"}
     assert all(state.converged for state in states.values())
+    assert converger._conversation_states == {}
+
+
+@pytest.mark.asyncio
+async def test_converger_start_skips_process_pool_for_io_only_stages(monkeypatch: pytest.MonkeyPatch) -> None:
+    factory = Mock()
+    monkeypatch.setattr("polylogue.daemon.convergence.process_pool_executor", factory)
+
+    converger = DaemonConverger(
+        [
+            ConvergenceStage(
+                name="insights",
+                description="io stage",
+                check=lambda _candidate: False,
+                execute=lambda _candidate: True,
+            )
+        ]
+    )
+
+    await converger.start()
+
+    factory.assert_not_called()
+    assert converger._executor is None
+
+
+@pytest.mark.asyncio
+async def test_converger_start_creates_process_pool_for_cpu_bound_stages(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeExecutor:
+        def __init__(self) -> None:
+            self.shutdown_called = False
+
+        def submit(self, func, *args):  # type: ignore[no-untyped-def]
+            future: Future[bool] = Future()
+            future.set_result(func(*args))
+            return future
+
+        def shutdown(self, *, wait: bool = True) -> None:
+            self.shutdown_called = wait
+
+    fake_executor = FakeExecutor()
+    factory = Mock(return_value=fake_executor)
+    monkeypatch.setattr("polylogue.daemon.convergence.process_pool_executor", factory)
+
+    converger = DaemonConverger(
+        [
+            ConvergenceStage(
+                name="parse",
+                description="cpu stage",
+                check=lambda _candidate: False,
+                execute=lambda _candidate: True,
+                cpu_bound=True,
+            )
+        ],
+        max_workers=3,
+    )
+
+    await converger.start()
+    await converger.stop()
+
+    factory.assert_called_once_with(max_workers=3)
+    assert fake_executor.shutdown_called is True

@@ -33,6 +33,7 @@ from polylogue.daemon.catchup_status import catchup_status_info
 from polylogue.daemon.convergence import (
     ConvergenceStage,
     DaemonConverger,
+    FileState,
     StageState,
 )
 from polylogue.daemon.events import (
@@ -81,10 +82,13 @@ def _stage(name: str, *, failing: set[Path] | None = None) -> ConvergenceStage:
     )
 
 
-def _stage_timings(converger: DaemonConverger, files: list[Path]) -> dict[str, float]:
+def _stage_timings(
+    converger: DaemonConverger,
+    files: list[Path],
+) -> tuple[dict[Path, FileState], dict[str, float]]:
     """Drive ``converge_batch`` and return measured per-stage timings."""
-    _, batch_timings = converger.converge_batch(files)
-    return {name: round(elapsed, 6) for name, elapsed in batch_timings.items()}
+    states, batch_timings = converger.converge_batch(files)
+    return states, {name: round(elapsed, 6) for name, elapsed in batch_timings.items()}
 
 
 def _seed_source_file(path: Path, *, body: str) -> int:
@@ -151,7 +155,7 @@ def test_catch_up_cycle_emits_runtime_observability_evidence(
 
     good_paths = [good_a, good_b]
     cycle_started = time.perf_counter()
-    stage_timings = _stage_timings(converger, good_paths)
+    converged_states, stage_timings = _stage_timings(converger, good_paths)
     parse_time_s = float(stage_timings.get("parse", 0.0))
     convergence_time_s = float(stage_timings.get("fts", 0.0) + stage_timings.get("insights", 0.0))
 
@@ -232,7 +236,7 @@ def test_catch_up_cycle_emits_runtime_observability_evidence(
     assert all(value >= 0.0 for value in stage_timings.values())
     # Converger marked every good input DONE for every stage.
     for path in good_paths:
-        states = converger._file_states[path].stages
+        states = converged_states[path].stages
         assert all(state == StageState.DONE for state in states.values())
 
     # ── Catchup status surface reads the durable stage event. ──
