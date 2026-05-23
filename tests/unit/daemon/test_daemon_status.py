@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import timedelta
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import Mock, patch
 
 import pytest
@@ -288,6 +289,42 @@ def test_daemon_status_fts_readiness_uses_lightweight_table_probe(tmp_path: Path
 
     assert readiness["messages_ready"] is True
     assert readiness["action_events_ready"] is True
+
+
+def test_daemon_status_fts_readiness_uses_stats_not_message_scan(tmp_path: Path) -> None:
+    db = tmp_path / "polylogue.db"
+    queries: list[str] = []
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE messages (text TEXT);
+            CREATE TABLE conversation_stats (conversation_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL);
+            CREATE TABLE messages_fts (text TEXT);
+            CREATE TABLE messages_fts_docsize (id INTEGER PRIMARY KEY, sz BLOB);
+            CREATE TABLE action_events (event_id TEXT);
+            CREATE TABLE action_events_fts (text TEXT);
+            CREATE TABLE action_events_fts_docsize (id INTEGER PRIMARY KEY, sz BLOB);
+            INSERT INTO conversation_stats VALUES ('c1', 2), ('c2', 3);
+            INSERT INTO messages_fts_docsize VALUES (1, x''), (2, x''), (3, x''), (4, x''), (5, x'');
+            """
+        )
+
+    original_connect = sqlite3.connect
+
+    def traced_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        conn = original_connect(*args, **kwargs)
+        conn.set_trace_callback(queries.append)
+        return cast(sqlite3.Connection, conn)
+
+    with (
+        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.storage.sqlite.connection_profile.sqlite3.connect", side_effect=traced_connect),
+    ):
+        readiness = status_module._fts_readiness_info()
+
+    assert readiness["message_indexable_count"] == 5
+    assert readiness["message_indexed_count"] == 5
+    assert all("COUNT(*) FROM messages WHERE" not in query for query in queries)
 
 
 def test_daemon_status_insight_freshness_uses_lightweight_counts(tmp_path: Path) -> None:

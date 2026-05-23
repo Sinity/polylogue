@@ -303,9 +303,9 @@ def test_ensure_fts_startup_readiness_uses_bounded_probes(
                     ("action_events_fts_au",),
                 ]
                 return FakeCursor(triggers[0], rows=triggers)
-            if query == "SELECT COUNT(*) FROM messages WHERE text IS NOT NULL":
+            if query == "SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1":
                 return FakeCursor((1,))
-            if query == "SELECT COUNT(*) FROM messages_fts_docsize":
+            if query == "SELECT 1 FROM messages_fts_docsize LIMIT 1":
                 return FakeCursor((1,))
             raise AssertionError(f"unexpected query: {query}")
 
@@ -337,6 +337,7 @@ def test_ensure_fts_startup_readiness_uses_bounded_probes(
     assert conn.committed is True
     assert conn.closed is True
     assert all("COUNT(*) FROM messages_fts " not in query for query in conn.queries)
+    assert all("COUNT(*) FROM messages WHERE text IS NOT NULL" not in query for query in conn.queries)
 
 
 def test_ensure_fts_startup_readiness_rebuilds_empty_fts(
@@ -380,10 +381,10 @@ def test_ensure_fts_startup_readiness_rebuilds_empty_fts(
                     ("action_events_fts_au",),
                 ]
                 return FakeCursor(triggers[0], rows=triggers)
-            if query == "SELECT COUNT(*) FROM messages WHERE text IS NOT NULL":
+            if query == "SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1":
                 return FakeCursor((1,))
-            if query == "SELECT COUNT(*) FROM messages_fts_docsize":
-                return FakeCursor((0,))
+            if query == "SELECT 1 FROM messages_fts_docsize LIMIT 1":
+                return FakeCursor(None)
             raise AssertionError(f"unexpected query: {query}")
 
         def commit(self) -> None:
@@ -409,6 +410,7 @@ def test_ensure_fts_startup_readiness_rebuilds_empty_fts(
     assert conn.committed is True
     assert conn.closed is True
     assert all("COUNT(*) FROM messages_fts " not in query for query in conn.queries)
+    assert all("COUNT(*) FROM messages WHERE text IS NOT NULL" not in query for query in conn.queries)
 
 
 def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
@@ -453,8 +455,6 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
                     ("action_events_fts_ad",),
                 ]
                 return FakeCursor(triggers[0], rows=triggers)
-            if query == "SELECT COUNT(*) FROM messages WHERE text IS NOT NULL":
-                return FakeCursor((1,))
             raise AssertionError(f"unexpected query: {query}")
 
         def commit(self) -> None:

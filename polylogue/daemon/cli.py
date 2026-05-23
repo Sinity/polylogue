@@ -127,9 +127,6 @@ async def _ensure_fts_startup_readiness() -> None:
         conn = open_connection(db, timeout=10.0)
         row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
         has_fts_table = row is not None
-        indexable_messages = int(
-            conn.execute("SELECT COUNT(*) FROM messages WHERE text IS NOT NULL").fetchone()[0] or 0
-        )
 
         from polylogue.storage.fts.fts_lifecycle import (
             ensure_fts_index_sync,
@@ -158,13 +155,10 @@ async def _ensure_fts_startup_readiness() -> None:
             return
 
         ensure_fts_index_sync(conn)
-        indexed_messages = int(conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] or 0)
-        if indexable_messages and indexed_messages != indexable_messages:
-            logger.warning(
-                "daemon: message FTS count mismatch on startup (%d/%d indexed). Rebuilding once.",
-                indexed_messages,
-                indexable_messages,
-            )
+        has_indexable_messages = bool(conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1").fetchone())
+        has_indexed_messages = bool(conn.execute("SELECT 1 FROM messages_fts_docsize LIMIT 1").fetchone())
+        if has_indexable_messages and not has_indexed_messages:
+            logger.warning("daemon: message FTS is empty on startup while messages exist. Rebuilding once.")
             rebuild_fts_index_sync(conn)
             conn.commit()
             logger.info("daemon: FTS rebuild complete.")
@@ -257,14 +251,13 @@ async def _periodic_db_optimize() -> None:
 async def _periodic_convergence_check(
     sources: tuple[WatchSource, ...],
 ) -> None:
-    """Periodically verify FTS coverage, insight freshness, and repair gaps.
+    """Periodically retry derived convergence debt.
 
-    This is a safety net that runs every 10 minutes. The write path
-    maintains these atomically via commit_archive_write_effects(),
-    so gaps should be rare — this catches edge cases like crash recovery.
+    The live ingest path schedules per-source/per-conversation convergence
+    work. This safety net retries recorded debt without doing full-archive
+    scans or global FTS rebuilds from the daemon's idle loop.
     """
     from polylogue.paths import db_path
-    from polylogue.storage.sqlite.connection_profile import open_connection
 
     db = db_path()
     while True:
@@ -275,33 +268,6 @@ async def _periodic_convergence_check(
             repaired = await asyncio.to_thread(_drain_convergence_debt_once, db)
             if repaired:
                 logger.info("convergence: retried %d derived debt item(s)", repaired)
-            conn = open_connection(db, timeout=5.0)
-            try:
-                total_msgs = conn.execute("SELECT COUNT(*) FROM messages WHERE text IS NOT NULL").fetchone()[0]
-                if total_msgs == 0:
-                    continue
-                fts_count = (
-                    conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
-                    if conn.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages_fts_docsize'"
-                    ).fetchone()
-                    else 0
-                )
-                gap = total_msgs - fts_count
-                if gap != 0:
-                    logger.warning(
-                        "convergence: FTS count mismatch detected (%d/%d messages, %.1f%%). Rebuilding.",
-                        fts_count,
-                        total_msgs,
-                        100 * abs(gap) / total_msgs,
-                    )
-                    from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
-
-                    rebuild_fts_index_sync(conn)
-                    conn.commit()
-                    logger.info("convergence: FTS rebuild complete — %d messages indexed.", total_msgs)
-            finally:
-                conn.close()
         except Exception:
             logger.warning("convergence: check failed", exc_info=True)
 
@@ -556,14 +522,6 @@ async def run_daemon_services(
             )
         )
 
-    # Ensure FTS is consistent on startup. A gap can only exist from
-    # pre-daemon historical data; once caught up, the write path maintains
-    # FTS atomically via commit_archive_write_effects(). Skipped when the
-    # schema is structurally unusable for this runtime — opening the DB at
-    # all is what the preflight is preventing.
-    if not watcher_blocked:
-        await _ensure_fts_startup_readiness()
-
     pidfile = Path(archive_root()) / "daemon.pid"
     pidfile_fd: int | None = None
 
@@ -581,6 +539,13 @@ async def run_daemon_services(
     # attempt by an ephemeral instance would still atexit-unlink the live
     # daemon's pidfile.
     _pidfile_path = pidfile
+
+    # Ensure FTS structure is usable on startup. Keep this after pidfile
+    # acquisition so operator status sees the live daemon even if SQLite is
+    # busy, and keep the check bounded so daemon restart is not a full-table
+    # maintenance operation.
+    if not watcher_blocked:
+        await _ensure_fts_startup_readiness()
 
     # Periodic maintenance tasks.
     wal_task = asyncio.create_task(_periodic_wal_checkpoint())
