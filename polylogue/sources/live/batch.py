@@ -987,17 +987,16 @@ class LiveBatchProcessor:
             return None
         if stat.st_size <= cursor.byte_offset:
             return None
-        if stat.st_size - cursor.byte_offset > _MAX_APPEND_PLAN_PAYLOAD_BYTES:
-            return None
         if cursor.st_dev is not None and cursor.st_dev != stat.st_dev:
             return None
         if cursor.st_ino is not None and cursor.st_ino != stat.st_ino:
             return None
 
         start_offset = max(cursor.byte_offset, 0)
+        append_window = min(stat.st_size - start_offset, _MAX_APPEND_PLAN_PAYLOAD_BYTES)
         with path.open("rb") as handle:
             handle.seek(start_offset)
-            payload = handle.read()
+            payload = handle.read(append_window)
         newline_at = payload.rfind(b"\n")
         if newline_at < 0:
             return None
