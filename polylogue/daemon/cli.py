@@ -219,7 +219,7 @@ async def _periodic_wal_checkpoint() -> None:
 
     db = db_path()
     while True:
-        await asyncio.sleep(300)  # 5 minutes
+        await asyncio.sleep(300)
         if not db.exists():
             continue
         try:
@@ -227,17 +227,17 @@ async def _periodic_wal_checkpoint() -> None:
                 maybe_checkpoint_wal,
                 db,
                 reason="periodic",
-                timeout_s=5.0,
             )
             if observation.ran:
                 logger.info(
-                    "daemon: WAL checkpoint %s before=%d after=%d busy=%d checkpointed=%d error=%s",
+                    "daemon: WAL checkpoint %s before=%d after=%d busy=%d checkpointed=%d error=%s blockers=%s",
                     observation.mode,
                     observation.wal_bytes_before,
                     observation.wal_bytes_after,
                     observation.busy_pages,
                     observation.checkpointed_pages,
                     observation.error,
+                    ",".join(observation.blocking_processes[:5]),
                 )
         except Exception:
             logger.warning("daemon: WAL checkpoint failed", exc_info=True)

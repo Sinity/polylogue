@@ -11,7 +11,7 @@ from polylogue.pipeline.services.ingest_batch import _process_ingest_batch_sync
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult
 from polylogue.storage.runtime import RawConversationRecord
 from polylogue.storage.sqlite.connection import open_connection
-from polylogue.storage.sqlite.wal_checkpoint import WalCheckpointObservation
+from polylogue.storage.sqlite.wal_checkpoint import WalCheckpointObservation, maybe_checkpoint_wal
 
 
 def test_process_ingest_batch_sync_records_wal_checkpoint_observation(
@@ -93,3 +93,35 @@ def test_process_ingest_batch_sync_records_wal_checkpoint_observation(
     assert summary.wal_bytes_after_checkpoint == 0
     assert summary.wal_checkpointed_pages == 7
     assert summary.wal_checkpoint_elapsed_s == 0.25
+
+
+def test_maybe_checkpoint_wal_reports_blocking_processes_when_busy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "polylogue.db"
+
+    class FakeConnection:
+        def execute(self, sql: str) -> object:
+            assert sql == "PRAGMA wal_checkpoint(PASSIVE)"
+            return self
+
+        def fetchone(self) -> tuple[int, int, int]:
+            return (1, 25, 12)
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("polylogue.storage.sqlite.wal_checkpoint._wal_size", lambda db: 1024)
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.wal_checkpoint.open_connection", lambda *_args, **_kwargs: FakeConnection()
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.wal_checkpoint._sqlite_file_holders",
+        lambda db: ("1234:polylogue-mcp",) if db == db_path else (),
+    )
+
+    observation = maybe_checkpoint_wal(db_path, reason="test", warn_bytes=0, truncate_bytes=0)
+
+    assert observation.busy_pages == 1
+    assert observation.blocking_processes == ("1234:polylogue-mcp",)

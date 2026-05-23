@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ class WalCheckpointObservation:
     checkpointed_pages: int = 0
     elapsed_s: float = 0.0
     error: str | None = None
+    blocking_processes: tuple[str, ...] = ()
 
     @property
     def ran(self) -> bool:
@@ -82,6 +84,11 @@ def maybe_checkpoint_wal(
     except sqlite3.Error as exc:
         error = str(exc)
     after = _wal_size(db)
+    blocking_processes = (
+        _sqlite_file_holders(db)
+        if busy > 0 or after >= truncate_bytes or (error is not None and "locked" in error.lower())
+        else ()
+    )
     return WalCheckpointObservation(
         reason=reason,
         mode=mode,
@@ -92,7 +99,50 @@ def maybe_checkpoint_wal(
         checkpointed_pages=checkpointed,
         elapsed_s=round(time.perf_counter() - started, 6),
         error=error,
+        blocking_processes=blocking_processes,
     )
+
+
+def _sqlite_file_holders(db: Path) -> tuple[str, ...]:
+    """Return processes currently holding the SQLite db/wal/shm files."""
+    targets = {db.resolve(), db.with_suffix(".db-wal").resolve(), db.with_suffix(".db-shm").resolve()}
+    holders: list[str] = []
+    proc_root = Path("/proc")
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = entry.name
+        fd_dir = entry / "fd"
+        try:
+            fd_paths = tuple(fd_dir.iterdir())
+        except OSError:
+            continue
+        matched = False
+        for fd in fd_paths:
+            try:
+                if Path(os.readlink(fd)).resolve() in targets:
+                    matched = True
+                    break
+            except OSError:
+                continue
+        if not matched:
+            continue
+        holders.append(f"{pid}:{_process_command(entry)}")
+    return tuple(sorted(holders))
+
+
+def _process_command(proc_entry: Path) -> str:
+    try:
+        comm = (proc_entry / "comm").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        comm = "unknown"
+    try:
+        cmdline = (proc_entry / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", errors="replace").strip()
+    except OSError:
+        cmdline = ""
+    if not cmdline:
+        return comm
+    return cmdline[:240]
 
 
 __all__ = [
