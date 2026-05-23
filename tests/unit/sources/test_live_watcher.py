@@ -336,7 +336,7 @@ def test_live_full_ingest_caps_workers_below_batch_policy(monkeypatch: pytest.Mo
         acquired_at="2026-05-01T00:00:00+00:00",
     )
 
-    assert _full_ingest_worker_count(records) == 2
+    assert _full_ingest_worker_count(records) == 1
     assert _full_ingest_worker_count([giant]) == 1
 
 
