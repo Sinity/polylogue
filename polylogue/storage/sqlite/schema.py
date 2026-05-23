@@ -15,6 +15,7 @@ import aiosqlite
 
 from polylogue.errors import SchemaIncompatibleError
 from polylogue.logging import get_logger
+from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_async, ensure_runtime_indexes_sync
 from polylogue.storage.sqlite.schema_bootstrap import (
     SCHEMA_DDL,
     SCHEMA_VERSION,
@@ -63,6 +64,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.executescript(SCHEMA_DDL)
         ensure_vec0_table(conn)
+        ensure_runtime_indexes_sync(conn)
+        conn.execute("PRAGMA optimize")
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
         logger.debug("Created fresh schema v%s", SCHEMA_VERSION)
@@ -79,6 +82,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # open_as_is — vec0 still needs to be ensured per-connection because the
     # extension may have been newly loaded since fresh init.
     ensure_vec0_table(conn)
+    ensure_runtime_indexes_sync(conn)
 
 
 async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
@@ -90,6 +94,8 @@ async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
         await conn.execute("PRAGMA foreign_keys = ON")
         await conn.executescript(SCHEMA_DDL)
         await ensure_vec0_table_async(conn)
+        await ensure_runtime_indexes_async(conn)
+        await conn.execute("PRAGMA optimize")
         await conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         await conn.commit()
         return
@@ -103,6 +109,7 @@ async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
         )
 
     await ensure_vec0_table_async(conn)
+    await ensure_runtime_indexes_async(conn)
 
 
 __all__ = [

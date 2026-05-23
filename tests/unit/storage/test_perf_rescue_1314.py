@@ -7,9 +7,9 @@ hosts and CI shapes.
 1. ``_SESSION_INSIGHT_REBUILD_PAGE_SIZE`` must be at least 50; the
    page-size-1 regression produced ~17K SQL round-trips for ~4K
    conversations.
-2. ``search_conversation_hits`` must prove exact message FTS freshness
-   before executing MATCH until a durable daemon-maintained freshness ledger
-   replaces the per-call count.
+2. ``search_conversation_hits`` must skip archive-scale FTS COUNT(*) probes
+   when the daemon-maintained freshness ledger says the message FTS surface is
+   ready, and must fall back to exact verification when that row is absent.
 3. ``get_provider_metrics_rows`` must read ``conversation_stats`` for
    the per-conversation pre-aggregates instead of scanning ``messages``
    for them.
@@ -75,13 +75,40 @@ def test_session_insight_rebuild_page_size_is_at_least_50() -> None:
 
 
 @pytest.mark.scale_small
-def test_search_conversation_hits_checks_exact_fts_freshness_before_match(tier_small_db: Path) -> None:
-    """Search must not serve partial FTS results when docsize parity is stale."""
+def test_search_conversation_hits_uses_freshness_ledger_before_match(tier_small_db: Path) -> None:
+    """Search should not pay archive-scale COUNT(*) probes after daemon readiness."""
+    from polylogue.storage.fts.freshness import READY, record_fts_surface_state_async
+
     with open_bench_store(tier_small_db) as store:
         backend = store.backend
 
         async def _run(statements: list[str]) -> None:
             async with backend.connection() as conn:
+                await record_fts_surface_state_async(conn, surface="messages_fts", state=READY)
+                await conn.commit()
+                await search_conversation_hits(conn, "analysis", limit=5)
+
+        with _capture_aiosqlite_sql() as statements:
+            store.run(_run(statements))
+
+        lowered = [sql.lower() for sql in statements]
+        match_index = next(i for i, sql in enumerate(lowered) if "messages_fts match" in sql)
+        assert all("count(*) from messages_fts_docsize" not in sql for sql in lowered[:match_index])
+        assert all("count(*) from messages where text is not null" not in sql for sql in lowered[:match_index])
+
+
+@pytest.mark.scale_small
+def test_search_conversation_hits_falls_back_to_exact_freshness(tier_small_db: Path) -> None:
+    """Absent ledger rows fall back to exact FTS verification before MATCH."""
+    from polylogue.storage.fts.freshness import STALE, record_fts_surface_state_async
+
+    with open_bench_store(tier_small_db) as store:
+        backend = store.backend
+
+        async def _run(statements: list[str]) -> None:
+            async with backend.connection() as conn:
+                await record_fts_surface_state_async(conn, surface="messages_fts", state=STALE)
+                await conn.commit()
                 await search_conversation_hits(conn, "analysis", limit=5)
 
         with _capture_aiosqlite_sql() as statements:

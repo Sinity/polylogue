@@ -335,7 +335,7 @@ class TestConfigThreading:
 
         with (
             patch(
-                "polylogue.storage.sqlite.connection.connection_context",
+                "polylogue.storage.sqlite.connection.open_read_connection",
                 fake_connection_context,
             ),
             patch(
@@ -364,7 +364,7 @@ class TestConfigThreading:
 
         with (
             patch(
-                "polylogue.storage.sqlite.connection.connection_context",
+                "polylogue.storage.sqlite.connection.open_read_connection",
                 fake_connection_context,
             ),
             patch(

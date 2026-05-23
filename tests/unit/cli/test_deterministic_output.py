@@ -489,6 +489,7 @@ def test_should_use_plain_contract(
         monkeypatch.delenv("POLYLOGUE_FORCE_PLAIN", raising=False)
     else:
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", env_value)
+    monkeypatch.delenv("NO_COLOR", raising=False)
 
     with patch("sys.stdout.isatty", return_value=tty), patch("sys.stderr.isatty", return_value=tty):
         assert should_use_plain(plain=plain) is expected
@@ -502,6 +503,7 @@ def test_should_use_plain_falsey_env_values_do_not_force_plain(
     from polylogue.cli.shared.formatting import should_use_plain
 
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", falsey)
+    monkeypatch.delenv("NO_COLOR", raising=False)
     with patch("sys.stdout.isatty", return_value=True), patch("sys.stderr.isatty", return_value=True):
         assert should_use_plain(plain=False) is False
 

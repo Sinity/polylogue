@@ -45,6 +45,8 @@ varies on a known-bounded dimension):
 - ``polylogue_blob_lease_distinct_operations`` (gauge)
 - ``polylogue_fts_trigger_present`` (gauge) — labels: trigger
 - ``polylogue_fts_triggers_all_present`` (gauge, 0/1)
+- ``polylogue_fts_freshness_ready`` (gauge, 0/1) — labels: surface
+- ``polylogue_live_ingest_memory_mebibytes`` (gauge) — labels: kind
 - ``polylogue_stale_cursor_writes_total`` (counter)
 
 The handler signature mirrors ``healthz.py``'s ``ProbeResponder``
@@ -239,6 +241,56 @@ def _fts_trigger_presence(conn: sqlite3.Connection) -> dict[str, bool]:
     return {name: (name in present) for name in _EXPECTED_FTS_TRIGGERS}
 
 
+def _fts_freshness_ready(conn: sqlite3.Connection) -> list[tuple[str, int]]:
+    if not _table_exists(conn, "fts_freshness_state"):
+        return []
+    rows = conn.execute(
+        """
+        SELECT surface, state
+        FROM fts_freshness_state
+        ORDER BY surface
+        """
+    ).fetchall()
+    return [(str(row[0]), 1 if str(row[1]) == "ready" else 0) for row in rows]
+
+
+def _latest_ingest_memory(conn: sqlite3.Connection) -> list[tuple[str, float]]:
+    if not _table_exists(conn, "live_ingest_attempt"):
+        return []
+    cols = _columns(conn, "live_ingest_attempt")
+    metric_columns = {
+        "rss_current": "rss_current_mb",
+        "rss_peak_self": "rss_peak_self_mb",
+        "rss_peak_children": "rss_peak_children_mb",
+        "cgroup_current": "cgroup_memory_current_mb",
+        "cgroup_peak": "cgroup_memory_peak_mb",
+        "cgroup_swap_current": "cgroup_memory_swap_current_mb",
+        "cgroup_anon": "cgroup_memory_anon_mb",
+        "cgroup_file": "cgroup_memory_file_mb",
+        "cgroup_inactive_file": "cgroup_memory_inactive_file_mb",
+    }
+    available = [(kind, column) for kind, column in metric_columns.items() if column in cols]
+    if not available:
+        return []
+    select_list = ", ".join(column for _, column in available)
+    row = conn.execute(
+        f"""
+        SELECT {select_list}
+        FROM live_ingest_attempt
+        ORDER BY updated_at DESC, started_at DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if row is None:
+        return []
+    samples: list[tuple[str, float]] = []
+    for idx, (kind, _column) in enumerate(available):
+        value = row[idx]
+        if value is not None:
+            samples.append((kind, float(value)))
+    return samples
+
+
 # ---------------------------------------------------------------------------
 # Format
 # ---------------------------------------------------------------------------
@@ -319,6 +371,8 @@ def format_metrics(
                 "1 when the named FTS sync trigger is installed in the archive DB.",
             ),
             ("polylogue_fts_triggers_all_present", "All expected FTS sync triggers are installed."),
+            ("polylogue_fts_freshness_ready", "1 when the daemon freshness ledger marks an FTS surface ready."),
+            ("polylogue_live_ingest_memory_mebibytes", "Latest live ingest memory sample in MiB by kind."),
             ("polylogue_stale_cursor_writes_total", "Total stale-cursor writes observed across ingest attempts."),
         ):
             metric_type = "counter" if name.endswith("_total") else "gauge"
@@ -430,6 +484,24 @@ def format_metrics(
             help_text="1 when every expected FTS sync trigger is installed.",
             metric_type="gauge",
             samples=[(None, 1 if all(triggers.values()) else 0)],
+        )
+
+        freshness = _fts_freshness_ready(conn)
+        _emit_metric(
+            lines,
+            name="polylogue_fts_freshness_ready",
+            help_text="1 when the daemon freshness ledger marks an FTS surface ready.",
+            metric_type="gauge",
+            samples=[({"surface": surface}, ready) for surface, ready in freshness],
+        )
+
+        memory = _latest_ingest_memory(conn)
+        _emit_metric(
+            lines,
+            name="polylogue_live_ingest_memory_mebibytes",
+            help_text="Latest live ingest memory sample in MiB by kind.",
+            metric_type="gauge",
+            samples=[({"kind": kind}, value) for kind, value in memory],
         )
     finally:
         conn.close()
