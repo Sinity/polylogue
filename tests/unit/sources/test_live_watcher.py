@@ -20,7 +20,6 @@ import polylogue.sources.live.watcher as live_watcher
 from polylogue import Polylogue
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.batch import (
-    _LARGE_FULL_PARSE_PROGRESS_BYTES,
     _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES,
     _SMALL_FULL_PARSE_PROGRESS_MAX_FILES,
     _STREAMING_FULL_INGEST_BYTES,
@@ -30,6 +29,7 @@ from polylogue.sources.live.batch import (
     _FullIngestResult,
     last_complete_newline_from_tail,
 )
+from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.storage.runtime import RawConversationRecord
 from tests.infra.frozen_clock import FrozenClock
@@ -847,13 +847,68 @@ def test_full_parse_progress_groups_bounds_small_files_by_bytes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     paths = [tmp_path / f"{index}.jsonl" for index in range(5)]
-    byte_size = _LARGE_FULL_PARSE_PROGRESS_BYTES - 1
+    byte_size = (_SMALL_FULL_PARSE_PROGRESS_MAX_BYTES // 3) + 1
     monkeypatch.setattr("polylogue.sources.live.batch_support._path_size", lambda path: byte_size)
 
     groups = list(_full_parse_progress_groups(paths))
 
     assert sum(byte_size for _ in groups[0]) <= _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES
-    assert groups == [paths[:4], paths[4:]]
+    assert groups == [paths[:2], paths[2:4], paths[4:]]
+
+
+@pytest.mark.asyncio
+async def test_live_append_plans_flush_in_bounded_groups(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    paths = [root / f"{index}.jsonl" for index in range(5)]
+    for path in paths:
+        path.write_text('{"type":"session_meta","payload":{"id":"bounded"}}\n', encoding="utf-8")
+    cursor = CursorStore(tmp_path / "live.sqlite")
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor._db_path))
+    processor = LiveBatchProcessor(
+        cast(Any, polylogue),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    groups: list[list[Path]] = []
+
+    def fake_append_plan(path: Path, *, cursor: CursorRecord | None = None) -> _AppendPlan:
+        del cursor
+        return _AppendPlan(
+            path=path,
+            source_name="codex",
+            start_offset=0,
+            last_complete_newline=10,
+            stat_size=10,
+            st_dev=1,
+            st_ino=1,
+            mtime_ns=1,
+            payload=b"payload\n",
+            payload_hash="tail",
+            cursor_fingerprint="base",
+            bytes_read=10,
+        )
+
+    def fake_ingest_append_plans(plans: list[_AppendPlan]) -> _AppendResult:
+        groups.append([plan.path for plan in plans])
+        return _AppendResult(succeeded=list(plans), failed=[], worker_count=1)
+
+    monkeypatch.setattr(processor, "_append_plan", fake_append_plan)
+    monkeypatch.setattr(processor, "_ingest_append_plans", fake_ingest_append_plans)
+    monkeypatch.setattr(processor, "_converge_paths", lambda paths: (paths, 0.0, {}, []))
+    monkeypatch.setattr(processor, "_record_append_cursor", lambda plan: True)
+    monkeypatch.setattr(processor, "_record_convergence_outcome", lambda path, debts: None)
+    monkeypatch.setattr("polylogue.sources.live.batch._append_plan_group_ready", lambda plans: len(plans) >= 2)
+
+    metrics = await processor.ingest_files(paths, emit_event=False)
+
+    assert groups == [paths[:2], paths[2:4], paths[4:]]
+    assert metrics.append_file_count == 5
+    assert metrics.full_file_count == 0
 
 
 @pytest.mark.asyncio

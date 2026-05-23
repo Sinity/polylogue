@@ -8,7 +8,9 @@ import pytest
 
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import _MAX_APPEND_PLAN_PAYLOAD_BYTES, LiveBatchProcessor
+from polylogue.sources.live.batch_support import _detect_provider_from_path_sample, _parse_path_as_conversation_artifact
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.types import Provider
 
 
 def test_full_ingest_heartbeats_small_file_groups_with_current_path(
@@ -125,6 +127,23 @@ def test_fingerprint_file_empty_file(tmp_path: Path) -> None:
     fp, last_nl = fingerprint_file(target)
     assert fp == hashlib.sha256(b"").hexdigest()
     assert last_nl == 0
+
+
+def test_large_non_jsonl_full_ingest_planning_does_not_read_whole_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "large.json"
+    target.write_text('{"mapping": {}}\n', encoding="utf-8")
+    monkeypatch.setattr("polylogue.sources.live.batch_support._path_size", lambda path: 32 * 1024 * 1024)
+
+    def fail_read_bytes(_path: Path) -> bytes:
+        raise AssertionError("large full-ingest planning must not materialize the whole file")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
+
+    assert _detect_provider_from_path_sample(target, Provider.CHATGPT) is Provider.CHATGPT
+    assert _parse_path_as_conversation_artifact(target, provider=Provider.CHATGPT) is True
 
 
 def test_append_plan_rejects_large_tail_for_streaming_full_ingest(tmp_path: Path) -> None:

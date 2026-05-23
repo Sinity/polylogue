@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from polylogue.core.degraded import is_degraded
+from polylogue.core.memory import release_process_memory
 from polylogue.core.metrics import (
     read_cgroup_memory_current_mb,
     read_cgroup_memory_peak_mb,
@@ -43,6 +44,7 @@ from polylogue.sources.live.batch_support import (
     _MAX_APPEND_PLAN_PAYLOAD_BYTES,
     _STREAMING_FULL_INGEST_BYTES,
     _accumulate_stage_timings,
+    _append_plan_group_ready,
     _AppendPlan,
     _AppendResult,
     _blob_copy_heartbeat,
@@ -161,21 +163,21 @@ class LiveBatchProcessor:
         ingest_worker_count_max = 0
         cursor_records = self._cursor.get_records(paths)
 
-        append_plans: list[_AppendPlan] = []
+        append_file_count = 0
+        pending_append_plans: list[_AppendPlan] = []
         full_paths: list[Path] = []
-        for path in paths:
-            append_plan = (
-                self._append_plan(path, cursor=cursor_records.get(path))
-                if self._can_ingest_appends_directly()
-                else None
-            )
-            if append_plan is None:
-                full_paths.append(path)
-            else:
-                append_plans.append(append_plan)
-                source_payload_read_bytes += append_plan.bytes_read
 
-        if append_plans:
+        async def flush_append_plans() -> None:
+            nonlocal convergence_time_s
+            nonlocal cursor_fingerprint_read_bytes
+            nonlocal ingest_worker_count_max
+            nonlocal parse_time_s
+            nonlocal pending_append_plans
+            nonlocal stale_cursor_write_count
+            if not pending_append_plans:
+                return
+            plans = pending_append_plans
+            pending_append_plans = []
             self._record_attempt_progress(
                 attempt_id,
                 phase="append_parse",
@@ -184,15 +186,15 @@ class LiveBatchProcessor:
                 source_payload_read_bytes=source_payload_read_bytes,
                 cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
                 parse_time_s=parse_time_s,
-                current_source=append_plans[0].source_name,
-                current_path=append_plans[0].path,
+                current_source=plans[0].source_name,
+                current_path=plans[0].path,
             )
             t0 = time.perf_counter()
             try:
-                append_result = await asyncio.to_thread(self._ingest_append_plans, append_plans)
+                append_result = await asyncio.to_thread(self._ingest_append_plans, plans)
             except SchemaIncompatibleError as exc:
-                handle_schema_incompatible(append_plans[0].source_name, exc)
-                for plan in append_plans:
+                handle_schema_incompatible(plans[0].source_name, exc)
+                for plan in plans:
                     failed_paths.append(str(plan.path))
                 # Use an empty result so the per-plan cleanup loop below
                 # (``for plan in append_result.failed``) does NOT re-push the
@@ -203,6 +205,7 @@ class LiveBatchProcessor:
                 append_result = _AppendResult(succeeded=[], failed=[], worker_count=0)
             ingest_worker_count_max = max(ingest_worker_count_max, append_result.worker_count)
             parse_time_s += time.perf_counter() - t0
+            release_process_memory()
             self._record_attempt_progress(
                 attempt_id,
                 phase="convergence",
@@ -212,14 +215,15 @@ class LiveBatchProcessor:
                 cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
                 parse_time_s=parse_time_s,
                 convergence_time_s=convergence_time_s,
-                current_source=append_plans[0].source_name,
-                current_path=append_plans[0].path,
+                current_source=plans[0].source_name,
+                current_path=plans[0].path,
             )
             _converged_paths, elapsed, timings, convergence_debt = await asyncio.to_thread(
                 self._converge_paths,
                 [plan.path for plan in append_result.succeeded],
             )
             convergence_time_s += elapsed
+            release_process_memory()
             _accumulate_stage_timings(stage_timings, timings)
             debt_by_source_path = debt_by_path(convergence_debt)
             for plan in append_result.succeeded:
@@ -230,6 +234,25 @@ class LiveBatchProcessor:
             for plan in append_result.failed:
                 failed_paths.append(str(plan.path))
                 cursor_fingerprint_read_bytes += self._record_failed_cursor(plan.path)
+
+        for path in paths:
+            if is_degraded():
+                full_paths.append(path)
+                continue
+            append_plan = (
+                self._append_plan(path, cursor=cursor_records.get(path))
+                if self._can_ingest_appends_directly()
+                else None
+            )
+            if append_plan is None:
+                full_paths.append(path)
+            else:
+                pending_append_plans.append(append_plan)
+                append_file_count += 1
+                source_payload_read_bytes += append_plan.bytes_read
+                if _append_plan_group_ready(pending_append_plans):
+                    await flush_append_plans()
+        await flush_append_plans()
 
         by_source: dict[str, list[Path]] = {}
         for path in full_paths:
@@ -338,6 +361,7 @@ class LiveBatchProcessor:
                 parse_elapsed = time.perf_counter() - t0
                 parse_time_s += parse_elapsed
                 source_payload_read_bytes += full_result.source_payload_read_bytes
+                release_process_memory()
                 self._record_attempt_progress(
                     attempt_id,
                     phase="convergence",
@@ -355,6 +379,7 @@ class LiveBatchProcessor:
                     full_result.succeeded,
                 )
                 convergence_time_s += elapsed
+                release_process_memory()
                 _accumulate_stage_timings(stage_timings, timings)
                 debt_by_source_path = debt_by_path(convergence_debt)
                 for path in full_result.succeeded:
@@ -402,7 +427,7 @@ class LiveBatchProcessor:
             source_payload_read_bytes=source_payload_read_bytes,
             cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
             ingest_worker_count_max=ingest_worker_count_max,
-            append_file_count=len(append_plans),
+            append_file_count=append_file_count,
             full_file_count=len(full_paths),
             archive_bytes_before=db_bytes_before,
             archive_bytes_after=db_bytes_after,
@@ -915,13 +940,17 @@ class LiveBatchProcessor:
                 )
 
         failed_set = set(failed)
+        raw_fingerprints = {path: raw_id for raw_id, path in raw_by_id.items()}
+        worker_count = int(getattr(summary, "worker_count", 0)) if raw_records else 0
+        raw_records.clear()
+        raw_by_id.clear()
         return _FullIngestResult(
             succeeded=[path for path in ingested if path not in failed_set],
             failed=failed,
             source_payload_read_bytes=source_payload_read_bytes,
-            raw_fingerprints={path: raw_id for raw_id, path in raw_by_id.items()},
+            raw_fingerprints=raw_fingerprints,
             raw_byte_sizes=raw_byte_sizes,
-            worker_count=int(getattr(summary, "worker_count", 0)) if raw_records else 0,
+            worker_count=worker_count,
         )
 
     def _assert_writable_archive_layout(self) -> None:
@@ -1092,6 +1121,8 @@ class LiveBatchProcessor:
         failed = [raw_by_id[raw_id] for raw_id in summary.failed_raw_ids if raw_id in raw_by_id]
         failed_paths = {plan.path for plan in failed}
         succeeded = [plan for plan in plans if plan.path not in failed_paths and summary.parse_failures == 0]
+        raw_records.clear()
+        raw_by_id.clear()
         if summary.parse_failures and not failed:
             return _AppendResult(succeeded=[], failed=plans, worker_count=summary.worker_count)
         return _AppendResult(succeeded=succeeded, failed=failed, worker_count=summary.worker_count)

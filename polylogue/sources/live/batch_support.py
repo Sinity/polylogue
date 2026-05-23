@@ -21,10 +21,12 @@ from polylogue.storage.runtime import RawConversationRecord
 from polylogue.types import Provider
 
 _LARGE_FULL_PARSE_PROGRESS_BYTES = 64 * 1024 * 1024
-_SMALL_FULL_PARSE_PROGRESS_MAX_BYTES = 256 * 1024 * 1024
-_SMALL_FULL_PARSE_PROGRESS_MAX_FILES = 256
+_SMALL_FULL_PARSE_PROGRESS_MAX_BYTES = 64 * 1024 * 1024
+_SMALL_FULL_PARSE_PROGRESS_MAX_FILES = 64
 _STREAMING_FULL_INGEST_BYTES = 8 * 1024 * 1024
 _MAX_APPEND_PLAN_PAYLOAD_BYTES = 16 * 1024 * 1024
+_MAX_APPEND_PLAN_GROUP_PAYLOAD_BYTES = 64 * 1024 * 1024
+_MAX_APPEND_PLAN_GROUP_FILES = 64
 _DEFAULT_LIVE_FULL_INGEST_WORKERS = 2
 
 
@@ -202,6 +204,13 @@ def _full_parse_progress_groups(paths: list[Path]) -> Iterable[list[Path]]:
         yield small_paths
 
 
+def _append_plan_group_ready(plans: list[_AppendPlan]) -> bool:
+    """Return true when pending append plans should be ingested now."""
+    if len(plans) >= _MAX_APPEND_PLAN_GROUP_FILES:
+        return True
+    return sum(plan.bytes_read for plan in plans) >= _MAX_APPEND_PLAN_GROUP_PAYLOAD_BYTES
+
+
 def _full_ingest_worker_count(records: list[RawConversationRecord]) -> int:
     """Return the worker count for daemon live full-ingest batches."""
     return _select_ingest_worker_count(records, _live_full_ingest_worker_limit())
@@ -300,6 +309,8 @@ def _detect_provider_from_path_sample(path: Path, fallback_provider: Provider) -
         if records:
             return detect_provider(records) or fallback_provider
         return fallback_provider
+    if _path_size(path) > _STREAMING_FULL_INGEST_BYTES:
+        return fallback_provider
     try:
         payload = path.read_bytes()
     except OSError:
@@ -330,6 +341,8 @@ def _parse_path_as_conversation_artifact(path: Path, *, provider: Provider) -> b
         if not records:
             return False
         return classify_artifact(records, provider=provider, source_path=path).parse_as_conversation
+    if _path_size(path) > _STREAMING_FULL_INGEST_BYTES:
+        return True
     try:
         document = cast(JSONValue, orjson.loads(path.read_bytes()))
     except orjson.JSONDecodeError:
