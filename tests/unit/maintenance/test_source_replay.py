@@ -20,6 +20,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from polylogue.config import Config, Source
 from polylogue.maintenance.planner import BackfillKind, BackfillStatus
 from polylogue.maintenance.replay import (
@@ -139,6 +141,21 @@ def test_resolve_sources_filters_by_source_root(tmp_path: Path) -> None:
     config = _make_config(tmp_path, sources=[src_a, src_b])
     filter_a = MaintenanceScopeFilter(source_root=root_a)
     assert resolve_source_replay_sources(config, filter_a) == [src_a]
+
+
+def test_resolve_sources_filters_archived_paths_lexically(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    archived_root = Path("/mnt/pendrv/archive/chatgpt")
+    src = Source(name="chatgpt", path=archived_root / "exports")
+    config = _make_config(tmp_path, sources=[src])
+
+    def fail_resolve(self: Path, *args: object, **kwargs: object) -> Path:
+        raise AssertionError("source replay must not resolve archived paths")
+
+    monkeypatch.setattr(Path, "resolve", fail_resolve)
+
+    resolved = resolve_source_replay_sources(config, MaintenanceScopeFilter(source_root=archived_root))
+
+    assert resolved == [src]
 
 
 def test_resolve_sources_filters_by_provider(tmp_path: Path) -> None:
