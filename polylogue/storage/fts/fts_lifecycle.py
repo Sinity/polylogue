@@ -175,6 +175,17 @@ def restore_fts_triggers_sync(conn: sqlite3.Connection) -> None:
         conn.execute(ddl)
 
 
+def ensure_fts_triggers_sync(conn: sqlite3.Connection) -> None:
+    """Create missing FTS triggers without dropping existing triggers.
+
+    Steady-state archive writes must not create a dropped-trigger window.
+    ``restore_fts_triggers_sync`` remains the explicit recovery/rebuild path
+    for replacing trigger definitions and repairing global FTS state.
+    """
+    for ddl in _MESSAGE_FTS_TRIGGER_DDL + _ACTION_FTS_TRIGGER_DDL:
+        conn.execute(ddl)
+
+
 def ensure_fts_index_sync(conn: sqlite3.Connection) -> None:
     """Ensure the FTS5 tables and triggers exist on a sync SQLite connection."""
     conn.execute(FTS_MESSAGES_TABLE_SQL)
@@ -483,6 +494,7 @@ __all__ = [
     "check_fts_readiness",
     "ensure_fts_index_async",
     "ensure_fts_index_sync",
+    "ensure_fts_triggers_sync",
     "fts_index_status_async",
     "fts_index_status_sync",
     "message_fts_readiness_async",

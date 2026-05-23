@@ -31,7 +31,7 @@ def commit_archive_write_effects(
     """Run the canonical post-write side effects for an archive write.
 
     This function:
-    1. Restores FTS triggers (suspended during bulk writes)
+    1. Ensures FTS triggers exist without dropping live triggers
     2. Repairs message FTS for changed conversation IDs
     3. Repairs action-event FTS for changed conversation IDs
     4. Commits the transaction
@@ -55,9 +55,9 @@ def commit_archive_write_effects(
     WriteResult with status, rows_affected, and operation_id.
     """
     from polylogue.storage.fts.fts_lifecycle import (
+        ensure_fts_triggers_sync,
         repair_action_fts_index_sync,
         repair_message_fts_index_sync,
-        restore_fts_triggers_sync,
     )
 
     changed_ids: Sequence[str] = payload.get("changed_conversation_ids", [])
@@ -76,9 +76,9 @@ def commit_archive_write_effects(
 
         acquire_blob_leases(db_path, blob_hashes, operation_id)
 
-    t_restore = time.perf_counter()
-    restore_fts_triggers_sync(conn)
-    restore_elapsed_s = time.perf_counter() - t_restore
+    t_trigger = time.perf_counter()
+    ensure_fts_triggers_sync(conn)
+    trigger_elapsed_s = time.perf_counter() - t_trigger
     message_fts_elapsed_s = 0.0
     action_fts_elapsed_s = 0.0
     if sorted_ids:
@@ -92,14 +92,14 @@ def commit_archive_write_effects(
     t_commit = time.perf_counter()
     conn.commit()
     commit_elapsed_s = time.perf_counter() - t_commit
-    total_effect_elapsed_s = restore_elapsed_s + message_fts_elapsed_s + action_fts_elapsed_s + commit_elapsed_s
+    total_effect_elapsed_s = trigger_elapsed_s + message_fts_elapsed_s + action_fts_elapsed_s + commit_elapsed_s
     if total_effect_elapsed_s >= 1.0:
         logger.info(
-            "slow_archive_write_effects operation=%s conversations=%d restore_fts_s=%.3f "
+            "slow_archive_write_effects operation=%s conversations=%d ensure_fts_triggers_s=%.3f "
             "message_fts_s=%.3f action_fts_s=%.3f commit_s=%.3f total_s=%.3f",
             op.value,
             len(sorted_ids),
-            restore_elapsed_s,
+            trigger_elapsed_s,
             message_fts_elapsed_s,
             action_fts_elapsed_s,
             commit_elapsed_s,
