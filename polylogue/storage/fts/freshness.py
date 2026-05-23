@@ -175,25 +175,33 @@ async def mark_all_fts_stale_async(conn: aiosqlite.Connection, *, detail: str) -
 
 
 def message_fts_marked_ready_sync(conn: sqlite3.Connection) -> bool:
+    return message_fts_recorded_state_sync(conn) == READY
+
+
+async def message_fts_marked_ready_async(conn: aiosqlite.Connection) -> bool:
+    return await message_fts_recorded_state_async(conn) == READY
+
+
+def message_fts_recorded_state_sync(conn: sqlite3.Connection) -> str | None:
     if not _table_exists_sync(conn):
-        return False
+        return None
     row = conn.execute(
         "SELECT state FROM fts_freshness_state WHERE surface=?",
         (MESSAGE_SURFACE,),
     ).fetchone()
-    return row is not None and str(row[0]) == READY
+    return None if row is None else str(row[0])
 
 
-async def message_fts_marked_ready_async(conn: aiosqlite.Connection) -> bool:
+async def message_fts_recorded_state_async(conn: aiosqlite.Connection) -> str | None:
     if not await _table_exists_async(conn):
-        return False
+        return None
     row = await (
         await conn.execute(
             "SELECT state FROM fts_freshness_state WHERE surface=?",
             (MESSAGE_SURFACE,),
         )
     ).fetchone()
-    return row is not None and str(row[0]) == READY
+    return None if row is None else str(row[0])
 
 
 __all__ = [
@@ -208,6 +216,8 @@ __all__ = [
     "mark_all_fts_stale_sync",
     "message_fts_marked_ready_async",
     "message_fts_marked_ready_sync",
+    "message_fts_recorded_state_async",
+    "message_fts_recorded_state_sync",
     "record_fts_invariant_snapshot_sync",
     "record_fts_surface_state_async",
     "record_fts_surface_state_sync",

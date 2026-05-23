@@ -505,11 +505,12 @@ def message_fts_search_readiness_sync(conn: sqlite3.Connection) -> dict[str, int
     from polylogue.storage.fts.freshness import (
         READY,
         STALE,
-        message_fts_marked_ready_sync,
+        message_fts_recorded_state_sync,
         record_fts_surface_state_sync,
     )
 
-    if message_fts_marked_ready_sync(conn):
+    recorded_state = message_fts_recorded_state_sync(conn)
+    if recorded_state == READY:
         return {
             "exists": True,
             "indexed_rows": 0,
@@ -517,6 +518,9 @@ def message_fts_search_readiness_sync(conn: sqlite3.Connection) -> dict[str, int
             "ready": True,
             "triggers_present": True,
         }
+    if recorded_state is not None:
+        readiness = message_fts_readiness_sync(conn, verify_total_rows=False)
+        return {**readiness, "ready": False}
     readiness = message_fts_readiness_sync(conn, verify_total_rows=True)
     if bool(readiness["ready"]):
         with suppress(sqlite3.Error):
@@ -582,11 +586,12 @@ async def message_fts_search_readiness_async(conn: aiosqlite.Connection) -> dict
     from polylogue.storage.fts.freshness import (
         READY,
         STALE,
-        message_fts_marked_ready_async,
+        message_fts_recorded_state_async,
         record_fts_surface_state_async,
     )
 
-    if await message_fts_marked_ready_async(conn):
+    recorded_state = await message_fts_recorded_state_async(conn)
+    if recorded_state == READY:
         return {
             "exists": True,
             "indexed_rows": 0,
@@ -594,6 +599,9 @@ async def message_fts_search_readiness_async(conn: aiosqlite.Connection) -> dict
             "ready": True,
             "triggers_present": True,
         }
+    if recorded_state is not None:
+        readiness = await message_fts_readiness_async(conn, verify_total_rows=False)
+        return {**readiness, "ready": False}
     readiness = await message_fts_readiness_async(conn, verify_total_rows=True)
     if bool(readiness["ready"]):
         with suppress(sqlite3.Error):
