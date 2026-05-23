@@ -9,6 +9,33 @@ from pydantic import BaseModel, Field
 
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
+_FTS_SURFACES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
+    (
+        "messages_fts",
+        "messages",
+        "messages_fts",
+        ("messages_fts_ai", "messages_fts_ad", "messages_fts_au"),
+    ),
+    (
+        "action_events_fts",
+        "action_events",
+        "action_events_fts",
+        ("action_events_fts_ai", "action_events_fts_ad", "action_events_fts_au"),
+    ),
+    (
+        "session_work_events_fts",
+        "session_work_events",
+        "session_work_events_fts",
+        ("session_work_events_fts_ai", "session_work_events_fts_ad", "session_work_events_fts_au"),
+    ),
+    (
+        "work_threads_fts",
+        "work_threads",
+        "work_threads_fts",
+        ("work_threads_fts_ai", "work_threads_fts_ad", "work_threads_fts_au"),
+    ),
+)
+
 
 class FTSReadiness(BaseModel):
     messages_ready: bool = False
@@ -24,16 +51,49 @@ class FTSReadiness(BaseModel):
     surfaces: dict[str, dict[str, int | bool]] = Field(default_factory=dict)
 
 
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _triggers_present(conn: sqlite3.Connection, trigger_names: tuple[str, ...]) -> bool:
+    placeholders = ",".join("?" for _ in trigger_names)
+    rows = conn.execute(
+        f"SELECT name FROM sqlite_master WHERE type='trigger' AND name IN ({placeholders})",
+        trigger_names,
+    ).fetchall()
+    present = {row[0] for row in rows}
+    return all(name in present for name in trigger_names)
+
+
 def fts_readiness_info(dbf: Path) -> dict[str, object]:
-    """Check FTS table presence and source-count parity through bounded probes."""
+    """Return bounded structural FTS readiness for health/status probes."""
     if not dbf.exists():
         return {"messages_ready": False, "action_events_ready": False, "coverage_pct": 0.0}
     try:
         conn = open_readonly_connection(dbf)
         try:
-            from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
-
-            snapshot = fts_invariant_snapshot_sync(conn)
+            surfaces: dict[str, dict[str, int | bool]] = {}
+            for name, source_table, fts_table, triggers in _FTS_SURFACES:
+                source_exists = _table_exists(conn, source_table)
+                exists = _table_exists(conn, fts_table)
+                triggers_present = exists and _triggers_present(conn, triggers)
+                ready = (exists and triggers_present) if source_exists else not exists
+                surfaces[name] = {
+                    "source_exists": source_exists,
+                    "exists": exists,
+                    "source_rows": 0,
+                    "indexed_rows": 0,
+                    "triggers_present": triggers_present,
+                    "missing_rows": 0,
+                    "excess_rows": 0,
+                    "duplicate_rows": 0,
+                    "ready": ready,
+                    "exact": False,
+                }
         finally:
             conn.close()
     except sqlite3.Error:
@@ -47,34 +107,22 @@ def fts_readiness_info(dbf: Path) -> dict[str, object]:
             "surfaces": {},
         }
 
-    message_indexable_count = snapshot.messages.source_rows
-    message_indexed_count = snapshot.messages.indexed_rows
-    action_event_count = snapshot.action_events.source_rows
-    action_event_indexed_count = snapshot.action_events.indexed_rows
-    coverage_pct = 100.0 if message_indexable_count == 0 else 100 * message_indexed_count / message_indexable_count
+    messages = surfaces["messages_fts"]
+    action_events = surfaces["action_events_fts"]
+    session_work_events = surfaces["session_work_events_fts"]
+    work_threads = surfaces["work_threads_fts"]
+    invariant_ready = all(bool(surface["ready"]) for surface in surfaces.values())
     return {
-        "messages_ready": snapshot.messages.ready,
-        "action_events_ready": snapshot.action_events.ready,
-        "session_work_events_ready": snapshot.session_work_events.ready,
-        "work_threads_ready": snapshot.work_threads.ready,
-        "invariant_ready": snapshot.ready,
-        "message_indexed_count": message_indexed_count,
-        "message_indexable_count": message_indexable_count,
-        "action_event_indexed_count": action_event_indexed_count,
-        "action_event_count": action_event_count,
-        "coverage_pct": round(max(0.0, coverage_pct), 1),
-        "surfaces": {
-            surface.name: {
-                "source_exists": surface.source_exists,
-                "exists": surface.exists,
-                "source_rows": surface.source_rows,
-                "indexed_rows": surface.indexed_rows,
-                "triggers_present": surface.triggers_present,
-                "missing_rows": surface.missing_rows,
-                "excess_rows": surface.excess_rows,
-                "duplicate_rows": surface.duplicate_rows,
-                "ready": surface.ready,
-            }
-            for surface in snapshot.surfaces
-        },
+        "messages_ready": messages["ready"],
+        "action_events_ready": action_events["ready"],
+        "session_work_events_ready": session_work_events["ready"],
+        "work_threads_ready": work_threads["ready"],
+        "invariant_ready": invariant_ready,
+        "message_indexed_count": 0,
+        "message_indexable_count": 0,
+        "action_event_indexed_count": 0,
+        "action_event_count": 0,
+        "coverage_pct": 100.0 if invariant_ready else 0.0,
+        "coverage_exact": False,
+        "surfaces": surfaces,
     }
