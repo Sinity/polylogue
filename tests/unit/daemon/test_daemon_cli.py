@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import sqlite3
+from collections.abc import Sequence
 from datetime import timedelta
 from pathlib import Path
 from typing import cast
@@ -476,6 +477,11 @@ def test_ensure_fts_startup_readiness_rebuilds_stats_count_mismatch(
                 return FakeCursor((5,))
             if query == "SELECT COUNT(*) FROM messages_fts_docsize":
                 return FakeCursor((6,))
+            if query == (
+                "SELECT COUNT(*) FROM messages_fts_docsize AS d LEFT JOIN messages AS m "
+                "ON m.rowid = d.id AND m.text IS NOT NULL WHERE m.rowid IS NULL"
+            ):
+                return FakeCursor((1,))
             raise AssertionError(f"unexpected query: {query}")
 
         def commit(self) -> None:
@@ -501,6 +507,98 @@ def test_ensure_fts_startup_readiness_rebuilds_stats_count_mismatch(
     assert conn.committed is True
     assert conn.closed is True
     assert all("COUNT(*) FROM messages WHERE text IS NOT NULL" not in query for query in conn.queries)
+
+
+def test_ensure_fts_startup_readiness_repairs_missing_message_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    db = tmp_path / "polylogue.db"
+    db.write_bytes(b"sqlite placeholder")
+
+    class FakeCursor:
+        def __init__(self, row: tuple[object, ...] | None, rows: list[tuple[object, ...]] | None = None) -> None:
+            self._row = row
+            self._rows = rows if rows is not None else ([] if row is None else [row])
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return self._row
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return self._rows
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+            self.committed = False
+            self.closed = False
+            self.doc_count_reads = 0
+
+        def execute(self, sql: str, _params: object = ()) -> FakeCursor:
+            query = " ".join(sql.split())
+            self.queries.append(query)
+            if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'":
+                return FakeCursor(("messages_fts",))
+            if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
+                triggers: list[tuple[object, ...]] = [
+                    ("messages_fts_ai",),
+                    ("messages_fts_ad",),
+                    ("messages_fts_au",),
+                    ("action_events_fts_ai",),
+                    ("action_events_fts_ad",),
+                    ("action_events_fts_au",),
+                ]
+                return FakeCursor(triggers[0], rows=triggers)
+            if query == "SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1":
+                return FakeCursor((1,))
+            if query == "SELECT 1 FROM messages_fts_docsize LIMIT 1":
+                return FakeCursor((1,))
+            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+                return FakeCursor((1,))
+            if query == "SELECT COALESCE(SUM(message_count), 0) FROM conversation_stats":
+                return FakeCursor((5,))
+            if query == "SELECT COUNT(*) FROM messages_fts_docsize":
+                self.doc_count_reads += 1
+                return FakeCursor((4 if self.doc_count_reads == 1 else 5,))
+            if query == (
+                "SELECT COUNT(*) FROM messages_fts_docsize AS d LEFT JOIN messages AS m "
+                "ON m.rowid = d.id AND m.text IS NOT NULL WHERE m.rowid IS NULL"
+            ):
+                return FakeCursor((0,))
+            if query.startswith("SELECT DISTINCT m.conversation_id FROM messages AS m"):
+                return FakeCursor(("conv-a",), rows=[("conv-a",)])
+            raise AssertionError(f"unexpected query: {query}")
+
+        def commit(self) -> None:
+            self.committed = True
+
+        def close(self) -> None:
+            self.closed = True
+
+    conn = FakeConnection()
+    rebuilds: list[FakeConnection] = []
+    repaired: list[tuple[FakeConnection, Sequence[str]]] = []
+
+    monkeypatch.setattr("polylogue.paths.db_path", lambda: db)
+    monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
+    monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", lambda _conn: None)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync",
+        lambda fake_conn: rebuilds.append(fake_conn),
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.repair_message_fts_index_sync",
+        lambda fake_conn, ids: repaired.append((fake_conn, tuple(ids))),
+    )
+
+    asyncio.run(daemon_cli._ensure_fts_startup_readiness())
+
+    assert repaired == [(conn, ("conv-a",))]
+    assert rebuilds == []
+    assert conn.committed is True
+    assert conn.closed is True
 
 
 def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
@@ -545,6 +643,16 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
                     ("action_events_fts_ad",),
                 ]
                 return FakeCursor(triggers[0], rows=triggers)
+            if query == "SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1":
+                return FakeCursor((1,))
+            if query == "SELECT 1 FROM messages_fts_docsize LIMIT 1":
+                return FakeCursor((1,))
+            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+                return FakeCursor((1,))
+            if query == "SELECT COALESCE(SUM(message_count), 0) FROM conversation_stats":
+                return FakeCursor((5,))
+            if query == "SELECT COUNT(*) FROM messages_fts_docsize":
+                return FakeCursor((5,))
             raise AssertionError(f"unexpected query: {query}")
 
         def commit(self) -> None:
@@ -574,9 +682,9 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
-    assert ensured == []
+    assert ensured == [conn]
     assert restored == [conn]
-    assert rebuilds == [conn]
+    assert rebuilds == []
     assert conn.committed is True
     assert conn.closed is True
 
