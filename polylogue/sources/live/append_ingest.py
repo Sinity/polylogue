@@ -72,7 +72,7 @@ def ingest_append_plans(owner: _AppendIngestOwner, plans: list[_AppendPlan]) -> 
 
     failed = [raw_by_id[raw_id] for raw_id in summary.failed_raw_ids if raw_id in raw_by_id]
     failed_paths = {plan.path for plan in failed}
-    succeeded = [plan for plan in plans if plan.path not in failed_paths and summary.parse_failures == 0]
+    succeeded = [plan for plan in plans if plan.path not in failed_paths]
     raw_records.clear()
     raw_by_id.clear()
     if summary.parse_failures and not failed:

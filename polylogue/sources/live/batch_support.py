@@ -342,12 +342,23 @@ def _parse_path_as_conversation_artifact(path: Path, *, provider: Provider) -> b
             return False
         return classify_artifact(records, provider=provider, source_path=path).parse_as_conversation
     if _path_size(path) > _STREAMING_FULL_INGEST_BYTES:
-        return True
+        return _large_non_jsonl_path_can_stream(path, provider=provider)
     try:
         document = cast(JSONValue, orjson.loads(path.read_bytes()))
     except orjson.JSONDecodeError:
         return False
     return classify_artifact(document, provider=provider, source_path=path).parse_as_conversation
+
+
+def _large_non_jsonl_path_can_stream(path: Path, *, provider: Provider) -> bool:
+    if path.suffix.lower() != ".json":
+        return False
+    return provider in {
+        Provider.CHATGPT,
+        Provider.CLAUDE_AI,
+        Provider.DRIVE,
+        Provider.GEMINI,
+    }
 
 
 def _parse_payload_as_conversation_artifact(path: Path, *, provider: Provider, payload: bytes) -> bool:

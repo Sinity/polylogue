@@ -7,6 +7,7 @@ from typing import Any, cast
 import pytest
 
 from polylogue.sources.live import WatchSource
+from polylogue.sources.live.append_ingest import ingest_append_plans
 from polylogue.sources.live.batch import _MAX_APPEND_PLAN_PAYLOAD_BYTES, LiveBatchProcessor
 from polylogue.sources.live.batch_support import (
     _AppendPlan,
@@ -15,6 +16,7 @@ from polylogue.sources.live.batch_support import (
     _parse_path_as_conversation_artifact,
 )
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.storage.runtime import RawConversationRecord
 from polylogue.types import Provider
 
 
@@ -151,6 +153,22 @@ def test_large_non_jsonl_full_ingest_planning_does_not_read_whole_file(
     assert _parse_path_as_conversation_artifact(target, provider=Provider.CHATGPT) is True
 
 
+def test_unclassified_large_non_jsonl_is_not_streamed_as_conversation_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "unknown.large"
+    target.write_bytes(b"not-json")
+    monkeypatch.setattr("polylogue.sources.live.batch_support._path_size", lambda path: 32 * 1024 * 1024)
+
+    def fail_read_bytes(_path: Path) -> bytes:
+        raise AssertionError("unclassified large files must not be materialized during planning")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
+
+    assert _parse_path_as_conversation_artifact(target, provider=Provider.UNKNOWN) is False
+
+
 def test_append_plan_rejects_large_tail_for_streaming_full_ingest(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
@@ -179,6 +197,71 @@ def test_append_plan_rejects_large_tail_for_streaming_full_ingest(tmp_path: Path
     )
 
     assert processor._append_plan(path) is None
+
+
+def test_append_ingest_preserves_successes_when_other_plan_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Owner:
+        def __init__(self) -> None:
+            self._cursor = CursorStore(tmp_path / "append.sqlite")
+            self._polylogue = SimpleNamespace(
+                archive_root=tmp_path,
+                backend=SimpleNamespace(db_path=self._cursor._db_path),
+            )
+            self.persisted_count = 0
+
+        def _persist_raw_records(self, records: list[RawConversationRecord]) -> None:
+            self.persisted_count = len(records)
+
+    plans = [
+        _AppendPlan(
+            path=tmp_path / "ok.jsonl",
+            source_name="codex",
+            start_offset=0,
+            last_complete_newline=8,
+            stat_size=8,
+            st_dev=1,
+            st_ino=1,
+            mtime_ns=1,
+            payload=b'{"ok":1}\n',
+            payload_hash="ok",
+            cursor_fingerprint="base",
+            bytes_read=8,
+        ),
+        _AppendPlan(
+            path=tmp_path / "bad.jsonl",
+            source_name="codex",
+            start_offset=0,
+            last_complete_newline=9,
+            stat_size=9,
+            st_dev=1,
+            st_ino=2,
+            mtime_ns=1,
+            payload=b'{"bad":1}\n',
+            payload_hash="bad",
+            cursor_fingerprint="base",
+            bytes_read=9,
+        ),
+    ]
+    raw_ids = iter(("raw-ok", "raw-bad"))
+    monkeypatch.setattr(
+        "polylogue.sources.live.append_ingest.BlobStore.write_from_bytes",
+        lambda _store, payload: (next(raw_ids), len(payload)),
+    )
+    monkeypatch.setattr(
+        "polylogue.sources.live.append_ingest._process_ingest_batch_sync",
+        lambda *args, **kwargs: SimpleNamespace(failed_raw_ids={"raw-bad"}, parse_failures=1, worker_count=1),
+    )
+
+    owner = Owner()
+    result = ingest_append_plans(owner, plans)
+
+    assert owner.persisted_count == 2
+    assert result.succeeded == [plans[0]]
+    assert result.failed == [plans[1]]
+    assert result.worker_count == 1
 
 
 @pytest.mark.asyncio
