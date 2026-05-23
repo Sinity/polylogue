@@ -99,6 +99,14 @@ def _missing_fts_triggers_sync(conn: sqlite3.Connection) -> list[str]:
     return [name for name in _EXPECTED_FTS_TRIGGERS if name not in present]
 
 
+def _table_exists_sync(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
 async def _ensure_fts_startup_readiness() -> None:
     """Ensure FTS triggers and index are healthy on daemon startup.
 
@@ -163,6 +171,21 @@ async def _ensure_fts_startup_readiness() -> None:
             conn.commit()
             logger.info("daemon: FTS rebuild complete.")
             return
+        if _table_exists_sync(conn, "conversation_stats") and _table_exists_sync(conn, "messages_fts_docsize"):
+            indexable_messages = int(
+                conn.execute("SELECT COALESCE(SUM(message_count), 0) FROM conversation_stats").fetchone()[0] or 0
+            )
+            indexed_messages = int(conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] or 0)
+            if indexable_messages and indexed_messages != indexable_messages:
+                logger.warning(
+                    "daemon: message FTS count mismatch on startup (%d/%d indexed). Rebuilding once.",
+                    indexed_messages,
+                    indexable_messages,
+                )
+                rebuild_fts_index_sync(conn)
+                conn.commit()
+                logger.info("daemon: FTS rebuild complete.")
+                return
 
         conn.commit()
     except Exception:

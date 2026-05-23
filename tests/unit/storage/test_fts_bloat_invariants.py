@@ -149,3 +149,58 @@ def test_messages_fts_deletion_consistency_with_external_content(tmp_path: Path)
         assert beta_hits == 1
     finally:
         conn.close()
+
+
+def test_conversation_replacement_purges_fts_when_delete_triggers_missing(tmp_path: Path) -> None:
+    """Replacement must not orphan FTS rows if bulk ingest has suspended triggers."""
+    from polylogue.storage.conversation_replacement import replace_conversation_runtime_state_sync
+    from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
+
+    conn = sqlite3.connect(str(tmp_path / "fts_replace_missing_triggers.db"))
+    try:
+        conn.executescript(SCHEMA_DDL)
+        conn.execute(
+            "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) "
+            "VALUES('c1','test','pc1',1)"
+        )
+        conn.execute(
+            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) "
+            "VALUES('m1','c1','user','replace orphan needle','test',1)"
+        )
+        conn.execute(
+            """
+            INSERT INTO action_events (
+                event_id, conversation_id, message_id, sequence_index,
+                action_kind, normalized_tool_name, search_text
+            ) VALUES ('a1', 'c1', 'm1', 0, 'shell', 'bash', 'action orphan needle')
+            """
+        )
+        conn.commit()
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM action_events_fts_docsize").fetchone()[0] == 1
+
+        conn.execute("DROP TRIGGER messages_fts_ad")
+        conn.execute("DROP TRIGGER action_events_fts_ad")
+        replace_conversation_runtime_state_sync(conn, "c1")
+        conn.commit()
+
+        message_orphans = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM messages_fts_docsize AS d
+            LEFT JOIN messages AS m ON m.rowid = d.id
+            WHERE m.rowid IS NULL
+            """
+        ).fetchone()[0]
+        action_orphans = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM action_events_fts_docsize AS d
+            LEFT JOIN action_events AS ae ON ae.rowid = d.id
+            WHERE ae.rowid IS NULL
+            """
+        ).fetchone()[0]
+        assert message_orphans == 0
+        assert action_orphans == 0
+    finally:
+        conn.close()

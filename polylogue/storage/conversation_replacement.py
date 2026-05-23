@@ -27,9 +27,117 @@ async def _table_exists_async(conn: aiosqlite.Connection, table_name: str) -> bo
     return row is not None
 
 
+def _trigger_exists_sync(conn: sqlite3.Connection, trigger_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+        (trigger_name,),
+    ).fetchone()
+    return row is not None
+
+
+async def _trigger_exists_async(conn: aiosqlite.Connection, trigger_name: str) -> bool:
+    row = await (
+        await conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+            (trigger_name,),
+        )
+    ).fetchone()
+    return row is not None
+
+
 async def _ensure_sqlite_vec_async(conn: aiosqlite.Connection) -> bool:
     loaded, _error = await try_load_sqlite_vec_async(conn)
     return loaded
+
+
+def _purge_message_fts_sync(conn: sqlite3.Connection, conversation_id: str) -> None:
+    if _trigger_exists_sync(conn, "messages_fts_ad"):
+        return
+    if not _table_exists_sync(conn, "messages_fts") or not _table_exists_sync(conn, "messages_fts_docsize"):
+        return
+    conn.execute(
+        """
+        INSERT INTO messages_fts(messages_fts, rowid, message_id, conversation_id, text)
+        SELECT 'delete', m.rowid, m.message_id, m.conversation_id, m.text
+        FROM messages AS m
+        JOIN messages_fts_docsize AS d ON d.id = m.rowid
+        WHERE m.conversation_id = ?
+          AND m.text IS NOT NULL
+        """,
+        (conversation_id,),
+    )
+
+
+async def _purge_message_fts_async(conn: aiosqlite.Connection, conversation_id: str) -> None:
+    if await _trigger_exists_async(conn, "messages_fts_ad"):
+        return
+    if not await _table_exists_async(conn, "messages_fts") or not await _table_exists_async(
+        conn, "messages_fts_docsize"
+    ):
+        return
+    await conn.execute(
+        """
+        INSERT INTO messages_fts(messages_fts, rowid, message_id, conversation_id, text)
+        SELECT 'delete', m.rowid, m.message_id, m.conversation_id, m.text
+        FROM messages AS m
+        JOIN messages_fts_docsize AS d ON d.id = m.rowid
+        WHERE m.conversation_id = ?
+          AND m.text IS NOT NULL
+        """,
+        (conversation_id,),
+    )
+
+
+def _purge_action_fts_sync(conn: sqlite3.Connection, conversation_id: str) -> None:
+    if _trigger_exists_sync(conn, "action_events_fts_ad"):
+        return
+    if (
+        not _table_exists_sync(conn, "action_events")
+        or not _table_exists_sync(conn, "action_events_fts")
+        or not _table_exists_sync(conn, "action_events_fts_docsize")
+    ):
+        return
+    conn.execute(
+        """
+        INSERT INTO action_events_fts(
+            action_events_fts, rowid, event_id, message_id, conversation_id,
+            action_kind, normalized_tool_name, search_text
+        )
+        SELECT
+            'delete', ae.rowid, ae.event_id, ae.message_id, ae.conversation_id,
+            ae.action_kind, ae.normalized_tool_name, ae.search_text
+        FROM action_events AS ae
+        JOIN action_events_fts_docsize AS d ON d.id = ae.rowid
+        WHERE ae.conversation_id = ?
+        """,
+        (conversation_id,),
+    )
+
+
+async def _purge_action_fts_async(conn: aiosqlite.Connection, conversation_id: str) -> None:
+    if await _trigger_exists_async(conn, "action_events_fts_ad"):
+        return
+    if (
+        not await _table_exists_async(conn, "action_events")
+        or not await _table_exists_async(conn, "action_events_fts")
+        or not await _table_exists_async(conn, "action_events_fts_docsize")
+    ):
+        return
+    await conn.execute(
+        """
+        INSERT INTO action_events_fts(
+            action_events_fts, rowid, event_id, message_id, conversation_id,
+            action_kind, normalized_tool_name, search_text
+        )
+        SELECT
+            'delete', ae.rowid, ae.event_id, ae.message_id, ae.conversation_id,
+            ae.action_kind, ae.normalized_tool_name, ae.search_text
+        FROM action_events AS ae
+        JOIN action_events_fts_docsize AS d ON d.id = ae.rowid
+        WHERE ae.conversation_id = ?
+        """,
+        (conversation_id,),
+    )
 
 
 def _invalidate_embedding_state_sync(conn: sqlite3.Connection, conversation_id: str) -> None:
@@ -82,6 +190,8 @@ def replace_conversation_runtime_state_sync(
     }
     _invalidate_embedding_state_sync(conn, conversation_id)
     conn.execute("DELETE FROM attachment_refs WHERE conversation_id = ?", (conversation_id,))
+    _purge_action_fts_sync(conn, conversation_id)
+    _purge_message_fts_sync(conn, conversation_id)
     conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
     conn.execute("DELETE FROM conversation_stats WHERE conversation_id = ?", (conversation_id,))
     return affected_attachment_ids
@@ -101,6 +211,8 @@ async def replace_conversation_runtime_state_async(
     affected_attachment_ids = {str(row[0]) for row in rows}
     await _invalidate_embedding_state_async(conn, conversation_id)
     await conn.execute("DELETE FROM attachment_refs WHERE conversation_id = ?", (conversation_id,))
+    await _purge_action_fts_async(conn, conversation_id)
+    await _purge_message_fts_async(conn, conversation_id)
     await conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
     await conn.execute("DELETE FROM conversation_stats WHERE conversation_id = ?", (conversation_id,))
     return affected_attachment_ids
