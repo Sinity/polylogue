@@ -419,6 +419,11 @@ files are local generated state and are not committed. If the seed is missing,
 the default command fails with setup guidance instead of silently running the
 whole suite.
 
+Plain focused `pytest` runs are single-process by default so small inner-loop
+checks do not spawn a worker pool. Broad gates that benefit from parallelism
+opt into workers explicitly through `devtools verify --all`,
+`devtools verify --seed-testmon`, or an explicit `pytest -n <workers>`.
+
 The default path does not replay cached verify results. Every invocation runs
 the static gates and lets pytest-testmon evaluate current source, package, and
 Python-version state. Changes to pytest configuration, dependency locks, or

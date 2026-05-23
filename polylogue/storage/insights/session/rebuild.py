@@ -15,6 +15,7 @@ from polylogue.archive.session.session_profile import SessionProfile, build_sess
 
 # Re-export canonical chunked from polylogue.core.common.
 from polylogue.core.common import chunked
+from polylogue.core.memory import release_process_memory
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.action_events.rows import attach_blocks_to_messages
 from polylogue.storage.hydrators import conversation_from_records
@@ -94,6 +95,7 @@ ORDER BY COALESCE(source_sort_key, 0) DESC, conversation_id
 # cutting round-trips by ~50x (#1314).
 _SESSION_INSIGHT_REBUILD_PAGE_SIZE = 50
 _SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET = 5_000
+_SESSION_INSIGHT_RELEASE_MESSAGE_THRESHOLD = 1_000
 _SESSION_INSIGHT_CONVERSATION_SQL_TEMPLATE = """
 SELECT
     conversation_id,
@@ -684,6 +686,9 @@ def rebuild_session_insights_sync(
                     progress_total=progress_total,
                 ),
             )
+        if len(batch.messages) >= _SESSION_INSIGHT_RELEASE_MESSAGE_THRESHOLD:
+            del batch, record_bundles
+            release_process_memory()
     if not saw_conversation_ids:
         if conversation_ids is None:
             conn.execute("DELETE FROM work_threads")
@@ -820,6 +825,9 @@ async def rebuild_session_insights_async(
                         progress_total=progress_total,
                     ),
                 )
+            if len(batch.messages) >= _SESSION_INSIGHT_RELEASE_MESSAGE_THRESHOLD:
+                del batch, record_bundles
+                release_process_memory()
     else:
         for chunk_ids in chunked(list(conversation_ids), size=page_size):
             batch = await load_async_batch(conn, chunk_ids)
@@ -865,6 +873,9 @@ async def rebuild_session_insights_async(
                         progress_total=progress_total,
                     ),
                 )
+            if len(batch.messages) >= _SESSION_INSIGHT_RELEASE_MESSAGE_THRESHOLD:
+                del batch, record_bundles
+                release_process_memory()
 
     await conn.execute("DELETE FROM work_threads")
     thread_count = 0

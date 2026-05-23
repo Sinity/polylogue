@@ -22,6 +22,7 @@ from enum import Enum
 from pathlib import Path
 
 from polylogue.logging import get_logger
+from polylogue.pipeline.services.process_pool import process_pool_executor
 
 logger = get_logger(__name__)
 
@@ -116,10 +117,19 @@ class DaemonConverger:
     def stage_names(self) -> list[str]:
         return list(self._stages)
 
+    def _has_cpu_bound_stage(self) -> bool:
+        return any(stage.cpu_bound for stage in self._stages.values())
+
     async def start(self) -> None:
         if self._executor is not None:
             return
-        self._executor = ProcessPoolExecutor(max_workers=self._max_workers)
+        if not self._has_cpu_bound_stage():
+            logger.info(
+                "converger: started without worker pool, stages=%s",
+                list(self._stages),
+            )
+            return
+        self._executor = process_pool_executor(max_workers=self._max_workers)
         logger.info(
             "converger: started with %d worker(s), stages=%s",
             self._max_workers,
@@ -202,6 +212,18 @@ class DaemonConverger:
             return
         state.stages.clear()
         state.last_stage_times.clear()
+
+    def _evict_converged_files(self, paths: Iterable[Path]) -> None:
+        for path in paths:
+            state = self._file_states.get(path)
+            if state is not None and state.converged:
+                del self._file_states[path]
+
+    def _evict_converged_conversations(self, conversation_ids: Iterable[str]) -> None:
+        for conversation_id in conversation_ids:
+            state = self._conversation_states.get(conversation_id)
+            if state is not None and state.converged:
+                del self._conversation_states[conversation_id]
 
     def converge_batch(self, files: Iterable[Path]) -> tuple[dict[Path, FileState], dict[str, float]]:
         """Converge a changed source batch and return per-stage batch timings."""
@@ -302,7 +324,9 @@ class DaemonConverger:
                     state.error_count += 1
                     state.last_error = f"batch stage {stage_name} returned False"
 
-        return {path: self._file_states[path] for path in paths}, batch_stage_times
+        results = {path: self._file_states[path] for path in paths}
+        self._evict_converged_files(paths)
+        return results, batch_stage_times
 
     def converge_conversations(
         self,
@@ -366,9 +390,9 @@ class DaemonConverger:
                     state.error_count += 1
                     state.last_error = f"conversation stage {stage_name} returned False"
 
-        return {
-            conversation_id: self._conversation_states[conversation_id] for conversation_id in ids
-        }, batch_stage_times
+        results = {conversation_id: self._conversation_states[conversation_id] for conversation_id in ids}
+        self._evict_converged_conversations(ids)
+        return results, batch_stage_times
 
     def converge_all(
         self,

@@ -646,7 +646,7 @@ files:
     target: polylogue/cli/bulk_export.py
     owner: stable
   - path: polylogue/cli/click_app.py
-    loc: 256
+    loc: 257
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
@@ -730,7 +730,7 @@ files:
     target: polylogue/cli/commands/insights.py
     owner: stable
   - path: polylogue/cli/commands/maintenance.py
-    loc: 641
+    loc: 640
     target: polylogue/cli/commands/maintenance.py
     owner: stable
   - path: polylogue/cli/commands/neighbors.py
@@ -750,7 +750,7 @@ files:
     target: polylogue/cli/commands/schema.py
     owner: stable
   - path: polylogue/cli/commands/status.py
-    loc: 296
+    loc: 298
     target: polylogue/cli/commands/status.py
     owner: stable
   - path: polylogue/cli/commands/status_diagnostics.py
@@ -997,6 +997,11 @@ files:
   - path: polylogue/core/loopback.py
     loc: 73
     target: polylogue/core/loopback.py
+    owner: core-primitive
+    reason: core primitive
+  - path: polylogue/core/memory.py
+    loc: 44
+    target: polylogue/core/memory.py
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/metrics.py
@@ -1372,11 +1377,11 @@ files:
     target: polylogue/maintenance/models.py
     owner: stable
   - path: polylogue/maintenance/planner.py
-    loc: 642
+    loc: 660
     target: polylogue/maintenance/planner.py
     owner: stable
   - path: polylogue/maintenance/preview.py
-    loc: 453
+    loc: 493
     target: polylogue/maintenance/preview.py
     owner: stable
   - path: polylogue/maintenance/registry.py
@@ -1384,7 +1389,7 @@ files:
     target: polylogue/maintenance/registry.py
     owner: stable
   - path: polylogue/maintenance/replay.py
-    loc: 773
+    loc: 783
     target: polylogue/maintenance/replay.py
     owner: stable
   - path: polylogue/maintenance/scope.py
@@ -2500,8 +2505,12 @@ files:
     loc: 13
     target: polylogue/sources/live/__init__.py
     owner: stable
+  - path: polylogue/sources/live/append_ingest.py
+    loc: 83
+    target: polylogue/sources/live/append_ingest.py
+    owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 1156
+    loc: 1144
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
@@ -2509,7 +2518,7 @@ files:
     target: polylogue/sources/live/batch_observability.py
     owner: stable
   - path: polylogue/sources/live/batch_support.py
-    loc: 348
+    loc: 376
     target: polylogue/sources/live/batch_support.py
     owner: stable
   - path: polylogue/sources/live/convergence_debt.py
@@ -2939,7 +2948,7 @@ files:
     target: polylogue/storage/raw/models.py
     owner: stable
   - path: polylogue/storage/repair.py
-    loc: 1270
+    loc: 1277
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper

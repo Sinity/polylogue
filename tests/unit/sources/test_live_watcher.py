@@ -20,7 +20,6 @@ import polylogue.sources.live.watcher as live_watcher
 from polylogue import Polylogue
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.batch import (
-    _LARGE_FULL_PARSE_PROGRESS_BYTES,
     _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES,
     _SMALL_FULL_PARSE_PROGRESS_MAX_FILES,
     _STREAMING_FULL_INGEST_BYTES,
@@ -847,13 +846,13 @@ def test_full_parse_progress_groups_bounds_small_files_by_bytes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     paths = [tmp_path / f"{index}.jsonl" for index in range(5)]
-    byte_size = _LARGE_FULL_PARSE_PROGRESS_BYTES - 1
+    byte_size = (_SMALL_FULL_PARSE_PROGRESS_MAX_BYTES // 3) + 1
     monkeypatch.setattr("polylogue.sources.live.batch_support._path_size", lambda path: byte_size)
 
     groups = list(_full_parse_progress_groups(paths))
 
     assert sum(byte_size for _ in groups[0]) <= _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES
-    assert groups == [paths[:4], paths[4:]]
+    assert groups == [paths[:2], paths[2:4], paths[4:]]
 
 
 @pytest.mark.asyncio

@@ -52,6 +52,7 @@ from polylogue.core.common import (
 from polylogue.core.common import (
     SQL_STATS_UPSERT as _STATS_UPSERT_SQL,
 )
+from polylogue.core.memory import release_process_memory
 from polylogue.core.metrics import (
     read_current_rss_mb,
     read_peak_rss_children_mb,
@@ -115,6 +116,8 @@ class _BlobSized(Protocol):
 IngestHeartbeat = Callable[[], None]
 _INGEST_RESULT_WAIT_HEARTBEAT_S = 15.0
 _INGEST_RESULT_CHUNK_SIZE = 100
+_INGEST_RELEASE_BLOB_MB_THRESHOLD = 16.0
+_INGEST_RELEASE_MESSAGE_THRESHOLD = 1_000
 
 
 # ---------------------------------------------------------------------------
@@ -1253,6 +1256,11 @@ async def process_ingest_batch(
         force_write=force_write,
         ingest_result_chunk_size=ingest_result_chunk_size,
     )
+    heavy_batch = (
+        batch_summary.total_blob_mb >= _INGEST_RELEASE_BLOB_MB_THRESHOLD
+        or batch_summary.total_msgs >= _INGEST_RELEASE_MESSAGE_THRESHOLD
+    )
+    raw_artifacts.clear()
 
     _apply_ingest_batch_summary(result, batch_summary)
     progressed_raw_count = _progressed_raw_count(batch_summary)
@@ -1292,7 +1300,7 @@ async def process_ingest_batch(
     rss_end_mb = read_current_rss_mb()
     peak_rss_self_end_mb = read_peak_rss_self_mb()
     peak_rss_children_mb = read_peak_rss_children_mb()
-    return _build_parse_batch_observation(
+    observation = _build_parse_batch_observation(
         batch_summary=batch_summary,
         elapsed_s=elapsed_s,
         raw_state_update_elapsed_s=raw_state_update_elapsed_s,
@@ -1302,6 +1310,10 @@ async def process_ingest_batch(
         peak_rss_self_end_mb=peak_rss_self_end_mb,
         peak_rss_children_mb=peak_rss_children_mb,
     )
+    if heavy_batch:
+        del batch_summary
+        release_process_memory()
+    return observation
 
 
 def _successful_raw_state_update(
