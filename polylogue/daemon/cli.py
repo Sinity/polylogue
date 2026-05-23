@@ -88,6 +88,8 @@ here to keep the daemon startup path independent of the health-check
 module's import surface.
 """
 
+_STARTUP_FTS_TARGETED_REPAIR_LIMIT = 5_000
+
 
 def _missing_fts_triggers_sync(conn: sqlite3.Connection) -> list[str]:
     placeholders = ",".join("?" for _ in _EXPECTED_FTS_TRIGGERS)
@@ -97,6 +99,71 @@ def _missing_fts_triggers_sync(conn: sqlite3.Connection) -> list[str]:
     ).fetchall()
     present = {row[0] for row in rows}
     return [name for name in _EXPECTED_FTS_TRIGGERS if name not in present]
+
+
+def _missing_message_fts_conversation_ids_sync(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = _STARTUP_FTS_TARGETED_REPAIR_LIMIT,
+) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT m.conversation_id
+        FROM messages AS m
+        LEFT JOIN messages_fts_docsize AS d ON d.id = m.rowid
+        WHERE m.text IS NOT NULL AND d.id IS NULL
+        ORDER BY m.conversation_id
+        LIMIT ?
+        """,
+        (limit + 1,),
+    ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def _excess_message_fts_row_count_sync(conn: sqlite3.Connection) -> int:
+    row = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM messages_fts_docsize AS d
+        LEFT JOIN messages AS m ON m.rowid = d.id AND m.text IS NOT NULL
+        WHERE m.rowid IS NULL
+        """,
+    ).fetchone()
+    return int(row[0] or 0) if row is not None else 0
+
+
+def _repair_message_fts_gap_sync(conn: sqlite3.Connection, *, indexed_messages: int, indexable_messages: int) -> bool:
+    if indexed_messages >= indexable_messages:
+        return False
+    missing_conversation_ids = _missing_message_fts_conversation_ids_sync(conn)
+    if not missing_conversation_ids:
+        return False
+    if len(missing_conversation_ids) > _STARTUP_FTS_TARGETED_REPAIR_LIMIT:
+        logger.warning(
+            "daemon: message FTS startup gap spans more than %d conversations; falling back to full rebuild.",
+            _STARTUP_FTS_TARGETED_REPAIR_LIMIT,
+        )
+        return False
+
+    from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
+
+    logger.warning(
+        "daemon: message FTS count mismatch on startup (%d/%d indexed). Repairing %d affected conversation(s).",
+        indexed_messages,
+        indexable_messages,
+        len(missing_conversation_ids),
+    )
+    repair_message_fts_index_sync(conn, missing_conversation_ids)
+    repaired_indexed_messages = int(conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] or 0)
+    if repaired_indexed_messages == indexable_messages:
+        logger.info("daemon: targeted message FTS repair complete.")
+        return True
+    logger.warning(
+        "daemon: targeted message FTS repair left mismatch (%d/%d indexed); falling back to full rebuild.",
+        repaired_indexed_messages,
+        indexable_messages,
+    )
+    return False
 
 
 def _table_exists_sync(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -153,14 +220,10 @@ async def _ensure_fts_startup_readiness() -> None:
         if missing_triggers:
             logger.warning(
                 "daemon: FTS triggers missing on startup (%s). "
-                "SIGKILL-during-bulk-suspend signature; restoring and rebuilding FTS index.",
+                "SIGKILL-during-bulk-suspend signature; restoring triggers before freshness repair.",
                 ", ".join(missing_triggers),
             )
             restore_fts_triggers_sync(conn)
-            rebuild_fts_index_sync(conn)
-            conn.commit()
-            logger.info("daemon: FTS trigger restore + rebuild complete.")
-            return
 
         ensure_fts_index_sync(conn)
         has_indexable_messages = bool(conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1").fetchone())
@@ -177,10 +240,20 @@ async def _ensure_fts_startup_readiness() -> None:
             )
             indexed_messages = int(conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] or 0)
             if indexable_messages and indexed_messages != indexable_messages:
+                excess_rows = _excess_message_fts_row_count_sync(conn)
+                if excess_rows == 0 and _repair_message_fts_gap_sync(
+                    conn,
+                    indexed_messages=indexed_messages,
+                    indexable_messages=indexable_messages,
+                ):
+                    conn.commit()
+                    return
                 logger.warning(
-                    "daemon: message FTS count mismatch on startup (%d/%d indexed). Rebuilding once.",
+                    "daemon: message FTS structural mismatch on startup (%d/%d indexed, %d excess row(s)). "
+                    "Rebuilding once.",
                     indexed_messages,
                     indexable_messages,
+                    excess_rows,
                 )
                 rebuild_fts_index_sync(conn)
                 conn.commit()
