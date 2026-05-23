@@ -1081,6 +1081,16 @@ def _process_ingest_batch_sync(
         summary.wal_busy_pages = wal_observation.busy_pages
         summary.wal_checkpoint_elapsed_s = wal_observation.elapsed_s
         summary.wal_checkpoint_error = wal_observation.error
+        if wal_observation.blocking_processes:
+            logger.warning(
+                "wal_checkpoint_blocked",
+                reason=wal_observation.reason,
+                mode=wal_observation.mode,
+                wal_bytes_before=wal_observation.wal_bytes_before,
+                wal_bytes_after=wal_observation.wal_bytes_after,
+                busy_pages=wal_observation.busy_pages,
+                blocking_processes=wal_observation.blocking_processes[:5],
+            )
     except Exception:
         # Roll back the row writes.  If a caller explicitly opted into
         # dropped-trigger bulk mode, restore triggers before propagating
