@@ -29,7 +29,9 @@ def fts_readiness_info(dbf: Path) -> dict[str, object]:
         try:
             tables = _table_names(conn)
             message_indexable_count = (
-                _count(conn, "SELECT COUNT(*) FROM messages WHERE text IS NOT NULL") if "messages" in tables else 0
+                _count(conn, "SELECT COALESCE(SUM(message_count), 0) FROM conversation_stats")
+                if "conversation_stats" in tables
+                else 0
             )
             message_indexed_count = (
                 _count(conn, "SELECT COUNT(*) FROM messages_fts_docsize") if "messages_fts_docsize" in tables else 0
@@ -66,6 +68,7 @@ def _table_names(conn: sqlite3.Connection) -> set[str]:
         FROM sqlite_master
         WHERE type = 'table'
           AND name IN (
+            'conversation_stats',
             'messages',
             'messages_fts',
             'messages_fts_docsize',
