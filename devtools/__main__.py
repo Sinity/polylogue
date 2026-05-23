@@ -6,8 +6,13 @@ Delegates to Click dispatch from devtools.click_dispatch.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
-from devtools.click_dispatch import main
+_REPO_ROOT = str(Path(__file__).resolve().parents[1])
+if sys.path[0] != _REPO_ROOT:
+    sys.path.insert(0, _REPO_ROOT)
+
+from devtools.click_dispatch import main  # noqa: E402
 
 __all__ = ["main"]
 
