@@ -14,8 +14,9 @@ from polylogue.cli.shared.types import AppEnv
 _BUILTIN_DAEMON_URL = "http://127.0.0.1:8766"
 # Bare `polylogue` uses this as a quick probe before falling back to SQLite.
 _FAST_TIMEOUT_S = 1.0
-# Explicit status can wait for large archive health payloads (~20s observed).
-_FULL_TIMEOUT_S = 30.0
+# Explicit status is still an operator command; a busy local daemon should fall
+# through to bounded read-only SQLite status instead of hiding the archive.
+_FULL_TIMEOUT_S = 3.0
 
 
 def _default_daemon_url() -> str:
@@ -45,6 +46,20 @@ def _fast_fts_doc_count(conn: Any) -> int:
         return _fast_count(conn, "SELECT COUNT(*) FROM messages_fts_docsize")
     except Exception:
         return 0
+
+
+def _table_exists(conn: Any, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _fast_message_count(conn: Any) -> int:
+    if _table_exists(conn, "conversation_stats"):
+        return _fast_count(conn, "SELECT COALESCE(SUM(message_count), 0) FROM conversation_stats")
+    return _fast_count(conn, "SELECT COUNT(*) FROM messages")
 
 
 @click.command("status")
@@ -207,12 +222,12 @@ def _show_direct_json(env: AppEnv) -> None:
     }
     if db.exists():
         try:
-            from polylogue.storage.sqlite.connection_profile import open_connection
+            from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-            conn = open_connection(db)
+            conn = open_readonly_connection(db)
             try:
                 payload["conversations"] = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
-                payload["messages"] = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+                payload["messages"] = _fast_message_count(conn)
                 payload["raw_records"] = conn.execute("SELECT COUNT(*) FROM raw_conversations").fetchone()[0]
             finally:
                 conn.close()
@@ -249,12 +264,12 @@ def _show_direct_status(env: AppEnv, *, compact: bool = False) -> None:
         return
 
     try:
-        from polylogue.storage.sqlite.connection_profile import open_connection
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-        conn = open_connection(db)
+        conn = open_readonly_connection(db)
         try:
             convs = _fast_count(conn, "SELECT COUNT(*) FROM conversations")
-            msgs = _fast_count(conn, "SELECT COUNT(*) FROM messages")
+            msgs = _fast_message_count(conn)
             raw = _fast_count(conn, "SELECT COUNT(*) FROM raw_conversations")
             fts = _fast_fts_doc_count(conn)
         finally:
@@ -271,7 +286,7 @@ def _show_direct_status(env: AppEnv, *, compact: bool = False) -> None:
         try:
             from polylogue.storage.embeddings.status_payload import embedding_status_payload
 
-            ep = embedding_status_payload(env)
+            ep = embedding_status_payload(env, include_retrieval_bands=False)
             if ep["total_conversations"] > 0:
                 emb_pct = ep["embedding_coverage_percent"]
                 emb_color = "green" if ep["retrieval_ready"] else "dim"
