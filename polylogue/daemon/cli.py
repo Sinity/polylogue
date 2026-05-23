@@ -34,6 +34,7 @@ from polylogue.daemon.status import daemon_status_payload, format_daemon_status_
 from polylogue.logging import configure_logging, get_logger
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.watcher import default_sources
+from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES as _EXPECTED_FTS_TRIGGERS
 
 logger = get_logger(__name__)
 
@@ -73,30 +74,17 @@ def _verify_pidfile(pidfile: Path) -> bool:
         return False
 
 
-_EXPECTED_FTS_TRIGGERS: tuple[str, ...] = (
-    "messages_fts_ai",
-    "messages_fts_ad",
-    "messages_fts_au",
-    "action_events_fts_ai",
-    "action_events_fts_ad",
-    "action_events_fts_au",
-)
-"""Canonical FTS sync triggers (#1242).
-
-Mirrors ``polylogue.daemon.health._EXPECTED_FTS_TRIGGERS``. Defined
-here to keep the daemon startup path independent of the health-check
-module's import surface.
-"""
-
-
 def _missing_fts_triggers_sync(conn: sqlite3.Connection) -> list[str]:
-    placeholders = ",".join("?" for _ in _EXPECTED_FTS_TRIGGERS)
+    expected = _active_fts_triggers_sync(conn)
+    if not expected:
+        return []
+    placeholders = ",".join("?" for _ in expected)
     rows = conn.execute(
         f"SELECT name FROM sqlite_master WHERE type='trigger' AND name IN ({placeholders})",
-        _EXPECTED_FTS_TRIGGERS,
+        expected,
     ).fetchall()
     present = {row[0] for row in rows}
-    return [name for name in _EXPECTED_FTS_TRIGGERS if name not in present]
+    return [name for name in expected if name not in present]
 
 
 def _table_exists_sync(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -105,6 +93,20 @@ def _table_exists_sync(conn: sqlite3.Connection, table_name: str) -> bool:
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def _active_fts_triggers_sync(conn: sqlite3.Connection) -> tuple[str, ...]:
+    surfaces = (
+        (("messages", "messages_fts"), _EXPECTED_FTS_TRIGGERS[0:3]),
+        (("action_events", "action_events_fts"), _EXPECTED_FTS_TRIGGERS[3:6]),
+        (("session_work_events", "session_work_events_fts"), _EXPECTED_FTS_TRIGGERS[6:9]),
+        (("work_threads", "work_threads_fts"), _EXPECTED_FTS_TRIGGERS[9:12]),
+    )
+    expected: list[str] = []
+    for table_names, trigger_names in surfaces:
+        if all(_table_exists_sync(conn, table_name) for table_name in table_names):
+            expected.extend(trigger_names)
+    return tuple(expected)
 
 
 def _enable_faulthandler_if_supported() -> None:

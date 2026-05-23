@@ -99,6 +99,9 @@ _FTS_TRIGGER_NAMES = (
     + _WORK_THREAD_FTS_TRIGGER_NAMES
 )
 
+FTS_TRIGGER_NAMES = _FTS_TRIGGER_NAMES
+"""Canonical FTS trigger set for all archive and insight search surfaces."""
+
 
 @dataclass(frozen=True, slots=True)
 class FtsSurfaceInvariant:
@@ -182,7 +185,7 @@ async def suspend_fts_triggers_async(conn: aiosqlite.Connection, *, mark_stale: 
 async def restore_fts_triggers_async(conn: aiosqlite.Connection) -> None:
     """Re-create FTS triggers after bulk insert."""
     await suspend_fts_triggers_async(conn)
-    for ddl in _MESSAGE_FTS_TRIGGER_DDL + _ACTION_FTS_TRIGGER_DDL:
+    for ddl in await _fts_trigger_ddl_for_existing_surfaces_async(conn):
         await conn.execute(ddl)
 
 
@@ -229,6 +232,49 @@ _ACTION_FTS_TRIGGER_DDL = [
        END""",
 ]
 
+_SESSION_WORK_EVENT_FTS_TRIGGER_DDL = [
+    """CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ai
+       AFTER INSERT ON session_work_events BEGIN
+           INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, kind, text)
+           VALUES (new.event_id, new.conversation_id, new.provider_name, new.kind, new.search_text);
+       END""",
+    """CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ad
+       AFTER DELETE ON session_work_events BEGIN
+           DELETE FROM session_work_events_fts WHERE event_id = old.event_id;
+       END""",
+    """CREATE TRIGGER IF NOT EXISTS session_work_events_fts_au
+       AFTER UPDATE ON session_work_events BEGIN
+           DELETE FROM session_work_events_fts WHERE event_id = old.event_id;
+           INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, kind, text)
+           VALUES (new.event_id, new.conversation_id, new.provider_name, new.kind, new.search_text);
+       END""",
+]
+
+_WORK_THREAD_FTS_TRIGGER_DDL = [
+    """CREATE TRIGGER IF NOT EXISTS work_threads_fts_ai
+       AFTER INSERT ON work_threads BEGIN
+           INSERT INTO work_threads_fts (thread_id, root_id, text)
+           VALUES (new.thread_id, new.root_id, new.search_text);
+       END""",
+    """CREATE TRIGGER IF NOT EXISTS work_threads_fts_ad
+       AFTER DELETE ON work_threads BEGIN
+           DELETE FROM work_threads_fts WHERE thread_id = old.thread_id;
+       END""",
+    """CREATE TRIGGER IF NOT EXISTS work_threads_fts_au
+       AFTER UPDATE ON work_threads BEGIN
+           DELETE FROM work_threads_fts WHERE thread_id = old.thread_id;
+           INSERT INTO work_threads_fts (thread_id, root_id, text)
+           VALUES (new.thread_id, new.root_id, new.search_text);
+       END""",
+]
+
+_FTS_TRIGGER_DDL = (
+    _MESSAGE_FTS_TRIGGER_DDL
+    + _ACTION_FTS_TRIGGER_DDL
+    + _SESSION_WORK_EVENT_FTS_TRIGGER_DDL
+    + _WORK_THREAD_FTS_TRIGGER_DDL
+)
+
 
 def suspend_fts_triggers_sync(conn: sqlite3.Connection, *, mark_stale: bool = True) -> None:
     """Drop FTS triggers for bulk sync operations."""
@@ -243,7 +289,7 @@ def suspend_fts_triggers_sync(conn: sqlite3.Connection, *, mark_stale: bool = Tr
 def restore_fts_triggers_sync(conn: sqlite3.Connection) -> None:
     """Re-create FTS triggers after bulk insert."""
     suspend_fts_triggers_sync(conn)
-    for ddl in _MESSAGE_FTS_TRIGGER_DDL + _ACTION_FTS_TRIGGER_DDL:
+    for ddl in _fts_trigger_ddl_for_existing_surfaces_sync(conn):
         conn.execute(ddl)
 
 
@@ -254,7 +300,7 @@ def ensure_fts_triggers_sync(conn: sqlite3.Connection) -> None:
     ``restore_fts_triggers_sync`` remains the explicit recovery/rebuild path
     for replacing trigger definitions and repairing global FTS state.
     """
-    for ddl in _MESSAGE_FTS_TRIGGER_DDL + _ACTION_FTS_TRIGGER_DDL:
+    for ddl in _fts_trigger_ddl_for_existing_surfaces_sync(conn):
         conn.execute(ddl)
 
 
@@ -269,8 +315,45 @@ async def ensure_fts_index_async(conn: aiosqlite.Connection) -> None:
     """Ensure the FTS5 tables and triggers exist on an async SQLite connection."""
     await conn.execute(FTS_MESSAGES_TABLE_SQL)
     await conn.execute(FTS_ACTIONS_TABLE_SQL)
-    for ddl in _MESSAGE_FTS_TRIGGER_DDL + _ACTION_FTS_TRIGGER_DDL:
+    for ddl in await _fts_trigger_ddl_for_existing_surfaces_async(conn):
         await conn.execute(ddl)
+
+
+def _fts_trigger_ddl_for_existing_surfaces_sync(conn: sqlite3.Connection) -> tuple[str, ...]:
+    ddl: list[str] = []
+    if _table_exists_sync(conn, "messages") and _table_exists_sync(conn, "messages_fts"):
+        ddl.extend(_MESSAGE_FTS_TRIGGER_DDL)
+    if _table_exists_sync(conn, "action_events") and _table_exists_sync(conn, "action_events_fts"):
+        ddl.extend(_ACTION_FTS_TRIGGER_DDL)
+    if _table_exists_sync(conn, "session_work_events") and _table_exists_sync(conn, "session_work_events_fts"):
+        ddl.extend(_SESSION_WORK_EVENT_FTS_TRIGGER_DDL)
+    if _table_exists_sync(conn, "work_threads") and _table_exists_sync(conn, "work_threads_fts"):
+        ddl.extend(_WORK_THREAD_FTS_TRIGGER_DDL)
+    return tuple(ddl)
+
+
+async def _table_exists_async(conn: aiosqlite.Connection, table_name: str) -> bool:
+    cursor = await conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1",
+        (table_name,),
+    )
+    row = await cursor.fetchone()
+    return row is not None
+
+
+async def _fts_trigger_ddl_for_existing_surfaces_async(conn: aiosqlite.Connection) -> tuple[str, ...]:
+    ddl: list[str] = []
+    if await _table_exists_async(conn, "messages") and await _table_exists_async(conn, "messages_fts"):
+        ddl.extend(_MESSAGE_FTS_TRIGGER_DDL)
+    if await _table_exists_async(conn, "action_events") and await _table_exists_async(conn, "action_events_fts"):
+        ddl.extend(_ACTION_FTS_TRIGGER_DDL)
+    if await _table_exists_async(conn, "session_work_events") and await _table_exists_async(
+        conn, "session_work_events_fts"
+    ):
+        ddl.extend(_SESSION_WORK_EVENT_FTS_TRIGGER_DDL)
+    if await _table_exists_async(conn, "work_threads") and await _table_exists_async(conn, "work_threads_fts"):
+        ddl.extend(_WORK_THREAD_FTS_TRIGGER_DDL)
+    return tuple(ddl)
 
 
 def rebuild_fts_index_sync(conn: sqlite3.Connection) -> None:
@@ -284,9 +367,37 @@ def rebuild_fts_index_sync(conn: sqlite3.Connection) -> None:
     ensure_fts_index_sync(conn)
     conn.execute(FTS_REBUILD_SQL)
     conn.execute(ACTION_FTS_REBUILD_SQL)
+    _rebuild_session_work_events_fts_sync(conn)
+    _rebuild_work_threads_fts_sync(conn)
     from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
 
     record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
+
+
+def _rebuild_session_work_events_fts_sync(conn: sqlite3.Connection) -> None:
+    if not (_table_exists_sync(conn, "session_work_events") and _table_exists_sync(conn, "session_work_events_fts")):
+        return
+    conn.execute("DELETE FROM session_work_events_fts")
+    conn.execute(
+        """
+        INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, kind, text)
+        SELECT event_id, conversation_id, provider_name, kind, search_text
+        FROM session_work_events
+        """
+    )
+
+
+def _rebuild_work_threads_fts_sync(conn: sqlite3.Connection) -> None:
+    if not (_table_exists_sync(conn, "work_threads") and _table_exists_sync(conn, "work_threads_fts")):
+        return
+    conn.execute("DELETE FROM work_threads_fts")
+    conn.execute(
+        """
+        INSERT INTO work_threads_fts (thread_id, root_id, text)
+        SELECT thread_id, root_id, search_text
+        FROM work_threads
+        """
+    )
 
 
 async def rebuild_fts_index_async(
@@ -776,6 +887,7 @@ def fts_invariant_snapshot_sync(conn: sqlite3.Connection) -> FtsInvariantSnapsho
 __all__ = [
     "FtsInvariantSnapshot",
     "FtsSurfaceInvariant",
+    "FTS_TRIGGER_NAMES",
     "_MESSAGE_FTS_TRIGGER_DDL",
     "_chunked",
     "check_fts_readiness",
