@@ -39,6 +39,12 @@ ACTION_EVENT_DDL = """
         CREATE INDEX IF NOT EXISTS idx_action_events_tool
         ON action_events(normalized_tool_name);
 
+        CREATE INDEX IF NOT EXISTS idx_action_events_conv_kind
+        ON action_events(conversation_id, action_kind);
+
+        CREATE INDEX IF NOT EXISTS idx_action_events_conv_tool
+        ON action_events(conversation_id, normalized_tool_name);
+
         CREATE INDEX IF NOT EXISTS idx_action_events_sort
         ON action_events(conversation_id, sort_key, sequence_index);
 """

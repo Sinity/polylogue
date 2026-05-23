@@ -53,6 +53,8 @@ EXPECTED_SERIES: frozenset[str] = frozenset(
         "polylogue_blob_lease_distinct_operations",
         "polylogue_fts_trigger_present",
         "polylogue_fts_triggers_all_present",
+        "polylogue_fts_freshness_ready",
+        "polylogue_live_ingest_memory_mebibytes",
         "polylogue_stale_cursor_writes_total",
     }
 )
@@ -134,9 +136,25 @@ class TestFormatMetricsReadsArchiveState:
                     attempt_id TEXT PRIMARY KEY,
                     status TEXT NOT NULL,
                     started_at TEXT,
+                    updated_at TEXT,
                     convergence_time_s REAL,
                     stale_cursor_write_count INTEGER DEFAULT 0,
+                    rss_current_mb REAL,
+                    cgroup_memory_current_mb REAL,
+                    cgroup_memory_file_mb REAL,
+                    cgroup_memory_inactive_file_mb REAL,
                     source_paths_json TEXT
+                );
+                CREATE TABLE fts_freshness_state (
+                    surface TEXT PRIMARY KEY,
+                    state TEXT NOT NULL,
+                    checked_at TEXT NOT NULL,
+                    source_rows INTEGER NOT NULL DEFAULT 0,
+                    indexed_rows INTEGER NOT NULL DEFAULT 0,
+                    missing_rows INTEGER NOT NULL DEFAULT 0,
+                    excess_rows INTEGER NOT NULL DEFAULT 0,
+                    duplicate_rows INTEGER NOT NULL DEFAULT 0,
+                    detail TEXT
                 );
                 CREATE TABLE live_convergence_debt (
                     debt_id TEXT PRIMARY KEY,
@@ -158,12 +176,26 @@ class TestFormatMetricsReadsArchiveState:
                 """
             )
             conn.executemany(
-                "INSERT INTO live_ingest_attempt (attempt_id, status, started_at, convergence_time_s, stale_cursor_write_count) VALUES (?, ?, ?, ?, ?)",
+                """
+                INSERT INTO live_ingest_attempt (
+                    attempt_id, status, started_at, updated_at, convergence_time_s,
+                    stale_cursor_write_count, rss_current_mb, cgroup_memory_current_mb,
+                    cgroup_memory_file_mb, cgroup_memory_inactive_file_mb
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 [
-                    ("a1", "completed", "2026-05-01T00:00:00Z", 1.5, 0),
-                    ("a2", "completed", "2026-05-01T00:00:01Z", 2.5, 1),
-                    ("a3", "failed", "2026-05-01T00:00:02Z", None, 0),
-                    ("a4", "running", "2026-05-01T00:00:03Z", None, 0),
+                    ("a1", "completed", "2026-05-01T00:00:00Z", "2026-05-01T00:00:00Z", 1.5, 0, 40.0, 80.0, 20.0, 10.0),
+                    ("a2", "completed", "2026-05-01T00:00:01Z", "2026-05-01T00:00:01Z", 2.5, 1, 42.0, 82.0, 21.0, 11.0),
+                    ("a3", "failed", "2026-05-01T00:00:02Z", "2026-05-01T00:00:02Z", None, 0, 43.0, 83.0, 22.0, 12.0),
+                    ("a4", "running", "2026-05-01T00:00:03Z", "2026-05-01T00:00:03Z", None, 0, 44.0, 84.0, 23.0, 13.0),
+                ],
+            )
+            conn.executemany(
+                "INSERT INTO fts_freshness_state (surface, state, checked_at) VALUES (?, ?, ?)",
+                [
+                    ("messages_fts", "ready", "2026-05-01T00:00:04Z"),
+                    ("action_events_fts", "stale", "2026-05-01T00:00:04Z"),
                 ],
             )
             conn.executemany(
@@ -219,6 +251,13 @@ class TestFormatMetricsReadsArchiveState:
         assert 'polylogue_fts_trigger_present{trigger="messages_fts_ai"} 1' in body
         assert 'polylogue_fts_trigger_present{trigger="action_events_fts_ai"} 0' in body
         assert "polylogue_fts_triggers_all_present 0" in body
+
+    def test_fts_freshness_and_memory_state(self, tmp_path: Path) -> None:
+        body = format_metrics(self._make_db(tmp_path))
+        assert 'polylogue_fts_freshness_ready{surface="messages_fts"} 1' in body
+        assert 'polylogue_fts_freshness_ready{surface="action_events_fts"} 0' in body
+        assert 'polylogue_live_ingest_memory_mebibytes{kind="rss_current"} 44.0' in body
+        assert 'polylogue_live_ingest_memory_mebibytes{kind="cgroup_file"} 23.0' in body
 
 
 # ---------------------------------------------------------------------------

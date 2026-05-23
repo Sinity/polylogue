@@ -1139,6 +1139,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         status = get_status_snapshot_payload()
         if isinstance(status, dict):
             status["last_event_id"] = latest_event_id
+            with contextlib.suppress(Exception):
+                from polylogue.daemon.status import _check_daemon_liveness
+
+                status["daemon_liveness"] = _check_daemon_liveness()
         self._send_json(HTTPStatus.OK, status, extra_headers={"ETag": etag})
 
     # ------------------------------------------------------------------

@@ -264,7 +264,8 @@ def test_reader_search_query_no_results_and_facets_evidence(
 
     assert query["total"] == 1
     hits = cast(list[dict[str, object]], query["hits"])
-    hit_target = cast(dict[str, object], hits[0]["target_ref"])
+    hit_conversation = cast(dict[str, object], hits[0]["conversation"])
+    hit_target = cast(dict[str, object], hit_conversation["target_ref"])
     hit_match = cast(dict[str, object], hits[0]["match"])
     match_target = cast(dict[str, object], hit_match["target_ref"])
     assert hit_target["identity_key"] == "conversation:reader-c1"

@@ -261,7 +261,7 @@ def test_run_live_watcher_stops_on_keyboard_interrupt() -> None:
     assert stopped == [True]
 
 
-def test_ensure_fts_startup_readiness_uses_bounded_probes(
+def test_ensure_fts_startup_readiness_records_ready_invariant(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -325,21 +325,31 @@ def test_ensure_fts_startup_readiness_uses_bounded_probes(
     def ensure(fake_conn: FakeConnection) -> None:
         ensured.append(fake_conn)
 
+    class ReadySnapshot:
+        ready = True
+        surfaces: tuple[object, ...] = ()
+
+    recorded: list[object] = []
+
     monkeypatch.setattr("polylogue.paths.db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", ensure)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", rebuild)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.fts_invariant_snapshot_sync", lambda fake_conn: ReadySnapshot()
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.fts.freshness.record_fts_invariant_snapshot_sync",
+        lambda fake_conn, snapshot: recorded.append(snapshot),
+    )
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
     assert ensured == [conn]
     assert rebuilds == []
+    assert len(recorded) == 1
     assert conn.committed is True
     assert conn.closed is True
-    assert all("COUNT(*) FROM messages_fts" not in query for query in conn.queries)
-    assert all("COUNT(*) FROM messages_fts_docsize" not in query for query in conn.queries)
-    assert all("LEFT JOIN messages_fts_docsize" not in query for query in conn.queries)
-    assert all("COUNT(*) FROM messages WHERE text IS NOT NULL" not in query for query in conn.queries)
 
 
 def test_ensure_fts_startup_readiness_rebuilds_empty_fts(
@@ -488,6 +498,18 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
     monkeypatch.setattr(
         "polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync",
         lambda fake_conn: rebuilds.append(fake_conn),
+    )
+
+    class ReadySnapshot:
+        ready = True
+        surfaces: tuple[object, ...] = ()
+
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.fts_invariant_snapshot_sync", lambda fake_conn: ReadySnapshot()
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.fts.freshness.record_fts_invariant_snapshot_sync",
+        lambda fake_conn, snapshot: None,
     )
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())

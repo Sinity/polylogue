@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TypeAlias
 
@@ -170,6 +171,9 @@ async def suspend_fts_triggers_async(conn: aiosqlite.Connection) -> None:
 
     Call rebuild_fts_index_async() after to repopulate the FTS index.
     """
+    from polylogue.storage.fts.freshness import mark_all_fts_stale_async
+
+    await mark_all_fts_stale_async(conn, detail="FTS triggers suspended for bulk write")
     for name in _FTS_TRIGGER_NAMES:
         await conn.execute(f"DROP TRIGGER IF EXISTS {name}")
 
@@ -227,6 +231,9 @@ _ACTION_FTS_TRIGGER_DDL = [
 
 def suspend_fts_triggers_sync(conn: sqlite3.Connection) -> None:
     """Drop FTS triggers for bulk sync operations."""
+    from polylogue.storage.fts.freshness import mark_all_fts_stale_sync
+
+    mark_all_fts_stale_sync(conn, detail="FTS triggers suspended for bulk write")
     for name in _FTS_TRIGGER_NAMES:
         conn.execute(f"DROP TRIGGER IF EXISTS {name}")
 
@@ -275,6 +282,9 @@ def rebuild_fts_index_sync(conn: sqlite3.Connection) -> None:
     ensure_fts_index_sync(conn)
     conn.execute(FTS_REBUILD_SQL)
     conn.execute(ACTION_FTS_REBUILD_SQL)
+    from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
+
+    record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
 
 
 async def rebuild_fts_index_async(
@@ -296,6 +306,17 @@ async def rebuild_fts_index_async(
         )
         return
     await conn.execute(ACTION_FTS_REBUILD_SQL)
+    readiness = await message_fts_readiness_async(conn, verify_total_rows=True)
+    from polylogue.storage.fts.freshness import READY, STALE, record_fts_surface_state_async
+
+    await record_fts_surface_state_async(
+        conn,
+        surface="messages_fts",
+        state=READY if bool(readiness["ready"]) else STALE,
+        source_rows=int(readiness["total_rows"]),
+        indexed_rows=int(readiness["indexed_rows"]),
+        detail=None if bool(readiness["ready"]) else "exact message invariant failed after rebuild",
+    )
 
 
 def repair_message_fts_index_sync(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> None:
@@ -479,6 +500,46 @@ def message_fts_readiness_sync(
     }
 
 
+def message_fts_search_readiness_sync(conn: sqlite3.Connection) -> dict[str, int | bool]:
+    """Return retrieval readiness, using the daemon-maintained freshness row when available."""
+    from polylogue.storage.fts.freshness import (
+        READY,
+        STALE,
+        message_fts_marked_ready_sync,
+        record_fts_surface_state_sync,
+    )
+
+    if message_fts_marked_ready_sync(conn):
+        return {
+            "exists": True,
+            "indexed_rows": 0,
+            "total_rows": 0,
+            "ready": True,
+            "triggers_present": True,
+        }
+    readiness = message_fts_readiness_sync(conn, verify_total_rows=True)
+    if bool(readiness["ready"]):
+        with suppress(sqlite3.Error):
+            record_fts_surface_state_sync(
+                conn,
+                surface="messages_fts",
+                state=READY,
+                source_rows=int(readiness["total_rows"]),
+                indexed_rows=int(readiness["indexed_rows"]),
+            )
+    elif bool(readiness["exists"]):
+        with suppress(sqlite3.Error):
+            record_fts_surface_state_sync(
+                conn,
+                surface="messages_fts",
+                state=STALE,
+                source_rows=int(readiness["total_rows"]),
+                indexed_rows=int(readiness["indexed_rows"]),
+                detail="exact message readiness failed",
+            )
+    return readiness
+
+
 async def message_fts_readiness_async(
     conn: aiosqlite.Connection,
     *,
@@ -514,6 +575,46 @@ async def message_fts_readiness_async(
         "ready": ready,
         "triggers_present": triggers_present,
     }
+
+
+async def message_fts_search_readiness_async(conn: aiosqlite.Connection) -> dict[str, int | bool]:
+    """Async retrieval readiness with durable-freshness fast path."""
+    from polylogue.storage.fts.freshness import (
+        READY,
+        STALE,
+        message_fts_marked_ready_async,
+        record_fts_surface_state_async,
+    )
+
+    if await message_fts_marked_ready_async(conn):
+        return {
+            "exists": True,
+            "indexed_rows": 0,
+            "total_rows": 0,
+            "ready": True,
+            "triggers_present": True,
+        }
+    readiness = await message_fts_readiness_async(conn, verify_total_rows=True)
+    if bool(readiness["ready"]):
+        with suppress(sqlite3.Error):
+            await record_fts_surface_state_async(
+                conn,
+                surface="messages_fts",
+                state=READY,
+                source_rows=int(readiness["total_rows"]),
+                indexed_rows=int(readiness["indexed_rows"]),
+            )
+    elif bool(readiness["exists"]):
+        with suppress(sqlite3.Error):
+            await record_fts_surface_state_async(
+                conn,
+                surface="messages_fts",
+                state=STALE,
+                source_rows=int(readiness["total_rows"]),
+                indexed_rows=int(readiness["indexed_rows"]),
+                detail="exact message readiness failed",
+            )
+    return readiness
 
 
 def check_fts_readiness(readiness: Mapping[str, object], repair_hint: str = "") -> None:
@@ -676,6 +777,8 @@ __all__ = [
     "fts_invariant_snapshot_sync",
     "message_fts_readiness_async",
     "message_fts_readiness_sync",
+    "message_fts_search_readiness_async",
+    "message_fts_search_readiness_sync",
     "rebuild_fts_index_async",
     "rebuild_fts_index_sync",
     "repair_action_fts_index_sync",

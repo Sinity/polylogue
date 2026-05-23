@@ -21,12 +21,12 @@ async def search_conversation_hits(
     limit: int = 100,
     providers: list[str] | None = None,
 ) -> ConversationSearchResult:
-    from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_readiness_async
+    from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_async
 
     # Search must not silently serve stale FTS results. Status/reporting
     # paths may use bounded structural probes, but retrieval is a hard
     # correctness boundary.
-    readiness = await message_fts_readiness_async(conn, verify_total_rows=True)
+    readiness = await message_fts_search_readiness_async(conn)
     check_fts_readiness(readiness, _MESSAGE_SEARCH_REPAIR_HINT)
 
     from polylogue.storage.search import build_ranked_conversation_search_query
@@ -52,12 +52,12 @@ async def search_conversation_evidence_hits(
     providers: list[str] | None = None,
     since: str | None = None,
 ) -> list[ConversationSearchEvidenceHit]:
-    from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_readiness_async
+    from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_async
     from polylogue.storage.search import build_ranked_conversation_search_query
 
     # See search_conversation_hits: retrieval is allowed only against an
     # exactly fresh message FTS surface.
-    readiness = await message_fts_readiness_async(conn, verify_total_rows=True)
+    readiness = await message_fts_search_readiness_async(conn)
     check_fts_readiness(readiness, _MESSAGE_SEARCH_REPAIR_HINT)
 
     query_spec = build_ranked_conversation_search_query(

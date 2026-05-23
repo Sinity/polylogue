@@ -11,7 +11,7 @@ from pathlib import Path
 from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.storage.fts.fts_lifecycle import (
     check_fts_readiness,
-    message_fts_readiness_sync,
+    message_fts_search_readiness_sync,
     replace_fts_rows_for_messages_sync,
 )
 from polylogue.storage.index import ensure_index
@@ -85,7 +85,7 @@ class FTS5Provider:
             return []
 
         with open_read_connection(self.db_path) as conn:
-            readiness = message_fts_readiness_sync(conn)
+            readiness = message_fts_search_readiness_sync(conn)
             check_fts_readiness(readiness, _MESSAGE_SEARCH_REPAIR_HINT)
 
             # Search with relevance ranking

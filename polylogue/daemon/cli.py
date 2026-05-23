@@ -178,9 +178,11 @@ async def _ensure_fts_startup_readiness() -> None:
             conn.commit()
             logger.info("daemon: FTS rebuild complete.")
             return
+        from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
         from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
 
         snapshot = fts_invariant_snapshot_sync(conn)
+        record_fts_invariant_snapshot_sync(conn, snapshot)
         if not snapshot.ready:
             stale_surfaces = ", ".join(surface.name for surface in snapshot.surfaces if not surface.ready)
             logger.warning("daemon: exact FTS invariant stale on startup (%s). Rebuilding once.", stale_surfaces)
@@ -280,8 +282,8 @@ async def _periodic_db_optimize() -> None:
 
     db = db_path()
     while True:
-        await asyncio.sleep(86_400)  # 24 hours
         if not db.exists():
+            await asyncio.sleep(86_400)  # 24 hours
             continue
         try:
             conn = open_connection(db, timeout=30.0)
@@ -292,6 +294,7 @@ async def _periodic_db_optimize() -> None:
                 conn.close()
         except Exception:
             logger.warning("daemon: DB optimize failed", exc_info=True)
+        await asyncio.sleep(86_400)  # 24 hours
 
 
 async def _periodic_fts_repair() -> None:
@@ -313,6 +316,7 @@ async def _periodic_fts_repair() -> None:
 
 def _repair_fts_if_stale_once(db: Path) -> bool:
     """Rebuild FTS once when exact invariants show drift."""
+    from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
     from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync, rebuild_fts_index_sync
     from polylogue.storage.search.cache import invalidate_search_cache
     from polylogue.storage.sqlite.connection_profile import open_connection
@@ -320,7 +324,9 @@ def _repair_fts_if_stale_once(db: Path) -> bool:
     conn = open_connection(db, timeout=30.0)
     try:
         snapshot = fts_invariant_snapshot_sync(conn)
+        record_fts_invariant_snapshot_sync(conn, snapshot)
         if snapshot.ready:
+            conn.commit()
             return False
         stale_surfaces = ", ".join(surface.name for surface in snapshot.surfaces if not surface.ready)
         logger.warning("daemon: exact FTS invariant stale (%s). Rebuilding.", stale_surfaces)

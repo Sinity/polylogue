@@ -41,6 +41,8 @@ class StatusSnapshot:
 
 def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error: str | None = None) -> JSONDocument:
     """Return a request-safe status envelope with no archive-scale scans."""
+    from polylogue.daemon.status import _check_daemon_liveness, browser_capture_status_payload
+
     dbf = db_path()
     wal = dbf.with_suffix(".db-wal")
     fts_payload: dict[str, object] = {}
@@ -54,24 +56,31 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
         {
             "ok": True,
             "daemon": "polylogued",
-            "daemon_liveness": True,
+            "daemon_liveness": _check_daemon_liveness(),
             "checked_at": now,
             "component_state": {
                 "watcher": "running",
                 "api": "running",
                 "browser_capture": "unknown",
             },
+            "live": False,
+            "browser_capture": browser_capture_status_payload(None),
             "db_path": str(dbf),
             "db_size_bytes": dbf.stat().st_size if dbf.exists() else 0,
             "wal_size_bytes": wal.stat().st_size if wal.exists() else 0,
             "blob_dir_size_bytes": 0,
             "disk_free_bytes": 0,
+            "quick_check_result": None,
+            "quick_check_age_s": None,
+            "watcher_roots": [],
+            "browser_capture_active": False,
             "failing_files": [],
             "live_cursor": {},
             "live_ingest_attempts": {},
             "catchup": {},
             "convergence": {},
             "operations": [],
+            "last_ingestion_batch": None,
             "fts_readiness": fts_payload,
             "embedding_readiness": {},
             "memory": {},
