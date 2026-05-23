@@ -60,12 +60,12 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
                 total = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
                 if total == 0:
                     return False
-                fts_count = int(conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0])
+                fts_count = _fts_doc_count(conn, "messages_fts_docsize")
                 if fts_count < total:
                     return True
-                if _table_exists(conn, "action_events") and _table_exists(conn, "action_events_fts"):
+                if _table_exists(conn, "action_events") and _table_exists(conn, "action_events_fts_docsize"):
                     action_total = int(conn.execute("SELECT COUNT(*) FROM action_events").fetchone()[0])
-                    action_fts_count = int(conn.execute("SELECT COUNT(*) FROM action_events_fts").fetchone()[0])
+                    action_fts_count = _fts_doc_count(conn, "action_events_fts_docsize")
                     return action_fts_count < action_total
                 return False
             finally:
@@ -90,7 +90,7 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
                 total = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
                 rebuild_fts_index_sync(conn)
                 conn.commit()
-                new_count = int(conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0])
+                new_count = _fts_doc_count(conn, "messages_fts_docsize")
                 logger.info("fts: rebuilt — %d/%d indexed", new_count, total)
                 return new_count >= total
             finally:
@@ -516,6 +516,13 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
         (table,),
     ).fetchone()
     return row is not None
+
+
+def _fts_doc_count(conn: sqlite3.Connection, table: str) -> int:
+    if not _table_exists(conn, table):
+        return 0
+    row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+    return int(row[0] or 0) if row is not None else 0
 
 
 def _conversation_ids_for_source_path(conn: sqlite3.Connection, path: Path) -> list[str]:

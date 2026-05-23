@@ -26,6 +26,7 @@ import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -276,6 +277,43 @@ def test_fts_readiness_error_when_large_gap(
     assert alert.severity == HealthSeverity.ERROR
     assert alert.consecutive_failures == 1
     assert "FTS gap" in alert.message
+
+
+def test_fts_readiness_counts_docsize_not_virtual_table(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Production status must not count the FTS5 virtual table directly."""
+    dbf = db_path()
+    dbf.parent.mkdir(parents=True, exist_ok=True)
+    _init_messages_db(dbf, message_rows=3, fts_rows=3)
+
+    original_connect = sqlite3.connect
+    queries: list[str] = []
+
+    class GuardedConnection:
+        def __init__(self, inner: sqlite3.Connection) -> None:
+            self._inner = inner
+
+        def execute(self, sql: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
+            normalized = " ".join(sql.split()).lower()
+            queries.append(normalized)
+            if "count(*) from messages_fts" in normalized and "messages_fts_docsize" not in normalized:
+                raise AssertionError("health status must not COUNT(*) the FTS5 virtual table")
+            return self._inner.execute(sql, *args, **kwargs)
+
+        def close(self) -> None:
+            self._inner.close()
+
+    def guarded_connect(path: str) -> GuardedConnection:
+        return GuardedConnection(original_connect(path))
+
+    monkeypatch.setattr("polylogue.daemon.health.sqlite3.connect", guarded_connect)
+
+    alert = _check_fts_readiness_medium()
+
+    assert alert.severity == HealthSeverity.OK
+    assert any("messages_fts_docsize" in query for query in queries)
 
 
 # ---------------------------------------------------------------------------

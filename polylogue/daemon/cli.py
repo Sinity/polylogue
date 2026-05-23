@@ -144,13 +144,6 @@ async def _ensure_fts_startup_readiness() -> None:
             logger.info("daemon: FTS rebuild complete.")
             return
 
-        ensure_fts_index_sync(conn)
-        # SIGKILL recovery: if any of the six FTS triggers are absent,
-        # a previous bulk-write window was killed between suspend and
-        # restore. ensure_fts_index_sync above re-created them, but the
-        # index itself may have drifted while writes landed without the
-        # trigger sync — rebuild to bring index and source rows back
-        # into agreement.
         missing_triggers = _missing_fts_triggers_sync(conn)
         if missing_triggers:
             logger.warning(
@@ -164,6 +157,7 @@ async def _ensure_fts_startup_readiness() -> None:
             logger.info("daemon: FTS trigger restore + rebuild complete.")
             return
 
+        ensure_fts_index_sync(conn)
         has_indexed_messages = conn.execute("SELECT 1 FROM messages_fts_docsize LIMIT 1").fetchone() is not None
         if has_indexable_messages and not has_indexed_messages:
             logger.warning("daemon: message FTS is empty while archive has messages. Rebuilding once.")
@@ -282,7 +276,13 @@ async def _periodic_convergence_check(
                 total_msgs = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
                 if total_msgs == 0:
                     continue
-                fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+                fts_count = (
+                    conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
+                    if conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages_fts_docsize'"
+                    ).fetchone()
+                    else 0
+                )
                 gap = total_msgs - fts_count
                 if gap > 0:
                     logger.warning(

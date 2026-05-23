@@ -411,6 +411,86 @@ def test_ensure_fts_startup_readiness_rebuilds_empty_fts(
     assert all(not query.startswith("SELECT COUNT(*)") for query in conn.queries)
 
 
+def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    db = tmp_path / "polylogue.db"
+    db.write_bytes(b"sqlite placeholder")
+
+    class FakeCursor:
+        def __init__(self, row: tuple[object, ...] | None, rows: list[tuple[object, ...]] | None = None) -> None:
+            self._row = row
+            self._rows = rows if rows is not None else ([] if row is None else [row])
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return self._row
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return self._rows
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+            self.committed = False
+            self.closed = False
+
+        def execute(self, sql: str, _params: object = ()) -> FakeCursor:
+            query = " ".join(sql.split())
+            self.queries.append(query)
+            if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'":
+                return FakeCursor(("messages_fts",))
+            if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
+                # One missing trigger must send startup through restore+rebuild
+                # before ensure_fts_index_sync can hide the drift evidence.
+                triggers: list[tuple[object, ...]] = [
+                    ("messages_fts_ai",),
+                    ("messages_fts_ad",),
+                    ("messages_fts_au",),
+                    ("action_events_fts_ai",),
+                    ("action_events_fts_ad",),
+                ]
+                return FakeCursor(triggers[0], rows=triggers)
+            if query == "SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1":
+                return FakeCursor((1,))
+            raise AssertionError(f"unexpected query: {query}")
+
+        def commit(self) -> None:
+            self.committed = True
+
+        def close(self) -> None:
+            self.closed = True
+
+    conn = FakeConnection()
+    ensured: list[FakeConnection] = []
+    restored: list[FakeConnection] = []
+    rebuilds: list[FakeConnection] = []
+
+    monkeypatch.setattr("polylogue.paths.db_path", lambda: db)
+    monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", lambda fake_conn: ensured.append(fake_conn)
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.restore_fts_triggers_sync",
+        lambda fake_conn: restored.append(fake_conn),
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync",
+        lambda fake_conn: rebuilds.append(fake_conn),
+    )
+
+    asyncio.run(daemon_cli._ensure_fts_startup_readiness())
+
+    assert ensured == []
+    assert restored == [conn]
+    assert rebuilds == [conn]
+    assert conn.committed is True
+    assert conn.closed is True
+
+
 def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
     from polylogue.daemon import cli as daemon_cli
 
