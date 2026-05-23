@@ -117,7 +117,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue maintenance plan` | `polylogue/cli/commands/maintenance.py:130` `polylogue.cli.commands.maintenance.plan_command` |
 | `polylogue maintenance preview` | `polylogue/cli/commands/maintenance.py:357` `polylogue.cli.commands.maintenance.preview_command` |
 | `polylogue maintenance run` | `polylogue/cli/commands/maintenance.py:213` `polylogue.cli.commands.maintenance.run_command` |
-| `polylogue maintenance status` | `polylogue/cli/commands/maintenance.py:502` `polylogue.cli.commands.maintenance.status_command` |
+| `polylogue maintenance status` | `polylogue/cli/commands/maintenance.py:501` `polylogue.cli.commands.maintenance.status_command` |
 | `polylogue messages` | `polylogue/cli/click_app.py` `polylogue messages` |
 | `polylogue neighbors` | `polylogue/cli/click_app.py` `polylogue neighbors` |
 | `polylogue open` | `polylogue/cli/click_app.py` `polylogue open` |

@@ -40,12 +40,7 @@ from polylogue.sources.live.batch_support import (
     _LARGE_FULL_PARSE_PROGRESS_BYTES as _LARGE_FULL_PARSE_PROGRESS_BYTES,
 )
 from polylogue.sources.live.batch_support import (
-    _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES as _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES,
-)
-from polylogue.sources.live.batch_support import (
-    _SMALL_FULL_PARSE_PROGRESS_MAX_FILES as _SMALL_FULL_PARSE_PROGRESS_MAX_FILES,
-)
-from polylogue.sources.live.batch_support import (
+    _MAX_APPEND_PLAN_PAYLOAD_BYTES,
     _STREAMING_FULL_INGEST_BYTES,
     _accumulate_stage_timings,
     _AppendPlan,
@@ -65,6 +60,12 @@ from polylogue.sources.live.batch_support import (
     fingerprint_file,
     last_complete_newline_from_tail,
     tail_hash_from_path,
+)
+from polylogue.sources.live.batch_support import (
+    _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES as _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES,
+)
+from polylogue.sources.live.batch_support import (
+    _SMALL_FULL_PARSE_PROGRESS_MAX_FILES as _SMALL_FULL_PARSE_PROGRESS_MAX_FILES,
 )
 from polylogue.sources.live.convergence_debt import (
     ConvergenceDebt,
@@ -956,6 +957,8 @@ class LiveBatchProcessor:
             return None
         if stat.st_size <= cursor.byte_offset:
             return None
+        if stat.st_size - cursor.byte_offset > _MAX_APPEND_PLAN_PAYLOAD_BYTES:
+            return None
         if cursor.st_dev is not None and cursor.st_dev != stat.st_dev:
             return None
         if cursor.st_ino is not None and cursor.st_ino != stat.st_ino:
@@ -1152,5 +1155,5 @@ class LiveBatchProcessor:
 
 
 # fmt: off
-__all__ = ["LiveBatchMetrics", "LiveBatchProcessor", "_FullIngestResult", "_LARGE_FULL_PARSE_PROGRESS_BYTES", "_SMALL_FULL_PARSE_PROGRESS_MAX_BYTES", "_SMALL_FULL_PARSE_PROGRESS_MAX_FILES", "_STREAMING_FULL_INGEST_BYTES", "_full_ingest_worker_count", "_full_parse_progress_groups", "fingerprint_file", "last_complete_newline_from_tail"]
+__all__ = ["LiveBatchMetrics", "LiveBatchProcessor", "_FullIngestResult", "_LARGE_FULL_PARSE_PROGRESS_BYTES", "_MAX_APPEND_PLAN_PAYLOAD_BYTES", "_SMALL_FULL_PARSE_PROGRESS_MAX_BYTES", "_SMALL_FULL_PARSE_PROGRESS_MAX_FILES", "_STREAMING_FULL_INGEST_BYTES", "_full_ingest_worker_count", "_full_parse_progress_groups", "fingerprint_file", "last_complete_newline_from_tail"]
 # fmt: on

@@ -69,7 +69,12 @@ from polylogue.storage.repair import (
     RepairResult,
     repair_action_event_read_model,
     repair_dangling_fts,
+    repair_empty_conversations,
     repair_message_type_backfill,
+    repair_orphaned_attachments,
+    repair_orphaned_blobs,
+    repair_orphaned_content_blocks,
+    repair_orphaned_messages,
     repair_session_insights,
     repair_wal_checkpoint,
 )
@@ -124,6 +129,11 @@ _REPLAY_DISPATCH: Final[dict[str, _RepairFn]] = {
     "dangling_fts": repair_dangling_fts,
     "message_type_backfill": repair_message_type_backfill,
     "wal_checkpoint": repair_wal_checkpoint,
+    "orphaned_messages": repair_orphaned_messages,
+    "orphaned_content_blocks": repair_orphaned_content_blocks,
+    "empty_conversations": repair_empty_conversations,
+    "orphaned_attachments": repair_orphaned_attachments,
+    "orphaned_blobs": repair_orphaned_blobs,
     # ``source_replay`` is handled by a dedicated branch in
     # :func:`_run_one_target` because it needs the typed scope filter and
     # the per-artifact resume cursor. The sentinel value here only exists
