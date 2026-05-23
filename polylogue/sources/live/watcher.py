@@ -31,6 +31,8 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 _PARSER_FINGERPRINT = "live-batched-v2"
+_CATCH_UP_MAX_BATCH_FILES = 50
+_CATCH_UP_MAX_BATCH_BYTES = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,17 +155,31 @@ class LiveWatcher:
         plan = self._plan_catch_up(candidates)
 
         if plan.needed:
+            candidate_by_path = {candidate.path: candidate for candidate in plan.candidates}
+            chunks = tuple(self._chunk_catch_up_paths(plan.needed, candidate_by_path))
             logger.info(
-                "live.watcher: catch-up ingesting %d file(s) (%.1f MB), skipped=%d",
+                "live.watcher: catch-up ingesting %d file(s) (%.1f MB), skipped=%d, chunks=%d",
                 len(plan.needed),
                 plan.needed_bytes / 1e6,
                 plan.skipped_file_count,
+                len(chunks),
             )
-            await self._ingest_files(
-                list(plan.needed),
-                queued_file_count=len(plan.candidates),
-                skipped_file_count=plan.skipped_file_count,
-            )
+            for index, chunk in enumerate(chunks, start=1):
+                if self._stop.is_set():
+                    break
+                chunk_bytes = sum(candidate_by_path[path].stat.st_size for path in chunk)
+                logger.info(
+                    "live.watcher: catch-up chunk %d/%d ingesting %d file(s) (%.1f MB)",
+                    index,
+                    len(chunks),
+                    len(chunk),
+                    chunk_bytes / 1e6,
+                )
+                await self._ingest_files(
+                    list(chunk),
+                    queued_file_count=len(plan.candidates) if index == 1 else len(chunk),
+                    skipped_file_count=plan.skipped_file_count if index == 1 else 0,
+                )
 
     def _scan_catch_up_candidates(self, roots: list[Path]) -> tuple[CandidateSourceFile, ...]:
         root_set = {root.resolve() for root in roots}
@@ -214,6 +230,28 @@ class LiveWatcher:
             skipped_file_count=skipped,
             needed_bytes=needed_bytes,
         )
+
+    def _chunk_catch_up_paths(
+        self,
+        paths: tuple[Path, ...],
+        candidate_by_path: dict[Path, CandidateSourceFile],
+    ) -> tuple[tuple[Path, ...], ...]:
+        chunks: list[tuple[Path, ...]] = []
+        current: list[Path] = []
+        current_bytes = 0
+        for path in paths:
+            size = candidate_by_path[path].stat.st_size
+            would_exceed_count = len(current) >= _CATCH_UP_MAX_BATCH_FILES
+            would_exceed_bytes = current_bytes > 0 and current_bytes + size > _CATCH_UP_MAX_BATCH_BYTES
+            if current and (would_exceed_count or would_exceed_bytes):
+                chunks.append(tuple(current))
+                current = []
+                current_bytes = 0
+            current.append(path)
+            current_bytes += size
+        if current:
+            chunks.append(tuple(current))
+        return tuple(chunks)
 
     # ------------------------------------------------------------------
     # Live: debounced batch scheduling

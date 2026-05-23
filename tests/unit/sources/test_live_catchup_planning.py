@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -49,3 +50,37 @@ def test_catch_up_plan_carries_statted_candidates_without_payload_reads(
     assert plan.needed == (changed,)
     assert plan.skipped_file_count == 1
     assert plan.needed_bytes == changed.stat().st_size
+
+
+def test_catch_up_ingests_needed_files_in_bounded_chunks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    files = [root / f"session-{index}.jsonl" for index in range(5)]
+    for index, path in enumerate(files):
+        path.write_text("x" * (index + 1))
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    watcher = LiveWatcher(cast(Any, polylogue), (WatchSource(name="test", root=root),))
+    monkeypatch.setattr(live_watcher, "_CATCH_UP_MAX_BATCH_FILES", 2)
+    monkeypatch.setattr(live_watcher, "_CATCH_UP_MAX_BATCH_BYTES", 100)
+
+    calls: list[tuple[list[Path], int | None, int]] = []
+
+    async def fake_ingest_files(
+        paths: list[Path],
+        *,
+        queued_file_count: int | None = None,
+        skipped_file_count: int = 0,
+    ) -> None:
+        calls.append((paths, queued_file_count, skipped_file_count))
+
+    watcher._ingest_files = fake_ingest_files  # type: ignore[method-assign]
+
+    asyncio.run(watcher._catch_up([root]))
+
+    assert [paths for paths, _queued, _skipped in calls] == [files[:2], files[2:4], files[4:]]
+    assert calls[0][1:] == (5, 0)
+    assert calls[1][1:] == (2, 0)
+    assert calls[2][1:] == (1, 0)
