@@ -17,6 +17,7 @@ from polylogue.core.json import JSONDocument, json_document
 from polylogue.daemon.catchup_status import CatchupStatus, catchup_status_info, format_catchup_status_lines
 from polylogue.daemon.convergence_debt_status import ConvergenceDebtSummary, convergence_debt_summary_info
 from polylogue.daemon.cursor_lag_status import CursorLagSummary, cursor_lag_summary_info
+from polylogue.daemon.fts_status import FTSReadiness, fts_readiness_info
 from polylogue.daemon.health import DaemonHealth, check_health
 from polylogue.daemon.live_ingest_attempt_models import LiveIngestAttemptState, LiveIngestAttemptSummary
 from polylogue.daemon.live_ingest_attempt_progress import (
@@ -62,11 +63,6 @@ class SourceLagItem(BaseModel):
 class IngestionThroughput(BaseModel):
     messages_per_second: float = 0.0
     files_per_second: float = 0.0
-
-
-class FTSReadiness(BaseModel):
-    messages_ready: bool = False
-    action_events_ready: bool = False
 
 
 class InsightFreshness(BaseModel):
@@ -275,33 +271,8 @@ def _blob_size_info() -> int:
     return 0
 
 
-def _fts_readiness_info() -> dict[str, bool]:
-    """Check FTS table presence through a bounded read-only probe."""
-    dbf = db_path()
-    if not dbf.exists():
-        return {"messages_ready": False, "action_events_ready": False}
-    try:
-        conn = open_readonly_connection(dbf)
-        try:
-            tables = {
-                row[0]
-                for row in conn.execute(
-                    """
-                    SELECT name
-                    FROM sqlite_master
-                    WHERE type = 'table'
-                      AND name IN ('messages_fts', 'action_events_fts')
-                    """
-                ).fetchall()
-            }
-        finally:
-            conn.close()
-        return {
-            "messages_ready": "messages_fts" in tables,
-            "action_events_ready": "action_events_fts" in tables,
-        }
-    except sqlite3.Error:
-        return {"messages_ready": False, "action_events_ready": False}
+def _fts_readiness_info() -> dict[str, object]:
+    return fts_readiness_info(db_path())
 
 
 def _insight_freshness_info() -> dict[str, object]:
@@ -1055,8 +1026,13 @@ def build_daemon_status(
         blob_dir_size_bytes=_blob_size_info(),
         disk_free_bytes=_safe_int(db_info.get("disk_free_bytes", 0)),
         fts_readiness=FTSReadiness(
-            messages_ready=fts.get("messages_ready", False),
-            action_events_ready=fts.get("action_events_ready", False),
+            messages_ready=bool(fts.get("messages_ready", False)),
+            action_events_ready=bool(fts.get("action_events_ready", False)),
+            message_indexed_count=_safe_int(fts.get("message_indexed_count", 0)),
+            message_indexable_count=_safe_int(fts.get("message_indexable_count", 0)),
+            action_event_indexed_count=_safe_int(fts.get("action_event_indexed_count", 0)),
+            action_event_count=_safe_int(fts.get("action_event_count", 0)),
+            coverage_pct=_safe_float(fts.get("coverage_pct")),
         ),
         insight_freshness=InsightFreshness(
             sessions_with_profiles=_safe_int(freshness.get("sessions_with_profiles", 0)),

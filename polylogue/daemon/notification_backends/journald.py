@@ -49,7 +49,7 @@ class _JournalSender(Protocol):
 
 def _resolve_default_sender() -> _JournalSender:
     try:
-        from systemd import journal
+        from systemd import journal  # type: ignore[attr-defined]
     except ImportError as err:  # pragma: no cover - exercised in test_no_systemd
         raise BackendUnavailableError(
             "notification_backend='journald' requires the 'systemd' Python package "

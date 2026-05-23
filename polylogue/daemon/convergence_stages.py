@@ -57,16 +57,16 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
                 conversation_ids = _conversation_ids_for_source_path(conn, path)
                 if conversation_ids:
                     return _fts_needs_repair_for_conversations(conn, conversation_ids)
-                total = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+                total = int(conn.execute("SELECT COUNT(*) FROM messages WHERE text IS NOT NULL").fetchone()[0])
+                fts_count = _fts_doc_count(conn, "messages_fts_docsize")
+                if fts_count != total:
+                    return True
                 if total == 0:
                     return False
-                fts_count = _fts_doc_count(conn, "messages_fts_docsize")
-                if fts_count < total:
-                    return True
                 if _table_exists(conn, "action_events") and _table_exists(conn, "action_events_fts_docsize"):
                     action_total = int(conn.execute("SELECT COUNT(*) FROM action_events").fetchone()[0])
                     action_fts_count = _fts_doc_count(conn, "action_events_fts_docsize")
-                    return action_fts_count < action_total
+                    return action_fts_count != action_total
                 return False
             finally:
                 conn.close()
@@ -87,12 +87,12 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
                     conn.commit()
                     logger.info("fts: repaired conversations=%d", len(conversation_ids))
                     return not _fts_needs_repair_for_conversations(conn, conversation_ids)
-                total = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+                total = int(conn.execute("SELECT COUNT(*) FROM messages WHERE text IS NOT NULL").fetchone()[0])
                 rebuild_fts_index_sync(conn)
                 conn.commit()
                 new_count = _fts_doc_count(conn, "messages_fts_docsize")
                 logger.info("fts: rebuilt — %d/%d indexed", new_count, total)
-                return new_count >= total
+                return new_count == total
             finally:
                 conn.close()
         except Exception:

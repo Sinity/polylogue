@@ -260,7 +260,10 @@ def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> N
     assert payload["wal_size_bytes"] == 7
     assert payload["blob_dir_size_bytes"] == 0
     assert payload["disk_free_bytes"] == 99
-    assert payload["fts_readiness"] == {"messages_ready": True, "action_events_ready": True}
+    fts_readiness = payload["fts_readiness"]
+    assert isinstance(fts_readiness, dict)
+    assert fts_readiness["messages_ready"] is True
+    assert fts_readiness["action_events_ready"] is True
     assert db_info.call_count == 1
     assert blob_info.call_count == 1
     assert fts_info.call_count == 1
@@ -283,7 +286,8 @@ def test_daemon_status_fts_readiness_uses_lightweight_table_probe(tmp_path: Path
     with patch("polylogue.daemon.status.db_path", return_value=db):
         readiness = status_module._fts_readiness_info()
 
-    assert readiness == {"messages_ready": True, "action_events_ready": True}
+    assert readiness["messages_ready"] is True
+    assert readiness["action_events_ready"] is True
 
 
 def test_daemon_status_insight_freshness_uses_lightweight_counts(tmp_path: Path) -> None:

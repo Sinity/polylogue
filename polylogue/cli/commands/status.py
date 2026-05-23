@@ -151,8 +151,8 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
     # FTS
     fts = status.get("fts_readiness", {})
     if isinstance(fts, dict):
-        pct = fts.get("coverage_pct", 0)
-        fts_color = "green" if pct > 99 else "yellow"
+        pct = float(fts.get("coverage_pct", 100 if fts.get("messages_ready") else 0))
+        fts_color = "green" if fts.get("messages_ready") and fts.get("action_events_ready") else "yellow"
         env.ui.console.print(f"  FTS: [{fts_color}]{pct:.1f}% indexed[/{fts_color}]")
 
     # Sizes
