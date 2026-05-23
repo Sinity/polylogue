@@ -1,7 +1,7 @@
 """FTS sync-trigger drift detection and auto-restore (#1229).
 
-The daemon's FAST tier inspects the six canonical FTS triggers
-(``messages_fts_a{i,d,u}`` + ``action_events_fts_a{i,d,u}``) every health
+The daemon's FAST tier inspects the canonical FTS triggers for active
+archive and insight search surfaces every health
 cycle. A SIGKILL during the bulk-write suspension window (see
 ``docs/internals.md`` "FTS5 Model") leaves these triggers dropped and
 silently corrupts search.
@@ -62,6 +62,44 @@ CREATE TABLE IF NOT EXISTS action_events (
 )
 """
 
+_SESSION_WORK_EVENTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS session_work_events (
+    event_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    provider_name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    search_text TEXT NOT NULL
+)
+"""
+
+_SESSION_WORK_EVENTS_FTS_SQL = """
+CREATE VIRTUAL TABLE IF NOT EXISTS session_work_events_fts USING fts5(
+    event_id UNINDEXED,
+    conversation_id UNINDEXED,
+    provider_name UNINDEXED,
+    kind UNINDEXED,
+    text,
+    tokenize='unicode61'
+)
+"""
+
+_WORK_THREADS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS work_threads (
+    thread_id TEXT PRIMARY KEY,
+    root_id TEXT NOT NULL,
+    search_text TEXT NOT NULL
+)
+"""
+
+_WORK_THREADS_FTS_SQL = """
+CREATE VIRTUAL TABLE IF NOT EXISTS work_threads_fts USING fts5(
+    thread_id UNINDEXED,
+    root_id UNINDEXED,
+    text,
+    tokenize='unicode61'
+)
+"""
+
 
 @pytest.fixture(autouse=True)
 def _reset_failure_counts() -> Iterator[None]:
@@ -75,14 +113,18 @@ def _seed_archive_with_triggers(path: Path) -> None:
     """Bootstrap the minimal table set + the canonical FTS triggers.
 
     The check is schema-agnostic — it only reads ``sqlite_schema`` — but
-    the auto-restore path needs ``messages`` and ``action_events`` to
-    exist (because the FTS5 ``rebuild`` command reads from them).
+    the auto-restore path needs the active source and FTS tables to
+    exist because repair recreates triggers and rebuilds the indexes.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     try:
         conn.execute(_MESSAGES_TABLE_SQL)
         conn.execute(_ACTION_EVENTS_TABLE_SQL)
+        conn.execute(_SESSION_WORK_EVENTS_TABLE_SQL)
+        conn.execute(_SESSION_WORK_EVENTS_FTS_SQL)
+        conn.execute(_WORK_THREADS_TABLE_SQL)
+        conn.execute(_WORK_THREADS_FTS_SQL)
         ensure_fts_index_sync(conn)
         conn.commit()
     finally:
@@ -103,9 +145,9 @@ def _drop_trigger(path: Path, name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_expected_fts_trigger_inventory_is_six_canonical_names() -> None:
-    """The contract is six triggers — three per FTS table."""
-    assert len(_EXPECTED_FTS_TRIGGERS) == 6
+def test_expected_fts_trigger_inventory_covers_archive_and_insight_search() -> None:
+    """The contract is twelve triggers — three per active FTS table."""
+    assert len(_EXPECTED_FTS_TRIGGERS) == 12
     assert set(_EXPECTED_FTS_TRIGGERS) == {
         "messages_fts_ai",
         "messages_fts_ad",
@@ -113,6 +155,12 @@ def test_expected_fts_trigger_inventory_is_six_canonical_names() -> None:
         "action_events_fts_ai",
         "action_events_fts_ad",
         "action_events_fts_au",
+        "session_work_events_fts_ai",
+        "session_work_events_fts_ad",
+        "session_work_events_fts_au",
+        "work_threads_fts_ai",
+        "work_threads_fts_ad",
+        "work_threads_fts_au",
     }
 
 
@@ -135,7 +183,7 @@ def test_check_returns_ok_when_all_triggers_present(
     alert = _check_fts_trigger_drift_fast()
     assert alert.severity == HealthSeverity.OK
     assert alert.tier == HealthTier.FAST
-    assert "all 6 FTS triggers present" in alert.message
+    assert "all 12 active FTS triggers present" in alert.message
     assert alert.consecutive_failures == 0
 
 
@@ -149,7 +197,7 @@ def test_check_detects_any_missing_trigger(
     workspace_env: dict[str, Path],
     dropped: str,
 ) -> None:
-    """Dropping any of the six canonical triggers must surface as CRITICAL."""
+    """Dropping any active canonical trigger must surface as CRITICAL."""
     dbf = db_path()
     _seed_archive_with_triggers(dbf)
     _drop_trigger(dbf, dropped)
@@ -173,7 +221,7 @@ def test_check_lists_all_missing_triggers_when_several_drop(
 
     alert = _check_fts_trigger_drift_fast()
     assert alert.severity == HealthSeverity.CRITICAL
-    assert "2/6 missing" in alert.message
+    assert "2/12 missing" in alert.message
     assert "messages_fts_ai" in alert.message
     assert "action_events_fts_ad" in alert.message
 
@@ -243,7 +291,7 @@ def test_auto_restore_repairs_missing_triggers_and_warns(
     # The next health cycle returns to OK.
     next_alert = _check_fts_trigger_drift_fast()
     assert next_alert.severity == HealthSeverity.OK
-    assert "all 6 FTS triggers present" in next_alert.message
+    assert "all 12 active FTS triggers present" in next_alert.message
 
 
 def test_auto_restore_disabled_by_default_keeps_alert_critical(

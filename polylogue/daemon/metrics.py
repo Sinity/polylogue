@@ -63,6 +63,7 @@ from pathlib import Path
 from typing import Protocol
 
 from polylogue.logging import get_logger
+from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES as _EXPECTED_FTS_TRIGGERS
 
 logger = get_logger(__name__)
 
@@ -154,18 +155,6 @@ def _scalar_int(conn: sqlite3.Connection, sql: str) -> int:
     if row is None or row[0] is None:
         return 0
     return int(row[0])
-
-
-# Same expected FTS triggers as devtools/daemon_workload_probe.py — kept
-# inline so the metrics module does not depend on the probe.
-_EXPECTED_FTS_TRIGGERS: tuple[str, ...] = (
-    "messages_fts_ai",
-    "messages_fts_ad",
-    "messages_fts_au",
-    "action_events_fts_ai",
-    "action_events_fts_ad",
-    "action_events_fts_au",
-)
 
 
 def _attempt_counts(conn: sqlite3.Connection) -> dict[str, int]:

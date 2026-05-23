@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.paths import db_path as default_db_path
+from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES as _EXPECTED_FTS_TRIGGERS
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
@@ -46,17 +47,6 @@ _BOUNDARY_TABLES: tuple[str, ...] = (
     "topology_edges",
     "repo_identities",
     "conversation_repo_observations",
-)
-
-# Expected FTS-sync triggers.  A missing trigger means the FTS index can drift
-# silently (suspended for bulk operations and never restored, for example).
-_EXPECTED_FTS_TRIGGERS: tuple[str, ...] = (
-    "messages_fts_ai",
-    "messages_fts_ad",
-    "messages_fts_au",
-    "action_events_fts_ai",
-    "action_events_fts_ad",
-    "action_events_fts_au",
 )
 
 

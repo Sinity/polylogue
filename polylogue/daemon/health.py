@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from polylogue.config import PolylogueConfig
 from polylogue.logging import get_logger
 from polylogue.paths import archive_root, db_path
+from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES as _EXPECTED_FTS_TRIGGERS
 
 logger = get_logger(__name__)
 
@@ -272,33 +273,45 @@ def _check_source_availability_fast() -> HealthAlert:
         )
 
 
-_EXPECTED_FTS_TRIGGERS: tuple[str, ...] = (
-    "messages_fts_ai",
-    "messages_fts_ad",
-    "messages_fts_au",
-    "action_events_fts_ai",
-    "action_events_fts_ad",
-    "action_events_fts_au",
-)
-"""Six canonical FTS sync triggers (#1229).
-
-Three for ``messages_fts`` + three for ``action_events_fts``. These are
-restored after every bulk-write window by
-``polylogue/storage/fts/fts_lifecycle.py::restore_fts_triggers_sync``;
-their absence after a SIGKILL during a suspension window leaves the FTS
-indexes silently out of sync with the source tables.
-"""
+"""Canonical FTS sync triggers for archive and insight search surfaces."""
 
 
 def _find_missing_fts_triggers(conn: sqlite3.Connection) -> list[str]:
     """Return the names of expected FTS triggers that do not exist."""
-    placeholders = ",".join("?" for _ in _EXPECTED_FTS_TRIGGERS)
+    expected = _active_fts_triggers(conn)
+    if not expected:
+        return []
+    placeholders = ",".join("?" for _ in expected)
     rows = conn.execute(
         f"SELECT name FROM sqlite_schema WHERE type='trigger' AND name IN ({placeholders})",
-        _EXPECTED_FTS_TRIGGERS,
+        expected,
     ).fetchall()
     present = {row[0] for row in rows}
-    return [name for name in _EXPECTED_FTS_TRIGGERS if name not in present]
+    return [name for name in expected if name not in present]
+
+
+def _table_exists_for_fts_trigger(conn: sqlite3.Connection, table_name: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type='table' AND name = ? LIMIT 1",
+            (table_name,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _active_fts_triggers(conn: sqlite3.Connection) -> tuple[str, ...]:
+    surfaces = (
+        (("messages", "messages_fts"), _EXPECTED_FTS_TRIGGERS[0:3]),
+        (("action_events", "action_events_fts"), _EXPECTED_FTS_TRIGGERS[3:6]),
+        (("session_work_events", "session_work_events_fts"), _EXPECTED_FTS_TRIGGERS[6:9]),
+        (("work_threads", "work_threads_fts"), _EXPECTED_FTS_TRIGGERS[9:12]),
+    )
+    expected: list[str] = []
+    for table_names, trigger_names in surfaces:
+        if all(_table_exists_for_fts_trigger(conn, table_name) for table_name in table_names):
+            expected.extend(trigger_names)
+    return tuple(expected)
 
 
 def _auto_restore_fts_triggers(dbf: object) -> tuple[list[str], bool, str]:
@@ -386,6 +399,7 @@ def _check_fts_trigger_drift_fast() -> HealthAlert:
         # opens a writable connection.
         conn = sqlite3.connect(f"file:{dbf}?mode=ro", uri=True, timeout=2.0)
         try:
+            active_trigger_count = len(_active_fts_triggers(conn))
             missing = _find_missing_fts_triggers(conn)
         finally:
             conn.close()
@@ -395,7 +409,7 @@ def _check_fts_trigger_drift_fast() -> HealthAlert:
                 check_name="fts_trigger_drift",
                 tier=HealthTier.FAST,
                 severity=HealthSeverity.OK,
-                message=f"all {len(_EXPECTED_FTS_TRIGGERS)} FTS triggers present",
+                message=f"all {active_trigger_count} active FTS triggers present",
                 checked_at=now,
                 consecutive_failures=_record_failure("fts_trigger_drift", True),
             )
@@ -410,7 +424,7 @@ def _check_fts_trigger_drift_fast() -> HealthAlert:
 
         if not auto_restore:
             message = (
-                f"FTS trigger drift: {len(missing)}/{len(_EXPECTED_FTS_TRIGGERS)} missing "
+                f"FTS trigger drift: {len(missing)}/{active_trigger_count} missing "
                 f"({missing_text}); restore with `{restore_cmd}` "
                 "(rebuild ~O(messages))"
             )

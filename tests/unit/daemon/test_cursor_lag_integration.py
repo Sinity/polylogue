@@ -19,7 +19,7 @@ from polylogue.daemon.cursor_lag_alert import reset_default_dedup_state as reset
 from polylogue.daemon.cursor_lag_anomaly import (
     reset_default_dedup_state as reset_anomaly_dedup,
 )
-from polylogue.daemon.cursor_lag_baseline import record_cursor_lag_sample
+from polylogue.daemon.cursor_lag_baseline import gc_cursor_lag_samples, record_cursor_lag_sample
 from polylogue.daemon.cursor_lag_status import (
     CursorLagFamilySummary,
     CursorLagSummary,
@@ -136,6 +136,30 @@ def _sample_history(
     )
     for i in range(samples):
         record_cursor_lag_sample(db, summary, now=now - spacing * (i + 1))
+
+
+def test_lag_sample_writes_do_not_block_health_loop_on_database_lock(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+) -> None:
+    db = tmp_path / "locked.db"
+    summary = CursorLagSummary(
+        tracked_file_count=1,
+        stuck_file_count=1,
+        idle_file_count=0,
+        max_lag_s=120,
+        family_summaries=[CursorLagFamilySummary(family="codex-session", stuck_file_count=1, max_lag_s=120)],
+    )
+    blocker = sqlite3.connect(str(db))
+    try:
+        blocker.execute("CREATE TABLE lock_holder (id INTEGER PRIMARY KEY)")
+        blocker.execute("BEGIN EXCLUSIVE")
+
+        assert record_cursor_lag_sample(db, summary, now=frozen_clock.now()) == 0
+        assert gc_cursor_lag_samples(db, retention_days=14, now=frozen_clock.now()) == 0
+    finally:
+        blocker.rollback()
+        blocker.close()
 
 
 # ---------------------------------------------------------------------------

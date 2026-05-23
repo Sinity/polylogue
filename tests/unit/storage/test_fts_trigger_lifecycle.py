@@ -3,14 +3,14 @@
 Pins the contract documented in ``docs/internals.md`` ("FTS5 Model →
 Trigger suspension"):
 
-- ``suspend_fts_triggers_sync`` drops the six expected FTS triggers.
+- ``suspend_fts_triggers_sync`` drops every expected FTS trigger.
 - ``restore_fts_triggers_sync`` is idempotent and re-creates the full
   set even if invoked twice in a row.
 - A SIGKILL-like interruption between ``suspend`` and ``restore`` leaves
   the database in a detectable drift state (no triggers present); the
   recovery path is ``restore_fts_triggers_sync`` itself.
 - Multiple threads racing on suspend + restore on independent
-  connections converge on the "all six present" state.
+  connections converge on the "all present" state.
 """
 
 from __future__ import annotations
@@ -36,6 +36,12 @@ _EXPECTED_TRIGGERS = (
     "action_events_fts_ai",
     "action_events_fts_ad",
     "action_events_fts_au",
+    "session_work_events_fts_ai",
+    "session_work_events_fts_ad",
+    "session_work_events_fts_au",
+    "work_threads_fts_ai",
+    "work_threads_fts_ad",
+    "work_threads_fts_au",
 )
 
 
@@ -67,12 +73,46 @@ def _bootstrap_fts_db(path: Path) -> sqlite3.Connection:
             search_text TEXT
         )"""
     )
+    conn.execute(
+        """CREATE TABLE session_work_events (
+            event_id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            provider_name TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            search_text TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE VIRTUAL TABLE session_work_events_fts USING fts5(
+            event_id UNINDEXED,
+            conversation_id UNINDEXED,
+            provider_name UNINDEXED,
+            kind UNINDEXED,
+            text,
+            tokenize='unicode61'
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE work_threads (
+            thread_id TEXT PRIMARY KEY,
+            root_id TEXT NOT NULL,
+            search_text TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE VIRTUAL TABLE work_threads_fts USING fts5(
+            thread_id UNINDEXED,
+            root_id UNINDEXED,
+            text,
+            tokenize='unicode61'
+        )"""
+    )
     ensure_fts_index_sync(conn)
     conn.commit()
     return conn
 
 
-def test_suspend_drops_all_six_triggers(tmp_path: Path) -> None:
+def test_suspend_drops_all_fts_triggers(tmp_path: Path) -> None:
     conn = _bootstrap_fts_db(tmp_path / "fts.db")
     try:
         present = _trigger_names(conn)
@@ -126,8 +166,43 @@ def test_restore_is_idempotent(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_rebuild_restores_insight_fts_surfaces(tmp_path: Path) -> None:
+    from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync, rebuild_fts_index_sync
+
+    conn = _bootstrap_fts_db(tmp_path / "fts.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO session_work_events (
+                event_id, conversation_id, provider_name, kind, search_text
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            ("event-1", "conversation-1", "codex", "implementation", "fixed daemon locks"),
+        )
+        conn.execute(
+            "INSERT INTO work_threads (thread_id, root_id, search_text) VALUES (?, ?, ?)",
+            ("thread-1", "conversation-1", "daemon convergence"),
+        )
+        conn.execute("DELETE FROM session_work_events_fts")
+        conn.execute("DELETE FROM work_threads_fts")
+        conn.commit()
+
+        snapshot = fts_invariant_snapshot_sync(conn)
+        assert snapshot.session_work_events.ready is False
+        assert snapshot.work_threads.ready is False
+
+        rebuild_fts_index_sync(conn)
+        conn.commit()
+
+        snapshot = fts_invariant_snapshot_sync(conn)
+        assert snapshot.session_work_events.ready is True
+        assert snapshot.work_threads.ready is True
+    finally:
+        conn.close()
+
+
 def test_concurrent_suspend_restore_threads_converge(tmp_path: Path) -> None:
-    """Two threads alternating suspend/restore on independent connections must end with all six triggers present."""
+    """Two threads alternating suspend/restore on independent connections must end with all triggers present."""
     db_file = tmp_path / "fts.db"
     conn = _bootstrap_fts_db(db_file)
     conn.close()
@@ -209,7 +284,12 @@ def test_hypothesis_arbitrary_lifecycle_recoverable(
         unexpected = {
             name
             for name in present
-            if (name.startswith("messages_fts_") or name.startswith("action_events_fts_"))
+            if (
+                name.startswith("messages_fts_")
+                or name.startswith("action_events_fts_")
+                or name.startswith("session_work_events_fts_")
+                or name.startswith("work_threads_fts_")
+            )
             and name not in _EXPECTED_TRIGGERS
         }
         assert not unexpected, f"unexpected FTS triggers leaked: {unexpected}"

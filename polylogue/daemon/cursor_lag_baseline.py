@@ -149,17 +149,22 @@ def record_cursor_lag_sample(
     if not rows:
         return 0
     dbf.parent.mkdir(parents=True, exist_ok=True)
-    with open_connection(dbf, timeout=5.0) as conn:
-        ensure_lag_sample_table(conn)
-        conn.executemany(
-            """
-            INSERT INTO live_cursor_lag_sample (
-                family, observed_at, max_lag_s, stuck_file_count, p50_lag_s, p95_lag_s
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            rows,
-        )
-        conn.commit()
+    try:
+        with open_connection(dbf, timeout=0.1) as conn:
+            ensure_lag_sample_table(conn)
+            conn.executemany(
+                """
+                INSERT INTO live_cursor_lag_sample (
+                    family, observed_at, max_lag_s, stuck_file_count, p50_lag_s, p95_lag_s
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            conn.commit()
+    except sqlite3.OperationalError as exc:
+        if _database_is_locked(exc):
+            return 0
+        raise
     return len(rows)
 
 
@@ -180,14 +185,19 @@ def gc_cursor_lag_samples(
     if not dbf.exists():
         return 0
     cutoff = ((now or datetime.now(UTC)) - timedelta(days=retention_days)).isoformat()
-    with open_connection(dbf, timeout=5.0) as conn:
-        ensure_lag_sample_table(conn)
-        cur = conn.execute(
-            "DELETE FROM live_cursor_lag_sample WHERE observed_at < ?",
-            (cutoff,),
-        )
-        conn.commit()
-        return cur.rowcount or 0
+    try:
+        with open_connection(dbf, timeout=0.1) as conn:
+            ensure_lag_sample_table(conn)
+            cur = conn.execute(
+                "DELETE FROM live_cursor_lag_sample WHERE observed_at < ?",
+                (cutoff,),
+            )
+            conn.commit()
+            return cur.rowcount or 0
+    except sqlite3.OperationalError as exc:
+        if _database_is_locked(exc):
+            return 0
+        raise
 
 
 def load_family_baseline(
@@ -293,6 +303,10 @@ def _bucket_stuck_lags_by_family(stuck: list[CursorLagItem]) -> dict[str, list[f
     for lags in out.values():
         lags.sort()
     return out
+
+
+def _database_is_locked(exc: sqlite3.OperationalError) -> bool:
+    return "database is locked" in str(exc).lower()
 
 
 def _percentile(sorted_values: list[float], q: float) -> float:
