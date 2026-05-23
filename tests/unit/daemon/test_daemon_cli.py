@@ -261,7 +261,7 @@ def test_run_live_watcher_stops_on_keyboard_interrupt() -> None:
     assert stopped == [True]
 
 
-def test_ensure_fts_startup_readiness_records_ready_invariant(
+def test_ensure_fts_startup_readiness_marks_unknown_without_exact_scan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -325,29 +325,31 @@ def test_ensure_fts_startup_readiness_records_ready_invariant(
     def ensure(fake_conn: FakeConnection) -> None:
         ensured.append(fake_conn)
 
-    class ReadySnapshot:
-        ready = True
-        surfaces: tuple[object, ...] = ()
-
-    recorded: list[object] = []
+    recorded: list[dict[str, object]] = []
 
     monkeypatch.setattr("polylogue.paths.db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", ensure)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", rebuild)
+    monkeypatch.setattr("polylogue.storage.fts.freshness.ensure_fts_freshness_table_sync", lambda fake_conn: None)
+    monkeypatch.setattr("polylogue.storage.fts.freshness.message_fts_marked_ready_sync", lambda fake_conn: False)
     monkeypatch.setattr(
-        "polylogue.storage.fts.fts_lifecycle.fts_invariant_snapshot_sync", lambda fake_conn: ReadySnapshot()
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.fts.freshness.record_fts_invariant_snapshot_sync",
-        lambda fake_conn, snapshot: recorded.append(snapshot),
+        "polylogue.storage.fts.freshness.record_fts_surface_state_sync",
+        lambda fake_conn, **kwargs: recorded.append(kwargs),
     )
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
     assert ensured == [conn]
     assert rebuilds == []
-    assert len(recorded) == 1
+    assert recorded == [
+        {
+            "surface": "messages_fts",
+            "state": "unknown",
+            "detail": "startup structural check passed; exact repair pending",
+        }
+    ]
+    assert all("LEFT JOIN messages_fts_docsize" not in query for query in conn.queries)
     assert conn.committed is True
     assert conn.closed is True
 
@@ -415,6 +417,7 @@ def test_ensure_fts_startup_readiness_rebuilds_empty_fts(
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", lambda _conn: None)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", rebuild)
+    monkeypatch.setattr("polylogue.storage.fts.freshness.ensure_fts_freshness_table_sync", lambda fake_conn: None)
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
@@ -500,16 +503,10 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
         lambda fake_conn: rebuilds.append(fake_conn),
     )
 
-    class ReadySnapshot:
-        ready = True
-        surfaces: tuple[object, ...] = ()
-
+    monkeypatch.setattr("polylogue.storage.fts.freshness.ensure_fts_freshness_table_sync", lambda fake_conn: None)
+    monkeypatch.setattr("polylogue.storage.fts.freshness.message_fts_marked_ready_sync", lambda fake_conn: False)
     monkeypatch.setattr(
-        "polylogue.storage.fts.fts_lifecycle.fts_invariant_snapshot_sync", lambda fake_conn: ReadySnapshot()
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.fts.freshness.record_fts_invariant_snapshot_sync",
-        lambda fake_conn, snapshot: None,
+        "polylogue.storage.fts.freshness.record_fts_surface_state_sync", lambda fake_conn, **kwargs: None
     )
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())

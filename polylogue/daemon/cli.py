@@ -129,10 +129,10 @@ async def _ensure_fts_startup_readiness() -> None:
        death, and subsequent writes silently bypass the FTS index. See
        #1242.
 
-    This path restores obvious broken structure first, then verifies the
-    exact FTS invariant before the daemon starts serving readiness. Search
-    correctness wins over a fast start: a daemon that reports ready while
-    FTS is stale makes the archive unusable.
+    This path restores obvious broken structure first and records a
+    durable freshness state for search request handlers. It deliberately
+    avoids exact full-archive invariant scans: those run from the
+    ambient repair task, after HTTP/status surfaces have bound.
     """
     from polylogue.paths import db_path
     from polylogue.storage.sqlite.connection_profile import open_connection
@@ -147,11 +147,20 @@ async def _ensure_fts_startup_readiness() -> None:
         row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
         has_fts_table = row is not None
 
+        from polylogue.storage.fts.freshness import (
+            STALE,
+            UNKNOWN,
+            ensure_fts_freshness_table_sync,
+            message_fts_marked_ready_sync,
+            record_fts_surface_state_sync,
+        )
         from polylogue.storage.fts.fts_lifecycle import (
             ensure_fts_index_sync,
             rebuild_fts_index_sync,
             restore_fts_triggers_sync,
         )
+
+        ensure_fts_freshness_table_sync(conn)
 
         if not has_fts_table:
             logger.warning("daemon: message FTS table missing. Rebuilding once.")
@@ -168,6 +177,12 @@ async def _ensure_fts_startup_readiness() -> None:
                 ", ".join(missing_triggers),
             )
             restore_fts_triggers_sync(conn)
+            record_fts_surface_state_sync(
+                conn,
+                surface="messages_fts",
+                state=STALE,
+                detail=f"startup restored missing triggers: {', '.join(missing_triggers)}",
+            )
 
         ensure_fts_index_sync(conn)
         has_indexable_messages = bool(conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1").fetchone())
@@ -178,18 +193,14 @@ async def _ensure_fts_startup_readiness() -> None:
             conn.commit()
             logger.info("daemon: FTS rebuild complete.")
             return
-        from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
-        from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
 
-        snapshot = fts_invariant_snapshot_sync(conn)
-        record_fts_invariant_snapshot_sync(conn, snapshot)
-        if not snapshot.ready:
-            stale_surfaces = ", ".join(surface.name for surface in snapshot.surfaces if not surface.ready)
-            logger.warning("daemon: exact FTS invariant stale on startup (%s). Rebuilding once.", stale_surfaces)
-            rebuild_fts_index_sync(conn)
-            conn.commit()
-            logger.info("daemon: FTS rebuild complete.")
-            return
+        if not message_fts_marked_ready_sync(conn):
+            record_fts_surface_state_sync(
+                conn,
+                surface="messages_fts",
+                state=STALE if missing_triggers else UNKNOWN,
+                detail="startup structural check passed; exact repair pending",
+            )
         conn.commit()
     except Exception:
         logger.warning("daemon: FTS startup check failed", exc_info=True)
@@ -302,8 +313,10 @@ async def _periodic_fts_repair() -> None:
     from polylogue.paths import db_path
 
     db = db_path()
+    delay_s = 30
     while True:
-        await asyncio.sleep(600)  # 10 minutes
+        await asyncio.sleep(delay_s)
+        delay_s = 600  # 10 minutes
         if not db.exists():
             continue
         try:
@@ -316,13 +329,23 @@ async def _periodic_fts_repair() -> None:
 
 def _repair_fts_if_stale_once(db: Path) -> bool:
     """Rebuild FTS once when exact invariants show drift."""
-    from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
-    from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync, rebuild_fts_index_sync
+    from polylogue.storage.fts.freshness import message_fts_marked_ready_sync, record_fts_invariant_snapshot_sync
+    from polylogue.storage.fts.fts_lifecycle import (
+        fts_invariant_snapshot_sync,
+        message_fts_readiness_sync,
+        rebuild_fts_index_sync,
+    )
     from polylogue.storage.search.cache import invalidate_search_cache
     from polylogue.storage.sqlite.connection_profile import open_connection
 
     conn = open_connection(db, timeout=30.0)
     try:
+        conn.execute("PRAGMA cache_size = -8192")
+        conn.execute("PRAGMA mmap_size = 0")
+        if message_fts_marked_ready_sync(conn):
+            readiness = message_fts_readiness_sync(conn, verify_total_rows=False)
+            if bool(readiness["ready"]):
+                return False
         snapshot = fts_invariant_snapshot_sync(conn)
         record_fts_invariant_snapshot_sync(conn, snapshot)
         if snapshot.ready:
