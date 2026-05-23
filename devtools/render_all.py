@@ -114,6 +114,13 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     exit_code = 0
+    if args.check:
+        for surface in selected:
+            result = _render_one(surface, check=True)
+            if result != 0:
+                exit_code = result if exit_code == 0 else exit_code
+        return exit_code
+
     # Render independent surfaces in parallel.
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures = {pool.submit(_render_one, s, bool(args.check)): s for s in selected}

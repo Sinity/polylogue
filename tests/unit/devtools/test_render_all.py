@@ -43,6 +43,28 @@ def test_render_all_check_passes_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == [("--check",)]
 
 
+def test_render_all_check_runs_surfaces_sequentially(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    class FakeSurface:
+        def __init__(self, name: str):
+            self.name = name
+
+        def main(self, argv: list[str] | None) -> int:
+            assert argv == ["--check"]
+            calls.append(self.name)
+            return 0
+
+    monkeypatch.setattr(
+        render_all,
+        "GENERATED_SURFACES",
+        (FakeSurface("agents"), FakeSurface("devtools-reference"), FakeSurface("quality-reference")),
+    )
+
+    assert render_all.main(["--check"]) == 0
+    assert calls == ["agents", "devtools-reference", "quality-reference"]
+
+
 def test_render_all_reports_surface_progress(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
