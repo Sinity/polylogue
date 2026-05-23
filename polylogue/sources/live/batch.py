@@ -50,6 +50,7 @@ from polylogue.sources.live.batch_support import (
     _AppendResult,
     _blob_copy_heartbeat,
     _detect_provider_from_path_sample,
+    _full_ingest_result_from_summary,
     _full_ingest_worker_count,
     _full_parse_progress_groups,
     _FullIngestHeartbeat,
@@ -79,7 +80,7 @@ from polylogue.sources.live.convergence_debt import (
 from polylogue.sources.live.conversation_convergence import converge_known_conversations
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.dedup import handle_schema_incompatible, handle_structural_database_error
-from polylogue.sources.live.metrics import LiveBatchMetrics
+from polylogue.sources.live.metrics import LiveBatchMetrics, LiveFullIngestAggregate
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawConversationRecord
 from polylogue.types import Provider
@@ -163,6 +164,7 @@ class LiveBatchProcessor:
         failed_paths: list[str] = []
         succeeded_paths: set[Path] = set()
         ingest_worker_count_max = 0
+        full_ingest_aggregate = LiveFullIngestAggregate()
         cursor_records = self._cursor.get_records(paths)
 
         append_file_count = 0
@@ -303,6 +305,7 @@ class LiveBatchProcessor:
                         ),
                     )
                     ingest_worker_count_max = max(ingest_worker_count_max, full_result.worker_count)
+                    full_ingest_aggregate.add(full_result)
                 except SchemaIncompatibleError as exc:
                     handle_schema_incompatible(source_name, exc)
                     # Account for every queued path in this source group, not
@@ -437,6 +440,7 @@ class LiveBatchProcessor:
             parse_time_s=round(parse_time_s, 6),
             convergence_time_s=round(convergence_time_s, 6),
             total_time_s=round(time.perf_counter() - batch_started, 6),
+            **full_ingest_aggregate.to_metric_kwargs(),
             rss_current_mb=read_current_rss_mb(),
             rss_peak_self_mb=read_peak_rss_self_mb(),
             rss_peak_children_mb=read_peak_rss_children_mb(),
@@ -948,17 +952,17 @@ class LiveBatchProcessor:
 
         failed_set = set(failed)
         raw_fingerprints = {path: raw_id for raw_id, path in raw_by_id.items()}
-        worker_count = int(getattr(summary, "worker_count", 0)) if raw_records else 0
-        raw_records.clear()
-        raw_by_id.clear()
-        return _FullIngestResult(
+        result = _full_ingest_result_from_summary(
             succeeded=[path for path in ingested if path not in failed_set],
             failed=failed,
             source_payload_read_bytes=source_payload_read_bytes,
             raw_fingerprints=raw_fingerprints,
             raw_byte_sizes=raw_byte_sizes,
-            worker_count=worker_count,
+            summary=summary,
         )
+        raw_records.clear()
+        raw_by_id.clear()
+        return result
 
     def _assert_writable_archive_layout(self) -> None:
         from polylogue.storage.sqlite.connection_profile import open_connection

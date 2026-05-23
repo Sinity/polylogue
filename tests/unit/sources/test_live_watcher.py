@@ -56,6 +56,16 @@ class _FullIngestMock:
             succeeded=list(paths),
             failed=[],
             source_payload_read_bytes=sum(path.stat().st_size for path in paths),
+            raw_fingerprints={path: f"raw:{path.name}" for path in paths},
+            ingested_conversation_count=1,
+            ingested_message_count=7,
+            changed_conversation_count=1,
+            wal_bytes_before_checkpoint=8192,
+            wal_bytes_after_checkpoint=1024,
+            wal_checkpointed_pages=4,
+            wal_busy_pages=2,
+            wal_checkpoint_elapsed_s=0.125,
+            wal_checkpoint_mode="truncate",
         )
 
 
@@ -1310,6 +1320,16 @@ def test_ingest_files_emits_observable_batch_metrics(tmp_path: Path) -> None:
     assert payload["append_file_count"] == 0
     assert payload["full_file_count"] == 1
     assert payload["archive_write_bytes_delta"] >= 0
+    assert payload["ingested_conversation_count"] == 1
+    assert payload["ingested_message_count"] == 7
+    assert payload["changed_conversation_count"] == 1
+    assert payload["wal_bytes_before_checkpoint_max"] == 8192
+    assert payload["wal_bytes_after_checkpoint_max"] == 1024
+    assert payload["wal_checkpointed_pages_total"] == 4
+    assert payload["wal_busy_pages_total"] == 2
+    assert payload["wal_checkpoint_elapsed_s"] == 0.125
+    assert payload["wal_checkpoint_modes"] == {"truncate": 1}
+    assert payload["wal_checkpoint_errors"] == []
     assert payload["parse_time_s"] >= 0
     assert payload["total_time_s"] >= 0
     assert payload["stage_timings_s"] == {}
