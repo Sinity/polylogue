@@ -147,6 +147,17 @@ def test_fts_readiness_rejects_negative_gap_and_missing_triggers() -> None:
             }
         )
 
+    with pytest.raises(DatabaseError):
+        check_fts_readiness(
+            {
+                "exists": True,
+                "ready": False,
+                "indexed_rows": 99,
+                "total_rows": 100,
+                "triggers_present": True,
+            }
+        )
+
 
 class TestRetrievalSurfaceAgreement:
     @pytest.mark.asyncio()

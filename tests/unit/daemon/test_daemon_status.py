@@ -287,11 +287,12 @@ def test_daemon_status_fts_readiness_uses_lightweight_table_probe(tmp_path: Path
     with patch("polylogue.daemon.status.db_path", return_value=db):
         readiness = status_module._fts_readiness_info()
 
-    assert readiness["messages_ready"] is True
-    assert readiness["action_events_ready"] is True
+    assert readiness["messages_ready"] is False
+    assert readiness["action_events_ready"] is False
+    assert readiness["invariant_ready"] is False
 
 
-def test_daemon_status_fts_readiness_uses_stats_not_message_scan(tmp_path: Path) -> None:
+def test_daemon_status_fts_readiness_uses_exact_message_source_count(tmp_path: Path) -> None:
     db = tmp_path / "polylogue.db"
     queries: list[str] = []
     with sqlite3.connect(db) as conn:
@@ -301,10 +302,14 @@ def test_daemon_status_fts_readiness_uses_stats_not_message_scan(tmp_path: Path)
             CREATE TABLE conversation_stats (conversation_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL);
             CREATE TABLE messages_fts (text TEXT);
             CREATE TABLE messages_fts_docsize (id INTEGER PRIMARY KEY, sz BLOB);
+            CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages BEGIN SELECT 1; END;
             CREATE TABLE action_events (event_id TEXT);
             CREATE TABLE action_events_fts (text TEXT);
             CREATE TABLE action_events_fts_docsize (id INTEGER PRIMARY KEY, sz BLOB);
             INSERT INTO conversation_stats VALUES ('c1', 2), ('c2', 3);
+            INSERT INTO messages(rowid, text) VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e');
             INSERT INTO messages_fts_docsize VALUES (1, x''), (2, x''), (3, x''), (4, x''), (5, x'');
             """
         )
@@ -324,7 +329,7 @@ def test_daemon_status_fts_readiness_uses_stats_not_message_scan(tmp_path: Path)
 
     assert readiness["message_indexable_count"] == 5
     assert readiness["message_indexed_count"] == 5
-    assert all("COUNT(*) FROM messages WHERE" not in query for query in queries)
+    assert any("COUNT(*) FROM messages WHERE text IS NOT NULL" in query for query in queries)
 
 
 def test_daemon_status_insight_freshness_uses_lightweight_counts(tmp_path: Path) -> None:

@@ -113,7 +113,9 @@ async def test_search_action_results_fallback_batches_scores_and_keeps_best(monk
         }[str(conversation.id)],
     )
 
-    results = await search_action_results(
+    from polylogue.archive.query.retrieval_search import search_action_results_fallback
+
+    results = await search_action_results_fallback(
         ConversationQueryPlan(query_terms=("needle",)),
         repository,
         limit=2,
@@ -123,15 +125,15 @@ async def test_search_action_results_fallback_batches_scores_and_keeps_best(monk
 
 
 @pytest.mark.asyncio
-async def test_search_action_results_uses_ready_path_and_falls_back_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_search_action_results_uses_ready_path_and_raises_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.errors import DatabaseError
+
     repository = SimpleNamespace(search_actions=AsyncMock())
     direct = [_conversation("conv-direct")]
-    fallback = AsyncMock(return_value=[_conversation("conv-fallback")])
 
     monkeypatch.setattr(
         "polylogue.archive.query.retrieval_candidates.action_search_ready", AsyncMock(return_value=True)
     )
-    monkeypatch.setattr("polylogue.archive.query.retrieval_search.search_action_results_fallback", fallback)
 
     repository.search_actions.return_value = direct
     ready_results = await search_action_results(
@@ -142,14 +144,17 @@ async def test_search_action_results_uses_ready_path_and_falls_back_on_error(mon
 
     assert [str(conversation.id) for conversation in ready_results] == ["conv-direct"]
     repository.search_actions.assert_awaited_once_with("needle", limit=3, providers=["chatgpt"])
-    fallback.assert_not_awaited()
 
     repository.search_actions.reset_mock(side_effect=True, return_value=True)
     repository.search_actions.side_effect = RuntimeError("boom")
-    errored_results = await search_action_results(ConversationQueryPlan(query_terms=("needle",)), repository, limit=2)
+    with pytest.raises(RuntimeError, match="boom"):
+        await search_action_results(ConversationQueryPlan(query_terms=("needle",)), repository, limit=2)
 
-    assert [str(conversation.id) for conversation in errored_results] == ["conv-fallback"]
-    fallback.assert_awaited_once()
+    monkeypatch.setattr(
+        "polylogue.archive.query.retrieval_candidates.action_search_ready", AsyncMock(return_value=False)
+    )
+    with pytest.raises(DatabaseError, match="Action search index is not fresh"):
+        await search_action_results(ConversationQueryPlan(query_terms=("needle",)), repository, limit=2)
 
 
 @pytest.mark.asyncio

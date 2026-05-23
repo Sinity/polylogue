@@ -74,6 +74,9 @@ async def _make_work_events_db() -> aiosqlite.Connection:
             text,
             tokenize='unicode61'
         );
+        CREATE TRIGGER session_work_events_fts_ai AFTER INSERT ON session_work_events BEGIN SELECT 1; END;
+        CREATE TRIGGER session_work_events_fts_ad AFTER DELETE ON session_work_events BEGIN SELECT 1; END;
+        CREATE TRIGGER session_work_events_fts_au AFTER UPDATE ON session_work_events BEGIN SELECT 1; END;
         INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, kind, text)
         VALUES ('e1', 'c1', 'claude-code', 'edit', 'hello world');
         INSERT INTO session_work_events (
@@ -117,6 +120,9 @@ async def _make_work_threads_db() -> aiosqlite.Connection:
             text,
             tokenize='unicode61'
         );
+        CREATE TRIGGER work_threads_fts_ai AFTER INSERT ON work_threads BEGIN SELECT 1; END;
+        CREATE TRIGGER work_threads_fts_ad AFTER DELETE ON work_threads BEGIN SELECT 1; END;
+        CREATE TRIGGER work_threads_fts_au AFTER UPDATE ON work_threads BEGIN SELECT 1; END;
         INSERT INTO work_threads_fts (thread_id, root_id, text)
         VALUES ('t1', 'r1', 'hello world');
         INSERT INTO work_threads (

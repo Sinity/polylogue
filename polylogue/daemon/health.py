@@ -576,7 +576,7 @@ def _run_fast_checks() -> list[HealthAlert]:
 
 
 def _check_fts_readiness_medium() -> HealthAlert:
-    """Check FTS tables exist and are populated."""
+    """Check every active FTS-backed search surface is exactly fresh."""
     now = datetime.now(UTC).isoformat()
     dbf = db_path()
     if not dbf.exists():
@@ -591,50 +591,32 @@ def _check_fts_readiness_medium() -> HealthAlert:
     try:
         conn = sqlite3.connect(str(dbf))
         try:
-            tables = {
-                str(row[0])
-                for row in conn.execute(
-                    """
-                    SELECT name
-                    FROM sqlite_master
-                    WHERE type='table'
-                      AND name IN (
-                        'conversation_stats',
-                        'messages_fts',
-                        'messages_fts_docsize',
-                        'action_events_fts'
-                      )
-                    """
-                ).fetchall()
-            }
-            has_messages_fts = "messages_fts" in tables
-            has_messages_docsize = "messages_fts_docsize" in tables
-            has_action_fts = "action_events_fts" in tables
-            if "conversation_stats" in tables:
-                total = conn.execute("SELECT COALESCE(SUM(message_count), 0) FROM conversation_stats").fetchone()[0]
-            else:
-                total = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-            fts_count = (
-                conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] if has_messages_docsize else 0
-            )
-            gap = total - fts_count
+            from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
 
-            if not has_messages_fts and not has_action_fts:
-                severity = HealthSeverity.WARNING
-                message = "FTS tables missing"
-            elif has_messages_fts and not has_messages_docsize:
-                severity = HealthSeverity.WARNING
-                message = "FTS docsize table missing"
-            elif gap != 0:
-                gap_pct = 100 * abs(gap) / total if total else 100
-                severity = HealthSeverity.WARNING if gap_pct < 10 else HealthSeverity.ERROR
-                if gap > 0:
-                    message = f"FTS gap: {gap} of {total} messages unindexed ({gap_pct:.1f}%)"
-                else:
-                    message = f"FTS stale rows: {-gap} extra indexed messages over {total} expected ({gap_pct:.1f}%)"
-            else:
+            snapshot = fts_invariant_snapshot_sync(conn)
+            broken = [surface for surface in snapshot.surfaces if not surface.ready]
+            if not broken:
                 severity = HealthSeverity.OK
                 message = "FTS up to date"
+            else:
+                severity = HealthSeverity.ERROR
+                details = []
+                for surface in broken:
+                    if not surface.source_exists:
+                        details.append(f"{surface.name}: unexpected table without source")
+                    elif not surface.exists:
+                        details.append(f"{surface.name}: missing table")
+                    elif not surface.triggers_present:
+                        details.append(f"{surface.name}: missing triggers")
+                    elif surface.missing_rows:
+                        details.append(f"{surface.name}: {surface.missing_rows} missing row(s)")
+                    elif surface.excess_rows:
+                        details.append(f"{surface.name}: {surface.excess_rows} stale row(s)")
+                    elif surface.duplicate_rows:
+                        details.append(f"{surface.name}: {surface.duplicate_rows} duplicate row(s)")
+                    else:
+                        details.append(f"{surface.name}: not fresh")
+                message = "FTS invariant failed: " + "; ".join(details)
             is_ok = severity == HealthSeverity.OK
             return HealthAlert(
                 check_name="fts_readiness",
