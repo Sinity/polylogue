@@ -282,7 +282,13 @@ async def _periodic_convergence_check(
                 total_msgs = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
                 if total_msgs == 0:
                     continue
-                fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+                fts_count = (
+                    conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
+                    if conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages_fts_docsize'"
+                    ).fetchone()
+                    else 0
+                )
                 gap = total_msgs - fts_count
                 if gap > 0:
                     logger.warning(

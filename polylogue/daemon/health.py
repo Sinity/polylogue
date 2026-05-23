@@ -591,19 +591,36 @@ def _check_fts_readiness_medium() -> HealthAlert:
     try:
         conn = sqlite3.connect(str(dbf))
         try:
-            has_messages_fts = bool(
-                conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
-            )
-            has_action_fts = bool(
-                conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='action_events_fts'").fetchone()
-            )
+            tables = {
+                str(row[0])
+                for row in conn.execute(
+                    """
+                    SELECT name
+                    FROM sqlite_master
+                    WHERE type='table'
+                      AND name IN (
+                        'messages_fts',
+                        'messages_fts_docsize',
+                        'action_events_fts'
+                      )
+                    """
+                ).fetchall()
+            }
+            has_messages_fts = "messages_fts" in tables
+            has_messages_docsize = "messages_fts_docsize" in tables
+            has_action_fts = "action_events_fts" in tables
             total = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-            fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] if has_messages_fts else 0
+            fts_count = (
+                conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] if has_messages_docsize else 0
+            )
             gap = total - fts_count
 
             if not has_messages_fts and not has_action_fts:
                 severity = HealthSeverity.WARNING
                 message = "FTS tables missing"
+            elif has_messages_fts and not has_messages_docsize:
+                severity = HealthSeverity.WARNING
+                message = "FTS docsize table missing"
             elif gap > 0:
                 gap_pct = 100 * gap / total if total else 0
                 severity = HealthSeverity.WARNING if gap_pct < 10 else HealthSeverity.ERROR
