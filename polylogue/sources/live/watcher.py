@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 import stat as stat_module
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -102,6 +103,7 @@ class LiveWatcher:
         self._drain_task: asyncio.Task[None] | None = None
         self._last_batch_at: float = 0.0
         self._batch_lock = asyncio.Lock()
+        self._ingest_lock = asyncio.Lock()
         self._stop = asyncio.Event()
         self._batch_processor = LiveBatchProcessor(
             polylogue,
@@ -296,25 +298,33 @@ class LiveWatcher:
             paths = list(self._pending_paths)
             self._pending_paths.clear()
 
-        # Filter to files that actually need work.
-        cursor_records = self._cursor.get_records(paths)
-        needed = []
-        for path in paths:
-            try:
-                stat = path.stat()
-            except FileNotFoundError:
-                continue
-            if self._needs_work_from_state(path, stat=stat, cursor=cursor_records.get(path)):
-                needed.append(path)
-        if not needed:
-            return bool(paths)
+        try:
+            # Filter to files that actually need work.
+            cursor_records = self._cursor.get_records(paths)
+            needed = []
+            for path in paths:
+                try:
+                    stat = path.stat()
+                except FileNotFoundError:
+                    continue
+                if self._needs_work_from_state(path, stat=stat, cursor=cursor_records.get(path)):
+                    needed.append(path)
+            if not needed:
+                return bool(paths)
 
-        logger.info("live.watcher: batching %d changed file(s)", len(needed))
-        await self._ingest_files(
-            needed,
-            queued_file_count=len(paths),
-            skipped_file_count=len(paths) - len(needed),
-        )
+            logger.info("live.watcher: batching %d changed file(s)", len(needed))
+            await self._ingest_files(
+                needed,
+                queued_file_count=len(paths),
+                skipped_file_count=len(paths) - len(needed),
+            )
+        except sqlite3.OperationalError as exc:
+            if not _is_database_locked(exc):
+                raise
+            logger.warning("live.watcher: archive busy; requeueing %d changed file(s)", len(paths))
+            async with self._batch_lock:
+                self._pending_paths.update(paths)
+            await asyncio.sleep(self._debounce_s)
         return True
 
     # ------------------------------------------------------------------
@@ -371,11 +381,12 @@ class LiveWatcher:
         skipped_file_count: int = 0,
     ) -> None:
         """Ingest files through the reusable daemon live batch processor."""
-        await self._batch_processor.ingest_files(
-            paths,
-            queued_file_count=queued_file_count,
-            skipped_file_count=skipped_file_count,
-        )
+        async with self._ingest_lock:
+            await self._batch_processor.ingest_files(
+                paths,
+                queued_file_count=queued_file_count,
+                skipped_file_count=skipped_file_count,
+            )
 
     def _source_name_for(self, path: Path) -> str:
         resolved = path.resolve()
@@ -433,6 +444,10 @@ def _cursor_db_path(polylogue: Polylogue) -> Path:
     if isinstance(db_path, Path):
         return db_path
     return Path(polylogue.archive_root) / "polylogue.db"
+
+
+def _is_database_locked(exc: sqlite3.OperationalError) -> bool:
+    return "database is locked" in str(exc).lower()
 
 
 def _retry_due(next_retry_at: str | None) -> bool:
