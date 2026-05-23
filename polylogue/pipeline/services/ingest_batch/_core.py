@@ -998,11 +998,8 @@ def _process_ingest_batch_sync(
     heartbeat: IngestHeartbeat | None = None,
     progress: _WorkerProgress | None = None,
     ingest_result_chunk_size: int = 0,
+    suspend_fts_triggers: bool = False,
 ) -> _IngestBatchSummary:
-    from polylogue.storage.fts.fts_lifecycle import (
-        suspend_fts_triggers_sync,
-    )
-
     if progress is None:
         progress = _WorkerProgress()
     summary = _new_ingest_batch_summary(raw_artifacts, ingest_workers=ingest_workers)
@@ -1021,7 +1018,10 @@ def _process_ingest_batch_sync(
     _observe_current_rss(summary)
     changed_ids: set[str] = set()
     try:
-        suspend_fts_triggers_sync(conn)
+        if suspend_fts_triggers:
+            from polylogue.storage.fts.fts_lifecycle import suspend_fts_triggers_sync
+
+            suspend_fts_triggers_sync(conn)
         conn.execute("BEGIN IMMEDIATE")
         _consume_ingest_results(
             conn,
@@ -1058,18 +1058,19 @@ def _process_ingest_batch_sync(
         )
         summary.commit_elapsed_s = time.perf_counter() - commit_started
     except Exception:
-        # Roll back the row writes. The suspend DROP TRIGGER auto-
-        # committed (DDL), so we must explicitly restore triggers so the
-        # database is not left in the SIGKILL-style drift state. If the
-        # restore itself fails, we propagate the original exception
-        # (the daemon startup readiness check is the next safety net).
+        # Roll back the row writes.  If a caller explicitly opted into
+        # dropped-trigger bulk mode, restore triggers before propagating
+        # so ordinary exceptions do not leave the database in a drift
+        # state.  Daemon live ingest leaves triggers active and therefore
+        # has no dropped-trigger window to recover from here.
         with contextlib.suppress(Exception):
             conn.rollback()
-        from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync
+        if suspend_fts_triggers:
+            from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync
 
-        with contextlib.suppress(Exception):
-            restore_fts_triggers_sync(conn)
-            conn.commit()
+            with contextlib.suppress(Exception):
+                restore_fts_triggers_sync(conn)
+                conn.commit()
         raise
     finally:
         conn.close()

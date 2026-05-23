@@ -1014,6 +1014,10 @@ def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cac
         return IngestRecordResult(raw_id=record.raw_id, conversations=[conversation])
 
     monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest_record)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.suspend_fts_triggers_sync",
+        lambda _conn: (_ for _ in ()).throw(AssertionError("live/default ingest must keep FTS triggers active")),
+    )
 
     summary = _process_ingest_batch_sync(
         [raw_record],

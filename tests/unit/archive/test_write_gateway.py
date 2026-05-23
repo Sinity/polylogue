@@ -25,6 +25,36 @@ def test_write_gateway_commits_effects_on_caller_owned_connection(tmp_path: Path
         assert conn.execute("SELECT 1").fetchone()[0] == 1
 
 
+def test_write_gateway_normal_commit_does_not_drop_fts_triggers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "archive.db"
+    ensured: list[bool] = []
+
+    def ensure_only(_conn: object) -> None:
+        ensured.append(True)
+
+    def fail_restore(_conn: object) -> None:
+        raise AssertionError("normal archive writes must not drop/recreate FTS triggers")
+
+    monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_triggers_sync", ensure_only)
+    monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.restore_fts_triggers_sync", fail_restore)
+
+    with open_connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        result = ArchiveWriteGateway(db_path).commit_write_sync(
+            WriteOperation.INGEST,
+            {
+                "_connection": conn,
+                "changed_conversation_ids": (),
+            },
+        )
+
+    assert result.status == "committed"
+    assert ensured == [True]
+
+
 @pytest.mark.asyncio
 async def test_write_gateway_async_commit_uses_same_local_effects_path(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.db"
