@@ -599,6 +599,7 @@ def _check_fts_readiness_medium() -> HealthAlert:
                     FROM sqlite_master
                     WHERE type='table'
                       AND name IN (
+                        'conversation_stats',
                         'messages_fts',
                         'messages_fts_docsize',
                         'action_events_fts'
@@ -609,7 +610,10 @@ def _check_fts_readiness_medium() -> HealthAlert:
             has_messages_fts = "messages_fts" in tables
             has_messages_docsize = "messages_fts_docsize" in tables
             has_action_fts = "action_events_fts" in tables
-            total = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            if "conversation_stats" in tables:
+                total = conn.execute("SELECT COALESCE(SUM(message_count), 0) FROM conversation_stats").fetchone()[0]
+            else:
+                total = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
             fts_count = (
                 conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] if has_messages_docsize else 0
             )
@@ -621,10 +625,13 @@ def _check_fts_readiness_medium() -> HealthAlert:
             elif has_messages_fts and not has_messages_docsize:
                 severity = HealthSeverity.WARNING
                 message = "FTS docsize table missing"
-            elif gap > 0:
-                gap_pct = 100 * gap / total if total else 0
+            elif gap != 0:
+                gap_pct = 100 * abs(gap) / total if total else 100
                 severity = HealthSeverity.WARNING if gap_pct < 10 else HealthSeverity.ERROR
-                message = f"FTS gap: {gap} of {total} messages unindexed ({gap_pct:.1f}%)"
+                if gap > 0:
+                    message = f"FTS gap: {gap} of {total} messages unindexed ({gap_pct:.1f}%)"
+                else:
+                    message = f"FTS stale rows: {-gap} extra indexed messages over {total} expected ({gap_pct:.1f}%)"
             else:
                 severity = HealthSeverity.OK
                 message = "FTS up to date"
