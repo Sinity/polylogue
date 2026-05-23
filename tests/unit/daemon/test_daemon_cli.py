@@ -307,6 +307,12 @@ def test_ensure_fts_startup_readiness_uses_bounded_probes(
                 return FakeCursor((1,))
             if query == "SELECT 1 FROM messages_fts_docsize LIMIT 1":
                 return FakeCursor((1,))
+            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+                return FakeCursor((1,))
+            if query == "SELECT COALESCE(SUM(message_count), 0) FROM conversation_stats":
+                return FakeCursor((1,))
+            if query == "SELECT COUNT(*) FROM messages_fts_docsize":
+                return FakeCursor((1,))
             raise AssertionError(f"unexpected query: {query}")
 
         def commit(self) -> None:
@@ -385,6 +391,12 @@ def test_ensure_fts_startup_readiness_rebuilds_empty_fts(
                 return FakeCursor((1,))
             if query == "SELECT 1 FROM messages_fts_docsize LIMIT 1":
                 return FakeCursor(None)
+            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+                return FakeCursor((1,))
+            if query == "SELECT COALESCE(SUM(message_count), 0) FROM conversation_stats":
+                return FakeCursor((1,))
+            if query == "SELECT COUNT(*) FROM messages_fts_docsize":
+                return FakeCursor((0,))
             raise AssertionError(f"unexpected query: {query}")
 
         def commit(self) -> None:
@@ -410,6 +422,84 @@ def test_ensure_fts_startup_readiness_rebuilds_empty_fts(
     assert conn.committed is True
     assert conn.closed is True
     assert all("COUNT(*) FROM messages_fts " not in query for query in conn.queries)
+    assert all("COUNT(*) FROM messages WHERE text IS NOT NULL" not in query for query in conn.queries)
+
+
+def test_ensure_fts_startup_readiness_rebuilds_stats_count_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    db = tmp_path / "polylogue.db"
+    db.write_bytes(b"sqlite placeholder")
+
+    class FakeCursor:
+        def __init__(self, row: tuple[object, ...] | None, rows: list[tuple[object, ...]] | None = None) -> None:
+            self._row = row
+            self._rows = rows if rows is not None else ([] if row is None else [row])
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return self._row
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return self._rows
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+            self.committed = False
+            self.closed = False
+
+        def execute(self, sql: str, _params: object = ()) -> FakeCursor:
+            query = " ".join(sql.split())
+            self.queries.append(query)
+            if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'":
+                return FakeCursor(("messages_fts",))
+            if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
+                triggers: list[tuple[object, ...]] = [
+                    ("messages_fts_ai",),
+                    ("messages_fts_ad",),
+                    ("messages_fts_au",),
+                    ("action_events_fts_ai",),
+                    ("action_events_fts_ad",),
+                    ("action_events_fts_au",),
+                ]
+                return FakeCursor(triggers[0], rows=triggers)
+            if query == "SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1":
+                return FakeCursor((1,))
+            if query == "SELECT 1 FROM messages_fts_docsize LIMIT 1":
+                return FakeCursor((1,))
+            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+                return FakeCursor((1,))
+            if query == "SELECT COALESCE(SUM(message_count), 0) FROM conversation_stats":
+                return FakeCursor((5,))
+            if query == "SELECT COUNT(*) FROM messages_fts_docsize":
+                return FakeCursor((6,))
+            raise AssertionError(f"unexpected query: {query}")
+
+        def commit(self) -> None:
+            self.committed = True
+
+        def close(self) -> None:
+            self.closed = True
+
+    conn = FakeConnection()
+    rebuilds: list[FakeConnection] = []
+
+    monkeypatch.setattr("polylogue.paths.db_path", lambda: db)
+    monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
+    monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", lambda _conn: None)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync",
+        lambda fake_conn: rebuilds.append(fake_conn),
+    )
+
+    asyncio.run(daemon_cli._ensure_fts_startup_readiness())
+
+    assert rebuilds == [conn]
+    assert conn.committed is True
+    assert conn.closed is True
     assert all("COUNT(*) FROM messages WHERE text IS NOT NULL" not in query for query in conn.queries)
 
 
