@@ -85,6 +85,10 @@ exceptions:
     ceiling: 1160
     reason: "live ingestion batch processor with metrics, fingerprinting, multi-stage progress tracking, and conversation-scoped convergence dispatch"
 
+  - path: polylogue/sources/live/cursor.py
+    ceiling: 1180
+    reason: "durable live ingest cursor, attempt, and stage telemetry including cgroup file-cache/RSS fields for catch-up pressure diagnosis; split candidate: move attempt/stage event persistence into sources/live/attempts.py"
+
   - path: polylogue/api/archive.py
     ceiling: 1200
     reason: "archive facade for read/query/insight/maintenance surfaces; added audit_insights_rigor entrypoint (#1275) and scoped/global facets entrypoint (#1269); split candidate: extract per-domain facades (insights, maintenance) under polylogue/api/"

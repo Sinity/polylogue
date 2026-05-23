@@ -7,6 +7,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from polylogue.storage.fts.fts_lifecycle import FtsInvariantSnapshot, FtsSurfaceInvariant, fts_invariant_snapshot_sync
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 _FTS_SURFACES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
@@ -69,13 +70,56 @@ def _triggers_present(conn: sqlite3.Connection, trigger_names: tuple[str, ...]) 
     return all(name in present for name in trigger_names)
 
 
-def fts_readiness_info(dbf: Path) -> dict[str, object]:
-    """Return bounded structural FTS readiness for health/status probes."""
+def _surface_payload(surface: FtsSurfaceInvariant) -> dict[str, int | bool]:
+    return {
+        "source_exists": surface.source_exists,
+        "exists": surface.exists,
+        "source_rows": surface.source_rows,
+        "indexed_rows": surface.indexed_rows,
+        "triggers_present": surface.triggers_present,
+        "missing_rows": surface.missing_rows,
+        "excess_rows": surface.excess_rows,
+        "duplicate_rows": surface.duplicate_rows,
+        "ready": surface.ready,
+        "exact": True,
+    }
+
+
+def _exact_readiness_payload(snapshot: FtsInvariantSnapshot) -> dict[str, object]:
+    surfaces = {surface.name: _surface_payload(surface) for surface in snapshot.surfaces}
+    messages = snapshot.messages
+    action_events = snapshot.action_events
+    coverage_pct = round((messages.indexed_rows / messages.source_rows) * 100, 1) if messages.source_rows > 0 else 100.0
+    return {
+        "messages_ready": messages.ready,
+        "action_events_ready": action_events.ready,
+        "session_work_events_ready": snapshot.session_work_events.ready,
+        "work_threads_ready": snapshot.work_threads.ready,
+        "invariant_ready": snapshot.ready,
+        "message_indexed_count": messages.indexed_rows,
+        "message_indexable_count": messages.source_rows,
+        "action_event_indexed_count": action_events.indexed_rows,
+        "action_event_count": action_events.source_rows,
+        "coverage_pct": coverage_pct,
+        "coverage_exact": True,
+        "surfaces": surfaces,
+    }
+
+
+def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
+    """Return FTS readiness for health/status probes.
+
+    The default is request-safe and structural: it proves tables/triggers
+    exist without scanning FTS shadow tables. Use ``exact=True`` for hard
+    readiness/search decisions where stale search must never be served.
+    """
     if not dbf.exists():
         return {"messages_ready": False, "action_events_ready": False, "coverage_pct": 0.0}
     try:
         conn = open_readonly_connection(dbf)
         try:
+            if exact:
+                return _exact_readiness_payload(fts_invariant_snapshot_sync(conn))
             surfaces: dict[str, dict[str, int | bool]] = {}
             for name, source_table, fts_table, triggers in _FTS_SURFACES:
                 source_exists = _table_exists(conn, source_table)

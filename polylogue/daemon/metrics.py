@@ -34,6 +34,8 @@ varies on a known-bounded dimension):
 
 - ``polylogue_daemon_uptime_seconds`` (gauge) — process uptime
 - ``polylogue_daemon_build_info`` (gauge, value 1) — labels: version
+- ``polylogue_status_snapshot_age_seconds`` (gauge) — cached status age
+- ``polylogue_status_snapshot_state`` (gauge) — labels: state
 - ``polylogue_live_ingest_attempts_total`` (counter) — labels: status
 - ``polylogue_live_ingest_attempts_in_flight`` (gauge)
 - ``polylogue_live_ingest_attempt_duration_seconds`` (gauge buckets:
@@ -277,6 +279,26 @@ def format_metrics(
         help_text="Constant 1 gauge labelled with daemon build identity.",
         metric_type="gauge",
         samples=[({"version": str(polylogue_version)}, 1)],
+    )
+
+    from polylogue.daemon.status_snapshot import snapshot_state_for_metrics
+
+    snapshot = snapshot_state_for_metrics()
+    snapshot_state = str(snapshot.get("state", "missing"))
+    snapshot_age = float(snapshot.get("age_s", -1.0))
+    _emit_metric(
+        lines,
+        name="polylogue_status_snapshot_age_seconds",
+        help_text="Age of the cached daemon status snapshot in seconds, or -1 when absent.",
+        metric_type="gauge",
+        samples=[(None, snapshot_age)],
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_status_snapshot_state",
+        help_text="1 for the current daemon status snapshot freshness state.",
+        metric_type="gauge",
+        samples=[({"state": state}, 1 if state == snapshot_state else 0) for state in ("fresh", "stale", "missing")],
     )
 
     if not db.exists():

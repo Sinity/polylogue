@@ -115,6 +115,27 @@ def read_cgroup_memory_swap_current_mb() -> float | None:
     return _bytes_to_mb(_read_cgroup_int("memory.swap.current"))
 
 
+def read_cgroup_memory_stat_mb() -> dict[str, float]:
+    """Return selected memory.stat counters for the current cgroup in MiB."""
+    path = _cgroup_file("memory.stat")
+    if path is None:
+        return {}
+    selected = {"anon", "file", "inactive_file", "active_file", "file_dirty", "file_writeback"}
+    values: dict[str, float] = {}
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            parts = line.split()
+            if len(parts) != 2 or parts[0] not in selected:
+                continue
+            try:
+                values[parts[0]] = round(int(parts[1]) / (1024 * 1024), 1)
+            except ValueError:
+                continue
+    except OSError:
+        return {}
+    return values
+
+
 def _slow_item_elapsed(item: JSONDocument) -> float:
     elapsed = item.get("elapsed_s")
     return float(elapsed) if isinstance(elapsed, int | float) else 0.0
@@ -257,6 +278,7 @@ __all__ = [
     "StageMetrics",
     "read_cgroup_memory_current_mb",
     "read_cgroup_memory_peak_mb",
+    "read_cgroup_memory_stat_mb",
     "read_cgroup_memory_swap_current_mb",
     "read_cgroup_path",
     "read_current_rss_mb",

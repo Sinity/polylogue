@@ -9,6 +9,7 @@ from typing import Any
 from polylogue.core.metrics import (
     read_cgroup_memory_current_mb,
     read_cgroup_memory_peak_mb,
+    read_cgroup_memory_stat_mb,
     read_cgroup_memory_swap_current_mb,
     read_cgroup_path,
     read_current_rss_mb,
@@ -48,6 +49,7 @@ def record_attempt_progress(
     cgroup_current_mb = read_cgroup_memory_current_mb()
     cgroup_peak_mb = read_cgroup_memory_peak_mb()
     cgroup_swap_mb = read_cgroup_memory_swap_current_mb()
+    cgroup_stat_mb = read_cgroup_memory_stat_mb()
     cursor.update_ingest_attempt(
         attempt_id,
         phase=phase,
@@ -68,6 +70,9 @@ def record_attempt_progress(
         cgroup_memory_current_mb=cgroup_current_mb,
         cgroup_memory_peak_mb=cgroup_peak_mb,
         cgroup_memory_swap_current_mb=cgroup_swap_mb,
+        cgroup_memory_anon_mb=cgroup_stat_mb.get("anon"),
+        cgroup_memory_file_mb=cgroup_stat_mb.get("file"),
+        cgroup_memory_inactive_file_mb=cgroup_stat_mb.get("inactive_file"),
         stale_cursor_write_count=stale_cursor_write_count,
     )
     record_event = getattr(cursor, "record_ingest_stage_event", None)
@@ -99,6 +104,9 @@ def record_attempt_progress(
         cgroup_memory_current_mb=cgroup_current_mb,
         cgroup_memory_peak_mb=cgroup_peak_mb,
         cgroup_memory_swap_current_mb=cgroup_swap_mb,
+        cgroup_memory_anon_mb=cgroup_stat_mb.get("anon"),
+        cgroup_memory_file_mb=cgroup_stat_mb.get("file"),
+        cgroup_memory_inactive_file_mb=cgroup_stat_mb.get("inactive_file"),
         stage_timings_json=None
         if not stage_timings_s
         else json_dumps(stage_timings_s, sort_keys=True, separators=(",", ":")),
