@@ -86,8 +86,8 @@ class TestNoArchiveStatus:
         assert "Conversations: 0" in combined
         assert "polylogued run" in combined
 
-    def test_direct_status_counts_fts_docsize_not_virtual_table(self) -> None:
-        """Large archive fallback status must not run COUNT(*) on messages_fts."""
+    def test_direct_status_does_not_count_fts_shadow_tables(self) -> None:
+        """Large archive fallback status must not count FTS shadow tables."""
         env = _make_app_env()
         fake_root = Path("/tmp/archive-root")
         fake_db = MagicMock()
@@ -114,8 +114,7 @@ class TestNoArchiveStatus:
                     return FakeCursor(7)
                 if "raw_conversations" in sql:
                     return FakeCursor(9)
-                if "messages_fts_docsize" in sql:
-                    return FakeCursor(11)
+                assert "messages_fts_docsize" not in sql
                 return FakeCursor(0)
 
             def close(self) -> None:
@@ -129,16 +128,16 @@ class TestNoArchiveStatus:
                     _show_direct_status(env)
 
         combined = _combined_calls(env)
-        assert "FTS indexed" in combined
+        assert "daemon status unavailable" in combined
         assert any("SUM(message_count)" in query for query in queries)
-        assert any("messages_fts_docsize" in query for query in queries)
+        assert not any("messages_fts_docsize" in query for query in queries)
 
     def test_explicit_status_has_short_daemon_timeout_before_direct_fallback(self) -> None:
         """Explicit status must not hide behind a daemon blocked on ingest."""
         env = _make_app_env()
 
         def raise_timeout(_request: object, *, timeout: float) -> None:
-            assert timeout == _FULL_TIMEOUT_S
+            assert timeout in {_FULL_TIMEOUT_S, 1.0}
             raise TimeoutError
 
         with patch("polylogue.cli.commands.status.urlopen", side_effect=raise_timeout):

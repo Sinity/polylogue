@@ -23,10 +23,10 @@ async def search_conversation_hits(
 ) -> ConversationSearchResult:
     from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_readiness_async
 
-    # Search callers rely on the daemon readiness invariant for exact
-    # source/docsize parity. The hot query path keeps the bounded probe
-    # from #1314 so ordinary searches do not perform full FTS counts.
-    readiness = await message_fts_readiness_async(conn, verify_total_rows=False)
+    # Search must not silently serve stale FTS results. Status/reporting
+    # paths may use bounded structural probes, but retrieval is a hard
+    # correctness boundary.
+    readiness = await message_fts_readiness_async(conn, verify_total_rows=True)
     check_fts_readiness(readiness, _MESSAGE_SEARCH_REPAIR_HINT)
 
     from polylogue.storage.search import build_ranked_conversation_search_query
@@ -55,9 +55,9 @@ async def search_conversation_evidence_hits(
     from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_readiness_async
     from polylogue.storage.search import build_ranked_conversation_search_query
 
-    # See search_conversation_hits: exact FTS parity is established by
-    # daemon readiness/repair, not by a full count on every query.
-    readiness = await message_fts_readiness_async(conn, verify_total_rows=False)
+    # See search_conversation_hits: retrieval is allowed only against an
+    # exactly fresh message FTS surface.
+    readiness = await message_fts_readiness_async(conn, verify_total_rows=True)
     check_fts_readiness(readiness, _MESSAGE_SEARCH_REPAIR_HINT)
 
     query_spec = build_ranked_conversation_search_query(

@@ -7,9 +7,9 @@ hosts and CI shapes.
 1. ``_SESSION_INSIGHT_REBUILD_PAGE_SIZE`` must be at least 50; the
    page-size-1 regression produced ~17K SQL round-trips for ~4K
    conversations.
-2. ``search_conversation_hits`` / ``search_conversation_evidence_hits``
-   must not run ``SELECT COUNT(*) FROM messages_fts(_docsize)?`` —
-   daemon convergence is the canonical FTS-readiness gate.
+2. ``search_conversation_hits`` must prove exact message FTS freshness
+   before executing MATCH until a durable daemon-maintained freshness ledger
+   replaces the per-call count.
 3. ``get_provider_metrics_rows`` must read ``conversation_stats`` for
    the per-conversation pre-aggregates instead of scanning ``messages``
    for them.
@@ -70,19 +70,13 @@ def test_session_insight_rebuild_page_size_is_at_least_50() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Item 2: per-call FTS readiness COUNT(*).
+# Item 2: exact FTS freshness before retrieval.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.scale_small
-def test_search_conversation_hits_does_not_count_fts_index(tier_small_db: Path) -> None:
-    """The per-search FTS-readiness probe must avoid the COUNT(*) scan.
-
-    Daemon convergence maintains the strict-readiness invariant at startup
-    and after every ingest cycle (``polylogue/daemon/convergence_stages.py``).
-    Repeating the same COUNT(*) per search burns one full FTS scan on
-    every query — see issue #1314.
-    """
+def test_search_conversation_hits_checks_exact_fts_freshness_before_match(tier_small_db: Path) -> None:
+    """Search must not serve partial FTS results when docsize parity is stale."""
     with open_bench_store(tier_small_db) as store:
         backend = store.backend
 
@@ -93,15 +87,14 @@ def test_search_conversation_hits_does_not_count_fts_index(tier_small_db: Path) 
         with _capture_aiosqlite_sql() as statements:
             store.run(_run(statements))
 
-        offenders = [
-            sql
-            for sql in statements
-            if "count(" in sql.lower() and ("messages_fts" in sql.lower() or "messages_fts_docsize" in sql.lower())
-        ]
-        assert not offenders, (
-            "search_conversation_hits ran a full FTS COUNT(*) — #1314 says the "
-            f"per-call probe must be a LIMIT-1 existence check. Offenders: {offenders!r}"
+        lowered = [sql.lower() for sql in statements]
+        docsize_count_index = next(i for i, sql in enumerate(lowered) if "count(*) from messages_fts_docsize" in sql)
+        message_count_index = next(
+            i for i, sql in enumerate(lowered) if "count(*) from messages where text is not null" in sql
         )
+        match_index = next(i for i, sql in enumerate(lowered) if "messages_fts match" in sql)
+        assert docsize_count_index < match_index
+        assert message_count_index < match_index
 
 
 # ---------------------------------------------------------------------------

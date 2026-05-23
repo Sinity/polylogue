@@ -8,10 +8,29 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from polylogue.core.json import JSONDocument
 from polylogue.daemon import status as status_module
 from polylogue.daemon.status import build_daemon_status, daemon_status_payload, format_daemon_status_lines
+from polylogue.daemon.status_snapshot import get_status_snapshot_payload, refresh_status_snapshot
 from polylogue.sources.live.cursor import CursorStore
 from tests.infra.frozen_clock import FrozenClock
+
+
+def test_status_snapshot_serves_cached_payload_without_rebuilding_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload: JSONDocument = {"ok": True, "daemon_liveness": True, "checked_at": "cached"}
+    refresh_status_snapshot(payload=payload)
+
+    monkeypatch.setattr(
+        "polylogue.daemon.status.daemon_status_payload",
+        lambda: (_ for _ in ()).throw(AssertionError("request path must not rebuild rich status")),
+    )
+
+    result = get_status_snapshot_payload()
+
+    assert result["checked_at"] == "cached"
+    snapshot = result["status_snapshot"]
+    assert isinstance(snapshot, dict)
+    assert snapshot["state"] == "fresh"
 
 
 def test_build_daemon_status_reports_failed_live_cursor_files(tmp_path: Path) -> None:
@@ -337,6 +356,38 @@ def test_daemon_status_fts_readiness_uses_bounded_structural_probes(tmp_path: Pa
     assert all("COUNT(*) FROM messages" not in query for query in queries)
     assert all("COUNT(*) FROM messages_fts_docsize" not in query for query in queries)
     assert all("LEFT JOIN messages_fts_docsize" not in query for query in queries)
+
+
+def test_fts_readiness_exact_detects_missing_docsize_row(tmp_path: Path) -> None:
+    from polylogue.daemon.fts_status import fts_readiness_info
+    from polylogue.storage.sqlite.connection import open_connection
+
+    db_path = tmp_path / "polylogue.db"
+    with open_connection(db_path) as conn:
+        conn.execute(
+            "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) VALUES(?,?,?,1)",
+            ("conv-stale-fts", "codex", "provider-conv"),
+        )
+        conn.execute(
+            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
+            ("msg-stale-fts", "conv-stale-fts", "user", "needle stale index", "codex"),
+        )
+        conn.commit()
+        rowid = conn.execute("SELECT rowid FROM messages WHERE message_id = ?", ("msg-stale-fts",)).fetchone()[0]
+        conn.execute("DELETE FROM messages_fts WHERE rowid = ?", (rowid,))
+        conn.commit()
+
+    structural = fts_readiness_info(db_path)
+    exact = fts_readiness_info(db_path, exact=True)
+
+    assert structural["messages_ready"] is True
+    assert exact["messages_ready"] is False
+    surfaces = exact["surfaces"]
+    assert isinstance(surfaces, dict)
+    messages = surfaces["messages_fts"]
+    assert isinstance(messages, dict)
+    assert messages["missing_rows"] == 1
+    assert messages["ready"] is False
 
 
 def test_daemon_status_insight_freshness_uses_lightweight_counts(tmp_path: Path) -> None:

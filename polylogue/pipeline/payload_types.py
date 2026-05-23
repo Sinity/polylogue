@@ -46,6 +46,13 @@ class ParseBatchObservation(TypedDict, total=False):
     max_write_elapsed_ms: float
     flush_elapsed_ms: float
     commit_elapsed_ms: float
+    wal_checkpoint_mode: str
+    wal_bytes_before_checkpoint: int
+    wal_bytes_after_checkpoint: int
+    wal_checkpointed_pages: int
+    wal_busy_pages: int
+    wal_checkpoint_elapsed_ms: float
+    wal_checkpoint_error: str
     executor_teardown_elapsed_ms: float
     raw_state_update_elapsed_ms: float
     unattributed_elapsed_ms: float

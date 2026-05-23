@@ -129,11 +129,10 @@ async def _ensure_fts_startup_readiness() -> None:
        death, and subsequent writes silently bypass the FTS index. See
        #1242.
 
-    This path must stay bounded. Exact FTS freshness checks over the
-    shadow tables are explicit/post-listen maintenance work; on real
-    archives even ``COUNT(*)`` over ``messages_fts_docsize`` can take
-    tens of seconds and fault gigabytes of pages before health sockets
-    are available (#1442).
+    This path restores obvious broken structure first, then verifies the
+    exact FTS invariant before the daemon starts serving readiness. Search
+    correctness wins over a fast start: a daemon that reports ready while
+    FTS is stale makes the archive unusable.
     """
     from polylogue.paths import db_path
     from polylogue.storage.sqlite.connection_profile import open_connection
@@ -179,6 +178,16 @@ async def _ensure_fts_startup_readiness() -> None:
             conn.commit()
             logger.info("daemon: FTS rebuild complete.")
             return
+        from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
+
+        snapshot = fts_invariant_snapshot_sync(conn)
+        if not snapshot.ready:
+            stale_surfaces = ", ".join(surface.name for surface in snapshot.surfaces if not surface.ready)
+            logger.warning("daemon: exact FTS invariant stale on startup (%s). Rebuilding once.", stale_surfaces)
+            rebuild_fts_index_sync(conn)
+            conn.commit()
+            logger.info("daemon: FTS rebuild complete.")
+            return
         conn.commit()
     except Exception:
         logger.warning("daemon: FTS startup check failed", exc_info=True)
@@ -191,7 +200,7 @@ async def _ensure_fts_startup_readiness() -> None:
 async def _periodic_wal_checkpoint() -> None:
     """Run WAL checkpoint every 5 minutes to keep the WAL file bounded."""
     from polylogue.paths import db_path
-    from polylogue.storage.sqlite.connection_profile import open_connection
+    from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_wal
 
     db = db_path()
     while True:
@@ -199,14 +208,36 @@ async def _periodic_wal_checkpoint() -> None:
         if not db.exists():
             continue
         try:
-            conn = open_connection(db, timeout=5.0)
-            try:
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                logger.debug("daemon: WAL checkpoint completed")
-            finally:
-                conn.close()
+            observation = await asyncio.to_thread(
+                maybe_checkpoint_wal,
+                db,
+                reason="periodic",
+                timeout_s=5.0,
+            )
+            if observation.ran:
+                logger.info(
+                    "daemon: WAL checkpoint %s before=%d after=%d busy=%d checkpointed=%d error=%s",
+                    observation.mode,
+                    observation.wal_bytes_before,
+                    observation.wal_bytes_after,
+                    observation.busy_pages,
+                    observation.checkpointed_pages,
+                    observation.error,
+                )
         except Exception:
             logger.warning("daemon: WAL checkpoint failed", exc_info=True)
+
+
+async def _periodic_status_snapshot_refresh() -> None:
+    """Refresh the rich daemon status snapshot outside request handlers."""
+    from polylogue.daemon.status_snapshot import refresh_status_snapshot
+
+    while True:
+        try:
+            await asyncio.to_thread(refresh_status_snapshot)
+        except Exception:
+            logger.warning("daemon: status snapshot refresh failed", exc_info=True)
+        await asyncio.sleep(10)
 
 
 async def _periodic_heartbeat() -> None:
@@ -261,6 +292,44 @@ async def _periodic_db_optimize() -> None:
                 conn.close()
         except Exception:
             logger.warning("daemon: DB optimize failed", exc_info=True)
+
+
+async def _periodic_fts_repair() -> None:
+    """Keep FTS ambiently fresh without waiting for a search request to fail."""
+    from polylogue.paths import db_path
+
+    db = db_path()
+    while True:
+        await asyncio.sleep(600)  # 10 minutes
+        if not db.exists():
+            continue
+        try:
+            repaired = await asyncio.to_thread(_repair_fts_if_stale_once, db)
+            if repaired:
+                logger.info("daemon: exact FTS invariant repaired")
+        except Exception:
+            logger.warning("daemon: exact FTS repair check failed", exc_info=True)
+
+
+def _repair_fts_if_stale_once(db: Path) -> bool:
+    """Rebuild FTS once when exact invariants show drift."""
+    from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync, rebuild_fts_index_sync
+    from polylogue.storage.search.cache import invalidate_search_cache
+    from polylogue.storage.sqlite.connection_profile import open_connection
+
+    conn = open_connection(db, timeout=30.0)
+    try:
+        snapshot = fts_invariant_snapshot_sync(conn)
+        if snapshot.ready:
+            return False
+        stale_surfaces = ", ".join(surface.name for surface in snapshot.surfaces if not surface.ready)
+        logger.warning("daemon: exact FTS invariant stale (%s). Rebuilding.", stale_surfaces)
+        rebuild_fts_index_sync(conn)
+        conn.commit()
+        invalidate_search_cache()
+        return True
+    finally:
+        conn.close()
 
 
 async def _periodic_convergence_check(
@@ -568,7 +637,17 @@ async def run_daemon_services(
     convergence_task = asyncio.create_task(_periodic_convergence_check(sources))
     health_task = asyncio.create_task(_periodic_health_check())
     db_optimize_task = asyncio.create_task(_periodic_db_optimize())
-    maintenance_tasks = [wal_task, heartbeat_task, convergence_task, health_task, db_optimize_task]
+    fts_repair_task = asyncio.create_task(_periodic_fts_repair())
+    status_snapshot_task = asyncio.create_task(_periodic_status_snapshot_refresh())
+    maintenance_tasks = [
+        wal_task,
+        heartbeat_task,
+        convergence_task,
+        health_task,
+        db_optimize_task,
+        fts_repair_task,
+        status_snapshot_task,
+    ]
 
     api_server: ThreadingHTTPServer | None = None
     api_server_task: asyncio.Task[None] | None = None

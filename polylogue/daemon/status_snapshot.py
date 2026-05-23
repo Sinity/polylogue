@@ -1,0 +1,159 @@
+"""Bounded daemon status snapshots for request-time status surfaces."""
+
+from __future__ import annotations
+
+import threading
+import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
+
+from polylogue.core.json import JSONDocument, json_document
+from polylogue.daemon.fts_status import fts_readiness_info
+from polylogue.paths import db_path
+
+_MAX_FRESH_AGE_S = 30.0
+_SNAPSHOT_LOCK = threading.Lock()
+_REFRESH_LOCK = threading.Lock()
+_SNAPSHOT: StatusSnapshot | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StatusSnapshot:
+    """One cached daemon status payload plus refresh metadata."""
+
+    payload: JSONDocument
+    captured_monotonic: float
+    captured_at: str
+    refresh_error: str | None = None
+
+    def with_metadata(self) -> JSONDocument:
+        age_s = max(0.0, time.monotonic() - self.captured_monotonic)
+        payload = dict(self.payload)
+        payload["status_snapshot"] = {
+            "state": "fresh" if age_s <= _MAX_FRESH_AGE_S else "stale",
+            "captured_at": self.captured_at,
+            "age_s": round(age_s, 3),
+            "refresh_error": self.refresh_error,
+        }
+        return json_document(payload)
+
+
+def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error: str | None = None) -> JSONDocument:
+    """Return a request-safe status envelope with no archive-scale scans."""
+    dbf = db_path()
+    wal = dbf.with_suffix(".db-wal")
+    fts_payload: dict[str, object] = {}
+    if dbf.exists():
+        try:
+            fts_payload = fts_readiness_info(dbf)
+        except Exception as exc:
+            refresh_error = refresh_error or str(exc)
+    now = datetime.now(UTC).isoformat()
+    return json_document(
+        {
+            "ok": True,
+            "daemon": "polylogued",
+            "daemon_liveness": True,
+            "checked_at": now,
+            "component_state": {
+                "watcher": "running",
+                "api": "running",
+                "browser_capture": "unknown",
+            },
+            "db_path": str(dbf),
+            "db_size_bytes": dbf.stat().st_size if dbf.exists() else 0,
+            "wal_size_bytes": wal.stat().st_size if wal.exists() else 0,
+            "blob_dir_size_bytes": 0,
+            "disk_free_bytes": 0,
+            "failing_files": [],
+            "live_cursor": {},
+            "live_ingest_attempts": {},
+            "catchup": {},
+            "convergence": {},
+            "operations": [],
+            "fts_readiness": fts_payload,
+            "embedding_readiness": {},
+            "memory": {},
+            "health": {},
+            "raw_parse_failures": 0,
+            "raw_validation_failures": 0,
+            "raw_quarantined": 0,
+            "raw_maintenance_failures": 0,
+            "raw_detection_warnings": 0,
+            "raw_failure_samples": [],
+            "status_snapshot": {
+                "state": "refreshing" if refresh_in_progress else "minimal",
+                "captured_at": now,
+                "age_s": 0.0,
+                "refresh_error": refresh_error,
+            },
+        }
+    )
+
+
+def get_status_snapshot_payload() -> JSONDocument:
+    """Return the current cached status payload or a minimal request-safe one."""
+    with _SNAPSHOT_LOCK:
+        snapshot = _SNAPSHOT
+    if snapshot is not None:
+        return snapshot.with_metadata()
+    return _minimal_status_payload(refresh_in_progress=_REFRESH_LOCK.locked())
+
+
+def refresh_status_snapshot(*, payload: JSONDocument | None = None) -> StatusSnapshot:
+    """Refresh the global daemon status snapshot if no refresh is in progress."""
+    global _SNAPSHOT
+    if not _REFRESH_LOCK.acquire(blocking=False):
+        with _SNAPSHOT_LOCK:
+            snapshot = _SNAPSHOT
+        if snapshot is not None:
+            return snapshot
+        return StatusSnapshot(
+            payload=_minimal_status_payload(refresh_in_progress=True),
+            captured_monotonic=time.monotonic(),
+            captured_at=datetime.now(UTC).isoformat(),
+        )
+    try:
+        captured_at = datetime.now(UTC).isoformat()
+        refresh_error: str | None = None
+        try:
+            if payload is None:
+                from polylogue.daemon.status import daemon_status_payload
+
+                payload = daemon_status_payload()
+        except Exception as exc:
+            refresh_error = str(exc)
+            payload = _minimal_status_payload(refresh_error=refresh_error)
+        snapshot = StatusSnapshot(
+            payload=json_document(dict(payload)),
+            captured_monotonic=time.monotonic(),
+            captured_at=captured_at,
+            refresh_error=refresh_error,
+        )
+        with _SNAPSHOT_LOCK:
+            _SNAPSHOT = snapshot
+        return snapshot
+    finally:
+        _REFRESH_LOCK.release()
+
+
+def snapshot_state_for_metrics() -> dict[str, Any]:
+    """Return bounded snapshot metadata for metrics."""
+    with _SNAPSHOT_LOCK:
+        snapshot = _SNAPSHOT
+    if snapshot is None:
+        return {"age_s": -1.0, "state": "missing", "refresh_error": ""}
+    age_s = max(0.0, time.monotonic() - snapshot.captured_monotonic)
+    return {
+        "age_s": round(age_s, 3),
+        "state": "fresh" if age_s <= _MAX_FRESH_AGE_S else "stale",
+        "refresh_error": snapshot.refresh_error or "",
+    }
+
+
+__all__ = [
+    "get_status_snapshot_payload",
+    "refresh_status_snapshot",
+    "snapshot_state_for_metrics",
+]

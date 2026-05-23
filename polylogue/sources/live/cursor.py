@@ -69,6 +69,9 @@ CREATE TABLE IF NOT EXISTS live_ingest_attempt (
     cgroup_memory_current_mb REAL,
     cgroup_memory_peak_mb REAL,
     cgroup_memory_swap_current_mb REAL,
+    cgroup_memory_anon_mb REAL,
+    cgroup_memory_file_mb REAL,
+    cgroup_memory_inactive_file_mb REAL,
     worker_in_flight_count INTEGER,
     worker_completed_count INTEGER,
     worker_total_count INTEGER,
@@ -107,6 +110,9 @@ CREATE TABLE IF NOT EXISTS live_ingest_stage_event (
     cgroup_memory_current_mb REAL,
     cgroup_memory_peak_mb REAL,
     cgroup_memory_swap_current_mb REAL,
+    cgroup_memory_anon_mb REAL,
+    cgroup_memory_file_mb REAL,
+    cgroup_memory_inactive_file_mb REAL,
     worker_in_flight_count INTEGER,
     worker_completed_count INTEGER,
     worker_total_count INTEGER,
@@ -206,6 +212,9 @@ class LiveIngestAttempt:
     cgroup_memory_current_mb: float | None = None
     cgroup_memory_peak_mb: float | None = None
     cgroup_memory_swap_current_mb: float | None = None
+    cgroup_memory_anon_mb: float | None = None
+    cgroup_memory_file_mb: float | None = None
+    cgroup_memory_inactive_file_mb: float | None = None
     worker_in_flight_count: int | None = None
     worker_completed_count: int | None = None
     worker_total_count: int | None = None
@@ -318,6 +327,9 @@ class CursorStore:
             "cgroup_memory_current_mb": "REAL",
             "cgroup_memory_peak_mb": "REAL",
             "cgroup_memory_swap_current_mb": "REAL",
+            "cgroup_memory_anon_mb": "REAL",
+            "cgroup_memory_file_mb": "REAL",
+            "cgroup_memory_inactive_file_mb": "REAL",
             "worker_in_flight_count": "INTEGER",
             "worker_completed_count": "INTEGER",
             "worker_total_count": "INTEGER",
@@ -327,6 +339,15 @@ class CursorStore:
             if name not in existing_attempt:
                 conn.execute(f"ALTER TABLE live_ingest_attempt ADD COLUMN {name} {definition}")
         conn.execute(_STAGE_EVENT_DDL)
+        existing_stage_event = {row[1] for row in conn.execute("PRAGMA table_info(live_ingest_stage_event)")}
+        stage_event_columns = {
+            "cgroup_memory_anon_mb": "REAL",
+            "cgroup_memory_file_mb": "REAL",
+            "cgroup_memory_inactive_file_mb": "REAL",
+        }
+        for name, definition in stage_event_columns.items():
+            if name not in existing_stage_event:
+                conn.execute(f"ALTER TABLE live_ingest_stage_event ADD COLUMN {name} {definition}")
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_live_ingest_stage_event_attempt
@@ -337,6 +358,32 @@ class CursorStore:
             """
             CREATE INDEX IF NOT EXISTS idx_live_ingest_stage_event_observed
             ON live_ingest_stage_event(observed_at DESC)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_live_cursor_failed_retry
+            ON live_cursor(failure_count, next_retry_at)
+            WHERE failure_count > 0
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_live_cursor_excluded
+            ON live_cursor(excluded)
+            WHERE excluded = 1
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_live_ingest_attempt_status_updated
+            ON live_ingest_attempt(status, updated_at DESC, started_at DESC)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_live_ingest_attempt_updated
+            ON live_ingest_attempt(updated_at DESC, started_at DESC)
             """
         )
         conn.execute(_CONVERGENCE_DEBT_DDL)
@@ -435,6 +482,9 @@ class CursorStore:
         cgroup_memory_current_mb: float | None = None,
         cgroup_memory_peak_mb: float | None = None,
         cgroup_memory_swap_current_mb: float | None = None,
+        cgroup_memory_anon_mb: float | None = None,
+        cgroup_memory_file_mb: float | None = None,
+        cgroup_memory_inactive_file_mb: float | None = None,
         worker_in_flight_count: int | None = None,
         worker_completed_count: int | None = None,
         worker_total_count: int | None = None,
@@ -461,6 +511,9 @@ class CursorStore:
             "cgroup_memory_current_mb": cgroup_memory_current_mb,
             "cgroup_memory_peak_mb": cgroup_memory_peak_mb,
             "cgroup_memory_swap_current_mb": cgroup_memory_swap_current_mb,
+            "cgroup_memory_anon_mb": cgroup_memory_anon_mb,
+            "cgroup_memory_file_mb": cgroup_memory_file_mb,
+            "cgroup_memory_inactive_file_mb": cgroup_memory_inactive_file_mb,
             "worker_in_flight_count": worker_in_flight_count,
             "worker_completed_count": worker_completed_count,
             "worker_total_count": worker_total_count,
@@ -507,6 +560,9 @@ class CursorStore:
         cgroup_memory_current_mb: float | None = None,
         cgroup_memory_peak_mb: float | None = None,
         cgroup_memory_swap_current_mb: float | None = None,
+        cgroup_memory_anon_mb: float | None = None,
+        cgroup_memory_file_mb: float | None = None,
+        cgroup_memory_inactive_file_mb: float | None = None,
         worker_in_flight_count: int | None = None,
         worker_completed_count: int | None = None,
         worker_total_count: int | None = None,
@@ -550,11 +606,14 @@ class CursorStore:
                     cgroup_memory_current_mb,
                     cgroup_memory_peak_mb,
                     cgroup_memory_swap_current_mb,
+                    cgroup_memory_anon_mb,
+                    cgroup_memory_file_mb,
+                    cgroup_memory_inactive_file_mb,
                     worker_in_flight_count,
                     worker_completed_count,
                     worker_total_count,
                     stage_timings_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     attempt_id,
@@ -584,6 +643,9 @@ class CursorStore:
                     cgroup_memory_current_mb,
                     cgroup_memory_peak_mb,
                     cgroup_memory_swap_current_mb,
+                    cgroup_memory_anon_mb,
+                    cgroup_memory_file_mb,
+                    cgroup_memory_inactive_file_mb,
                     worker_in_flight_count,
                     worker_completed_count,
                     worker_total_count,

@@ -98,6 +98,7 @@ from polylogue.pipeline.services.ingest_batch._models import (
     _ParsingServiceRawStateLike,
     _RawIngestOutcome,
 )
+from polylogue.pipeline.services.ingest_batch._observations import _build_parse_batch_observation
 
 logger = get_logger(__name__)
 
@@ -366,6 +367,15 @@ def _upsert_stats_from_messages(conn: sqlite3.Connection, conversation_id: str, 
 
 _ACTION_EVENT_INSERT_OR_IGNORE_SQL = _ACTION_EVENT_INSERT_SQL.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1)
 _PROVIDER_EVENT_INSERT_OR_IGNORE_SQL = _PROVIDER_EVENT_INSERT_SQL.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1)
+_WRITE_EXECUTEMANY_CHUNK_SIZE = 1_000
+
+
+def _executemany_chunked(conn: sqlite3.Connection, sql: str, rows: Sequence[Sequence[object]]) -> None:
+    """Run executemany in bounded chunks while preserving caller transaction scope."""
+    if not rows:
+        return
+    for offset in range(0, len(rows), _WRITE_EXECUTEMANY_CHUNK_SIZE):
+        conn.executemany(sql, rows[offset : offset + _WRITE_EXECUTEMANY_CHUNK_SIZE])
 
 
 def _append_conversation(
@@ -415,23 +425,23 @@ def _append_conversation(
 
     if cdata.message_tuples:
         sorted_msgs = _topo_sort_message_tuples(cdata.message_tuples)
-        conn.executemany(_MESSAGE_UPSERT_SQL, sorted_msgs)
+        _executemany_chunked(conn, _MESSAGE_UPSERT_SQL, sorted_msgs)
         counts["messages"] = len(changed_messages)
 
     if cdata.block_tuples:
-        conn.executemany(_CONTENT_BLOCK_UPSERT_SQL, cdata.block_tuples)
+        _executemany_chunked(conn, _CONTENT_BLOCK_UPSERT_SQL, cdata.block_tuples)
 
     if cdata.action_event_tuples:
-        conn.executemany(_ACTION_EVENT_INSERT_OR_IGNORE_SQL, cdata.action_event_tuples)
+        _executemany_chunked(conn, _ACTION_EVENT_INSERT_OR_IGNORE_SQL, cdata.action_event_tuples)
 
     if cdata.provider_event_tuples:
-        conn.executemany(_PROVIDER_EVENT_INSERT_OR_IGNORE_SQL, cdata.provider_event_tuples)
+        _executemany_chunked(conn, _PROVIDER_EVENT_INSERT_OR_IGNORE_SQL, cdata.provider_event_tuples)
         counts["provider_events"] = len(cdata.provider_event_tuples)
 
     affected_attachment_ids = {str(attachment_id) for attachment_id, *_rest in cdata.attachment_tuples}
     if cdata.attachment_tuples:
-        conn.executemany(_ATTACHMENT_UPSERT_SQL, cdata.attachment_tuples)
-        conn.executemany(_ATTACHMENT_REF_INSERT_SQL, cdata.attachment_ref_tuples)
+        _executemany_chunked(conn, _ATTACHMENT_UPSERT_SQL, cdata.attachment_tuples)
+        _executemany_chunked(conn, _ATTACHMENT_REF_INSERT_SQL, cdata.attachment_ref_tuples)
         counts["attachments"] = len(cdata.attachment_tuples)
         recount_and_prune_attachments_sync(conn, affected_attachment_ids)
 
@@ -507,7 +517,7 @@ def _write_conversation(
 
     if cdata.message_tuples:
         sorted_msgs = _topo_sort_message_tuples(cdata.message_tuples)
-        conn.executemany(_MESSAGE_UPSERT_SQL, sorted_msgs)
+        _executemany_chunked(conn, _MESSAGE_UPSERT_SQL, sorted_msgs)
         counts["messages"] = len(sorted_msgs)
 
     # Conversation stats
@@ -517,17 +527,17 @@ def _write_conversation(
     if not content_unchanged:
         conn.execute("DELETE FROM content_blocks WHERE conversation_id = ?", (cdata.conversation_id,))
         if cdata.block_tuples:
-            conn.executemany(_CONTENT_BLOCK_UPSERT_SQL, cdata.block_tuples)
+            _executemany_chunked(conn, _CONTENT_BLOCK_UPSERT_SQL, cdata.block_tuples)
 
     if not content_unchanged:
         conn.execute("DELETE FROM action_events WHERE conversation_id = ?", (cdata.conversation_id,))
         if cdata.action_event_tuples:
-            conn.executemany(_ACTION_EVENT_INSERT_SQL, cdata.action_event_tuples)
+            _executemany_chunked(conn, _ACTION_EVENT_INSERT_SQL, cdata.action_event_tuples)
 
     if not content_unchanged:
         conn.execute("DELETE FROM provider_events WHERE conversation_id = ?", (cdata.conversation_id,))
         if cdata.provider_event_tuples:
-            conn.executemany(_PROVIDER_EVENT_INSERT_SQL, cdata.provider_event_tuples)
+            _executemany_chunked(conn, _PROVIDER_EVENT_INSERT_SQL, cdata.provider_event_tuples)
             counts["provider_events"] = len(cdata.provider_event_tuples)
 
     # Attachments
@@ -535,8 +545,8 @@ def _write_conversation(
         new_attachment_ids = {attachment_id for attachment_id, *_rest in cdata.attachment_tuples}
         affected_attachment_ids |= new_attachment_ids
         if cdata.attachment_tuples:
-            conn.executemany(_ATTACHMENT_UPSERT_SQL, cdata.attachment_tuples)
-            conn.executemany(_ATTACHMENT_REF_INSERT_SQL, cdata.attachment_ref_tuples)
+            _executemany_chunked(conn, _ATTACHMENT_UPSERT_SQL, cdata.attachment_tuples)
+            _executemany_chunked(conn, _ATTACHMENT_REF_INSERT_SQL, cdata.attachment_ref_tuples)
             counts["attachments"] = len(cdata.attachment_tuples)
         recount_and_prune_attachments_sync(conn, affected_attachment_ids)
     else:
@@ -1057,6 +1067,16 @@ def _process_ingest_batch_sync(
             repair_action_fts=repair_action_fts,
         )
         summary.commit_elapsed_s = time.perf_counter() - commit_started
+        from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_wal
+
+        wal_observation = maybe_checkpoint_wal(db_path, reason="ingest_batch_commit")
+        summary.wal_checkpoint_mode = wal_observation.mode
+        summary.wal_bytes_before_checkpoint = wal_observation.wal_bytes_before
+        summary.wal_bytes_after_checkpoint = wal_observation.wal_bytes_after
+        summary.wal_checkpointed_pages = wal_observation.checkpointed_pages
+        summary.wal_busy_pages = wal_observation.busy_pages
+        summary.wal_checkpoint_elapsed_s = wal_observation.elapsed_s
+        summary.wal_checkpoint_error = wal_observation.error
     except Exception:
         # Roll back the row writes.  If a caller explicitly opted into
         # dropped-trigger bulk mode, restore triggers before propagating
@@ -1081,51 +1101,6 @@ def _process_ingest_batch_sync(
     return summary
 
 
-def _unattributed_batch_elapsed_s(
-    *,
-    elapsed_s: float,
-    batch_summary: _IngestBatchSummary,
-    raw_state_update_elapsed_s: float,
-) -> float:
-    accounted_elapsed_s = (
-        batch_summary.setup_elapsed_s
-        + batch_summary.result_wait_s
-        + batch_summary.drain_elapsed_s
-        + batch_summary.flush_elapsed_s
-        + batch_summary.commit_elapsed_s
-        + batch_summary.teardown_elapsed_s
-        + raw_state_update_elapsed_s
-    )
-    return max(elapsed_s - accounted_elapsed_s, 0.0)
-
-
-def _build_batch_memory_observation(
-    *,
-    rss_start_mb: float | None,
-    rss_end_mb: float | None,
-    peak_rss_self_start_mb: float | None,
-    peak_rss_self_end_mb: float | None,
-    peak_rss_children_mb: float | None,
-    max_current_rss_mb: float | None,
-) -> ParseBatchObservation:
-    observation: ParseBatchObservation = {}
-    if rss_start_mb is not None:
-        observation["rss_start_mb"] = rss_start_mb
-    if rss_end_mb is not None:
-        observation["rss_end_mb"] = rss_end_mb
-    if rss_start_mb is not None and rss_end_mb is not None:
-        observation["rss_delta_mb"] = round(rss_end_mb - rss_start_mb, 1)
-    if peak_rss_self_end_mb is not None:
-        observation["process_peak_rss_self_mb"] = peak_rss_self_end_mb
-    if peak_rss_self_start_mb is not None and peak_rss_self_end_mb is not None:
-        observation["peak_rss_growth_mb"] = round(max(peak_rss_self_end_mb - peak_rss_self_start_mb, 0.0), 1)
-    if peak_rss_children_mb is not None:
-        observation["peak_rss_children_mb"] = peak_rss_children_mb
-    if max_current_rss_mb is not None:
-        observation["max_current_rss_mb"] = max_current_rss_mb
-    return observation
-
-
 def _apply_ingest_batch_summary(result: ParseResult, batch_summary: _IngestBatchSummary) -> None:
     result.parse_failures += batch_summary.parse_failures
     result.processed_ids.update(batch_summary.processed_ids)
@@ -1148,61 +1123,6 @@ def _successful_raw_ids(batch_summary: _IngestBatchSummary) -> set[str]:
         for raw_id, outcome in batch_summary.outcomes.items()
         if outcome.had_conversations and raw_id not in batch_summary.failed_raw_ids
     }
-
-
-def _build_parse_batch_observation(
-    *,
-    batch_summary: _IngestBatchSummary,
-    elapsed_s: float,
-    raw_state_update_elapsed_s: float,
-    rss_start_mb: float | None,
-    rss_end_mb: float | None,
-    peak_rss_self_start_mb: float | None,
-    peak_rss_self_end_mb: float | None,
-    peak_rss_children_mb: float | None,
-) -> ParseBatchObservation:
-    observation: ParseBatchObservation = {
-        "records": batch_summary.raw_record_count,
-        "blob_mb": round(batch_summary.total_blob_mb, 1),
-        "result_mb": round(batch_summary.total_result_bytes / (1024 * 1024), 3),
-        "max_result_mb": round(batch_summary.max_result_bytes / (1024 * 1024), 3),
-        "conversations": batch_summary.total_convos,
-        "messages": batch_summary.total_msgs,
-        "changed_conversations": len(batch_summary.changed_conversation_ids),
-        "workers": batch_summary.worker_count,
-        "failed_raw_count": len(batch_summary.failed_raw_ids),
-        "skipped_raw_count": len(batch_summary.skipped_raw_ids),
-        "elapsed_ms": round(elapsed_s * 1000, 1),
-        "sync_ingest_elapsed_ms": round(batch_summary.elapsed_s * 1000, 1),
-        "sync_setup_elapsed_ms": round(batch_summary.setup_elapsed_s * 1000, 1),
-        "result_wait_elapsed_ms": round(batch_summary.result_wait_s * 1000, 1),
-        "drain_elapsed_ms": round(batch_summary.drain_elapsed_s * 1000, 1),
-        "write_elapsed_ms": round(batch_summary.write_elapsed_s * 1000, 1),
-        "max_write_elapsed_ms": round(batch_summary.max_write_elapsed_s * 1000, 1),
-        "flush_elapsed_ms": round(batch_summary.flush_elapsed_s * 1000, 1),
-        "commit_elapsed_ms": round(batch_summary.commit_elapsed_s * 1000, 1),
-        "executor_teardown_elapsed_ms": round(batch_summary.teardown_elapsed_s * 1000, 1),
-        "raw_state_update_elapsed_ms": round(raw_state_update_elapsed_s * 1000, 1),
-    }
-    residual_elapsed_s = _unattributed_batch_elapsed_s(
-        elapsed_s=elapsed_s,
-        batch_summary=batch_summary,
-        raw_state_update_elapsed_s=raw_state_update_elapsed_s,
-    )
-    observation["unattributed_elapsed_ms"] = round(residual_elapsed_s * 1000, 1)
-    observation.update(
-        _build_batch_memory_observation(
-            rss_start_mb=rss_start_mb,
-            rss_end_mb=rss_end_mb,
-            peak_rss_self_start_mb=peak_rss_self_start_mb,
-            peak_rss_self_end_mb=peak_rss_self_end_mb,
-            peak_rss_children_mb=peak_rss_children_mb,
-            max_current_rss_mb=batch_summary.max_current_rss_mb,
-        )
-    )
-    if batch_summary.max_result_raw_id is not None:
-        observation["max_result_raw_id"] = batch_summary.max_result_raw_id
-    return observation
 
 
 # ---------------------------------------------------------------------------
@@ -1280,6 +1200,10 @@ async def process_ingest_batch(
             changed=len(batch_summary.changed_conversation_ids),
             write_s=round(batch_summary.write_elapsed_s, 2),
             commit_s=round(batch_summary.commit_elapsed_s, 2),
+            wal_mode=batch_summary.wal_checkpoint_mode,
+            wal_before=batch_summary.wal_bytes_before_checkpoint,
+            wal_after=batch_summary.wal_bytes_after_checkpoint,
+            wal_busy=batch_summary.wal_busy_pages,
             drain_s=round(batch_summary.drain_elapsed_s, 2),
             flush_s=round(batch_summary.flush_elapsed_s, 2),
             wait_s=round(batch_summary.result_wait_s, 2),

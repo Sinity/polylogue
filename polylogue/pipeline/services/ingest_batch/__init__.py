@@ -6,7 +6,6 @@ helpers are re-exported for test access.
 """
 
 from polylogue.pipeline.services.ingest_batch._core import (
-    _build_batch_memory_observation,
     _drain_ready_conversation_entries,
     _failed_raw_state_update,
     _iter_ingest_results_sync,
@@ -15,7 +14,6 @@ from polylogue.pipeline.services.ingest_batch._core import (
     _select_ingest_worker_count,
     _successful_raw_state_update,
     _topo_sort_conversation_entries,
-    _unattributed_batch_elapsed_s,
     _write_conversation,
     process_ingest_batch,
     refresh_session_insights_bulk,
@@ -25,6 +23,10 @@ from polylogue.pipeline.services.ingest_batch._models import (
     _IngestBatchSummary,
     _IngestWorkerRequest,
     _RawIngestOutcome,
+)
+from polylogue.pipeline.services.ingest_batch._observations import (
+    _build_batch_memory_observation,
+    _unattributed_batch_elapsed_s,
 )
 from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.pipeline.services.process_pool import process_pool_executor

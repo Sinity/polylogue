@@ -631,6 +631,11 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
             cgroup_current_expr = "cgroup_memory_current_mb" if "cgroup_memory_current_mb" in columns else "NULL"
             cgroup_peak_expr = "cgroup_memory_peak_mb" if "cgroup_memory_peak_mb" in columns else "NULL"
             cgroup_swap_expr = "cgroup_memory_swap_current_mb" if "cgroup_memory_swap_current_mb" in columns else "NULL"
+            cgroup_anon_expr = "cgroup_memory_anon_mb" if "cgroup_memory_anon_mb" in columns else "NULL"
+            cgroup_file_expr = "cgroup_memory_file_mb" if "cgroup_memory_file_mb" in columns else "NULL"
+            cgroup_inactive_expr = (
+                "cgroup_memory_inactive_file_mb" if "cgroup_memory_inactive_file_mb" in columns else "NULL"
+            )
             worker_in_flight_expr = "worker_in_flight_count" if "worker_in_flight_count" in columns else "NULL"
             worker_completed_expr = "worker_completed_count" if "worker_completed_count" in columns else "NULL"
             worker_total_expr = "worker_total_count" if "worker_total_count" in columns else "NULL"
@@ -663,6 +668,9 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
                     {cgroup_current_expr},
                     {cgroup_peak_expr},
                     {cgroup_swap_expr},
+                    {cgroup_anon_expr},
+                    {cgroup_file_expr},
+                    {cgroup_inactive_expr},
                     {worker_in_flight_expr},
                     {worker_completed_expr},
                     {worker_total_expr},
@@ -799,10 +807,13 @@ def _live_ingest_attempt_state_from_row(
         cgroup_memory_current_mb=_row_float(row[22]),
         cgroup_memory_peak_mb=_row_float(row[23]),
         cgroup_memory_swap_current_mb=_row_float(row[24]),
-        worker_in_flight_count=_row_int(row[25]) if len(row) > 25 else None,
-        worker_completed_count=_row_int(row[26]) if len(row) > 26 else None,
-        worker_total_count=_row_int(row[27]) if len(row) > 27 else None,
-        stale_cursor_write_count=_row_int(row[28]) if len(row) > 28 else 0,
+        cgroup_memory_anon_mb=_row_float(row[25]) if len(row) > 25 else None,
+        cgroup_memory_file_mb=_row_float(row[26]) if len(row) > 26 else None,
+        cgroup_memory_inactive_file_mb=_row_float(row[27]) if len(row) > 27 else None,
+        worker_in_flight_count=_row_int(row[28]) if len(row) > 28 else None,
+        worker_completed_count=_row_int(row[29]) if len(row) > 29 else None,
+        worker_total_count=_row_int(row[30]) if len(row) > 30 else None,
+        stale_cursor_write_count=_row_int(row[31]) if len(row) > 31 else 0,
         updated_age_s=updated_age_s,
         stale=stale,
         progress_classification=progress_classification,
@@ -1220,6 +1231,12 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                     cgroup_text = f"  memory: cgroup {cgroup_current} MiB"
                     if cgroup_peak is not None:
                         cgroup_text += f" peak {cgroup_peak} MiB"
+                    cgroup_file = latest.get("cgroup_memory_file_mb")
+                    cgroup_inactive = latest.get("cgroup_memory_inactive_file_mb")
+                    if cgroup_file is not None:
+                        cgroup_text += f" file {cgroup_file} MiB"
+                    if cgroup_inactive is not None:
+                        cgroup_text += f" inactive_file {cgroup_inactive} MiB"
                     lines.append(cgroup_text)
                 rss_current = latest.get("rss_current_mb")
                 if rss_current is not None:

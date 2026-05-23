@@ -39,6 +39,9 @@ class LiveIngestAttemptState(BaseModel):
     cgroup_memory_current_mb: float | None = None
     cgroup_memory_peak_mb: float | None = None
     cgroup_memory_swap_current_mb: float | None = None
+    cgroup_memory_anon_mb: float | None = None
+    cgroup_memory_file_mb: float | None = None
+    cgroup_memory_inactive_file_mb: float | None = None
     worker_in_flight_count: int | None = None
     worker_completed_count: int | None = None
     worker_total_count: int | None = None

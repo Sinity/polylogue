@@ -1197,6 +1197,10 @@ files:
     loc: 1340
     target: polylogue/daemon/status.py
     owner: stable
+  - path: polylogue/daemon/status_snapshot.py
+    loc: 159
+    target: polylogue/daemon/status_snapshot.py
+    owner: stable
   - path: polylogue/daemon/thread_continue.py
     loc: 198
     target: polylogue/daemon/thread_continue.py
@@ -1607,6 +1611,10 @@ files:
     target: polylogue/pipeline/services/ingest_batch/_models.py
     owner: stable
     cross_cut: { lifecycle: model }
+  - path: polylogue/pipeline/services/ingest_batch/_observations.py
+    loc: 114
+    target: polylogue/pipeline/services/ingest_batch/_observations.py
+    owner: stable
   - path: polylogue/pipeline/services/ingest_worker.py
     loc: 1166
     target: polylogue/pipeline/services/ingest_worker.py
@@ -3188,6 +3196,10 @@ files:
   - path: polylogue/storage/sqlite/connection_profile.py
     loc: 160
     target: polylogue/storage/sqlite/connection_profile.py
+    owner: stable
+  - path: polylogue/storage/sqlite/wal_checkpoint.py
+    loc: 103
+    target: polylogue/storage/sqlite/wal_checkpoint.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/__init__.py
     loc: 35

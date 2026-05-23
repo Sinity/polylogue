@@ -92,6 +92,13 @@ class _IngestBatchSummary:
     flush_elapsed_s: float = 0.0
     commit_elapsed_s: float = 0.0
     teardown_elapsed_s: float = 0.0
+    wal_checkpoint_mode: str = "none"
+    wal_bytes_before_checkpoint: int = 0
+    wal_bytes_after_checkpoint: int = 0
+    wal_checkpointed_pages: int = 0
+    wal_busy_pages: int = 0
+    wal_checkpoint_elapsed_s: float = 0.0
+    wal_checkpoint_error: str | None = None
     worker_progress_in_flight: int = 0
     worker_progress_completed: int = 0
     worker_progress_total: int = 0

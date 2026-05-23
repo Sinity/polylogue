@@ -42,10 +42,23 @@ def _fast_count(conn: Any, sql: str) -> int:
 
 
 def _fast_fts_doc_count(conn: Any) -> int:
+    # Exact FTS coverage is no longer a direct-status fallback concern.
+    # Counting the FTS shadow table can fault gigabytes of pages during
+    # catch-up; daemon status carries the maintained freshness state.
+    return 0
+
+
+def _daemon_live(daemon_url: str, *, timeout: float) -> bool:
     try:
-        return _fast_count(conn, "SELECT COUNT(*) FROM messages_fts_docsize")
-    except Exception:
-        return 0
+        req = Request(
+            f"{daemon_url}/healthz/live",
+            headers={"Accept": "application/json"},
+            method="GET",
+        )
+        with urlopen(req, timeout=timeout) as resp:
+            return 200 <= int(resp.status) < 500
+    except (OSError, ValueError):
+        return False
 
 
 def _table_exists(conn: Any, table_name: str) -> bool:
@@ -100,9 +113,15 @@ def status_command(
     except (OSError, ValueError):
         # ValueError covers malformed URLs (urllib raises before any I/O).
         if output_format == "json":
-            _show_direct_json(env)
+            if _daemon_live(daemon_url, timeout=_FAST_TIMEOUT_S):
+                _show_daemon_status_unavailable_json(env)
+            else:
+                _show_direct_json(env)
         else:
-            _show_direct_status(env)
+            if _daemon_live(daemon_url, timeout=_FAST_TIMEOUT_S):
+                _show_daemon_status_unavailable(env)
+            else:
+                _show_direct_status(env)
         return
 
     if output_format == "json":
@@ -128,7 +147,10 @@ def show_fast_status(env: AppEnv, *, daemon_url: str | None = None) -> None:
             result = json.loads(resp.read())
         _show_daemon_status(env, result, compact=True)
     except OSError:
-        _show_direct_status(env, compact=True)
+        if _daemon_live(resolved_url, timeout=_FAST_TIMEOUT_S):
+            _show_daemon_status_unavailable(env, compact=True)
+        else:
+            _show_direct_status(env, compact=True)
 
 
 def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = False) -> None:
@@ -197,6 +219,24 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
 def _show_status_json(env: AppEnv, status: dict[str, Any]) -> None:
     """Machine-readable JSON status output."""
     env.ui.console.print(json.dumps(status, indent=2, default=str))
+
+
+def _show_daemon_status_unavailable_json(env: AppEnv) -> None:
+    payload = {
+        "daemon_liveness": True,
+        "status_snapshot": {
+            "state": "unavailable",
+            "reason": "api_status_timeout",
+        },
+    }
+    env.ui.console.print(json.dumps(payload, indent=2, default=str))
+
+
+def _show_daemon_status_unavailable(env: AppEnv, *, compact: bool = False) -> None:
+    env.ui.console.print("\n[bold yellow]Daemon: running[/bold yellow]")
+    env.ui.console.print("  Status snapshot: [yellow]unavailable[/yellow]")
+    if not compact:
+        env.ui.console.print("  [dim]/api/status did not answer within the bounded CLI timeout.[/dim]")
 
 
 def _show_direct_json(env: AppEnv) -> None:
@@ -279,9 +319,12 @@ def _show_direct_status(env: AppEnv, *, compact: bool = False) -> None:
         env.ui.console.print(f"  Conversations: {convs:,}")
         env.ui.console.print(f"  Messages: {msgs:,}")
         env.ui.console.print(f"  Raw records: {raw:,}")
-        fts_pct = 100 * fts / msgs if msgs else 100
-        fts_color = "green" if fts_pct > 99 else "yellow"
-        env.ui.console.print(f"  FTS indexed: [{fts_color}]{fts_pct:.1f}%[/{fts_color}]")
+        if fts:
+            fts_pct = 100 * fts / msgs if msgs else 100
+            fts_color = "green" if fts_pct > 99 else "yellow"
+            env.ui.console.print(f"  FTS indexed: [{fts_color}]{fts_pct:.1f}%[/{fts_color}]")
+        else:
+            env.ui.console.print("  FTS indexed: [dim]daemon status unavailable[/dim]")
 
         try:
             from polylogue.storage.embeddings.status_payload import embedding_status_payload

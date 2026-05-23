@@ -21,7 +21,7 @@ from polylogue.daemon.events import (
     emit_daemon_event,
     get_latest_event_id,
 )
-from polylogue.daemon.status import daemon_status_payload
+from polylogue.daemon.status_snapshot import get_status_snapshot_payload
 from polylogue.daemon.web_shell_attachments import (
     LibraryEntry,
     attachment_to_envelope,
@@ -1136,7 +1136,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self.send_header("ETag", etag)
             self.end_headers()
             return
-        status = daemon_status_payload()
+        status = get_status_snapshot_payload()
         if isinstance(status, dict):
             status["last_event_id"] = latest_event_id
         self._send_json(HTTPStatus.OK, status, extra_headers={"ETag": etag})
