@@ -316,6 +316,69 @@ def test_fts_readiness_counts_docsize_not_virtual_table(
     assert any("messages_fts_docsize" in query for query in queries)
 
 
+def test_fts_readiness_uses_stats_not_message_scan(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dbf = db_path()
+    dbf.parent.mkdir(parents=True, exist_ok=True)
+    _init_messages_db(dbf, message_rows=999, fts_rows=3)
+    conn = sqlite3.connect(str(dbf))
+    try:
+        conn.execute("CREATE TABLE conversation_stats (conversation_id TEXT PRIMARY KEY, message_count INTEGER)")
+        conn.execute("INSERT INTO conversation_stats VALUES ('c1', 3)")
+        conn.commit()
+    finally:
+        conn.close()
+
+    original_connect = sqlite3.connect
+    queries: list[str] = []
+
+    class GuardedConnection:
+        def __init__(self, inner: sqlite3.Connection) -> None:
+            self._inner = inner
+
+        def execute(self, sql: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
+            normalized = " ".join(sql.split()).lower()
+            queries.append(normalized)
+            if normalized == "select count(*) from messages":
+                raise AssertionError("health status must use conversation_stats when available")
+            return self._inner.execute(sql, *args, **kwargs)
+
+        def close(self) -> None:
+            self._inner.close()
+
+    def guarded_connect(path: str) -> GuardedConnection:
+        return GuardedConnection(original_connect(path))
+
+    monkeypatch.setattr("polylogue.daemon.health.sqlite3.connect", guarded_connect)
+
+    alert = _check_fts_readiness_medium()
+
+    assert alert.severity == HealthSeverity.OK
+    assert any("sum(message_count)" in query for query in queries)
+
+
+def test_fts_readiness_flags_stale_extra_rows(
+    workspace_env: dict[str, Path],
+) -> None:
+    dbf = db_path()
+    dbf.parent.mkdir(parents=True, exist_ok=True)
+    _init_messages_db(dbf, message_rows=3, fts_rows=5)
+    conn = sqlite3.connect(str(dbf))
+    try:
+        conn.execute("CREATE TABLE conversation_stats (conversation_id TEXT PRIMARY KEY, message_count INTEGER)")
+        conn.execute("INSERT INTO conversation_stats VALUES ('c1', 3)")
+        conn.commit()
+    finally:
+        conn.close()
+
+    alert = _check_fts_readiness_medium()
+
+    assert alert.severity == HealthSeverity.ERROR
+    assert "stale rows" in alert.message
+
+
 # ---------------------------------------------------------------------------
 # MEDIUM: raw_failures (OK + degraded + RECOVERY)
 # ---------------------------------------------------------------------------
