@@ -388,11 +388,9 @@ def test_session_insight_materialization_campaign_reports_rebuild_counts(
 ) -> None:
     before = {
         "session_profiles_count": 1,
-        "session_profiles_fts_count": 1,
     }
     after = {
         "session_profiles_count": 5,
-        "session_profiles_fts_count": 5,
         "session_work_events_count": 8,
         "session_work_events_fts_count": 8,
         "session_phases_count": 3,
@@ -443,7 +441,6 @@ def test_session_insight_materialization_campaign_reports_rebuild_counts(
     assert result.db_stats == {
         "session_profiles_before": 1,
         "session_profiles_after": 5,
-        "session_profiles_fts_after": 5,
         "session_work_events_after": 8,
         "session_work_events_fts_after": 8,
         "session_phases_after": 3,

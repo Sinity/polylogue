@@ -99,13 +99,19 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
         entry for entry in registry.synthetic_benchmark_campaigns if entry.name == "session-insight-materialization"
     )
     assert session_insights.origin == "authored.synthetic-benchmark"
-    assert "session_insight_source_conversations" in session_insights.artifact_targets
-    assert "session_profile_rows" in session_insights.artifact_targets
-    assert "session_profile_merged_fts" in session_insights.artifact_targets
-    assert "session_work_event_rows" in session_insights.artifact_targets
-    assert "work_thread_fts" in session_insights.artifact_targets
-    assert "session_insight_rows" in session_insights.artifact_targets
-    assert "session_insight_fts" in session_insights.artifact_targets
+    assert session_insights.artifact_targets == (
+        "session_insight_source_conversations",
+        "session_profile_rows",
+        "session_work_event_rows",
+        "session_work_event_fts",
+        "session_phase_rows",
+        "work_thread_rows",
+        "work_thread_fts",
+        "session_tag_rollup_rows",
+        "day_session_summary_rows",
+        "session_insight_rows",
+        "session_insight_fts",
+    )
     assert session_insights.operation_targets == ("materialize-session-insights",)
     assert session_insights.tags == ("benchmark", "synthetic", "session-insights")
     daemon_live = next(
