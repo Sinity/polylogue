@@ -13,7 +13,7 @@ comment have explicit, fast unit coverage:
 The production code is exercised directly: ``_reconcile_embedding_config_change``
 and ``_embed_conversations_sync`` operate on real (in-memory) SQLite handles
 plus a mocked ``EmbedConversationOutcome`` stream for the embed loop, and
-``_embedding_readiness_info`` is exercised through the tiny ``cfg``/db seam.
+``embedding_readiness_info`` is exercised through the tiny ``cfg``/db seam.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from polylogue.daemon.convergence_stages import (
     _embed_conversations_sync,
     _reconcile_embedding_config_change,
 )
-from polylogue.daemon.status import _embedding_readiness_info
+from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.storage.embeddings.materialization import EmbedConversationOutcome
 from polylogue.storage.search_providers.sqlite_vec_runtime import (
     _reconcile_vec0_dimension,
@@ -143,7 +143,7 @@ def test_readiness_configured_reports_enabled_with_model_and_dimension(
         embedding_dimension=1024,
     )
     with patch("polylogue.config.load_polylogue_config", return_value=cfg):
-        info = _embedding_readiness_info()
+        info = embedding_readiness_info(db)
 
     assert info["embedding_enabled"] is True
     assert info["embedding_model"] == "voyage-4"
@@ -166,7 +166,7 @@ def test_readiness_unconfigured_reports_disabled_when_no_api_key(
 
     cfg = _FakeCfg(embedding_enabled=True, voyage_api_key=None)
     with patch("polylogue.config.load_polylogue_config", return_value=cfg):
-        info = _embedding_readiness_info()
+        info = embedding_readiness_info(db)
 
     assert info["embedding_enabled"] is False
     assert info["embedding_pending_count"] == 0
@@ -178,16 +178,26 @@ def test_readiness_unconfigured_reports_disabled_when_no_api_key(
 def test_readiness_unconfigured_when_enabled_flag_off(
     workspace_env: dict[str, Path],
 ) -> None:
-    """Even with an API key, ``embedding_enabled=False`` keeps readiness inactive."""
+    """Even disabled config still exposes the backlog instead of hiding it."""
     db = workspace_env["data_root"] / "polylogue" / "polylogue.db"
     db.parent.mkdir(parents=True, exist_ok=True)
-    db.touch()
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY)")
+        conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, conversation_id TEXT)")
+        conn.execute("CREATE TABLE embedding_status (conversation_id TEXT PRIMARY KEY, needs_reindex INTEGER)")
+        conn.execute("INSERT INTO conversations VALUES ('conv-1')")
+        conn.execute("INSERT INTO messages VALUES ('msg-1', 'conv-1')")
+        conn.commit()
 
     cfg = _FakeCfg(embedding_enabled=False, voyage_api_key="vk-live")
     with patch("polylogue.config.load_polylogue_config", return_value=cfg):
-        info = _embedding_readiness_info()
+        info = embedding_readiness_info(db)
 
     assert info["embedding_enabled"] is False
+    assert info["embedding_config_enabled"] is False
+    assert info["embedding_has_voyage_key"] is True
+    assert info["embedding_pending_count"] == 1
+    assert info["embedding_pending_message_count"] == 1
 
 
 # ── 3. embedding failure branch ────────────────────────────────────
@@ -206,12 +216,12 @@ def test_readiness_failure_branch_counts_error_message_rows(
         _seed_embedding_tables(conn, model="voyage-4", dimension=1024, conversation_ids=("conv-1", "conv-2"))
         conn.execute("UPDATE embedding_status SET error_message = 'voyage api 429' WHERE conversation_id = 'conv-1'")
         conn.execute("CREATE TABLE message_embeddings (message_id TEXT PRIMARY KEY)")
-        conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, content_hash TEXT)")
+        conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, conversation_id TEXT, content_hash TEXT)")
         conn.commit()
 
     cfg = _FakeCfg(embedding_enabled=True, voyage_api_key="vk-live")
     with patch("polylogue.config.load_polylogue_config", return_value=cfg):
-        info = _embedding_readiness_info()
+        info = embedding_readiness_info(db)
 
     assert info["embedding_failure_count"] == 1
 

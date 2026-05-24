@@ -21,8 +21,8 @@ from polylogue.mcp.context_pack import (
     _build_project_context,
     _summarize_action_events,
     redact_path,
+    select_context_pack_conversations,
 )
-from polylogue.mcp.query_contracts import MCPConversationQueryRequest
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -105,19 +105,18 @@ def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             # cast: at runtime the query store IS the full ConversationRepository
             repo = cast("ConversationRepository", hooks.get_query_store())
 
-            spec = MCPConversationQueryRequest(
-                query=query,
-                provider=provider,
+            selection = await select_context_pack_conversations(
+                ops.query_conversations,
+                hooks.clamp_limit,
+                project_path=project_path,
+                project_repo=project_repo,
                 since=since,
                 until=until,
-                cwd_prefix=project_path,
-                repo=project_repo,
-                sort="date",
-                reverse=True,
+                provider=provider,
+                query=query,
                 limit=conv_limit,
-            ).build_spec(hooks.clamp_limit)
-
-            conversations = await ops.query_conversations(spec)
+            )
+            conversations = selection.conversations
             total_matching = len(conversations)
             conv_ids = [str(conv.id) for conv in conversations]
 
@@ -156,6 +155,10 @@ def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 project_repo=project_repo,
                 provider=provider,
                 query=query,
+                query_matched=total_matching,
+                query_total=selection.query_total,
+                match_strategy=selection.match_strategy,
+                relaxed_filters=list(selection.relaxed_filters),
             )
 
             # Build conversation entries

@@ -77,10 +77,6 @@ async def _message_trigger_names_for_async(conn: aiosqlite.Connection) -> tuple[
     return ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
 
 
-# ---------------------------------------------------------------------------
-# Trigger suspension for bulk writes
-# ---------------------------------------------------------------------------
-
 _MESSAGE_FTS_TRIGGER_NAMES = (
     "messages_fts_ai",
     "messages_fts_ad",
@@ -573,48 +569,6 @@ def replace_fts_rows_for_messages_sync(
     conversation_ids = sorted({_indexed_message_parts(message)[1] for message in messages})
     for chunk in chunked(conversation_ids, size=500):
         conn.execute(delete_conversation_rows_sql(len(chunk)), tuple(chunk))
-
-    message_ids = [_indexed_message_parts(message)[0] for message in messages]
-    rowids_by_message_id: dict[str, int] = {}
-    for chunk in chunked(message_ids, size=500):
-        placeholders = ", ".join("?" for _ in chunk)
-        rows = conn.execute(
-            f"SELECT rowid, message_id FROM messages WHERE message_id IN ({placeholders})",
-            tuple(chunk),
-        ).fetchall()
-        rowids_by_message_id.update({row["message_id"]: row["rowid"] for row in rows})
-
-    with_rowid: list[tuple[int, str, str, str]] = []
-    without_rowid: list[tuple[str, str, str]] = []
-    missing_text_conversations: set[str] = set()
-    for message in messages:
-        payload_message_id, payload_conversation_id, payload_text = _indexed_message_parts(message)
-        if payload_text is None:
-            missing_text_conversations.add(payload_conversation_id)
-            continue
-        rowid = rowids_by_message_id.get(payload_message_id)
-        if rowid is not None:
-            with_rowid.append((rowid, payload_message_id, payload_conversation_id, payload_text))
-        else:
-            without_rowid.append((payload_message_id, payload_conversation_id, payload_text))
-
-    if with_rowid:
-        conn.executemany(
-            """
-            INSERT INTO messages_fts (rowid, message_id, conversation_id, text)
-            VALUES (?, ?, ?, ?)
-            """,
-            with_rowid,
-        )
-    if without_rowid:
-        conn.executemany(
-            """
-            INSERT INTO messages_fts (message_id, conversation_id, text)
-            VALUES (?, ?, ?)
-            """,
-            without_rowid,
-        )
-    for chunk in chunked(sorted(missing_text_conversations), size=500):
         conn.execute(insert_conversation_rows_sql(len(chunk)), tuple(chunk))
 
 
@@ -705,8 +659,28 @@ def message_fts_search_readiness_sync(conn: sqlite3.Connection) -> dict[str, int
             "triggers_present": True,
         }
     if recorded_state is not None:
-        readiness = message_fts_readiness_sync(conn, verify_total_rows=False)
-        return {**readiness, "ready": False}
+        readiness = message_fts_readiness_sync(conn, verify_total_rows=True)
+        if bool(readiness["ready"]):
+            with suppress(sqlite3.Error):
+                record_fts_surface_state_sync(
+                    conn,
+                    surface="messages_fts",
+                    state=READY,
+                    source_rows=int(readiness["total_rows"]),
+                    indexed_rows=int(readiness["indexed_rows"]),
+                    detail="stale freshness marker repaired during search readiness",
+                )
+        elif bool(readiness["exists"]):
+            with suppress(sqlite3.Error):
+                record_fts_surface_state_sync(
+                    conn,
+                    surface="messages_fts",
+                    state=STALE,
+                    source_rows=int(readiness["total_rows"]),
+                    indexed_rows=int(readiness["indexed_rows"]),
+                    detail="exact message readiness failed",
+                )
+        return readiness
     readiness = message_fts_readiness_sync(conn, verify_total_rows=True)
     if bool(readiness["ready"]):
         with suppress(sqlite3.Error):
@@ -786,8 +760,28 @@ async def message_fts_search_readiness_async(conn: aiosqlite.Connection) -> dict
             "triggers_present": True,
         }
     if recorded_state is not None:
-        readiness = await message_fts_readiness_async(conn, verify_total_rows=False)
-        return {**readiness, "ready": False}
+        readiness = await message_fts_readiness_async(conn, verify_total_rows=True)
+        if bool(readiness["ready"]):
+            with suppress(sqlite3.Error):
+                await record_fts_surface_state_async(
+                    conn,
+                    surface="messages_fts",
+                    state=READY,
+                    source_rows=int(readiness["total_rows"]),
+                    indexed_rows=int(readiness["indexed_rows"]),
+                    detail="stale freshness marker repaired during search readiness",
+                )
+        elif bool(readiness["exists"]):
+            with suppress(sqlite3.Error):
+                await record_fts_surface_state_async(
+                    conn,
+                    surface="messages_fts",
+                    state=STALE,
+                    source_rows=int(readiness["total_rows"]),
+                    indexed_rows=int(readiness["indexed_rows"]),
+                    detail="exact message readiness failed",
+                )
+        return readiness
     readiness = await message_fts_readiness_async(conn, verify_total_rows=True)
     if bool(readiness["ready"]):
         with suppress(sqlite3.Error):

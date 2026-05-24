@@ -4,6 +4,13 @@ from __future__ import annotations
 
 EMBEDDED_CONVERSATIONS_SQL = "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 0"
 PENDING_CONVERSATIONS_SQL = "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 1"
+PENDING_MESSAGES_SQL = """
+    SELECT COUNT(*)
+    FROM messages m
+    JOIN conversations c ON c.conversation_id = m.conversation_id
+    LEFT JOIN embedding_status e ON e.conversation_id = c.conversation_id
+    WHERE e.conversation_id IS NULL OR e.needs_reindex = 1
+"""
 EMBEDDED_MESSAGES_SQL = "SELECT COUNT(*) FROM message_embeddings"
 MISSING_META_MESSAGES_SQL = """
     SELECT COUNT(*)
@@ -50,7 +57,7 @@ STORED_MODEL_SQL = """
     WHERE target_type = 'message'
     ORDER BY model
 """
-EMBEDDING_TOTAL_TOKENS_SQL = """
+TOTAL_MESSAGES_SQL = """
     SELECT COUNT(*) AS message_count
-    FROM message_embeddings
+    FROM messages
 """

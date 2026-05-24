@@ -53,6 +53,7 @@ class _IngestBatchSummary:
     skipped_raw_ids: set[str] = field(default_factory=set)
     processed_ids: set[str] = field(default_factory=set)
     changed_conversation_ids: list[str] = field(default_factory=list)
+    fts_repair_conversation_ids: list[str] = field(default_factory=list)
     counts: dict[str, int] = field(
         default_factory=lambda: {
             "conversations": 0,

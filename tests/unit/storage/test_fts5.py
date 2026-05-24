@@ -986,7 +986,16 @@ class TestFTS5Provider:
         assert len(results) == 1
 
         # Re-index with different content
+        conv_v2 = make_conversation(
+            "incr-conv",
+            title="Incremental Test",
+            created_at="1000",
+            updated_at="1001",
+            provider_meta={"source": "inbox"},
+            content_hash="updated-content-hash",
+        )
         msgs_v2 = [make_message("incr-msg-1", "incr-conv", text="Updated content about oranges", timestamp="1000")]
+        await storage_repository.save_conversation(conversation=conv_v2, messages=msgs_v2, attachments=[])
         fts_provider.index(msgs_v2)
 
         # "apples" should no longer be found

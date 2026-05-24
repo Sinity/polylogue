@@ -309,6 +309,18 @@ class TestLexicalSemanticShortcuts:
         assert spec.similar_text == "explain this code"
         assert spec.query_terms == ()
 
+    def test_semantic_promotes_click_context_query_terms(self) -> None:
+        import click
+
+        ctx = click.Context(click.Command("polylogue"))
+        ctx.params = {"semantic": True, "similar_text": None}
+        ctx.meta["polylogue_query_terms"] = ("explain this", "code")
+
+        spec = RootModeRequest.from_context(ctx).query_spec()
+
+        assert spec.similar_text == "explain this code"
+        assert spec.query_terms == ()
+
     def test_default_keeps_query_terms_unchanged(self) -> None:
         req = RootModeRequest.from_params({"query": ("foo",)})
         spec = req.query_spec()

@@ -207,7 +207,9 @@ def test_execute_query_stream_target_resolution_contract(
 async def test_async_execute_query_errors_for_similar_without_vector_support() -> None:
     from polylogue.cli.query import async_execute_query
 
-    env = _make_env(repo=MagicMock(), config=MagicMock())
+    repo = MagicMock()
+    repo.get_archive_stats = AsyncMock(return_value=SimpleNamespace(embedded_messages=1, embedded_conversations=1))
+    env = _make_env(repo=repo, config=MagicMock())
 
     with (
         patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
@@ -220,8 +222,8 @@ async def test_async_execute_query_errors_for_similar_without_vector_support() -
     assert exc_info.value.code == 1
     mock_echo.assert_called_once()
     assert "requires vector search support" in mock_echo.call_args.args[0]
-    assert "initialization failed or is disabled" in mock_echo.call_args.args[0]
-    assert "POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS=1/true/yes" in mock_echo.call_args.args[0]
+    assert "initialization failed or embeddings are disabled" in mock_echo.call_args.args[0]
+    assert "polylogue embed status" in mock_echo.call_args.args[0]
 
 
 @pytest.mark.asyncio
@@ -243,7 +245,7 @@ async def test_async_execute_query_errors_for_similar_without_embeddings() -> No
     assert exc_info.value.code == 1
     mock_echo.assert_called_once()
     assert "requires existing embeddings" in mock_echo.call_args.args[0]
-    assert "POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS=1/true/yes" in mock_echo.call_args.args[0]
+    assert "polylogue embed backfill" in mock_echo.call_args.args[0]
 
 
 @pytest.mark.asyncio

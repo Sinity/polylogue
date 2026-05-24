@@ -8,7 +8,6 @@ import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.shared.types import AppEnv
-from polylogue.core.json import dumps as json_dumps
 from polylogue.mcp.context_pack import (
     ContextPackConversation,
     ContextPackDateRange,
@@ -20,11 +19,22 @@ from polylogue.mcp.context_pack import (
     ContextPackQueryContext,
     _build_project_context,
     _summarize_action_events,
+    select_context_pack_conversations,
 )
-from polylogue.mcp.query_contracts import MCPConversationQueryRequest
+from polylogue.surfaces.payloads import serialize_surface_payload
 
 _DEFAULT_MAX_CONVERSATIONS = 5
 _DEFAULT_MAX_MESSAGES = 20
+
+
+def _clamp_context_pack_limit(value: int | object) -> int:
+    if isinstance(value, bool):
+        return 1
+    if isinstance(value, int):
+        return max(1, min(value, 20))
+    if isinstance(value, str | bytes | bytearray):
+        return max(1, min(int(value), 20))
+    return 1
 
 
 @click.command("context-pack")
@@ -68,19 +78,20 @@ def context_pack_command(
     ops = env.operations
     repo = env.repository
 
-    spec = MCPConversationQueryRequest(
-        query=query,
-        provider=provider,
-        since=since,
-        until=until,
-        cwd_prefix=project_path,
-        repo=project_repo,
-        sort="date",
-        reverse=True,
-        limit=conv_limit,
-    ).build_spec(lambda x: max(1, min(int(x) + 0, 20)))  # type: ignore[arg-type]
-
-    conversations = run_coroutine_sync(ops.query_conversations(spec))
+    selection = run_coroutine_sync(
+        select_context_pack_conversations(
+            ops.query_conversations,
+            _clamp_context_pack_limit,
+            project_path=project_path,
+            project_repo=project_repo,
+            since=since,
+            until=until,
+            provider=provider,
+            query=query,
+            limit=conv_limit,
+        )
+    )
+    conversations = selection.conversations
     total_matching = len(conversations)
     conv_ids = [str(conv.id) for conv in conversations]
 
@@ -159,6 +170,10 @@ def context_pack_command(
             project_repo=project_repo,
             provider=provider,
             query=query,
+            query_matched=total_matching,
+            query_total=selection.query_total,
+            match_strategy=selection.match_strategy,
+            relaxed_filters=list(selection.relaxed_filters),
         ),
         conversations=pack_conversations,
         action_summaries=action_summaries,
@@ -168,4 +183,4 @@ def context_pack_command(
         total_tool_calls=total_tools,
     )
 
-    click.echo(json_dumps(payload))
+    click.echo(serialize_surface_payload(payload))

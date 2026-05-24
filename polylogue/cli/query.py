@@ -424,24 +424,25 @@ async def _execute_query_plan(
     repo: QueryExecutionStore,
     plan: QueryExecutionPlan,
 ) -> None:
-    vector_provider = _create_query_vector_provider(config, db_path=repo.backend.db_path)
-
-    plan = await _maybe_elevate_to_hybrid(plan, vector_provider=vector_provider, repo=repo)
-
-    if plan.selection.similar_text and vector_provider is None:
-        click.echo(
-            "Error: --similar requires vector search support, but vector provider initialization failed or is disabled. Check VOYAGE_API_KEY and POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS=1/true/yes.",
-            err=True,
-        )
-        raise SystemExit(1)
+    vector_provider: VectorProvider | None = None
     if plan.selection.similar_text:
         archive_stats = await repo.get_archive_stats()
         if archive_stats.embedded_messages <= 0:
             click.echo(
-                "Error: --similar requires existing embeddings. Set POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS=1/true/yes and let embeddings build before querying.",
+                "Error: --similar/--semantic requires existing embeddings. Run `polylogue embed status`, then `polylogue embed backfill` or let polylogued converge after enabling embeddings.",
                 err=True,
             )
             raise SystemExit(1)
+        vector_provider = _create_query_vector_provider(config, db_path=repo.backend.db_path)
+        if vector_provider is None:
+            click.echo(
+                "Error: --similar/--semantic requires vector search support, but vector provider initialization failed or embeddings are disabled. Run `polylogue embed status`, then `polylogue embed enable` if needed.",
+                err=True,
+            )
+            raise SystemExit(1)
+    else:
+        vector_provider = _create_query_vector_provider(config, db_path=repo.backend.db_path)
+        plan = await _maybe_elevate_to_hybrid(plan, vector_provider=vector_provider, repo=repo)
 
     try:
         filter_chain = plan.selection.build_filter(

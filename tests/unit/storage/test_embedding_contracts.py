@@ -56,12 +56,21 @@ _CONVERSATIONS_DDL = """
     );
 """
 
+_MESSAGES_DDL = """
+    CREATE TABLE IF NOT EXISTS messages (
+        message_id       TEXT PRIMARY KEY,
+        conversation_id  TEXT NOT NULL,
+        text             TEXT
+    );
+"""
+
 
 def _setup_minimal_embedding_db(conn: sqlite3.Connection) -> None:
     """Create the minimum tables needed for embedding stats reading."""
     conn.executescript(_EMBEDDING_STATUS_DDL)
     conn.executescript(_MESSAGE_EMBEDDINGS_DDL)
     conn.executescript(_CONVERSATIONS_DDL)
+    conn.executescript(_MESSAGES_DDL)
     conn.commit()
 
 
@@ -82,6 +91,7 @@ def _assert_all_pending(stats: EmbeddingStatsSnapshot, _conn: sqlite3.Connection
     assert stats.embedded_conversations == 0
     assert stats.embedded_messages == 0
     assert stats.pending_conversations >= 1
+    assert stats.pending_messages >= 1
 
 
 def _assert_partially_embedded(stats: EmbeddingStatsSnapshot, _conn: sqlite3.Connection) -> None:
@@ -209,6 +219,10 @@ def test_embedding_status_lifecycle(
                 "INSERT INTO conversations (conversation_id, provider_name, title) VALUES (?, ?, ?)",
                 (conv_id, "test", f"Test {conv_id}"),
             )
+            conn.execute(
+                "INSERT INTO messages (message_id, conversation_id, text) VALUES (?, ?, ?)",
+                (f"{conv_id}-msg-1", conv_id, "hello from embedding status test"),
+            )
         conn.commit()
 
         # Seed embedding_status rows
@@ -236,6 +250,28 @@ def test_embedding_status_lifecycle(
 
         stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
         assert_fn(stats, conn)
+    finally:
+        conn.close()
+
+
+def test_missing_embedding_status_rows_count_as_pending_messages() -> None:
+    """Never-embedded conversations are pending even before embedding_status exists for them."""
+    conn = sqlite3.connect(":memory:")
+    try:
+        _setup_minimal_embedding_db(conn)
+        conn.execute(
+            "INSERT INTO conversations (conversation_id, provider_name, title) VALUES (?, ?, ?)",
+            ("conv-new", "test", "New"),
+        )
+        conn.execute(
+            "INSERT INTO messages (message_id, conversation_id, text) VALUES (?, ?, ?)",
+            ("msg-new", "conv-new", "this message has never been embedded"),
+        )
+        conn.commit()
+
+        stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
+        assert stats.pending_conversations == 1
+        assert stats.pending_messages == 1
     finally:
         conn.close()
 

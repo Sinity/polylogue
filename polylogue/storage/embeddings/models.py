@@ -10,6 +10,7 @@ class EmbeddingStatsSnapshot:
     embedded_conversations: int = 0
     embedded_messages: int = 0
     pending_conversations: int = 0
+    pending_messages: int = 0
     stale_messages: int = 0
     messages_missing_provenance: int = 0
     oldest_embedded_at: str | None = None

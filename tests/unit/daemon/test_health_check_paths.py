@@ -309,6 +309,9 @@ def test_fts_readiness_counts_docsize_not_virtual_table(
         def close(self) -> None:
             self._inner.close()
 
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
     def guarded_connect(path: str) -> GuardedConnection:
         return GuardedConnection(original_connect(path))
 
@@ -351,6 +354,9 @@ def test_fts_readiness_does_not_accept_stats_when_messages_drift(
 
         def close(self) -> None:
             self._inner.close()
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
 
     def guarded_connect(path: str) -> GuardedConnection:
         return GuardedConnection(original_connect(path))
@@ -706,8 +712,8 @@ def test_embedding_coverage_error_when_enabled_with_failures(
 
     monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: _Cfg())
     monkeypatch.setattr(
-        "polylogue.daemon.status._embedding_readiness_info",
-        lambda: {"embedding_coverage_percent": 12.5, "embedding_failure_count": 7},
+        "polylogue.daemon.health.embedding_readiness_info",
+        lambda _db_file: {"embedding_coverage_percent": 12.5, "embedding_failure_count": 7},
     )
     alert = _check_embedding_coverage_expensive()
     assert alert.severity == HealthSeverity.ERROR

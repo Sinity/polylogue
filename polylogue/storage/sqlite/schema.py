@@ -14,7 +14,6 @@ import sqlite3
 import aiosqlite
 
 from polylogue.errors import SchemaIncompatibleError
-from polylogue.logging import get_logger
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_async, ensure_runtime_indexes_sync
 from polylogue.storage.sqlite.schema_bootstrap import (
     SCHEMA_DDL,
@@ -26,8 +25,6 @@ from polylogue.storage.sqlite.schema_bootstrap import (
     ensure_vec0_table_async,
     schema_version_mismatch_message,
 )
-
-logger = get_logger(__name__)
 
 
 def assert_supported_archive_layout(conn: sqlite3.Connection) -> None:
@@ -68,7 +65,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA optimize")
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
-        logger.debug("Created fresh schema v%s", SCHEMA_VERSION)
         return
 
     if decision.action == "version_mismatch":

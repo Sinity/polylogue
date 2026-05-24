@@ -22,23 +22,28 @@ class RootModeRequest:
 
     @classmethod
     def from_context(cls, ctx: click.Context) -> RootModeRequest:
-        query_terms = coerce_query_terms(ctx.meta.get("polylogue_query_terms") or ctx.params.get("query_term"))
-        return cls(params=dict(ctx.params), query_terms=query_terms)
+        params = dict(ctx.params)
+        query_terms = coerce_query_terms(ctx.meta.get("polylogue_query_terms") or params.pop("query_term", ()))
+        return cls._from_normalized_params(params, query_terms)
 
     @classmethod
     def from_params(cls, params: Mapping[str, object]) -> RootModeRequest:
         normalized_params = dict(params)
         query_terms = coerce_query_terms(normalized_params.pop("query", ()))
+        return cls._from_normalized_params(normalized_params, query_terms)
+
+    @classmethod
+    def _from_normalized_params(cls, params: dict[str, object], query_terms: tuple[str, ...]) -> RootModeRequest:
         # --lexical and --semantic are ergonomic shortcuts that desugar
         # into existing query knobs so downstream specs stay unchanged.
-        lexical = bool(normalized_params.pop("lexical", False))
-        semantic = bool(normalized_params.pop("semantic", False))
+        lexical = bool(params.pop("lexical", False))
+        semantic = bool(params.pop("semantic", False))
         if semantic and query_terms:
-            normalized_params["similar_text"] = " ".join(query_terms)
+            params["similar_text"] = " ".join(query_terms)
             query_terms = ()
         if lexical:
-            normalized_params["retrieval_lane"] = "dialogue"
-        return cls(params=normalized_params, query_terms=query_terms)
+            params["retrieval_lane"] = "dialogue"
+        return cls(params=params, query_terms=query_terms)
 
     def query_params(self) -> dict[str, object]:
         params = dict(self.params)
