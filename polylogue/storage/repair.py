@@ -20,7 +20,11 @@ from polylogue.maintenance.targets import (
 )
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.action_events.artifacts import ActionEventArtifactState
-from polylogue.storage.insights.session.runtime import SessionInsightReadyFlag, SessionInsightStatusSnapshot
+from polylogue.storage.insights.session.repair_assessment import (
+    assess_session_insight_repairs,
+    session_insight_fts_ready,
+    session_insight_status_ready,
+)
 from polylogue.storage.message_type_backfill import (
     BackfillResult,
     count_messages_by_type_sync,
@@ -29,18 +33,6 @@ from polylogue.storage.message_type_backfill import (
 
 logger = get_logger(__name__)
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
-
-_SESSION_INSIGHT_READY_FLAGS: tuple[SessionInsightReadyFlag, ...] = (
-    "profile_rows_ready",
-    "work_event_inference_rows_ready",
-    "work_event_inference_fts_ready",
-    "phase_inference_rows_ready",
-    "threads_ready",
-    "threads_fts_ready",
-    "tag_rollups_ready",
-    "day_summaries_ready",
-    "week_summaries_ready",
-)
 
 
 def offline_maintenance_blockers(
@@ -82,16 +74,6 @@ class RepairResult:
                 "detail": self.detail,
             }
         )
-
-
-@dataclass(slots=True, frozen=True)
-class _SessionInsightRepairAssessment:
-    row_debt: int
-    fts_debt: int
-
-    @property
-    def pending(self) -> int:
-        return self.row_debt + self.fts_debt
 
 
 # ---------------------------------------------------------------------------
@@ -201,58 +183,6 @@ def session_insight_repair_count(derived_statuses: dict[str, DerivedModelStatus]
         total += max(0, int(s.stale_rows or 0))
         total += max(0, int(s.orphan_rows or 0))
     return total
-
-
-def _positive_count(value: int) -> int:
-    return max(0, value)
-
-
-def _fts_repair_count(*, source_rows: int, indexed_rows: int, duplicates: int) -> int:
-    return _positive_count(source_rows - indexed_rows) + _positive_count(duplicates)
-
-
-def _session_insight_row_repair_count(status: SessionInsightStatusSnapshot) -> int:
-    return (
-        status.missing_profile_row_count
-        + status.stale_profile_row_count
-        + status.orphan_profile_row_count
-        + status.stale_work_event_inference_count
-        + status.orphan_work_event_inference_count
-        + status.stale_phase_inference_count
-        + status.orphan_phase_inference_count
-        + status.stale_thread_count
-        + status.orphan_thread_count
-        + status.stale_tag_rollup_count
-        + status.stale_day_summary_count
-    )
-
-
-def _session_insight_fts_repair_count(status: SessionInsightStatusSnapshot) -> int:
-    return sum(
-        (
-            _fts_repair_count(
-                source_rows=status.work_event_inference_count,
-                indexed_rows=status.work_event_inference_fts_count,
-                duplicates=status.work_event_inference_fts_duplicate_count,
-            ),
-            _fts_repair_count(
-                source_rows=status.thread_count,
-                indexed_rows=status.thread_fts_count,
-                duplicates=status.thread_fts_duplicate_count,
-            ),
-        )
-    )
-
-
-def _assess_session_insight_repairs(status: SessionInsightStatusSnapshot) -> _SessionInsightRepairAssessment:
-    return _SessionInsightRepairAssessment(
-        row_debt=_session_insight_row_repair_count(status),
-        fts_debt=_session_insight_fts_repair_count(status),
-    )
-
-
-def _session_insight_status_ready(status: SessionInsightStatusSnapshot) -> bool:
-    return all(status.ready_flag(flag) for flag in _SESSION_INSIGHT_READY_FLAGS)
 
 
 def action_event_repair_count(derived_statuses: dict[str, DerivedModelStatus]) -> int:
@@ -805,6 +735,7 @@ def repair_session_insights(
     set instead of touching the full archive — used by the maintenance
     planner to honor :class:`MaintenanceScopeFilter.conversation_ids`.
     """
+    from polylogue.storage.fts.fts_lifecycle import rebuild_session_insight_fts_sync
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
     from polylogue.storage.insights.session.status import session_insight_status_sync
     from polylogue.storage.sqlite.connection import connection_context
@@ -812,7 +743,7 @@ def repair_session_insights(
     try:
         with connection_context(None) as conn:
             status = session_insight_status_sync(conn)
-            assessment = _assess_session_insight_repairs(status)
+            assessment = assess_session_insight_repairs(status)
 
             if dry_run:
                 pending = (
@@ -829,7 +760,7 @@ def repair_session_insights(
                     else f"Would: rebuild session insights ({pending:,} pending items)",
                 )
 
-            if conversation_ids is None and assessment.pending == 0 and _session_insight_status_ready(status):
+            if conversation_ids is None and assessment.pending == 0 and session_insight_status_ready(status):
                 return _repair_result(
                     "session_insights",
                     repaired_count=0,
@@ -837,20 +768,32 @@ def repair_session_insights(
                     detail="Session insights already ready",
                 )
 
-            rebuilt = rebuild_session_insights_sync(
-                conn,
-                conversation_ids=conversation_ids,
-                progress_callback=progress_callback,
-                progress_total=progress_total,
-            )
-            conn.commit()
+            if conversation_ids is None and assessment.row_debt == 0 and assessment.fts_debt > 0:
+                rebuild_session_insight_fts_sync(conn)
+                conn.commit()
+                rebuilt_count = assessment.fts_debt
+            else:
+                rebuilt = rebuild_session_insights_sync(
+                    conn,
+                    conversation_ids=conversation_ids,
+                    progress_callback=progress_callback,
+                    progress_total=progress_total,
+                )
+                conn.commit()
+                rebuilt_count = rebuilt.total()
             refreshed = session_insight_status_sync(conn)
+            if conversation_ids is None and not session_insight_fts_ready(refreshed):
+                fts_debt = assess_session_insight_repairs(refreshed).fts_debt
+                rebuild_session_insight_fts_sync(conn)
+                conn.commit()
+                rebuilt_count += fts_debt
+                refreshed = session_insight_status_sync(conn)
             # A narrowed rebuild only attests its own slice; do not
             # demand global readiness for a scope-filtered call.
-            success = True if conversation_ids is not None else _session_insight_status_ready(refreshed)
+            success = True if conversation_ids is not None else session_insight_status_ready(refreshed)
             return _repair_result(
                 "session_insights",
-                repaired_count=rebuilt.total(),
+                repaired_count=rebuilt_count,
                 success=success,
                 detail="Session insights ready" if success else "Session insights still incomplete",
             )

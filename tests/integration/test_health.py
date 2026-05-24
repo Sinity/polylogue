@@ -842,6 +842,74 @@ class TestMaintenanceSelection:
         assert profile_count == 1
         assert thread_count == 1
 
+    def test_session_insight_repair_cleans_duplicate_fts_rows(self, cli_workspace: CliWorkspace) -> None:
+        """Session-insight repair must finish when only insight FTS debt remains."""
+        from polylogue.config import get_config
+        from polylogue.storage.insights.session.status import session_insight_status_sync
+        from polylogue.storage.repair import repair_session_insights
+        from polylogue.storage.sqlite.connection import connection_context
+        from tests.infra.storage_records import ConversationBuilder
+
+        config = get_config()
+        db_path = cli_workspace["db_path"]
+        (
+            ConversationBuilder(db_path, "conv-insight-fts")
+            .provider("claude-code")
+            .title("Duplicate Insight FTS")
+            .add_message("u1", role="user", text="Implement the data repair")
+            .add_message("a1", role="assistant", text="Updated the session insight materializer")
+            .save()
+        )
+        assert repair_session_insights(config).success is True
+
+        with connection_context(None) as conn:
+            event = conn.execute(
+                """
+                SELECT event_id, conversation_id, provider_name, kind, search_text
+                FROM session_work_events
+                LIMIT 1
+                """
+            ).fetchone()
+            thread = conn.execute(
+                """
+                SELECT thread_id, root_id, search_text
+                FROM work_threads
+                LIMIT 1
+                """
+            ).fetchone()
+            assert event is not None
+            assert thread is not None
+            conn.execute(
+                """
+                INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, kind, text)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    event["event_id"],
+                    event["conversation_id"],
+                    event["provider_name"],
+                    event["kind"],
+                    event["search_text"],
+                ),
+            )
+            conn.execute(
+                "INSERT INTO work_threads_fts (thread_id, root_id, text) VALUES (?, ?, ?)",
+                (thread["thread_id"], thread["root_id"], thread["search_text"]),
+            )
+            conn.commit()
+            status = session_insight_status_sync(conn)
+            assert status.ready_flag("work_event_inference_fts_ready") is False
+            assert status.ready_flag("threads_fts_ready") is False
+
+        result = repair_session_insights(config)
+
+        assert result.success is True
+        assert result.detail == "Session insights ready"
+        with connection_context(None) as conn:
+            status = session_insight_status_sync(conn)
+        assert status.ready_flag("work_event_inference_fts_ready") is True
+        assert status.ready_flag("threads_fts_ready") is True
+
     def test_run_selected_maintenance_idempotency_after_full_run(self, cli_workspace: CliWorkspace) -> None:
         """Selected maintenance twice should find 0 issues on second run."""
         from polylogue.config import get_config

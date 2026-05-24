@@ -201,6 +201,50 @@ def test_rebuild_restores_insight_fts_surfaces(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_targeted_rebuild_restores_only_insight_fts_surfaces(tmp_path: Path) -> None:
+    from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync, rebuild_session_insight_fts_sync
+
+    conn = _bootstrap_fts_db(tmp_path / "fts.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO session_work_events (
+                event_id, conversation_id, provider_name, kind, search_text
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            ("event-1", "conversation-1", "codex", "implementation", "fixed daemon locks"),
+        )
+        conn.execute(
+            "INSERT INTO work_threads (thread_id, root_id, search_text) VALUES (?, ?, ?)",
+            ("thread-1", "conversation-1", "daemon convergence"),
+        )
+        conn.execute(
+            """
+            INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, kind, text)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("event-1", "conversation-1", "codex", "implementation", "duplicate event row"),
+        )
+        conn.execute(
+            "INSERT INTO work_threads_fts (thread_id, root_id, text) VALUES (?, ?, ?)",
+            ("thread-1", "conversation-1", "duplicate thread row"),
+        )
+        conn.commit()
+
+        snapshot = fts_invariant_snapshot_sync(conn)
+        assert snapshot.session_work_events.ready is False
+        assert snapshot.work_threads.ready is False
+
+        rebuild_session_insight_fts_sync(conn)
+        conn.commit()
+
+        snapshot = fts_invariant_snapshot_sync(conn)
+        assert snapshot.session_work_events.ready is True
+        assert snapshot.work_threads.ready is True
+    finally:
+        conn.close()
+
+
 def test_concurrent_suspend_restore_threads_converge(tmp_path: Path) -> None:
     """Two threads alternating suspend/restore on independent connections must end with all triggers present."""
     db_file = tmp_path / "fts.db"
