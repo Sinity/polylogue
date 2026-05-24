@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import sqlite3
 
-from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync
+from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync, restore_fts_triggers_sync
 from polylogue.storage.fts.sql import (
     ACTION_FTS_REBUILD_SQL,
     delete_action_rows_sql,
     delete_conversation_rows_sql,
     insert_action_rows_sql,
+    insert_conversation_rows_sql,
     insert_missing_action_rows_sql,
 )
 from tests.infra.storage_records import make_conversation, make_message, store_records
@@ -22,6 +23,8 @@ def test_incremental_fts_repair_deletes_via_base_rowid(test_conn: sqlite3.Connec
 
     assert "DELETE FROM messages_fts WHERE rowid IN" in message_delete_sql
     assert "DELETE FROM messages_fts WHERE conversation_id" not in message_delete_sql
+    message_insert_sql = " ".join(insert_conversation_rows_sql(1).split())
+    assert "SELECT DISTINCT conversation_id FROM raw_target_conversations" in message_insert_sql
     assert "DELETE FROM action_events_fts WHERE rowid IN" in action_delete_sql
     assert "DELETE FROM action_events_fts WHERE conversation_id" not in action_delete_sql
     assert "INSERT INTO action_events_fts (rowid," in " ".join(insert_action_rows_sql(1).split())
@@ -36,6 +39,31 @@ def test_incremental_fts_repair_deletes_via_base_rowid(test_conn: sqlite3.Connec
         row[3] for row in test_conn.execute(f"EXPLAIN QUERY PLAN {delete_conversation_rows_sql(1)}", ("conv1",))
     )
     assert "SEARCH messages USING" in plan
+
+
+def test_message_fts_repair_dedupes_duplicate_conversation_ids(test_conn: sqlite3.Connection) -> None:
+    restore_fts_triggers_sync(test_conn)
+    conv = make_conversation("conv-message-repair-dupe", title="Message repair")
+    msg = make_message("msg-message-repair-dupe", "conv-message-repair-dupe", text="repair duplicate needle")
+    store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
+
+    repair_message_fts_index_sync(
+        test_conn,
+        [
+            "conv-message-repair-dupe",
+            "conv-message-repair-dupe",
+        ],
+    )
+
+    row = test_conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM messages_fts_docsize
+        WHERE id = (SELECT rowid FROM messages WHERE message_id = ?)
+        """,
+        ("msg-message-repair-dupe",),
+    ).fetchone()
+    assert row[0] == 1
 
 
 def test_action_fts_trigger_rowids_track_action_event_rowids(test_conn: sqlite3.Connection) -> None:

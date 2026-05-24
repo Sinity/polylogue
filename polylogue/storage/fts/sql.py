@@ -85,8 +85,12 @@ def delete_conversation_rows_sql(chunk_size: int) -> str:
 def insert_conversation_rows_sql(chunk_size: int) -> str:
     values = ", ".join("(?)" for _ in range(chunk_size))
     return f"""
-        WITH target_conversations(conversation_id) AS (
+        WITH raw_target_conversations(conversation_id) AS (
             VALUES {values}
+        ),
+        target_conversations AS (
+            SELECT DISTINCT conversation_id
+            FROM raw_target_conversations
         ),
         message_parts AS (
             SELECT m.message_id, m.text AS part, -1 AS block_index, 0 AS part_index
