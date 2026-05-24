@@ -82,10 +82,6 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
         artifact_targets=(
             "session_insight_source_conversations",
             "session_profile_rows",
-            "session_profile_merged_fts",
-            "session_profile_evidence_fts",
-            "session_profile_inference_fts",
-            "session_profile_enrichment_fts",
             "session_work_event_rows",
             "session_work_event_fts",
             "session_phase_rows",

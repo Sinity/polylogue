@@ -77,7 +77,7 @@ async def _ameasure(coro: Awaitable[_T]) -> tuple[float, _T]:
 
 
 def _session_insight_table_counts(db_path: Path) -> dict[str, int]:
-    """Collect row counts for durable session-insight tables and FTS projections."""
+    """Collect row counts for durable session-insight tables and live FTS projections."""
     from polylogue.storage.sqlite.connection import open_connection
 
     stats: dict[str, int] = {}
@@ -86,7 +86,6 @@ def _session_insight_table_counts(db_path: Path) -> dict[str, int]:
     with open_connection(db_path) as conn:
         for table in (
             "session_profiles",
-            "session_profiles_fts",
             "session_work_events",
             "session_work_events_fts",
             "session_phases",
@@ -336,7 +335,6 @@ def run_session_insight_materialization_campaign(db_path: Path) -> CampaignResul
         db_stats={
             "session_profiles_before": stats_before.get("session_profiles_count", 0),
             "session_profiles_after": stats_after.get("session_profiles_count", 0),
-            "session_profiles_fts_after": stats_after.get("session_profiles_fts_count", 0),
             "session_work_events_after": stats_after.get("session_work_events_count", 0),
             "session_work_events_fts_after": stats_after.get("session_work_events_fts_count", 0),
             "session_phases_after": stats_after.get("session_phases_count", 0),

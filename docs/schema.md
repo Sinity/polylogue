@@ -70,7 +70,7 @@ First-class structured content within messages. One row per block.
 | `tool_name` | TEXT | Tool name (for `tool_use` blocks) |
 | `tool_id` | TEXT | Tool call ID |
 | `tool_input` | TEXT | Tool input JSON |
-| `media_type` | TEXT | MIME type for images/documents |
+| `metadata` | TEXT | Block metadata JSON; carries media type for image/document blocks |
 | `semantic_type` | TEXT | Inferred semantic type: `file_read`, `file_write`, `file_edit`, `shell`, `git`, `search`, `web`, `agent`, `subagent`, `thinking`, `other` |
 
 ### action_events
@@ -120,15 +120,13 @@ Used for pushdown filters (`--min-messages`, `--min-words`, `--has-tool-use`,
 |---------------|---------|-----------|
 | `messages_fts` | Message text | `unicode61` |
 | `action_events_fts` | Action event text | `unicode61` |
-| `session_profiles_fts` | Session profile search text | `unicode61` |
-| `session_profile_evidence_fts` | Profile evidence text | `unicode61` |
-| `session_profile_inference_fts` | Profile inference text | `unicode61` |
-| `session_profile_enrichment_fts` | Profile enrichment text | `unicode61` |
 | `session_work_events_fts` | Work event search text | `unicode61` |
 | `work_threads_fts` | Thread search text | `unicode61` |
 
-All FTS tables use `unicode61` tokenizer (no porter stemmer). Tables are
-maintained via AFTER INSERT/UPDATE/DELETE triggers on their base tables.
+All FTS tables use `unicode61` tokenizer (no porter stemmer). The message and
+action-event indexes are external-content FTS5 tables backed by
+`messages`/`action_events`; FTS sync triggers maintain the indexes and startup
+repair verifies the trigger set.
 
 ## Vector Table
 
