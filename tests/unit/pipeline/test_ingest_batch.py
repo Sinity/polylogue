@@ -1099,7 +1099,44 @@ def test_select_ingest_worker_count_respects_limit(monkeypatch: pytest.MonkeyPat
     assert worker_count == 4
 
 
-def test_drain_ready_conversation_entries_preserves_late_parent_fk(tmp_path: Path) -> None:
+def test_drain_ready_conversation_entries_writes_missing_parent_without_buffering(tmp_path: Path) -> None:
+    with open_connection(tmp_path / "ingest.db") as conn:
+        c_msg = _message_tuple(
+            "msg-c",
+            "codex:child",
+            role="user",
+            text="child",
+            content_hash="hash-c",
+            sort_key=1.0,
+        )
+        child = _conversation_data(
+            "codex:child",
+            content_hash="hash-child",
+            parent_conversation_id="codex:parent",
+            message_tuples=[c_msg],
+        )
+
+        summary = _IngestBatchSummary()
+        materialized_ids: set[str] = set()
+
+        _drain_ready_conversation_entries(
+            conn,
+            [("raw-child", child)],
+            summary=summary,
+            materialized_ids=materialized_ids,
+        )
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT parent_conversation_id FROM conversations WHERE conversation_id = ?",
+            ("codex:child",),
+        ).fetchone()
+        assert row is not None
+        assert row["parent_conversation_id"] is None
+        assert child.message_tuples == []
+
+
+def test_drain_ready_conversation_entries_preserves_same_result_parent_fk(tmp_path: Path) -> None:
     with open_connection(tmp_path / "ingest.db") as conn:
         p_msg = _message_tuple(
             "msg-p",
@@ -1129,25 +1166,11 @@ def test_drain_ready_conversation_entries_preserves_late_parent_fk(tmp_path: Pat
             message_tuples=[c_msg],
         )
 
-        summary = _IngestBatchSummary()
-        materialized_ids: set[str] = set()
-        pending_by_parent: dict[str, list[tuple[str, ConversationData]]] = {}
-
         _drain_ready_conversation_entries(
             conn,
-            [("raw-child", child)],
-            summary=summary,
-            materialized_ids=materialized_ids,
-            pending_by_parent=pending_by_parent,
-        )
-        assert list(pending_by_parent) == ["codex:parent"]
-
-        _drain_ready_conversation_entries(
-            conn,
-            [("raw-parent", parent)],
-            summary=summary,
-            materialized_ids=materialized_ids,
-            pending_by_parent=pending_by_parent,
+            [("raw-child", child), ("raw-parent", parent)],
+            summary=_IngestBatchSummary(),
+            materialized_ids=set(),
         )
         conn.commit()
 

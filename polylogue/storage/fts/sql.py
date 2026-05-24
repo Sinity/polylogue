@@ -83,36 +83,53 @@ def delete_conversation_rows_sql(chunk_size: int) -> str:
 
 
 def insert_conversation_rows_sql(chunk_size: int) -> str:
-    placeholders = ", ".join("?" for _ in range(chunk_size))
+    values = ", ".join("(?)" for _ in range(chunk_size))
     return f"""
-        INSERT INTO messages_fts (rowid, message_id, conversation_id, text)
-        SELECT m.rowid, m.message_id, m.conversation_id, parts.search_text
-        FROM messages AS m
-        JOIN (
+        WITH target_conversations(conversation_id) AS (
+            VALUES {values}
+        ),
+        message_parts AS (
+            SELECT m.message_id, m.text AS part, -1 AS block_index, 0 AS part_index
+            FROM messages AS m
+            JOIN target_conversations AS target
+              ON target.conversation_id = m.conversation_id
+            WHERE m.text IS NOT NULL AND m.text != ''
+            UNION ALL
+            SELECT cb.message_id, cb.text AS part, cb.block_index, 1 AS part_index
+            FROM content_blocks AS cb
+            JOIN target_conversations AS target
+              ON target.conversation_id = cb.conversation_id
+            WHERE cb.text IS NOT NULL AND cb.text != ''
+            UNION ALL
+            SELECT cb.message_id, cb.tool_input AS part, cb.block_index, 2 AS part_index
+            FROM content_blocks AS cb
+            JOIN target_conversations AS target
+              ON target.conversation_id = cb.conversation_id
+            WHERE cb.tool_input IS NOT NULL AND cb.tool_input != ''
+            UNION ALL
+            SELECT cb.message_id, cb.metadata AS part, cb.block_index, 3 AS part_index
+            FROM content_blocks AS cb
+            JOIN target_conversations AS target
+              ON target.conversation_id = cb.conversation_id
+            WHERE cb.metadata IS NOT NULL AND cb.metadata != ''
+        ),
+        grouped_parts AS (
             SELECT
-                source.message_id,
-                group_concat(source.part, char(10)) AS search_text
+                message_parts.message_id,
+                group_concat(message_parts.part, char(10)) AS search_text
             FROM (
-                SELECT message_id, text AS part, -1 AS block_index, 0 AS part_index
-                FROM messages
-                WHERE text IS NOT NULL AND text != ''
-                UNION ALL
-                SELECT message_id, text AS part, block_index, 1 AS part_index
-                FROM content_blocks
-                WHERE text IS NOT NULL AND text != ''
-                UNION ALL
-                SELECT message_id, tool_input AS part, block_index, 2 AS part_index
-                FROM content_blocks
-                WHERE tool_input IS NOT NULL AND tool_input != ''
-                UNION ALL
-                SELECT message_id, metadata AS part, block_index, 3 AS part_index
-                FROM content_blocks
-                WHERE metadata IS NOT NULL AND metadata != ''
-                ORDER BY 1, 3, 4
-            ) AS source
-            GROUP BY source.message_id
-        ) AS parts ON parts.message_id = m.message_id
-        WHERE m.conversation_id IN ({placeholders})
+                SELECT message_id, part, block_index, part_index
+                FROM message_parts
+                ORDER BY message_id, block_index, part_index
+            ) AS message_parts
+            GROUP BY message_parts.message_id
+        )
+        INSERT INTO messages_fts (rowid, message_id, conversation_id, text)
+        SELECT m.rowid, m.message_id, m.conversation_id, grouped_parts.search_text
+        FROM messages AS m
+        JOIN target_conversations AS target
+          ON target.conversation_id = m.conversation_id
+        JOIN grouped_parts ON grouped_parts.message_id = m.message_id
     """
 
 

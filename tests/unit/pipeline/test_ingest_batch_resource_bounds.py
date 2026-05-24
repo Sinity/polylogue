@@ -38,6 +38,26 @@ def _conversation_data_with_rows(*, conversation_id: str = "conv-large", message
         ConversationData,
         SimpleNamespace(
             conversation_id=conversation_id,
+            conversation_tuple=(
+                conversation_id,
+                "codex",
+                conversation_id,
+                "Large",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                "[]",
+                None,
+                "hash-large",
+                "raw-large",
+                "codex",
+                None,
+                None,
+                None,
+            ),
             message_tuples=[object()] * messages,
             block_tuples=[],
             action_event_tuples=[],
@@ -122,7 +142,6 @@ def test_consume_ingest_results_delays_write_transaction_until_parse_result(
         worker_request=_worker_request(),
         summary=summary,  # type: ignore[arg-type]
         materialized_ids=set(),
-        pending_by_parent={},
     )
 
     assert transaction_started is True
@@ -158,7 +177,6 @@ def test_consume_ingest_results_releases_large_result_payload(
         worker_request=_worker_request(),
         summary=summary,  # type: ignore[arg-type]
         materialized_ids=set(),
-        pending_by_parent={},
     )
 
     assert transaction_started is True
@@ -173,8 +191,6 @@ def test_drain_ready_conversation_entries_drops_written_payload(
     cdata = _conversation_data_with_rows(messages=3)
     writes: list[int] = []
 
-    monkeypatch.setattr(ingest_batch_core, "_parent_ready", lambda *args, **kwargs: True)
-
     def fake_write(*args: object, **kwargs: object) -> bool:
         del args, kwargs
         writes.append(len(cdata.message_tuples))
@@ -187,7 +203,6 @@ def test_drain_ready_conversation_entries_drops_written_payload(
         [("raw-large", cdata)],
         summary=SimpleNamespace(),  # type: ignore[arg-type]
         materialized_ids=set(),
-        pending_by_parent={},
     )
 
     assert writes == [3]
