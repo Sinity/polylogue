@@ -72,8 +72,9 @@ def _payload_int(value: object) -> int:
 
 
 def _total_conversations(conn: sqlite3.Connection) -> int:
-    row = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()
-    return _payload_int(row[0]) if row is not None else 0
+    from polylogue.storage.embeddings.support import optional_count_sync
+
+    return optional_count_sync(conn, "SELECT COUNT(*) FROM conversations")
 
 
 def _coverage_percent(*, embedded_conversations: int, total_conversations: int) -> float:
@@ -155,7 +156,8 @@ def _payload_from_stats(
 def embedding_status_payload(
     env: _HasConfig,
     *,
-    include_retrieval_bands: bool = True,
+    include_retrieval_bands: bool = False,
+    include_detail: bool = False,
 ) -> EmbeddingStatusPayload:
     """Read canonical embedding-status statistics for operator surfaces."""
     from polylogue.config import load_polylogue_config
@@ -165,7 +167,11 @@ def embedding_status_payload(
     cfg = load_polylogue_config()
     with open_read_connection(env.config.db_path) as conn:
         total_conversations = _total_conversations(conn)
-        embedding_stats = read_embedding_stats_sync(conn, include_retrieval_bands=include_retrieval_bands)
+        embedding_stats = read_embedding_stats_sync(
+            conn,
+            include_retrieval_bands=include_retrieval_bands,
+            detail=include_detail,
+        )
 
     return _payload_from_stats(
         config_enabled=bool(cfg.embedding_enabled),

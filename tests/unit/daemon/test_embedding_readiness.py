@@ -197,7 +197,13 @@ def test_readiness_unconfigured_when_enabled_flag_off(
     assert info["embedding_config_enabled"] is False
     assert info["embedding_has_voyage_key"] is True
     assert info["embedding_pending_count"] == 1
-    assert info["embedding_pending_message_count"] == 1
+    assert info["embedding_pending_message_count"] == 0
+
+    with patch("polylogue.config.load_polylogue_config", return_value=cfg):
+        detailed = embedding_readiness_info(db, detail=True)
+
+    assert detailed["embedding_pending_count"] == 1
+    assert detailed["embedding_pending_message_count"] == 1
 
 
 # ── 3. embedding failure branch ────────────────────────────────────

@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 
 import polylogue.config as polylogue_config
-from polylogue.storage.embeddings.support import optional_count_sync
+from polylogue.storage.embeddings.support import optional_count_sync, table_exists_sync
 from polylogue.storage.search_providers.sqlite_vec_support import (
     ESTIMATED_TOKENS_PER_MESSAGE,
     VOYAGE_4_COST_PER_1M_TOKENS,
@@ -30,11 +30,13 @@ def _defaults(*, enabled: bool, config_enabled: bool, has_key: bool, model: str,
     }
 
 
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", (table,)).fetchone())
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    if not table_exists_sync(conn, table):
+        return False
+    return any(row[1] == column for row in conn.execute(f"PRAGMA table_info({table})").fetchall())
 
 
-def embedding_readiness_info(db_file: Path) -> dict[str, object]:
+def embedding_readiness_info(db_file: Path, *, detail: bool = False) -> dict[str, object]:
     """Query embedding tables for bounded daemon status visibility."""
     cfg = polylogue_config.load_polylogue_config()
     config_enabled = bool(cfg.embedding_enabled)
@@ -57,53 +59,58 @@ def embedding_readiness_info(db_file: Path) -> dict[str, object]:
     try:
         conn = open_readonly_connection(db_file)
         try:
-            pending = optional_count_sync(
-                conn,
-                """
-                SELECT COUNT(*)
-                FROM conversations c
-                LEFT JOIN embedding_status e ON e.conversation_id = c.conversation_id
-                WHERE e.conversation_id IS NULL OR e.needs_reindex = 1
-                """,
-            )
-            pending_messages = optional_count_sync(
-                conn,
-                """
-                SELECT COUNT(*)
-                FROM messages m
-                JOIN conversations c ON c.conversation_id = m.conversation_id
-                LEFT JOIN embedding_status e ON e.conversation_id = c.conversation_id
-                WHERE e.conversation_id IS NULL OR e.needs_reindex = 1
-                """,
-            )
-            stale = optional_count_sync(
-                conn,
-                """
-                SELECT COUNT(*)
-                FROM message_embeddings me
-                JOIN messages m ON m.message_id = me.message_id
-                LEFT JOIN embeddings_meta em
-                  ON em.target_id = me.message_id
-                 AND em.target_type = 'message'
-                WHERE em.target_id IS NULL
-                   OR (em.content_hash IS NOT NULL AND em.content_hash != m.content_hash)
-                """,
-            )
             embedded_msg = optional_count_sync(conn, "SELECT COUNT(*) FROM message_embeddings")
-            failure = optional_count_sync(conn, "SELECT COUNT(*) FROM embedding_status WHERE error_message IS NOT NULL")
+            if _column_exists(conn, "embedding_status", "error_message"):
+                failure = optional_count_sync(
+                    conn, "SELECT COUNT(*) FROM embedding_status WHERE error_message IS NOT NULL"
+                )
             embedded_conv = optional_count_sync(conn, "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 0")
             total_conv = (
                 int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] or 0)
-                if _table_exists(conn, "conversations")
+                if table_exists_sync(conn, "conversations")
                 else 0
             )
-            total_messages = (
-                int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] or 0)
-                if _table_exists(conn, "messages")
-                else 0
-            )
+            if detail:
+                pending = optional_count_sync(
+                    conn,
+                    """
+                    SELECT COUNT(*)
+                    FROM conversations c
+                    LEFT JOIN embedding_status e ON e.conversation_id = c.conversation_id
+                    WHERE e.conversation_id IS NULL OR e.needs_reindex = 1
+                    """,
+                )
+                pending_messages = optional_count_sync(
+                    conn,
+                    """
+                    SELECT COUNT(*)
+                    FROM messages m
+                    JOIN conversations c ON c.conversation_id = m.conversation_id
+                    LEFT JOIN embedding_status e ON e.conversation_id = c.conversation_id
+                    WHERE e.conversation_id IS NULL OR e.needs_reindex = 1
+                    """,
+                )
+                stale = optional_count_sync(
+                    conn,
+                    """
+                    SELECT COUNT(*)
+                    FROM message_embeddings me
+                    JOIN messages m ON m.message_id = me.message_id
+                    LEFT JOIN embeddings_meta em
+                      ON em.target_id = me.message_id
+                     AND em.target_type = 'message'
+                    WHERE em.target_id IS NULL
+                       OR (em.content_hash IS NOT NULL AND em.content_hash != m.content_hash)
+                    """,
+                )
+                total_messages = (
+                    int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] or 0)
+                    if table_exists_sync(conn, "messages")
+                    else 0
+                )
             pending = max(pending, total_conv - embedded_conv)
-            pending_messages = max(pending_messages, total_messages - embedded_msg if pending > 0 else 0)
+            if detail:
+                pending_messages = max(pending_messages, total_messages - embedded_msg if pending > 0 else 0)
             total = embedded_msg if total_conv > 0 else 0
             estimated_tokens = (total + pending_messages) * ESTIMATED_TOKENS_PER_MESSAGE
             cost = round(estimated_tokens * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000, 2)

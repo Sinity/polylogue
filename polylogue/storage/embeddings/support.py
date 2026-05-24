@@ -169,6 +169,32 @@ def is_missing_table_error(exc: sqlite3.OperationalError) -> bool:
     )
 
 
+def table_exists_sync(conn: sqlite3.Connection, table: str) -> bool:
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+            (table,),
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        if is_missing_table_error(exc):
+            return False
+        raise
+    return row is not None
+
+
+async def table_exists_async(conn: aiosqlite.Connection, table: str) -> bool:
+    try:
+        cursor = await conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+            (table,),
+        )
+    except sqlite3.OperationalError as exc:
+        if is_missing_table_error(exc):
+            return False
+        raise
+    return await cursor.fetchone() is not None
+
+
 def optional_count_sync(conn: sqlite3.Connection, sql: str) -> int:
     try:
         row = conn.execute(sql).fetchone()

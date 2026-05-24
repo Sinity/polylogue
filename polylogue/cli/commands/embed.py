@@ -442,10 +442,15 @@ def backfill_subcommand(
     type=click.Choice(["text", "json"]),
     default="text",
 )
+@click.option(
+    "--detail",
+    is_flag=True,
+    help="Include exact pending-message, freshness, model, and retrieval-band accounting.",
+)
 @click.pass_obj
-def status_subcommand(env: AppEnv, output_format: str) -> None:
+def status_subcommand(env: AppEnv, output_format: str, detail: bool) -> None:
     """Show embedding coverage and freshness."""
-    show_embedding_stats(env, json_output=(output_format == "json"))
+    show_embedding_stats(env, json_output=(output_format == "json"), detail=detail)
 
 
 __all__ = [
