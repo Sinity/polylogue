@@ -137,6 +137,10 @@ def test_profile_repair_candidates_match_sort_key_freshness() -> None:
             VALUES ('stale-sort-key', 2.0, '2026-05-01T12:00:00Z');
             INSERT INTO conversations (conversation_id, sort_key, updated_at)
             VALUES ('missing-profile', 3.0, '2026-05-01T12:00:00Z');
+            INSERT INTO conversations (conversation_id, sort_key, updated_at)
+            VALUES ('hot-missing-profile', 4102444800.0, '2100-01-01T00:00:00Z');
+            INSERT INTO conversations (conversation_id, sort_key, updated_at)
+            VALUES ('hot-stale-sort-key', 4102444800.0, '2100-01-01T00:00:00Z');
             """
         )
         conn.execute(
@@ -163,6 +167,19 @@ def test_profile_repair_candidates_match_sort_key_freshness() -> None:
                 SESSION_INSIGHT_MATERIALIZER_VERSION,
                 1.5,
                 "2026-05-01T12:00:00Z",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO session_profiles (
+                conversation_id, materializer_version, source_sort_key, source_updated_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                "hot-stale-sort-key",
+                SESSION_INSIGHT_MATERIALIZER_VERSION,
+                1.5,
+                "2100-01-01T00:00:00Z",
             ),
         )
 
@@ -195,6 +212,35 @@ def test_profile_repair_candidates_do_not_require_row_factory() -> None:
         candidates = session_profile_repair_candidate_ids_sync(conn)
 
     assert candidates == ["missing-profile"]
+
+
+def test_profile_repair_candidates_ignore_hot_recent_sources() -> None:
+    with sqlite3.connect(":memory:") as conn:
+        conn.executescript(
+            """
+            CREATE TABLE conversations (
+                conversation_id TEXT PRIMARY KEY,
+                parent_conversation_id TEXT,
+                sort_key REAL,
+                updated_at TEXT
+            );
+            CREATE TABLE session_profiles (
+                conversation_id TEXT PRIMARY KEY,
+                materializer_version INTEGER NOT NULL,
+                source_sort_key REAL,
+                source_updated_at TEXT
+            );
+
+            INSERT INTO conversations (conversation_id, sort_key, updated_at)
+            VALUES ('cold-missing-profile', 3.0, '2026-05-01T12:00:00Z');
+            INSERT INTO conversations (conversation_id, sort_key, updated_at)
+            VALUES ('hot-missing-profile', strftime('%s', 'now'), '2026-05-24T07:00:00Z');
+            """
+        )
+
+        candidates = session_profile_repair_candidate_ids_sync(conn)
+
+    assert candidates == ["cold-missing-profile"]
 
 
 async def test_status_sync_and_async_match_when_product_tables_are_absent(tmp_path: Path) -> None:

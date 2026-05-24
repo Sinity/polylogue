@@ -22,19 +22,13 @@ the full ``BaseHTTPRequestHandler`` stack.
 from __future__ import annotations
 
 import os
-import time
 from http import HTTPStatus
 from typing import Protocol
 
+from polylogue.daemon.process_start import started_at_wall, uptime_seconds
 from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
-
-
-# Process start time captured at module import — used by /healthz/live to
-# report uptime without touching disk, DB, or any other subsystem.
-_PROCESS_STARTED_AT: float = time.monotonic()
-_PROCESS_STARTED_AT_WALL: float = time.time()
 
 
 class ProbeResponder(Protocol):
@@ -56,13 +50,13 @@ def handle_healthz_live(responder: ProbeResponder) -> None:
     and restart the pod — which is precisely the failure mode liveness
     is supposed to detect, but only when the *process* itself is wedged.
     """
-    uptime_s = time.monotonic() - _PROCESS_STARTED_AT
+    uptime_s = uptime_seconds()
     responder._send_json(
         HTTPStatus.OK,
         {
             "status": "alive",
             "pid": os.getpid(),
-            "started_at": _PROCESS_STARTED_AT_WALL,
+            "started_at": started_at_wall(),
             "uptime_s": round(uptime_s, 3),
         },
     )

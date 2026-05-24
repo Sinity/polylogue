@@ -333,7 +333,7 @@ class PolylogueConfig:
 
     @property
     def health_check_tiers(self) -> str:
-        return str(self._data.get("health_check_tiers", "fast,medium"))
+        return str(self._data.get("health_check_tiers", "fast"))
 
     @property
     def health_fts_auto_restore(self) -> bool:
@@ -537,7 +537,7 @@ def _default_config_values() -> dict[str, object]:
         "notification_email_use_starttls": True,
         "notification_email_max_per_hour": 12,
         "health_check_interval_s": 300,
-        "health_check_tiers": "fast,medium",
+        "health_check_tiers": "fast",
         "health_fts_auto_restore": False,
         "watch_debounce_s": 2.0,
         "browser_capture_host": "127.0.0.1",

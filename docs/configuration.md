@@ -76,7 +76,7 @@ backend = "log"
 
 [health]
 check_interval_s = 300
-check_tiers = "fast,medium"
+check_tiers = "fast"
 
 # Convergence-debt alert thresholds (#1226). The daemon raises a typed
 # HealthAlert when the per-family count of `live_convergence_debt` rows

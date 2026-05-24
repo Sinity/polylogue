@@ -545,9 +545,11 @@ async def run_daemon_services(
     api_auth_token: str | None = None,
 ) -> None:
     """Run configured daemon components until interrupted."""
+    from polylogue.daemon import process_start as _process_start
     from polylogue.paths import archive_root
 
     global _pidfile_path
+    _process_start.started_at_wall()
 
     # Non-localhost API binding requires explicit opt-in AND an auth token.
     if enable_api and not is_loopback_host(api_host):
@@ -859,7 +861,7 @@ def status_command(spool_path: Path | None, output_format: str | None) -> None:
     type=click.Choice(["fast", "medium", "expensive"]),
     multiple=True,
     default=None,
-    help="Run specific health check tiers (repeatable). Default: fast + medium.",
+    help="Run specific health check tiers (repeatable). Default: fast.",
 )
 @click.option(
     "--format",
@@ -882,7 +884,7 @@ def health_command(
 ) -> None:
     """Run tiered daemon health checks.
 
-    By default runs FAST + MEDIUM checks. Use --tier to select specific
+    By default runs FAST checks. Use --tier to select specific
     tiers or --expensive to add the EXPENSIVE tier.
     """
     configure_logging()
@@ -890,9 +892,9 @@ def health_command(
     if tiers:
         health_tiers: set[HealthTier] = {HealthTier(t) for t in tiers}
     else:
-        health_tiers = {HealthTier.FAST, HealthTier.MEDIUM}
+        health_tiers = {HealthTier.FAST}
         if include_expensive:
-            health_tiers.add(HealthTier.EXPENSIVE)
+            health_tiers.update({HealthTier.MEDIUM, HealthTier.EXPENSIVE})
 
     health = check_health(tiers=health_tiers)
 

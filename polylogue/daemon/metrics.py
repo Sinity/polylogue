@@ -57,11 +57,11 @@ stack.
 from __future__ import annotations
 
 import sqlite3
-import time
 from http import HTTPStatus
 from pathlib import Path
 from typing import Protocol
 
+from polylogue.daemon.process_start import uptime_seconds
 from polylogue.logging import get_logger
 from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES as _EXPECTED_FTS_TRIGGERS
 
@@ -69,9 +69,6 @@ logger = get_logger(__name__)
 
 
 PROMETHEUS_CONTENT_TYPE: str = "text/plain; version=0.0.4; charset=utf-8"
-
-# Process start captured at import — same posture as healthz.py.
-_PROCESS_STARTED_AT_MONOTONIC: float = time.monotonic()
 
 
 class MetricsResponder(Protocol):
@@ -296,9 +293,7 @@ def format_metrics(
     tables. Missing tables degrade to zero samples rather than raising.
     Caller injects ``now_monotonic`` in tests to keep uptime stable.
     """
-    if now_monotonic is None:
-        now_monotonic = time.monotonic()
-    uptime_s = max(0.0, now_monotonic - _PROCESS_STARTED_AT_MONOTONIC)
+    uptime_s = uptime_seconds(now_monotonic=now_monotonic)
     lines: list[str] = []
 
     _emit_metric(

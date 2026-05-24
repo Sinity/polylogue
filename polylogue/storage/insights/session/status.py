@@ -183,6 +183,8 @@ WORK_THREAD_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT thread_i
 SESSION_TAG_ROLLUP_COUNT_SQL = "SELECT COUNT(*) FROM session_tag_rollups"
 DAY_SESSION_SUMMARY_COUNT_SQL = "SELECT COUNT(*) FROM day_session_summaries"
 TOTAL_CONVERSATIONS_SQL = "SELECT COUNT(*) FROM conversations"
+HOT_SOURCE_GRACE_SECONDS = 600
+HOT_SOURCE_READY_CUTOFF_SQL = f"(strftime('%s', 'now') - {HOT_SOURCE_GRACE_SECONDS})"
 ROOT_THREAD_COUNT_SQL = """
     SELECT COUNT(*)
     FROM conversations c
@@ -194,13 +196,18 @@ MISSING_SESSION_PROFILE_COUNT_SQL = """
     FROM conversations c
     LEFT JOIN session_profiles sp ON sp.conversation_id = c.conversation_id
     WHERE sp.conversation_id IS NULL
+      AND COALESCE(c.sort_key, 0.0) < {cutoff}
 """
-STALE_SESSION_PROFILE_COUNT_SQL = """
+MISSING_SESSION_PROFILE_COUNT_SQL = MISSING_SESSION_PROFILE_COUNT_SQL.format(cutoff=HOT_SOURCE_READY_CUTOFF_SQL)
+STALE_SESSION_PROFILE_COUNT_SQL = f"""
     SELECT COUNT(*)
     FROM conversations c
     JOIN session_profiles sp ON sp.conversation_id = c.conversation_id
-    WHERE sp.materializer_version != ?
-       OR ABS(COALESCE(sp.source_sort_key, 0.0) - COALESCE(c.sort_key, 0.0)) > 0.000001
+    WHERE COALESCE(c.sort_key, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
+      AND (
+           sp.materializer_version != ?
+        OR ABS(COALESCE(sp.source_sort_key, 0.0) - COALESCE(c.sort_key, 0.0)) > 0.000001
+      )
 """
 ORPHAN_SESSION_PROFILE_COUNT_SQL = """
     SELECT COUNT(*)
@@ -210,12 +217,15 @@ ORPHAN_SESSION_PROFILE_COUNT_SQL = """
 """
 EXPECTED_WORK_EVENT_COUNT_SQL = "SELECT COALESCE(SUM(work_event_count), 0) FROM session_profiles"
 EXPECTED_PHASE_COUNT_SQL = "SELECT COALESCE(SUM(phase_count), 0) FROM session_profiles"
-STALE_WORK_EVENT_COUNT_SQL = """
+STALE_WORK_EVENT_COUNT_SQL = f"""
     SELECT COUNT(*)
     FROM session_work_events swe
     JOIN conversations c ON c.conversation_id = swe.conversation_id
-    WHERE swe.materializer_version != ?
-       OR ABS(COALESCE(swe.source_sort_key, 0.0) - COALESCE(c.sort_key, 0.0)) > 0.000001
+    WHERE COALESCE(c.sort_key, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
+      AND (
+           swe.materializer_version != ?
+        OR ABS(COALESCE(swe.source_sort_key, 0.0) - COALESCE(c.sort_key, 0.0)) > 0.000001
+      )
 """
 ORPHAN_SESSION_WORK_EVENT_COUNT_SQL = """
     SELECT COUNT(*)
@@ -347,11 +357,15 @@ SESSION_PROFILE_REPAIR_CANDIDATES_SQL = """
     SELECT c.conversation_id
     FROM conversations c
     LEFT JOIN session_profiles sp ON sp.conversation_id = c.conversation_id
-    WHERE sp.conversation_id IS NULL
-       OR sp.materializer_version != ?
-       OR ABS(COALESCE(sp.source_sort_key, 0.0) - COALESCE(c.sort_key, 0.0)) > 0.000001
+    WHERE COALESCE(c.sort_key, 0.0) < {cutoff}
+      AND (
+           sp.conversation_id IS NULL
+        OR sp.materializer_version != ?
+        OR ABS(COALESCE(sp.source_sort_key, 0.0) - COALESCE(c.sort_key, 0.0)) > 0.000001
+      )
     ORDER BY c.conversation_id
 """
+SESSION_PROFILE_REPAIR_CANDIDATES_SQL = SESSION_PROFILE_REPAIR_CANDIDATES_SQL.format(cutoff=HOT_SOURCE_READY_CUTOFF_SQL)
 
 _TABLE_DESCRIPTORS: tuple[SessionInsightTableDescriptor, ...] = (
     SessionInsightTableDescriptor(

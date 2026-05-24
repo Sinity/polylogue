@@ -983,12 +983,13 @@ def build_daemon_status(
     raw_failures = _raw_failure_info()
     embedding_info = _embedding_readiness_info()
 
-    # Build health status (FAST + MEDIUM by default; EXPENSIVE opt-in).
+    # Build health status. Keep the default bounded; medium includes exact
+    # FTS invariant scans and must be requested explicitly by operator paths.
     from polylogue.daemon.health import HealthTier
 
-    health_tiers: set[HealthTier] = {HealthTier.FAST, HealthTier.MEDIUM}
+    health_tiers: set[HealthTier] = {HealthTier.FAST}
     if include_expensive_health:
-        health_tiers.add(HealthTier.EXPENSIVE)
+        health_tiers.update({HealthTier.MEDIUM, HealthTier.EXPENSIVE})
     try:
         health = check_health(tiers=health_tiers)
     except Exception:
