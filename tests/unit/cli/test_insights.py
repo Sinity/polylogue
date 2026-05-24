@@ -761,9 +761,8 @@ def test_session_insight_rebuild_preserves_profile_semantics_without_loading_ful
                 event_type,
                 timestamp,
                 sort_key,
-                payload_json,
                 materializer_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "conv-heavy:provider-event:000000",
@@ -773,9 +772,12 @@ def test_session_insight_rebuild_preserves_profile_semantics_without_loading_ful
                 "compaction",
                 "2026-03-01T10:04:00+00:00",
                 None,
-                json.dumps({"summary": "Earlier context collapsed."}),
                 1,
             ),
+        )
+        conn.execute(
+            "INSERT INTO provider_event_compactions (event_id, summary) VALUES (?, ?)",
+            ("conv-heavy:provider-event:000000", "Earlier context collapsed."),
         )
         counts = rebuild_session_insights_sync(conn, page_size=1)
         row = conn.execute(

@@ -141,7 +141,7 @@ INSERT INTO action_events (
 _PROVIDER_EVENT_INSERT_SQL = """
 INSERT INTO provider_events (
     event_id, conversation_id, provider_name, event_index, event_type,
-    timestamp, sort_key, payload_json, source_message_id, raw_id,
+    normalized_kind, timestamp, sort_key, source_message_id, raw_id,
     materializer_version
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """

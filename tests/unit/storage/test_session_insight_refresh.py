@@ -95,9 +95,8 @@ async def test_apply_session_insight_conversation_updates_async_counts_provider_
                 event_index,
                 event_type,
                 timestamp,
-                payload_json,
                 materializer_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "conv-provider-event:provider-event:000000",
@@ -106,9 +105,15 @@ async def test_apply_session_insight_conversation_updates_async_counts_provider_
                 0,
                 "compaction",
                 "2026-04-01T10:05:00+00:00",
-                '{"summary":"Earlier context"}',
                 1,
             ),
+        )
+        conn.execute(
+            """
+            INSERT INTO provider_event_compactions (event_id, summary)
+            VALUES (?, ?)
+            """,
+            ("conv-provider-event:provider-event:000000", "Earlier context"),
         )
         conn.commit()
 

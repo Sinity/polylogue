@@ -21,6 +21,7 @@ from polylogue.daemon.convergence_debt_alert import (
 from polylogue.daemon.convergence_debt_status import (
     ConvergenceDebtItem,
     ConvergenceDebtSummary,
+    convergence_debt_summary_info,
 )
 from polylogue.daemon.health import HealthSeverity, HealthTier
 
@@ -47,6 +48,66 @@ def _summary(items: list[ConvergenceDebtItem]) -> ConvergenceDebtSummary:
         retry_due_count=sum(1 for it in items if it.retry_due),
         recent=items,
     )
+
+
+def test_convergence_debt_summary_does_not_count_deferred_as_failed(tmp_path: Path) -> None:
+    db_path = tmp_path / "debt.sqlite"
+    import sqlite3
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE live_convergence_debt (
+                stage TEXT NOT NULL,
+                subject_type TEXT NOT NULL,
+                subject_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                first_failed_at TEXT NOT NULL,
+                last_failed_at TEXT NOT NULL,
+                next_retry_at TEXT,
+                materializer_version TEXT,
+                last_error TEXT
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO live_convergence_debt (
+                stage, subject_type, subject_id, status, failure_count,
+                first_failed_at, last_failed_at, next_retry_at, last_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "insights",
+                    "conversation_id",
+                    "conv-deferred",
+                    "deferred",
+                    1,
+                    "2026-05-24T00:00:00+00:00",
+                    "2026-05-24T00:00:00+00:00",
+                    "2026-05-24T00:01:00+00:00",
+                    "insights deferred until source quiet",
+                ),
+                (
+                    "fts",
+                    "conversation_id",
+                    "conv-failed",
+                    "failed",
+                    1,
+                    "2026-05-24T00:00:00+00:00",
+                    "2026-05-24T00:00:00+00:00",
+                    None,
+                    "boom",
+                ),
+            ],
+        )
+
+    summary = convergence_debt_summary_info(db_path)
+
+    assert summary.failed_count == 1
+    assert [item.subject_id for item in summary.recent] == ["conv-failed"]
 
 
 # ---------------------------------------------------------------------------

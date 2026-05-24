@@ -11,6 +11,14 @@ from polylogue.sources.live.convergence_debt_retry import (
     same_pending_convergence_debt,
 )
 
+_INSIGHT_DEFERRED_UNTIL_QUIET = "insights deferred until source quiet"
+
+
+def _debt_status(*, stage: str, error: str | None) -> str:
+    if stage == "insights" and error == _INSIGHT_DEFERRED_UNTIL_QUIET:
+        return "deferred"
+    return "failed"
+
 
 def record_convergence_debt_sync(
     conn: sqlite3.Connection,
@@ -52,22 +60,34 @@ def record_convergence_debt_sync(
         subject_type=subject_type,
         subject_id=subject_id,
     )
+    status = _debt_status(stage=stage, error=error)
     conn.execute(
         """
         INSERT INTO live_convergence_debt (
             stage, subject_type, subject_id, status, failure_count,
             first_failed_at, last_failed_at, next_retry_at,
             materializer_version, last_error
-        ) VALUES (?, ?, ?, 'failed', ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(stage, subject_type, subject_id) DO UPDATE SET
-            status = 'failed',
+            status = excluded.status,
             failure_count = excluded.failure_count,
             last_failed_at = excluded.last_failed_at,
             next_retry_at = excluded.next_retry_at,
             materializer_version = excluded.materializer_version,
             last_error = excluded.last_error
         """,
-        (stage, subject_type, subject_id, failure_count, now, now, retry_at.isoformat(), materializer_version, error),
+        (
+            stage,
+            subject_type,
+            subject_id,
+            status,
+            failure_count,
+            now,
+            now,
+            retry_at.isoformat(),
+            materializer_version,
+            error,
+        ),
     )
 
 

@@ -72,7 +72,7 @@ from polylogue.storage.sqlite.schema_ddl_repo_identity import (
     REPO_IDENTITY_DDL as _REPO_IDENTITY_DDL,
 )
 
-SCHEMA_VERSION = 8  # Canonical schema. No migration chain: mismatch → re-ingest from source (#1212, #1190, #1240, #1241, #1252, #1258, #1260, #1253).
+SCHEMA_VERSION = 9  # Canonical schema. No migration chain: mismatch → re-ingest from source (#1212, #1190, #1240, #1241, #1252, #1258, #1260, #1253, #1486).
 
 
 # Complete target schema applied to fresh databases.

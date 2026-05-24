@@ -42,6 +42,7 @@ from polylogue.storage.runtime import (
     RawConversationRecord,
     _json_or_none,
 )
+from polylogue.storage.sqlite.provider_event_model import project_provider_event_payload
 from polylogue.types import (
     AttachmentId,
     ContentBlockType,
@@ -157,9 +158,10 @@ ProviderEventTuple = tuple[
     Provider,
     int,
     str,
+    str,
     str | None,
     float | None,
-    str,
+    dict[str, object],
     MessageId | None,
     str | None,
     int,
@@ -937,22 +939,26 @@ def _provider_event_tuples(
     *,
     raw_id: str | None,
 ) -> list[ProviderEventTuple]:
-    return [
-        (
-            event.event_id,
-            event.conversation_id,
-            event.provider_name,
-            event.event_index,
-            event.event_type,
-            event.timestamp,
-            event.sort_key,
-            json_dumps(event.payload),
-            event.source_message_id,
-            raw_id,
-            PROVIDER_EVENT_MATERIALIZER_VERSION,
+    tuples: list[ProviderEventTuple] = []
+    for event in conversation.provider_events:
+        projection = project_provider_event_payload(event.event_type, event.payload)
+        tuples.append(
+            (
+                event.event_id,
+                event.conversation_id,
+                event.provider_name,
+                event.event_index,
+                event.event_type,
+                projection.normalized_kind,
+                event.timestamp,
+                event.sort_key,
+                projection.payload,
+                event.source_message_id,
+                raw_id,
+                PROVIDER_EVENT_MATERIALIZER_VERSION,
+            )
         )
-        for event in conversation.provider_events
-    ]
+    return tuples
 
 
 def _attachment_tuples(
