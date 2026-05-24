@@ -88,19 +88,20 @@ def test_write_gateway_can_skip_fts_repairs_when_triggers_maintained_rows(
     assert repaired == []
 
 
-def test_write_gateway_skips_redundant_fts_repairs_when_live_triggers_exist(
+def test_write_gateway_repairs_fts_when_requested_even_if_live_triggers_exist(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_path = tmp_path / "archive.db"
+    repaired: list[str] = []
 
     monkeypatch.setattr(
         "polylogue.storage.fts.fts_lifecycle.repair_message_fts_index_sync",
-        lambda _conn, _ids: pytest.fail("message FTS repair should be handled by live triggers"),
+        lambda _conn, _ids: repaired.append("messages"),
     )
     monkeypatch.setattr(
         "polylogue.storage.fts.fts_lifecycle.repair_action_fts_index_sync",
-        lambda _conn, _ids: pytest.fail("action FTS repair should be handled by live triggers"),
+        lambda _conn, _ids: repaired.append("actions"),
     )
 
     with open_connection(db_path) as conn:
@@ -114,6 +115,7 @@ def test_write_gateway_skips_redundant_fts_repairs_when_live_triggers_exist(
         )
 
     assert result.status == "committed"
+    assert repaired == ["messages", "actions"]
 
 
 def test_write_gateway_repairs_fts_when_live_triggers_were_missing(

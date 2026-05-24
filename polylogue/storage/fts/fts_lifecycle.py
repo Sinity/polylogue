@@ -866,6 +866,26 @@ def _trigger_invariant_sync(
 
 
 def fts_invariant_snapshot_sync(conn: sqlite3.Connection) -> FtsInvariantSnapshot:
+    """Return exact freshness status for every active FTS search surface.
+
+    The snapshot spans multiple aggregate queries. Start an explicit read
+    transaction when the caller has not already opened one so live ingest
+    commits cannot make source counts and FTS shadow counts describe
+    different moments in time.
+    """
+    if conn.in_transaction:
+        return _fts_invariant_snapshot_sync(conn)
+    conn.execute("BEGIN")
+    try:
+        snapshot = _fts_invariant_snapshot_sync(conn)
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
+    return snapshot
+
+
+def _fts_invariant_snapshot_sync(conn: sqlite3.Connection) -> FtsInvariantSnapshot:
     """Return exact freshness status for every active FTS search surface."""
     has_content_blocks = _table_exists_sync(conn, "content_blocks")
     message_source_sql = (
