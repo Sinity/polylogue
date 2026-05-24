@@ -1064,7 +1064,7 @@ class CursorStore:
                 (stage, subject_type, subject_id),
             ).fetchone()
             failure_count = int(row[0]) + 1 if row is not None else 1
-            delay_s = min(60 * (2 ** (failure_count - 1)), 3600)
+            delay_s = _convergence_debt_retry_delay_s(failure_count, error=error)
             retry_at = datetime.fromtimestamp(datetime.now(UTC).timestamp() + delay_s, tz=UTC).isoformat()
             conn.execute(
                 """
@@ -1171,3 +1171,9 @@ __all__ = [
     "LiveConvergenceDebt",
     "LiveIngestAttempt",
 ]
+
+
+def _convergence_debt_retry_delay_s(failure_count: int, *, error: str | None) -> int:
+    if error == "insights deferred until source quiet":
+        return 60
+    return int(min(60 * (2 ** (failure_count - 1)), 3600))

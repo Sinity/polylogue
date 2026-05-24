@@ -37,6 +37,7 @@ from polylogue.sources.live.watcher import default_sources
 from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES as _EXPECTED_FTS_TRIGGERS
 
 logger = get_logger(__name__)
+_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
 
 # Track the pidfile path for atexit cleanup.
 _pidfile_path: Path | None = None
@@ -321,7 +322,7 @@ async def _periodic_convergence_check(
 
     db = db_path()
     while True:
-        await asyncio.sleep(600)  # 10 minutes
+        await asyncio.sleep(_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS)
         if not db.exists():
             continue
         try:
