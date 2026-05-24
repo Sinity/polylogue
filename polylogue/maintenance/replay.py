@@ -67,6 +67,7 @@ from polylogue.maintenance.targets import (
 )
 from polylogue.storage.repair import (
     RepairResult,
+    offline_maintenance_blockers,
     repair_action_event_read_model,
     repair_dangling_fts,
     repair_empty_conversations,
@@ -423,6 +424,39 @@ def execute_replay(
             status=BackfillStatus.FAILED,
             error="No valid targets resolved from input",
             scope=MaintenanceScope(targets=(), filter=effective_filter),
+        )
+
+    blockers = offline_maintenance_blockers(
+        config,
+        repair=any(name in _REPLAY_DISPATCH for name in resolved_names),
+        cleanup=False,
+        dry_run=dry_run,
+        targets=resolved_names,
+    )
+    if blockers:
+        samples = tuple(
+            FailureSample(
+                kind="OfflineMaintenanceBlocked",
+                locator=f"target:{result.name}",
+                message=result.detail,
+            )
+            for result in blockers
+        )
+        started_at = datetime.now(timezone.utc).isoformat()
+        return BackfillOperation(
+            operation_id=op_id,
+            kind=BackfillKind.SOURCE_REPLAY if SOURCE_REPLAY_TARGET in resolved_names else BackfillKind.DERIVED_REBUILD,
+            targets=resolved_names,
+            status=BackfillStatus.FAILED,
+            progress=0.0,
+            started_at=started_at,
+            completed_at=started_at,
+            affected_rows=0,
+            results=[result.to_dict() for result in blockers],
+            scope=MaintenanceScope(targets=resolved_names, filter=effective_filter),
+            reason=InvalidationReason.UNKNOWN,
+            failure_samples=BoundedFailureSamples.from_samples(samples),
+            metrics={"repaired_count": 0.0},
         )
 
     if resume_cursor is None and persist_state:

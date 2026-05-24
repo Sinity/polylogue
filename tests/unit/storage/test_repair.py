@@ -189,6 +189,39 @@ def test_repair_session_insights_noops_when_ready(monkeypatch: pytest.MonkeyPatc
     assert result.detail == "Session insights already ready"
 
 
+def test_offline_maintenance_refuses_live_daemon(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("polylogue.maintenance.offline_guard.running_daemon_pid", lambda _config: 1234)
+
+    results = repair_mod.run_selected_maintenance(
+        _config(tmp_path),
+        repair=True,
+        cleanup=False,
+        targets=("session_insights",),
+    )
+
+    assert len(results) == 1
+    assert results[0].name == "session_insights"
+    assert results[0].success is False
+    assert "polylogued PID 1234 is running" in results[0].detail
+
+
+def test_offline_maintenance_preview_allowed_with_live_daemon(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("polylogue.maintenance.offline_guard.running_daemon_pid", lambda _config: 1234)
+
+    results = repair_mod.run_selected_maintenance(
+        _config(tmp_path),
+        repair=True,
+        cleanup=False,
+        dry_run=True,
+        preview_counts={"session_insights": 2},
+        targets=("session_insights",),
+    )
+
+    assert len(results) == 1
+    assert results[0].success is True
+    assert results[0].repaired_count == 2
+
+
 def test_repair_action_event_read_model_rebuilds_fts_when_stale_extra_rows(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

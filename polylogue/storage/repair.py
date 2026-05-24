@@ -11,6 +11,7 @@ from polylogue.config import Config
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
 from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
+from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
 from polylogue.maintenance.targets import (
     CLEANUP_TARGETS,
     SAFE_REPAIR_TARGETS,
@@ -42,15 +43,27 @@ _SESSION_INSIGHT_READY_FLAGS: tuple[SessionInsightReadyFlag, ...] = (
 )
 
 
-# ---------------------------------------------------------------------------
-# RepairResult
-# ---------------------------------------------------------------------------
+def offline_maintenance_blockers(
+    config: Config,
+    *,
+    repair: bool,
+    cleanup: bool,
+    dry_run: bool,
+    targets: tuple[str, ...] = (),
+) -> list[RepairResult]:
+    detail = offline_maintenance_block_reason(config, active=repair or cleanup, dry_run=dry_run)
+    if detail is None:
+        return []
+    selected_targets = targets or tuple(SAFE_REPAIR_TARGETS if repair else ()) + tuple(
+        CLEANUP_TARGETS if cleanup else ()
+    )
+    return [
+        _repair_result(target_name, repaired_count=0, success=False, detail=detail) for target_name in selected_targets
+    ]
 
 
 @dataclass
 class RepairResult:
-    """Result of a repair operation."""
-
     name: str
     category: MaintenanceCategory
     destructive: bool
@@ -1216,6 +1229,15 @@ def run_selected_maintenance(
     session_insight_progress_callback: ProgressCallback | None = None,
     session_insight_progress_total: int | None = None,
 ) -> list[RepairResult]:
+    blockers = offline_maintenance_blockers(
+        config,
+        repair=repair,
+        cleanup=cleanup,
+        dry_run=dry_run,
+        targets=targets,
+    )
+    if blockers:
+        return blockers
     results: list[RepairResult] = []
     repair_targets = tuple(name for name in targets if name in SAFE_REPAIR_TARGETS)
     cleanup_targets = tuple(name for name in targets if name in CLEANUP_TARGETS)
