@@ -48,20 +48,33 @@ _PROVIDER_EVENT_SELECT = """
 """
 
 
+def _provider_event_select_sql(where_clause: str) -> str:
+    return f"""
+{_PROVIDER_EVENT_SELECT}
+            {where_clause}
+            ORDER BY pe.conversation_id, pe.event_index
+            """
+
+
+def _provider_event_compaction_count_sql(placeholders: str) -> str:
+    return f"""
+            SELECT conversation_id, COUNT(*) AS compaction_count
+            FROM provider_events
+            WHERE conversation_id IN ({placeholders})
+              AND event_type = 'compaction'
+            GROUP BY conversation_id
+            """
+
+
 async def get_provider_events(
     conn: aiosqlite.Connection,
     conversation_id: str,
 ) -> list[ProviderEventRecord]:
-    rows = await (
-        await conn.execute(
-            f"""
-{_PROVIDER_EVENT_SELECT}
-            WHERE pe.conversation_id = ?
-            ORDER BY pe.event_index
-            """,
-            (conversation_id,),
-        )
-    ).fetchall()
+    query = _provider_event_select_sql("WHERE pe.conversation_id = ?").replace(
+        "ORDER BY pe.conversation_id, pe.event_index",
+        "ORDER BY pe.event_index",
+    )
+    rows = await (await conn.execute(query, (conversation_id,))).fetchall()
     return [_row_to_provider_event(row) for row in rows]
 
 
@@ -72,16 +85,8 @@ async def get_provider_events_batch(
     if not conversation_ids:
         return {}
     placeholders = ", ".join("?" for _ in conversation_ids)
-    rows = await (
-        await conn.execute(
-            f"""
-{_PROVIDER_EVENT_SELECT}
-            WHERE pe.conversation_id IN ({placeholders})
-            ORDER BY pe.conversation_id, pe.event_index
-            """,
-            tuple(conversation_ids),
-        )
-    ).fetchall()
+    query = _provider_event_select_sql(f"WHERE pe.conversation_id IN ({placeholders})")
+    rows = await (await conn.execute(query, tuple(conversation_ids))).fetchall()
     result: dict[str, list[ProviderEventRecord]] = {conversation_id: [] for conversation_id in conversation_ids}
     for row in rows:
         record = _row_to_provider_event(row)
@@ -96,18 +101,8 @@ async def get_provider_event_compaction_counts(
     if not conversation_ids:
         return {}
     placeholders = ", ".join("?" for _ in conversation_ids)
-    rows = await (
-        await conn.execute(
-            f"""
-            SELECT conversation_id, COUNT(*) AS compaction_count
-            FROM provider_events
-            WHERE conversation_id IN ({placeholders})
-              AND event_type = 'compaction'
-            GROUP BY conversation_id
-            """,
-            tuple(conversation_ids),
-        )
-    ).fetchall()
+    query = _provider_event_compaction_count_sql(placeholders)
+    rows = await (await conn.execute(query, tuple(conversation_ids))).fetchall()
     result = dict.fromkeys(conversation_ids, 0)
     for row in rows:
         result[str(row["conversation_id"])] = int(row["compaction_count"] or 0)
@@ -121,14 +116,8 @@ def sync_provider_events_batch(
     if not conversation_ids:
         return {}
     placeholders = ", ".join("?" for _ in conversation_ids)
-    rows = conn.execute(
-        f"""
-{_PROVIDER_EVENT_SELECT}
-        WHERE pe.conversation_id IN ({placeholders})
-        ORDER BY pe.conversation_id, pe.event_index
-        """,
-        tuple(conversation_ids),
-    ).fetchall()
+    query = _provider_event_select_sql(f"WHERE pe.conversation_id IN ({placeholders})")
+    rows = conn.execute(query, tuple(conversation_ids)).fetchall()
     result: dict[str, list[ProviderEventRecord]] = defaultdict(list)
     for conversation_id in conversation_ids:
         result.setdefault(conversation_id, [])
@@ -145,16 +134,8 @@ def sync_provider_event_compaction_counts(
     if not conversation_ids:
         return {}
     placeholders = ", ".join("?" for _ in conversation_ids)
-    rows = conn.execute(
-        f"""
-        SELECT conversation_id, COUNT(*) AS compaction_count
-        FROM provider_events
-        WHERE conversation_id IN ({placeholders})
-          AND event_type = 'compaction'
-        GROUP BY conversation_id
-        """,
-        tuple(conversation_ids),
-    ).fetchall()
+    query = _provider_event_compaction_count_sql(placeholders)
+    rows = conn.execute(query, tuple(conversation_ids)).fetchall()
     result = dict.fromkeys(conversation_ids, 0)
     for row in rows:
         result[str(row["conversation_id"])] = int(row["compaction_count"] or 0)

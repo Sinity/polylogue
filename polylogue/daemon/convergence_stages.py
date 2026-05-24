@@ -61,7 +61,9 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
                 conversation_ids = _conversation_ids_for_source_path(conn, path)
                 if conversation_ids:
                     return _fts_needs_repair_for_conversations(conn, conversation_ids)
-                total = int(conn.execute("SELECT COUNT(*) FROM messages WHERE text IS NOT NULL").fetchone()[0])
+                from polylogue.storage.fts.sql import FTS_INDEXABLE_MESSAGE_COUNT_SQL
+
+                total = int(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone()[0])
                 fts_count = _fts_doc_count(conn, "messages_fts_docsize")
                 if fts_count != total:
                     return True
@@ -92,7 +94,9 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
                     conn.commit()
                     logger.info("fts: repaired conversations=%d", len(conversation_ids))
                     return not _fts_needs_repair_for_conversations(conn, conversation_ids)
-                total = int(conn.execute("SELECT COUNT(*) FROM messages WHERE text IS NOT NULL").fetchone()[0])
+                from polylogue.storage.fts.sql import FTS_INDEXABLE_MESSAGE_COUNT_SQL
+
+                total = int(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone()[0])
                 rebuild_fts_index_sync(conn)
                 conn.commit()
                 new_count = _fts_doc_count(conn, "messages_fts_docsize")
@@ -593,9 +597,21 @@ def _fts_repair_needs_for_conversations(
                 SELECT COUNT(*)
                 FROM messages AS m
                 LEFT JOIN messages_fts_docsize AS d ON d.id = m.rowid
-                WHERE m.text IS NOT NULL
-                  AND m.conversation_id IN ({placeholders})
+                WHERE m.conversation_id IN ({placeholders})
                   AND d.id IS NULL
+                  AND (
+                      m.text IS NOT NULL
+                      OR EXISTS (
+                          SELECT 1
+                          FROM content_blocks AS cb
+                          WHERE cb.message_id = m.message_id
+                            AND (
+                                NULLIF(cb.text, '') IS NOT NULL
+                                OR NULLIF(cb.tool_input, '') IS NOT NULL
+                                OR NULLIF(cb.metadata, '') IS NOT NULL
+                            )
+                      )
+                  )
                 """,
                 params,
             ).fetchone()[0]
@@ -633,10 +649,12 @@ def _fts_surface_triggers_are_trusted(conn: sqlite3.Connection, *, surface: str)
     from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES
 
     if surface == "messages_fts":
-        trigger_names = tuple(FTS_TRIGGER_NAMES[0:3])
+        trigger_names = tuple(
+            FTS_TRIGGER_NAMES[0:6] if _table_exists(conn, "content_blocks") else FTS_TRIGGER_NAMES[0:3]
+        )
         required_tables = ("messages_fts", "messages_fts_docsize")
     elif surface == "action_events_fts":
-        trigger_names = tuple(FTS_TRIGGER_NAMES[3:6])
+        trigger_names = tuple(FTS_TRIGGER_NAMES[6:9])
         required_tables = ("action_events_fts", "action_events_fts_docsize")
     else:
         return False

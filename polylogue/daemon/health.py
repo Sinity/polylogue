@@ -301,14 +301,14 @@ def _table_exists_for_fts_trigger(conn: sqlite3.Connection, table_name: str) -> 
 
 
 def _active_fts_triggers(conn: sqlite3.Connection) -> tuple[str, ...]:
-    surfaces = (
-        (("messages", "messages_fts"), _EXPECTED_FTS_TRIGGERS[0:3]),
-        (("action_events", "action_events_fts"), _EXPECTED_FTS_TRIGGERS[3:6]),
-        (("session_work_events", "session_work_events_fts"), _EXPECTED_FTS_TRIGGERS[6:9]),
-        (("work_threads", "work_threads_fts"), _EXPECTED_FTS_TRIGGERS[9:12]),
-    )
     expected: list[str] = []
-    for table_names, trigger_names in surfaces:
+    if _table_exists_for_fts_trigger(conn, "messages") and _table_exists_for_fts_trigger(conn, "messages_fts"):
+        expected.extend(_EXPECTED_FTS_TRIGGERS[: 6 if _table_exists_for_fts_trigger(conn, "content_blocks") else 3])
+    for table_names, trigger_names in (
+        (("action_events", "action_events_fts"), _EXPECTED_FTS_TRIGGERS[6:9]),
+        (("session_work_events", "session_work_events_fts"), _EXPECTED_FTS_TRIGGERS[9:12]),
+        (("work_threads", "work_threads_fts"), _EXPECTED_FTS_TRIGGERS[12:15]),
+    ):
         if all(_table_exists_for_fts_trigger(conn, table_name) for table_name in table_names):
             expected.extend(trigger_names)
     return tuple(expected)
@@ -361,9 +361,9 @@ def _auto_restore_fts_triggers(dbf: object) -> tuple[list[str], bool, str]:
 def _check_fts_trigger_drift_fast() -> HealthAlert:
     """Detect missing FTS sync triggers; auto-restore when configured.
 
-    The six canonical triggers in :data:`_EXPECTED_FTS_TRIGGERS` keep
-    ``messages_fts`` and ``action_events_fts`` in sync with their source
-    tables. A SIGKILL during the bulk-write trigger-suspension window
+    The canonical triggers in :data:`_EXPECTED_FTS_TRIGGERS` keep each
+    active FTS surface in sync with its source tables. A SIGKILL during
+    the bulk-write trigger-suspension window
     (see ``docs/internals.md`` "FTS5 Model") leaves them dropped, which
     silently corrupts search results until the next bulk operation
     restores them.

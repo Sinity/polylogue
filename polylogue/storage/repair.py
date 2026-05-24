@@ -949,22 +949,18 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
                     detail=f"Would: FTS sync: {msg_count:,} messages vs {fts_count:,} indexed ({diff:,} difference)",
                 )
 
-            deleted = conn.execute(
-                "DELETE FROM messages_fts WHERE rowid IN (SELECT f.rowid FROM messages_fts f WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.rowid = f.rowid))"
-            ).rowcount
-            inserted = conn.execute(
-                "INSERT INTO messages_fts (rowid, message_id, conversation_id, text) SELECT m.rowid, m.message_id, m.conversation_id, m.text FROM messages m WHERE m.text IS NOT NULL AND NOT EXISTS (SELECT 1 FROM messages_fts f WHERE f.rowid = m.rowid)"
-            ).rowcount
-            from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync
+            from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
 
-            restore_fts_triggers_sync(conn)
+            before = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
+            rebuild_fts_index_sync(conn)
+            after = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
             conn.commit()
-            total = deleted + inserted
+            total = abs(int(after or 0) - int(before or 0))
             return _repair_result(
                 "dangling_fts",
                 repaired_count=total,
                 success=True,
-                detail=f"FTS sync: deleted {deleted} orphaned, added {inserted} missing entries",
+                detail=f"FTS sync: rebuilt message index ({after:,} indexed messages)",
             )
     except Exception as exc:
         return _repair_result(

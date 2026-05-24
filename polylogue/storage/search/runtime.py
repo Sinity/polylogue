@@ -58,6 +58,11 @@ def search_messages_impl(
             rows = conn.execute(sql, tuple(params)).fetchall()
         except sqlite3.Error as exc:
             raise DatabaseError(f"Invalid search query: {exc}") from exc
+        fallback_snippets = {
+            row["message_id"]: _fallback_snippet(conn, row["message_id"], query)
+            for row in rows
+            if row["snippet"] is None
+        }
 
     hits: list[SearchHit] = []
     for row in rows:
@@ -70,11 +75,41 @@ def search_messages_impl(
                 message_id=row["message_id"],
                 title=row["title"],
                 timestamp=sort_key_to_iso(row["sort_key"]),
-                snippet=row["snippet"],
+                snippet=str(row["snippet"] or fallback_snippets.get(row["message_id"]) or ""),
                 conversation_url=conversation_web_url(conversation_id),
             )
         )
     return SearchResult(hits=hits)
+
+
+def _fallback_snippet(conn: sqlite3.Connection, message_id: str, query: str) -> str | None:
+    row = conn.execute("SELECT text FROM messages WHERE message_id = ?", (message_id,)).fetchone()
+    parts: list[str] = []
+    if row is not None and row["text"]:
+        parts.append(str(row["text"]))
+    block_rows = conn.execute(
+        """
+        SELECT text, tool_input, metadata
+        FROM content_blocks
+        WHERE message_id = ?
+        ORDER BY block_index
+        """,
+        (message_id,),
+    ).fetchall()
+    for block in block_rows:
+        parts.extend(str(block[key]) for key in ("text", "tool_input", "metadata") if block[key])
+    text = "\n".join(parts).strip()
+    if not text:
+        return None
+    needle = query.strip().strip('"').split()[0].lower() if query.strip() else ""
+    offset = text.lower().find(needle) if needle else -1
+    if offset < 0:
+        return text[:200]
+    start = max(0, offset - 80)
+    end = min(len(text), offset + 120)
+    prefix = "..." if start else ""
+    suffix = "..." if end < len(text) else ""
+    return f"{prefix}{text[start:end]}{suffix}"
 
 
 def search_messages(

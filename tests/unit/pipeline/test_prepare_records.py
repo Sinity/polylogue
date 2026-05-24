@@ -541,8 +541,8 @@ async def test_prepare_records_backfills_structured_blocks_from_provider_meta(
         ("msg-2", "thinking", "reasoning"),
     ]
     assert [(row["provider_message_id"], row["text"], row["has_thinking"]) for row in message_rows] == [
-        ("msg-1", "inline\nprint('ok')\nok", 0),
-        ("msg-2", "reasoning", 1),
+        ("msg-1", None, 0),
+        ("msg-2", None, 1),
     ]
 
 

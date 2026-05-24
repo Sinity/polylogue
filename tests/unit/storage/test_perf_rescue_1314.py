@@ -114,9 +114,7 @@ def test_search_conversation_hits_falls_back_to_exact_freshness(tier_small_db: P
 
         lowered = [sql.lower() for sql in statements]
         docsize_count_index = next(i for i, sql in enumerate(lowered) if "count(*) from messages_fts_docsize" in sql)
-        message_count_index = next(
-            i for i, sql in enumerate(lowered) if "count(*) from messages where text is not null" in sql
-        )
+        message_count_index = next(i for i, sql in enumerate(lowered) if "from messages as m" in sql)
         match_index = next(i for i, sql in enumerate(lowered) if "messages_fts match" in sql)
         assert docsize_count_index < match_index
         assert message_count_index < match_index

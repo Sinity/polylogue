@@ -22,7 +22,14 @@ from polylogue.archive.write_gateway import WriteOperation, WriteResult
 
 logger = logging.getLogger(__name__)
 
-_MESSAGE_FTS_TRIGGER_NAMES = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
+_MESSAGE_FTS_TRIGGER_NAMES = (
+    "messages_fts_ai",
+    "messages_fts_ad",
+    "messages_fts_au",
+    "content_blocks_fts_ai",
+    "content_blocks_fts_ad",
+    "content_blocks_fts_au",
+)
 _ACTION_FTS_TRIGGER_NAMES = ("action_events_fts_ai", "action_events_fts_ad", "action_events_fts_au")
 
 

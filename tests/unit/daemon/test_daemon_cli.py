@@ -313,6 +313,8 @@ def test_ensure_fts_startup_readiness_marks_ready_without_exact_scan(
                 return FakeCursor(triggers[0], rows=triggers)
             if query == "SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1":
                 return FakeCursor((1,))
+            if "COUNT(*)" in query and "FROM messages AS m" in query:
+                return FakeCursor((1,))
             if query == "SELECT 1 FROM messages_fts_docsize LIMIT 1":
                 return FakeCursor((1,))
             raise AssertionError(f"unexpected query: {query}")
@@ -411,6 +413,8 @@ def test_ensure_fts_startup_readiness_rebuilds_empty_fts(
                 ]
                 return FakeCursor(triggers[0], rows=triggers)
             if query == "SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1":
+                return FakeCursor((1,))
+            if "COUNT(*)" in query and "FROM messages AS m" in query:
                 return FakeCursor((1,))
             if query == "SELECT 1 FROM messages_fts_docsize LIMIT 1":
                 return FakeCursor(None)

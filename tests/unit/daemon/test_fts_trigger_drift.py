@@ -51,6 +51,23 @@ CREATE TABLE IF NOT EXISTS messages (
 )
 """
 
+_CONTENT_BLOCKS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS content_blocks (
+    block_id TEXT PRIMARY KEY,
+    message_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    block_index INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    text TEXT,
+    tool_name TEXT,
+    tool_id TEXT,
+    tool_input TEXT,
+    metadata TEXT,
+    semantic_type TEXT,
+    UNIQUE (message_id, block_index)
+)
+"""
+
 _ACTION_EVENTS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS action_events (
     event_id TEXT PRIMARY KEY,
@@ -120,6 +137,7 @@ def _seed_archive_with_triggers(path: Path) -> None:
     conn = sqlite3.connect(str(path))
     try:
         conn.execute(_MESSAGES_TABLE_SQL)
+        conn.execute(_CONTENT_BLOCKS_TABLE_SQL)
         conn.execute(_ACTION_EVENTS_TABLE_SQL)
         conn.execute(_SESSION_WORK_EVENTS_TABLE_SQL)
         conn.execute(_SESSION_WORK_EVENTS_FTS_SQL)
@@ -146,12 +164,15 @@ def _drop_trigger(path: Path, name: str) -> None:
 
 
 def test_expected_fts_trigger_inventory_covers_archive_and_insight_search() -> None:
-    """The contract is twelve triggers — three per active FTS table."""
-    assert len(_EXPECTED_FTS_TRIGGERS) == 12
+    """The contract is fifteen triggers over archive and insight FTS tables."""
+    assert len(_EXPECTED_FTS_TRIGGERS) == 15
     assert set(_EXPECTED_FTS_TRIGGERS) == {
         "messages_fts_ai",
         "messages_fts_ad",
         "messages_fts_au",
+        "content_blocks_fts_ai",
+        "content_blocks_fts_ad",
+        "content_blocks_fts_au",
         "action_events_fts_ai",
         "action_events_fts_ad",
         "action_events_fts_au",
@@ -183,7 +204,7 @@ def test_check_returns_ok_when_all_triggers_present(
     alert = _check_fts_trigger_drift_fast()
     assert alert.severity == HealthSeverity.OK
     assert alert.tier == HealthTier.FAST
-    assert "all 12 active FTS triggers present" in alert.message
+    assert "all 15 active FTS triggers present" in alert.message
     assert alert.consecutive_failures == 0
 
 
@@ -221,7 +242,7 @@ def test_check_lists_all_missing_triggers_when_several_drop(
 
     alert = _check_fts_trigger_drift_fast()
     assert alert.severity == HealthSeverity.CRITICAL
-    assert "2/12 missing" in alert.message
+    assert "2/15 missing" in alert.message
     assert "messages_fts_ai" in alert.message
     assert "action_events_fts_ad" in alert.message
 
@@ -291,7 +312,7 @@ def test_auto_restore_repairs_missing_triggers_and_warns(
     # The next health cycle returns to OK.
     next_alert = _check_fts_trigger_drift_fast()
     assert next_alert.severity == HealthSeverity.OK
-    assert "all 12 active FTS triggers present" in next_alert.message
+    assert "all 15 active FTS triggers present" in next_alert.message
 
 
 def test_auto_restore_disabled_by_default_keeps_alert_critical(

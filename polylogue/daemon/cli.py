@@ -35,6 +35,7 @@ from polylogue.logging import configure_logging, get_logger
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.watcher import default_sources
 from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES as _EXPECTED_FTS_TRIGGERS
+from polylogue.storage.fts.sql import FTS_INDEXABLE_MESSAGE_COUNT_SQL
 
 logger = get_logger(__name__)
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
@@ -97,14 +98,14 @@ def _table_exists_sync(conn: sqlite3.Connection, table_name: str) -> bool:
 
 
 def _active_fts_triggers_sync(conn: sqlite3.Connection) -> tuple[str, ...]:
-    surfaces = (
-        (("messages", "messages_fts"), _EXPECTED_FTS_TRIGGERS[0:3]),
-        (("action_events", "action_events_fts"), _EXPECTED_FTS_TRIGGERS[3:6]),
-        (("session_work_events", "session_work_events_fts"), _EXPECTED_FTS_TRIGGERS[6:9]),
-        (("work_threads", "work_threads_fts"), _EXPECTED_FTS_TRIGGERS[9:12]),
-    )
     expected: list[str] = []
-    for table_names, trigger_names in surfaces:
+    if _table_exists_sync(conn, "messages") and _table_exists_sync(conn, "messages_fts"):
+        expected.extend(_EXPECTED_FTS_TRIGGERS[: 6 if _table_exists_sync(conn, "content_blocks") else 3])
+    for table_names, trigger_names in (
+        (("action_events", "action_events_fts"), _EXPECTED_FTS_TRIGGERS[6:9]),
+        (("session_work_events", "session_work_events_fts"), _EXPECTED_FTS_TRIGGERS[9:12]),
+        (("work_threads", "work_threads_fts"), _EXPECTED_FTS_TRIGGERS[12:15]),
+    ):
         if all(_table_exists_sync(conn, table_name) for table_name in table_names):
             expected.extend(trigger_names)
     return tuple(expected)
@@ -186,7 +187,7 @@ async def _ensure_fts_startup_readiness() -> None:
             return
 
         ensure_fts_index_sync(conn)
-        has_indexable_messages = bool(conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1").fetchone())
+        has_indexable_messages = bool(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone()[0])
         has_indexed_messages = bool(conn.execute("SELECT 1 FROM messages_fts_docsize LIMIT 1").fetchone())
         if has_indexable_messages and not has_indexed_messages:
             logger.warning("daemon: message FTS is empty on startup while messages exist. Rebuilding once.")

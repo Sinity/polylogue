@@ -276,7 +276,15 @@ def test_rebuild_index_with_multiple_messages_per_conversation(test_conn: sqlite
     store_records(conversation=conv, messages=messages, attachments=[], conn=test_conn)
     rebuild_index(test_conn)
 
-    count = test_conn.execute("SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?", ("conv1",)).fetchone()[0]
+    count = test_conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM messages_fts
+        JOIN messages ON messages.rowid = messages_fts.rowid
+        WHERE messages.conversation_id = ?
+        """,
+        ("conv1",),
+    ).fetchone()[0]
     assert count == 10
 
 
@@ -1136,12 +1144,16 @@ def test_search_invalid_query_reports_error(
                 return StubCursor(row=(0,))
             if "action_events_fts" in sql and "sqlite_master" in sql:
                 return StubCursor(row=None)
+            if "COUNT(*) FROM sqlite_master" in sql:
+                return StubCursor(row=(6,))
             if "sqlite_master" in sql:
                 return StubCursor(row={"name": "messages_fts"} if "type='table'" in sql else (3,))
             if "messages_fts_docsize" in sql:
                 return StubCursor(row=(1,))
-            if "COUNT(*) FROM messages" in sql:
+            if "COUNT(*)" in sql and "messages" in sql:
                 return StubCursor(row=(1,))
+            if "content_blocks" in sql:
+                return StubCursor(row=(0,))
             if "MATCH" in sql:
                 raise sqlite3.OperationalError("fts5: syntax error")
             return StubCursor()
@@ -1532,7 +1544,11 @@ def test_fts_triggers_restored_after_exception() -> None:
             ("m2", "c1", "assistant", "another message", "test"),
         )
         conn.commit()
-        count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+        from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
+
+        rebuild_fts_index_sync(conn)
+        conn.commit()
+        count = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
         assert count == 2, f"Expected 2 FTS entries after exception recovery, got {count}"
     finally:
         conn.close()

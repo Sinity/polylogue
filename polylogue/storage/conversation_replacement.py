@@ -55,17 +55,9 @@ def _purge_message_fts_sync(conn: sqlite3.Connection, conversation_id: str) -> N
         return
     if not _table_exists_sync(conn, "messages_fts") or not _table_exists_sync(conn, "messages_fts_docsize"):
         return
-    conn.execute(
-        """
-        INSERT INTO messages_fts(messages_fts, rowid, message_id, conversation_id, text)
-        SELECT 'delete', m.rowid, m.message_id, m.conversation_id, m.text
-        FROM messages AS m
-        JOIN messages_fts_docsize AS d ON d.id = m.rowid
-        WHERE m.conversation_id = ?
-          AND m.text IS NOT NULL
-        """,
-        (conversation_id,),
-    )
+    from polylogue.storage.fts.sql import delete_conversation_rows_sql
+
+    conn.execute(delete_conversation_rows_sql(1), (conversation_id,))
 
 
 async def _purge_message_fts_async(conn: aiosqlite.Connection, conversation_id: str) -> None:
@@ -75,17 +67,9 @@ async def _purge_message_fts_async(conn: aiosqlite.Connection, conversation_id: 
         conn, "messages_fts_docsize"
     ):
         return
-    await conn.execute(
-        """
-        INSERT INTO messages_fts(messages_fts, rowid, message_id, conversation_id, text)
-        SELECT 'delete', m.rowid, m.message_id, m.conversation_id, m.text
-        FROM messages AS m
-        JOIN messages_fts_docsize AS d ON d.id = m.rowid
-        WHERE m.conversation_id = ?
-          AND m.text IS NOT NULL
-        """,
-        (conversation_id,),
-    )
+    from polylogue.storage.fts.sql import delete_conversation_rows_sql
+
+    await conn.execute(delete_conversation_rows_sql(1), (conversation_id,))
 
 
 def _purge_action_fts_sync(conn: sqlite3.Connection, conversation_id: str) -> None:

@@ -717,7 +717,7 @@ def test_transform_deduplicates_materialized_message_rows_by_primary_key(tmp_pat
     )
 
     assert len(cdata.message_tuples) == 1
-    assert cdata.message_tuples[0][4] == "newer text"
+    assert cdata.message_tuples[0][4] is None
     assert len(cdata.block_tuples) == 1
     assert cdata.block_tuples[0][5] == "newer text"
     assert cdata.stats_tuple

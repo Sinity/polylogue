@@ -845,7 +845,7 @@ def _message_tuple(conversation: MaterializedConversation, message: Materialized
         conversation.conversation_id,
         message.provider_message_id,
         message.role,
-        message.text,
+        None if message.blocks else message.text,
         message.sort_key,
         message.content_hash,
         1,

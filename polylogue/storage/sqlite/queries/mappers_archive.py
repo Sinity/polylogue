@@ -261,10 +261,6 @@ def _row_to_provider_event(row: sqlite3.Row) -> ProviderEventRecord:
         value = _row_text(row, "ghost_snapshot_ghost_commit")
         if value is not None:
             payload["ghost_commit"] = value
-    else:
-        legacy_payload = _row_get(row, "payload_json")
-        if legacy_payload is not None:
-            payload = _json_object(_parse_json(legacy_payload, field="payload_json", record_id=row["event_id"])) or {}
     return ProviderEventRecord(
         event_id=ProviderEventId(row["event_id"]),
         conversation_id=ConversationId(row["conversation_id"]),

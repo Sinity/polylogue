@@ -1043,7 +1043,12 @@ def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cac
         assert {"action_events_fts_ai", "action_events_fts_ad", "action_events_fts_au"}.issubset(trigger_names)
         assert (
             conn.execute(
-                "SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?",
+                """
+                SELECT COUNT(*)
+                FROM messages_fts
+                JOIN messages ON messages.rowid = messages_fts.rowid
+                WHERE messages.conversation_id = ?
+                """,
                 (conversation_id,),
             ).fetchone()[0]
             == 1

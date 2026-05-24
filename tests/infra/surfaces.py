@@ -41,10 +41,11 @@ def _provider_ids_from_connection(conn: sqlite3.Connection, provider: str) -> tu
 def _search_ids_from_connection(conn: sqlite3.Connection, search_text: str) -> tuple[str, ...]:
     rows = conn.execute(
         """
-        SELECT DISTINCT conversation_id
+        SELECT DISTINCT messages.conversation_id
         FROM messages_fts
+        JOIN messages ON messages.rowid = messages_fts.rowid
         WHERE messages_fts MATCH ?
-        ORDER BY conversation_id
+        ORDER BY messages.conversation_id
         """,
         (search_text,),
     ).fetchall()
