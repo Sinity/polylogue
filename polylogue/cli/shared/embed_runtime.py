@@ -76,14 +76,20 @@ def embed_batch(
     vec_provider: VectorProvider,
     *,
     rebuild: bool = False,
-    limit: int | None = None,
+    max_conversations: int | None = None,
+    max_messages: int | None = None,
 ) -> None:
     """Embed pending conversations using the rich CLI progress UI."""
     if not isinstance(env, _HasUI):
         raise TypeError(f"Embedding environment must expose ui, got {type(env).__name__}")
     ui = env.ui
 
-    pending = iter_pending_conversations(repo.backend, rebuild=rebuild, limit=limit)
+    pending = iter_pending_conversations(
+        repo.backend,
+        rebuild=rebuild,
+        max_conversations=max_conversations,
+        max_messages=max_messages,
+    )
     if not pending:
         click.echo("All conversations are already embedded.")
         return
@@ -101,6 +107,8 @@ def embed_batch(
             outcome = embed_conversation_sync(repo, vec_provider, item.conversation_id)
             if outcome.status == "embedded":
                 embedded_count += 1
+            elif outcome.status in {"no_messages", "no_embeddable_messages"}:
+                pass
             elif outcome.status == "error":
                 error_count += 1
                 ui.console.print(f"Warning: [{index}/{len(pending)}] {label}: {outcome.error}")

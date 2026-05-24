@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -45,7 +45,7 @@ def _seed_archive_without_embedding_ledgers(db_path: Path, *, vec_table: bool = 
 
 
 def _payload(result_output: str) -> dict[str, Any]:
-    return json.loads(result_output)
+    return cast("dict[str, Any]", json.loads(result_output))
 
 
 def _run_status(db_path: Path, *args: str, cfg: _Cfg | None = None) -> dict[str, Any]:

@@ -31,6 +31,8 @@ _INSIGHT_DEFERRED_UNTIL_QUIET = "insights deferred until source quiet"
 def _stage_false_error(stage_name: str, *, scope: str) -> str:
     if stage_name == "insights":
         return _INSIGHT_DEFERRED_UNTIL_QUIET
+    if scope == "stage":
+        return f"stage {stage_name} returned False"
     return f"{scope} stage {stage_name} returned False"
 
 
@@ -62,6 +64,9 @@ class ConvergenceStage:
     execute_conversations: Callable[[Sequence[str]], bool] | None = None
     # Can run in a worker process (CPU-bound, no SQLite write).
     cpu_bound: bool = False
+    # Some stages intentionally return False after doing bounded successful
+    # work so the remaining backlog is retried as convergence debt.
+    false_means_pending: bool = False
 
 
 @dataclass(slots=True)
@@ -98,6 +103,25 @@ class ConversationState:
     @property
     def converged(self) -> bool:
         return all(s in (StageState.DONE, StageState.SKIPPED) for s in self.stages.values())
+
+
+def _record_execute_result(
+    state: FileState | ConversationState,
+    *,
+    stage_name: str,
+    stage: ConvergenceStage,
+    success: bool,
+    scope: str,
+) -> None:
+    if success:
+        state.stages[stage_name] = StageState.DONE
+        return
+    state.last_error = _stage_false_error(stage_name, scope=scope)
+    if stage.false_means_pending:
+        state.stages[stage_name] = StageState.PENDING
+        return
+    state.stages[stage_name] = StageState.FAILED
+    state.error_count += 1
 
 
 class DaemonConverger:
@@ -205,10 +229,13 @@ class DaemonConverger:
             elapsed = time.perf_counter() - t_stage
             state.stage_times[stage_name] = elapsed
             state.last_stage_times[stage_name] = elapsed
-            state.stages[stage_name] = StageState.DONE if success else StageState.FAILED
-            if not success:
-                state.error_count += 1
-                state.last_error = _stage_false_error(stage_name, scope="stage")
+            _record_execute_result(
+                state,
+                stage_name=stage_name,
+                stage=stage,
+                success=success,
+                scope="stage",
+            )
 
         return state
 
@@ -287,10 +314,13 @@ class DaemonConverger:
                     batch_stage_times[stage_name] = batch_stage_times.get(stage_name, 0.0) + elapsed
                     state.stage_times[stage_name] = elapsed
                     state.last_stage_times[stage_name] = elapsed
-                    state.stages[stage_name] = StageState.DONE if success else StageState.FAILED
-                    if not success:
-                        state.error_count += 1
-                        state.last_error = _stage_false_error(stage_name, scope="stage")
+                    _record_execute_result(
+                        state,
+                        stage_name=stage_name,
+                        stage=stage,
+                        success=success,
+                        scope="stage",
+                    )
                 continue
 
             try:
@@ -326,10 +356,13 @@ class DaemonConverger:
                 state = self._file_states[path]
                 state.stage_times[stage_name] = elapsed
                 state.last_stage_times[stage_name] = elapsed
-                state.stages[stage_name] = StageState.DONE if success else StageState.FAILED
-                if not success:
-                    state.error_count += 1
-                    state.last_error = _stage_false_error(stage_name, scope="batch")
+                _record_execute_result(
+                    state,
+                    stage_name=stage_name,
+                    stage=stage,
+                    success=success,
+                    scope="batch",
+                )
 
         results = {path: self._file_states[path] for path in paths}
         self._evict_converged_files(paths)
@@ -392,10 +425,13 @@ class DaemonConverger:
                 state = self._conversation_states[conversation_id]
                 state.stage_times[stage_name] = elapsed
                 state.last_stage_times[stage_name] = elapsed
-                state.stages[stage_name] = StageState.DONE if success else StageState.FAILED
-                if not success:
-                    state.error_count += 1
-                    state.last_error = _stage_false_error(stage_name, scope="conversation")
+                _record_execute_result(
+                    state,
+                    stage_name=stage_name,
+                    stage=stage,
+                    success=success,
+                    scope="conversation",
+                )
 
         results = {conversation_id: self._conversation_states[conversation_id] for conversation_id in ids}
         self._evict_converged_conversations(ids)

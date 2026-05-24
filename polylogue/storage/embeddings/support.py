@@ -170,10 +170,10 @@ def is_missing_table_error(exc: sqlite3.OperationalError) -> bool:
 
 
 def table_exists_sync(conn: sqlite3.Connection, table: str) -> bool:
+    escaped = table.replace("'", "''")
     try:
         row = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
-            (table,),
+            f"SELECT 1 FROM sqlite_master WHERE type='table' AND name='{escaped}' LIMIT 1",
         ).fetchone()
     except sqlite3.OperationalError as exc:
         if is_missing_table_error(exc):
@@ -183,10 +183,10 @@ def table_exists_sync(conn: sqlite3.Connection, table: str) -> bool:
 
 
 async def table_exists_async(conn: aiosqlite.Connection, table: str) -> bool:
+    escaped = table.replace("'", "''")
     try:
         cursor = await conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
-            (table,),
+            f"SELECT 1 FROM sqlite_master WHERE type='table' AND name='{escaped}' LIMIT 1",
         )
     except sqlite3.OperationalError as exc:
         if is_missing_table_error(exc):
@@ -203,6 +203,13 @@ def optional_count_sync(conn: sqlite3.Connection, sql: str) -> int:
             return 0
         raise
     return int(row[0]) if row is not None else 0
+
+
+def embedded_message_count_sync(conn: sqlite3.Connection) -> int:
+    """Count embedded vectors without scanning the sqlite-vec virtual table."""
+    if table_exists_sync(conn, "message_embeddings_rowids"):
+        return optional_count_sync(conn, "SELECT COUNT(*) FROM message_embeddings_rowids")
+    return optional_count_sync(conn, "SELECT COUNT(*) FROM message_embeddings")
 
 
 def optional_row_sync(conn: sqlite3.Connection, sql: str) -> StatsRow | None:
@@ -232,6 +239,13 @@ async def optional_count_async(conn: aiosqlite.Connection, sql: str) -> int:
             return 0
         raise
     return _coerce_int(row[0]) if row is not None else 0
+
+
+async def embedded_message_count_async(conn: aiosqlite.Connection) -> int:
+    """Count embedded vectors without scanning the sqlite-vec virtual table."""
+    if await table_exists_async(conn, "message_embeddings_rowids"):
+        return await optional_count_async(conn, "SELECT COUNT(*) FROM message_embeddings_rowids")
+    return await optional_count_async(conn, "SELECT COUNT(*) FROM message_embeddings")
 
 
 async def optional_row_async(conn: aiosqlite.Connection, sql: str) -> StatsRow | None:

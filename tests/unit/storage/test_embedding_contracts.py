@@ -13,14 +13,21 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable
+from pathlib import Path
 from typing import TypeAlias
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from polylogue.storage.embeddings.embedding_stats import (
     read_embedding_stats_sync,
 )
+from polylogue.storage.embeddings.materialization import (
+    embed_conversation_sync,
+    select_pending_conversation_window,
+)
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
+from polylogue.storage.sqlite.schema_ddl import SCHEMA_VERSION
 
 # ---------------------------------------------------------------------------
 # Schema bootstrap (same DDL as sqlite_vec_runtime.py)
@@ -72,6 +79,31 @@ def _setup_minimal_embedding_db(conn: sqlite3.Connection) -> None:
     conn.executescript(_CONVERSATIONS_DDL)
     conn.executescript(_MESSAGES_DDL)
     conn.commit()
+
+
+def _setup_minimal_embedding_file(path: Path) -> None:
+    conn = sqlite3.connect(path)
+    try:
+        _setup_minimal_embedding_db(conn)
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _insert_conversation(conn: sqlite3.Connection, conversation_id: str, *, message_count: int) -> None:
+    conn.execute(
+        """
+        INSERT INTO conversations (conversation_id, provider_name, title, updated_at, content_hash)
+        VALUES (?, 'test', ?, ?, ?)
+        """,
+        (conversation_id, conversation_id, conversation_id, f"hash-{conversation_id}"),
+    )
+    for index in range(message_count):
+        conn.execute(
+            "INSERT INTO messages (message_id, conversation_id, text) VALUES (?, ?, ?)",
+            (f"{conversation_id}-msg-{index}", conversation_id, "long enough message text for embedding"),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +304,130 @@ def test_missing_embedding_status_rows_count_as_pending_messages() -> None:
         stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
         assert stats.pending_conversations == 1
         assert stats.pending_messages == 1
+    finally:
+        conn.close()
+
+
+def test_pending_window_honors_max_conversations() -> None:
+    conn = sqlite3.connect(":memory:")
+    try:
+        _setup_minimal_embedding_db(conn)
+        for index in range(3):
+            _insert_conversation(conn, f"conv-{index}", message_count=1)
+        conn.commit()
+
+        pending = select_pending_conversation_window(conn, max_conversations=2)
+
+        assert [item.conversation_id for item in pending] == ["conv-0", "conv-1"]
+    finally:
+        conn.close()
+
+
+def test_pending_window_honors_max_messages() -> None:
+    conn = sqlite3.connect(":memory:")
+    try:
+        _setup_minimal_embedding_db(conn)
+        _insert_conversation(conn, "conv-a", message_count=2)
+        _insert_conversation(conn, "conv-b", message_count=2)
+        _insert_conversation(conn, "conv-c", message_count=1)
+        conn.commit()
+
+        pending = select_pending_conversation_window(conn, max_messages=3)
+
+        assert [item.conversation_id for item in pending] == ["conv-a"]
+        assert sum(item.message_count for item in pending) == 2
+    finally:
+        conn.close()
+
+
+def test_no_message_conversation_records_clean_status(tmp_path: Path) -> None:
+    db_path = tmp_path / "archive.sqlite"
+    _setup_minimal_embedding_file(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        _insert_conversation(conn, "conv-empty", message_count=0)
+        conn.commit()
+    finally:
+        conn.close()
+
+    repo = MagicMock()
+    repo.backend.db_path = db_path
+    repo.get_messages = AsyncMock(return_value=[])
+
+    outcome = embed_conversation_sync(repo, MagicMock(), "conv-empty")
+
+    assert outcome.status == "no_messages"
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT needs_reindex, error_message FROM embedding_status WHERE conversation_id = 'conv-empty'"
+        ).fetchone()
+        assert row == (0, None)
+        assert select_pending_conversation_window(conn) == []
+    finally:
+        conn.close()
+
+
+def test_no_embeddable_provider_noop_records_clean_status(tmp_path: Path) -> None:
+    db_path = tmp_path / "archive.sqlite"
+    _setup_minimal_embedding_file(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        _insert_conversation(conn, "conv-short", message_count=1)
+        conn.commit()
+    finally:
+        conn.close()
+
+    repo = MagicMock()
+    repo.backend.db_path = db_path
+    repo.get_messages = AsyncMock(
+        return_value=[MagicMock(message_id="m", conversation_id="conv-short", text="short", content_hash="h")]
+    )
+    provider = MagicMock()
+    provider.upsert.return_value = None
+
+    outcome = embed_conversation_sync(repo, provider, "conv-short")
+
+    assert outcome.status == "no_embeddable_messages"
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT needs_reindex, error_message FROM embedding_status WHERE conversation_id = 'conv-short'"
+        ).fetchone()
+        assert row == (0, None)
+        assert select_pending_conversation_window(conn) == []
+    finally:
+        conn.close()
+
+
+def test_provider_error_records_error_status_and_clears_retry(tmp_path: Path) -> None:
+    db_path = tmp_path / "archive.sqlite"
+    _setup_minimal_embedding_file(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        _insert_conversation(conn, "conv-error", message_count=1)
+        conn.commit()
+    finally:
+        conn.close()
+
+    repo = MagicMock()
+    repo.backend.db_path = db_path
+    repo.get_messages = AsyncMock(
+        return_value=[MagicMock(message_id="m", conversation_id="conv-error", text="long enough", content_hash="h")]
+    )
+    provider = MagicMock()
+    provider.upsert.side_effect = RuntimeError("provider 429")
+
+    outcome = embed_conversation_sync(repo, provider, "conv-error")
+
+    assert outcome.status == "error"
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT needs_reindex, error_message FROM embedding_status WHERE conversation_id = 'conv-error'"
+        ).fetchone()
+        assert row == (1, "provider 429")
+        assert [item.conversation_id for item in select_pending_conversation_window(conn)] == ["conv-error"]
     finally:
         conn.close()
 

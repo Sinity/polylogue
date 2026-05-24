@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 
 import polylogue.config as polylogue_config
-from polylogue.storage.embeddings.support import optional_count_sync, table_exists_sync
+from polylogue.storage.embeddings.support import embedded_message_count_sync, optional_count_sync, table_exists_sync
 from polylogue.storage.search_providers.sqlite_vec_support import (
     ESTIMATED_TOKENS_PER_MESSAGE,
     VOYAGE_4_COST_PER_1M_TOKENS,
@@ -59,7 +59,7 @@ def embedding_readiness_info(db_file: Path, *, detail: bool = False) -> dict[str
     try:
         conn = open_readonly_connection(db_file)
         try:
-            embedded_msg = optional_count_sync(conn, "SELECT COUNT(*) FROM message_embeddings")
+            embedded_msg = embedded_message_count_sync(conn)
             if _column_exists(conn, "embedding_status", "error_message"):
                 failure = optional_count_sync(
                     conn, "SELECT COUNT(*) FROM embedding_status WHERE error_message IS NOT NULL"

@@ -233,7 +233,7 @@ class TestEmbedBatch:
             if limit is None:
                 embed_batch(mock_env, mock_repository, mock_vec_provider, rebuild=rebuild)
             else:
-                embed_batch(mock_env, mock_repository, mock_vec_provider, limit=limit, rebuild=rebuild)
+                embed_batch(mock_env, mock_repository, mock_vec_provider, max_conversations=limit, rebuild=rebuild)
 
         assert expected_output in capsys.readouterr().out
 
@@ -245,7 +245,7 @@ class TestEmbedBatch:
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
             embed_batch(mock_env, mock_repository, mock_vec_provider, rebuild=True)
-        assert any("ORDER BY updated_at DESC" in str(call) for call in mock_conn.execute.call_args_list)
+        assert any("ORDER BY COALESCE(c.updated_at, '')" in str(call) for call in mock_conn.execute.call_args_list)
 
     def testembed_batch_error_handling(
         self, mock_env: MagicMock, mock_repository: MagicMock, capsys: pytest.CaptureFixture[str]

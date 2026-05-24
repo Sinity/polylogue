@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from polylogue.daemon.convergence import ConvergenceStage, DaemonConverger
+from polylogue.daemon.convergence import ConvergenceStage, DaemonConverger, StageState
 
 
 def test_converger_reports_only_current_run_stage_timings(tmp_path: Path) -> None:
@@ -104,6 +104,30 @@ def test_converger_retains_failed_batch_state_for_diagnostics(tmp_path: Path) ->
     assert set(converger._file_states) == {failed}
 
 
+def test_converger_keeps_bounded_false_as_pending_debt(tmp_path: Path) -> None:
+    path = tmp_path / "a.jsonl"
+    path.write_text("{}\n", encoding="utf-8")
+
+    converger = DaemonConverger(
+        [
+            ConvergenceStage(
+                name="embed",
+                description="bounded embedding catch-up",
+                check=lambda _candidate: True,
+                execute=lambda _candidate: False,
+                false_means_pending=True,
+            )
+        ]
+    )
+
+    state = converger.converge_file(path)
+
+    assert state.stages["embed"] is StageState.PENDING
+    assert state.error_count == 0
+    assert state.last_error == "stage embed returned False"
+    assert set(converger._file_states) == {path}
+
+
 def test_converger_batches_conversation_execution() -> None:
     checked: list[tuple[str, ...]] = []
     executed: list[tuple[str, ...]] = []
@@ -137,6 +161,29 @@ def test_converger_batches_conversation_execution() -> None:
     assert set(stage_times) == {"insights"}
     assert all(state.converged for state in states.values())
     assert converger._conversation_states == {}
+
+
+def test_converger_keeps_bounded_conversation_false_as_pending_debt() -> None:
+    converger = DaemonConverger(
+        [
+            ConvergenceStage(
+                name="embed",
+                description="bounded embedding catch-up",
+                check=lambda _candidate: False,
+                execute=lambda _candidate: False,
+                check_conversations=lambda conversation_ids: set(conversation_ids),
+                execute_conversations=lambda _conversation_ids: False,
+                false_means_pending=True,
+            )
+        ]
+    )
+
+    states, _stage_times = converger.converge_conversations(["conv-a"])
+
+    assert states["conv-a"].stages["embed"] is StageState.PENDING
+    assert states["conv-a"].error_count == 0
+    assert states["conv-a"].last_error == "conversation stage embed returned False"
+    assert set(converger._conversation_states) == {"conv-a"}
 
 
 @pytest.mark.asyncio

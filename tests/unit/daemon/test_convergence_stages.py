@@ -379,6 +379,7 @@ def test_embed_stage_scopes_changed_conversations_without_asyncio_run(
     path_a = tmp_path / "a.jsonl"
     path_b = tmp_path / "b.jsonl"
     embedded_calls: list[list[str]] = []
+    pending_calls = 0
 
     class FakeConnection:
         def close(self) -> None:
@@ -396,9 +397,21 @@ def test_embed_stage_scopes_changed_conversations_without_asyncio_run(
         raise AssertionError("embed stage should not open an asyncio runner")
 
     def fake_pending(_conn: FakeConnection, conversation_ids: list[str]) -> list[str]:
+        nonlocal pending_calls
+        pending_calls += 1
+        if pending_calls > 2:
+            return []
         return [conversation_id for conversation_id in conversation_ids if conversation_id in {"conv-a", "conv-c"}]
 
-    def fake_embed(_db_path: Path, conversation_ids: list[str]) -> bool:
+    def fake_embed(
+        _db_path: Path,
+        conversation_ids: list[str],
+        *,
+        max_errors: int | None = None,
+        stop_after_seconds: int | None = None,
+    ) -> bool:
+        assert max_errors is not None
+        assert stop_after_seconds is not None
         embedded_calls.append(list(conversation_ids))
         return True
 
@@ -421,6 +434,62 @@ def test_embed_stage_scopes_changed_conversations_without_asyncio_run(
     assert stage.check_many([path_a, path_b]) == {path_a, path_b}
     assert stage.execute_many([path_a, path_b]) is True
     assert embedded_calls == [["conv-a", "conv-c"]]
+
+
+def test_embed_stage_processes_bounded_window_and_leaves_debt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "archive.sqlite"
+    db_path.touch()
+    path_a = tmp_path / "a.jsonl"
+    embedded_calls: list[list[str]] = []
+    remaining_checks = 0
+
+    class FakeConnection:
+        def close(self) -> None:
+            pass
+
+        def commit(self) -> None:
+            pass
+
+    def fake_open_connection(path: Path, *, timeout: float) -> FakeConnection:
+        assert path == db_path
+        assert timeout == 5.0
+        return FakeConnection()
+
+    def fake_pending(_conn: FakeConnection, conversation_ids: list[str] | tuple[str, ...]) -> list[str]:
+        nonlocal remaining_checks
+        ids = list(conversation_ids)
+        if ids == ["conv-a", "conv-b", "conv-c"]:
+            remaining_checks += 1
+            return ["conv-c"] if remaining_checks > 1 else ["conv-a", "conv-b"]
+        return []
+
+    def fake_embed(
+        _db_path: Path,
+        conversation_ids: list[str],
+        *,
+        max_errors: int | None = None,
+        stop_after_seconds: int | None = None,
+    ) -> bool:
+        embedded_calls.append(list(conversation_ids))
+        return True
+
+    monkeypatch.setenv("VOYAGE_API_KEY", "key")
+    monkeypatch.setenv("POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS", "1")
+    monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", fake_open_connection)
+    monkeypatch.setattr(
+        stages, "_conversation_ids_for_source_path", lambda _conn, _path: ["conv-a", "conv-b", "conv-c"]
+    )
+    monkeypatch.setattr(stages, "_pending_embedding_conversation_ids", fake_pending)
+    monkeypatch.setattr(stages, "_embed_conversations_sync", fake_embed)
+    monkeypatch.setattr(stages, "_reconcile_embedding_config_change", lambda _conn: None)
+
+    stage = make_embed_stage(db_path)
+
+    assert stage.execute(path_a) is False
+    assert embedded_calls == [["conv-a", "conv-b"]]
 
 
 def test_default_convergence_stages_do_not_embed_without_opt_in(
