@@ -17,6 +17,7 @@ from polylogue.daemon.convergence_stages import (
     make_fts_stage,
     make_insights_stage,
 )
+from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync
 from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -267,6 +268,21 @@ def test_fts_repair_needs_probe_uses_docsize_shadow_tables() -> None:
     assert "LEFT JOIN action_events_fts_docsize" in probe_sql
     assert "LEFT JOIN messages_fts AS" not in probe_sql
     assert "LEFT JOIN action_events_fts AS" not in probe_sql
+
+
+def test_fts_repair_needs_ignores_empty_text_messages(tmp_path: Path) -> None:
+    db_path = tmp_path / "archive.sqlite"
+    with open_connection(db_path) as conn:
+        restore_fts_triggers_sync(conn)
+        store_records(
+            conversation=make_conversation("conv-empty-text", provider_name="codex"),
+            messages=[make_message("msg-empty-text", "conv-empty-text", text="")],
+            attachments=[],
+            conn=conn,
+        )
+        conn.commit()
+
+        assert stages._fts_repair_needs_for_conversations(conn, ["conv-empty-text"]) == stages._FtsRepairNeeds()
 
 
 def test_embed_stage_scopes_changed_conversations_without_asyncio_run(
