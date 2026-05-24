@@ -33,6 +33,26 @@ def test_status_snapshot_serves_cached_payload_without_rebuilding_status(monkeyp
     assert snapshot["state"] == "fresh"
 
 
+def test_status_snapshot_refresh_default_stays_request_safe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / "polylogue.db"
+    db.touch()
+    monkeypatch.setattr("polylogue.daemon.status_snapshot.db_path", lambda: db)
+    monkeypatch.setattr(
+        "polylogue.daemon.status.daemon_status_payload",
+        lambda: (_ for _ in ()).throw(AssertionError("periodic snapshot must not build rich status")),
+    )
+
+    snapshot = refresh_status_snapshot()
+
+    status_snapshot = snapshot.payload["status_snapshot"]
+    assert isinstance(status_snapshot, dict)
+    assert status_snapshot["state"] == "minimal"
+    assert snapshot.payload["db_path"] == str(db)
+
+
 def test_build_daemon_status_reports_failed_live_cursor_files(tmp_path: Path) -> None:
     db = tmp_path / "polylogue.db"
     failed = tmp_path / "failed.jsonl"
@@ -387,6 +407,40 @@ def test_fts_readiness_exact_detects_missing_docsize_row(tmp_path: Path) -> None
     messages = surfaces["messages_fts"]
     assert isinstance(messages, dict)
     assert messages["missing_rows"] == 1
+    assert messages["ready"] is False
+
+
+def test_fts_readiness_requires_recorded_freshness_when_available(tmp_path: Path) -> None:
+    from polylogue.daemon.fts_status import fts_readiness_info
+
+    db_path = tmp_path / "polylogue.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE messages (message_id TEXT, text TEXT);
+            CREATE TABLE messages_fts (text TEXT);
+            CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages BEGIN SELECT 1; END;
+            CREATE TABLE fts_freshness_state (
+                surface TEXT PRIMARY KEY,
+                state TEXT NOT NULL,
+                checked_at TEXT NOT NULL
+            );
+            INSERT INTO fts_freshness_state VALUES ('messages_fts', 'stale', '2026-05-24T00:00:00+00:00');
+            """
+        )
+
+    readiness = fts_readiness_info(db_path)
+
+    assert readiness["messages_ready"] is False
+    assert readiness["invariant_ready"] is False
+    surfaces = readiness["surfaces"]
+    assert isinstance(surfaces, dict)
+    messages = surfaces["messages_fts"]
+    assert isinstance(messages, dict)
+    assert messages["freshness_known"] is True
+    assert messages["freshness_state"] == "stale"
     assert messages["ready"] is False
 
 
