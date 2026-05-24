@@ -1606,8 +1606,12 @@ files:
     loc: 56
     target: polylogue/pipeline/services/ingest_batch/__init__.py
     owner: stable
+  - path: polylogue/pipeline/services/ingest_batch/_append_stats.py
+    loc: 106
+    target: polylogue/pipeline/services/ingest_batch/_append_stats.py
+    owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_core.py
-    loc: 1497
+    loc: 1500
     target: polylogue/pipeline/services/ingest_batch/_core.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_models.py
