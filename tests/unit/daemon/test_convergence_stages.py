@@ -285,6 +285,48 @@ def test_fts_repair_needs_ignores_empty_text_messages(tmp_path: Path) -> None:
         assert stages._fts_repair_needs_for_conversations(conn, ["conv-empty-text"]) == stages._FtsRepairNeeds()
 
 
+def test_targeted_fts_ready_marker_preserves_ledger_counts(tmp_path: Path) -> None:
+    from polylogue.storage.fts.freshness import record_fts_surface_state_sync
+
+    db_path = tmp_path / "archive.sqlite"
+    with open_connection(db_path) as conn:
+        conn.execute(
+            "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) VALUES(?,?,?,1)",
+            ("conv-ledger", "codex", "provider-conv"),
+        )
+        conn.execute(
+            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
+            ("msg-ledger", "conv-ledger", "user", "indexed text", "codex"),
+        )
+        record_fts_surface_state_sync(
+            conn,
+            surface="messages_fts",
+            state="stale",
+            source_rows=100,
+            indexed_rows=99,
+            missing_rows=1,
+            detail="pre-existing exact snapshot",
+        )
+        stages._mark_message_fts_ready_after_targeted_repair(conn)
+        row = conn.execute(
+            """
+            SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows, detail
+            FROM fts_freshness_state
+            WHERE surface='messages_fts'
+            """,
+        ).fetchone()
+
+    assert tuple(row) == (
+        "ready",
+        100,
+        99,
+        0,
+        0,
+        0,
+        "targeted changed-conversation repair complete",
+    )
+
+
 def test_embed_stage_scopes_changed_conversations_without_asyncio_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
