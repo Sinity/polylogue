@@ -157,6 +157,69 @@ def test_drain_convergence_debt_retries_conversation_subjects_without_source_loo
     assert debt_after == []
 
 
+def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path: Path) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    db = tmp_path / "polylogue.db"
+    db.touch()
+    sleep_calls = 0
+
+    async def fake_sleep(_seconds: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls > 1:
+            raise asyncio.CancelledError
+
+    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+        raise sqlite3.OperationalError("database is locked")
+
+    with (
+        patch("polylogue.paths.db_path", return_value=db),
+        patch("asyncio.sleep", side_effect=fake_sleep),
+        patch("asyncio.to_thread", side_effect=fake_to_thread),
+        patch.object(daemon_cli.logger, "info") as info,
+        patch.object(daemon_cli.logger, "warning") as warning,
+        pytest.raises(asyncio.CancelledError),
+    ):
+        asyncio.run(daemon_cli._periodic_convergence_check(()))
+
+    info.assert_called_once()
+    assert info.call_args.args[0] == "convergence: archive busy; retrying derived debt on next tick: %s"
+    warning.assert_not_called()
+
+
+def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    db = tmp_path / "polylogue.db"
+    db.touch()
+    sleep_calls = 0
+
+    async def fake_sleep(_seconds: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls > 1:
+            raise asyncio.CancelledError
+
+    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("unexpected convergence retry failure")
+
+    with (
+        patch("polylogue.paths.db_path", return_value=db),
+        patch("asyncio.sleep", side_effect=fake_sleep),
+        patch("asyncio.to_thread", side_effect=fake_to_thread),
+        patch.object(daemon_cli.logger, "info") as info,
+        patch.object(daemon_cli.logger, "warning") as warning,
+        pytest.raises(asyncio.CancelledError),
+    ):
+        asyncio.run(daemon_cli._periodic_convergence_check(()))
+
+    info.assert_not_called()
+    warning.assert_called_once()
+    assert warning.call_args.args[0] == "convergence: check failed"
+    assert warning.call_args.kwargs == {"exc_info": True}
+
+
 def test_polylogued_browser_capture_help_lists_service_commands() -> None:
     result = CliRunner().invoke(main, ["browser-capture", "--help"])
 

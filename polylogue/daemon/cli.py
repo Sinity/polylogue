@@ -33,6 +33,7 @@ from polylogue.daemon.health import (
 from polylogue.daemon.status import daemon_status_payload, format_daemon_status_lines
 from polylogue.logging import configure_logging, get_logger
 from polylogue.sources.live import LiveWatcher, WatchSource
+from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.live.watcher import default_sources
 from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES as _EXPECTED_FTS_TRIGGERS
 
@@ -312,15 +313,8 @@ async def _periodic_db_optimize() -> None:
             logger.warning("daemon: DB optimize failed", exc_info=True)
 
 
-async def _periodic_convergence_check(
-    sources: tuple[WatchSource, ...],
-) -> None:
-    """Periodically retry derived convergence debt.
-
-    The live ingest path schedules per-source/per-conversation convergence
-    work. This safety net retries recorded debt without doing full-archive
-    scans or global FTS rebuilds from the daemon's idle loop.
-    """
+async def _periodic_convergence_check(sources: tuple[WatchSource, ...]) -> None:
+    """Periodically retry recorded derived convergence debt."""
     from polylogue.paths import db_path
 
     db = db_path()
@@ -332,6 +326,11 @@ async def _periodic_convergence_check(
             repaired = await asyncio.to_thread(_drain_convergence_debt_once, db)
             if repaired:
                 logger.info("convergence: retried %d derived debt item(s)", repaired)
+        except sqlite3.OperationalError as exc:
+            if is_transient_sqlite_lock(exc):
+                logger.info("convergence: archive busy; retrying derived debt on next tick: %s", exc)
+                continue
+            logger.warning("convergence: check failed", exc_info=True)
         except Exception:
             logger.warning("convergence: check failed", exc_info=True)
 
