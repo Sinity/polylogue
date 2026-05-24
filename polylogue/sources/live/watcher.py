@@ -102,6 +102,8 @@ class LiveWatcher:
         self._pending_paths: set[Path] = set()
         self._pending_scheduled = False
         self._drain_task: asyncio.Task[None] | None = None
+        self._failed_retry_task: asyncio.Task[None] | None = None
+        self._failed_retry_deadline: float | None = None
         self._last_batch_at: float = 0.0
         self._batch_lock = asyncio.Lock()
         self._ingest_lock = asyncio.Lock()
@@ -125,6 +127,7 @@ class LiveWatcher:
             return
 
         await self._catch_up(roots)
+        self._schedule_failed_retry_scan()
         self._ensure_pending_scheduled()
 
         logger.info("live.watcher: watching %s", ", ".join(str(r) for r in roots))
@@ -139,6 +142,7 @@ class LiveWatcher:
 
     def stop(self) -> None:
         self._stop.set()
+        self._cancel_failed_retry_task()
 
     def cancel_pending(self) -> None:
         task = self._drain_task
@@ -146,6 +150,7 @@ class LiveWatcher:
             task.cancel()
         self._drain_task = None
         self._pending_scheduled = False
+        self._cancel_failed_retry_task()
 
     # ------------------------------------------------------------------
     # Catch-up: batch all changed files
@@ -179,12 +184,12 @@ class LiveWatcher:
                     len(chunk),
                     chunk_bytes / 1e6,
                 )
-                metrics = await self._ingest_files(
+                await self._ingest_files(
                     list(chunk),
                     queued_file_count=len(plan.candidates) if index == 1 else len(chunk),
                     skipped_file_count=plan.skipped_file_count if index == 1 else 0,
                 )
-                await self._requeue_failed_paths(metrics)
+                self._schedule_failed_retry_scan()
 
     def _scan_catch_up_candidates(self, roots: list[Path]) -> tuple[CandidateSourceFile, ...]:
         root_set = {root.resolve() for root in roots}
@@ -274,19 +279,61 @@ class LiveWatcher:
             self._pending_scheduled = True
             self._drain_task = asyncio.create_task(self._debounced_batch())
 
-    async def _requeue_failed_paths(self, metrics: object) -> None:
-        failed_paths = getattr(metrics, "failed_paths", ())
-        if not failed_paths:
+    def _schedule_failed_retry_scan(self) -> None:
+        if self._stop.is_set():
             return
-        paths = [Path(path) for path in failed_paths if isinstance(path, str) and path]
-        if not paths:
+        due_paths: list[Path] = []
+        next_retry_at: datetime | None = None
+        for record in self._cursor.list_failed_records():
+            path = Path(record.source_path)
+            if not self._source_accepts(path):
+                continue
+            if _retry_due(record.next_retry_at):
+                due_paths.append(path)
+                continue
+            retry_at = _parse_retry_at(record.next_retry_at)
+            if retry_at is not None and (next_retry_at is None or retry_at < next_retry_at):
+                next_retry_at = retry_at
+        if due_paths:
+            logger.info("live.watcher: scheduling %d failed file(s) whose retry is due", len(due_paths))
+            self._pending_paths.update(due_paths)
+            self._ensure_pending_scheduled()
+        if next_retry_at is not None:
+            self._schedule_failed_retry_wakeup(next_retry_at)
+
+    def _schedule_failed_retry_wakeup(self, retry_at: datetime) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
             return
-        logger.warning(
-            "live.watcher: requeued %d failed file(s) for live retry",
-            len(paths),
-        )
-        async with self._batch_lock:
-            self._pending_paths.update(paths)
+        delay_s = max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
+        deadline = loop.time() + delay_s
+        if (
+            self._failed_retry_task is not None
+            and not self._failed_retry_task.done()
+            and self._failed_retry_deadline is not None
+            and self._failed_retry_deadline <= deadline
+        ):
+            return
+        self._cancel_failed_retry_task()
+        self._failed_retry_deadline = deadline
+        self._failed_retry_task = asyncio.create_task(self._wake_failed_retries(delay_s))
+
+    async def _wake_failed_retries(self, delay_s: float) -> None:
+        try:
+            await asyncio.sleep(delay_s)
+            self._failed_retry_deadline = None
+            self._failed_retry_task = None
+            self._schedule_failed_retry_scan()
+        except asyncio.CancelledError:
+            raise
+
+    def _cancel_failed_retry_task(self) -> None:
+        task = self._failed_retry_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._failed_retry_task = None
+        self._failed_retry_deadline = None
 
     async def _debounced_batch(self) -> None:
         """Wait for the debounce window, then drain pending paths serially."""
@@ -335,12 +382,12 @@ class LiveWatcher:
                 return bool(paths)
 
             logger.info("live.watcher: batching %d changed file(s)", len(needed))
-            metrics = await self._ingest_files(
+            await self._ingest_files(
                 needed,
                 queued_file_count=len(paths),
                 skipped_file_count=len(paths) - len(needed),
             )
-            await self._requeue_failed_paths(metrics)
+            self._schedule_failed_retry_scan()
         except sqlite3.OperationalError as exc:
             if not _is_database_locked(exc):
                 raise
@@ -477,13 +524,22 @@ def _is_database_locked(exc: sqlite3.OperationalError) -> bool:
 def _retry_due(next_retry_at: str | None) -> bool:
     if not next_retry_at:
         return True
+    retry_at = _parse_retry_at(next_retry_at)
+    if retry_at is None:
+        return True
+    return retry_at <= datetime.now(UTC)
+
+
+def _parse_retry_at(next_retry_at: str | None) -> datetime | None:
+    if not next_retry_at:
+        return None
     try:
         retry_at = datetime.fromisoformat(next_retry_at)
     except ValueError:
-        return True
+        return None
     if retry_at.tzinfo is None:
         retry_at = retry_at.replace(tzinfo=UTC)
-    return retry_at <= datetime.now(UTC)
+    return retry_at
 
 
 __all__ = ["LiveWatcher", "WatchSource", "default_sources"]

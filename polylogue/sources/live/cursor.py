@@ -1012,6 +1012,37 @@ class CursorStore:
             ).fetchall()
         return [str(row[0]) for row in rows]
 
+    def list_failed_records(self) -> list[CursorRecord]:
+        """Return all failed, non-excluded cursor records."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    source_path,
+                    byte_size,
+                    byte_offset,
+                    last_complete_newline,
+                    record_count,
+                    updated_at,
+                    last_record_ts,
+                    parser_fingerprint,
+                    content_fingerprint,
+                    tail_hash,
+                    source_name,
+                    st_dev,
+                    st_ino,
+                    mtime_ns,
+                    source_generation,
+                    failure_count,
+                    next_retry_at,
+                    excluded
+                FROM live_cursor
+                WHERE failure_count > 0 AND excluded = 0
+                ORDER BY next_retry_at IS NULL DESC, next_retry_at ASC, source_path ASC
+                """
+            ).fetchall()
+        return [_cursor_record_from_row(row) for row in rows]
+
     def record_convergence_debt(
         self,
         *,
