@@ -815,10 +815,32 @@ def _mark_message_fts_ready_after_targeted_repair(conn: sqlite3.Connection) -> N
     from polylogue.storage.fts.fts_lifecycle import message_fts_readiness_sync
 
     readiness = message_fts_readiness_sync(conn, verify_total_rows=False)
+    freshness_columns = (
+        {str(row[1]) for row in conn.execute("PRAGMA table_info(fts_freshness_state)").fetchall()}
+        if _table_exists(conn, "fts_freshness_state")
+        else set()
+    )
+    existing = (
+        conn.execute(
+            """
+            SELECT source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows
+            FROM fts_freshness_state
+            WHERE surface = 'messages_fts'
+            """,
+        ).fetchone()
+        if {"source_rows", "indexed_rows", "missing_rows", "excess_rows", "duplicate_rows"} <= freshness_columns
+        else None
+    )
+    counts = existing if existing is not None else (0, 0, 0, 0, 0)
     record_fts_surface_state_sync(
         conn,
         surface="messages_fts",
         state=READY if bool(readiness["ready"]) else STALE,
+        source_rows=int(counts[0] or 0),
+        indexed_rows=int(counts[1] or 0),
+        missing_rows=0 if bool(readiness["ready"]) else int(counts[2] or 0),
+        excess_rows=0 if bool(readiness["ready"]) else int(counts[3] or 0),
+        duplicate_rows=0 if bool(readiness["ready"]) else int(counts[4] or 0),
         detail=(
             "targeted changed-conversation repair complete"
             if bool(readiness["ready"])
