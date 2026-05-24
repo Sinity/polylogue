@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import sqlite3
+import threading
 from datetime import timedelta
 from pathlib import Path
 from typing import cast
@@ -637,6 +638,67 @@ def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:
             )
         )
 
+    assert server.shutdown_called is False
+    assert server.close_called is True
+
+
+def test_run_daemon_services_shutdowns_running_server_on_watcher_failure() -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    class FakePolylogue:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    class FakeWatcher:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def run(self) -> None:
+            raise RuntimeError("watch stopped")
+
+        def stop(self) -> None:
+            return None
+
+    class BlockingServer:
+        shutdown_called = False
+        close_called = False
+
+        def __init__(self) -> None:
+            self._stopped = threading.Event()
+
+        def serve_forever(self, poll_interval: float = 0.5) -> None:
+            assert poll_interval == 0.5
+            self._stopped.wait(timeout=5)
+
+        def shutdown(self) -> None:
+            self.shutdown_called = True
+            self._stopped.set()
+
+        def server_close(self) -> None:
+            self.close_called = True
+
+    server = BlockingServer()
+    with (
+        patch.object(daemon_cli, "Polylogue", FakePolylogue),
+        patch.object(daemon_cli, "LiveWatcher", FakeWatcher),
+        patch.object(daemon_cli, "make_server", return_value=server),
+        pytest.raises(RuntimeError, match="watch stopped"),
+    ):
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(WatchSource(name="codex", root=Path("/tmp/codex")),),
+                debounce_s=1.0,
+                enable_watch=True,
+                enable_browser_capture=True,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+
     assert server.shutdown_called is True
     assert server.close_called is True
 
@@ -694,5 +756,5 @@ def test_run_daemon_services_schema_block_skips_db_background_work() -> None:
             )
         )
 
-    assert server.shutdown_called is True
+    assert server.shutdown_called is False
     assert server.close_called is True

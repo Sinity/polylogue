@@ -686,35 +686,39 @@ async def run_daemon_services(
 
         # Preflight already ran at the top of run_daemon_services (see
         # ``watcher_blocked`` above); reuse that result.
-        if enable_watch and not watcher_blocked:
-            async with Polylogue() as polylogue:
-                watcher = LiveWatcher(
-                    polylogue,
-                    sources,
-                    debounce_s=debounce_s,
-                    converger=converger,
-                    event_emitter=_emit_live_batch_event,
-                )
-                watcher_task = asyncio.create_task(watcher.run())
-                tasks.append(watcher_task)
+        try:
+            if enable_watch and not watcher_blocked:
+                async with Polylogue() as polylogue:
+                    watcher = LiveWatcher(
+                        polylogue,
+                        sources,
+                        debounce_s=debounce_s,
+                        converger=converger,
+                        event_emitter=_emit_live_batch_event,
+                    )
+                    watcher_task = asyncio.create_task(watcher.run())
+                    tasks.append(watcher_task)
+                    all_tasks = tasks + maintenance_tasks
+                    await asyncio.gather(*all_tasks)
+            elif tasks:
+                # Watcher disabled or preflight-blocked: keep HTTP/health and
+                # other components serving so operators see the degraded state.
                 all_tasks = tasks + maintenance_tasks
                 await asyncio.gather(*all_tasks)
-        elif tasks:
-            # Watcher disabled or preflight-blocked: keep HTTP/health and
-            # other components serving so operators see the degraded state.
-            all_tasks = tasks + maintenance_tasks
-            await asyncio.gather(*all_tasks)
-        else:
-            await asyncio.gather(*maintenance_tasks)
+            else:
+                await asyncio.gather(*maintenance_tasks)
+        except BaseException:
+            _log_completed_daemon_tasks(tasks + maintenance_tasks)
+            raise
     finally:
         if watcher is not None:
             watcher.stop()
         if converger is not None:
             await converger.stop()
         if server is not None:
-            server.shutdown()
+            _shutdown_server_if_serving(server, server_task, label="browser-capture")
         if api_server is not None:
-            api_server.shutdown()
+            _shutdown_server_if_serving(api_server, api_server_task, label="api")
 
         # Cancel all component tasks.
         for task in tasks:
@@ -759,10 +763,14 @@ async def _drain_tasks(tasks: list[asyncio.Task[None]], *, timeout: float = 5.0)
     """
     if not tasks:
         return []
-    results = await asyncio.wait_for(
-        asyncio.gather(*tasks, return_exceptions=True),
-        timeout=timeout,
-    )
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True),
+            timeout=timeout,
+        )
+    except TimeoutError as exc:
+        logger.warning("daemon: timed out draining %d task(s) during shutdown", len(tasks))
+        return [exc]
     return [r if isinstance(r, BaseException) else None for r in results]
 
 
@@ -771,6 +779,43 @@ def _report_drain_exceptions(results: list[BaseException | None]) -> None:
     for exc in results:
         if exc is not None:
             logger.warning("daemon: task raised during shutdown: %s", exc)
+
+
+def _log_completed_daemon_tasks(tasks: list[asyncio.Task[None]]) -> None:
+    for task in tasks:
+        if not task.done():
+            continue
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            logger.warning("daemon: component task cancelled unexpectedly")
+            continue
+        if exc is None:
+            logger.warning("daemon: component task exited unexpectedly")
+        else:
+            logger.warning("daemon: component task failed unexpectedly: %s", exc)
+
+
+def _shutdown_server_if_serving(
+    server: BrowserCaptureHTTPServer | ThreadingHTTPServer,
+    task: asyncio.Task[None] | None,
+    *,
+    label: str,
+) -> None:
+    if task is None:
+        return
+    if task.done():
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            logger.warning("daemon: %s server task was cancelled before shutdown", label)
+            return
+        if exc is None:
+            logger.warning("daemon: %s server task exited before shutdown", label)
+        else:
+            logger.warning("daemon: %s server task failed before shutdown: %s", label, exc)
+        return
+    server.shutdown()
 
 
 @click.group(help="Run long-lived Polylogue local services.")

@@ -14,7 +14,9 @@ from polylogue.storage.insights.session.status import (
     SessionInsightReadyDescriptor,
     session_insight_status_async,
     session_insight_status_sync,
+    session_profile_repair_candidate_ids_sync,
 )
+from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 
 
 def test_fts_descriptor_marks_duplicates_unready() -> None:
@@ -109,6 +111,64 @@ def test_ready_descriptor_combines_table_equalities_and_zero_counts() -> None:
         {"work_threads": True},
         {"thread_count": 3, "root_threads": 3, "stale_thread_count": 1, "orphan_thread_count": 0},
     )
+
+
+def test_profile_repair_candidates_match_sort_key_freshness() -> None:
+    with sqlite3.connect(":memory:") as conn:
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            """
+            CREATE TABLE conversations (
+                conversation_id TEXT PRIMARY KEY,
+                sort_key REAL,
+                updated_at TEXT
+            );
+            CREATE TABLE session_profiles (
+                conversation_id TEXT PRIMARY KEY,
+                materializer_version INTEGER NOT NULL,
+                source_sort_key REAL,
+                source_updated_at TEXT
+            );
+
+            INSERT INTO conversations (conversation_id, sort_key, updated_at)
+            VALUES ('ready-even-if-updated-at-differs', 1.0, '2026-05-01T12:00:00Z');
+
+            INSERT INTO conversations (conversation_id, sort_key, updated_at)
+            VALUES ('stale-sort-key', 2.0, '2026-05-01T12:00:00Z');
+            INSERT INTO conversations (conversation_id, sort_key, updated_at)
+            VALUES ('missing-profile', 3.0, '2026-05-01T12:00:00Z');
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO session_profiles (
+                conversation_id, materializer_version, source_sort_key, source_updated_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                "ready-even-if-updated-at-differs",
+                SESSION_INSIGHT_MATERIALIZER_VERSION,
+                1.0,
+                "2026-04-30T12:00:00Z",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO session_profiles (
+                conversation_id, materializer_version, source_sort_key, source_updated_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                "stale-sort-key",
+                SESSION_INSIGHT_MATERIALIZER_VERSION,
+                1.5,
+                "2026-05-01T12:00:00Z",
+            ),
+        )
+
+        candidates = session_profile_repair_candidate_ids_sync(conn)
+
+    assert candidates == ["missing-profile", "stale-sort-key"]
 
 
 async def test_status_sync_and_async_match_when_product_tables_are_absent(tmp_path: Path) -> None:
