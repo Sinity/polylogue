@@ -917,8 +917,8 @@ class LiveBatchProcessor:
                 validation_mode=str(getattr(getattr(self._polylogue, "config", None), "validation_mode", "advisory")),
                 ingest_workers=_full_ingest_worker_count(raw_records),
                 measure_ingest_result_size=False,
-                repair_message_fts=suspend_fts_triggers,
-                repair_action_fts=suspend_fts_triggers,
+                repair_message_fts=True,
+                repair_action_fts=True,
                 ingest_result_chunk_size=_INGEST_RESULT_CHUNK_SIZE,
                 suspend_fts_triggers=suspend_fts_triggers,
                 heartbeat=None

@@ -22,16 +22,6 @@ from polylogue.archive.write_gateway import WriteOperation, WriteResult
 
 logger = logging.getLogger(__name__)
 
-_MESSAGE_FTS_TRIGGER_NAMES = (
-    "messages_fts_ai",
-    "messages_fts_ad",
-    "messages_fts_au",
-    "content_blocks_fts_ai",
-    "content_blocks_fts_ad",
-    "content_blocks_fts_au",
-)
-_ACTION_FTS_TRIGGER_NAMES = ("action_events_fts_ai", "action_events_fts_ad", "action_events_fts_au")
-
 
 def commit_archive_write_effects(
     conn: sqlite3.Connection,
@@ -87,19 +77,16 @@ def commit_archive_write_effects(
 
         acquire_blob_leases(db_path, blob_hashes, operation_id)
 
-    message_triggers_live = _all_triggers_present(conn, _MESSAGE_FTS_TRIGGER_NAMES)
-    action_triggers_live = _all_triggers_present(conn, _ACTION_FTS_TRIGGER_NAMES)
-
     t_trigger = time.perf_counter()
     ensure_fts_triggers_sync(conn)
     trigger_elapsed_s = time.perf_counter() - t_trigger
     message_fts_elapsed_s = 0.0
     action_fts_elapsed_s = 0.0
-    if sorted_ids and repair_message_fts and not message_triggers_live:
+    if sorted_ids and repair_message_fts:
         t_message = time.perf_counter()
         repair_message_fts_index_sync(conn, sorted_ids)
         message_fts_elapsed_s = time.perf_counter() - t_message
-    if sorted_ids and repair_action_fts and not action_triggers_live:
+    if sorted_ids and repair_action_fts:
         t_action = time.perf_counter()
         repair_action_fts_index_sync(conn, sorted_ids)
         action_fts_elapsed_s = time.perf_counter() - t_action
@@ -144,17 +131,6 @@ def _invalidate_search_cache() -> None:
     from polylogue.storage.search.cache import invalidate_search_cache
 
     invalidate_search_cache()
-
-
-def _all_triggers_present(conn: sqlite3.Connection, names: Sequence[str]) -> bool:
-    if not names:
-        return True
-    placeholders = ", ".join("?" for _ in names)
-    rows = conn.execute(
-        f"SELECT name FROM sqlite_master WHERE type = 'trigger' AND name IN ({placeholders})",
-        tuple(names),
-    ).fetchall()
-    return {str(row[0]) for row in rows} == set(names)
 
 
 __all__ = ["commit_archive_write_effects"]

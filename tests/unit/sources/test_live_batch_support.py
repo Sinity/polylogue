@@ -523,8 +523,8 @@ def test_append_ingest_preserves_successes_when_other_plan_fails(
     assert result.succeeded == [plans[0]]
     assert result.failed == [plans[1]]
     assert result.worker_count == 1
-    assert captured_kwargs["repair_message_fts"] is False
-    assert captured_kwargs["repair_action_fts"] is False
+    assert captured_kwargs["repair_message_fts"] is True
+    assert captured_kwargs["repair_action_fts"] is True
 
 
 @pytest.mark.asyncio

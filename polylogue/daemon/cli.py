@@ -188,6 +188,7 @@ async def _ensure_fts_startup_readiness() -> None:
         snapshot = fts_invariant_snapshot_sync(conn)
         if not snapshot.ready:
             logger.warning("daemon: FTS invariant failed on startup. Rebuilding before serving search.")
+            restore_fts_triggers_sync(conn)
             rebuild_fts_index_sync(conn)
             conn.commit()
             logger.info("daemon: FTS rebuild complete.")

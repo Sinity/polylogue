@@ -413,6 +413,7 @@ def test_ensure_fts_startup_readiness_rebuilds_stale_invariant(
 
     conn = FakeConnection()
     rebuilds: list[FakeConnection] = []
+    restored: list[FakeConnection] = []
 
     def rebuild(fake_conn: FakeConnection) -> None:
         rebuilds.append(fake_conn)
@@ -427,11 +428,16 @@ def test_ensure_fts_startup_readiness_rebuilds_stale_invariant(
         "polylogue.storage.fts.fts_lifecycle.fts_invariant_snapshot_sync",
         lambda fake_conn: FakeSnapshot(),
     )
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.restore_fts_triggers_sync",
+        lambda fake_conn: restored.append(fake_conn),
+    )
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", rebuild)
     monkeypatch.setattr("polylogue.storage.fts.freshness.ensure_fts_freshness_table_sync", lambda fake_conn: None)
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
+    assert restored == [conn]
     assert rebuilds == [conn]
     assert conn.committed is True
     assert conn.closed is True
