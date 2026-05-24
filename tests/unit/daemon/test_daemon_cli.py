@@ -262,7 +262,7 @@ def test_run_live_watcher_stops_on_keyboard_interrupt() -> None:
     assert stopped == [True]
 
 
-def test_ensure_fts_startup_readiness_marks_ready_without_exact_scan(
+def test_ensure_fts_startup_readiness_records_exact_invariant(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -311,12 +311,6 @@ def test_ensure_fts_startup_readiness_marks_ready_without_exact_scan(
                     ("action_events_fts_au",),
                 ]
                 return FakeCursor(triggers[0], rows=triggers)
-            if query == "SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1":
-                return FakeCursor((1,))
-            if "COUNT(*)" in query and "FROM messages AS m" in query:
-                return FakeCursor((1,))
-            if query == "SELECT 1 FROM messages_fts_docsize LIMIT 1":
-                return FakeCursor((1,))
             raise AssertionError(f"unexpected query: {query}")
 
         def commit(self) -> None:
@@ -335,36 +329,33 @@ def test_ensure_fts_startup_readiness_marks_ready_without_exact_scan(
     def ensure(fake_conn: FakeConnection) -> None:
         ensured.append(fake_conn)
 
-    recorded: list[dict[str, object]] = []
+    class FakeSnapshot:
+        ready = True
+
+    snapshot = FakeSnapshot()
+    recorded: list[FakeSnapshot] = []
 
     monkeypatch.setattr("polylogue.paths.db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", ensure)
+    monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.fts_invariant_snapshot_sync", lambda fake_conn: snapshot)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", rebuild)
     monkeypatch.setattr("polylogue.storage.fts.freshness.ensure_fts_freshness_table_sync", lambda fake_conn: None)
-    monkeypatch.setattr("polylogue.storage.fts.freshness.message_fts_marked_ready_sync", lambda fake_conn: False)
     monkeypatch.setattr(
-        "polylogue.storage.fts.freshness.record_fts_surface_state_sync",
-        lambda fake_conn, **kwargs: recorded.append(kwargs),
+        "polylogue.storage.fts.freshness.record_fts_invariant_snapshot_sync",
+        lambda fake_conn, fake_snapshot: recorded.append(fake_snapshot),
     )
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
     assert ensured == [conn]
     assert rebuilds == []
-    assert recorded == [
-        {
-            "surface": "messages_fts",
-            "state": "ready",
-            "detail": "startup structural check passed",
-        }
-    ]
-    assert all("LEFT JOIN messages_fts_docsize" not in query for query in conn.queries)
+    assert recorded == [snapshot]
     assert conn.committed is True
     assert conn.closed is True
 
 
-def test_ensure_fts_startup_readiness_rebuilds_empty_fts(
+def test_ensure_fts_startup_readiness_rebuilds_stale_invariant(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -412,12 +403,6 @@ def test_ensure_fts_startup_readiness_rebuilds_empty_fts(
                     ("action_events_fts_au",),
                 ]
                 return FakeCursor(triggers[0], rows=triggers)
-            if query == "SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1":
-                return FakeCursor((1,))
-            if "COUNT(*)" in query and "FROM messages AS m" in query:
-                return FakeCursor((1,))
-            if query == "SELECT 1 FROM messages_fts_docsize LIMIT 1":
-                return FakeCursor(None)
             raise AssertionError(f"unexpected query: {query}")
 
         def commit(self) -> None:
@@ -432,9 +417,16 @@ def test_ensure_fts_startup_readiness_rebuilds_empty_fts(
     def rebuild(fake_conn: FakeConnection) -> None:
         rebuilds.append(fake_conn)
 
+    class FakeSnapshot:
+        ready = False
+
     monkeypatch.setattr("polylogue.paths.db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", lambda _conn: None)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.fts_invariant_snapshot_sync",
+        lambda fake_conn: FakeSnapshot(),
+    )
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", rebuild)
     monkeypatch.setattr("polylogue.storage.fts.freshness.ensure_fts_freshness_table_sync", lambda fake_conn: None)
 
@@ -443,10 +435,6 @@ def test_ensure_fts_startup_readiness_rebuilds_empty_fts(
     assert rebuilds == [conn]
     assert conn.committed is True
     assert conn.closed is True
-    assert all("COUNT(*) FROM messages_fts" not in query for query in conn.queries)
-    assert all("COUNT(*) FROM messages_fts_docsize" not in query for query in conn.queries)
-    assert all("LEFT JOIN messages_fts_docsize" not in query for query in conn.queries)
-    assert all("COUNT(*) FROM messages WHERE text IS NOT NULL" not in query for query in conn.queries)
 
 
 def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
@@ -527,9 +515,8 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
     )
 
     monkeypatch.setattr("polylogue.storage.fts.freshness.ensure_fts_freshness_table_sync", lambda fake_conn: None)
-    monkeypatch.setattr("polylogue.storage.fts.freshness.message_fts_marked_ready_sync", lambda fake_conn: False)
     monkeypatch.setattr(
-        "polylogue.storage.fts.freshness.record_fts_surface_state_sync", lambda fake_conn, **kwargs: None
+        "polylogue.storage.fts.freshness.record_fts_invariant_snapshot_sync", lambda fake_conn, fake_snapshot: None
     )
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())

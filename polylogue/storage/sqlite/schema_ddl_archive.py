@@ -261,7 +261,7 @@ MESSAGE_FTS_DDL = """
         AFTER INSERT ON messages BEGIN
             INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
             SELECT new.rowid, new.message_id, new.conversation_id, new.text
-            WHERE new.text IS NOT NULL;
+            WHERE new.text IS NOT NULL AND new.text != '';
         END;
 
         CREATE TRIGGER IF NOT EXISTS messages_fts_ad
