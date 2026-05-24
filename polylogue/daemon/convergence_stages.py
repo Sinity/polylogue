@@ -815,6 +815,11 @@ def _mark_message_fts_ready_after_targeted_repair(conn: sqlite3.Connection) -> N
     from polylogue.storage.fts.fts_lifecycle import message_fts_readiness_sync
 
     readiness = message_fts_readiness_sync(conn, verify_total_rows=False)
+    freshness_columns = (
+        {str(row[1]) for row in conn.execute("PRAGMA table_info(fts_freshness_state)").fetchall()}
+        if _table_exists(conn, "fts_freshness_state")
+        else set()
+    )
     existing = (
         conn.execute(
             """
@@ -823,7 +828,7 @@ def _mark_message_fts_ready_after_targeted_repair(conn: sqlite3.Connection) -> N
             WHERE surface = 'messages_fts'
             """,
         ).fetchone()
-        if _table_exists(conn, "fts_freshness_state")
+        if {"source_rows", "indexed_rows", "missing_rows", "excess_rows", "duplicate_rows"} <= freshness_columns
         else None
     )
     counts = existing if existing is not None else (0, 0, 0, 0, 0)

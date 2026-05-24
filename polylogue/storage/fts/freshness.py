@@ -28,6 +28,15 @@ _CREATE_TABLE_SQL = f"""
     )
 """
 
+_COLUMN_UPGRADES: tuple[tuple[str, str], ...] = (
+    ("source_rows", "INTEGER NOT NULL DEFAULT 0"),
+    ("indexed_rows", "INTEGER NOT NULL DEFAULT 0"),
+    ("missing_rows", "INTEGER NOT NULL DEFAULT 0"),
+    ("excess_rows", "INTEGER NOT NULL DEFAULT 0"),
+    ("duplicate_rows", "INTEGER NOT NULL DEFAULT 0"),
+    ("detail", "TEXT"),
+)
+
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
@@ -53,10 +62,19 @@ async def _table_exists_async(conn: aiosqlite.Connection) -> bool:
 
 def ensure_fts_freshness_table_sync(conn: sqlite3.Connection) -> None:
     conn.execute(_CREATE_TABLE_SQL)
+    columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({FRESHNESS_TABLE})").fetchall()}
+    for name, definition in _COLUMN_UPGRADES:
+        if name not in columns:
+            conn.execute(f"ALTER TABLE {FRESHNESS_TABLE} ADD COLUMN {name} {definition}")
 
 
 async def ensure_fts_freshness_table_async(conn: aiosqlite.Connection) -> None:
     await conn.execute(_CREATE_TABLE_SQL)
+    rows = await (await conn.execute(f"PRAGMA table_info({FRESHNESS_TABLE})")).fetchall()
+    columns = {str(row[1]) for row in rows}
+    for name, definition in _COLUMN_UPGRADES:
+        if name not in columns:
+            await conn.execute(f"ALTER TABLE {FRESHNESS_TABLE} ADD COLUMN {name} {definition}")
 
 
 def record_fts_surface_state_sync(

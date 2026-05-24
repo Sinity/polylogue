@@ -327,6 +327,49 @@ def test_targeted_fts_ready_marker_preserves_ledger_counts(tmp_path: Path) -> No
     )
 
 
+def test_targeted_fts_ready_marker_handles_legacy_freshness_table(tmp_path: Path) -> None:
+    db_path = tmp_path / "archive.sqlite"
+    with open_connection(db_path) as conn:
+        conn.execute(
+            "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) VALUES(?,?,?,1)",
+            ("conv-legacy-ledger", "codex", "provider-conv"),
+        )
+        conn.execute(
+            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
+            ("msg-legacy-ledger", "conv-legacy-ledger", "user", "indexed text", "codex"),
+        )
+        conn.execute("DROP TABLE IF EXISTS fts_freshness_state")
+        conn.execute(
+            """
+            CREATE TABLE fts_freshness_state (
+                surface TEXT PRIMARY KEY,
+                state TEXT NOT NULL,
+                checked_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("INSERT INTO fts_freshness_state VALUES ('messages_fts', 'stale', '2026-05-24T00:00:00+00:00')")
+
+        stages._mark_message_fts_ready_after_targeted_repair(conn)
+        row = conn.execute(
+            """
+            SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows, detail
+            FROM fts_freshness_state
+            WHERE surface='messages_fts'
+            """,
+        ).fetchone()
+
+    assert tuple(row) == (
+        "ready",
+        0,
+        0,
+        0,
+        0,
+        0,
+        "targeted changed-conversation repair complete",
+    )
+
+
 def test_embed_stage_scopes_changed_conversations_without_asyncio_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
