@@ -96,6 +96,8 @@ ORDER BY COALESCE(source_sort_key, 0) DESC, conversation_id
 _SESSION_INSIGHT_REBUILD_PAGE_SIZE = 50
 _SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET = 5_000
 _SESSION_INSIGHT_RELEASE_MESSAGE_THRESHOLD = 1_000
+_SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS = 16_384
+_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS = 4_096
 _SESSION_INSIGHT_CONVERSATION_SQL_TEMPLATE = """
 SELECT
     conversation_id,
@@ -116,6 +118,66 @@ SELECT
     json_extract(provider_meta, '$.git') AS provider_meta_git
 FROM conversations
 WHERE conversation_id IN ({placeholders})
+"""
+_SESSION_INSIGHT_MESSAGE_SQL_TEMPLATE = """
+SELECT
+    message_id,
+    conversation_id,
+    provider_message_id,
+    role,
+    CASE
+        WHEN text IS NULL THEN NULL
+        ELSE substr(text, 1, {text_preview_chars})
+    END AS text,
+    sort_key,
+    content_hash,
+    version,
+    parent_message_id,
+    branch_index,
+    provider_name,
+    word_count,
+    has_tool_use,
+    has_thinking,
+    has_paste,
+    input_tokens,
+    output_tokens,
+    cache_read_tokens,
+    cache_write_tokens,
+    model_name,
+    message_type
+FROM messages
+WHERE conversation_id IN ({placeholders})
+ORDER BY conversation_id, sort_key, message_id
+"""
+_SESSION_INSIGHT_BLOCK_SQL_TEMPLATE = """
+SELECT
+    block_id,
+    message_id,
+    conversation_id,
+    block_index,
+    type,
+    CASE
+        WHEN text IS NULL THEN NULL
+        ELSE substr(text, 1, {text_preview_chars})
+    END AS text,
+    tool_name,
+    tool_id,
+    tool_input,
+    metadata,
+    semantic_type
+FROM content_blocks
+WHERE conversation_id IN ({placeholders})
+  AND message_id IN (
+      SELECT message_id
+      FROM messages
+      WHERE conversation_id IN ({placeholders})
+        AND (
+            has_tool_use != 0
+            OR has_thinking != 0
+            OR message_type IN ('tool_use', 'tool_result', 'thinking')
+        )
+  )
+ORDER BY conversation_id, message_id, block_index
 """
 
 
@@ -344,34 +406,20 @@ def load_sync_batch(
     messages = [
         _row_to_message(row)
         for row in conn.execute(
-            f"""
-            SELECT *
-            FROM messages
-            WHERE conversation_id IN ({placeholders})
-            ORDER BY conversation_id, sort_key, message_id
-            """,
+            _SESSION_INSIGHT_MESSAGE_SQL_TEMPLATE.format(
+                placeholders=placeholders,
+                text_preview_chars=_SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS,
+            ),
             tuple(conversation_ids),
         ).fetchall()
     ]
     blocks = [
         _row_to_content_block(row)
         for row in conn.execute(
-            f"""
-            SELECT *
-            FROM content_blocks
-            WHERE conversation_id IN ({placeholders})
-              AND message_id IN (
-                  SELECT message_id
-                  FROM messages
-                  WHERE conversation_id IN ({placeholders})
-                    AND (
-                        has_tool_use != 0
-                        OR has_thinking != 0
-                        OR message_type IN ('tool_use', 'tool_result', 'thinking')
-                    )
-              )
-            ORDER BY conversation_id, message_id, block_index
-            """,
+            _SESSION_INSIGHT_BLOCK_SQL_TEMPLATE.format(
+                placeholders=placeholders,
+                text_preview_chars=_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS,
+            ),
             tuple(conversation_ids) + tuple(conversation_ids),
         ).fetchall()
     ]
@@ -403,12 +451,10 @@ async def load_async_batch(
         _row_to_message(row)
         for row in await (
             await conn.execute(
-                f"""
-                SELECT *
-                FROM messages
-                WHERE conversation_id IN ({placeholders})
-                ORDER BY conversation_id, sort_key, message_id
-                """,
+                _SESSION_INSIGHT_MESSAGE_SQL_TEMPLATE.format(
+                    placeholders=placeholders,
+                    text_preview_chars=_SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS,
+                ),
                 tuple(conversation_ids),
             )
         ).fetchall()
@@ -417,22 +463,10 @@ async def load_async_batch(
         _row_to_content_block(row)
         for row in await (
             await conn.execute(
-                f"""
-                SELECT *
-                FROM content_blocks
-                WHERE conversation_id IN ({placeholders})
-                  AND message_id IN (
-                      SELECT message_id
-                      FROM messages
-                      WHERE conversation_id IN ({placeholders})
-                        AND (
-                            has_tool_use != 0
-                            OR has_thinking != 0
-                            OR message_type IN ('tool_use', 'tool_result', 'thinking')
-                        )
-                  )
-                ORDER BY conversation_id, message_id, block_index
-                """,
+                _SESSION_INSIGHT_BLOCK_SQL_TEMPLATE.format(
+                    placeholders=placeholders,
+                    text_preview_chars=_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS,
+                ),
                 tuple(conversation_ids) + tuple(conversation_ids),
             )
         ).fetchall()

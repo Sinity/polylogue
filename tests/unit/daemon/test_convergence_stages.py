@@ -16,7 +16,11 @@ from polylogue.daemon.convergence_stages import (
     make_fts_stage,
     make_insights_stage,
 )
+from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
+from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
+from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.storage_records import make_conversation, make_message, store_records
 
 
 def test_insights_stage_rebuilds_sync_against_configured_db(
@@ -332,6 +336,67 @@ def test_insights_stage_batches_sync_rebuild_chunks(
     assert stage.execute_many is not None
     assert stage.execute_many([tmp_path / "a.jsonl", tmp_path / "b.jsonl"]) is True
     assert rebuild_calls == [(["conv-a", "conv-b"], 10)]
+
+
+def test_insights_stage_scopes_conversation_debt_to_stale_profiles(tmp_path: Path) -> None:
+    db_path = tmp_path / "archive.sqlite"
+    conversations = {
+        "conv-fresh": "2026-05-24T01:00:00+00:00",
+        "conv-missing-profile": "2026-05-24T01:01:00+00:00",
+        "conv-stale-source": "2026-05-24T01:02:00+00:00",
+        "conv-stale-version": "2026-05-24T01:03:00+00:00",
+    }
+    with open_connection(db_path) as conn:
+        for conversation_id, updated_at in conversations.items():
+            store_records(
+                conversation=make_conversation(
+                    conversation_id,
+                    provider_name="codex",
+                    title=conversation_id,
+                    created_at=updated_at,
+                    updated_at=updated_at,
+                ),
+                messages=[
+                    make_message(
+                        f"{conversation_id}:msg-1",
+                        conversation_id,
+                        text=f"Message for {conversation_id}",
+                    )
+                ],
+                attachments=[],
+                conn=conn,
+            )
+        rebuild_session_insights_sync(
+            conn,
+            conversation_ids=list(conversations),
+            page_size=10,
+        )
+        conn.execute("DELETE FROM session_profiles WHERE conversation_id = ?", ("conv-missing-profile",))
+        conn.execute(
+            "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
+            ("2026-05-24T02:02:00+00:00", "conv-stale-source"),
+        )
+        conn.execute(
+            "UPDATE session_profiles SET materializer_version = ? WHERE conversation_id = ?",
+            (SESSION_INSIGHT_MATERIALIZER_VERSION - 1, "conv-stale-version"),
+        )
+        conn.commit()
+
+    stage = make_insights_stage(db_path)
+    assert stage.check_conversations is not None
+    assert stage.check_conversations(
+        [
+            "conv-fresh",
+            "conv-missing-profile",
+            "conv-stale-source",
+            "conv-stale-version",
+            "conv-unknown",
+        ]
+    ) == {
+        "conv-missing-profile",
+        "conv-stale-source",
+        "conv-stale-version",
+    }
 
 
 def test_embedding_config_enabled_with_key() -> None:
