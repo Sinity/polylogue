@@ -7,6 +7,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from polylogue.storage.fts.freshness import STALE, UNKNOWN, freshness_ready_record_trusted
 from polylogue.storage.fts.fts_lifecycle import FtsInvariantSnapshot, FtsSurfaceInvariant, fts_invariant_snapshot_sync
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -70,6 +71,14 @@ def _triggers_present(conn: sqlite3.Connection, trigger_names: tuple[str, ...]) 
     return all(name in present for name in trigger_names)
 
 
+def _source_has_rows(conn: sqlite3.Connection, table_name: str) -> bool | None:
+    try:
+        row = conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return None
+    return row is not None
+
+
 def _freshness_rows(conn: sqlite3.Connection) -> dict[str, dict[str, int | str | None]] | None:
     if not _table_exists(conn, "fts_freshness_state"):
         return None
@@ -104,12 +113,10 @@ def _freshness_rows(conn: sqlite3.Connection) -> dict[str, dict[str, int | str |
 def _freshness_record(
     freshness: dict[str, dict[str, int | str | None]] | None,
     surface: str,
-) -> tuple[bool, dict[str, int | str | None] | None]:
+) -> dict[str, int | str | None] | None:
     if freshness is None:
-        return True, None
-    record = freshness.get(surface)
-    state = None if record is None else record.get("state")
-    return state == "ready", record
+        return None
+    return freshness.get(surface)
 
 
 def _surface_payload(surface: FtsSurfaceInvariant) -> dict[str, int | bool | str | None]:
@@ -193,21 +200,52 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
                 source_exists = _table_exists(conn, source_table)
                 exists = _table_exists(conn, fts_table)
                 triggers_present = exists and _triggers_present(conn, triggers)
-                freshness_ready, freshness = _freshness_record(freshness_records, name)
+                freshness = _freshness_record(freshness_records, name)
+                source_rows = 0 if freshness is None else _int_or_zero(freshness.get("source_rows"))
+                indexed_rows = 0 if freshness is None else _int_or_zero(freshness.get("indexed_rows"))
+                missing_rows = 0 if freshness is None else _int_or_zero(freshness.get("missing_rows"))
+                excess_rows = 0 if freshness is None else _int_or_zero(freshness.get("excess_rows"))
+                duplicate_rows = 0 if freshness is None else _int_or_zero(freshness.get("duplicate_rows"))
+                recorded_state = None if freshness is None else str(freshness.get("state"))
+                source_has_rows = (
+                    _source_has_rows(conn, source_table)
+                    if source_exists and recorded_state == "ready" and source_rows == 0 and indexed_rows == 0
+                    else False
+                )
+                freshness_ready = (
+                    True
+                    if freshness_records is None
+                    else freshness_ready_record_trusted(
+                        state=recorded_state,
+                        source_rows=source_rows,
+                        indexed_rows=indexed_rows,
+                        missing_rows=missing_rows,
+                        excess_rows=excess_rows,
+                        duplicate_rows=duplicate_rows,
+                        source_has_rows=source_has_rows,
+                    )
+                )
+                freshness_state = recorded_state
+                if recorded_state == "ready" and not freshness_ready:
+                    freshness_state = (
+                        UNKNOWN if source_rows == 0 and indexed_rows == 0 and source_has_rows is not False else STALE
+                    )
                 ready = (exists and triggers_present and freshness_ready) if source_exists else not exists
                 surfaces[name] = {
                     "source_exists": source_exists,
                     "exists": exists,
-                    "source_rows": 0 if freshness is None else int(freshness.get("source_rows") or 0),
-                    "indexed_rows": 0 if freshness is None else int(freshness.get("indexed_rows") or 0),
+                    "source_rows": source_rows,
+                    "indexed_rows": indexed_rows,
                     "triggers_present": triggers_present,
-                    "missing_rows": 0 if freshness is None else int(freshness.get("missing_rows") or 0),
-                    "excess_rows": 0 if freshness is None else int(freshness.get("excess_rows") or 0),
-                    "duplicate_rows": 0 if freshness is None else int(freshness.get("duplicate_rows") or 0),
+                    "missing_rows": missing_rows,
+                    "excess_rows": excess_rows,
+                    "duplicate_rows": duplicate_rows,
                     "ready": ready,
                     "exact": False,
                     "freshness_known": freshness_records is not None,
-                    "freshness_state": None if freshness is None else str(freshness.get("state")),
+                    "freshness_state": freshness_state,
+                    "freshness_recorded_state": recorded_state,
+                    "freshness_trusted": freshness_ready,
                     "freshness_detail": None if freshness is None else freshness.get("detail"),
                 }
         finally:

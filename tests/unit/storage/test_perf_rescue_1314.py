@@ -84,7 +84,13 @@ def test_search_conversation_hits_uses_freshness_ledger_before_match(tier_small_
 
         async def _run(statements: list[str]) -> None:
             async with backend.connection() as conn:
-                await record_fts_surface_state_async(conn, surface="messages_fts", state=READY)
+                await record_fts_surface_state_async(
+                    conn,
+                    surface="messages_fts",
+                    state=READY,
+                    source_rows=1,
+                    indexed_rows=1,
+                )
                 await conn.commit()
                 await search_conversation_hits(conn, "analysis", limit=5)
 

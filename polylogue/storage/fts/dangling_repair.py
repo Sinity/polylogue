@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
-from polylogue.storage.fts.freshness import READY, STALE, record_fts_surface_state_sync
+from polylogue.storage.fts.freshness import READY, STALE, freshness_ready_record_trusted, record_fts_surface_state_sync
 from polylogue.storage.fts.fts_lifecycle import (
     _triggers_present_sync,
     ensure_fts_index_sync,
@@ -178,15 +178,67 @@ def _record_optional_derived_surface(
     return ready
 
 
-def _freshness_state(conn: sqlite3.Connection, surface: str) -> str | None:
+def _source_table_for_surface(surface: str) -> str | None:
+    return {
+        "messages_fts": "messages",
+        "action_events_fts": "action_events",
+        "session_work_events_fts": "session_work_events",
+        "work_threads_fts": "work_threads",
+    }.get(surface)
+
+
+def _source_has_rows(conn: sqlite3.Connection, surface: str) -> bool | None:
+    source_table = _source_table_for_surface(surface)
+    if source_table is None or not _table_exists(conn, source_table):
+        return None
+    return conn.execute(f"SELECT 1 FROM {source_table} LIMIT 1").fetchone() is not None
+
+
+def _freshness_record(conn: sqlite3.Connection, surface: str) -> dict[str, object] | None:
     if not _table_exists(conn, "fts_freshness_state"):
         return None
-    row = conn.execute("SELECT state FROM fts_freshness_state WHERE surface=?", (surface,)).fetchone()
-    return None if row is None else str(row[0])
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(fts_freshness_state)").fetchall()}
+    selected = ["state"]
+    for name in ("source_rows", "indexed_rows", "missing_rows", "excess_rows", "duplicate_rows"):
+        if name in columns:
+            selected.append(name)
+    row = conn.execute(f"SELECT {', '.join(selected)} FROM fts_freshness_state WHERE surface=?", (surface,)).fetchone()
+    return None if row is None else dict(zip(selected, row, strict=True))
+
+
+def _int_or_zero(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float | str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    if value is None:
+        return 0
+    try:
+        return int(str(value))
+    except ValueError:
+        return 0
 
 
 def _ready_freshness_marker(conn: sqlite3.Connection, surface: str, triggers: tuple[str, ...]) -> bool:
-    return _freshness_state(conn, surface) == READY and _triggers_present_sync(conn, triggers)
+    record = _freshness_record(conn, surface)
+    if record is None or not _triggers_present_sync(conn, triggers):
+        return False
+    source_rows = _int_or_zero(record.get("source_rows"))
+    indexed_rows = _int_or_zero(record.get("indexed_rows"))
+    return freshness_ready_record_trusted(
+        state=str(record["state"]),
+        source_rows=source_rows,
+        indexed_rows=indexed_rows,
+        missing_rows=_int_or_zero(record.get("missing_rows")),
+        excess_rows=_int_or_zero(record.get("excess_rows")),
+        duplicate_rows=_int_or_zero(record.get("duplicate_rows")),
+        source_has_rows=_source_has_rows(conn, surface) if source_rows == 0 and indexed_rows == 0 else False,
+    )
 
 
 def repair_stale_fts_rows(conn: sqlite3.Connection) -> DanglingFtsRepairOutcome:

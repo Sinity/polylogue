@@ -498,14 +498,73 @@ def test_fts_readiness_reports_recorded_freshness_counts_without_exact_scan(tmp_
     assert readiness["action_event_count"] == 7
     assert readiness["action_event_indexed_count"] == 7
     assert readiness["coverage_pct"] == 99.5
+    assert readiness["messages_ready"] is False
+    assert readiness["invariant_ready"] is False
     surfaces = readiness["surfaces"]
     assert isinstance(surfaces, dict)
     messages = surfaces["messages_fts"]
     assert isinstance(messages, dict)
     assert messages["missing_rows"] == 1
+    assert messages["freshness_state"] == "stale"
+    assert messages["freshness_recorded_state"] == "ready"
+    assert messages["freshness_trusted"] is False
     assert messages["freshness_detail"] == "repair pending"
     assert all("COUNT(*) FROM messages" not in query for query in queries)
     assert all("messages_fts_docsize" not in query for query in queries)
+
+
+def test_fts_readiness_rejects_zero_count_ready_freshness_when_source_has_rows(tmp_path: Path) -> None:
+    from polylogue.daemon.fts_status import fts_readiness_info
+
+    db_path = tmp_path / "polylogue.db"
+    queries: list[str] = []
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE messages (message_id TEXT, text TEXT);
+            CREATE TABLE messages_fts (text TEXT);
+            CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages BEGIN SELECT 1; END;
+            INSERT INTO messages VALUES ('m1', 'needs indexing');
+            CREATE TABLE fts_freshness_state (
+                surface TEXT PRIMARY KEY,
+                state TEXT NOT NULL,
+                checked_at TEXT NOT NULL,
+                source_rows INTEGER NOT NULL DEFAULT 0,
+                indexed_rows INTEGER NOT NULL DEFAULT 0,
+                missing_rows INTEGER NOT NULL DEFAULT 0,
+                excess_rows INTEGER NOT NULL DEFAULT 0,
+                duplicate_rows INTEGER NOT NULL DEFAULT 0,
+                detail TEXT
+            );
+            INSERT INTO fts_freshness_state
+                (surface, state, checked_at, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows)
+            VALUES ('messages_fts', 'ready', '2026-05-24T00:00:00+00:00', 0, 0, 0, 0, 0);
+            """
+        )
+
+    original_connect = sqlite3.connect
+
+    def traced_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        conn = original_connect(*args, **kwargs)
+        conn.set_trace_callback(queries.append)
+        return cast(sqlite3.Connection, conn)
+
+    with patch("polylogue.storage.sqlite.connection_profile.sqlite3.connect", side_effect=traced_connect):
+        readiness = fts_readiness_info(db_path)
+
+    assert readiness["messages_ready"] is False
+    assert readiness["invariant_ready"] is False
+    assert readiness["coverage_pct"] == 0.0
+    surfaces = readiness["surfaces"]
+    assert isinstance(surfaces, dict)
+    messages = surfaces["messages_fts"]
+    assert isinstance(messages, dict)
+    assert messages["freshness_state"] == "unknown"
+    assert messages["freshness_recorded_state"] == "ready"
+    assert messages["freshness_trusted"] is False
+    assert all("count(*) from messages_fts" not in query.lower() for query in queries)
 
 
 def test_fts_readiness_tolerates_malformed_recorded_counts(tmp_path: Path) -> None:
