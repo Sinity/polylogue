@@ -871,7 +871,7 @@ files:
     target: polylogue/cli/shared/check_validation.py
     owner: stable
   - path: polylogue/cli/shared/check_workflow.py
-    loc: 269
+    loc: 272
     target: polylogue/cli/shared/check_workflow.py
     owner: stable
   - path: polylogue/cli/shared/embed_runtime.py
@@ -1421,7 +1421,7 @@ files:
     target: polylogue/maintenance/source_replay.py
     owner: stable
   - path: polylogue/maintenance/targets.py
-    loc: 317
+    loc: 329
     target: polylogue/maintenance/targets.py
     owner: stable
   - path: polylogue/mcp/__init__.py
@@ -1614,12 +1614,16 @@ files:
     loc: 56
     target: polylogue/pipeline/services/ingest_batch/__init__.py
     owner: stable
+  - path: polylogue/pipeline/services/ingest_batch/_append_helpers.py
+    loc: 35
+    target: polylogue/pipeline/services/ingest_batch/_append_helpers.py
+    owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_append_stats.py
     loc: 106
     target: polylogue/pipeline/services/ingest_batch/_append_stats.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_core.py
-    loc: 1500
+    loc: 1493
     target: polylogue/pipeline/services/ingest_batch/_core.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_models.py
@@ -2538,7 +2542,7 @@ files:
     target: polylogue/sources/live/append_ingest.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 1140
+    loc: 1158
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
@@ -2811,6 +2815,11 @@ files:
     target: polylogue/storage/blob_integrity.py
     owner: storage-root
     reason: storage-root cross-cutting helper
+  - path: polylogue/storage/blob_repair.py
+    loc: 58
+    target: polylogue/storage/blob_repair.py
+    owner: storage-root
+    reason: storage-root cross-cutting helper
   - path: polylogue/storage/blob_store.py
     loc: 553
     target: polylogue/storage/blob_store.py
@@ -3004,8 +3013,13 @@ files:
     loc: 136
     target: polylogue/storage/raw/models.py
     owner: stable
+  - path: polylogue/storage/raw_retention.py
+    loc: 243
+    target: polylogue/storage/raw_retention.py
+    owner: storage-root
+    reason: storage-root cross-cutting helper
   - path: polylogue/storage/repair.py
-    loc: 1282
+    loc: 1277
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -3485,7 +3499,7 @@ files:
     target: polylogue/storage/sqlite/schema_ddl_insight_timelines.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_provider_events.py
-    loc: 40
+    loc: 44
     target: polylogue/storage/sqlite/schema_ddl_provider_events.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_repo_identity.py

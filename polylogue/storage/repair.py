@@ -20,6 +20,7 @@ from polylogue.maintenance.targets import (
 )
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.action_events.artifacts import ActionEventArtifactState
+from polylogue.storage.blob_repair import count_orphaned_blobs_sync, repair_orphaned_blobs_data
 from polylogue.storage.insights.session.repair_assessment import (
     assess_session_insight_repairs,
     session_insight_fts_ready,
@@ -424,6 +425,16 @@ def collect_archive_debt_statuses_sync(
             issue_count=orphaned_blobs,
             detail="No orphaned blobs" if orphaned_blobs == 0 else f"{orphaned_blobs:,} orphaned blob files on disk",
         )
+        superseded_raw_snapshots = count_superseded_raw_snapshots_sync(conn)
+        debt_statuses["superseded_raw_snapshots"] = _archive_debt_status(
+            "superseded_raw_snapshots",
+            issue_count=superseded_raw_snapshots,
+            detail=(
+                "No superseded live raw snapshots"
+                if superseded_raw_snapshots == 0
+                else f"{superseded_raw_snapshots:,} superseded live raw snapshots"
+            ),
+        )
     return debt_statuses
 
 
@@ -601,81 +612,47 @@ def preview_orphaned_content_blocks(*, count: int) -> RepairResult:
 # ---------------------------------------------------------------------------
 
 
-def count_orphaned_blobs_sync(conn: sqlite3.Connection) -> int:
-    """Count blob files on disk that have no DB reference.
-
-    This is a filesystem-intensive operation — it walks the blob store
-    directory and compares against ``raw_conversations.raw_id``.  Call
-    only when ``include_expensive`` or ``--deep`` is requested.
-    """
-    from polylogue.storage.blob_store import get_blob_store
-
-    db_raw_ids: set[str] = set()
-    for row in conn.execute("SELECT raw_id FROM raw_conversations"):
-        db_raw_ids.add(row[0])
-    blob_store = get_blob_store()
-    result = blob_store.detect_orphans(db_raw_ids)
-    return result.orphan_count
-
-
-def _orphaned_blob_hashes(db_raw_ids: set[str]) -> set[str]:
-    """Return the full orphan hash set for cleanup and exact dry-run accounting."""
-    from polylogue.storage.blob_store import get_blob_store
-
-    blob_store = get_blob_store()
-    return {h for h in blob_store.iter_all() if h not in db_raw_ids}
-
-
 def repair_orphaned_blobs(config: Config, dry_run: bool = False) -> RepairResult:
-    """Delete blob files that are no longer referenced in the archive.
+    outcome = repair_orphaned_blobs_data(config, dry_run=dry_run)
+    return _repair_result(
+        "orphaned_blobs",
+        repaired_count=outcome.repaired_count,
+        success=outcome.success,
+        detail=outcome.detail,
+    )
 
-    Dry-run (default via --preview) reports what would be deleted without
-    touching the filesystem.  The live path deletes blobs one at a time
-    and reports the aggregate result.
-    """
-    from polylogue.storage.blob_store import get_blob_store
-    from polylogue.storage.sqlite.connection import open_read_connection
 
-    blob_store = get_blob_store()
-    db_raw_ids: set[str] = set()
-    with open_read_connection(config.db_path) as conn:
-        for row in conn.execute("SELECT raw_id FROM raw_conversations"):
-            db_raw_ids.add(row[0])
+def count_superseded_raw_snapshots_sync(conn: sqlite3.Connection) -> int:
+    from polylogue.storage.raw_retention import superseded_raw_snapshot_candidates
 
-    detect_result = blob_store.detect_orphans(db_raw_ids)
-    if detect_result.orphan_count == 0:
-        return _repair_result(
-            "orphaned_blobs",
-            repaired_count=0,
-            success=True,
-            detail="No orphaned blobs found",
-        )
+    return len(superseded_raw_snapshot_candidates(conn, limit=10_000))
 
-    # ``detect_orphans`` intentionally returns only a bounded sample for
-    # operator display. Cleanup and dry-run accounting both need the exact
-    # set; otherwise a 20k-file orphan store can preview as ten files.
-    orphan_hashes = _orphaned_blob_hashes(db_raw_ids)
 
-    cleanup_result = blob_store.cleanup_orphans(orphan_hashes, dry_run=dry_run)
+def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> RepairResult:
+    from polylogue.storage.raw_retention import cleanup_superseded_raw_snapshots
+    from polylogue.storage.sqlite.connection import open_connection
 
+    with open_connection(config.db_path) as conn:
+        result = cleanup_superseded_raw_snapshots(conn, dry_run=dry_run, limit=10_000)
     if dry_run:
         return _repair_result(
-            "orphaned_blobs",
-            repaired_count=cleanup_result.would_delete_count,
+            "superseded_raw_snapshots",
+            repaired_count=result.candidate_count,
             success=True,
             detail=(
-                f"Would: delete {cleanup_result.would_delete_count} orphaned blobs "
-                f"({cleanup_result.would_delete_bytes:,} bytes)"
+                f"Would: delete {result.candidate_count:,} superseded raw snapshots "
+                f"({result.deleted_raw_bytes:,} referenced bytes)"
             ),
         )
     return _repair_result(
-        "orphaned_blobs",
-        repaired_count=cleanup_result.deleted_count,
-        success=cleanup_result.errors == 0,
+        "superseded_raw_snapshots",
+        repaired_count=result.deleted_raw_count,
+        success=not result.errors,
         detail=(
-            f"Deleted {cleanup_result.deleted_count} orphaned blobs "
-            f"({cleanup_result.deleted_bytes:,} bytes)"
-            + (f" with {cleanup_result.errors} errors" if cleanup_result.errors else "")
+            f"Deleted {result.deleted_raw_count:,} raw rows and {result.deleted_blob_count:,} blob files "
+            f"({result.deleted_blob_bytes:,} bytes); cleared "
+            f"{result.provider_event_links_cleared:,} provider-event raw links"
+            + (f"; errors: {'; '.join(result.errors[:3])}" if result.errors else "")
         ),
     )
 
@@ -686,6 +663,19 @@ def preview_orphaned_blobs(*, count: int) -> RepairResult:
         repaired_count=count,
         success=True,
         detail=f"Would: delete {count} orphaned blobs" if count else "Would: No orphaned blobs found",
+    )
+
+
+def preview_superseded_raw_snapshots(*, count: int) -> RepairResult:
+    return _repair_result(
+        "superseded_raw_snapshots",
+        repaired_count=count,
+        success=True,
+        detail=(
+            f"Would: delete {count} superseded live raw snapshots"
+            if count
+            else "Would: No superseded live raw snapshots found"
+        ),
     )
 
 
@@ -1105,6 +1095,7 @@ _PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "empty_conversations": preview_empty_conversations,
     "orphaned_attachments": preview_orphaned_attachments,
     "orphaned_blobs": preview_orphaned_blobs,
+    "superseded_raw_snapshots": preview_superseded_raw_snapshots,
 }
 
 
@@ -1138,6 +1129,7 @@ _REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "empty_conversations": repair_empty_conversations,
     "orphaned_attachments": repair_orphaned_attachments,
     "orphaned_blobs": repair_orphaned_blobs,
+    "superseded_raw_snapshots": repair_superseded_raw_snapshots,
 }
 
 
@@ -1250,6 +1242,7 @@ __all__ = [
     "count_empty_conversations_sync",
     "count_orphaned_attachments_sync",
     "count_orphaned_blobs_sync",
+    "count_superseded_raw_snapshots_sync",
     "count_orphaned_content_blocks_sync",
     "count_orphaned_messages_sync",
     "count_messages_by_type_sync",
@@ -1261,6 +1254,7 @@ __all__ = [
     "preview_empty_conversations",
     "preview_orphaned_attachments",
     "preview_orphaned_blobs",
+    "preview_superseded_raw_snapshots",
     "preview_orphaned_content_blocks",
     "preview_orphaned_messages",
     "preview_message_type_backfill",
@@ -1271,6 +1265,7 @@ __all__ = [
     "repair_message_type_backfill",
     "repair_orphaned_attachments",
     "repair_orphaned_blobs",
+    "repair_superseded_raw_snapshots",
     "repair_orphaned_content_blocks",
     "repair_orphaned_messages",
     "repair_session_insights",

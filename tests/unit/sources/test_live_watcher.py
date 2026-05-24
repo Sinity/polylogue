@@ -1531,6 +1531,7 @@ def test_end_to_end_modify_triggers_ingest(tmp_path: Path) -> None:
                 break
             await asyncio.sleep(0.05)
         baseline = parse_sources.await_count
+        await asyncio.sleep(0.2)  # ensure awatch is up after catch-up bookkeeping
         # Append more content; expect a second ingest after debounce.
         with open(f, "a") as fh:
             fh.write('{"b":2}\n')

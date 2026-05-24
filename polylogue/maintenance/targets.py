@@ -280,6 +280,18 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         archive_readiness_unready_status=OutcomeStatus.WARNING,
         archive_readiness_requires_deep=True,
     ),
+    MaintenanceTargetSpec(
+        name="superseded_raw_snapshots",
+        mode=MaintenanceTargetMode.CLEANUP,
+        category=MaintenanceCategory.ARCHIVE_CLEANUP,
+        destructive=True,
+        description="Delete redundant live raw snapshots whose source files still exist.",
+        include_in_archive_readiness=True,
+        archive_readiness_unready_status=OutcomeStatus.WARNING,
+        archive_readiness_requires_deep=True,
+        aliases=("raw_snapshots",),
+        invalidation_keys=("raw_conversations",),
+    ),
 )
 
 

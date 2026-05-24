@@ -20,7 +20,6 @@ from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -61,6 +60,12 @@ from polylogue.core.metrics import (
 from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
 from polylogue.pipeline.payload_types import MaterializeStageObservation, ParseBatchObservation
+from polylogue.pipeline.services.ingest_batch._append_helpers import (
+    append_content_hash,
+    conversation_tuple_without_raw_id,
+    provider_event_tuple_without_raw_id,
+    tail_content_hash,
+)
 from polylogue.pipeline.services.ingest_batch._append_stats import existing_message_signatures, upsert_stats_for_append
 from polylogue.pipeline.services.ingest_worker import (
     ConversationData,
@@ -336,19 +341,6 @@ def _existing_provider_event_ids(conn: sqlite3.Connection, event_ids: Sequence[s
     return existing
 
 
-def _append_content_hash(existing_hash: str | None, tail_hash: str) -> str:
-    if not existing_hash:
-        return tail_hash
-    return sha256(f"{existing_hash}\0{tail_hash}".encode()).hexdigest()
-
-
-def _tail_content_hash(changed_messages: Sequence[MessageTuple], fallback_hash: str) -> str:
-    if not changed_messages:
-        return fallback_hash
-    joined_hashes = "\0".join(str(message[6]) for message in changed_messages)
-    return sha256(joined_hashes.encode()).hexdigest()
-
-
 def _upsert_stats_from_messages(conn: sqlite3.Connection, conversation_id: str, provider_name: str) -> None:
     row = conn.execute(
         """
@@ -438,8 +430,8 @@ def _append_conversation(
     counts["skipped_messages"] = len(cdata.message_tuples) - len(changed_messages)
     counts["skipped_provider_events"] = len(cdata.provider_event_tuples) - len(changed_provider_events)
 
-    merged_hash = _append_content_hash(existing_hash, _tail_content_hash(changed_messages, cdata.content_hash))
-    resolved_tuple = _resolved_conversation_tuple(conn, cdata)
+    merged_hash = append_content_hash(existing_hash, tail_content_hash(changed_messages, cdata.content_hash))
+    resolved_tuple = conversation_tuple_without_raw_id(_resolved_conversation_tuple(conn, cdata))
     conn.execute(_CONVERSATION_UPSERT_SQL, _conversation_tuple_with_hash(resolved_tuple, merged_hash))
     # Record the identity mapping so re-ingest after reset preserves conversation_id.
     # Tuple indices: 1=provider_name, 2=provider_conversation_id, 13=raw_id, 14=source_name
@@ -479,7 +471,8 @@ def _append_conversation(
         _executemany_chunked(conn, _ACTION_EVENT_INSERT_OR_IGNORE_SQL, changed_action_events)
 
     if changed_provider_events:
-        _executemany_chunked(conn, _PROVIDER_EVENT_INSERT_OR_IGNORE_SQL, changed_provider_events)
+        rawless_provider_events = [provider_event_tuple_without_raw_id(event) for event in changed_provider_events]
+        _executemany_chunked(conn, _PROVIDER_EVENT_INSERT_OR_IGNORE_SQL, rawless_provider_events)
         counts["provider_events"] = len(changed_provider_events)
 
     affected_attachment_ids = {str(attachment_id) for attachment_id, *_rest in cdata.attachment_tuples}
