@@ -6,7 +6,6 @@ Architecture:
 - as_completed yields results as workers finish; writes drain completed worker
   results without retaining the whole parsed batch in memory
 
-Replaces: parsing_batch.py, parsing_workflow.py, validation_flow.py.
 """
 
 from __future__ import annotations
@@ -92,6 +91,13 @@ if TYPE_CHECKING:
     from polylogue.protocols import ProgressCallback
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
+from polylogue.pipeline.services.ingest_batch._memory import (
+    INGEST_RELEASE_BLOB_MB_THRESHOLD,
+    INGEST_RELEASE_MESSAGE_THRESHOLD,
+    discard_conversation_data_payload,
+    discard_ingest_result_payload,
+    ingest_result_needs_memory_release,
+)
 from polylogue.pipeline.services.ingest_batch._models import (
     _DEFAULT_INGEST_WORKER_LIMIT,
     _BulkConnectionBackendLike,
@@ -103,6 +109,11 @@ from polylogue.pipeline.services.ingest_batch._models import (
     _RawIngestOutcome,
 )
 from polylogue.pipeline.services.ingest_batch._observations import _build_parse_batch_observation
+from polylogue.pipeline.services.ingest_batch._summary import (
+    apply_ingest_batch_summary,
+    progressed_raw_count,
+    successful_raw_ids,
+)
 
 logger = get_logger(__name__)
 
@@ -121,8 +132,6 @@ class _BlobSized(Protocol):
 IngestHeartbeat = Callable[[], None]
 _INGEST_RESULT_WAIT_HEARTBEAT_S = 15.0
 _INGEST_RESULT_CHUNK_SIZE = 100
-_INGEST_RELEASE_BLOB_MB_THRESHOLD = 16.0
-_INGEST_RELEASE_MESSAGE_THRESHOLD = 1_000
 
 
 # Sync DB writer
@@ -714,7 +723,9 @@ def _drain_ready_conversation_entries(
             if parent_id is not None:
                 pending_by_parent.setdefault(parent_id, []).append((raw_id, cdata))
             continue
-        if not _write_conversation_entry(conn, raw_id, cdata, summary=summary, force_write=force_write):
+        wrote = _write_conversation_entry(conn, raw_id, cdata, summary=summary, force_write=force_write)
+        discard_conversation_data_payload(cdata)
+        if not wrote:
             continue
         materialized_ids.add(cdata.conversation_id)
         children = pending_by_parent.pop(cdata.conversation_id, [])
@@ -734,7 +745,9 @@ def _flush_pending_conversation_entries(
         return
     pending_by_parent.clear()
     for raw_id, cdata in _topo_sort_conversation_entries(remaining):
-        if _write_conversation_entry(conn, raw_id, cdata, summary=summary):
+        wrote = _write_conversation_entry(conn, raw_id, cdata, summary=summary)
+        discard_conversation_data_payload(cdata)
+        if wrote:
             materialized_ids.add(cdata.conversation_id)
 
 
@@ -991,21 +1004,28 @@ def _consume_ingest_results(
             summary.teardown_elapsed_s = time.perf_counter() - wait_started
             break
         summary.result_wait_s += time.perf_counter() - wait_started
-        if not transaction_started:
-            conn.execute("BEGIN IMMEDIATE")
-            if suspend_fts_triggers:
-                from polylogue.storage.fts.fts_lifecycle import suspend_fts_triggers_sync
+        release_after_drain = ingest_result_needs_memory_release(ir)
+        try:
+            if not transaction_started:
+                conn.execute("BEGIN IMMEDIATE")
+                if suspend_fts_triggers:
+                    from polylogue.storage.fts.fts_lifecycle import suspend_fts_triggers_sync
 
-                suspend_fts_triggers_sync(conn, mark_stale=False)
-            transaction_started = True
-        _drain_ingest_result(
-            conn,
-            ir,
-            summary=summary,
-            materialized_ids=materialized_ids,
-            pending_by_parent=pending_by_parent,
-            force_write=force_write,
-        )
+                    suspend_fts_triggers_sync(conn, mark_stale=False)
+                transaction_started = True
+            _drain_ingest_result(
+                conn,
+                ir,
+                summary=summary,
+                materialized_ids=materialized_ids,
+                pending_by_parent=pending_by_parent,
+                force_write=force_write,
+            )
+        finally:
+            discard_ingest_result_payload(ir)
+            if release_after_drain:
+                release_process_memory()
+                _observe_current_rss(summary)
     return transaction_started
 
 
@@ -1087,6 +1107,7 @@ def _process_ingest_batch_sync(
     setup_started = time.perf_counter()
     conn = _open_sync_connection(db_path)
     summary.setup_elapsed_s = time.perf_counter() - setup_started
+    heavy_batch = summary.total_blob_mb >= INGEST_RELEASE_BLOB_MB_THRESHOLD
     materialized_ids: set[str] = set()
     pending_by_parent: dict[str, list[_ConversationEntry]] = {}
     _observe_current_rss(summary)
@@ -1170,31 +1191,10 @@ def _process_ingest_batch_sync(
     summary.worker_progress_completed = progress.completed_raw_count
     summary.worker_progress_total = progress.total_raw_count
     summary.elapsed_s = time.perf_counter() - t_start
+    if heavy_batch or summary.total_msgs >= INGEST_RELEASE_MESSAGE_THRESHOLD:
+        release_process_memory()
+        _observe_current_rss(summary)
     return summary
-
-
-def _apply_ingest_batch_summary(result: ParseResult, batch_summary: _IngestBatchSummary) -> None:
-    result.parse_failures += batch_summary.parse_failures
-    result.processed_ids.update(batch_summary.processed_ids)
-    result._changed_conversation_ids.extend(batch_summary.changed_conversation_ids)
-    for key, value in batch_summary.counts.items():
-        if key in result.counts:
-            result.counts[key] += value
-    for key, value in batch_summary.changed_counts.items():
-        if key in result.changed_counts:
-            result.changed_counts[key] += value
-
-
-def _progressed_raw_count(batch_summary: _IngestBatchSummary) -> int:
-    return sum(1 for outcome in batch_summary.outcomes.values() if outcome.had_conversations and outcome.error is None)
-
-
-def _successful_raw_ids(batch_summary: _IngestBatchSummary) -> set[str]:
-    return {
-        raw_id
-        for raw_id, outcome in batch_summary.outcomes.items()
-        if outcome.had_conversations and raw_id not in batch_summary.failed_raw_ids
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -1250,15 +1250,15 @@ async def process_ingest_batch(
         ingest_result_chunk_size=ingest_result_chunk_size,
     )
     heavy_batch = (
-        batch_summary.total_blob_mb >= _INGEST_RELEASE_BLOB_MB_THRESHOLD
-        or batch_summary.total_msgs >= _INGEST_RELEASE_MESSAGE_THRESHOLD
+        batch_summary.total_blob_mb >= INGEST_RELEASE_BLOB_MB_THRESHOLD
+        or batch_summary.total_msgs >= INGEST_RELEASE_MESSAGE_THRESHOLD
     )
     raw_artifacts.clear()
 
-    _apply_ingest_batch_summary(result, batch_summary)
-    progressed_raw_count = _progressed_raw_count(batch_summary)
-    if progress_callback and progressed_raw_count:
-        progress_callback(progressed_raw_count)
+    apply_ingest_batch_summary(result, batch_summary)
+    progressed = progressed_raw_count(batch_summary)
+    if progress_callback and progressed:
+        progress_callback(progressed)
 
     if batch_summary.elapsed_s > 0.0:
         logger.info(
@@ -1292,7 +1292,7 @@ async def process_ingest_batch(
         service,
         backend,
         outcomes=batch_summary.outcomes,
-        succeeded_raw_ids=_successful_raw_ids(batch_summary),
+        succeeded_raw_ids=successful_raw_ids(batch_summary),
         skipped_raw_ids=batch_summary.skipped_raw_ids,
         failed_raw_ids=batch_summary.failed_raw_ids,
         validation_mode=validation_mode,
