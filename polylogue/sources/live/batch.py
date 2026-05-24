@@ -119,6 +119,7 @@ class LiveBatchProcessor:
         self._stop_requested = stop_requested or (lambda: False)
         self._event_emitter = event_emitter
         self._last_cursor_write_stale = False
+        self._raw_compaction_min_acquired_at = datetime.now(UTC).isoformat()
 
     async def ingest_files(
         self,
@@ -428,6 +429,9 @@ class LiveBatchProcessor:
             convergence_time_s=convergence_time_s,
             stale_cursor_write_count=stale_cursor_write_count,
         )
+
+        if succeeded_paths:
+            await asyncio.to_thread(self._compact_superseded_raw_snapshots, sorted(succeeded_paths))
 
         retry_paths = failed_paths + [str(path) for path in deferred_paths]
         db_bytes_after = _path_size(self._cursor._db_path) + _path_size(self._cursor._db_path.with_suffix(".db-wal"))
@@ -1114,6 +1118,20 @@ class LiveBatchProcessor:
                 ],
             )
             conn.commit()
+
+    def _compact_superseded_raw_snapshots(self, paths: list[Path]) -> None:
+        if not paths:
+            return
+        with self._cursor._connect() as conn:
+            from polylogue.storage.raw_retention import compact_paths_superseded_raw_snapshots
+            from polylogue.storage.sqlite.schema import _ensure_schema
+
+            _ensure_schema(conn)
+            result = compact_paths_superseded_raw_snapshots(
+                conn, paths, limit_per_path=25, min_acquired_at=self._raw_compaction_min_acquired_at
+            )
+        if result.errors:
+            logger.warning("live.watcher: raw snapshot compaction errors: %s", "; ".join(result.errors[:3]))
 
     def _record_append_cursor(self, plan: _AppendPlan) -> bool:
         content_fingerprint = sha256(f"{plan.cursor_fingerprint or ''}\0{plan.payload_hash}".encode()).hexdigest()

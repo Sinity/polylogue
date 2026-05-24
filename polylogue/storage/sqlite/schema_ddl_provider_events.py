@@ -26,6 +26,10 @@ PROVIDER_EVENT_DDL = """
         ON provider_events(source_message_id)
         WHERE source_message_id IS NOT NULL;
 
+        CREATE INDEX IF NOT EXISTS idx_provider_events_raw_id
+        ON provider_events(raw_id)
+        WHERE raw_id IS NOT NULL;
+
         CREATE INDEX IF NOT EXISTS idx_provider_events_type
         ON provider_events(event_type);
 

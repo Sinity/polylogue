@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `612`
+- subjects: `613`
 - claims: `37`
 - runner bindings: `37`
-- proof obligations: `477`
+- proof obligations: `478`
 
 ## Quality Checks
 
@@ -46,7 +46,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `error.surface` | 2 |
 | `generated.scenario_family` | 9 |
 | `insight.surface` | 14 |
-| `maintenance.target` | 12 |
+| `maintenance.target` | 13 |
 | `operation.spec` | 51 |
 | `operation.spec.effect` | 136 |
 | `provider.capability` | 3 |
@@ -309,7 +309,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `generated.scenario.local_deterministic` | 4 |
 | `generated.scenario.semantic_claim_mapping` | 9 |
 | `insight.surface.registered` | 14 |
-| `maintenance.repair.crash_consistency` | 12 |
+| `maintenance.repair.crash_consistency` | 13 |
 | `operation.effect.atomic` | 18 |
 | `operation.effect.confirmed_before_execute` | 1 |
 | `operation.effect.deterministic` | 8 |

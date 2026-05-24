@@ -205,10 +205,13 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
     if _runtime_only_requested(options):
         return CheckCommandResult(report=run_runtime_readiness(config))
 
+    explicit_target_probe = (
+        (options.repair or options.cleanup) and bool(options.maintenance_targets) and not options.deep
+    )
     report = get_readiness(
         config,
         deep=options.deep,
-        probe_only=not (options.deep or options.repair or options.cleanup),
+        probe_only=explicit_target_probe or not (options.deep or options.repair or options.cleanup),
     )
     result = CheckCommandResult(report=report)
     maintenance_inputs: _MaintenanceRunInputs | None = None
