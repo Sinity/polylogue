@@ -225,7 +225,7 @@ def _message_fts_trigger_ddl(*, include_content_blocks: bool) -> tuple[str, ...]
         AFTER INSERT ON messages BEGIN
             INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
             SELECT new.rowid, new.message_id, new.conversation_id, new.text
-            WHERE new.text IS NOT NULL;
+            WHERE new.text IS NOT NULL AND new.text != '';
         END;
 
         CREATE TRIGGER IF NOT EXISTS messages_fts_ad
@@ -238,7 +238,7 @@ def _message_fts_trigger_ddl(*, include_content_blocks: bool) -> tuple[str, ...]
             DELETE FROM messages_fts WHERE rowid = old.rowid;
             INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
             SELECT new.rowid, new.message_id, new.conversation_id, new.text
-            WHERE new.text IS NOT NULL;
+            WHERE new.text IS NOT NULL AND new.text != '';
         END;
         """,
     )
@@ -409,7 +409,7 @@ def rebuild_fts_index_sync(conn: sqlite3.Connection) -> None:
             INSERT INTO messages_fts (rowid, message_id, conversation_id, text)
             SELECT rowid, message_id, conversation_id, text
             FROM messages
-            WHERE text IS NOT NULL
+            WHERE NULLIF(text, '') IS NOT NULL
             """
         )
     conn.execute(ACTION_FTS_REBUILD_SQL)
@@ -482,7 +482,7 @@ async def rebuild_fts_index_async(
             INSERT INTO messages_fts (rowid, message_id, conversation_id, text)
             SELECT rowid, message_id, conversation_id, text
             FROM messages
-            WHERE text IS NOT NULL
+            WHERE NULLIF(text, '') IS NOT NULL
             """
         )
     await conn.execute(ACTION_FTS_REBUILD_SQL)
@@ -670,7 +670,9 @@ def message_fts_readiness_sync(
         # so the cheap path can still see the "FTS exists but empty"
         # state without paying for a full COUNT(*) (#1314).
         has_indexed_rows = exists and bool(conn.execute("SELECT 1 FROM messages_fts_docsize LIMIT 1").fetchone())
-        has_indexable_messages = bool(conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1").fetchone())
+        has_indexable_messages = bool(
+            conn.execute("SELECT 1 FROM messages WHERE NULLIF(text, '') IS NOT NULL LIMIT 1").fetchone()
+        )
         triggers_present = exists and _triggers_present_sync(conn, _message_trigger_names_for_sync(conn))
         indexed_rows = 0
         total_messages = 0
@@ -750,7 +752,7 @@ async def message_fts_readiness_async(
             await (await conn.execute("SELECT 1 FROM messages_fts_docsize LIMIT 1")).fetchone()
         )
         has_indexable_messages = bool(
-            await (await conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1")).fetchone()
+            await (await conn.execute("SELECT 1 FROM messages WHERE NULLIF(text, '') IS NOT NULL LIMIT 1")).fetchone()
         )
         triggers_present = exists and await _triggers_present_async(conn, await _message_trigger_names_for_async(conn))
         indexed_rows = 0
@@ -869,7 +871,7 @@ def fts_invariant_snapshot_sync(conn: sqlite3.Connection) -> FtsInvariantSnapsho
     message_source_sql = (
         FTS_INDEXABLE_MESSAGE_COUNT_SQL
         if has_content_blocks
-        else "SELECT COUNT(*) FROM messages WHERE text IS NOT NULL"
+        else "SELECT COUNT(*) FROM messages WHERE NULLIF(text, '') IS NOT NULL"
     )
     message_trigger_names = (
         _MESSAGE_FTS_TRIGGER_NAMES if has_content_blocks else ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
@@ -881,7 +883,7 @@ def fts_invariant_snapshot_sync(conn: sqlite3.Connection) -> FtsInvariantSnapsho
             LEFT JOIN messages_fts_docsize AS d ON d.id = m.rowid
             WHERE d.id IS NULL
               AND (
-                  m.text IS NOT NULL
+                  NULLIF(m.text, '') IS NOT NULL
                   OR EXISTS (
                       SELECT 1
                       FROM content_blocks AS cb
@@ -899,7 +901,7 @@ def fts_invariant_snapshot_sync(conn: sqlite3.Connection) -> FtsInvariantSnapsho
             SELECT COUNT(*)
             FROM messages AS m
             LEFT JOIN messages_fts_docsize AS d ON d.id = m.rowid
-            WHERE m.text IS NOT NULL AND d.id IS NULL
+            WHERE NULLIF(m.text, '') IS NOT NULL AND d.id IS NULL
         """
     )
     message_excess_sql = (
@@ -909,7 +911,7 @@ def fts_invariant_snapshot_sync(conn: sqlite3.Connection) -> FtsInvariantSnapsho
             LEFT JOIN messages AS m ON m.rowid = d.id
             WHERE m.rowid IS NULL
                OR (
-                   m.text IS NULL
+                   NULLIF(m.text, '') IS NULL
                    AND NOT EXISTS (
                        SELECT 1
                        FROM content_blocks AS cb
@@ -926,7 +928,7 @@ def fts_invariant_snapshot_sync(conn: sqlite3.Connection) -> FtsInvariantSnapsho
         else """
             SELECT COUNT(*)
             FROM messages_fts_docsize AS d
-            LEFT JOIN messages AS m ON m.rowid = d.id AND m.text IS NOT NULL
+            LEFT JOIN messages AS m ON m.rowid = d.id AND NULLIF(m.text, '') IS NOT NULL
             WHERE m.rowid IS NULL
         """
     )

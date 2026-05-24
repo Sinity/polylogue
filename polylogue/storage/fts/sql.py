@@ -37,7 +37,7 @@ FTS_INDEX_DOC_COUNT_SQL = "SELECT COUNT(*) FROM messages_fts_docsize"
 FTS_INDEXABLE_MESSAGE_COUNT_SQL = """
     SELECT COUNT(*)
     FROM messages AS m
-    WHERE m.text IS NOT NULL
+    WHERE NULLIF(m.text, '') IS NOT NULL
        OR EXISTS (
            SELECT 1
            FROM content_blocks AS cb

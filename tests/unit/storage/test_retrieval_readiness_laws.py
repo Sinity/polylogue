@@ -210,7 +210,7 @@ class TestRetrievalIndexInvariants:
                     """
                     SELECT DISTINCT m.message_id
                     FROM messages AS m
-                    WHERE m.text IS NOT NULL
+                    WHERE NULLIF(m.text, '') IS NOT NULL
                        OR EXISTS (
                            SELECT 1
                            FROM content_blocks AS cb

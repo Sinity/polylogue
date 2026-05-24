@@ -35,7 +35,6 @@ from polylogue.logging import configure_logging, get_logger
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.watcher import default_sources
 from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES as _EXPECTED_FTS_TRIGGERS
-from polylogue.storage.fts.sql import FTS_INDEXABLE_MESSAGE_COUNT_SQL
 
 logger = get_logger(__name__)
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
@@ -153,13 +152,12 @@ async def _ensure_fts_startup_readiness() -> None:
         has_fts_table = row is not None
 
         from polylogue.storage.fts.freshness import (
-            READY,
             ensure_fts_freshness_table_sync,
-            message_fts_marked_ready_sync,
-            record_fts_surface_state_sync,
+            record_fts_invariant_snapshot_sync,
         )
         from polylogue.storage.fts.fts_lifecycle import (
             ensure_fts_index_sync,
+            fts_invariant_snapshot_sync,
             rebuild_fts_index_sync,
             restore_fts_triggers_sync,
         )
@@ -187,22 +185,15 @@ async def _ensure_fts_startup_readiness() -> None:
             return
 
         ensure_fts_index_sync(conn)
-        has_indexable_messages = bool(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone()[0])
-        has_indexed_messages = bool(conn.execute("SELECT 1 FROM messages_fts_docsize LIMIT 1").fetchone())
-        if has_indexable_messages and not has_indexed_messages:
-            logger.warning("daemon: message FTS is empty on startup while messages exist. Rebuilding once.")
+        snapshot = fts_invariant_snapshot_sync(conn)
+        if not snapshot.ready:
+            logger.warning("daemon: FTS invariant failed on startup. Rebuilding before serving search.")
             rebuild_fts_index_sync(conn)
             conn.commit()
             logger.info("daemon: FTS rebuild complete.")
             return
 
-        if not message_fts_marked_ready_sync(conn):
-            record_fts_surface_state_sync(
-                conn,
-                surface="messages_fts",
-                state=READY,
-                detail="startup structural check passed",
-            )
+        record_fts_invariant_snapshot_sync(conn, snapshot)
         conn.commit()
     except Exception:
         logger.warning("daemon: FTS startup check failed", exc_info=True)
