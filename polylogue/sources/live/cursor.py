@@ -15,6 +15,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from polylogue.sources.live.convergence_debt_store import (
+    clear_convergence_debt_except_sync,
+    record_convergence_debt_sync,
+)
 from polylogue.storage.sqlite.connection_profile import open_connection
 
 _DDL = """
@@ -1055,50 +1059,31 @@ class CursorStore:
         """Record derived convergence debt without marking source ingest failed."""
         now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT failure_count
-                FROM live_convergence_debt
-                WHERE stage = ? AND subject_type = ? AND subject_id = ?
-                """,
-                (stage, subject_type, subject_id),
-            ).fetchone()
-            failure_count = int(row[0]) + 1 if row is not None else 1
-            delay_s = _convergence_debt_retry_delay_s(failure_count, error=error)
-            retry_at = datetime.fromtimestamp(datetime.now(UTC).timestamp() + delay_s, tz=UTC).isoformat()
-            conn.execute(
-                """
-                INSERT INTO live_convergence_debt (
-                    stage,
-                    subject_type,
-                    subject_id,
-                    status,
-                    failure_count,
-                    first_failed_at,
-                    last_failed_at,
-                    next_retry_at,
-                    materializer_version,
-                    last_error
-                ) VALUES (?, ?, ?, 'failed', ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(stage, subject_type, subject_id) DO UPDATE SET
-                    status = 'failed',
-                    failure_count = excluded.failure_count,
-                    last_failed_at = excluded.last_failed_at,
-                    next_retry_at = excluded.next_retry_at,
-                    materializer_version = excluded.materializer_version,
-                    last_error = excluded.last_error
-                """,
-                (
-                    stage,
-                    subject_type,
-                    subject_id,
-                    failure_count,
-                    now,
-                    now,
-                    retry_at,
-                    materializer_version,
-                    error,
-                ),
+            record_convergence_debt_sync(
+                conn,
+                stage=stage,
+                subject_type=subject_type,
+                subject_id=subject_id,
+                error=error,
+                materializer_version=materializer_version,
+                now=now,
+            )
+            conn.commit()
+
+    def clear_convergence_debt_except(
+        self,
+        *,
+        subject_type: str,
+        subject_id: str,
+        stages: Iterable[str],
+    ) -> None:
+        """Clear convergence debt for a subject except currently failed stages."""
+        with self._connect() as conn:
+            clear_convergence_debt_except_sync(
+                conn,
+                subject_type=subject_type,
+                subject_id=subject_id,
+                stages=stages,
             )
             conn.commit()
 
@@ -1171,9 +1156,3 @@ __all__ = [
     "LiveConvergenceDebt",
     "LiveIngestAttempt",
 ]
-
-
-def _convergence_debt_retry_delay_s(failure_count: int, *, error: str | None) -> int:
-    if error == "insights deferred until source quiet":
-        return 60
-    return int(min(60 * (2 ** (failure_count - 1)), 3600))

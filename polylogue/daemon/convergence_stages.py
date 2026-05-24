@@ -507,14 +507,18 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
                     page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
                 )
                 conn.commit()
+                remaining = _stale_session_profile_ids(conn, ids)
                 logger.info(
-                    "insights: refreshed conversation debt conversations=%d profiles=%d work_events=%d phases=%d threads=%d",
+                    "insights: refreshed conversation debt conversations=%d profiles=%d work_events=%d phases=%d threads=%d remaining=%d",
                     len(ids),
                     counts.profiles,
                     counts.work_events,
                     counts.phases,
                     counts.threads,
+                    len(remaining),
                 )
+                if remaining:
+                    return False
             return True
         except Exception:
             logger.warning("insights: conversation rebuild failed", exc_info=True)
@@ -958,7 +962,15 @@ def _stale_session_profile_ids(conn: sqlite3.Connection, conversation_ids: Seque
           AND (
               sp.conversation_id IS NULL
               OR sp.materializer_version != ?
-              OR COALESCE(sp.source_updated_at, '') != COALESCE(c.updated_at, '')
+              OR (
+                  c.sort_key IS NOT NULL
+                  AND ABS(COALESCE(sp.source_sort_key, 0.0) - c.sort_key) > 0.000001
+              )
+              OR (
+                  c.sort_key IS NULL
+                  AND COALESCE(strftime('%s', sp.source_updated_at), sp.source_updated_at, '') !=
+                      COALESCE(strftime('%s', c.updated_at), c.updated_at, '')
+              )
           )
         ORDER BY c.conversation_id
         """,

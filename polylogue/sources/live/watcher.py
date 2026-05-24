@@ -421,8 +421,6 @@ class LiveWatcher:
         parser_matches = cursor.parser_fingerprint == _PARSER_FINGERPRINT
         if not parser_matches:
             return True
-        if size > cursor.byte_offset:
-            return True
         if size == cursor.byte_size and cursor.content_fingerprint is not None:
             # Stable path + size + recorded content fingerprint is the hot
             # catch-up skip path. Device/inode churn across bind mounts,
@@ -435,6 +433,8 @@ class LiveWatcher:
             except FileNotFoundError:
                 return False
             return current_tail_hash != cursor.tail_hash
+        if size > cursor.byte_offset:
+            return True
         if cursor.content_fingerprint is None:
             return True
         try:

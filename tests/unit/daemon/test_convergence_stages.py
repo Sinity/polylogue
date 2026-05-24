@@ -458,6 +458,75 @@ def test_insights_stage_defers_hot_large_conversation_debt(
     assert stage.execute_conversations(["conv-hot"]) is False
 
 
+def test_insights_staleness_uses_sort_key_not_timestamp_text(tmp_path: Path) -> None:
+    db_path = tmp_path / "archive.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE conversations (
+                conversation_id TEXT PRIMARY KEY,
+                sort_key REAL,
+                updated_at TEXT
+            );
+            CREATE TABLE session_profiles (
+                conversation_id TEXT PRIMARY KEY,
+                materializer_version INTEGER,
+                source_sort_key REAL,
+                source_updated_at TEXT
+            );
+            INSERT INTO conversations (conversation_id, sort_key, updated_at)
+            VALUES ('conv-current', 1779606000.0, '2026-05-24T07:00:00+00:00');
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO session_profiles (
+                conversation_id,
+                materializer_version,
+                source_sort_key,
+                source_updated_at
+            ) VALUES (
+                'conv-current',
+                ?,
+                1779606000.0,
+                '2026-05-24T07:00:00Z'
+            );
+            """,
+            (SESSION_INSIGHT_MATERIALIZER_VERSION,),
+        )
+
+        stale = stages._stale_session_profile_ids(conn, ["conv-current"])
+
+    assert stale == []
+
+
+def test_insights_conversation_rebuild_returns_false_when_still_stale(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "archive.sqlite"
+    source_path = tmp_path / "quiet-codex.jsonl"
+    source_path.write_text("{}\n", encoding="utf-8")
+    with open_connection(db_path) as conn:
+        _seed_raw_source_conversation(conn, conversation_id="conv-stale", source_path=source_path)
+        conn.commit()
+
+    def no_op_rebuild(
+        conn: sqlite3.Connection,
+        *,
+        conversation_ids: list[str],
+        page_size: int,
+    ) -> SessionInsightCounts:
+        del conn, conversation_ids, page_size
+        return SessionInsightCounts(profiles=0, work_events=0, phases=0, threads=0, tag_rollups=0, day_summaries=0)
+
+    monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", no_op_rebuild)
+
+    stage = make_insights_stage(db_path)
+    assert stage.execute_conversations is not None
+    assert stage.execute_conversations(["conv-stale"]) is False
+
+
 def test_insights_stage_rebuilds_large_conversation_after_quiet_window(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -484,6 +553,7 @@ def test_insights_stage_rebuilds_large_conversation_after_quiet_window(
         return SessionInsightCounts(profiles=1, work_events=0, phases=0, threads=0, tag_rollups=0, day_summaries=0)
 
     monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
+    monkeypatch.setattr(stages, "_stale_session_profile_ids", lambda _conn, _ids: [])
 
     stage = make_insights_stage(db_path)
     assert stage.execute_conversations is not None
@@ -514,6 +584,7 @@ def test_insights_stage_rebuilds_small_active_conversation(
         return SessionInsightCounts(profiles=1, work_events=0, phases=0, threads=0, tag_rollups=0, day_summaries=0)
 
     monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
+    monkeypatch.setattr(stages, "_stale_session_profile_ids", lambda _conn, _ids: [])
 
     stage = make_insights_stage(db_path)
     assert stage.execute_conversations is not None
