@@ -374,6 +374,16 @@ def rebuild_fts_index_sync(conn: sqlite3.Connection) -> None:
     record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
 
 
+def rebuild_session_insight_fts_sync(conn: sqlite3.Connection) -> None:
+    """Rebuild only the durable session-insight FTS projections."""
+    restore_fts_triggers_sync(conn)
+    _rebuild_session_work_events_fts_sync(conn)
+    _rebuild_work_threads_fts_sync(conn)
+    from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
+
+    record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
+
+
 def _rebuild_session_work_events_fts_sync(conn: sqlite3.Connection) -> None:
     if not (_table_exists_sync(conn, "session_work_events") and _table_exists_sync(conn, "session_work_events_fts")):
         return
@@ -903,6 +913,7 @@ __all__ = [
     "message_fts_search_readiness_sync",
     "rebuild_fts_index_async",
     "rebuild_fts_index_sync",
+    "rebuild_session_insight_fts_sync",
     "repair_action_fts_index_sync",
     "repair_fts_index_async",
     "repair_fts_index_sync",

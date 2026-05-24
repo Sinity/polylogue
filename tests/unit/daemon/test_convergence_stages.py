@@ -269,6 +269,53 @@ def test_fts_repair_needs_probe_uses_docsize_shadow_tables() -> None:
     assert "LEFT JOIN action_events_fts AS" not in probe_sql
 
 
+def test_fts_repair_needs_trusts_ready_surfaces_with_live_triggers() -> None:
+    queries: list[tuple[str, tuple[str, ...]]] = []
+    existing_tables = {
+        "messages_fts",
+        "messages_fts_docsize",
+        "action_events",
+        "action_events_fts",
+        "action_events_fts_docsize",
+        "fts_freshness_state",
+    }
+    trigger_names = {
+        "messages_fts_ai",
+        "messages_fts_ad",
+        "messages_fts_au",
+        "action_events_fts_ai",
+        "action_events_fts_ad",
+        "action_events_fts_au",
+    }
+
+    class FakeConnection:
+        def execute(self, sql: str, params: tuple[str, ...] = ()) -> object:
+            queries.append((sql, params))
+            if "sqlite_master" in sql and "type='table'" in sql:
+                return _FakeCursor([(1,)] if params and params[0] in existing_tables else [])
+            if "sqlite_master" in sql and "type='trigger'" in sql:
+                count = sum(1 for param in params if param in trigger_names)
+                return _FakeCursor([(count,)])
+            if "fts_freshness_state" in sql:
+                return _FakeCursor([("ready",)])
+            raise AssertionError(f"unexpected exact FTS scan: {sql}")
+
+    class _FakeCursor:
+        def __init__(self, rows: list[tuple[object, ...]]) -> None:
+            self._rows = rows
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return self._rows[0] if self._rows else None
+
+    conn = cast(sqlite3.Connection, FakeConnection())
+
+    assert stages._fts_repair_needs_for_conversations(conn, ["conv-a"]) == stages._FtsRepairNeeds()
+
+    probe_sql = "\n".join(sql for sql, _params in queries)
+    assert "LEFT JOIN messages_fts_docsize" not in probe_sql
+    assert "LEFT JOIN action_events_fts_docsize" not in probe_sql
+
+
 def test_embed_stage_scopes_changed_conversations_without_asyncio_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
