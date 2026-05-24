@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -169,3 +169,30 @@ def test_failed_retry_scan_requeues_only_due_failures(tmp_path: Path, frozen_clo
     asyncio.run(run_scan())
 
     assert watcher._pending_paths == {due}
+
+
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor")
+def test_hot_insight_convergence_debt_uses_quiet_window_retry(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+) -> None:
+    cursor = CursorStore(tmp_path / "cursor.sqlite")
+    cursor.record_convergence_debt(
+        stage="insights",
+        subject_type="conversation_id",
+        subject_id="conv-hot",
+        error="insights deferred until source quiet",
+    )
+    frozen_clock.advance(1)
+    cursor.record_convergence_debt(
+        stage="insights",
+        subject_type="conversation_id",
+        subject_id="conv-hot",
+        error="insights deferred until source quiet",
+    )
+
+    debt = cursor.list_convergence_debt(limit=1)[0]
+    retry_at = datetime.fromisoformat(debt.next_retry_at or "")
+    failed_at = datetime.fromisoformat(debt.last_failed_at)
+    assert debt.failure_count == 2
+    assert retry_at - failed_at == timedelta(seconds=60)

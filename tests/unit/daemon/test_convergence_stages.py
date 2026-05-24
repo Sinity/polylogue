@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -20,7 +21,54 @@ from polylogue.storage.insights.session.rebuild import rebuild_session_insights_
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.frozen_clock import FrozenClock
 from tests.infra.storage_records import make_conversation, make_message, store_records
+
+
+def _seed_raw_source_conversation(conn: sqlite3.Connection, *, conversation_id: str, source_path: Path) -> None:
+    conn.execute(
+        """
+        INSERT INTO raw_conversations (
+            raw_id,
+            provider_name,
+            source_path,
+            blob_size,
+            acquired_at
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            f"raw-{conversation_id}",
+            "codex",
+            str(source_path),
+            source_path.stat().st_size,
+            "2026-05-24T01:00:00+00:00",
+        ),
+    )
+    store_records(
+        conversation=make_conversation(
+            conversation_id,
+            provider_name="codex",
+            title=conversation_id,
+            created_at="2026-05-24T01:00:00+00:00",
+            updated_at="2026-05-24T01:00:00+00:00",
+            raw_id=f"raw-{conversation_id}",
+        ),
+        messages=[
+            make_message(
+                f"{conversation_id}:msg-1",
+                conversation_id,
+                text=f"Message for {conversation_id}",
+            )
+        ],
+        attachments=[],
+        conn=conn,
+    )
+
+
+def _truncate(path: Path, size: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as handle:
+        handle.truncate(size)
 
 
 def test_insights_stage_rebuilds_sync_against_configured_db(
@@ -334,11 +382,96 @@ def test_insights_stage_batches_sync_rebuild_chunks(
         "_conversation_ids_for_source_paths",
         lambda _conn, paths: {Path(paths[0]): ["conv-a"], Path(paths[1]): ["conv-b"]},
     )
+    monkeypatch.setattr(stages, "_hot_insight_conversation_ids", lambda _conn, _ids: set())
 
     stage = make_insights_stage(db_path)
     assert stage.execute_many is not None
     assert stage.execute_many([tmp_path / "a.jsonl", tmp_path / "b.jsonl"]) is True
     assert rebuild_calls == [(["conv-a", "conv-b"], 10)]
+
+
+def test_insights_stage_defers_hot_large_conversation_debt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "archive.sqlite"
+    source_path = tmp_path / "active-codex.jsonl"
+    _truncate(source_path, stages._HOT_INSIGHT_SOURCE_BYTES + 1)
+    with open_connection(db_path) as conn:
+        _seed_raw_source_conversation(conn, conversation_id="conv-hot", source_path=source_path)
+        conn.commit()
+
+    def fail_rebuild(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("hot active sources should wait for convergence debt retry")
+
+    monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fail_rebuild)
+
+    stage = make_insights_stage(db_path)
+    assert stage.execute_conversations is not None
+    assert stage.execute_conversations(["conv-hot"]) is False
+
+
+def test_insights_stage_rebuilds_large_conversation_after_quiet_window(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+) -> None:
+    db_path = tmp_path / "archive.sqlite"
+    source_path = tmp_path / "quiet-codex.jsonl"
+    _truncate(source_path, stages._HOT_INSIGHT_SOURCE_BYTES + 1)
+    quiet_mtime = frozen_clock.now().timestamp() - stages._HOT_INSIGHT_QUIET_SECONDS - 5
+    os.utime(source_path, (quiet_mtime, quiet_mtime))
+    rebuild_calls: list[tuple[list[str], int]] = []
+    with open_connection(db_path) as conn:
+        _seed_raw_source_conversation(conn, conversation_id="conv-quiet", source_path=source_path)
+        conn.commit()
+
+    def fake_rebuild(
+        conn: sqlite3.Connection,
+        *,
+        conversation_ids: list[str],
+        page_size: int,
+    ) -> SessionInsightCounts:
+        del conn
+        rebuild_calls.append((conversation_ids, page_size))
+        return SessionInsightCounts(profiles=1, work_events=0, phases=0, threads=0, tag_rollups=0, day_summaries=0)
+
+    monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
+
+    stage = make_insights_stage(db_path)
+    assert stage.execute_conversations is not None
+    assert stage.execute_conversations(["conv-quiet"]) is True
+    assert rebuild_calls == [(["conv-quiet"], 10)]
+
+
+def test_insights_stage_rebuilds_small_active_conversation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "archive.sqlite"
+    source_path = tmp_path / "small-active-codex.jsonl"
+    _truncate(source_path, 1024)
+    rebuild_calls: list[tuple[list[str], int]] = []
+    with open_connection(db_path) as conn:
+        _seed_raw_source_conversation(conn, conversation_id="conv-small", source_path=source_path)
+        conn.commit()
+
+    def fake_rebuild(
+        conn: sqlite3.Connection,
+        *,
+        conversation_ids: list[str],
+        page_size: int,
+    ) -> SessionInsightCounts:
+        del conn
+        rebuild_calls.append((conversation_ids, page_size))
+        return SessionInsightCounts(profiles=1, work_events=0, phases=0, threads=0, tag_rollups=0, day_summaries=0)
+
+    monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
+
+    stage = make_insights_stage(db_path)
+    assert stage.execute_conversations is not None
+    assert stage.execute_conversations(["conv-small"]) is True
+    assert rebuild_calls == [(["conv-small"], 10)]
 
 
 def test_insights_stage_scopes_conversation_debt_to_stale_profiles(tmp_path: Path) -> None:

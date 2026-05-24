@@ -13,6 +13,7 @@ repair and refresh post-ingest archive state.
 from __future__ import annotations
 
 import sqlite3
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,8 @@ from polylogue.storage.source_conversations import (
 logger = get_logger(__name__)
 
 _DAEMON_INSIGHT_REBUILD_PAGE_SIZE = 10
+_HOT_INSIGHT_SOURCE_BYTES = 64 * 1024 * 1024
+_HOT_INSIGHT_QUIET_SECONDS = 60.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,6 +375,14 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
                 conversation_ids = _conversation_ids_for_source_path(conn, path) or _conversation_ids_missing_profiles(
                     conn
                 )
+                hot_ids = _hot_insight_conversation_ids(conn, conversation_ids)
+                if hot_ids:
+                    logger.info(
+                        "insights: deferring hot source rebuild conversations=%d quiet_s=%.0f",
+                        len(hot_ids),
+                        _HOT_INSIGHT_QUIET_SECONDS,
+                    )
+                    return False
                 counts = rebuild_session_insights_sync(
                     conn,
                     conversation_ids=conversation_ids,
@@ -429,6 +440,14 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
                 )
                 if not conversation_ids:
                     conversation_ids = _conversation_ids_missing_profiles(conn)
+                hot_ids = _hot_insight_conversation_ids(conn, conversation_ids)
+                if hot_ids:
+                    logger.info(
+                        "insights: deferring hot source batch rebuild conversations=%d quiet_s=%.0f",
+                        len(hot_ids),
+                        _HOT_INSIGHT_QUIET_SECONDS,
+                    )
+                    return False
                 counts = rebuild_session_insights_sync(
                     conn,
                     conversation_ids=conversation_ids,
@@ -474,6 +493,14 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
                 ids = _existing_conversation_ids(conn, tuple(dict.fromkeys(conversation_ids)))
                 if not ids:
                     return True
+                hot_ids = _hot_insight_conversation_ids(conn, ids)
+                if hot_ids:
+                    logger.info(
+                        "insights: deferring hot source conversation rebuild conversations=%d quiet_s=%.0f",
+                        len(hot_ids),
+                        _HOT_INSIGHT_QUIET_SECONDS,
+                    )
+                    return False
                 counts = rebuild_session_insights_sync(
                     conn,
                     conversation_ids=ids,
@@ -823,6 +850,56 @@ def _existing_conversation_ids(conn: sqlite3.Connection, conversation_ids: Seque
         unique_ids,
     ).fetchall()
     return [str(row[0]) for row in rows]
+
+
+def _hot_insight_conversation_ids(
+    conn: sqlite3.Connection,
+    conversation_ids: Sequence[str],
+    *,
+    now: float | None = None,
+) -> set[str]:
+    """Return stale conversations whose source file is too hot for full insight rebuild.
+
+    Live archive writes and targeted FTS repair must stay immediate. Session
+    insight rebuilds can require rehydrating an entire conversation; for huge
+    actively-appending agent sessions that turns every small append into a
+    multi-GB read cycle. Returning False from the stage records durable
+    convergence debt, so this is a quiet-window deferral, not a scope reduction.
+    """
+
+    unique_ids = tuple(dict.fromkeys(str(conversation_id) for conversation_id in conversation_ids if conversation_id))
+    if not unique_ids or not _table_exists(conn, "conversations") or not _table_exists(conn, "raw_conversations"):
+        return set()
+    placeholders = ", ".join("?" for _ in unique_ids)
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT c.conversation_id, r.source_path
+        FROM conversations AS c
+        JOIN raw_conversations AS r ON r.raw_id = c.raw_id
+        WHERE c.conversation_id IN ({placeholders})
+          AND r.source_path IS NOT NULL
+          AND r.source_path != ''
+        ORDER BY c.conversation_id
+        """,
+        unique_ids,
+    ).fetchall()
+    current = time.time() if now is None else now
+    hot: set[str] = set()
+    for conversation_id, source_path in rows:
+        if _source_path_is_hot_for_insights(Path(str(source_path)), now=current):
+            hot.add(str(conversation_id))
+    return hot
+
+
+def _source_path_is_hot_for_insights(path: Path, *, now: float | None = None) -> bool:
+    try:
+        stat = path.stat()
+    except OSError:
+        return False
+    if stat.st_size < _HOT_INSIGHT_SOURCE_BYTES:
+        return False
+    current = time.time() if now is None else now
+    return current - stat.st_mtime < _HOT_INSIGHT_QUIET_SECONDS
 
 
 def _stale_session_profile_ids(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> list[str]:

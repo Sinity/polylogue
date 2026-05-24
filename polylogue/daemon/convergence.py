@@ -25,6 +25,13 @@ from polylogue.logging import get_logger
 from polylogue.pipeline.services.process_pool import process_pool_executor
 
 logger = get_logger(__name__)
+_INSIGHT_DEFERRED_UNTIL_QUIET = "insights deferred until source quiet"
+
+
+def _stage_false_error(stage_name: str, *, scope: str) -> str:
+    if stage_name == "insights":
+        return _INSIGHT_DEFERRED_UNTIL_QUIET
+    return f"{scope} stage {stage_name} returned False"
 
 
 class StageState(Enum):
@@ -201,7 +208,7 @@ class DaemonConverger:
             state.stages[stage_name] = StageState.DONE if success else StageState.FAILED
             if not success:
                 state.error_count += 1
-                state.last_error = f"stage {stage_name} returned False"
+                state.last_error = _stage_false_error(stage_name, scope="stage")
 
         return state
 
@@ -283,7 +290,7 @@ class DaemonConverger:
                     state.stages[stage_name] = StageState.DONE if success else StageState.FAILED
                     if not success:
                         state.error_count += 1
-                        state.last_error = f"stage {stage_name} returned False"
+                        state.last_error = _stage_false_error(stage_name, scope="stage")
                 continue
 
             try:
@@ -322,7 +329,7 @@ class DaemonConverger:
                 state.stages[stage_name] = StageState.DONE if success else StageState.FAILED
                 if not success:
                     state.error_count += 1
-                    state.last_error = f"batch stage {stage_name} returned False"
+                    state.last_error = _stage_false_error(stage_name, scope="batch")
 
         results = {path: self._file_states[path] for path in paths}
         self._evict_converged_files(paths)
@@ -388,7 +395,7 @@ class DaemonConverger:
                 state.stages[stage_name] = StageState.DONE if success else StageState.FAILED
                 if not success:
                     state.error_count += 1
-                    state.last_error = f"conversation stage {stage_name} returned False"
+                    state.last_error = _stage_false_error(stage_name, scope="conversation")
 
         results = {conversation_id: self._conversation_states[conversation_id] for conversation_id in ids}
         self._evict_converged_conversations(ids)
