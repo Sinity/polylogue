@@ -100,14 +100,12 @@ def test_search_conversation_hits_uses_freshness_ledger_before_match(tier_small_
 @pytest.mark.scale_small
 def test_search_conversation_hits_falls_back_to_exact_freshness(tier_small_db: Path) -> None:
     """Absent ledger rows fall back to exact FTS verification before MATCH."""
-    from polylogue.storage.fts.freshness import STALE, record_fts_surface_state_async
-
     with open_bench_store(tier_small_db) as store:
         backend = store.backend
 
         async def _run(statements: list[str]) -> None:
             async with backend.connection() as conn:
-                await record_fts_surface_state_async(conn, surface="messages_fts", state=STALE)
+                await conn.execute("DELETE FROM fts_freshness_state WHERE surface = 'messages_fts'")
                 await conn.commit()
                 await search_conversation_hits(conn, "analysis", limit=5)
 

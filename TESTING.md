@@ -33,9 +33,10 @@ the default command fails with setup guidance instead of silently running the
 whole suite.
 
 Plain focused `pytest` runs are single-process by default so small inner-loop
-checks do not spawn a worker pool. Broad gates that benefit from parallelism
-opt into workers explicitly through `devtools verify --all`,
-`devtools verify --seed-testmon`, or an explicit `pytest -n <workers>`.
+checks do not spawn a worker pool. `devtools verify` keeps pytest-testmon as
+the affected-test selector and runs the selected tests with xdist workers
+(`-n 8` by default, override with `POLYLOGUE_PYTEST_WORKERS`). Full diagnostic
+and seed runs use the same worker override and default to `-n 16`.
 
 The default path does not replay cached verify results. Every invocation runs
 the static gates and lets pytest-testmon evaluate current source, package, and

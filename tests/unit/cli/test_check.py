@@ -151,11 +151,13 @@ def test_check_records_scoped_maintenance_preview(cli_workspace: WorkspacePaths,
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 
     db_path = cli_workspace["db_path"]
+    old_timestamp = "2020-01-01T00:00:00+00:00"
     (
         ConversationBuilder(db_path, "conv-check-insights")
         .provider("claude-code")
         .title("Scoped Check Repair")
-        .add_message("u1", role="user", text="Plan the cleanup")
+        .updated_at(old_timestamp)
+        .add_message("u1", role="user", text="Plan the cleanup", timestamp=old_timestamp)
         .save()
     )
     with open_connection(db_path) as conn:
@@ -192,11 +194,13 @@ def test_check_records_scoped_maintenance_apply(cli_workspace: WorkspacePaths, c
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 
     db_path = cli_workspace["db_path"]
+    old_timestamp = "2020-01-01T00:00:00+00:00"
     (
         ConversationBuilder(db_path, "conv-check-insights-apply")
         .provider("claude-code")
         .title("Scoped Check Repair Apply")
-        .add_message("u1", role="user", text="Repair the durable insights")
+        .updated_at(old_timestamp)
+        .add_message("u1", role="user", text="Repair the durable insights", timestamp=old_timestamp)
         .save()
     )
     with open_connection(db_path) as conn:
@@ -209,6 +213,7 @@ def test_check_records_scoped_maintenance_apply(cli_workspace: WorkspacePaths, c
         [
             "--plain",
             "doctor",
+            "--deep",
             "--format",
             "json",
             "--repair",
@@ -276,11 +281,13 @@ def test_check_plain_preview_summarizes_changes_not_issues(
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 
     db_path = cli_workspace["db_path"]
+    old_timestamp = "2020-01-01T00:00:00+00:00"
     (
         ConversationBuilder(db_path, "conv-check-insights-preview-plain")
         .provider("claude-code")
         .title("Scoped Check Repair Preview Plain")
-        .add_message("u1", role="user", text="Preview the repair output")
+        .updated_at(old_timestamp)
+        .add_message("u1", role="user", text="Preview the repair output", timestamp=old_timestamp)
         .save()
     )
     with open_connection(db_path) as conn:
@@ -293,6 +300,7 @@ def test_check_plain_preview_summarizes_changes_not_issues(
         [
             "--plain",
             "doctor",
+            "--deep",
             "--repair",
             "--preview",
             "--target",

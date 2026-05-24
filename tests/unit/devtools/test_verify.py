@@ -13,6 +13,7 @@ from devtools.verify import (
     _format_completion_notification,
     _is_testmon_global_invalidator,
     _parse_pytest_test_count,
+    _pytest_command_metadata,
     _pytest_metadata_from_report,
     _read_pytest_report,
     _run,
@@ -60,7 +61,7 @@ def test_default_verify_uses_pytest_testmon() -> None:
     assert "--testmon" in command
     assert "--testmon-noselect" not in command
     assert "-n" in command
-    assert "0" in command
+    assert command[command.index("-n") + 1] == "8"
 
 
 def test_pytest_step_requests_structured_json_report() -> None:
@@ -111,6 +112,16 @@ def test_seed_testmon_worker_count_can_be_overridden(monkeypatch: pytest.MonkeyP
     label, command = steps[-1]
     assert label == "pytest seed-testmon"
     assert command[command.index("-n") + 1] == "4"
+
+
+def test_default_testmon_worker_count_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "3")
+
+    steps = build_verify_steps(quick=False, lab=False, skip_slow=False)
+
+    label, command = steps[-1]
+    assert label == "pytest testmon"
+    assert command[command.index("-n") + 1] == "3"
 
 
 def test_global_testmon_invalidator_runs_full_collection(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -254,6 +265,8 @@ def test_run_records_pytest_count_metadata_from_terminal_fallback() -> None:
     assert rc == 0
     assert metadata["count"] == 4
     assert metadata["report_path"] is None
+    assert metadata["pytest_workers"] == "unset"
+    assert metadata["pytest_selection"] == "full"
 
 
 def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -289,7 +302,7 @@ def test_run_reads_structured_pytest_report() -> None:
         patch("devtools.verify.subprocess.run", return_value=completed),
         patch("devtools.verify._read_pytest_report", return_value=report),
     ):
-        rc, _elapsed, metadata = _run("pytest testmon", ["pytest"])
+        rc, _elapsed, metadata = _run("pytest testmon", ["pytest", "--testmon", "-n", "8"])
 
     assert rc == 0
     assert metadata["count"] == 13  # passed+failed+skipped
@@ -299,6 +312,23 @@ def test_run_reads_structured_pytest_report() -> None:
     assert metadata["total"] == 13
     assert metadata["pytest_duration_s"] == 4.56
     assert metadata["report_path"] == str(PYTEST_REPORT_PATH)
+    assert metadata["pytest_workers"] == "8"
+    assert metadata["pytest_selection"] == "testmon"
+
+
+def test_pytest_command_metadata_reports_worker_and_selection_policy() -> None:
+    assert _pytest_command_metadata(["pytest", "--testmon", "-n", "8"]) == {
+        "pytest_workers": "8",
+        "pytest_selection": "testmon",
+    }
+    assert _pytest_command_metadata(["pytest", "--testmon", "--testmon-noselect", "-n", "16"]) == {
+        "pytest_workers": "16",
+        "pytest_selection": "testmon-noselect",
+    }
+    assert _pytest_command_metadata(["pytest", "-n", "16"]) == {
+        "pytest_workers": "16",
+        "pytest_selection": "full",
+    }
 
 
 def test_pytest_metadata_handles_empty_summary() -> None:
