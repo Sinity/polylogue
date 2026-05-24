@@ -288,17 +288,6 @@ def _resolved_conversation_tuple(
     )
 
 
-def _parent_ready(
-    conn: sqlite3.Connection,
-    cdata: ConversationData,
-    materialized_ids: set[str],
-) -> bool:
-    parent_id = _conversation_parent_id(cdata)
-    if parent_id is None or parent_id == cdata.conversation_id:
-        return True
-    return parent_id in materialized_ids or _conversation_exists(conn, parent_id)
-
-
 def _conversation_tuple_with_hash(conversation: ConversationTuple, content_hash: str) -> ConversationTuple:
     return (
         conversation[0],
@@ -712,43 +701,14 @@ def _drain_ready_conversation_entries(
     *,
     summary: _IngestBatchSummary,
     materialized_ids: set[str],
-    pending_by_parent: dict[str, list[_ConversationEntry]],
     force_write: bool = False,
 ) -> None:
-    stack = list(reversed(ready_entries))
-    while stack:
-        raw_id, cdata = stack.pop()
-        if not _parent_ready(conn, cdata, materialized_ids):
-            parent_id = _conversation_parent_id(cdata)
-            if parent_id is not None:
-                pending_by_parent.setdefault(parent_id, []).append((raw_id, cdata))
-            continue
+    for raw_id, cdata in _topo_sort_conversation_entries(ready_entries):
         wrote = _write_conversation_entry(conn, raw_id, cdata, summary=summary, force_write=force_write)
         discard_conversation_data_payload(cdata)
         if not wrote:
             continue
         materialized_ids.add(cdata.conversation_id)
-        children = pending_by_parent.pop(cdata.conversation_id, [])
-        if children:
-            stack.extend(reversed(children))
-
-
-def _flush_pending_conversation_entries(
-    conn: sqlite3.Connection,
-    pending_by_parent: dict[str, list[_ConversationEntry]],
-    *,
-    summary: _IngestBatchSummary,
-    materialized_ids: set[str],
-) -> None:
-    remaining = [entry for entries in pending_by_parent.values() for entry in entries]
-    if not remaining:
-        return
-    pending_by_parent.clear()
-    for raw_id, cdata in _topo_sort_conversation_entries(remaining):
-        wrote = _write_conversation_entry(conn, raw_id, cdata, summary=summary)
-        discard_conversation_data_payload(cdata)
-        if wrote:
-            materialized_ids.add(cdata.conversation_id)
 
 
 def _run_ingest_record(
@@ -941,7 +901,6 @@ def _drain_ingest_result(
     *,
     summary: _IngestBatchSummary,
     materialized_ids: set[str],
-    pending_by_parent: dict[str, list[_ConversationEntry]],
     force_write: bool = False,
 ) -> None:
     _record_outcome(summary, ir)
@@ -955,18 +914,16 @@ def _drain_ingest_result(
         summary.skipped_raw_ids.add(ir.raw_id)
         return
 
-    for cdata in ir.conversations:
-        drain_started = time.perf_counter()
-        _drain_ready_conversation_entries(
-            conn,
-            [(ir.raw_id, cdata)],
-            summary=summary,
-            materialized_ids=materialized_ids,
-            pending_by_parent=pending_by_parent,
-            force_write=force_write,
-        )
-        summary.drain_elapsed_s += time.perf_counter() - drain_started
-        _observe_current_rss(summary)
+    drain_started = time.perf_counter()
+    _drain_ready_conversation_entries(
+        conn,
+        [(ir.raw_id, cdata) for cdata in ir.conversations],
+        summary=summary,
+        materialized_ids=materialized_ids,
+        force_write=force_write,
+    )
+    summary.drain_elapsed_s += time.perf_counter() - drain_started
+    _observe_current_rss(summary)
 
 
 def _consume_ingest_results(
@@ -976,7 +933,6 @@ def _consume_ingest_results(
     worker_request: _IngestWorkerRequest,
     summary: _IngestBatchSummary,
     materialized_ids: set[str],
-    pending_by_parent: dict[str, list[_ConversationEntry]],
     force_write: bool = False,
     heartbeat: IngestHeartbeat | None = None,
     progress: _WorkerProgress | None = None,
@@ -1018,7 +974,6 @@ def _consume_ingest_results(
                 ir,
                 summary=summary,
                 materialized_ids=materialized_ids,
-                pending_by_parent=pending_by_parent,
                 force_write=force_write,
             )
         finally:
@@ -1033,10 +988,8 @@ def _flush_ingest_results(
     conn: sqlite3.Connection,
     *,
     summary: _IngestBatchSummary,
-    materialized_ids: set[str],
-    pending_by_parent: dict[str, list[_ConversationEntry]],
 ) -> None:
-    """Flush pending conversation entries without committing.
+    """Record final drain timing before committing.
 
     The commit + FTS trigger restore + FTS repair are deliberately
     deferred to ``_commit_sync_ingest_side_effects`` so they land as a
@@ -1046,12 +999,6 @@ def _flush_ingest_results(
     committed and the FTS index drifted silently.
     """
     flush_started = time.perf_counter()
-    _flush_pending_conversation_entries(
-        conn,
-        pending_by_parent,
-        summary=summary,
-        materialized_ids=materialized_ids,
-    )
     summary.flush_elapsed_s = time.perf_counter() - flush_started
     _observe_current_rss(summary)
 
@@ -1109,7 +1056,6 @@ def _process_ingest_batch_sync(
     summary.setup_elapsed_s = time.perf_counter() - setup_started
     heavy_batch = summary.total_blob_mb >= INGEST_RELEASE_BLOB_MB_THRESHOLD
     materialized_ids: set[str] = set()
-    pending_by_parent: dict[str, list[_ConversationEntry]] = {}
     _observe_current_rss(summary)
     transaction_started = False
     try:
@@ -1119,7 +1065,6 @@ def _process_ingest_batch_sync(
             worker_request=worker_request,
             summary=summary,
             materialized_ids=materialized_ids,
-            pending_by_parent=pending_by_parent,
             force_write=force_write,
             heartbeat=heartbeat,
             progress=progress,
@@ -1130,8 +1075,6 @@ def _process_ingest_batch_sync(
         _flush_ingest_results(
             conn,
             summary=summary,
-            materialized_ids=materialized_ids,
-            pending_by_parent=pending_by_parent,
         )
         if transaction_started:
             fts_repair_ids = set(summary.fts_repair_conversation_ids)
