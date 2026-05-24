@@ -76,7 +76,7 @@ def test_catch_up_ingests_needed_files_in_bounded_chunks(
     ) -> None:
         calls.append((paths, queued_file_count, skipped_file_count))
 
-    watcher._ingest_files = fake_ingest_files  # type: ignore[method-assign]
+    watcher._ingest_files = fake_ingest_files  # type: ignore[assignment,method-assign]
 
     asyncio.run(watcher._catch_up([root]))
 
@@ -84,3 +84,27 @@ def test_catch_up_ingests_needed_files_in_bounded_chunks(
     assert calls[0][1:] == (5, 0)
     assert calls[1][1:] == (2, 0)
     assert calls[2][1:] == (1, 0)
+
+
+def test_catch_up_requeues_failed_paths_for_live_retry(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    files = [root / f"session-{index}.jsonl" for index in range(3)]
+    for path in files:
+        path.write_text('{"role":"user","content":"x"}\n')
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    watcher = LiveWatcher(cast(Any, polylogue), (WatchSource(name="test", root=root),))
+
+    async def fake_ingest_files(
+        paths: list[Path],
+        *,
+        queued_file_count: int | None = None,
+        skipped_file_count: int = 0,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(failed_paths=[str(paths[1])])
+
+    watcher._ingest_files = fake_ingest_files  # type: ignore[assignment,method-assign]
+
+    asyncio.run(watcher._catch_up([root]))
+
+    assert watcher._pending_paths == {files[1]}

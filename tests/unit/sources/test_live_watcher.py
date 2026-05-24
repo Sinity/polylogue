@@ -497,7 +497,7 @@ def test_catch_up_uses_bulk_cursor_records(tmp_path: Path, monkeypatch: pytest.M
 
     monkeypatch.setattr(watcher._cursor, "get_records", counted_get_records)
     monkeypatch.setattr(watcher._cursor, "get_record", fail_get_record)
-    watcher._ingest_files = fake_ingest_files  # type: ignore[method-assign]
+    watcher._ingest_files = fake_ingest_files  # type: ignore[assignment,method-assign]
 
     asyncio.run(watcher._catch_up([root]))
 
@@ -688,10 +688,11 @@ def test_append_plan_reads_only_completed_tail(tmp_path: Path) -> None:
     plan = watcher._batch_processor._append_plan(f)
 
     assert plan is not None
-    assert plan.start_offset == len(original)
-    assert plan.payload == b'{"b":2}\n'
-    assert plan.bytes_read == len(appended)
-    assert plan.last_complete_newline == len(original) + len(b'{"b":2}\n')
+    append_plan = cast(Any, plan)
+    assert append_plan.start_offset == len(original)
+    assert append_plan.payload == b'{"b":2}\n'
+    assert append_plan.bytes_read == len(appended)
+    assert append_plan.last_complete_newline == len(original) + len(b'{"b":2}\n')
 
 
 def test_last_complete_newline_from_tail_reads_only_final_chunk(tmp_path: Path) -> None:

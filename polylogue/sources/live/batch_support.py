@@ -74,6 +74,13 @@ class _AppendResult:
     worker_count: int = 0
 
 
+class _DeferredAppend:
+    pass
+
+
+_DEFER_APPEND = _DeferredAppend()
+
+
 @dataclass(frozen=True, slots=True)
 class _FullIngestResult:
     succeeded: list[Path]

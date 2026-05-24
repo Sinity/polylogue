@@ -39,9 +39,7 @@ from polylogue.sources.live.batch_observability import (
     record_attempt_progress,
 )
 from polylogue.sources.live.batch_support import (
-    _LARGE_FULL_PARSE_PROGRESS_BYTES as _LARGE_FULL_PARSE_PROGRESS_BYTES,
-)
-from polylogue.sources.live.batch_support import (
+    _DEFER_APPEND,
     _MAX_APPEND_PLAN_PAYLOAD_BYTES,
     _STREAMING_FULL_INGEST_BYTES,
     _accumulate_stage_timings,
@@ -49,6 +47,7 @@ from polylogue.sources.live.batch_support import (
     _AppendPlan,
     _AppendResult,
     _blob_copy_heartbeat,
+    _DeferredAppend,
     _detect_provider_from_path_sample,
     _full_ingest_result_from_summary,
     _full_ingest_worker_count,
@@ -64,6 +63,9 @@ from polylogue.sources.live.batch_support import (
     fingerprint_file,
     last_complete_newline_from_tail,
     tail_hash_from_path,
+)
+from polylogue.sources.live.batch_support import (
+    _LARGE_FULL_PARSE_PROGRESS_BYTES as _LARGE_FULL_PARSE_PROGRESS_BYTES,
 )
 from polylogue.sources.live.batch_support import (
     _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES as _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES,
@@ -166,10 +168,10 @@ class LiveBatchProcessor:
         ingest_worker_count_max = 0
         full_ingest_aggregate = LiveFullIngestAggregate()
         cursor_records = self._cursor.get_records(paths)
-
         append_file_count = 0
         pending_append_plans: list[_AppendPlan] = []
         full_paths: list[Path] = []
+        deferred_paths: list[Path] = []
 
         async def flush_append_plans() -> None:
             nonlocal convergence_time_s
@@ -248,7 +250,9 @@ class LiveBatchProcessor:
                 if self._can_ingest_appends_directly()
                 else None
             )
-            if append_plan is None:
+            if isinstance(append_plan, _DeferredAppend):
+                deferred_paths.append(path)
+            elif append_plan is None:
                 full_paths.append(path)
             else:
                 pending_append_plans.append(append_plan)
@@ -412,7 +416,7 @@ class LiveBatchProcessor:
             attempt_id,
             phase="cursor_update",
             succeeded_file_count=len(succeeded_paths),
-            failed_file_count=len(failed_paths),
+            failed_file_count=len(failed_paths) + len(deferred_paths),
             source_payload_read_bytes=source_payload_read_bytes,
             cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
             parse_time_s=parse_time_s,
@@ -420,6 +424,7 @@ class LiveBatchProcessor:
             stale_cursor_write_count=stale_cursor_write_count,
         )
 
+        retry_paths = failed_paths + [str(path) for path in deferred_paths]
         db_bytes_after = _path_size(self._cursor._db_path) + _path_size(self._cursor._db_path.with_suffix(".db-wal"))
         metrics = LiveBatchMetrics(
             queued_file_count=queued_file_count if queued_file_count is not None else len(paths),
@@ -450,7 +455,7 @@ class LiveBatchProcessor:
             cgroup_memory_swap_current_mb=read_cgroup_memory_swap_current_mb(),
             stale_cursor_write_count=stale_cursor_write_count,
             stage_timings_s={name: round(elapsed, 6) for name, elapsed in stage_timings.items()},
-            failed_paths=failed_paths,
+            failed_paths=retry_paths,
         )
         if emit_event and self._event_emitter is not None:
             self._event_emitter("ingestion_batch", metrics.to_payload())
@@ -462,7 +467,7 @@ class LiveBatchProcessor:
             needed_file_count=metrics.needed_file_count,
             skipped_file_count=metrics.skipped_file_count,
             succeeded_file_count=len(succeeded_paths),
-            failed_file_count=len(failed_paths),
+            failed_file_count=len(failed_paths) + len(deferred_paths),
             input_bytes=input_bytes,
             source_payload_read_bytes=source_payload_read_bytes,
             cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -475,9 +480,9 @@ class LiveBatchProcessor:
         )
         self._cursor.finish_ingest_attempt(
             attempt_id,
-            status="completed" if not failed_paths else "completed_with_failures",
+            status="completed" if not retry_paths else "completed_with_failures",
             phase="completed",
-            error="; ".join(failed_paths[:3]) if failed_paths else None,
+            error="; ".join(retry_paths[:3]) if retry_paths else None,
         )
         return metrics
 
@@ -987,7 +992,7 @@ class LiveBatchProcessor:
             excluded=True,
         )
 
-    def _append_plan(self, path: Path, *, cursor: CursorRecord | None = None) -> _AppendPlan | None:
+    def _append_plan(self, path: Path, *, cursor: CursorRecord | None = None) -> _AppendPlan | _DeferredAppend | None:
         cursor = cursor or self._cursor.get_record(path)
         if cursor is None or cursor.parser_fingerprint != self._current_parser_fingerprint():
             return None
@@ -1009,10 +1014,10 @@ class LiveBatchProcessor:
             payload = handle.read(append_window)
         newline_at = payload.rfind(b"\n")
         if newline_at < 0:
-            return None
+            return _DEFER_APPEND
         complete_payload = payload[: newline_at + 1]
         if not complete_payload:
-            return None
+            return _DEFER_APPEND
         append_payload = self._append_payload_for_provider(path, self._source_name_for(path), complete_payload)
         if append_payload is None:
             return None

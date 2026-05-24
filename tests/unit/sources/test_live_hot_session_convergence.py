@@ -118,7 +118,7 @@ def test_debounce_drains_live_events_serially_while_ingest_is_active(tmp_path: P
         active -= 1
 
     async def _drive() -> None:
-        watcher._ingest_files = fake_ingest  # type: ignore[method-assign]
+        watcher._ingest_files = fake_ingest  # type: ignore[assignment,method-assign]
         watcher._enqueue(first)
         await asyncio.wait_for(entered_first_batch.wait(), timeout=2.0)
         watcher._enqueue(second)
