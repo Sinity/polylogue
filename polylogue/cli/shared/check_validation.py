@@ -19,6 +19,8 @@ def validate_check_options(options: CheckCommandOptions) -> None:
         fail("doctor", "--preview requires --repair or --cleanup")
     if options.maintenance_targets and not (options.repair or options.cleanup):
         fail("doctor", "--target requires --repair or --cleanup")
+    if options.blob_integrity_full and not options.check_blob:
+        fail("doctor", "--full requires --blob")
     if options.schema_providers and not options.check_schemas:
         fail("doctor", "--schema-provider requires --schemas")
     if options.schema_samples != "all" and not options.check_schemas:

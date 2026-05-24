@@ -435,6 +435,7 @@ class TestCheckCommand:
             runtime=True,
             check_daemon=False,
             check_blob=False,
+            blob_integrity_full=False,
             check_schemas=False,
             check_proof=False,
             check_artifacts=False,

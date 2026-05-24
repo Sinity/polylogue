@@ -1,0 +1,95 @@
+"""Read-only blob integrity scanner contracts (#1231)."""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+from polylogue.storage.blob_integrity import scan_blob_integrity
+from polylogue.storage.blob_store import BlobStore
+
+
+def _make_db(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE raw_conversations (
+            raw_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL DEFAULT '',
+            source_path TEXT NOT NULL DEFAULT '',
+            blob_size INTEGER NOT NULL DEFAULT 0,
+            acquired_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE pending_blob_refs (
+            blob_hash TEXT NOT NULL,
+            operation_id TEXT NOT NULL,
+            acquired_at INTEGER NOT NULL,
+            PRIMARY KEY (blob_hash, operation_id)
+        );
+        """
+    )
+    conn.commit()
+    return conn
+
+
+def test_scan_blob_integrity_classifies_missing_orphan_hash_mismatch_and_stale_lease(tmp_path: Path) -> None:
+    db_path = tmp_path / "archive.db"
+    store = BlobStore(tmp_path / "blob")
+    conn = _make_db(db_path)
+    active_lease_time = 4_000_000_000
+
+    referenced_ok, ok_size = store.write_from_bytes(b"referenced")
+    orphan_hash, _ = store.write_from_bytes(b"orphan")
+    corrupt_hash, corrupt_size = store.write_from_bytes(b"original")
+    store.blob_path(corrupt_hash).write_bytes(b"corrupted")
+    leased_hash, _ = store.write_from_bytes(b"leased but not committed")
+    stale_lease_hash, _ = store.write_from_bytes(b"stale lease")
+    missing_hash = "0" * 64
+
+    for blob_hash, size in ((referenced_ok, ok_size), (missing_hash, 128), (corrupt_hash, corrupt_size)):
+        conn.execute(
+            "INSERT INTO raw_conversations (raw_id, blob_size, acquired_at) VALUES (?, ?, ?)",
+            (blob_hash, size, "2026-05-24T00:00:00+00:00"),
+        )
+    conn.execute(
+        "INSERT INTO pending_blob_refs (blob_hash, operation_id, acquired_at) VALUES (?, ?, ?)",
+        (leased_hash, "active-op", active_lease_time),
+    )
+    conn.execute(
+        "INSERT INTO pending_blob_refs (blob_hash, operation_id, acquired_at) VALUES (?, ?, ?)",
+        (stale_lease_hash, "stale-op", 1),
+    )
+    conn.commit()
+    conn.close()
+
+    report = scan_blob_integrity(db_path, store=store, full=True, stale_lease_s=3600)
+
+    by_kind = {finding.kind: finding for finding in report.findings}
+    assert by_kind["missing_referenced_blobs"].sample == (missing_hash,)
+    assert by_kind["orphan_blobs"].sample == (orphan_hash,)
+    assert by_kind["hash_mismatch"].sample == (corrupt_hash,)
+    assert by_kind["stale_leases"].sample == (stale_lease_hash,)
+    assert leased_hash not in by_kind["orphan_blobs"].sample
+    assert stale_lease_hash not in by_kind["orphan_blobs"].sample
+
+
+def test_scan_blob_integrity_bounds_default_probe_but_full_scans_everything(tmp_path: Path) -> None:
+    db_path = tmp_path / "archive.db"
+    store = BlobStore(tmp_path / "blob")
+    conn = _make_db(db_path)
+    hashes = [store.write_from_bytes(f"payload-{idx}".encode())[0] for idx in range(3)]
+    for blob_hash in hashes:
+        conn.execute(
+            "INSERT INTO raw_conversations (raw_id, blob_size, acquired_at) VALUES (?, ?, ?)",
+            (blob_hash, 9, "2026-05-24T00:00:00+00:00"),
+        )
+    conn.commit()
+    conn.close()
+
+    sampled = scan_blob_integrity(db_path, store=store, full=False, sample_size=1)
+    full = scan_blob_integrity(db_path, store=store, full=True, sample_size=1)
+
+    assert sampled.scanned_blobs == 1
+    assert sampled.scanned_references == 1
+    assert full.scanned_blobs == 3
+    assert full.scanned_references == 3

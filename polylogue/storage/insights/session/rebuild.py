@@ -127,7 +127,7 @@ SELECT
     role,
     CASE
         WHEN text IS NULL THEN NULL
-        ELSE substr(text, 1, {text_preview_chars})
+        ELSE substr(text, 1, ?)
     END AS text,
     sort_key,
     content_hash,
@@ -158,7 +158,7 @@ SELECT
     type,
     CASE
         WHEN text IS NULL THEN NULL
-        ELSE substr(text, 1, {text_preview_chars})
+        ELSE substr(text, 1, ?)
     END AS text,
     tool_name,
     tool_id,
@@ -406,21 +406,15 @@ def load_sync_batch(
     messages = [
         _row_to_message(row)
         for row in conn.execute(
-            _SESSION_INSIGHT_MESSAGE_SQL_TEMPLATE.format(
-                placeholders=placeholders,
-                text_preview_chars=_SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS,
-            ),
-            tuple(conversation_ids),
+            _SESSION_INSIGHT_MESSAGE_SQL_TEMPLATE.format(placeholders=placeholders),
+            (_SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS, *conversation_ids),
         ).fetchall()
     ]
     blocks = [
         _row_to_content_block(row)
         for row in conn.execute(
-            _SESSION_INSIGHT_BLOCK_SQL_TEMPLATE.format(
-                placeholders=placeholders,
-                text_preview_chars=_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS,
-            ),
-            tuple(conversation_ids) + tuple(conversation_ids),
+            _SESSION_INSIGHT_BLOCK_SQL_TEMPLATE.format(placeholders=placeholders),
+            (_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS, *conversation_ids, *conversation_ids),
         ).fetchall()
     ]
     return SessionInsightArchiveBatch(
@@ -451,11 +445,8 @@ async def load_async_batch(
         _row_to_message(row)
         for row in await (
             await conn.execute(
-                _SESSION_INSIGHT_MESSAGE_SQL_TEMPLATE.format(
-                    placeholders=placeholders,
-                    text_preview_chars=_SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS,
-                ),
-                tuple(conversation_ids),
+                _SESSION_INSIGHT_MESSAGE_SQL_TEMPLATE.format(placeholders=placeholders),
+                (_SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS, *conversation_ids),
             )
         ).fetchall()
     ]
@@ -463,11 +454,8 @@ async def load_async_batch(
         _row_to_content_block(row)
         for row in await (
             await conn.execute(
-                _SESSION_INSIGHT_BLOCK_SQL_TEMPLATE.format(
-                    placeholders=placeholders,
-                    text_preview_chars=_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS,
-                ),
-                tuple(conversation_ids) + tuple(conversation_ids),
+                _SESSION_INSIGHT_BLOCK_SQL_TEMPLATE.format(placeholders=placeholders),
+                (_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS, *conversation_ids, *conversation_ids),
             )
         ).fetchall()
     ]

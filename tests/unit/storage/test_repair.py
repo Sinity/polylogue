@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -148,6 +148,36 @@ def test_preview_counts_from_archive_debt_include_healthy_preview_targets_only()
         "dangling_fts": 0,
         "empty_conversations": 4,
     }
+
+
+def test_probe_only_archive_debt_skips_large_message_scans(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Conn:
+        def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("large probe mode should not run exact SQL scans")
+
+    statuses = {
+        "messages_fts": _status(),
+        "action_events": _status(),
+        "action_events_fts": _status(),
+    }
+    monkeypatch.setattr(repair_mod, "_table_has_more_than", lambda *_args: True)
+    monkeypatch.setattr(repair_mod, "count_orphaned_messages_sync", lambda _conn: (_ for _ in ()).throw(AssertionError))
+    monkeypatch.setattr(
+        repair_mod, "count_empty_conversations_sync", lambda _conn: (_ for _ in ()).throw(AssertionError)
+    )
+    monkeypatch.setattr(
+        repair_mod, "count_unclassified_message_type_sync", lambda _conn: (_ for _ in ()).throw(AssertionError)
+    )
+    monkeypatch.setattr(repair_mod, "count_orphaned_attachments_sync", lambda _conn: 0)
+
+    debt = repair_mod.collect_archive_debt_statuses_sync(
+        cast(Any, Conn()), derived_statuses=statuses, include_expensive=False, probe_only=True
+    )
+
+    assert debt["orphaned_messages"].skipped is True
+    assert debt["empty_conversations"].skipped is True
+    assert debt["message_type_backfill"].skipped is True
+    assert debt["orphaned_attachments"].skipped is False
 
 
 def _ready_session_insight_status() -> SessionInsightStatusSnapshot:

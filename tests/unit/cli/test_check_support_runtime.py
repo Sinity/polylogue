@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -14,6 +12,7 @@ from polylogue.cli.shared.check_models import CheckCommandResult, VacuumResult
 from polylogue.cli.shared.check_workflow import CheckCommandOptions
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
+from polylogue.core.json import JSONDocument
 from polylogue.maintenance.targets import MaintenanceTargetMode
 from polylogue.readiness import ReadinessCheck, ReadinessReport, VerifyStatus
 from polylogue.schemas.validation.models import SchemaVerificationReport
@@ -51,6 +50,7 @@ def _options(**overrides: object) -> CheckCommandOptions:
         "runtime": False,
         "check_daemon": False,
         "check_blob": False,
+        "blob_integrity_full": False,
         "check_schemas": False,
         "check_proof": False,
         "check_artifacts": False,
@@ -158,81 +158,35 @@ def test_formatting_helpers_cover_plan_counts_details_and_run_sections(monkeypat
 
 
 def test_run_blob_store_check_reports_missing_orphaned_and_verified_states() -> None:
-    env = _env()
     config = _config()
+    with patch("polylogue.storage.blob_integrity.scan_blob_integrity") as scan:
+        scan.return_value.to_dict.return_value = {
+            "ok": False,
+            "full_scan": True,
+            "sample_size": 100,
+            "scanned_blobs": 2,
+            "scanned_references": 2,
+            "total_blobs_seen": 2,
+            "total_references_seen": 2,
+            "active_lease_count": 0,
+            "stale_lease_count": 0,
+            "findings": [{"kind": "orphan_blobs", "severity": "warning", "count": 1, "sample": ["orphan-c"]}],
+        }
+        payload = check_workflow._run_blob_store_check(config, full=True)
 
-    rows = [("raw-a",), ("raw-b",)]
-
-    @contextmanager
-    def connection() -> Iterator[object]:
-        yield SimpleNamespace(execute=lambda sql: rows)
-
-    blob_store = SimpleNamespace(
-        iter_all=lambda: ["raw-a", "orphan-c"],
-        detect_orphans=lambda known_ids: SimpleNamespace(
-            orphan_count=1,
-            orphan_bytes=4096,
-            orphan_samples=("orphan-c",),
-        ),
-    )
-
-    with (
-        patch("polylogue.cli.shared.check_workflow.connection_context", return_value=connection()),
-        patch("polylogue.storage.blob_store.get_blob_store", return_value=blob_store),
-    ):
-        assert check_workflow._run_blob_store_check(env, config) is None
-
-    console_print = cast(MagicMock, env.ui.console.print)
-    printed = [call.args[0] for call in console_print.call_args_list if call.args]
-    assert "Blob store: 2 blobs on disk, 2 raw records in DB" in printed
-    assert "  MISSING: 1 blobs referenced in DB but not on disk" in printed
-    # 818-A4: orphan summary must include count, bytes, and at least one sample.
-    assert "  Orphaned: 1 blobs (4,096 bytes) not referenced in DB" in printed
-    assert "    orphan-c..." in printed
-
-    env = _env()
-    verified_store = SimpleNamespace(
-        iter_all=lambda: ["raw-a", "raw-b"],
-        detect_orphans=lambda known_ids: SimpleNamespace(orphan_count=0, orphan_bytes=0, orphan_samples=()),
-    )
-    with (
-        patch("polylogue.cli.shared.check_workflow.connection_context", return_value=connection()),
-        patch("polylogue.storage.blob_store.get_blob_store", return_value=verified_store),
-    ):
-        check_workflow._run_blob_store_check(env, config)
-
-    verified_console_print = cast(MagicMock, env.ui.console.print)
-    assert verified_console_print.call_args_list[-1].args[0] == "  All blobs verified."
+    scan.assert_called_once_with(config.db_path, full=True)
+    assert payload["ok"] is False
+    findings = cast(list[JSONDocument], payload["findings"])
+    assert findings[0]["kind"] == "orphan_blobs"
 
 
 def test_run_blob_store_check_returns_json_payload_without_emitting() -> None:
-    env = _env()
     config = _config()
-    rows = [("raw-a",), ("raw-b",)]
+    with patch("polylogue.storage.blob_integrity.scan_blob_integrity") as scan:
+        scan.return_value.to_dict.return_value = {"ok": True, "findings": []}
+        payload = check_workflow._run_blob_store_check(config)
 
-    @contextmanager
-    def connection() -> Iterator[object]:
-        yield SimpleNamespace(execute=lambda sql: rows)
-
-    blob_store = SimpleNamespace(
-        iter_all=lambda: ["raw-a", "orphan-c"],
-        detect_orphans=lambda known_ids: SimpleNamespace(orphan_count=1, orphan_bytes=0, orphan_samples=()),
-    )
-    with (
-        patch("polylogue.cli.shared.check_workflow.connection_context", return_value=connection()),
-        patch("polylogue.storage.blob_store.get_blob_store", return_value=blob_store),
-    ):
-        payload = check_workflow._run_blob_store_check(env, config, json_output=True)
-
-    assert payload is not None
-    assert payload["total_blobs"] == 2
-    assert payload["total_raw_records"] == 2
-    assert payload["missing_count"] == 1
-    assert payload["orphaned_count"] == 1
-    assert payload["missing"] == ["raw-b"]
-    # orphan_samples is empty in the mock; the actual orphan_count comes from
-    # detect_orphans, which the mock returns as 1.
-    cast(MagicMock, env.ui.console.print).assert_not_called()
+    assert payload == {"ok": True, "findings": []}
 
 
 def test_schema_verification_and_maintenance_helpers_cover_runtime_paths() -> None:
@@ -357,7 +311,7 @@ def test_run_check_workflow_covers_runtime_blob_vacuum_and_persist_paths() -> No
     assert result.maintenance_results == [repair_result]
     assert result.vacuum_result == VacuumResult(ok=True, detail="vacuumed")
     assert result.blob_report is run_blob_check.return_value
-    run_blob_check.assert_called_once_with(env, config, deep=False, json_output=True)
+    run_blob_check.assert_called_once_with(config, full=False)
     persist_run.assert_called_once()
 
 

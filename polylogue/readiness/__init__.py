@@ -194,6 +194,16 @@ def _archive_debt_checks(archive_debt: dict[str, ArchiveDebtStatus], *, deep: bo
         debt = archive_debt.get(spec.name)
         if debt is None:
             continue
+        if debt.skipped:
+            checks.append(
+                ReadinessCheck(
+                    debt.name,
+                    VerifyStatus.SKIP,
+                    count=debt.issue_count,
+                    summary=debt.detail,
+                )
+            )
+            continue
         unready_status = spec.archive_readiness_unready_status or VerifyStatus.WARNING
         checks.append(
             ReadinessCheck(
