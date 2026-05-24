@@ -180,6 +180,23 @@ def test_repair_reported_failure_surfaces_as_failure_sample(tmp_path: Path) -> N
     assert "schema mismatch" in op.failure_samples.samples[0].message
 
 
+def test_replay_refuses_offline_repair_while_daemon_runs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    monkeypatch.setattr("polylogue.maintenance.offline_guard.running_daemon_pid", lambda _config: 1234)
+
+    op = execute_replay(
+        config,
+        targets=("session_insights",),
+        operation_id="op-live-daemon",
+    )
+
+    assert op.status is BackfillStatus.FAILED
+    assert op.affected_rows == 0
+    assert op.results[0]["name"] == "session_insights"
+    assert op.failure_samples.samples[0].kind == "OfflineMaintenanceBlocked"
+    assert "polylogued PID 1234 is running" in op.failure_samples.samples[0].message
+
+
 def test_unsupported_target_is_typed_failure_not_silent(tmp_path: Path) -> None:
     config = _make_config(tmp_path)
 
