@@ -915,11 +915,16 @@ def preview_action_event_read_model(*, count: int) -> RepairResult:
 
 
 def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
-    from polylogue.storage.fts.sql import FTS_INDEXABLE_MESSAGE_COUNT_SQL
+    from polylogue.storage.fts.dangling_repair import (
+        configure_bounded_repair_connection,
+        dry_run_dangling_fts_repair,
+        repair_missing_fts_rows,
+    )
     from polylogue.storage.sqlite.connection import connection_context
 
     try:
         with connection_context(None) as conn:
+            configure_bounded_repair_connection(conn)
             fts_exists = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
             ).fetchone()
@@ -932,35 +937,20 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
                 )
 
             if dry_run:
-                msg_count = conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone()[0]
-                fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
-                diff = abs(msg_count - fts_count)
-                if diff == 0:
-                    return _repair_result(
-                        "dangling_fts",
-                        repaired_count=0,
-                        success=True,
-                        detail="FTS index in sync",
-                    )
+                outcome = dry_run_dangling_fts_repair(conn)
                 return _repair_result(
                     "dangling_fts",
-                    repaired_count=diff,
-                    success=True,
-                    detail=f"Would: FTS sync: {msg_count:,} messages vs {fts_count:,} indexed ({diff:,} difference)",
+                    repaired_count=outcome.repaired_count,
+                    success=outcome.success,
+                    detail=outcome.detail,
                 )
-
-            from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
-
-            before = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
-            rebuild_fts_index_sync(conn)
-            after = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
+            outcome = repair_missing_fts_rows(conn)
             conn.commit()
-            total = abs(int(after or 0) - int(before or 0))
             return _repair_result(
                 "dangling_fts",
-                repaired_count=total,
-                success=True,
-                detail=f"FTS sync: rebuilt message index ({after:,} indexed messages)",
+                repaired_count=outcome.repaired_count,
+                success=outcome.success,
+                detail=outcome.detail,
             )
     except Exception as exc:
         return _repair_result(

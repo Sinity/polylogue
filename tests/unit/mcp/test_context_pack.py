@@ -5,8 +5,12 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Conversation, ConversationSummary
+from polylogue.archive.query.spec import ConversationQuerySpec
+from polylogue.mcp.context_pack import select_context_pack_conversations
 from polylogue.types import ConversationId, Provider
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
@@ -87,6 +91,77 @@ class TestBuildContextPackRegistration:
             assert parsed["provenance"]["source"] == "polylogue"
         finally:
             _set_runtime_services(None)
+
+    @pytest.mark.asyncio
+    async def test_context_pack_broadens_zero_result_archaeology_query(self) -> None:
+        """A pasted multi-token archaeology query falls back to recall terms."""
+        conv = make_conv(
+            id="test:conv-1",
+            provider=Provider.CLAUDE_AI,
+            title="Replay Replacement History",
+            messages=[make_msg(id="m1", role=Role.USER, text="event_replacements")],
+        )
+        seen_queries: list[tuple[str, ...]] = []
+
+        async def query_conversations(spec: ConversationQuerySpec) -> list[Conversation]:
+            seen_queries.append(spec.query_terms)
+            if spec.query_terms == ("event_replacements",):
+                return [conv]
+            return []
+
+        def coerce_limit(value: object) -> int:
+            return int(str(value))
+
+        selection = await select_context_pack_conversations(
+            query_conversations,
+            coerce_limit,
+            project_path=None,
+            project_repo=None,
+            since="2026-04-01",
+            until=None,
+            provider=None,
+            query="supersedes_event_id event_replacements equivalence_key",
+            limit=5,
+        )
+
+        assert selection.conversations == [conv]
+        assert selection.match_strategy == "term_recall"
+        assert ("supersedes_event_id event_replacements equivalence_key",) in seen_queries
+        assert ("event_replacements",) in seen_queries
+
+    @pytest.mark.asyncio
+    async def test_context_pack_relaxes_project_filter_after_recall_miss(self) -> None:
+        """Project filters are relaxed only after strict and in-project recall miss."""
+        conv = make_conv(
+            id="test:conv-2",
+            provider=Provider.CLAUDE_AI,
+            title="Target Vision Archaeology",
+            messages=[make_msg(id="m1", role=Role.USER, text="source_material_id")],
+        )
+
+        async def query_conversations(spec: ConversationQuerySpec) -> list[Conversation]:
+            if spec.cwd_prefix is None and spec.query_terms == ("source_material_id",):
+                return [conv]
+            return []
+
+        def coerce_limit(value: object) -> int:
+            return int(str(value))
+
+        selection = await select_context_pack_conversations(
+            query_conversations,
+            coerce_limit,
+            project_path="/realm/project/sinex",
+            project_repo=None,
+            since="2026-04-01",
+            until=None,
+            provider=None,
+            query="source_material_id anchor_byte",
+            limit=5,
+        )
+
+        assert selection.conversations == [conv]
+        assert selection.match_strategy == "relaxed_project_term_recall"
+        assert selection.relaxed_filters == ("project_path",)
 
     def test_summary_detail_omits_messages(self, mcp_server: MCPServerUnderTest) -> None:
         """Summary detail level omits message bodies."""

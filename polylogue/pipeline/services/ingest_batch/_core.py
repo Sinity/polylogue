@@ -125,17 +125,6 @@ _INGEST_RELEASE_BLOB_MB_THRESHOLD = 16.0
 _INGEST_RELEASE_MESSAGE_THRESHOLD = 1_000
 
 
-# ---------------------------------------------------------------------------
-# SQL templates — imported from polylogue.core.common (canonical source)
-# ---------------------------------------------------------------------------
-
-# _CONVERSATION_UPSERT_SQL, _MESSAGE_UPSERT_SQL, _CONTENT_BLOCK_UPSERT_SQL,
-# _STATS_UPSERT_SQL, _ACTION_EVENT_INSERT_SQL, _ATTACHMENT_UPSERT_SQL,
-# _ATTACHMENT_REF_INSERT_SQL are imported at the top of this module from
-# polylogue.core.common — sync and async paths share the same SQL templates.
-
-
-# ---------------------------------------------------------------------------
 # Sync DB writer
 # ---------------------------------------------------------------------------
 
@@ -370,6 +359,13 @@ def _upsert_stats_from_messages(conn: sqlite3.Connection, conversation_id: str, 
 _ACTION_EVENT_INSERT_OR_IGNORE_SQL = _ACTION_EVENT_INSERT_SQL.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1)
 _WRITE_SELECT_CHUNK_SIZE = 900
 _WRITE_EXECUTEMANY_CHUNK_SIZE = 1_000
+_FTS_REPAIR_COUNT_KEY = "_fts_repair"
+
+
+def _needs_conversation_fts_repair(conn: sqlite3.Connection, conversation_id: str) -> bool:
+    from polylogue.storage.fts.conversation_repair import conversation_fts_needs_repair_sync
+
+    return conversation_fts_needs_repair_sync(conn, conversation_id)
 
 
 def _executemany_chunked(conn: sqlite3.Connection, sql: str, rows: Sequence[Sequence[object]]) -> None:
@@ -422,6 +418,8 @@ def _append_conversation(
         counts["skipped_messages"] = len(cdata.message_tuples)
         counts["skipped_attachments"] = len(cdata.attachment_tuples)
         counts["skipped_provider_events"] = len(cdata.provider_event_tuples)
+        if _needs_conversation_fts_repair(conn, cdata.conversation_id):
+            counts[_FTS_REPAIR_COUNT_KEY] = 1
         return False, counts
 
     counts["skipped_messages"] = len(cdata.message_tuples) - len(changed_messages)
@@ -522,6 +520,8 @@ def _write_conversation(
         counts["skipped_messages"] = len(cdata.message_tuples)
         counts["skipped_attachments"] = len(cdata.attachment_tuples)
         counts["skipped_provider_events"] = len(cdata.provider_event_tuples)
+        if _needs_conversation_fts_repair(conn, cdata.conversation_id):
+            counts[_FTS_REPAIR_COUNT_KEY] = 1
         return False, counts
 
     existing_raw_id = str(existing_row["raw_id"] or "") if existing_row is not None else ""
@@ -640,6 +640,9 @@ def _record_write_result(
     if content_changed:
         summary.changed_counts["conversations"] += 1
         summary.changed_conversation_ids.append(cdata.conversation_id)
+        summary.fts_repair_conversation_ids.append(cdata.conversation_id)
+    elif counts.get(_FTS_REPAIR_COUNT_KEY, 0):
+        summary.fts_repair_conversation_ids.append(cdata.conversation_id)
     if counts["messages"]:
         summary.changed_counts["messages"] += counts["messages"]
     if counts["attachments"]:
@@ -1077,7 +1080,6 @@ def _process_ingest_batch_sync(
     materialized_ids: set[str] = set()
     pending_by_parent: dict[str, list[_ConversationEntry]] = {}
     _observe_current_rss(summary)
-    changed_ids: set[str] = set()
     try:
         conn.execute("BEGIN IMMEDIATE")
         if suspend_fts_triggers:
@@ -1102,7 +1104,7 @@ def _process_ingest_batch_sync(
             materialized_ids=materialized_ids,
             pending_by_parent=pending_by_parent,
         )
-        changed_ids = set(summary.changed_conversation_ids)
+        fts_repair_ids = set(summary.fts_repair_conversation_ids)
         # Side effects (FTS trigger restore + FTS repair + commit) run
         # BEFORE we release the connection so the data write and post-
         # write effects share one transaction. The previous arrangement
@@ -1114,7 +1116,7 @@ def _process_ingest_batch_sync(
         _commit_sync_ingest_side_effects(
             conn,
             db_path=db_path,
-            changed_conversation_ids=tuple(changed_ids),
+            changed_conversation_ids=tuple(fts_repair_ids),
             repair_message_fts=repair_message_fts or suspend_fts_triggers,
             repair_action_fts=repair_action_fts or suspend_fts_triggers,
         )

@@ -33,11 +33,15 @@ class RetrievalBandPayload(TypedDict, total=False):
 
 
 class EmbeddingStatusPayload(TypedDict):
+    config_enabled: bool
+    has_voyage_api_key: bool
+    daemon_stage_enabled: bool
     status: str
     total_conversations: int
     embedded_conversations: int
     embedded_messages: int
     pending_conversations: int
+    pending_messages: int
     embedding_coverage_percent: float
     retrieval_ready: bool
     freshness_status: str
@@ -105,6 +109,8 @@ def _retrieval_ready(stats: EmbeddingStatsSnapshot) -> bool:
 
 def _payload_from_stats(
     *,
+    config_enabled: bool,
+    has_voyage_api_key: bool,
     total_conversations: int,
     stats: EmbeddingStatsSnapshot,
 ) -> EmbeddingStatusPayload:
@@ -116,11 +122,15 @@ def _payload_from_stats(
         pending_conversations=pending_conversations,
     )
     return {
+        "config_enabled": config_enabled,
+        "has_voyage_api_key": has_voyage_api_key,
+        "daemon_stage_enabled": config_enabled and has_voyage_api_key,
         "status": status,
         "total_conversations": total_conversations,
         "embedded_conversations": embedded_conversations,
         "embedded_messages": stats.embedded_messages,
         "pending_conversations": pending_conversations,
+        "pending_messages": stats.pending_messages,
         "embedding_coverage_percent": round(
             _coverage_percent(
                 embedded_conversations=embedded_conversations,
@@ -148,11 +158,18 @@ def embedding_status_payload(
     include_retrieval_bands: bool = True,
 ) -> EmbeddingStatusPayload:
     """Read canonical embedding-status statistics for operator surfaces."""
+    from polylogue.config import load_polylogue_config
     from polylogue.storage.embeddings.embedding_stats import read_embedding_stats_sync
     from polylogue.storage.sqlite.connection import open_read_connection
 
+    cfg = load_polylogue_config()
     with open_read_connection(env.config.db_path) as conn:
         total_conversations = _total_conversations(conn)
         embedding_stats = read_embedding_stats_sync(conn, include_retrieval_bands=include_retrieval_bands)
 
-    return _payload_from_stats(total_conversations=total_conversations, stats=embedding_stats)
+    return _payload_from_stats(
+        config_enabled=bool(cfg.embedding_enabled),
+        has_voyage_api_key=bool(cfg.voyage_api_key),
+        total_conversations=total_conversations,
+        stats=embedding_stats,
+    )

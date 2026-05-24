@@ -21,6 +21,7 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 from polylogue.config import PolylogueConfig
+from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.logging import get_logger
 from polylogue.paths import archive_root, db_path
 from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES as _EXPECTED_FTS_TRIGGERS
@@ -1215,7 +1216,6 @@ def _check_embedding_coverage_expensive() -> HealthAlert:
     or there are embedding failures. Disabled embedding is OK.
     """
     from polylogue.config import load_polylogue_config
-    from polylogue.daemon.status import _embedding_readiness_info
 
     now = datetime.now(UTC).isoformat()
     try:
@@ -1232,7 +1232,7 @@ def _check_embedding_coverage_expensive() -> HealthAlert:
                 consecutive_failures=_record_failure("embedding_coverage", True),
             )
 
-        info = _embedding_readiness_info()
+        info = embedding_readiness_info(db_path())
         coverage = info.get("embedding_coverage_percent", 0.0)
         cov_pct = float(coverage) if isinstance(coverage, (int, float)) and not isinstance(coverage, bool) else 0.0
         failure_count = info.get("embedding_failure_count", 0)

@@ -19,11 +19,12 @@ from polylogue.storage.embeddings.sql import (
     EMBEDDED_CONVERSATIONS_SQL,
     EMBEDDED_MESSAGES_SQL,
     EMBEDDING_FAILURE_COUNT_SQL,
-    EMBEDDING_TOTAL_TOKENS_SQL,
     MISSING_META_MESSAGES_SQL,
     MODEL_COUNTS_SQL,
     PENDING_CONVERSATIONS_SQL,
+    PENDING_MESSAGES_SQL,
     STALE_MESSAGES_SQL,
+    TOTAL_MESSAGES_SQL,
 )
 from polylogue.storage.embeddings.support import (
     StatsRow,
@@ -53,6 +54,7 @@ class _EmbeddingStatsParts:
     embedded_conversations: int
     embedded_messages: int
     pending_conversations: int
+    pending_messages: int
     stale_messages: int
     missing_provenance: int
     conversations_exist: bool
@@ -112,11 +114,12 @@ def _base_parts_sync(conn: sqlite3.Connection) -> _EmbeddingStatsParts:
         embedded_conversations=optional_count_sync(conn, EMBEDDED_CONVERSATIONS_SQL),
         embedded_messages=optional_count_sync(conn, EMBEDDED_MESSAGES_SQL),
         pending_conversations=optional_count_sync(conn, PENDING_CONVERSATIONS_SQL),
+        pending_messages=optional_count_sync(conn, PENDING_MESSAGES_SQL),
         stale_messages=optional_count_sync(conn, STALE_MESSAGES_SQL),
         missing_provenance=optional_count_sync(conn, MISSING_META_MESSAGES_SQL),
         conversations_exist=bool(optional_row_sync(conn, CONVERSATIONS_EXISTS_SQL)),
         failure_count=optional_count_sync(conn, EMBEDDING_FAILURE_COUNT_SQL),
-        total_message_count=optional_count_sync(conn, EMBEDDING_TOTAL_TOKENS_SQL),
+        total_message_count=optional_count_sync(conn, TOTAL_MESSAGES_SQL),
     )
 
 
@@ -128,21 +131,27 @@ async def _base_parts_async(conn: aiosqlite.Connection) -> _EmbeddingStatsParts:
         embedded_conversations=await optional_count_async(conn, EMBEDDED_CONVERSATIONS_SQL),
         embedded_messages=await optional_count_async(conn, EMBEDDED_MESSAGES_SQL),
         pending_conversations=await optional_count_async(conn, PENDING_CONVERSATIONS_SQL),
+        pending_messages=await optional_count_async(conn, PENDING_MESSAGES_SQL),
         stale_messages=await optional_count_async(conn, STALE_MESSAGES_SQL),
         missing_provenance=await optional_count_async(conn, MISSING_META_MESSAGES_SQL),
         conversations_exist=bool(await optional_row_async(conn, CONVERSATIONS_EXISTS_SQL)),
         failure_count=await optional_count_async(conn, EMBEDDING_FAILURE_COUNT_SQL),
-        total_message_count=await optional_count_async(conn, EMBEDDING_TOTAL_TOKENS_SQL),
+        total_message_count=await optional_count_async(conn, TOTAL_MESSAGES_SQL),
     )
 
 
 def _with_total_conversations(parts: _EmbeddingStatsParts, total_conversations: int) -> _EmbeddingStatsParts:
+    pending_conversations = max(
+        parts.pending_conversations,
+        total_conversations - parts.embedded_conversations,
+    )
     return replace(
         parts,
         total_conversations=total_conversations,
-        pending_conversations=max(
-            parts.pending_conversations,
-            total_conversations - parts.embedded_conversations,
+        pending_conversations=pending_conversations,
+        pending_messages=max(
+            parts.pending_messages,
+            parts.total_message_count - parts.embedded_messages if pending_conversations > 0 else 0,
         ),
     )
 
@@ -155,13 +164,13 @@ async def _total_conversations_async(conn: aiosqlite.Connection) -> int:
     return _row_count(await (await conn.execute("SELECT COUNT(*) FROM conversations")).fetchone())
 
 
-def _estimated_cost(total_message_count: int, pending_messages: int = 0) -> float:
+def _estimated_cost(message_count: int) -> float:
     """Estimate Voyage API cost from message counts.
 
     Uses rough per-message token estimate (500 tokens/msg average)
     and voyage-4 pricing ($0.10 / 1M tokens).
     """
-    estimated_tokens = (total_message_count + pending_messages) * ESTIMATED_TOKENS_PER_MESSAGE
+    estimated_tokens = message_count * ESTIMATED_TOKENS_PER_MESSAGE
     return estimated_tokens * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
 
 
@@ -174,6 +183,7 @@ def _snapshot(
         embedded_conversations=parts.embedded_conversations,
         embedded_messages=parts.embedded_messages,
         pending_conversations=parts.pending_conversations,
+        pending_messages=parts.pending_messages,
         stale_messages=parts.stale_messages,
         messages_missing_provenance=parts.missing_provenance,
         oldest_embedded_at=_bounds_value(parts.bounds, index=0, key="oldest_embedded_at"),
@@ -183,7 +193,7 @@ def _snapshot(
         retrieval_bands=retrieval_bands,
         failure_count=parts.failure_count,
         total_estimated_cost_usd=round(
-            _estimated_cost(parts.total_message_count, parts.pending_conversations),
+            _estimated_cost(parts.total_message_count),
             2,
         ),
     )

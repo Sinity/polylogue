@@ -590,39 +590,36 @@ def _fts_repair_needs_for_conversations(
     messages_missing = False
     placeholders = ", ".join("?" for _ in conversation_ids)
     params = tuple(conversation_ids)
-    if not _fts_surface_triggers_are_trusted(conn, surface="messages_fts"):
-        missing_messages = int(
-            conn.execute(
-                f"""
-                SELECT COUNT(*)
-                FROM messages AS m
-                LEFT JOIN messages_fts_docsize AS d ON d.id = m.rowid
-                WHERE m.conversation_id IN ({placeholders})
-                  AND d.id IS NULL
-                  AND (
-                      m.text IS NOT NULL
-                      OR EXISTS (
-                          SELECT 1
-                          FROM content_blocks AS cb
-                          WHERE cb.message_id = m.message_id
-                            AND (
-                                NULLIF(cb.text, '') IS NOT NULL
-                                OR NULLIF(cb.tool_input, '') IS NOT NULL
-                                OR NULLIF(cb.metadata, '') IS NOT NULL
-                            )
-                      )
+    missing_messages = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM messages AS m
+            LEFT JOIN messages_fts_docsize AS d ON d.id = m.rowid
+            WHERE m.conversation_id IN ({placeholders})
+              AND d.id IS NULL
+              AND (
+                  m.text IS NOT NULL
+                  OR EXISTS (
+                      SELECT 1
+                      FROM content_blocks AS cb
+                      WHERE cb.message_id = m.message_id
+                        AND (
+                            NULLIF(cb.text, '') IS NOT NULL
+                            OR NULLIF(cb.tool_input, '') IS NOT NULL
+                            OR NULLIF(cb.metadata, '') IS NOT NULL
+                        )
                   )
-                """,
-                params,
-            ).fetchone()[0]
-        )
-        messages_missing = missing_messages > 0
+              )
+            """,
+            params,
+        ).fetchone()[0]
+    )
+    messages_missing = missing_messages > 0
     if not _table_exists(conn, "action_events") or not _table_exists(conn, "action_events_fts"):
         return _FtsRepairNeeds(messages=messages_missing)
     if not _table_exists(conn, "action_events_fts_docsize"):
         return _FtsRepairNeeds(messages=messages_missing, actions=True)
-    if _fts_surface_triggers_are_trusted(conn, surface="action_events_fts"):
-        return _FtsRepairNeeds(messages=messages_missing)
     missing_actions = int(
         conn.execute(
             f"""
@@ -640,46 +637,6 @@ def _fts_repair_needs_for_conversations(
 
 def _fts_needs_repair_for_conversations(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> bool:
     return _fts_repair_needs_for_conversations(conn, conversation_ids).any
-
-
-def _fts_surface_triggers_are_trusted(conn: sqlite3.Connection, *, surface: str) -> bool:
-    """Return whether durable freshness plus live triggers make exact scans redundant."""
-
-    from polylogue.storage.fts.freshness import READY
-    from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES
-
-    if surface == "messages_fts":
-        trigger_names = tuple(
-            FTS_TRIGGER_NAMES[0:6] if _table_exists(conn, "content_blocks") else FTS_TRIGGER_NAMES[0:3]
-        )
-        required_tables = ("messages_fts", "messages_fts_docsize")
-    elif surface == "action_events_fts":
-        trigger_names = tuple(FTS_TRIGGER_NAMES[6:9])
-        required_tables = ("action_events_fts", "action_events_fts_docsize")
-    else:
-        return False
-    if any(not _table_exists(conn, table) for table in required_tables):
-        return False
-    if not _triggers_present(conn, trigger_names):
-        return False
-    if not _table_exists(conn, "fts_freshness_state"):
-        return False
-    row = conn.execute(
-        "SELECT state FROM fts_freshness_state WHERE surface = ?",
-        (surface,),
-    ).fetchone()
-    return row is not None and str(row[0]) == READY
-
-
-def _triggers_present(conn: sqlite3.Connection, trigger_names: Sequence[str]) -> bool:
-    if not trigger_names:
-        return True
-    placeholders = ", ".join("?" for _ in trigger_names)
-    row = conn.execute(
-        f"SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN ({placeholders})",
-        tuple(trigger_names),
-    ).fetchone()
-    return row is not None and int(row[0] or 0) == len(trigger_names)
 
 
 def _embedding_config_enabled() -> bool:

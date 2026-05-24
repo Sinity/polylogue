@@ -308,6 +308,86 @@ def test_offline_maintenance_preview_allowed_with_live_daemon(monkeypatch: pytes
     assert results[0].repaired_count == 2
 
 
+def test_repair_dangling_fts_uses_targeted_missing_row_repair(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class _Cursor:
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+        def fetchone(self) -> tuple[object, ...]:
+            return (self.value,)
+
+    class FakeConn:
+        message_count = 8
+        action_count = 4
+
+        def execute(self, sql: str, params: object = ()) -> _Cursor:
+            if sql.startswith("PRAGMA "):
+                return _Cursor(None)
+            if "sqlite_master" in sql and params == ("content_blocks",):
+                return _Cursor(1)
+            if "sqlite_master" in sql and params in {("action_events",), ("action_events_fts_docsize",)}:
+                return _Cursor(1)
+            if "sqlite_master" in sql and "messages_fts" in sql and "trigger" not in sql:
+                return _Cursor("messages_fts")
+            if "sqlite_master" in sql and "action_events" in sql:
+                return _Cursor("action_events")
+            if "sqlite_master" in sql and "content_blocks" in sql:
+                return _Cursor("content_blocks")
+            if "COUNT(*) FROM messages_fts_docsize" in sql:
+                return _Cursor(self.message_count)
+            if "COUNT(*) FROM action_events_fts_docsize" in sql:
+                return _Cursor(self.action_count)
+            if "FROM messages AS m" in sql:
+                return _Cursor(10)
+            if "SELECT COUNT(*) FROM action_events" in sql:
+                return _Cursor(5)
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+        def commit(self) -> None:
+            calls.append(("commit", ()))
+
+    @contextmanager
+    def fake_connection_context(_path: Path) -> Iterator[FakeConn]:
+        yield FakeConn()
+
+    def repair_messages(conn: FakeConn) -> int:
+        conn.message_count = 10
+        calls.append(("message", ()))
+        return 2
+
+    def repair_actions(conn: FakeConn) -> int:
+        conn.action_count = 5
+        calls.append(("action", ()))
+        return 1
+
+    monkeypatch.setattr("polylogue.storage.sqlite.connection.connection_context", fake_connection_context)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.dangling_repair.insert_missing_message_fts_rows_sync",
+        repair_messages,
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.fts.dangling_repair.insert_missing_action_fts_rows_sync",
+        repair_actions,
+    )
+    monkeypatch.setattr("polylogue.storage.fts.dangling_repair._triggers_present_sync", lambda _conn, _names: True)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.dangling_repair.record_fts_surface_state_sync",
+        lambda _conn, **kwargs: calls.append(("record", kwargs["surface"])),
+    )
+
+    result = repair_mod.repair_dangling_fts(_config(tmp_path), dry_run=False)
+
+    assert result.success is True
+    assert "repaired index" in result.detail
+    assert ("message", ()) in calls
+    assert ("action", ()) in calls
+    assert ("record", "messages_fts") in calls
+    assert ("record", "action_events_fts") in calls
+    assert ("commit", ()) in calls
+
+
 def test_repair_action_event_read_model_rebuilds_fts_when_stale_extra_rows(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

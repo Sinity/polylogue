@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from polylogue.archive.action_event.action_events import ActionEvent
+    from polylogue.archive.query.spec import ConversationQuerySpec
 
 
 class ContextPackProject(BaseModel):
@@ -38,6 +40,8 @@ class ContextPackQueryContext(BaseModel):
     query_total: int = 0
     total_matching_conversations: int = 0
     conversations_included: int = 0
+    match_strategy: str = "strict"
+    relaxed_filters: list[str] = Field(default_factory=list)
 
 
 class ContextPackMessage(BaseModel):
@@ -113,6 +117,152 @@ class ContextPackPayload(BaseModel):
     total_messages: int = 0
     total_tool_calls: int = 0
     truncated: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ContextPackSelection:
+    conversations: list[Any]
+    match_strategy: str
+    relaxed_filters: tuple[str, ...] = ()
+    query_total: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _ContextPackQueryAttempt:
+    query: str | None
+    project_path: str | None
+    project_repo: str | None
+    strategy: str
+    relaxed_filters: tuple[str, ...] = ()
+
+
+def _context_pack_recall_terms(query: str | None) -> tuple[str, ...]:
+    if not query:
+        return ()
+    from polylogue.storage.search.query_support import extract_match_terms
+
+    terms = extract_match_terms(query)
+    # Single-letter FTS terms produce noisy archaeology packs and pure boolean
+    # operators are already stripped by extract_match_terms().
+    return tuple(term for term in terms if len(term) > 1)
+
+
+def _context_pack_query_attempts(
+    *,
+    query: str | None,
+    project_path: str | None,
+    project_repo: str | None,
+) -> tuple[_ContextPackQueryAttempt, ...]:
+    attempts = [
+        _ContextPackQueryAttempt(
+            query=query,
+            project_path=project_path,
+            project_repo=project_repo,
+            strategy="strict",
+        )
+    ]
+    terms = _context_pack_recall_terms(query)
+    if len(terms) <= 1:
+        return tuple(attempts)
+
+    attempts.extend(
+        _ContextPackQueryAttempt(
+            query=term,
+            project_path=project_path,
+            project_repo=project_repo,
+            strategy="term_recall",
+        )
+        for term in terms
+    )
+    if project_path or project_repo:
+        relaxed = tuple(
+            name for name, value in (("project_path", project_path), ("project_repo", project_repo)) if value
+        )
+        attempts.extend(
+            _ContextPackQueryAttempt(
+                query=term,
+                project_path=None,
+                project_repo=None,
+                strategy="relaxed_project_term_recall",
+                relaxed_filters=relaxed,
+            )
+            for term in terms
+        )
+    return tuple(attempts)
+
+
+async def select_context_pack_conversations(
+    query_conversations: Callable[[ConversationQuerySpec], Awaitable[Sequence[Any]]],
+    clamp_limit: Callable[[int | object], int],
+    *,
+    project_path: str | None,
+    project_repo: str | None,
+    since: str | None,
+    until: str | None,
+    provider: str | None,
+    query: str | None,
+    limit: int,
+) -> ContextPackSelection:
+    """Select conversations for a context pack with recall-oriented fallback.
+
+    The context-pack surface is an archaeology/reorientation tool. A pasted
+    investigative query often contains many alternative identifiers; treating
+    it as one strict FTS conjunction produces false "no history" answers. We
+    still run the strict request first, then fall back to single-term recall
+    only when strict selection returns no conversations.
+    """
+    from polylogue.mcp.query_contracts import MCPConversationQueryRequest
+
+    def _spec(attempt: _ContextPackQueryAttempt) -> ConversationQuerySpec:
+        return MCPConversationQueryRequest(
+            query=attempt.query,
+            provider=provider,
+            since=since,
+            until=until,
+            cwd_prefix=attempt.project_path,
+            repo=attempt.project_repo,
+            sort="date",
+            reverse=True,
+            limit=limit,
+        ).build_spec(clamp_limit)
+
+    attempts = _context_pack_query_attempts(
+        query=query,
+        project_path=project_path,
+        project_repo=project_repo,
+    )
+    strict = list(await query_conversations(_spec(attempts[0])))
+    if strict:
+        return ContextPackSelection(conversations=strict[:limit], match_strategy="strict", query_total=len(strict))
+
+    for strategy in ("term_recall", "relaxed_project_term_recall"):
+        merged: list[Any] = []
+        seen: set[str] = set()
+        relaxed_filters: tuple[str, ...] = ()
+        for attempt in attempts:
+            if attempt.strategy != strategy:
+                continue
+            for conversation in await query_conversations(_spec(attempt)):
+                conv_id = str(getattr(conversation, "id", ""))
+                if conv_id and conv_id in seen:
+                    continue
+                if conv_id:
+                    seen.add(conv_id)
+                merged.append(conversation)
+                if len(merged) >= limit:
+                    break
+            relaxed_filters = attempt.relaxed_filters
+            if len(merged) >= limit:
+                break
+        if merged:
+            return ContextPackSelection(
+                conversations=merged,
+                match_strategy=strategy,
+                relaxed_filters=relaxed_filters,
+                query_total=len(merged),
+            )
+
+    return ContextPackSelection(conversations=[], match_strategy="strict", query_total=0)
 
 
 def redact_path(path: str) -> str:
