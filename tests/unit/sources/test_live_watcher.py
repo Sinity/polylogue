@@ -1219,6 +1219,7 @@ def test_partial_trailing_line_keeps_cursor_at_last_newline(tmp_path: Path) -> N
     watcher, parse_sources = _make_watcher(tmp_path, root)
 
     asyncio.run(_ingest_one(watcher, f))
+    asyncio.run(_ingest_one(watcher, f))
 
     record = watcher._cursor.get_record(f)
     assert parse_sources.await_count == 1

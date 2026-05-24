@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -171,7 +172,7 @@ def test_failed_retry_scan_requeues_only_due_failures(tmp_path: Path, frozen_clo
     assert watcher._pending_paths == {due}
 
 
-@pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor")
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor", "polylogue.sources.live.convergence_debt_retry")
 def test_hot_insight_convergence_debt_uses_quiet_window_retry(
     tmp_path: Path,
     frozen_clock: FrozenClock,
@@ -194,5 +195,76 @@ def test_hot_insight_convergence_debt_uses_quiet_window_retry(
     debt = cursor.list_convergence_debt(limit=1)[0]
     retry_at = datetime.fromisoformat(debt.next_retry_at or "")
     failed_at = datetime.fromisoformat(debt.last_failed_at)
+    assert debt.failure_count == 1
+    assert retry_at - failed_at == timedelta(seconds=60)
+
+
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor", "polylogue.sources.live.convergence_debt_retry")
+def test_hot_insight_convergence_debt_advances_after_retry_is_due(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+) -> None:
+    cursor = CursorStore(tmp_path / "cursor.sqlite")
+    cursor.record_convergence_debt(
+        stage="insights",
+        subject_type="conversation_id",
+        subject_id="conv-hot",
+        error="insights deferred until source quiet",
+    )
+    frozen_clock.advance(61)
+    cursor.record_convergence_debt(
+        stage="insights",
+        subject_type="conversation_id",
+        subject_id="conv-hot",
+        error="insights deferred until source quiet",
+    )
+
+    debt = cursor.list_convergence_debt(limit=1)[0]
+    retry_at = datetime.fromisoformat(debt.next_retry_at or "")
+    failed_at = datetime.fromisoformat(debt.last_failed_at)
     assert debt.failure_count == 2
     assert retry_at - failed_at == timedelta(seconds=60)
+
+
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor", "polylogue.sources.live.convergence_debt_retry")
+def test_hot_insight_convergence_debt_uses_source_quiet_deadline(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+) -> None:
+    source = tmp_path / "active.jsonl"
+    source.write_text("{}\n", encoding="utf-8")
+    source_mtime = frozen_clock.now().timestamp() - 10
+    os.utime(source, (source_mtime, source_mtime))
+    cursor = CursorStore(tmp_path / "cursor.sqlite")
+    with sqlite3.connect(cursor._db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE conversations (
+                conversation_id TEXT PRIMARY KEY,
+                raw_id TEXT
+            );
+            CREATE TABLE raw_conversations (
+                raw_id TEXT PRIMARY KEY,
+                source_path TEXT
+            );
+            INSERT INTO conversations (conversation_id, raw_id)
+            VALUES ('conv-hot', 'raw-hot');
+            """
+        )
+        conn.execute(
+            "INSERT INTO raw_conversations (raw_id, source_path) VALUES ('raw-hot', ?)",
+            (str(source),),
+        )
+        conn.commit()
+
+    cursor.record_convergence_debt(
+        stage="insights",
+        subject_type="conversation_id",
+        subject_id="conv-hot",
+        error="insights deferred until source quiet",
+    )
+
+    debt = cursor.list_convergence_debt(limit=1)[0]
+    retry_at = datetime.fromisoformat(debt.next_retry_at or "")
+    failed_at = datetime.fromisoformat(debt.last_failed_at)
+    assert retry_at - failed_at == timedelta(seconds=50)

@@ -35,7 +35,6 @@ from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
 from polylogue.sources.dispatch import _detect_provider_from_raw_bytes
 from polylogue.sources.live.append_ingest import ingest_append_plans
 from polylogue.sources.live.batch_observability import (
-    conversation_ids_for_source_path,
     record_attempt_progress,
 )
 from polylogue.sources.live.batch_support import (
@@ -79,9 +78,11 @@ from polylogue.sources.live.convergence_debt import (
     convergence_debt_from_states,
     debt_by_path,
 )
+from polylogue.sources.live.convergence_outcome import record_convergence_outcome
 from polylogue.sources.live.conversation_convergence import converge_known_conversations
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.dedup import handle_schema_incompatible, handle_structural_database_error
+from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics, LiveFullIngestAggregate
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawConversationRecord
@@ -245,12 +246,16 @@ class LiveBatchProcessor:
             if is_degraded():
                 full_paths.append(path)
                 continue
-            append_plan = (
-                self._append_plan(path, cursor=cursor_records.get(path))
-                if self._can_ingest_appends_directly()
-                else None
-            )
+            cursor = cursor_records.get(path)
+            append_plan = self._append_plan(path, cursor=cursor) if self._can_ingest_appends_directly() else None
             if isinstance(append_plan, _DeferredAppend):
+                cursor_fingerprint_read_bytes += record_deferred_append_cursor(
+                    self._cursor,
+                    path,
+                    cursor=cursor,
+                    parser_fingerprint=self._current_parser_fingerprint(),
+                    source_name=self._source_name_for(path),
+                )
                 deferred_paths.append(path)
             elif append_plan is None:
                 full_paths.append(path)
@@ -629,29 +634,7 @@ class LiveBatchProcessor:
         return bytes_read
 
     def _record_convergence_outcome(self, path: Path, debts: Iterable[ConvergenceDebt]) -> None:
-        debt_items = tuple(debts)
-        conversation_ids = conversation_ids_for_source_path(self._cursor, path)
-        self._cursor.clear_convergence_debt(subject_type="source_path", subject_id=str(path))
-        for conversation_id in conversation_ids:
-            self._cursor.clear_convergence_debt(subject_type="conversation_id", subject_id=conversation_id)
-        if not debt_items:
-            return
-        for debt in debt_items:
-            if conversation_ids:
-                for conversation_id in conversation_ids:
-                    self._cursor.record_convergence_debt(
-                        stage=debt.stage,
-                        subject_type="conversation_id",
-                        subject_id=conversation_id,
-                        error=debt.error,
-                    )
-            else:
-                self._cursor.record_convergence_debt(
-                    stage=debt.stage,
-                    subject_type="source_path",
-                    subject_id=str(path),
-                    error=debt.error,
-                )
+        record_convergence_outcome(self._cursor, path, debts)
 
     def _converge_paths(
         self, paths: Iterable[Path]

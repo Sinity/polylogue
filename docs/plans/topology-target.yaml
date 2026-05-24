@@ -1101,7 +1101,7 @@ files:
     target: polylogue/daemon/convergence_debt_status.py
     owner: stable
   - path: polylogue/daemon/convergence_stages.py
-    loc: 975
+    loc: 987
     target: polylogue/daemon/convergence_stages.py
     owner: stable
   - path: polylogue/daemon/cursor_lag_alert.py
@@ -2538,7 +2538,7 @@ files:
     target: polylogue/sources/live/append_ingest.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 1157
+    loc: 1140
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
@@ -2553,17 +2553,33 @@ files:
     loc: 75
     target: polylogue/sources/live/convergence_debt.py
     owner: stable
+  - path: polylogue/sources/live/convergence_debt_retry.py
+    loc: 100
+    target: polylogue/sources/live/convergence_debt_retry.py
+    owner: stable
+  - path: polylogue/sources/live/convergence_debt_store.py
+    loc: 97
+    target: polylogue/sources/live/convergence_debt_store.py
+    owner: stable
+  - path: polylogue/sources/live/convergence_outcome.py
+    loc: 41
+    target: polylogue/sources/live/convergence_outcome.py
+    owner: stable
   - path: polylogue/sources/live/conversation_convergence.py
     loc: 71
     target: polylogue/sources/live/conversation_convergence.py
     owner: stable
   - path: polylogue/sources/live/cursor.py
-    loc: 1179
+    loc: 1158
     target: polylogue/sources/live/cursor.py
     owner: stable
   - path: polylogue/sources/live/dedup.py
     loc: 106
     target: polylogue/sources/live/dedup.py
+    owner: stable
+  - path: polylogue/sources/live/deferred_cursor.py
+    loc: 45
+    target: polylogue/sources/live/deferred_cursor.py
     owner: stable
   - path: polylogue/sources/live/metrics.py
     loc: 169
@@ -2910,7 +2926,7 @@ files:
     target: polylogue/storage/insights/session/profiles.py
     owner: stable
   - path: polylogue/storage/insights/session/rebuild.py
-    loc: 963
+    loc: 951
     target: polylogue/storage/insights/session/rebuild.py
     owner: stable
   - path: polylogue/storage/insights/session/records.py
