@@ -310,6 +310,22 @@ class TestLivenessProbeContract:
         assert payload["uptime_s"] >= 0
         assert isinstance(payload["started_at"], float)
 
+    def test_liveness_uses_shared_process_start_anchor(
+        self,
+        workspace_env: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr("polylogue.daemon.healthz.started_at_wall", lambda: 1234.5)
+        monkeypatch.setattr("polylogue.daemon.healthz.uptime_seconds", lambda: 42.25)
+
+        handler = _make_handler("GET", "/healthz/live")
+        _, send_json = _capture_responses(handler)
+        handler.do_GET()
+        status, payload = send_json.call_args.args
+        assert status == HTTPStatus.OK
+        assert payload["started_at"] == 1234.5
+        assert payload["uptime_s"] == 42.25
+
     def test_liveness_does_not_query_health_subsystem(
         self,
         workspace_env: dict[str, Path],

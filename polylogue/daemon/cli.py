@@ -545,9 +545,11 @@ async def run_daemon_services(
     api_auth_token: str | None = None,
 ) -> None:
     """Run configured daemon components until interrupted."""
+    from polylogue.daemon import process_start as _process_start
     from polylogue.paths import archive_root
 
     global _pidfile_path
+    _process_start.started_at_wall()
 
     # Non-localhost API binding requires explicit opt-in AND an auth token.
     if enable_api and not is_loopback_host(api_host):
