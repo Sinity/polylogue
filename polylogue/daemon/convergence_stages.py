@@ -85,6 +85,7 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
                 if conversation_ids:
                     needs = _fts_repair_needs_for_conversations(conn, conversation_ids)
                     _repair_changed_conversation_fts(conn, conversation_ids, needs=needs)
+                    _mark_message_fts_ready_after_targeted_repair(conn)
                     conn.commit()
                     logger.info("fts: repaired conversations=%d", len(conversation_ids))
                     return not _fts_needs_repair_for_conversations(conn, conversation_ids)
@@ -137,6 +138,7 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
                     return execute(Path(paths[0]))
                 needs = _fts_repair_needs_for_conversations(conn, conversation_ids)
                 _repair_changed_conversation_fts(conn, conversation_ids, needs=needs)
+                _mark_message_fts_ready_after_targeted_repair(conn)
                 conn.commit()
                 logger.info("fts: batch repaired paths=%d conversations=%d", len(paths), len(conversation_ids))
                 return not _fts_needs_repair_for_conversations(conn, conversation_ids)
@@ -175,6 +177,7 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
                 ids = tuple(dict.fromkeys(conversation_ids))
                 needs = _fts_repair_needs_for_conversations(conn, ids)
                 _repair_changed_conversation_fts(conn, ids, needs=needs)
+                _mark_message_fts_ready_after_targeted_repair(conn)
                 conn.commit()
                 logger.info("fts: repaired conversation debt conversations=%d", len(ids))
                 return not _fts_needs_repair_for_conversations(conn, ids)
@@ -757,6 +760,23 @@ def _repair_changed_conversation_fts(
             repair_action_fts_index_sync(conn, conversation_ids)
         else:
             insert_missing_action_fts_index_sync(conn, conversation_ids)
+
+
+def _mark_message_fts_ready_after_targeted_repair(conn: sqlite3.Connection) -> None:
+    from polylogue.storage.fts.freshness import READY, STALE, record_fts_surface_state_sync
+    from polylogue.storage.fts.fts_lifecycle import message_fts_readiness_sync
+
+    readiness = message_fts_readiness_sync(conn, verify_total_rows=False)
+    record_fts_surface_state_sync(
+        conn,
+        surface="messages_fts",
+        state=READY if bool(readiness["ready"]) else STALE,
+        detail=(
+            "targeted changed-conversation repair complete"
+            if bool(readiness["ready"])
+            else "targeted changed-conversation repair left structural FTS readiness false"
+        ),
+    )
 
 
 def _action_events_exist_for_conversations(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> bool:
