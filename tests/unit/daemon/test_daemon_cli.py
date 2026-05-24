@@ -639,3 +639,60 @@ def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:
 
     assert server.shutdown_called is True
     assert server.close_called is True
+
+
+def test_run_daemon_services_schema_block_skips_db_background_work() -> None:
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier
+
+    class FakeServer:
+        shutdown_called = False
+        close_called = False
+
+        def serve_forever(self, poll_interval: float = 0.5) -> None:
+            assert poll_interval == 0.5
+            raise RuntimeError("server stopped")
+
+        def shutdown(self) -> None:
+            self.shutdown_called = True
+
+        def server_close(self) -> None:
+            self.close_called = True
+
+    def fail_background_work(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("schema-blocked daemon must not start DB background work")
+
+    server = FakeServer()
+    critical = HealthAlert(
+        check_name="schema_version",
+        tier=HealthTier.FAST,
+        severity=HealthSeverity.CRITICAL,
+        message="schema v12 incompatible with runtime v8",
+        checked_at="2026-05-24T00:00:00+00:00",
+    )
+    with (
+        patch.object(daemon_cli, "_check_schema_version_fast", return_value=critical),
+        patch.object(daemon_cli, "_periodic_wal_checkpoint", side_effect=fail_background_work),
+        patch.object(daemon_cli, "_periodic_heartbeat", side_effect=fail_background_work),
+        patch.object(daemon_cli, "_periodic_convergence_check", side_effect=fail_background_work),
+        patch.object(daemon_cli, "_periodic_health_check", side_effect=fail_background_work),
+        patch.object(daemon_cli, "_periodic_db_optimize", side_effect=fail_background_work),
+        patch.object(daemon_cli, "_periodic_status_snapshot_refresh", side_effect=fail_background_work),
+        patch("polylogue.daemon.convergence.DaemonConverger", side_effect=fail_background_work),
+        patch.object(daemon_cli, "make_server", return_value=server),
+        pytest.raises(RuntimeError, match="server stopped"),
+    ):
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(WatchSource(name="codex", root=Path("/tmp/codex")),),
+                debounce_s=1.0,
+                enable_watch=True,
+                enable_browser_capture=True,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+
+    assert server.shutdown_called is True
+    assert server.close_called is True
