@@ -371,6 +371,18 @@ def test_repair_dangling_fts_uses_targeted_missing_row_repair(monkeypatch: pytes
         "polylogue.storage.fts.dangling_repair.insert_missing_action_fts_rows_sync",
         repair_actions,
     )
+    monkeypatch.setattr(
+        "polylogue.storage.fts.dangling_repair._repair_session_work_events_fts_rows_sync",
+        lambda _conn: (0, 0, 0, 0),
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.fts.dangling_repair._repair_work_threads_fts_rows_sync",
+        lambda _conn: (0, 0, 0, 0),
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.fts.dangling_repair._record_optional_derived_surface",
+        lambda _conn, **_kwargs: True,
+    )
     monkeypatch.setattr("polylogue.storage.fts.dangling_repair._triggers_present_sync", lambda _conn, _names: True)
     monkeypatch.setattr(
         "polylogue.storage.fts.dangling_repair.record_fts_surface_state_sync",

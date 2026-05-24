@@ -921,6 +921,7 @@ class LiveBatchProcessor:
                 repair_action_fts=True,
                 ingest_result_chunk_size=_INGEST_RESULT_CHUNK_SIZE,
                 suspend_fts_triggers=suspend_fts_triggers,
+                force_process_pool=True,
                 heartbeat=None
                 if heartbeat is None
                 else lambda: heartbeat(
