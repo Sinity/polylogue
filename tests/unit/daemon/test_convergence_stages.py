@@ -128,6 +128,7 @@ def test_fts_stage_repairs_only_missing_action_index_when_messages_current(
         rebuilt = True
 
     needs_calls: list[list[str]] = []
+    marked_ready: list[FakeConnection] = []
 
     def fake_repair_needs(_conn: FakeConnection, conversation_ids: list[str]) -> stages._FtsRepairNeeds:
         needs_calls.append(conversation_ids)
@@ -147,6 +148,7 @@ def test_fts_stage_repairs_only_missing_action_index_when_messages_current(
     )
     monkeypatch.setattr(stages, "_fts_repair_needs_for_conversations", fake_repair_needs)
     monkeypatch.setattr(stages, "_action_events_exist_for_conversations", lambda _conn, _ids: False)
+    monkeypatch.setattr(stages, "_mark_message_fts_ready_after_targeted_repair", lambda conn: marked_ready.append(conn))
 
     stage = make_fts_stage(db_path)
     assert stage.execute_many is not None
@@ -154,6 +156,7 @@ def test_fts_stage_repairs_only_missing_action_index_when_messages_current(
     assert repaired_messages == []
     assert inserted_actions == [["conv-a", "conv-b"]]
     assert needs_calls == [["conv-a", "conv-b"], ["conv-a", "conv-b"]]
+    assert len(marked_ready) == 1
     assert committed is True
     assert rebuilt is False
 

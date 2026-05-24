@@ -131,10 +131,11 @@ async def _ensure_fts_startup_readiness() -> None:
        death, and subsequent writes silently bypass the FTS index. See
        #1242.
 
-    This path restores obvious broken structure first and records a
-    durable freshness state for search request handlers. It deliberately
-    avoids exact full-archive invariant scans: those run from the
-    ambient repair task, after HTTP/status surfaces have bound.
+    This path restores obvious broken structure first and records a durable
+    freshness state for search request handlers. It deliberately avoids exact
+    full-archive invariant scans during ordinary startup. If triggers are
+    missing, however, writes may already have bypassed FTS; the only correct
+    recovery is a one-time rebuild before search is served.
     """
     from polylogue.paths import db_path
     from polylogue.storage.sqlite.connection_profile import open_connection
@@ -150,8 +151,7 @@ async def _ensure_fts_startup_readiness() -> None:
         has_fts_table = row is not None
 
         from polylogue.storage.fts.freshness import (
-            STALE,
-            UNKNOWN,
+            READY,
             ensure_fts_freshness_table_sync,
             message_fts_marked_ready_sync,
             record_fts_surface_state_sync,
@@ -175,16 +175,14 @@ async def _ensure_fts_startup_readiness() -> None:
         if missing_triggers:
             logger.warning(
                 "daemon: FTS triggers missing on startup (%s). "
-                "SIGKILL-during-bulk-suspend signature; restoring triggers before freshness repair.",
+                "SIGKILL-during-bulk-suspend signature; rebuilding before serving search.",
                 ", ".join(missing_triggers),
             )
             restore_fts_triggers_sync(conn)
-            record_fts_surface_state_sync(
-                conn,
-                surface="messages_fts",
-                state=STALE,
-                detail=f"startup restored missing triggers: {', '.join(missing_triggers)}",
-            )
+            rebuild_fts_index_sync(conn)
+            conn.commit()
+            logger.info("daemon: FTS rebuild complete after trigger recovery.")
+            return
 
         ensure_fts_index_sync(conn)
         has_indexable_messages = bool(conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1").fetchone())
@@ -200,8 +198,8 @@ async def _ensure_fts_startup_readiness() -> None:
             record_fts_surface_state_sync(
                 conn,
                 surface="messages_fts",
-                state=STALE if missing_triggers else UNKNOWN,
-                detail="startup structural check passed; exact repair pending",
+                state=READY,
+                detail="startup structural check passed",
             )
         conn.commit()
     except Exception:

@@ -261,7 +261,7 @@ def test_run_live_watcher_stops_on_keyboard_interrupt() -> None:
     assert stopped == [True]
 
 
-def test_ensure_fts_startup_readiness_marks_unknown_without_exact_scan(
+def test_ensure_fts_startup_readiness_marks_ready_without_exact_scan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -352,8 +352,8 @@ def test_ensure_fts_startup_readiness_marks_unknown_without_exact_scan(
     assert recorded == [
         {
             "surface": "messages_fts",
-            "state": "unknown",
-            "detail": "startup structural check passed; exact repair pending",
+            "state": "ready",
+            "detail": "startup structural check passed",
         }
     ]
     assert all("LEFT JOIN messages_fts_docsize" not in query for query in conn.queries)
@@ -506,15 +506,12 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
             self.closed = True
 
     conn = FakeConnection()
-    ensured: list[FakeConnection] = []
     restored: list[FakeConnection] = []
     rebuilds: list[FakeConnection] = []
 
     monkeypatch.setattr("polylogue.paths.db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
-    monkeypatch.setattr(
-        "polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", lambda fake_conn: ensured.append(fake_conn)
-    )
+    monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", lambda fake_conn: None)
     monkeypatch.setattr(
         "polylogue.storage.fts.fts_lifecycle.restore_fts_triggers_sync",
         lambda fake_conn: restored.append(fake_conn),
@@ -532,9 +529,8 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
-    assert ensured == [conn]
     assert restored == [conn]
-    assert rebuilds == []
+    assert rebuilds == [conn]
     assert conn.committed is True
     assert conn.closed is True
 
