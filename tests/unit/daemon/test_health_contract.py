@@ -397,6 +397,47 @@ class TestReadinessProbeContract:
         names = {check["name"] for check in payload["checks"]}
         assert names == EXPECTED_FAST_CHECKS
 
+    def test_readiness_uses_bounded_fts_freshness_not_exact_scan(
+        self,
+        workspace_env: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import sqlite3
+
+        from polylogue.paths import db_path
+
+        self._patch_healthy_fast(monkeypatch)
+        dbf = db_path()
+        dbf.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(dbf) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE messages (message_id TEXT, text TEXT);
+                CREATE TABLE messages_fts (text TEXT);
+                CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN SELECT 1; END;
+                CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN SELECT 1; END;
+                CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages BEGIN SELECT 1; END;
+                CREATE TABLE fts_freshness_state (
+                    surface TEXT PRIMARY KEY,
+                    state TEXT NOT NULL,
+                    checked_at TEXT NOT NULL
+                );
+                INSERT INTO fts_freshness_state VALUES ('messages_fts', 'ready', '2026-05-24T00:00:00+00:00');
+                """
+            )
+        monkeypatch.setattr(
+            "polylogue.daemon.fts_status.fts_invariant_snapshot_sync",
+            lambda _conn: (_ for _ in ()).throw(AssertionError("readiness must not run exact FTS scans")),
+        )
+
+        handler = _make_handler("GET", "/healthz/ready")
+        _, send_json = _capture_responses(handler)
+        handler.do_GET()
+        status, payload = send_json.call_args.args
+        assert status == HTTPStatus.OK
+        assert payload["status"] == "ready"
+        assert payload["fts"]["coverage_exact"] is False
+
     def test_readiness_returns_503_on_critical_check(
         self,
         workspace_env: dict[str, Path],

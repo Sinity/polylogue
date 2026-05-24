@@ -133,7 +133,7 @@ def handle_healthz_ready(responder: ProbeResponder) -> None:
         fts_ready = True
         fts_payload: dict[str, object] | None = None
         if dbf.exists():
-            fts_payload = fts_readiness_info(dbf, exact=True)
+            fts_payload = fts_readiness_info(dbf)
             fts_ready = bool(fts_payload.get("invariant_ready", False))
 
         if schema_ok and not critical and fts_ready:

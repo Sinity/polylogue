@@ -49,7 +49,7 @@ class FTSReadiness(BaseModel):
     action_event_indexed_count: int = 0
     action_event_count: int = 0
     coverage_pct: float = 0.0
-    surfaces: dict[str, dict[str, int | bool]] = Field(default_factory=dict)
+    surfaces: dict[str, dict[str, int | bool | str | None]] = Field(default_factory=dict)
 
 
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -70,7 +70,21 @@ def _triggers_present(conn: sqlite3.Connection, trigger_names: tuple[str, ...]) 
     return all(name in present for name in trigger_names)
 
 
-def _surface_payload(surface: FtsSurfaceInvariant) -> dict[str, int | bool]:
+def _freshness_states(conn: sqlite3.Connection) -> dict[str, str] | None:
+    if not _table_exists(conn, "fts_freshness_state"):
+        return None
+    rows = conn.execute("SELECT surface, state FROM fts_freshness_state").fetchall()
+    return {str(row[0]): str(row[1]) for row in rows}
+
+
+def _freshness_ready(freshness: dict[str, str] | None, surface: str) -> tuple[bool, str | None]:
+    if freshness is None:
+        return True, None
+    state = freshness.get(surface)
+    return state == "ready", state
+
+
+def _surface_payload(surface: FtsSurfaceInvariant) -> dict[str, int | bool | str | None]:
     return {
         "source_exists": surface.source_exists,
         "exists": surface.exists,
@@ -109,9 +123,11 @@ def _exact_readiness_payload(snapshot: FtsInvariantSnapshot) -> dict[str, object
 def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
     """Return FTS readiness for health/status probes.
 
-    The default is request-safe and structural: it proves tables/triggers
-    exist without scanning FTS shadow tables. Use ``exact=True`` for hard
-    readiness/search decisions where stale search must never be served.
+    The default is request-safe: it proves tables/triggers exist and, when
+    the durable freshness table exists, requires each live surface to be
+    marked ready. It never scans source or FTS shadow tables. Use
+    ``exact=True`` for explicit diagnostics/repair jobs that can afford a
+    full invariant scan.
     """
     if not dbf.exists():
         return {"messages_ready": False, "action_events_ready": False, "coverage_pct": 0.0}
@@ -120,12 +136,14 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
         try:
             if exact:
                 return _exact_readiness_payload(fts_invariant_snapshot_sync(conn))
-            surfaces: dict[str, dict[str, int | bool]] = {}
+            freshness = _freshness_states(conn)
+            surfaces: dict[str, dict[str, int | bool | str | None]] = {}
             for name, source_table, fts_table, triggers in _FTS_SURFACES:
                 source_exists = _table_exists(conn, source_table)
                 exists = _table_exists(conn, fts_table)
                 triggers_present = exists and _triggers_present(conn, triggers)
-                ready = (exists and triggers_present) if source_exists else not exists
+                freshness_ready, freshness_state = _freshness_ready(freshness, name)
+                ready = (exists and triggers_present and freshness_ready) if source_exists else not exists
                 surfaces[name] = {
                     "source_exists": source_exists,
                     "exists": exists,
@@ -137,6 +155,8 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
                     "duplicate_rows": 0,
                     "ready": ready,
                     "exact": False,
+                    "freshness_known": freshness is not None,
+                    "freshness_state": freshness_state,
                 }
         finally:
             conn.close()

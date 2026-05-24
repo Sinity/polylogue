@@ -128,9 +128,7 @@ def refresh_status_snapshot(*, payload: JSONDocument | None = None) -> StatusSna
         refresh_error: str | None = None
         try:
             if payload is None:
-                from polylogue.daemon.status import daemon_status_payload
-
-                payload = daemon_status_payload()
+                payload = _minimal_status_payload()
         except Exception as exc:
             refresh_error = str(exc)
             payload = _minimal_status_payload(refresh_error=refresh_error)
