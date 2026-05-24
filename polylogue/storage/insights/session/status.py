@@ -349,7 +349,7 @@ SESSION_PROFILE_REPAIR_CANDIDATES_SQL = """
     LEFT JOIN session_profiles sp ON sp.conversation_id = c.conversation_id
     WHERE sp.conversation_id IS NULL
        OR sp.materializer_version != ?
-       OR COALESCE(sp.source_updated_at, '') != COALESCE(c.updated_at, '')
+       OR ABS(COALESCE(sp.source_sort_key, 0.0) - COALESCE(c.sort_key, 0.0)) > 0.000001
     ORDER BY c.conversation_id
 """
 
@@ -571,7 +571,7 @@ def _to_int(row: tuple[object, ...] | sqlite3.Row | None) -> int:
     if not row:
         return 0
     value = row[0]
-    if isinstance(value, (int, float, str)):
+    if isinstance(value, int | float | str):
         return int(value)
     return 0
 
