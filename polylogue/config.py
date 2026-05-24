@@ -349,6 +349,11 @@ class PolylogueConfig:
         return bool(self._data.get("health_fts_auto_restore", False))
 
     @property
+    def health_blob_integrity_sample_size(self) -> int:
+        """Bounded blob-integrity sample size for daemon health checks (#1231)."""
+        return int(str(self._data.get("health_blob_integrity_sample_size", 100)))
+
+    @property
     def health_convergence_debt(self) -> dict[str, object]:
         """Raw ``[health.convergence_debt]`` table from polylogue.toml.
 
@@ -539,6 +544,7 @@ def _default_config_values() -> dict[str, object]:
         "health_check_interval_s": 300,
         "health_check_tiers": "fast",
         "health_fts_auto_restore": False,
+        "health_blob_integrity_sample_size": 100,
         "watch_debounce_s": 2.0,
         "browser_capture_host": "127.0.0.1",
         "browser_capture_spool_path": "",
@@ -785,6 +791,7 @@ def _apply_env_overrides(cfg: dict[str, object]) -> None:
         "POLYLOGUE_HEALTH_CHECK_INTERVAL_S": "health_check_interval_s",
         "POLYLOGUE_HEALTH_CHECK_TIERS": "health_check_tiers",
         "POLYLOGUE_HEALTH_FTS_AUTO_RESTORE": "health_fts_auto_restore",
+        "POLYLOGUE_HEALTH_BLOB_INTEGRITY_SAMPLE_SIZE": "health_blob_integrity_sample_size",
         "POLYLOGUE_API_HOST": "api_host",
         "POLYLOGUE_API_PORT": "api_port",
         "POLYLOGUE_API_AUTH_TOKEN": "api_auth_token",
@@ -798,6 +805,7 @@ def _apply_env_overrides(cfg: dict[str, object]) -> None:
         "daemon_port",
         "browser_capture_port",
         "health_check_interval_s",
+        "health_blob_integrity_sample_size",
         "notification_email_port",
         "notification_email_max_per_hour",
     }

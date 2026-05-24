@@ -97,6 +97,40 @@ def append_daemon_lines(lines: list[str], result: CheckCommandResult) -> None:
     lines.extend(f"  {line}" for line in format_daemon_status_lines(result.daemon_report)[1:])
 
 
+def append_blob_lines(lines: list[str], result: CheckCommandResult) -> None:
+    if result.blob_report is None:
+        return
+    report = result.blob_report
+    mode = "full" if report.get("full_scan") else "sample"
+    lines.extend(
+        [
+            "",
+            (
+                f"Blob integrity ({mode}): {report.get('scanned_blobs', 0):,}/"
+                f"{report.get('total_blobs_seen', 0):,} blobs, "
+                f"{report.get('scanned_references', 0):,}/"
+                f"{report.get('total_references_seen', 0):,} references checked"
+            ),
+        ]
+    )
+    findings = report.get("findings", [])
+    if not findings:
+        lines.append("  OK: no blob integrity findings")
+        return
+    if isinstance(findings, list):
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            sample = finding.get("sample", [])
+            sample_text = ""
+            if isinstance(sample, list) and sample:
+                sample_text = " sample=" + ", ".join(str(item)[:12] + "..." for item in sample[:3])
+            lines.append(
+                f"  {str(finding.get('severity', 'warning')).upper()} {finding.get('kind')}: "
+                f"{finding.get('count', 0):,}{sample_text}"
+            )
+
+
 # ---------------------------------------------------------------------------
 # Artifact / schema sections
 # ---------------------------------------------------------------------------
@@ -206,6 +240,7 @@ def build_report_lines(
     append_artifact_observation_lines(lines, result)
     append_runtime_lines(lines, result, plain=env.ui.plain)
     append_daemon_lines(lines, result)
+    append_blob_lines(lines, result)
     return lines
 
 

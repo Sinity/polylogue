@@ -33,6 +33,7 @@ from polylogue.storage.message_type_backfill import (
 
 logger = get_logger(__name__)
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
+_PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT = 100_000
 
 
 def offline_maintenance_blockers(
@@ -155,6 +156,11 @@ def count_orphaned_attachments_sync(conn: sqlite3.Connection) -> int:
     return orphaned_refs + unreferenced_attachments
 
 
+def _table_has_more_than(conn: sqlite3.Connection, table_name: str, row_limit: int) -> bool:
+    row = conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1 OFFSET ?", (max(0, row_limit),)).fetchone()
+    return row is not None
+
+
 # ---------------------------------------------------------------------------
 # Derived repair count helpers (formerly archive_debt_repairs)
 # ---------------------------------------------------------------------------
@@ -248,10 +254,11 @@ class ArchiveDebtStatus:
     issue_count: int
     detail: str
     maintenance_target: str
+    skipped: bool = False
 
     @property
     def healthy(self) -> bool:
-        return self.issue_count == 0
+        return self.issue_count == 0 and not self.skipped
 
     def to_dict(self) -> JSONDocument:
         return json_document(
@@ -263,6 +270,7 @@ class ArchiveDebtStatus:
                 "detail": self.detail,
                 "maintenance_target": self.maintenance_target,
                 "healthy": self.healthy,
+                "skipped": self.skipped,
             }
         )
 
@@ -297,6 +305,7 @@ def _archive_debt_status(
     *,
     issue_count: int,
     detail: str,
+    skipped: bool = False,
 ) -> ArchiveDebtStatus:
     spec = _maintenance_target_spec(target_name)
     return ArchiveDebtStatus(
@@ -306,6 +315,7 @@ def _archive_debt_status(
         issue_count=issue_count,
         detail=detail,
         maintenance_target=spec.name,
+        skipped=skipped,
     )
 
 
@@ -320,26 +330,27 @@ def collect_archive_debt_statuses_sync(
 
     statuses = derived_statuses or collect_derived_model_statuses_sync(conn, verify_full=include_expensive)
 
-    orphaned_messages = (
-        1
-        if has_orphaned_messages_sync(conn)
-        else 0
-        if probe_only and not include_expensive
-        else count_orphaned_messages_sync(conn)
+    skip_large_message_scans = (
+        probe_only
+        and not include_expensive
+        and _table_has_more_than(conn, "messages", _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT)
     )
-    empty_conversations = count_empty_conversations_sync(conn)
+    orphaned_messages = 0 if skip_large_message_scans else count_orphaned_messages_sync(conn)
+    empty_conversations = 0 if skip_large_message_scans else count_empty_conversations_sync(conn)
     orphaned_attachments = count_orphaned_attachments_sync(conn)
     session_insights = session_insight_repair_count(statuses)
     action_events = action_event_repair_count(statuses)
     dangling_fts = dangling_fts_repair_count(statuses)
-    _unclassified = count_unclassified_message_type_sync(conn)
+    _unclassified = 0 if skip_large_message_scans else count_unclassified_message_type_sync(conn)
 
     debt_statuses = {
         "orphaned_messages": _archive_debt_status(
             "orphaned_messages",
             issue_count=orphaned_messages,
             detail=(
-                "No orphaned messages"
+                "Skipped exact orphaned-message scan in probe mode; use --deep for exact count"
+                if skip_large_message_scans
+                else "No orphaned messages"
                 if orphaned_messages == 0
                 else (
                     "Orphaned messages present; use --deep for exact count"
@@ -347,13 +358,19 @@ def collect_archive_debt_statuses_sync(
                     else f"{orphaned_messages:,} orphaned messages"
                 )
             ),
+            skipped=skip_large_message_scans,
         ),
         "empty_conversations": _archive_debt_status(
             "empty_conversations",
             issue_count=empty_conversations,
-            detail="No empty conversations"
-            if empty_conversations == 0
-            else f"{empty_conversations:,} empty conversations",
+            detail=(
+                "Skipped exact empty-conversation scan in probe mode; use --deep for exact count"
+                if skip_large_message_scans
+                else "No empty conversations"
+                if empty_conversations == 0
+                else f"{empty_conversations:,} empty conversations"
+            ),
+            skipped=skip_large_message_scans,
         ),
         "orphaned_attachments": _archive_debt_status(
             "orphaned_attachments",
@@ -382,9 +399,14 @@ def collect_archive_debt_statuses_sync(
         "message_type_backfill": _archive_debt_status(
             "message_type_backfill",
             issue_count=_unclassified,
-            detail="No messages need context/protocol classification"
-            if _unclassified == 0
-            else f"{_unclassified:,} messages would be classified as context or protocol",
+            detail=(
+                "Skipped exact message-type backfill scan in probe mode; use --deep for exact count"
+                if skip_large_message_scans
+                else "No messages need context/protocol classification"
+                if _unclassified == 0
+                else f"{_unclassified:,} messages would be classified as context or protocol"
+            ),
+            skipped=skip_large_message_scans,
         ),
     }
     if include_expensive:

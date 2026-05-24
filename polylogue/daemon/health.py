@@ -1179,47 +1179,33 @@ def _check_db_integrity_expensive() -> HealthAlert:
         )
 
 
-def _check_blob_integrity_expensive() -> HealthAlert:
-    """Sample-check blob store integrity by verifying a bounded set of blobs.
-
-    Uses ``BlobStore.verify_all()`` with a low failure cap to bound runtime.
-    This is a filesystem-only check — it does not touch the database and is
-    usable even when the DB is unavailable.
-    """
-    from polylogue.storage.blob_store import get_blob_store
+def _check_blob_integrity_expensive() -> list[HealthAlert]:
+    """Sample-check blob store integrity through the shared read-only scanner."""
+    from polylogue.config import load_polylogue_config
+    from polylogue.daemon.blob_integrity_alerts import blob_integrity_alerts_from_report
+    from polylogue.paths import db_path
+    from polylogue.storage.blob_integrity import scan_blob_integrity
 
     now = datetime.now(UTC).isoformat()
     try:
-        store = get_blob_store()
-        result = store.verify_all(max_failures=5)
-        if result.passed:
-            severity = HealthSeverity.OK
-            message = f"blob integrity ok ({result.checked} verified)"
-        elif result.truncated:
-            severity = HealthSeverity.ERROR
-            message = f"blob integrity: {result.failed_count} failures (stopped early)"
-        else:
-            severity = HealthSeverity.WARNING
-            failure_details = "; ".join(f"{f.hash[:8]}... ({f.reason})" for f in result.failures)
-            message = f"blob integrity: {result.failed_count}/{result.checked} failures [{failure_details}]"
-        is_ok = severity == HealthSeverity.OK
-        return HealthAlert(
-            check_name="blob_integrity",
-            tier=HealthTier.EXPENSIVE,
-            severity=severity,
-            message=message,
-            checked_at=now,
-            consecutive_failures=_record_failure("blob_integrity", is_ok),
+        cfg = load_polylogue_config()
+        report = scan_blob_integrity(
+            db_path(),
+            full=False,
+            sample_size=max(1, cfg.health_blob_integrity_sample_size),
         )
+        return blob_integrity_alerts_from_report(report, now, _record_failure)
     except Exception as exc:
-        return HealthAlert(
-            check_name="blob_integrity",
-            tier=HealthTier.EXPENSIVE,
-            severity=HealthSeverity.ERROR,
-            message=f"blob integrity check failed: {exc}",
-            checked_at=now,
-            consecutive_failures=_record_failure("blob_integrity", False),
-        )
+        return [
+            HealthAlert(
+                check_name="blob_integrity",
+                tier=HealthTier.EXPENSIVE,
+                severity=HealthSeverity.ERROR,
+                message=f"blob integrity check failed: {exc}",
+                checked_at=now,
+                consecutive_failures=_record_failure("blob_integrity", False),
+            )
+        ]
 
 
 def _check_embedding_coverage_expensive() -> HealthAlert:
@@ -1285,11 +1271,10 @@ def _check_embedding_coverage_expensive() -> HealthAlert:
 
 
 def _run_expensive_checks() -> list[HealthAlert]:
-    return [
-        _check_db_integrity_expensive(),
-        _check_blob_integrity_expensive(),
-        _check_embedding_coverage_expensive(),
-    ]
+    alerts = [_check_db_integrity_expensive()]
+    alerts.extend(_check_blob_integrity_expensive())
+    alerts.append(_check_embedding_coverage_expensive())
+    return alerts
 
 
 # ---------------------------------------------------------------------------

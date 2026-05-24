@@ -329,8 +329,10 @@ Options:
   --runtime                       Run environment and runtime verification
                                   checks
   --daemon                        Show daemon component status
-  --blob                          Verify blob store integrity
-                                  (missing/orphaned blobs)
+  --blob, --blob-integrity        Verify blob store integrity (missing,
+                                  orphaned, corrupt, and stale-lease blobs)
+  --full                          Run full blob-integrity scan (requires
+                                  --blob)
   --schemas                       Run raw-corpus schema verification (non-
                                   mutating)
   --proof                         Run durable artifact support proof

@@ -31,6 +31,7 @@ from typing import Any
 import pytest
 
 from polylogue.daemon import health as health_module
+from polylogue.daemon.blob_integrity_alerts import blob_integrity_alerts_from_report
 from polylogue.daemon.health import (
     HealthSeverity,
     _check_blob_integrity_expensive,
@@ -49,7 +50,7 @@ from polylogue.daemon.health import (
 )
 from polylogue.daemon.live_ingest_attempt_models import LiveIngestAttemptSummary
 from polylogue.paths import archive_root, db_path
-from polylogue.storage.blob_store import BlobVerifyAllResult, BlobVerifyFailure
+from polylogue.storage.blob_integrity import BlobIntegrityFinding, BlobIntegrityReport
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -588,12 +589,22 @@ def test_blob_integrity_ok(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class _Store:
-        def verify_all(self, *, max_failures: int = 5) -> BlobVerifyAllResult:
-            return BlobVerifyAllResult(checked=10, checked_bytes=1024, failures=(), truncated=False)
-
-    monkeypatch.setattr("polylogue.storage.blob_store.get_blob_store", lambda: _Store())
-    alert = _check_blob_integrity_expensive()
+    monkeypatch.setattr(
+        "polylogue.storage.blob_integrity.scan_blob_integrity",
+        lambda *_args, **_kwargs: BlobIntegrityReport(
+            full_scan=False,
+            sample_size=100,
+            scanned_blobs=10,
+            scanned_references=10,
+            total_blobs_seen=10,
+            total_references_seen=10,
+            active_lease_count=0,
+            stale_lease_count=0,
+            findings=(),
+        ),
+        raising=False,
+    )
+    alert = _check_blob_integrity_expensive()[0]
     assert alert.severity == HealthSeverity.OK
     assert "ok" in alert.message
 
@@ -603,20 +614,63 @@ def test_blob_integrity_warning_when_failures_present(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class _Store:
-        def verify_all(self, *, max_failures: int = 5) -> BlobVerifyAllResult:
-            return BlobVerifyAllResult(
-                checked=10,
-                checked_bytes=1024,
-                failures=(BlobVerifyFailure(hash="abc12345" * 8, reason="hash_mismatch"),),
-                truncated=False,
-            )
-
-    monkeypatch.setattr("polylogue.storage.blob_store.get_blob_store", lambda: _Store())
-    alert = _check_blob_integrity_expensive()
-    assert alert.severity == HealthSeverity.WARNING
+    monkeypatch.setattr(
+        "polylogue.storage.blob_integrity.scan_blob_integrity",
+        lambda *_args, **_kwargs: BlobIntegrityReport(
+            full_scan=False,
+            sample_size=100,
+            scanned_blobs=10,
+            scanned_references=10,
+            total_blobs_seen=10,
+            total_references_seen=10,
+            active_lease_count=0,
+            stale_lease_count=0,
+            findings=(
+                BlobIntegrityFinding(
+                    kind="hash_mismatch",
+                    severity="critical",
+                    count=1,
+                    sample=("abc12345" * 8,),
+                    suggested_action="restore from backup",
+                ),
+            ),
+        ),
+        raising=False,
+    )
+    alert = _check_blob_integrity_expensive()[0]
+    assert alert.severity == HealthSeverity.CRITICAL
     assert alert.consecutive_failures == 1
     assert "hash_mismatch" in alert.message
+
+
+def test_blob_integrity_alert_renderer_emits_one_alert_per_finding() -> None:
+    report = BlobIntegrityReport(
+        full_scan=False,
+        sample_size=100,
+        scanned_blobs=10,
+        scanned_references=10,
+        total_blobs_seen=10,
+        total_references_seen=10,
+        active_lease_count=0,
+        stale_lease_count=0,
+        findings=(
+            BlobIntegrityFinding(
+                kind="orphan_blobs",
+                severity="warning",
+                count=2,
+                sample=("a" * 64,),
+                suggested_action="preview cleanup",
+                bytes_total=42,
+            ),
+        ),
+    )
+
+    alerts = blob_integrity_alerts_from_report(report, "2026-05-24T00:00:00+00:00", lambda _name, _ok: 7)
+
+    assert [alert.check_name for alert in alerts] == ["blob_integrity.orphan_blobs"]
+    assert alerts[0].severity == HealthSeverity.WARNING
+    assert alerts[0].consecutive_failures == 7
+    assert "bytes=42" in alerts[0].message
 
 
 # ---------------------------------------------------------------------------

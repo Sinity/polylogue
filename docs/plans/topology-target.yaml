@@ -674,7 +674,7 @@ files:
     target: polylogue/cli/commands/backup.py
     owner: stable
   - path: polylogue/cli/commands/check.py
-    loc: 114
+    loc: 116
     target: polylogue/cli/commands/check.py
     owner: stable
   - path: polylogue/cli/commands/completions.py
@@ -851,7 +851,7 @@ files:
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/cli/shared/check_options.py
-    loc: 114
+    loc: 121
     target: polylogue/cli/shared/check_options.py
     owner: stable
   - path: polylogue/cli/shared/check_rendering_json.py
@@ -859,7 +859,7 @@ files:
     target: polylogue/cli/shared/check_rendering_json.py
     owner: stable
   - path: polylogue/cli/shared/check_rendering_plain.py
-    loc: 273
+    loc: 308
     target: polylogue/cli/shared/check_rendering_plain.py
     owner: stable
   - path: polylogue/cli/shared/check_support.py
@@ -867,11 +867,11 @@ files:
     target: polylogue/cli/shared/check_support.py
     owner: stable
   - path: polylogue/cli/shared/check_validation.py
-    loc: 68
+    loc: 70
     target: polylogue/cli/shared/check_validation.py
     owner: stable
   - path: polylogue/cli/shared/check_workflow.py
-    loc: 342
+    loc: 269
     target: polylogue/cli/shared/check_workflow.py
     owner: stable
   - path: polylogue/cli/shared/embed_runtime.py
@@ -960,7 +960,7 @@ files:
     target: polylogue/cli/verb_names.py
     owner: stable
   - path: polylogue/config.py
-    loc: 960
+    loc: 968
     target: polylogue/config.py
     owner: kernel
     reason: kernel root rule
@@ -1068,6 +1068,10 @@ files:
     loc: 233
     target: polylogue/daemon/backup.py
     owner: stable
+  - path: polylogue/daemon/blob_integrity_alerts.py
+    loc: 51
+    target: polylogue/daemon/blob_integrity_alerts.py
+    owner: stable
   - path: polylogue/daemon/browser_capture.py
     loc: 52
     target: polylogue/daemon/browser_capture.py
@@ -1129,7 +1133,7 @@ files:
     target: polylogue/daemon/fts_status.py
     owner: stable
   - path: polylogue/daemon/health.py
-    loc: 1393
+    loc: 1378
     target: polylogue/daemon/health.py
     owner: stable
   - path: polylogue/daemon/healthz.py
@@ -1198,7 +1202,7 @@ files:
     target: polylogue/daemon/similarity.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 1357
+    loc: 1358
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/status_snapshot.py
@@ -1754,7 +1758,7 @@ files:
     target: polylogue/publication/__init__.py
     owner: stable
   - path: polylogue/readiness/__init__.py
-    loc: 624
+    loc: 634
     target: polylogue/readiness/__init__.py
     owner: stable
   - path: polylogue/rendering/block_models.py
@@ -2786,6 +2790,11 @@ files:
     target: polylogue/storage/blob_gc.py
     owner: storage-root
     reason: storage-root cross-cutting helper
+  - path: polylogue/storage/blob_integrity.py
+    loc: 246
+    target: polylogue/storage/blob_integrity.py
+    owner: storage-root
+    reason: storage-root cross-cutting helper
   - path: polylogue/storage/blob_store.py
     loc: 553
     target: polylogue/storage/blob_store.py
@@ -2980,7 +2989,7 @@ files:
     target: polylogue/storage/raw/models.py
     owner: stable
   - path: polylogue/storage/repair.py
-    loc: 1264
+    loc: 1282
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper
