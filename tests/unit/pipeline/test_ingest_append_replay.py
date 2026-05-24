@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 from polylogue.pipeline.services.ingest_batch import _write_conversation
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.types import ConversationId
@@ -92,6 +95,14 @@ def test_append_mode_filters_unchanged_replayed_rows(tmp_path: Path) -> None:
             "SELECT message_id, text FROM content_blocks WHERE conversation_id = ? ORDER BY message_id",
             ("codex:append-replay",),
         ).fetchall()
+        stats = conn.execute(
+            """
+            SELECT message_count, word_count, tool_use_count, thinking_count, paste_count
+            FROM conversation_stats
+            WHERE conversation_id = ?
+            """,
+            ("codex:append-replay",),
+        ).fetchone()
 
     assert changed_initial is True
     assert changed_tail is True
@@ -105,3 +116,134 @@ def test_append_mode_filters_unchanged_replayed_rows(tmp_path: Path) -> None:
         ("msg-1", "first block"),
         ("msg-2", "second block"),
     ]
+    assert stats is not None
+    assert tuple(stats) == (2, 2, 0, 0, 0)
+
+
+def test_append_mode_updates_stats_without_full_message_recount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with open_connection(tmp_path / "ingest.db") as conn:
+        initial = _conversation_data(
+            "codex:append-stats",
+            content_hash="hash-v1",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex:append-stats",
+                    role="user",
+                    text="first message",
+                    content_hash="msg-v1-1",
+                    sort_key=1.0,
+                )
+            ],
+            stats_tuple=(ConversationId("codex:append-stats"), "codex", 1, 2, 0, 0, 0),
+        )
+        changed_initial, _initial_counts = _write_conversation(conn, initial)
+        conn.commit()
+
+        def fail_full_recount(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("append stats should be updated incrementally")
+
+        monkeypatch.setattr(ingest_batch_core, "_upsert_stats_from_messages", fail_full_recount)
+
+        replay = _conversation_data(
+            "codex:append-stats",
+            content_hash="hash-v2",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex:append-stats",
+                    role="user",
+                    text="rewritten first message",
+                    content_hash="msg-v1-1",
+                    sort_key=1.0,
+                ),
+                _message_tuple(
+                    "msg-2",
+                    "codex:append-stats",
+                    role="assistant",
+                    text="second message here",
+                    content_hash="msg-v2-2",
+                    sort_key=2.0,
+                ),
+            ],
+            append_only=True,
+        )
+
+        changed_tail, tail_counts = _write_conversation(conn, replay)
+        conn.commit()
+        stats = conn.execute(
+            """
+            SELECT message_count, word_count, tool_use_count, thinking_count, paste_count
+            FROM conversation_stats
+            WHERE conversation_id = ?
+            """,
+            ("codex:append-stats",),
+        ).fetchone()
+
+    assert changed_initial is True
+    assert changed_tail is True
+    assert tail_counts["messages"] == 1
+    assert tail_counts["skipped_messages"] == 1
+    assert stats is not None
+    assert tuple(stats) == (2, 5, 0, 0, 0)
+
+
+def test_append_mode_repairs_missing_stats_on_unchanged_replay(tmp_path: Path) -> None:
+    with open_connection(tmp_path / "ingest.db") as conn:
+        initial = _conversation_data(
+            "codex:append-stats-repair",
+            content_hash="hash-v1",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex:append-stats-repair",
+                    role="user",
+                    text="first message",
+                    content_hash="msg-v1-1",
+                    sort_key=1.0,
+                )
+            ],
+            stats_tuple=(ConversationId("codex:append-stats-repair"), "codex", 1, 2, 0, 0, 0),
+        )
+        changed_initial, _initial_counts = _write_conversation(conn, initial)
+        conn.execute(
+            "DELETE FROM conversation_stats WHERE conversation_id = ?",
+            ("codex:append-stats-repair",),
+        )
+        conn.commit()
+
+        replay = _conversation_data(
+            "codex:append-stats-repair",
+            content_hash="hash-v1",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex:append-stats-repair",
+                    role="user",
+                    text="first message",
+                    content_hash="msg-v1-1",
+                    sort_key=1.0,
+                )
+            ],
+            append_only=True,
+        )
+
+        changed_tail, tail_counts = _write_conversation(conn, replay)
+        conn.commit()
+        stats = conn.execute(
+            """
+            SELECT message_count, word_count, tool_use_count, thinking_count, paste_count
+            FROM conversation_stats
+            WHERE conversation_id = ?
+            """,
+            ("codex:append-stats-repair",),
+        ).fetchone()
+
+    assert changed_initial is True
+    assert changed_tail is False
+    assert tail_counts["messages"] == 0
+    assert tail_counts["skipped_messages"] == 1
+    assert stats is not None
+    assert tuple(stats) == (1, 2, 0, 0, 0)

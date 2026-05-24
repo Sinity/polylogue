@@ -61,6 +61,7 @@ from polylogue.core.metrics import (
 from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
 from polylogue.pipeline.payload_types import MaterializeStageObservation, ParseBatchObservation
+from polylogue.pipeline.services.ingest_batch._append_stats import existing_message_signatures, upsert_stats_for_append
 from polylogue.pipeline.services.ingest_worker import (
     ConversationData,
     ConversationTuple,
@@ -320,21 +321,6 @@ def _conversation_tuple_with_hash(conversation: ConversationTuple, content_hash:
     )
 
 
-def _existing_message_hashes(conn: sqlite3.Connection, message_ids: Sequence[str]) -> dict[str, str]:
-    if not message_ids:
-        return {}
-    hashes: dict[str, str] = {}
-    for offset in range(0, len(message_ids), _WRITE_SELECT_CHUNK_SIZE):
-        chunk = message_ids[offset : offset + _WRITE_SELECT_CHUNK_SIZE]
-        placeholders = ", ".join("?" for _ in chunk)
-        rows = conn.execute(
-            f"SELECT message_id, content_hash FROM messages WHERE message_id IN ({placeholders})",
-            tuple(chunk),
-        ).fetchall()
-        hashes.update({str(row["message_id"]): str(row["content_hash"]) for row in rows})
-    return hashes
-
-
 def _existing_provider_event_ids(conn: sqlite3.Connection, event_ids: Sequence[str]) -> set[str]:
     if not event_ids:
         return set()
@@ -422,9 +408,11 @@ def _append_conversation(
         "skipped_provider_events": 0,
     }
     message_ids = [str(message[0]) for message in cdata.message_tuples]
-    existing_messages = _existing_message_hashes(conn, message_ids)
+    existing_messages = existing_message_signatures(conn, message_ids)
     changed_messages = [
-        message for message in cdata.message_tuples if existing_messages.get(str(message[0])) != str(message[6])
+        message
+        for message in cdata.message_tuples
+        if existing_messages.get(str(message[0]), ("", 0, 0, 0, 0))[0] != str(message[6])
     ]
     changed_message_ids = {str(message[0]) for message in changed_messages}
     event_ids = [str(event[0]) for event in cdata.provider_event_tuples]
@@ -433,6 +421,14 @@ def _append_conversation(
         event for event in cdata.provider_event_tuples if str(event[0]) not in existing_provider_events
     ]
     if not changed_messages and not cdata.attachment_tuples and not changed_provider_events:
+        upsert_stats_for_append(
+            conn,
+            cdata.conversation_id,
+            cdata.provider_name,
+            changed_messages,
+            existing_messages,
+            full_recount=_upsert_stats_from_messages,
+        )
         counts["skipped_conversations"] = 1
         counts["skipped_messages"] = len(cdata.message_tuples)
         counts["skipped_attachments"] = len(cdata.attachment_tuples)
@@ -493,7 +489,14 @@ def _append_conversation(
         counts["attachments"] = len(cdata.attachment_tuples)
         recount_and_prune_attachments_sync(conn, affected_attachment_ids)
 
-    _upsert_stats_from_messages(conn, cdata.conversation_id, cdata.provider_name)
+    upsert_stats_for_append(
+        conn,
+        cdata.conversation_id,
+        cdata.provider_name,
+        changed_messages,
+        existing_messages,
+        full_recount=_upsert_stats_from_messages,
+    )
     counts["conversations"] = 1
     return True, counts
 
