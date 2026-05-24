@@ -292,6 +292,13 @@ def test_ensure_fts_startup_readiness_marks_unknown_without_exact_scan(
             self.queries.append(query)
             if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'":
                 return FakeCursor(("messages_fts",))
+            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+                name = str(_params[0]) if isinstance(_params, tuple) and _params else ""
+                return (
+                    FakeCursor((1,))
+                    if name in {"messages", "messages_fts", "action_events", "action_events_fts"}
+                    else FakeCursor(None)
+                )
             if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
                 # All six FTS triggers present — no SIGKILL-drift recovery.
                 triggers: list[tuple[object, ...]] = [
@@ -385,6 +392,13 @@ def test_ensure_fts_startup_readiness_rebuilds_empty_fts(
             self.queries.append(query)
             if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'":
                 return FakeCursor(("messages_fts",))
+            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+                name = str(_params[0]) if isinstance(_params, tuple) and _params else ""
+                return (
+                    FakeCursor((1,))
+                    if name in {"messages", "messages_fts", "action_events", "action_events_fts"}
+                    else FakeCursor(None)
+                )
             if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
                 triggers: list[tuple[object, ...]] = [
                     ("messages_fts_ai",),
@@ -461,6 +475,13 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
             self.queries.append(query)
             if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'":
                 return FakeCursor(("messages_fts",))
+            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+                name = str(_params[0]) if isinstance(_params, tuple) and _params else ""
+                return (
+                    FakeCursor((1,))
+                    if name in {"messages", "messages_fts", "action_events", "action_events_fts"}
+                    else FakeCursor(None)
+                )
             if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
                 # One missing trigger must send startup through restore+rebuild
                 # before ensure_fts_index_sync can hide the drift evidence.
@@ -516,6 +537,32 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
     assert rebuilds == []
     assert conn.committed is True
     assert conn.closed is True
+
+
+def test_periodic_db_optimize_does_not_run_on_startup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    class SleepBeforeOptimizeError(Exception):
+        pass
+
+    opened: list[Path] = []
+
+    async def fake_sleep(_seconds: float) -> None:
+        raise SleepBeforeOptimizeError
+
+    def fake_open_connection(path: Path, *, timeout: float) -> object:
+        del timeout
+        opened.append(path)
+        raise AssertionError("PRAGMA optimize must not run at daemon startup")
+
+    monkeypatch.setattr("polylogue.paths.db_path", lambda: tmp_path / "polylogue.db")
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", fake_open_connection)
+
+    with pytest.raises(SleepBeforeOptimizeError):
+        asyncio.run(daemon_cli._periodic_db_optimize())
+
+    assert opened == []
 
 
 def test_run_daemon_services_stops_live_watcher_on_failure() -> None:

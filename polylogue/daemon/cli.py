@@ -286,17 +286,18 @@ async def _periodic_db_optimize() -> None:
 
     On a 60 GB archive with millions of rows, the query planner's
     internal statistics drift as the table sizes change.  PRAGMA optimize
-    is a lightweight maintenance pass — it only runs ANALYZE on tables
-    that need it and never blocks reads.  It is NOT a VACUUM and does
-    not rewrite the file.
+    is an explicit background maintenance pass, not startup readiness.
+    The daemon must bind, catch up, and converge changed files before it
+    considers planner-stat maintenance; otherwise a large archive can pay
+    broad read IO at the exact moment live catch-up already needs the disk.
     """
     from polylogue.paths import db_path
     from polylogue.storage.sqlite.connection_profile import open_connection
 
     db = db_path()
     while True:
+        await asyncio.sleep(86_400)  # 24 hours; no startup optimize.
         if not db.exists():
-            await asyncio.sleep(86_400)  # 24 hours
             continue
         try:
             conn = open_connection(db, timeout=30.0)
@@ -307,60 +308,6 @@ async def _periodic_db_optimize() -> None:
                 conn.close()
         except Exception:
             logger.warning("daemon: DB optimize failed", exc_info=True)
-        await asyncio.sleep(86_400)  # 24 hours
-
-
-async def _periodic_fts_repair() -> None:
-    """Keep FTS ambiently fresh without waiting for a search request to fail."""
-    from polylogue.paths import db_path
-
-    db = db_path()
-    delay_s = 30
-    while True:
-        await asyncio.sleep(delay_s)
-        delay_s = 600  # 10 minutes
-        if not db.exists():
-            continue
-        try:
-            repaired = await asyncio.to_thread(_repair_fts_if_stale_once, db)
-            if repaired:
-                logger.info("daemon: exact FTS invariant repaired")
-        except Exception:
-            logger.warning("daemon: exact FTS repair check failed", exc_info=True)
-
-
-def _repair_fts_if_stale_once(db: Path) -> bool:
-    """Rebuild FTS once when exact invariants show drift."""
-    from polylogue.storage.fts.freshness import message_fts_marked_ready_sync, record_fts_invariant_snapshot_sync
-    from polylogue.storage.fts.fts_lifecycle import (
-        fts_invariant_snapshot_sync,
-        message_fts_readiness_sync,
-        rebuild_fts_index_sync,
-    )
-    from polylogue.storage.search.cache import invalidate_search_cache
-    from polylogue.storage.sqlite.connection_profile import open_connection
-
-    conn = open_connection(db, timeout=30.0)
-    try:
-        conn.execute("PRAGMA cache_size = -8192")
-        conn.execute("PRAGMA mmap_size = 0")
-        if message_fts_marked_ready_sync(conn):
-            readiness = message_fts_readiness_sync(conn, verify_total_rows=False)
-            if bool(readiness["ready"]):
-                return False
-        snapshot = fts_invariant_snapshot_sync(conn)
-        record_fts_invariant_snapshot_sync(conn, snapshot)
-        if snapshot.ready:
-            conn.commit()
-            return False
-        stale_surfaces = ", ".join(surface.name for surface in snapshot.surfaces if not surface.ready)
-        logger.warning("daemon: exact FTS invariant stale (%s). Rebuilding.", stale_surfaces)
-        rebuild_fts_index_sync(conn)
-        conn.commit()
-        invalidate_search_cache()
-        return True
-    finally:
-        conn.close()
 
 
 async def _periodic_convergence_check(
@@ -668,7 +615,6 @@ async def run_daemon_services(
     convergence_task = asyncio.create_task(_periodic_convergence_check(sources))
     health_task = asyncio.create_task(_periodic_health_check())
     db_optimize_task = asyncio.create_task(_periodic_db_optimize())
-    fts_repair_task = asyncio.create_task(_periodic_fts_repair())
     status_snapshot_task = asyncio.create_task(_periodic_status_snapshot_refresh())
     maintenance_tasks = [
         wal_task,
@@ -676,7 +622,6 @@ async def run_daemon_services(
         convergence_task,
         health_task,
         db_optimize_task,
-        fts_repair_task,
         status_snapshot_task,
     ]
 
