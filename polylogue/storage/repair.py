@@ -790,11 +790,7 @@ def repair_session_insights(
                 conn.commit()
                 rebuilt_count = rebuilt.total()
             refreshed = session_insight_status_sync(conn)
-            if (
-                conversation_ids is None
-                and not session_insight_status_ready(refreshed)
-                and assess_session_insight_repairs(refreshed).row_debt > 0
-            ):
+            if conversation_ids is None and not session_insight_status_ready(refreshed):
                 rebuilt = rebuild_session_insights_sync(
                     conn,
                     conversation_ids=None,

@@ -236,6 +236,22 @@ def _pytest_metadata_from_report(report: dict[str, Any]) -> dict[str, Any]:
     return metadata
 
 
+def _pytest_command_metadata(cmd: list[str]) -> dict[str, Any]:
+    """Return verify metadata that explains the pytest worker policy."""
+    metadata: dict[str, Any] = {}
+    if "-n" in cmd:
+        index = cmd.index("-n")
+        if index + 1 < len(cmd):
+            metadata["pytest_workers"] = cmd[index + 1]
+    else:
+        metadata["pytest_workers"] = "unset"
+    if "--testmon" in cmd:
+        metadata["pytest_selection"] = "testmon-noselect" if "--testmon-noselect" in cmd else "testmon"
+    else:
+        metadata["pytest_selection"] = "full"
+    return metadata
+
+
 def _clear_pytest_report() -> None:
     """Remove a stale report before a pytest step runs."""
     with contextlib.suppress(FileNotFoundError):
@@ -253,6 +269,7 @@ def _run(label: str, cmd: list[str], *, cwd: str | None = None) -> tuple[int, fl
     elapsed = time.monotonic() - t0
     metadata: dict[str, Any] = {}
     if label.startswith("pytest"):
+        metadata.update(_pytest_command_metadata(cmd))
         report = _read_pytest_report()
         if report is not None:
             metadata.update(_pytest_metadata_from_report(report))
@@ -379,7 +396,7 @@ def build_verify_steps(
             pytest_cmd.extend(["--testmon", "--testmon-noselect", *_pytest_worker_args(default="16")])
             steps.append(("pytest testmon-global", pytest_cmd))
         else:
-            pytest_cmd.extend(["--testmon", "-n", "0"])
+            pytest_cmd.extend(["--testmon", *_pytest_worker_args(default="8")])
             if skip_slow:
                 pytest_cmd.append("--testmon-forceselect")
             steps.append(("pytest testmon", pytest_cmd))
