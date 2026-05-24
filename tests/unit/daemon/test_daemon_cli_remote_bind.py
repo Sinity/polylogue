@@ -21,6 +21,7 @@ of the function and fires before any heavyweight setup.
 from __future__ import annotations
 
 import asyncio
+import socket
 
 import click
 import pytest
@@ -31,6 +32,12 @@ from polylogue.daemon.cli import run_daemon_services
 def _run(coro: object) -> None:
     """Drive an async function until it raises or returns."""
     asyncio.run(coro)  # type: ignore[arg-type]
+
+
+def _unused_loopback_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 @pytest.mark.parametrize("api_host", ["0.0.0.0", "192.168.1.1", "10.0.0.1"])
@@ -119,6 +126,7 @@ def test_loopback_bind_passes_remote_check() -> None:
     """
     from unittest.mock import patch
 
+    api_port = _unused_loopback_port()
     with patch(
         "polylogue.daemon.cli._ensure_fts_startup_readiness",
         side_effect=RuntimeError("post-gate sentinel"),
@@ -138,7 +146,7 @@ def test_loopback_bind_passes_remote_check() -> None:
                     browser_capture_extra_origins=(),
                     enable_api=True,
                     api_host="127.0.0.1",
-                    api_port=8766,
+                    api_port=api_port,
                     api_auth_token=None,
                 )
             )

@@ -145,16 +145,16 @@ def select_pending_conversation_window(
         params.extend(unique_ids)
 
     status_exists = _table_exists(conn, "embedding_status")
-    pending_filter = "1 = 1" if rebuild or not status_exists else "(e.conversation_id IS NULL OR e.needs_reindex = 1)"
+    where_clause = "1 = 1" if rebuild or not status_exists else "(e.conversation_id IS NULL OR e.needs_reindex = 1)"
 
-    status_join = "LEFT JOIN embedding_status e ON c.conversation_id = e.conversation_id" if status_exists else ""
+    join_clause = "LEFT JOIN embedding_status e ON c.conversation_id = e.conversation_id" if status_exists else ""
     cursor = conn.execute(
         f"""
         SELECT c.conversation_id, c.title, COUNT(m.message_id) AS message_count
         FROM conversations c
-        {status_join}
+        {join_clause}
         LEFT JOIN messages m ON m.conversation_id = c.conversation_id
-        WHERE {pending_filter}
+        WHERE {where_clause}
           {id_filter}
         GROUP BY c.conversation_id, c.title, c.updated_at
         ORDER BY COALESCE(c.updated_at, ''), c.conversation_id

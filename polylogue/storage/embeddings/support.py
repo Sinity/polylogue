@@ -170,10 +170,10 @@ def is_missing_table_error(exc: sqlite3.OperationalError) -> bool:
 
 
 def table_exists_sync(conn: sqlite3.Connection, table: str) -> bool:
-    escaped = table.replace("'", "''")
+    table_name = table.replace("'", "''")
     try:
         row = conn.execute(
-            f"SELECT 1 FROM sqlite_master WHERE type='table' AND name='{escaped}' LIMIT 1",
+            f"SELECT 1 FROM sqlite_master WHERE type='table' AND name='{table_name}' LIMIT 1",
         ).fetchone()
     except sqlite3.OperationalError as exc:
         if is_missing_table_error(exc):
@@ -183,10 +183,10 @@ def table_exists_sync(conn: sqlite3.Connection, table: str) -> bool:
 
 
 async def table_exists_async(conn: aiosqlite.Connection, table: str) -> bool:
-    escaped = table.replace("'", "''")
+    table_name = table.replace("'", "''")
     try:
         cursor = await conn.execute(
-            f"SELECT 1 FROM sqlite_master WHERE type='table' AND name='{escaped}' LIMIT 1",
+            f"SELECT 1 FROM sqlite_master WHERE type='table' AND name='{table_name}' LIMIT 1",
         )
     except sqlite3.OperationalError as exc:
         if is_missing_table_error(exc):

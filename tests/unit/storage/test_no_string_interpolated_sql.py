@@ -99,11 +99,14 @@ _TRUSTED_IDENTIFIER_NAMES: frozenset[str] = frozenset(
         "dimension",  # vec0 dimension is an int literal from config
         "table",
         "table_name",
+        "source_table",
+        "freshness_table",
         "tablename",
         "column",
         "column_name",
         "columnname",
         "id_column",  # compile-time PK column name (e.g. "conversation_id")
+        "key_column",
         "view",
         "view_name",
         "index",
@@ -122,6 +125,8 @@ _TRUSTED_IDENTIFIER_NAMES: frozenset[str] = frozenset(
         "fts_columns",
         "value_columns",
         "select_columns",
+        "selected",
+        "definition",
         # SQL fragments built by helper functions from closed-set inputs
         "set_clause",
         "set_clauses",
@@ -136,6 +141,7 @@ _TRUSTED_IDENTIFIER_NAMES: frozenset[str] = frozenset(
         "join",  # attribute name of str.join() in `' AND '.join(where_clauses)`
         "join_clause",
         "filter_sql",
+        "id_filter",
         "having_clause",
         "effective_raw_provider_sql",
     }

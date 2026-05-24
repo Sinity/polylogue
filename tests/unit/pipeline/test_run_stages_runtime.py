@@ -352,4 +352,4 @@ async def test_execute_embed_stage_covers_stats_errors_single_and_batch_paths() 
     assert batch == EmbedStageOutcome(embedded_count=0, error_count=0)
     iter_pending.assert_called_once()
     assert iter_pending.call_args.kwargs["rebuild"] is True
-    assert iter_pending.call_args.kwargs["limit"] == 3
+    assert iter_pending.call_args.kwargs["max_conversations"] == 3
