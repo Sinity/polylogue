@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import time
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
@@ -84,6 +85,7 @@ from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.dedup import handle_schema_incompatible, handle_structural_database_error
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics, LiveFullIngestAggregate
+from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawConversationRecord
 from polylogue.types import Provider
@@ -578,26 +580,36 @@ class LiveBatchProcessor:
             fp, last_nl = fingerprint_file(path)
             tail_hash, _tail_bytes = tail_hash_from_path(path, stat.st_size)
         except FileNotFoundError:
-            self._cursor.mark_failed(path)
+            try:
+                self._cursor.mark_failed(path)
+            except sqlite3.OperationalError as exc:
+                if not is_transient_sqlite_lock(exc):
+                    raise
+                logger.warning("live.watcher: skipped failed-cursor mark for missing file %s: %s", path, exc)
             return 0
-        existing = self._cursor.get_record(path)
-        self._cursor.set(
-            path,
-            stat.st_size,
-            byte_offset=last_nl,
-            last_complete_newline=last_nl,
-            parser_fingerprint=self._current_parser_fingerprint(),
-            content_fingerprint=fp,
-            tail_hash=tail_hash,
-            source_name=self._source_name_for(path),
-            st_dev=stat.st_dev,
-            st_ino=stat.st_ino,
-            mtime_ns=stat.st_mtime_ns,
-            failure_count=existing.failure_count if existing else 0,
-            next_retry_at=existing.next_retry_at if existing else None,
-            excluded=bool(existing.excluded) if existing else False,
-        )
-        self._cursor.mark_failed(path)
+        try:
+            existing = self._cursor.get_record(path)
+            self._cursor.set(
+                path,
+                stat.st_size,
+                byte_offset=last_nl,
+                last_complete_newline=last_nl,
+                parser_fingerprint=self._current_parser_fingerprint(),
+                content_fingerprint=fp,
+                tail_hash=tail_hash,
+                source_name=self._source_name_for(path),
+                st_dev=stat.st_dev,
+                st_ino=stat.st_ino,
+                mtime_ns=stat.st_mtime_ns,
+                failure_count=existing.failure_count if existing else 0,
+                next_retry_at=existing.next_retry_at if existing else None,
+                excluded=bool(existing.excluded) if existing else False,
+            )
+            self._cursor.mark_failed(path)
+        except sqlite3.OperationalError as exc:
+            if not is_transient_sqlite_lock(exc):
+                raise
+            logger.warning("live.watcher: skipped failed-cursor bookkeeping for %s: %s", path, exc)
         return stat.st_size
 
     def _record_full_cursor(

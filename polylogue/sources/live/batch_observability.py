@@ -50,7 +50,7 @@ def record_attempt_progress(
     cgroup_peak_mb = read_cgroup_memory_peak_mb()
     cgroup_swap_mb = read_cgroup_memory_swap_current_mb()
     cgroup_stat_mb = read_cgroup_memory_stat_mb()
-    cursor.update_ingest_attempt(
+    progress_recorded = cursor.update_ingest_attempt(
         attempt_id,
         phase=phase,
         status=status,
@@ -75,6 +75,8 @@ def record_attempt_progress(
         cgroup_memory_inactive_file_mb=cgroup_stat_mb.get("inactive_file"),
         stale_cursor_write_count=stale_cursor_write_count,
     )
+    if progress_recorded is False:
+        return
     record_event = getattr(cursor, "record_ingest_stage_event", None)
     if not callable(record_event):
         return

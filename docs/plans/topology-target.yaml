@@ -2554,11 +2554,11 @@ files:
     target: polylogue/sources/live/append_ingest.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 1159
+    loc: 1171
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
-    loc: 134
+    loc: 136
     target: polylogue/sources/live/batch_observability.py
     owner: stable
   - path: polylogue/sources/live/batch_support.py
@@ -2586,7 +2586,7 @@ files:
     target: polylogue/sources/live/conversation_convergence.py
     owner: stable
   - path: polylogue/sources/live/cursor.py
-    loc: 1158
+    loc: 1171
     target: polylogue/sources/live/cursor.py
     owner: stable
   - path: polylogue/sources/live/dedup.py
@@ -2600,6 +2600,10 @@ files:
   - path: polylogue/sources/live/metrics.py
     loc: 169
     target: polylogue/sources/live/metrics.py
+    owner: stable
+  - path: polylogue/sources/live/sqlite_locking.py
+    loc: 42
+    target: polylogue/sources/live/sqlite_locking.py
     owner: stable
   - path: polylogue/sources/live/watcher.py
     loc: 545

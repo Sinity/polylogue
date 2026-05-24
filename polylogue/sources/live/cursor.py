@@ -19,6 +19,7 @@ from polylogue.sources.live.convergence_debt_store import (
     clear_convergence_debt_except_sync,
     record_convergence_debt_sync,
 )
+from polylogue.sources.live.sqlite_locking import best_effort_cursor_write
 from polylogue.storage.sqlite.connection_profile import open_connection
 
 _DDL = """
@@ -493,7 +494,7 @@ class CursorStore:
         worker_completed_count: int | None = None,
         worker_total_count: int | None = None,
         stale_cursor_write_count: int | None = None,
-    ) -> None:
+    ) -> bool:
         """Update an in-flight attempt without waiting for batch completion."""
         now = datetime.now(UTC).isoformat()
         assignments: list[str] = ["updated_at = ?", "status = ?", "phase = ?"]
@@ -529,12 +530,16 @@ class CursorStore:
             assignments.append(f"{field} = ?")
             values.append(value)
         values.append(attempt_id)
-        with self._connect() as conn:
-            conn.execute(
-                f"UPDATE live_ingest_attempt SET {', '.join(assignments)} WHERE attempt_id = ?",
-                tuple(values),
-            )
-            conn.commit()
+
+        def write() -> None:
+            with self._connect() as conn:
+                conn.execute(
+                    f"UPDATE live_ingest_attempt SET {', '.join(assignments)} WHERE attempt_id = ?",
+                    tuple(values),
+                )
+                conn.commit()
+
+        return best_effort_cursor_write("live ingest attempt progress", write)
 
     def record_ingest_stage_event(
         self,
@@ -571,18 +576,20 @@ class CursorStore:
         worker_completed_count: int | None = None,
         worker_total_count: int | None = None,
         stage_timings_json: str | None = None,
-    ) -> None:
+    ) -> bool:
         """Append one durable progress event for a live-ingest attempt."""
         now = datetime.now(UTC).isoformat()
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM live_ingest_stage_event WHERE attempt_id = ?",
-                (attempt_id,),
-            ).fetchone()
-            sequence = int(row[0] or 1)
-            conn.execute(
-                """
-                INSERT INTO live_ingest_stage_event (
+
+        def write() -> None:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM live_ingest_stage_event WHERE attempt_id = ?",
+                    (attempt_id,),
+                ).fetchone()
+                sequence = int(row[0] or 1)
+                conn.execute(
+                    """
+                    INSERT INTO live_ingest_stage_event (
                     attempt_id,
                     sequence,
                     observed_at,
@@ -617,46 +624,48 @@ class CursorStore:
                     worker_completed_count,
                     worker_total_count,
                     stage_timings_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    attempt_id,
-                    sequence,
-                    now,
-                    phase,
-                    status,
-                    queued_file_count,
-                    needed_file_count,
-                    skipped_file_count,
-                    succeeded_file_count,
-                    failed_file_count,
-                    input_bytes,
-                    source_payload_read_bytes,
-                    cursor_fingerprint_read_bytes,
-                    archive_write_bytes_delta,
-                    parse_time_s,
-                    convergence_time_s,
-                    total_time_s,
-                    current_source,
-                    str(current_path) if current_path is not None else None,
-                    error,
-                    rss_current_mb,
-                    rss_peak_self_mb,
-                    rss_peak_children_mb,
-                    cgroup_path,
-                    cgroup_memory_current_mb,
-                    cgroup_memory_peak_mb,
-                    cgroup_memory_swap_current_mb,
-                    cgroup_memory_anon_mb,
-                    cgroup_memory_file_mb,
-                    cgroup_memory_inactive_file_mb,
-                    worker_in_flight_count,
-                    worker_completed_count,
-                    worker_total_count,
-                    stage_timings_json,
-                ),
-            )
-            conn.commit()
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        attempt_id,
+                        sequence,
+                        now,
+                        phase,
+                        status,
+                        queued_file_count,
+                        needed_file_count,
+                        skipped_file_count,
+                        succeeded_file_count,
+                        failed_file_count,
+                        input_bytes,
+                        source_payload_read_bytes,
+                        cursor_fingerprint_read_bytes,
+                        archive_write_bytes_delta,
+                        parse_time_s,
+                        convergence_time_s,
+                        total_time_s,
+                        current_source,
+                        str(current_path) if current_path is not None else None,
+                        error,
+                        rss_current_mb,
+                        rss_peak_self_mb,
+                        rss_peak_children_mb,
+                        cgroup_path,
+                        cgroup_memory_current_mb,
+                        cgroup_memory_peak_mb,
+                        cgroup_memory_swap_current_mb,
+                        cgroup_memory_anon_mb,
+                        cgroup_memory_file_mb,
+                        cgroup_memory_inactive_file_mb,
+                        worker_in_flight_count,
+                        worker_completed_count,
+                        worker_total_count,
+                        stage_timings_json,
+                    ),
+                )
+                conn.commit()
+
+        return best_effort_cursor_write("live ingest stage event", write)
 
     def finish_ingest_attempt(
         self,
@@ -665,23 +674,27 @@ class CursorStore:
         status: str,
         phase: str,
         error: str | None = None,
-    ) -> None:
+    ) -> bool:
         """Mark an ingest attempt complete or failed."""
         now = datetime.now(UTC).isoformat()
-        with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE live_ingest_attempt
-                SET updated_at = ?,
-                    completed_at = ?,
-                    status = ?,
-                    phase = ?,
-                    error = ?
-                WHERE attempt_id = ?
-                """,
-                (now, now, status, phase, error, attempt_id),
-            )
-            conn.commit()
+
+        def write() -> None:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE live_ingest_attempt
+                    SET updated_at = ?,
+                        completed_at = ?,
+                        status = ?,
+                        phase = ?,
+                        error = ?
+                    WHERE attempt_id = ?
+                    """,
+                    (now, now, status, phase, error, attempt_id),
+                )
+                conn.commit()
+
+        return best_effort_cursor_write("live ingest attempt finish", write)
 
     def recent_ingest_attempts(self, *, limit: int = 5) -> list[LiveIngestAttempt]:
         """Return recent live-ingest attempts for status/debug surfaces."""
