@@ -82,8 +82,8 @@ exceptions:
     reason: "schema bootstrap owns reviewed version branches through v17, including the v15/v16 -> v17 identity-preserving marks rebuild (#864, #867, #1113, #1114); split candidate: per-version upgrade modules"
 
   - path: polylogue/sources/live/batch.py
-    ceiling: 1160
-    reason: "live ingestion batch processor with metrics, fingerprinting, multi-stage progress tracking, and conversation-scoped convergence dispatch"
+    ceiling: 1175
+    reason: "live ingestion batch processor with metrics, fingerprinting, multi-stage progress tracking, conversation-scoped convergence dispatch, and transient-lock-tolerant failure bookkeeping"
 
   - path: polylogue/sources/live/cursor.py
     ceiling: 1180
