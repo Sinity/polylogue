@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.insights.session.aggregates import refresh_async_provider_day_aggregates
-from polylogue.storage.insights.session.rebuild import load_sync_batch, rebuild_session_insights_sync
+from polylogue.storage.insights.session.rebuild import (
+    _SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS,
+    _SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS,
+    load_sync_batch,
+    rebuild_session_insights_sync,
+)
 from polylogue.storage.insights.session.refresh import (
     _apply_session_insight_conversation_updates_async,
     _refresh_thread_roots_async,
@@ -255,6 +260,37 @@ def test_session_insight_load_skips_plain_text_blocks(tmp_path: Path) -> None:
         batch = load_sync_batch(conn, ["conv-blocks"])
 
     assert [str(block.message_id) for block in batch.blocks] == ["conv-blocks:msg-2"]
+
+
+def test_session_insight_load_bounds_large_text_payloads(tmp_path: Path) -> None:
+    db_path = tmp_path / "refresh-text-bound.db"
+    large_message = "m" * (_SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS + 100)
+    large_tool_output = "o" * (_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS + 100)
+    with open_connection(db_path) as conn:
+        store_records(
+            conversation=make_conversation("conv-large-text", provider_name="codex", title="Large Text"),
+            messages=[
+                make_message(
+                    "conv-large-text:msg-1",
+                    "conv-large-text",
+                    role="assistant",
+                    text=large_message,
+                    content_blocks=[
+                        {
+                            "type": "tool_result",
+                            "tool_id": "call-1",
+                            "text": large_tool_output,
+                        }
+                    ],
+                )
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        batch = load_sync_batch(conn, ["conv-large-text"])
+
+    assert batch.messages[0].text == large_message[:_SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS]
+    assert batch.blocks[0].text == large_tool_output[:_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS]
 
 
 def test_targeted_session_insight_rebuild_splits_large_message_batches(

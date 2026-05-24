@@ -20,6 +20,7 @@ from pathlib import Path
 from polylogue.config import load_polylogue_config
 from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.logging import get_logger
+from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.source_conversations import (
     conversation_ids_for_source_path,
     conversation_ids_for_source_paths,
@@ -346,8 +347,9 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
             try:
                 if not _table_exists(conn, "session_profiles"):
                     return False
-                if _conversation_ids_for_source_path(conn, path):
-                    return True
+                conversation_ids = _conversation_ids_for_source_path(conn, path)
+                if conversation_ids:
+                    return bool(_stale_session_profile_ids(conn, conversation_ids))
                 total_conv = int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0])
                 if total_conv == 0:
                     return False
@@ -397,7 +399,11 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
                 if not _table_exists(conn, "session_profiles"):
                     return set()
                 by_path = _conversation_ids_for_source_paths(conn, paths)
-                paths_with_conversations = {path for path, conversation_ids in by_path.items() if conversation_ids}
+                paths_with_conversations = {
+                    path
+                    for path, conversation_ids in by_path.items()
+                    if conversation_ids and _stale_session_profile_ids(conn, conversation_ids)
+                }
                 if paths_with_conversations:
                     return paths_with_conversations
                 if _conversation_ids_missing_profiles(conn):
@@ -450,8 +456,7 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
             try:
                 if not _table_exists(conn, "session_profiles"):
                     return set()
-                existing_ids = _existing_conversation_ids(conn, tuple(dict.fromkeys(conversation_ids)))
-                return set(existing_ids)
+                return set(_stale_session_profile_ids(conn, tuple(dict.fromkeys(conversation_ids))))
             finally:
                 conn.close()
         except Exception:
@@ -796,6 +801,29 @@ def _existing_conversation_ids(conn: sqlite3.Connection, conversation_ids: Seque
         ORDER BY conversation_id
         """,
         unique_ids,
+    ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def _stale_session_profile_ids(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> list[str]:
+    unique_ids = tuple(dict.fromkeys(str(conversation_id) for conversation_id in conversation_ids if conversation_id))
+    if not unique_ids or not _table_exists(conn, "conversations") or not _table_exists(conn, "session_profiles"):
+        return []
+    placeholders = ", ".join("?" for _ in unique_ids)
+    rows = conn.execute(
+        f"""
+        SELECT c.conversation_id
+        FROM conversations AS c
+        LEFT JOIN session_profiles AS sp ON sp.conversation_id = c.conversation_id
+        WHERE c.conversation_id IN ({placeholders})
+          AND (
+              sp.conversation_id IS NULL
+              OR sp.materializer_version != ?
+              OR COALESCE(sp.source_updated_at, '') != COALESCE(c.updated_at, '')
+          )
+        ORDER BY c.conversation_id
+        """,
+        unique_ids + (SESSION_INSIGHT_MATERIALIZER_VERSION,),
     ).fetchall()
     return [str(row[0]) for row in rows]
 
