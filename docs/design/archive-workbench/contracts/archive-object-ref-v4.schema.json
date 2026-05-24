@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ArchiveObjectRef.v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "object_type",
+    "object_id",
+    "availability"
+  ],
+  "properties": {
+    "object_type": {
+      "enum": [
+        "conversation",
+        "message",
+        "content_block",
+        "attachment",
+        "paste_span",
+        "raw_artifact",
+        "topology_edge",
+        "insight_record",
+        "work_event",
+        "thread",
+        "saved_view",
+        "recall_pack",
+        "workspace",
+        "operation",
+        "source_root",
+        "search_hit",
+        "selection_set",
+        "context_bundle"
+      ]
+    },
+    "object_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "conversation_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "message_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "block_index": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "identity_key": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source": {
+      "enum": [
+        "current",
+        "derived",
+        "proposed",
+        "unresolved",
+        "repaired",
+        "target"
+      ]
+    },
+    "availability": {
+      "enum": [
+        "ready",
+        "partial",
+        "unavailable",
+        "redacted",
+        "missing",
+        "stale",
+        "unsupported"
+      ]
+    },
+    "label": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}
