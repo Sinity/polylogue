@@ -589,7 +589,7 @@ files:
     owner: archive-viewport
     reason: archive-domain semantics
   - path: polylogue/archive/write_effects.py
-    loc: 136
+    loc: 153
     target: polylogue/archive/write_effects.py
     owner: stable
   - path: polylogue/archive/write_gateway.py
@@ -1077,7 +1077,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 1052
+    loc: 1099
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1125,7 +1125,7 @@ files:
     target: polylogue/daemon/events_http.py
     owner: stable
   - path: polylogue/daemon/fts_status.py
-    loc: 172
+    loc: 192
     target: polylogue/daemon/fts_status.py
     owner: stable
   - path: polylogue/daemon/health.py
@@ -1133,7 +1133,7 @@ files:
     target: polylogue/daemon/health.py
     owner: stable
   - path: polylogue/daemon/healthz.py
-    loc: 184
+    loc: 178
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
@@ -1158,7 +1158,7 @@ files:
     target: polylogue/daemon/maintenance_registry_http.py
     owner: stable
   - path: polylogue/daemon/metrics.py
-    loc: 530
+    loc: 525
     target: polylogue/daemon/metrics.py
     owner: stable
   - path: polylogue/daemon/notification_backends/__init__.py
@@ -1185,6 +1185,10 @@ files:
     loc: 242
     target: polylogue/daemon/notifications.py
     owner: stable
+  - path: polylogue/daemon/process_start.py
+    loc: 23
+    target: polylogue/daemon/process_start.py
+    owner: stable
   - path: polylogue/daemon/provenance.py
     loc: 301
     target: polylogue/daemon/provenance.py
@@ -1198,7 +1202,7 @@ files:
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/status_snapshot.py
-    loc: 168
+    loc: 166
     target: polylogue/daemon/status_snapshot.py
     owner: stable
   - path: polylogue/daemon/thread_continue.py
@@ -2921,7 +2925,7 @@ files:
     target: polylogue/storage/insights/session/runtime.py
     owner: stable
   - path: polylogue/storage/insights/session/status.py
-    loc: 816
+    loc: 830
     target: polylogue/storage/insights/session/status.py
     owner: stable
   - path: polylogue/storage/insights/session/storage.py
@@ -2976,7 +2980,7 @@ files:
     target: polylogue/storage/raw/models.py
     owner: stable
   - path: polylogue/storage/repair.py
-    loc: 1242
+    loc: 1264
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper
