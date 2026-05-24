@@ -137,7 +137,7 @@ Enabled by default on `127.0.0.1:8765`. Disable with `--no-browser-capture`.
 ## Health Monitoring
 
 `polylogued status` reports typed daemon health via the `DaemonStatus` model.
-`polylogued health` runs tiered health checks (fast + medium by default,
+`polylogued health` runs tiered health checks (fast by default,
 `--expensive` to include full integrity checks).
 
 ### Status Fields
@@ -277,7 +277,7 @@ These run automatically inside the daemon process:
 | WAL checkpoint | Every 5 minutes | Keeps the WAL file bounded via `PRAGMA wal_checkpoint(TRUNCATE)` |
 | Heartbeat | Every 15 minutes | Logs conversation/message counts as structured heartbeat |
 | FTS convergence | Every 10 minutes | Verifies FTS coverage, rebuilds if messages are unindexed |
-| Health checks | Configurable (default 5 min) | Runs tiered health checks (FAST + MEDIUM by default), sends notifications on non-OK status |
+| Health checks | Configurable (default 5 min) | Runs bounded FAST health checks by default, sends notifications on non-OK status. MEDIUM and EXPENSIVE checks are explicit operator diagnostics. |
 | FTS startup check | Once at startup | Rebuilds the FTS index if messages exist but aren't indexed (covers gaps from pre-daemon data) |
 
 Health check tier and interval are configurable via `polylogue.toml`:
@@ -285,7 +285,7 @@ Health check tier and interval are configurable via `polylogue.toml`:
 ```toml
 [health]
 health_check_interval_s = 300
-health_check_tiers = "fast,medium"
+health_check_tiers = "fast"
 ```
 
 ### Operator-Owned Tasks

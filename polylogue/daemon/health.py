@@ -1301,7 +1301,7 @@ def check_health(*, tiers: set[HealthTier] | None = None) -> DaemonHealth:
     """Run tiered health checks and return aggregated ``DaemonHealth``.
 
     Args:
-        tiers: Which tiers to run. If None, runs FAST + MEDIUM only.
+        tiers: Which tiers to run. If None, runs FAST only.
                Pass ``{HealthTier.FAST, HealthTier.MEDIUM, HealthTier.EXPENSIVE}``
                for a full check.
 
@@ -1309,7 +1309,7 @@ def check_health(*, tiers: set[HealthTier] | None = None) -> DaemonHealth:
         ``DaemonHealth`` with alerts and tier summary.
     """
     if tiers is None:
-        tiers = {HealthTier.FAST, HealthTier.MEDIUM}
+        tiers = {HealthTier.FAST}
 
     alerts: list[HealthAlert] = []
 
