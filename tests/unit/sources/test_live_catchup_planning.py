@@ -195,6 +195,7 @@ def test_hot_insight_convergence_debt_uses_quiet_window_retry(
     debt = cursor.list_convergence_debt(limit=1)[0]
     retry_at = datetime.fromisoformat(debt.next_retry_at or "")
     failed_at = datetime.fromisoformat(debt.last_failed_at)
+    assert debt.status == "deferred"
     assert debt.failure_count == 1
     assert retry_at - failed_at == timedelta(seconds=60)
 

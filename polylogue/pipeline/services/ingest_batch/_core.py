@@ -46,9 +46,6 @@ from polylogue.core.common import (
     SQL_MESSAGE_UPSERT as _MESSAGE_UPSERT_SQL,
 )
 from polylogue.core.common import (
-    SQL_PROVIDER_EVENT_INSERT as _PROVIDER_EVENT_INSERT_SQL,
-)
-from polylogue.core.common import (
     SQL_STATS_UPSERT as _STATS_UPSERT_SQL,
 )
 from polylogue.core.memory import release_process_memory
@@ -86,6 +83,7 @@ from polylogue.storage.sqlite.connection_profile import (
     DB_TIMEOUT,
     WRITE_CONNECTION_PRAGMA_STATEMENTS,
 )
+from polylogue.storage.sqlite.provider_event_writes import insert_provider_events_sync
 from polylogue.types import ContentHash
 
 if TYPE_CHECKING:
@@ -370,7 +368,6 @@ def _upsert_stats_from_messages(conn: sqlite3.Connection, conversation_id: str, 
 
 
 _ACTION_EVENT_INSERT_OR_IGNORE_SQL = _ACTION_EVENT_INSERT_SQL.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1)
-_PROVIDER_EVENT_INSERT_OR_IGNORE_SQL = _PROVIDER_EVENT_INSERT_SQL.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1)
 _WRITE_SELECT_CHUNK_SIZE = 900
 _WRITE_EXECUTEMANY_CHUNK_SIZE = 1_000
 
@@ -472,7 +469,7 @@ def _append_conversation(
 
     if changed_provider_events:
         rawless_provider_events = [provider_event_tuple_without_raw_id(event) for event in changed_provider_events]
-        _executemany_chunked(conn, _PROVIDER_EVENT_INSERT_OR_IGNORE_SQL, rawless_provider_events)
+        insert_provider_events_sync(conn, rawless_provider_events, ignore_existing=True)
         counts["provider_events"] = len(changed_provider_events)
 
     affected_attachment_ids = {str(attachment_id) for attachment_id, *_rest in cdata.attachment_tuples}
@@ -581,7 +578,7 @@ def _write_conversation(
     if not content_unchanged:
         conn.execute("DELETE FROM provider_events WHERE conversation_id = ?", (cdata.conversation_id,))
         if cdata.provider_event_tuples:
-            _executemany_chunked(conn, _PROVIDER_EVENT_INSERT_SQL, cdata.provider_event_tuples)
+            insert_provider_events_sync(conn, cdata.provider_event_tuples)
             counts["provider_events"] = len(cdata.provider_event_tuples)
 
     # Attachments

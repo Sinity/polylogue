@@ -840,7 +840,12 @@ async def test_backend_delete_contracts(tmp_path: Path) -> None:
         conn.commit()
         assert (
             conn.execute(
-                "SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?",
+                """
+                SELECT COUNT(*)
+                FROM messages_fts
+                JOIN messages ON messages.rowid = messages_fts.rowid
+                WHERE messages.conversation_id = ?
+                """,
                 ("conv-delete",),
             ).fetchone()[0]
             > 0
@@ -878,7 +883,12 @@ async def test_backend_delete_contracts(tmp_path: Path) -> None:
     with open_connection(backend.db_path) as conn:
         assert (
             conn.execute(
-                "SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?",
+                """
+                SELECT COUNT(*)
+                FROM messages_fts
+                JOIN messages ON messages.rowid = messages_fts.rowid
+                WHERE messages.conversation_id = ?
+                """,
                 ("conv-delete",),
             ).fetchone()[0]
             == 0
@@ -1150,12 +1160,11 @@ def test_fts_triggers_restored_after_exception_during_ingest(tmp_path: Path) -> 
 
     # FTS should have both messages (the original m1 via repair,
     # and m2 via active trigger after restore)
-    from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_sync
+    from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
 
-    ensure_fts_index_sync(conn)
-    conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+    rebuild_fts_index_sync(conn)
 
-    count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+    count = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
     assert count == 2, f"Expected 2 FTS entries after exception recovery, got {count}"
     conn.close()
 

@@ -12,8 +12,8 @@ FTS_MESSAGES_TABLE_SQL = """
         message_id UNINDEXED,
         conversation_id UNINDEXED,
         text,
-        content='messages',
-        content_rowid='rowid',
+        content='',
+        contentless_delete=1,
         tokenize='unicode61'
     );
 """
@@ -34,11 +34,25 @@ FTS_ACTIONS_TABLE_SQL = """
 
 FTS_INDEX_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
 FTS_INDEX_DOC_COUNT_SQL = "SELECT COUNT(*) FROM messages_fts_docsize"
-FTS_INDEXABLE_MESSAGE_COUNT_SQL = "SELECT COUNT(*) FROM messages WHERE text IS NOT NULL"
+FTS_INDEXABLE_MESSAGE_COUNT_SQL = """
+    SELECT COUNT(*)
+    FROM messages AS m
+    WHERE m.text IS NOT NULL
+       OR EXISTS (
+           SELECT 1
+           FROM content_blocks AS cb
+           WHERE cb.message_id = m.message_id
+             AND (
+                 NULLIF(cb.text, '') IS NOT NULL
+                 OR NULLIF(cb.tool_input, '') IS NOT NULL
+                 OR NULLIF(cb.metadata, '') IS NOT NULL
+             )
+       )
+"""
 ACTION_FTS_INDEX_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='action_events_fts'"
 ACTION_FTS_INDEX_DOC_COUNT_SQL = "SELECT COUNT(*) FROM action_events_fts_docsize"
 FTS_REBUILD_SQL = """
-    INSERT INTO messages_fts(messages_fts) VALUES('rebuild')
+    INSERT INTO messages_fts(messages_fts) VALUES('delete-all')
 """
 
 ACTION_FTS_REBUILD_SQL = """
@@ -72,9 +86,65 @@ def insert_conversation_rows_sql(chunk_size: int) -> str:
     placeholders = ", ".join("?" for _ in range(chunk_size))
     return f"""
         INSERT INTO messages_fts (rowid, message_id, conversation_id, text)
-        SELECT messages.rowid, messages.message_id, messages.conversation_id, messages.text
-        FROM messages
-        WHERE messages.text IS NOT NULL AND messages.conversation_id IN ({placeholders})
+        SELECT m.rowid, m.message_id, m.conversation_id, parts.search_text
+        FROM messages AS m
+        JOIN (
+            SELECT
+                source.message_id,
+                group_concat(source.part, char(10)) AS search_text
+            FROM (
+                SELECT message_id, text AS part, -1 AS block_index, 0 AS part_index
+                FROM messages
+                WHERE text IS NOT NULL AND text != ''
+                UNION ALL
+                SELECT message_id, text AS part, block_index, 1 AS part_index
+                FROM content_blocks
+                WHERE text IS NOT NULL AND text != ''
+                UNION ALL
+                SELECT message_id, tool_input AS part, block_index, 2 AS part_index
+                FROM content_blocks
+                WHERE tool_input IS NOT NULL AND tool_input != ''
+                UNION ALL
+                SELECT message_id, metadata AS part, block_index, 3 AS part_index
+                FROM content_blocks
+                WHERE metadata IS NOT NULL AND metadata != ''
+                ORDER BY message_id, block_index, part_index
+            ) AS source
+            GROUP BY source.message_id
+        ) AS parts ON parts.message_id = m.message_id
+        WHERE m.conversation_id IN ({placeholders})
+    """
+
+
+def insert_all_message_rows_sql() -> str:
+    return """
+        INSERT INTO messages_fts (rowid, message_id, conversation_id, text)
+        SELECT m.rowid, m.message_id, m.conversation_id, parts.search_text
+        FROM messages AS m
+        JOIN (
+            SELECT
+                source.message_id,
+                group_concat(source.part, char(10)) AS search_text
+            FROM (
+                SELECT message_id, text AS part, -1 AS block_index, 0 AS part_index
+                FROM messages
+                WHERE text IS NOT NULL AND text != ''
+                UNION ALL
+                SELECT message_id, text AS part, block_index, 1 AS part_index
+                FROM content_blocks
+                WHERE text IS NOT NULL AND text != ''
+                UNION ALL
+                SELECT message_id, tool_input AS part, block_index, 2 AS part_index
+                FROM content_blocks
+                WHERE tool_input IS NOT NULL AND tool_input != ''
+                UNION ALL
+                SELECT message_id, metadata AS part, block_index, 3 AS part_index
+                FROM content_blocks
+                WHERE metadata IS NOT NULL AND metadata != ''
+                ORDER BY message_id, block_index, part_index
+            ) AS source
+            GROUP BY source.message_id
+        ) AS parts ON parts.message_id = m.message_id
     """
 
 
@@ -145,6 +215,7 @@ __all__ = [
     "delete_action_rows_sql",
     "delete_conversation_rows_sql",
     "insert_action_rows_sql",
+    "insert_all_message_rows_sql",
     "insert_conversation_rows_sql",
     "insert_missing_action_rows_sql",
 ]

@@ -46,8 +46,8 @@ def build_ranked_conversation_search_query(
         return None
 
     candidate_columns = [
-        "messages_fts.message_id",
-        "messages_fts.conversation_id",
+        "messages.message_id",
+        "messages.conversation_id",
         "conversations.provider_name",
         "conversations.source_name",
         "conversations.title",
@@ -146,13 +146,23 @@ def _build_ranked_search_query(
     since_column: str,
     shape: RankedSearchShape,
 ) -> RankedSearchQuery:
+    if shape.fts_table == "messages_fts":
+        from_join_sql = """
+            FROM messages_fts
+            JOIN messages ON messages.rowid = messages_fts.rowid
+            JOIN conversations ON conversations.conversation_id = messages.conversation_id
+        """
+    else:
+        from_join_sql = f"""
+            FROM {shape.fts_table}
+            JOIN conversations ON conversations.conversation_id = {shape.fts_table}.conversation_id
+            JOIN messages ON messages.message_id = {shape.fts_table}.message_id
+        """
     sql = f"""
         WITH candidate_hits AS (
             SELECT
                 {", ".join(shape.candidate_columns)}
-            FROM {shape.fts_table}
-            JOIN conversations ON conversations.conversation_id = {shape.fts_table}.conversation_id
-            JOIN messages ON messages.message_id = {shape.fts_table}.message_id
+            {from_join_sql}
             WHERE {shape.fts_table} MATCH ?
     """
     params: list[SQLiteQueryParam] = [query]

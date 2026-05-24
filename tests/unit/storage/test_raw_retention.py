@@ -126,8 +126,8 @@ def test_superseded_raw_snapshot_cleanup_preserves_live_references(tmp_path: Pat
         """
         INSERT INTO provider_events (
             event_id, conversation_id, provider_name, event_index,
-            event_type, payload_json, raw_id
-        ) VALUES ('event-1', 'conv-1', 'codex', 1, 'message', '{}', ?)
+            event_type, raw_id
+        ) VALUES ('event-1', 'conv-1', 'codex', 1, 'message', ?)
         """,
         (append_old,),
     )
@@ -217,8 +217,8 @@ def test_destructive_cleanup_adds_provider_event_raw_index_when_missing(tmp_path
         """
         INSERT INTO provider_events (
             event_id, conversation_id, provider_name, event_index,
-            event_type, payload_json, raw_id
-        ) VALUES ('event-1', 'conv-1', 'codex', 1, 'message', '{}', ?)
+            event_type, raw_id
+        ) VALUES ('event-1', 'conv-1', 'codex', 1, 'message', ?)
         """,
         (old_raw,),
     )

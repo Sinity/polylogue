@@ -252,8 +252,8 @@ MESSAGE_FTS_DDL = """
             message_id UNINDEXED,
             conversation_id UNINDEXED,
             text,
-            content='messages',
-            content_rowid='rowid',
+            content='',
+            contentless_delete=1,
             tokenize='unicode61'
         );
 
@@ -266,17 +266,122 @@ MESSAGE_FTS_DDL = """
 
         CREATE TRIGGER IF NOT EXISTS messages_fts_ad
         AFTER DELETE ON messages BEGIN
-            INSERT INTO messages_fts(messages_fts, rowid, message_id, conversation_id, text)
-            VALUES('delete', old.rowid, old.message_id, old.conversation_id, old.text);
+            DELETE FROM messages_fts WHERE rowid = old.rowid;
         END;
 
         CREATE TRIGGER IF NOT EXISTS messages_fts_au
         AFTER UPDATE ON messages BEGIN
-            INSERT INTO messages_fts(messages_fts, rowid, message_id, conversation_id, text)
-            VALUES('delete', old.rowid, old.message_id, old.conversation_id, old.text);
+            DELETE FROM messages_fts WHERE rowid = old.rowid;
             INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
-            SELECT new.rowid, new.message_id, new.conversation_id, new.text
-            WHERE new.text IS NOT NULL;
+            SELECT m.rowid, m.message_id, m.conversation_id, group_concat(source.part, char(10))
+            FROM messages AS m
+            JOIN (
+                SELECT m2.message_id, m2.text AS part, -1 AS block_index, 0 AS part_index
+                FROM messages AS m2
+                WHERE m2.message_id = new.message_id AND m2.text IS NOT NULL AND m2.text != ''
+                UNION ALL
+                SELECT cb.message_id, cb.text AS part, cb.block_index, 1 AS part_index
+                FROM content_blocks AS cb
+                WHERE cb.message_id = new.message_id AND cb.text IS NOT NULL AND cb.text != ''
+                UNION ALL
+                SELECT cb.message_id, cb.tool_input AS part, cb.block_index, 2 AS part_index
+                FROM content_blocks AS cb
+                WHERE cb.message_id = new.message_id AND cb.tool_input IS NOT NULL AND cb.tool_input != ''
+                UNION ALL
+                SELECT cb.message_id, cb.metadata AS part, cb.block_index, 3 AS part_index
+                FROM content_blocks AS cb
+                WHERE cb.message_id = new.message_id AND cb.metadata IS NOT NULL AND cb.metadata != ''
+                ORDER BY message_id, block_index, part_index
+            ) AS source ON source.message_id = m.message_id
+            WHERE m.message_id = new.message_id
+            HAVING group_concat(source.part, char(10)) IS NOT NULL;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS content_blocks_fts_ai
+        AFTER INSERT ON content_blocks BEGIN
+            DELETE FROM messages_fts
+            WHERE rowid = (SELECT rowid FROM messages WHERE message_id = new.message_id);
+            INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
+            SELECT m.rowid, m.message_id, m.conversation_id, group_concat(source.part, char(10))
+            FROM messages AS m
+            JOIN (
+                SELECT m2.message_id, m2.text AS part, -1 AS block_index, 0 AS part_index
+                FROM messages AS m2
+                WHERE m2.message_id = new.message_id AND m2.text IS NOT NULL AND m2.text != ''
+                UNION ALL
+                SELECT cb.message_id, cb.text AS part, cb.block_index, 1 AS part_index
+                FROM content_blocks AS cb
+                WHERE cb.message_id = new.message_id AND cb.text IS NOT NULL AND cb.text != ''
+                UNION ALL
+                SELECT cb.message_id, cb.tool_input AS part, cb.block_index, 2 AS part_index
+                FROM content_blocks AS cb
+                WHERE cb.message_id = new.message_id AND cb.tool_input IS NOT NULL AND cb.tool_input != ''
+                UNION ALL
+                SELECT cb.message_id, cb.metadata AS part, cb.block_index, 3 AS part_index
+                FROM content_blocks AS cb
+                WHERE cb.message_id = new.message_id AND cb.metadata IS NOT NULL AND cb.metadata != ''
+                ORDER BY message_id, block_index, part_index
+            ) AS source ON source.message_id = m.message_id
+            WHERE m.message_id = new.message_id
+            HAVING group_concat(source.part, char(10)) IS NOT NULL;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS content_blocks_fts_ad
+        AFTER DELETE ON content_blocks BEGIN
+            DELETE FROM messages_fts
+            WHERE rowid = (SELECT rowid FROM messages WHERE message_id = old.message_id);
+            INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
+            SELECT m.rowid, m.message_id, m.conversation_id, group_concat(source.part, char(10))
+            FROM messages AS m
+            JOIN (
+                SELECT m2.message_id, m2.text AS part, -1 AS block_index, 0 AS part_index
+                FROM messages AS m2
+                WHERE m2.message_id = old.message_id AND m2.text IS NOT NULL AND m2.text != ''
+                UNION ALL
+                SELECT cb.message_id, cb.text AS part, cb.block_index, 1 AS part_index
+                FROM content_blocks AS cb
+                WHERE cb.message_id = old.message_id AND cb.text IS NOT NULL AND cb.text != ''
+                UNION ALL
+                SELECT cb.message_id, cb.tool_input AS part, cb.block_index, 2 AS part_index
+                FROM content_blocks AS cb
+                WHERE cb.message_id = old.message_id AND cb.tool_input IS NOT NULL AND cb.tool_input != ''
+                UNION ALL
+                SELECT cb.message_id, cb.metadata AS part, cb.block_index, 3 AS part_index
+                FROM content_blocks AS cb
+                WHERE cb.message_id = old.message_id AND cb.metadata IS NOT NULL AND cb.metadata != ''
+                ORDER BY message_id, block_index, part_index
+            ) AS source ON source.message_id = m.message_id
+            WHERE m.message_id = old.message_id
+            HAVING group_concat(source.part, char(10)) IS NOT NULL;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS content_blocks_fts_au
+        AFTER UPDATE ON content_blocks BEGIN
+            DELETE FROM messages_fts
+            WHERE rowid = (SELECT rowid FROM messages WHERE message_id = new.message_id);
+            INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
+            SELECT m.rowid, m.message_id, m.conversation_id, group_concat(source.part, char(10))
+            FROM messages AS m
+            JOIN (
+                SELECT m2.message_id, m2.text AS part, -1 AS block_index, 0 AS part_index
+                FROM messages AS m2
+                WHERE m2.message_id = new.message_id AND m2.text IS NOT NULL AND m2.text != ''
+                UNION ALL
+                SELECT cb.message_id, cb.text AS part, cb.block_index, 1 AS part_index
+                FROM content_blocks AS cb
+                WHERE cb.message_id = new.message_id AND cb.text IS NOT NULL AND cb.text != ''
+                UNION ALL
+                SELECT cb.message_id, cb.tool_input AS part, cb.block_index, 2 AS part_index
+                FROM content_blocks AS cb
+                WHERE cb.message_id = new.message_id AND cb.tool_input IS NOT NULL AND cb.tool_input != ''
+                UNION ALL
+                SELECT cb.message_id, cb.metadata AS part, cb.block_index, 3 AS part_index
+                FROM content_blocks AS cb
+                WHERE cb.message_id = new.message_id AND cb.metadata IS NOT NULL AND cb.metadata != ''
+                ORDER BY message_id, block_index, part_index
+            ) AS source ON source.message_id = m.message_id
+            WHERE m.message_id = new.message_id
+            HAVING group_concat(source.part, char(10)) IS NOT NULL;
         END;
 """
 

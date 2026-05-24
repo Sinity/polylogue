@@ -24,7 +24,7 @@ def conversation_tuple_without_raw_id(conversation: ConversationTuple) -> Conver
 
 
 def provider_event_tuple_without_raw_id(event: ProviderEventTuple) -> ProviderEventTuple:
-    return cast(ProviderEventTuple, (*event[:9], None, event[10]))
+    return cast(ProviderEventTuple, (*event[:10], None, event[11]))
 
 
 __all__ = [

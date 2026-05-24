@@ -109,6 +109,8 @@ STORAGE_ROOT_KEEP = frozenset(
     {
         "__init__.py",
         "blob_gc.py",
+        "blob_integrity.py",
+        "blob_repair.py",
         "blob_store.py",
         "repair.py",
         "index.py",
@@ -119,6 +121,7 @@ STORAGE_ROOT_KEEP = frozenset(
         "archive_views.py",
         "source_conversations.py",
         "query_models.py",
+        "raw_retention.py",
         "message_type_backfill.py",
     }
 )

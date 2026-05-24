@@ -90,10 +90,11 @@ class FTS5Provider:
 
             # Search with relevance ranking
             sql = """
-                SELECT message_id
+                SELECT m.message_id
                 FROM messages_fts
+                JOIN messages AS m ON m.rowid = messages_fts.rowid
                 WHERE messages_fts MATCH ?
-                ORDER BY bm25(messages_fts), message_id
+                ORDER BY bm25(messages_fts), m.message_id
             """
             params: list[object] = [fts_query]
             if limit is not None:

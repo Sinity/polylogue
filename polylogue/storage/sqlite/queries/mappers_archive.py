@@ -202,15 +202,74 @@ def _row_to_action_event(row: sqlite3.Row) -> ActionEventRecord:
 
 def _row_to_provider_event(row: sqlite3.Row) -> ProviderEventRecord:
     source_message_id = _row_text(row, "source_message_id")
+    event_type = _row_text(row, "event_type") or ""
+    stored_kind = _row_text(row, "normalized_kind")
+    normalized_kind = event_type if stored_kind in {None, "", "provider_native"} else stored_kind
+    payload: dict[str, object] = {}
+    if normalized_kind == "compaction":
+        payload["summary"] = _row_text(row, "compaction_summary") or ""
+        replacement_history_count = _row_int(row, "compaction_replacement_history_count", 0) or 0
+        if replacement_history_count:
+            payload["replacement_history_count"] = replacement_history_count
+        for source_key, payload_key in (
+            ("compaction_trigger", "trigger"),
+            ("compaction_pre_tokens", "pre_tokens"),
+            ("compaction_preserved_segment_id", "preserved_segment_id"),
+        ):
+            value = _row_get(row, source_key)
+            if value is not None:
+                payload[payload_key] = value
+        if _row_int(row, "compaction_is_modern", 0):
+            payload["is_modern"] = True
+    elif normalized_kind == "turn_context":
+        for source_key, payload_key in (
+            ("turn_context_cwd", "cwd"),
+            ("turn_context_model", "model"),
+            ("turn_context_effort", "effort"),
+            ("turn_context_approval_policy", "approval_policy"),
+            ("turn_context_sandbox_policy", "sandbox_policy"),
+            ("turn_context_summary", "summary"),
+        ):
+            value = _row_text(row, source_key)
+            if value is not None:
+                payload[payload_key] = value
+    elif normalized_kind in {"function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"}:
+        for source_key, payload_key in (
+            ("tool_call_id", "call_id"),
+            ("tool_call_tool_name", "name"),
+            ("tool_call_status", "status"),
+            ("tool_call_output_chars", "output_chars"),
+        ):
+            value = _row_get(row, source_key)
+            if value is not None:
+                payload[payload_key] = value
+        input_chars = _row_int(row, "tool_call_input_chars", 0) or 0
+        if input_chars:
+            payload["input_chars"] = input_chars
+        payload["has_input_body"] = bool(_row_int(row, "tool_call_has_input_body", 0))
+        payload["has_output_body"] = bool(_row_int(row, "tool_call_has_output_body", 0))
+    elif normalized_kind == "reasoning":
+        for source_key, payload_key in (
+            ("reasoning_summary", "summary"),
+            ("reasoning_encrypted_content_hash", "encrypted_content_hash"),
+            ("reasoning_encrypted_content_bytes", "encrypted_content_bytes"),
+        ):
+            value = _row_get(row, source_key)
+            if value is not None:
+                payload[payload_key] = value
+    elif normalized_kind == "ghost_snapshot":
+        value = _row_text(row, "ghost_snapshot_ghost_commit")
+        if value is not None:
+            payload["ghost_commit"] = value
     return ProviderEventRecord(
         event_id=ProviderEventId(row["event_id"]),
         conversation_id=ConversationId(row["conversation_id"]),
         provider_name=_row_text(row, "provider_name") or "unknown",
         event_index=_row_int(row, "event_index", 0) or 0,
-        event_type=_row_text(row, "event_type") or "",
+        event_type=event_type,
         timestamp=_row_text(row, "timestamp"),
         sort_key=_row_float(row, "sort_key"),
-        payload=_json_object(_parse_json(row["payload_json"], field="payload_json", record_id=row["event_id"])) or {},
+        payload=payload,
         source_message_id=MessageId(source_message_id) if source_message_id is not None else None,
         raw_id=_row_text(row, "raw_id"),
         materializer_version=_row_int(row, "materializer_version", 1) or 1,

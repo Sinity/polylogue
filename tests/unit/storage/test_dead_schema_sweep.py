@@ -42,17 +42,19 @@ def fresh_schema_db() -> Generator[Mapping[str, sqlite3.Connection], None, None]
 # ---------------------------------------------------------------------------
 
 
-def test_schema_version_is_8() -> None:
+def test_schema_version_is_9() -> None:
     # Bumped from 3 → 4 by #1241 (action_events_fts external-content),
     # then 4 → 5 by #1252 (first-class attachment native identifiers
     # + upload_origin column for the #1199 attachment library), then
     # 5 → 6 by #1258 (topology_edges table — persisted parent edges
     # including unresolved references for out-of-order ingest), then
     # 6 → 7 by #1260 (topology_edges.status gains the 'quarantined'
-    # value for the cycle-rejection slice), then 7 → 8 by #1253
+    # value for the cycle-rejection slice), 7 → 8 by #1253
     # (repo_identities + conversation_repo_observations: typed
-    # cross-source repo identity surface for slice C of #864).
-    assert SCHEMA_VERSION == 8
+    # cross-source repo identity surface for slice C of #864), then
+    # 8 → 9 by #1486 (provider-event payload split and content-block
+    # canonical message body storage).
+    assert SCHEMA_VERSION == 9
 
 
 def test_content_blocks_table_has_no_media_type_column(fresh_schema_db: Mapping[str, sqlite3.Connection]) -> None:

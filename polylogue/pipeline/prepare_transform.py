@@ -66,7 +66,7 @@ def transform_to_records(convo: ParsedConversation, source_name: str, *, archive
             conversation_id=materialized.conversation_id,
             provider_message_id=message.provider_message_id,
             role=message.role,
-            text=message.text,
+            text=None if message.blocks else message.text,
             sort_key=message.sort_key,
             content_hash=message.content_hash,
             parent_message_id=message.parent_message_id,

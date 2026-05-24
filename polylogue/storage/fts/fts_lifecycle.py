@@ -25,6 +25,7 @@ from polylogue.storage.fts.sql import (
     delete_action_rows_sql,
     delete_conversation_rows_sql,
     insert_action_rows_sql,
+    insert_all_message_rows_sql,
     insert_conversation_rows_sql,
     insert_missing_action_rows_sql,
 )
@@ -64,6 +65,18 @@ def _status_int(status: dict[str, object], key: str) -> int:
     return 0
 
 
+def _message_trigger_names_for_sync(conn: sqlite3.Connection) -> tuple[str, ...]:
+    if _table_exists_sync(conn, "content_blocks"):
+        return _MESSAGE_FTS_TRIGGER_NAMES
+    return ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
+
+
+async def _message_trigger_names_for_async(conn: aiosqlite.Connection) -> tuple[str, ...]:
+    if await _table_exists_async(conn, "content_blocks"):
+        return _MESSAGE_FTS_TRIGGER_NAMES
+    return ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
+
+
 # ---------------------------------------------------------------------------
 # Trigger suspension for bulk writes
 # ---------------------------------------------------------------------------
@@ -72,6 +85,9 @@ _MESSAGE_FTS_TRIGGER_NAMES = (
     "messages_fts_ai",
     "messages_fts_ad",
     "messages_fts_au",
+    "content_blocks_fts_ai",
+    "content_blocks_fts_ad",
+    "content_blocks_fts_au",
 )
 
 _ACTION_EVENT_FTS_TRIGGER_NAMES = (
@@ -186,31 +202,47 @@ async def restore_fts_triggers_async(conn: aiosqlite.Connection) -> None:
     """Re-create FTS triggers after bulk insert."""
     await suspend_fts_triggers_async(conn)
     for ddl in await _fts_trigger_ddl_for_existing_surfaces_async(conn):
-        await conn.execute(ddl)
+        if ";" in ddl:
+            await conn.executescript(ddl)
+        else:
+            await conn.execute(ddl)
 
 
-# Trigger DDL — must match schema_ddl_archive.py and schema_ddl_actions.py
-_MESSAGE_FTS_TRIGGER_DDL = [
-    """CREATE TRIGGER IF NOT EXISTS messages_fts_ai
-       AFTER INSERT ON messages BEGIN
-           INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
-           SELECT new.rowid, new.message_id, new.conversation_id, new.text
-           WHERE new.text IS NOT NULL;
-       END""",
-    """CREATE TRIGGER IF NOT EXISTS messages_fts_ad
-       AFTER DELETE ON messages BEGIN
-           INSERT INTO messages_fts(messages_fts, rowid, message_id, conversation_id, text)
-           VALUES('delete', old.rowid, old.message_id, old.conversation_id, old.text);
-       END""",
-    """CREATE TRIGGER IF NOT EXISTS messages_fts_au
-       AFTER UPDATE ON messages BEGIN
-           INSERT INTO messages_fts(messages_fts, rowid, message_id, conversation_id, text)
-           VALUES('delete', old.rowid, old.message_id, old.conversation_id, old.text);
-           INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
-           SELECT new.rowid, new.message_id, new.conversation_id, new.text
-           WHERE new.text IS NOT NULL;
-       END""",
-]
+# Message FTS trigger DDL is imported lazily from schema_ddl_archive to avoid
+# a storage package import cycle while keeping the fresh schema and lifecycle
+# repair path byte-for-byte aligned.
+_MESSAGE_FTS_TRIGGER_DDL: list[str] = []
+
+
+def _message_fts_trigger_ddl(*, include_content_blocks: bool) -> tuple[str, ...]:
+    if include_content_blocks:
+        from polylogue.storage.sqlite.schema_ddl_archive import MESSAGE_FTS_DDL
+
+        return (MESSAGE_FTS_DDL,)
+    return (
+        """
+        CREATE TRIGGER IF NOT EXISTS messages_fts_ai
+        AFTER INSERT ON messages BEGIN
+            INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
+            SELECT new.rowid, new.message_id, new.conversation_id, new.text
+            WHERE new.text IS NOT NULL;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS messages_fts_ad
+        AFTER DELETE ON messages BEGIN
+            DELETE FROM messages_fts WHERE rowid = old.rowid;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS messages_fts_au
+        AFTER UPDATE ON messages BEGIN
+            DELETE FROM messages_fts WHERE rowid = old.rowid;
+            INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
+            SELECT new.rowid, new.message_id, new.conversation_id, new.text
+            WHERE new.text IS NOT NULL;
+        END;
+        """,
+    )
+
 
 _ACTION_FTS_TRIGGER_DDL = [
     """CREATE TRIGGER IF NOT EXISTS action_events_fts_ai
@@ -290,7 +322,7 @@ def restore_fts_triggers_sync(conn: sqlite3.Connection) -> None:
     """Re-create FTS triggers after bulk insert."""
     suspend_fts_triggers_sync(conn)
     for ddl in _fts_trigger_ddl_for_existing_surfaces_sync(conn):
-        conn.execute(ddl)
+        conn.executescript(ddl) if ";" in ddl else conn.execute(ddl)
 
 
 def ensure_fts_triggers_sync(conn: sqlite3.Connection) -> None:
@@ -301,7 +333,7 @@ def ensure_fts_triggers_sync(conn: sqlite3.Connection) -> None:
     for replacing trigger definitions and repairing global FTS state.
     """
     for ddl in _fts_trigger_ddl_for_existing_surfaces_sync(conn):
-        conn.execute(ddl)
+        conn.executescript(ddl) if ";" in ddl else conn.execute(ddl)
 
 
 def ensure_fts_index_sync(conn: sqlite3.Connection) -> None:
@@ -316,13 +348,16 @@ async def ensure_fts_index_async(conn: aiosqlite.Connection) -> None:
     await conn.execute(FTS_MESSAGES_TABLE_SQL)
     await conn.execute(FTS_ACTIONS_TABLE_SQL)
     for ddl in await _fts_trigger_ddl_for_existing_surfaces_async(conn):
-        await conn.execute(ddl)
+        if ";" in ddl:
+            await conn.executescript(ddl)
+        else:
+            await conn.execute(ddl)
 
 
 def _fts_trigger_ddl_for_existing_surfaces_sync(conn: sqlite3.Connection) -> tuple[str, ...]:
     ddl: list[str] = []
     if _table_exists_sync(conn, "messages") and _table_exists_sync(conn, "messages_fts"):
-        ddl.extend(_MESSAGE_FTS_TRIGGER_DDL)
+        ddl.extend(_message_fts_trigger_ddl(include_content_blocks=_table_exists_sync(conn, "content_blocks")))
     if _table_exists_sync(conn, "action_events") and _table_exists_sync(conn, "action_events_fts"):
         ddl.extend(_ACTION_FTS_TRIGGER_DDL)
     if _table_exists_sync(conn, "session_work_events") and _table_exists_sync(conn, "session_work_events_fts"):
@@ -344,7 +379,7 @@ async def _table_exists_async(conn: aiosqlite.Connection, table_name: str) -> bo
 async def _fts_trigger_ddl_for_existing_surfaces_async(conn: aiosqlite.Connection) -> tuple[str, ...]:
     ddl: list[str] = []
     if await _table_exists_async(conn, "messages") and await _table_exists_async(conn, "messages_fts"):
-        ddl.extend(_MESSAGE_FTS_TRIGGER_DDL)
+        ddl.extend(_message_fts_trigger_ddl(include_content_blocks=await _table_exists_async(conn, "content_blocks")))
     if await _table_exists_async(conn, "action_events") and await _table_exists_async(conn, "action_events_fts"):
         ddl.extend(_ACTION_FTS_TRIGGER_DDL)
     if await _table_exists_async(conn, "session_work_events") and await _table_exists_async(
@@ -359,13 +394,24 @@ async def _fts_trigger_ddl_for_existing_surfaces_async(conn: aiosqlite.Connectio
 def rebuild_fts_index_sync(conn: sqlite3.Connection) -> None:
     """Rebuild the full FTS index from persisted archive rows.
 
-    Both FTS tables are configured with ``content='<base table>'`` (external
-    content).  The FTS5 'rebuild' control command wipes the index and
-    re-tokenizes from the base table, so an explicit DELETE is unnecessary
-    (and 'delete-all' is rejected for non-contentless tables).
+    ``messages_fts`` is contentless, so it must be cleared with
+    ``delete-all`` and repopulated from the canonical message/content-block
+    projection.  ``action_events_fts`` remains external-content and uses the
+    FTS5 ``rebuild`` command.
     """
     ensure_fts_index_sync(conn)
     conn.execute(FTS_REBUILD_SQL)
+    if _table_exists_sync(conn, "content_blocks"):
+        conn.execute(insert_all_message_rows_sql())
+    else:
+        conn.execute(
+            """
+            INSERT INTO messages_fts (rowid, message_id, conversation_id, text)
+            SELECT rowid, message_id, conversation_id, text
+            FROM messages
+            WHERE text IS NOT NULL
+            """
+        )
     conn.execute(ACTION_FTS_REBUILD_SQL)
     _rebuild_session_work_events_fts_sync(conn)
     _rebuild_work_threads_fts_sync(conn)
@@ -419,7 +465,6 @@ async def rebuild_fts_index_async(
 ) -> None:
     """Rebuild the full FTS index from persisted archive rows."""
     await ensure_fts_index_async(conn)
-    await conn.execute(FTS_REBUILD_SQL)
     if conversation_ids is not None:
         await repair_fts_index_async(
             conn,
@@ -428,6 +473,18 @@ async def rebuild_fts_index_async(
             progress_desc=progress_desc,
         )
         return
+    await conn.execute(FTS_REBUILD_SQL)
+    if await _table_exists_async(conn, "content_blocks"):
+        await conn.execute(insert_all_message_rows_sql())
+    else:
+        await conn.execute(
+            """
+            INSERT INTO messages_fts (rowid, message_id, conversation_id, text)
+            SELECT rowid, message_id, conversation_id, text
+            FROM messages
+            WHERE text IS NOT NULL
+            """
+        )
     await conn.execute(ACTION_FTS_REBUILD_SQL)
     readiness = await message_fts_readiness_async(conn, verify_total_rows=True)
     from polylogue.storage.fts.freshness import READY, STALE, record_fts_surface_state_async
@@ -508,7 +565,7 @@ def replace_fts_rows_for_messages_sync(
     conn: sqlite3.Connection,
     messages: Sequence[IndexedMessageLike],
 ) -> None:
-    """Replace FTS rows for the supplied message payloads."""
+    """Replace FTS rows for the supplied persisted message conversations."""
     ensure_fts_index_sync(conn)
     if not messages:
         return
@@ -529,9 +586,11 @@ def replace_fts_rows_for_messages_sync(
 
     with_rowid: list[tuple[int, str, str, str]] = []
     without_rowid: list[tuple[str, str, str]] = []
+    missing_text_conversations: set[str] = set()
     for message in messages:
         payload_message_id, payload_conversation_id, payload_text = _indexed_message_parts(message)
         if payload_text is None:
+            missing_text_conversations.add(payload_conversation_id)
             continue
         rowid = rowids_by_message_id.get(payload_message_id)
         if rowid is not None:
@@ -555,6 +614,8 @@ def replace_fts_rows_for_messages_sync(
             """,
             without_rowid,
         )
+    for chunk in chunked(sorted(missing_text_conversations), size=500):
+        conn.execute(insert_conversation_rows_sql(len(chunk)), tuple(chunk))
 
 
 def fts_index_status_sync(conn: sqlite3.Connection) -> dict[str, object]:
@@ -598,7 +659,7 @@ def message_fts_readiness_sync(
         indexed_rows = _status_int(status, "count")
         exists = bool(status.get("exists", False))
         total_messages = _row_int(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone(), 0)
-        triggers_present = exists and _triggers_present_sync(conn, _MESSAGE_FTS_TRIGGER_NAMES)
+        triggers_present = exists and _triggers_present_sync(conn, _message_trigger_names_for_sync(conn))
         ready = exists and triggers_present and indexed_rows == total_messages
     else:
         exists = bool(conn.execute(FTS_INDEX_EXISTS_SQL).fetchone())
@@ -610,7 +671,7 @@ def message_fts_readiness_sync(
         # state without paying for a full COUNT(*) (#1314).
         has_indexed_rows = exists and bool(conn.execute("SELECT 1 FROM messages_fts_docsize LIMIT 1").fetchone())
         has_indexable_messages = bool(conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1").fetchone())
-        triggers_present = exists and _triggers_present_sync(conn, _MESSAGE_FTS_TRIGGER_NAMES)
+        triggers_present = exists and _triggers_present_sync(conn, _message_trigger_names_for_sync(conn))
         indexed_rows = 0
         total_messages = 0
         ready = exists and triggers_present and (has_indexed_rows or not has_indexable_messages)
@@ -679,7 +740,7 @@ async def message_fts_readiness_async(
         exists = bool(status.get("exists", False))
         row = await (await conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL)).fetchone()
         total_messages = _row_int(row, 0)
-        triggers_present = exists and await _triggers_present_async(conn, _MESSAGE_FTS_TRIGGER_NAMES)
+        triggers_present = exists and await _triggers_present_async(conn, await _message_trigger_names_for_async(conn))
         ready = exists and triggers_present and indexed_rows == total_messages
     else:
         exists = bool(await (await conn.execute(FTS_INDEX_EXISTS_SQL)).fetchone())
@@ -691,7 +752,7 @@ async def message_fts_readiness_async(
         has_indexable_messages = bool(
             await (await conn.execute("SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1")).fetchone()
         )
-        triggers_present = exists and await _triggers_present_async(conn, _MESSAGE_FTS_TRIGGER_NAMES)
+        triggers_present = exists and await _triggers_present_async(conn, await _message_trigger_names_for_async(conn))
         indexed_rows = 0
         total_messages = 0
         ready = exists and triggers_present and (has_indexed_rows or not has_indexable_messages)
@@ -804,27 +865,82 @@ def _trigger_invariant_sync(
 
 def fts_invariant_snapshot_sync(conn: sqlite3.Connection) -> FtsInvariantSnapshot:
     """Return exact freshness status for every active FTS search surface."""
+    has_content_blocks = _table_exists_sync(conn, "content_blocks")
+    message_source_sql = (
+        FTS_INDEXABLE_MESSAGE_COUNT_SQL
+        if has_content_blocks
+        else "SELECT COUNT(*) FROM messages WHERE text IS NOT NULL"
+    )
+    message_trigger_names = (
+        _MESSAGE_FTS_TRIGGER_NAMES if has_content_blocks else ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
+    )
+    message_missing_sql = (
+        """
+            SELECT COUNT(*)
+            FROM messages AS m
+            LEFT JOIN messages_fts_docsize AS d ON d.id = m.rowid
+            WHERE d.id IS NULL
+              AND (
+                  m.text IS NOT NULL
+                  OR EXISTS (
+                      SELECT 1
+                      FROM content_blocks AS cb
+                      WHERE cb.message_id = m.message_id
+                        AND (
+                            NULLIF(cb.text, '') IS NOT NULL
+                            OR NULLIF(cb.tool_input, '') IS NOT NULL
+                            OR NULLIF(cb.metadata, '') IS NOT NULL
+                        )
+                  )
+              )
+        """
+        if has_content_blocks
+        else """
+            SELECT COUNT(*)
+            FROM messages AS m
+            LEFT JOIN messages_fts_docsize AS d ON d.id = m.rowid
+            WHERE m.text IS NOT NULL AND d.id IS NULL
+        """
+    )
+    message_excess_sql = (
+        """
+            SELECT COUNT(*)
+            FROM messages_fts_docsize AS d
+            LEFT JOIN messages AS m ON m.rowid = d.id
+            WHERE m.rowid IS NULL
+               OR (
+                   m.text IS NULL
+                   AND NOT EXISTS (
+                       SELECT 1
+                       FROM content_blocks AS cb
+                       WHERE cb.message_id = m.message_id
+                         AND (
+                             NULLIF(cb.text, '') IS NOT NULL
+                             OR NULLIF(cb.tool_input, '') IS NOT NULL
+                             OR NULLIF(cb.metadata, '') IS NOT NULL
+                         )
+                   )
+               )
+        """
+        if has_content_blocks
+        else """
+            SELECT COUNT(*)
+            FROM messages_fts_docsize AS d
+            LEFT JOIN messages AS m ON m.rowid = d.id AND m.text IS NOT NULL
+            WHERE m.rowid IS NULL
+        """
+    )
     return FtsInvariantSnapshot(
         messages=_trigger_invariant_sync(
             conn,
             name="messages_fts",
             source_table_name="messages",
             table_name="messages_fts",
-            source_sql=FTS_INDEXABLE_MESSAGE_COUNT_SQL,
+            source_sql=message_source_sql,
             indexed_sql=FTS_INDEX_DOC_COUNT_SQL,
-            trigger_names=_MESSAGE_FTS_TRIGGER_NAMES,
-            missing_sql="""
-                SELECT COUNT(*)
-                FROM messages AS m
-                LEFT JOIN messages_fts_docsize AS d ON d.id = m.rowid
-                WHERE m.text IS NOT NULL AND d.id IS NULL
-            """,
-            excess_sql="""
-                SELECT COUNT(*)
-                FROM messages_fts_docsize AS d
-                LEFT JOIN messages AS m ON m.rowid = d.id AND m.text IS NOT NULL
-                WHERE m.rowid IS NULL
-            """,
+            trigger_names=message_trigger_names,
+            missing_sql=message_missing_sql,
+            excess_sql=message_excess_sql,
         ),
         action_events=_trigger_invariant_sync(
             conn,

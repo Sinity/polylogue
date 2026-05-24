@@ -206,10 +206,33 @@ class TestRetrievalIndexInvariants:
         with open_connection(db_path) as conn:
             expected_text_messages = {
                 str(row["message_id"])
-                for row in conn.execute("SELECT message_id FROM messages WHERE text IS NOT NULL").fetchall()
+                for row in conn.execute(
+                    """
+                    SELECT DISTINCT m.message_id
+                    FROM messages AS m
+                    WHERE m.text IS NOT NULL
+                       OR EXISTS (
+                           SELECT 1
+                           FROM content_blocks AS cb
+                           WHERE cb.message_id = m.message_id
+                             AND (
+                                 NULLIF(cb.text, '') IS NOT NULL
+                                 OR NULLIF(cb.tool_input, '') IS NOT NULL
+                                 OR NULLIF(cb.metadata, '') IS NOT NULL
+                             )
+                       )
+                    """
+                ).fetchall()
             }
             indexed_messages = {
-                str(row["message_id"]) for row in conn.execute("SELECT message_id FROM messages_fts").fetchall()
+                str(row["message_id"])
+                for row in conn.execute(
+                    """
+                    SELECT messages.message_id
+                    FROM messages_fts
+                    JOIN messages ON messages.rowid = messages_fts.rowid
+                    """
+                ).fetchall()
             }
 
         assert indexed_messages == expected_text_messages

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -268,8 +267,8 @@ async def test_repository_resaves_hydrated_domain_provider_events(
             """
             INSERT INTO provider_events (
                 event_id, conversation_id, provider_name, event_index, event_type,
-                timestamp, sort_key, payload_json, materializer_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                timestamp, sort_key, materializer_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 f"{conv_record.conversation_id}:provider-event:000000",
@@ -279,9 +278,12 @@ async def test_repository_resaves_hydrated_domain_provider_events(
                 "compaction",
                 conv_record.updated_at,
                 0.5,
-                json.dumps({"summary": "compact"}),
                 PROVIDER_EVENT_MATERIALIZER_VERSION,
             ),
+        )
+        conn.execute(
+            "INSERT INTO provider_event_compactions (event_id, summary) VALUES (?, ?)",
+            (f"{conv_record.conversation_id}:provider-event:000000", "compact"),
         )
         conn.commit()
 
@@ -319,8 +321,8 @@ async def test_repository_record_resave_preserves_provider_events_when_omitted(
             """
             INSERT INTO provider_events (
                 event_id, conversation_id, provider_name, event_index, event_type,
-                timestamp, sort_key, payload_json, materializer_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                timestamp, sort_key, materializer_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 f"{conv_record.conversation_id}:provider-event:000000",
@@ -330,9 +332,12 @@ async def test_repository_record_resave_preserves_provider_events_when_omitted(
                 "compaction",
                 conv_record.updated_at,
                 0.5,
-                json.dumps({"summary": "keep"}),
                 PROVIDER_EVENT_MATERIALIZER_VERSION,
             ),
+        )
+        conn.execute(
+            "INSERT INTO provider_event_compactions (event_id, summary) VALUES (?, ?)",
+            (f"{conv_record.conversation_id}:provider-event:000000", "keep"),
         )
         conn.commit()
 
@@ -366,8 +371,8 @@ async def test_repository_record_resave_replaces_explicit_provider_events_on_has
             """
             INSERT INTO provider_events (
                 event_id, conversation_id, provider_name, event_index, event_type,
-                timestamp, sort_key, payload_json, materializer_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                timestamp, sort_key, materializer_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 f"{conv_record.conversation_id}:provider-event:000000",
@@ -377,9 +382,12 @@ async def test_repository_record_resave_replaces_explicit_provider_events_on_has
                 "compaction",
                 conv_record.updated_at,
                 0.5,
-                json.dumps({"summary": "old"}),
                 PROVIDER_EVENT_MATERIALIZER_VERSION,
             ),
+        )
+        conn.execute(
+            "INSERT INTO provider_event_compactions (event_id, summary) VALUES (?, ?)",
+            (f"{conv_record.conversation_id}:provider-event:000000", "old"),
         )
         conn.commit()
 

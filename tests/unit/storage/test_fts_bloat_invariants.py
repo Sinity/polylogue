@@ -1,11 +1,9 @@
-"""Regression tests pinning the messages_fts external-content invariants (#817).
+"""Regression tests pinning the messages_fts no-raw-body invariants (#817/#1486).
 
-These guard the post-#944 conversion of ``messages_fts`` to FTS5
-external-content mode (``content='messages', content_rowid='rowid'``). The
-conversion is what makes the FTS index keep only tokens + docsize rather than
-a full second copy of every message body; an earlier attempt at the same
-change was reverted because deletes were not propagating through the
-external-content link. These tests pin all three load-bearing facts:
+These guard the conversion of ``messages_fts`` to contentless-delete FTS5.
+The table keeps only tokens/docsize and supports targeted rowid deletes; full
+message bodies live in canonical archive tables instead of inside FTS shadow
+storage.
 
 * the DDL still carries the external-content options,
 * on synthetic data the index pages stay well under the source table size,
@@ -18,16 +16,8 @@ import sqlite3
 from pathlib import Path
 
 
-def test_messages_fts_is_contentless_external_content(tmp_path: Path) -> None:
-    """``messages_fts`` must use ``content='messages'`` so it does not duplicate text (#817).
-
-    Earlier schemas stored a full second copy of every message body inside the
-    FTS index, which on a production archive translated to several gigabytes of
-    redundant content. The conversion to external-content FTS5
-    (``content='messages', content_rowid='rowid'``) is the load-bearing fix.
-    This test pins the DDL so a future schema edit that drops the option (or
-    flips back to standalone FTS5) fails loudly.
-    """
+def test_messages_fts_is_contentless_delete(tmp_path: Path) -> None:
+    """``messages_fts`` must not store raw message bodies (#817/#1486)."""
     from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_sync
     from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
 
@@ -38,8 +28,8 @@ def test_messages_fts_is_contentless_external_content(tmp_path: Path) -> None:
         row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
         assert row is not None
         ddl = row[0].lower()
-        assert "content='messages'" in ddl or "content=messages" in ddl, ddl
-        assert "content_rowid='rowid'" in ddl or "content_rowid=rowid" in ddl, ddl
+        assert "content=''" in ddl or "content=" in ddl, ddl
+        assert "contentless_delete=1" in ddl, ddl
     finally:
         conn.close()
 
