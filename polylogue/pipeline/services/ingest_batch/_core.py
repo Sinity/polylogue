@@ -759,15 +759,9 @@ def _iter_ingest_results_sync(
     heartbeat: IngestHeartbeat | None = None,
     progress: _WorkerProgress | None = None,
     chunk_size: int = 0,
+    force_process_pool: bool = False,
 ) -> Iterable[IngestRecordResult]:
-    """Yield ingest results for raw_artifacts, optionally in bounded chunks.
-
-    When *chunk_size* > 0 and *total* > *chunk_size*, the raw_artifacts are
-    split into sub-lists of at most *chunk_size* records. Each chunk is
-    submitted and drained before the next begins, so the process pool and
-    the drain loop never hold parsed results for more than one chunk in
-    memory at once.
-    """
+    """Yield ingest results, optionally chunked to bound parsed-result memory."""
     total = len(raw_artifacts)
     if progress is not None:
         progress.total_raw_count = total
@@ -781,6 +775,7 @@ def _iter_ingest_results_sync(
             worker_count=worker_count,
             heartbeat=heartbeat,
             progress=progress,
+            force_process_pool=force_process_pool,
         )
         return
 
@@ -792,6 +787,7 @@ def _iter_ingest_results_sync(
             worker_count=worker_count,
             heartbeat=heartbeat,
             progress=progress,
+            force_process_pool=force_process_pool,
         )
 
 
@@ -802,9 +798,10 @@ def _iter_ingest_results_chunk(
     worker_count: int,
     heartbeat: IngestHeartbeat | None = None,
     progress: _WorkerProgress | None = None,
+    force_process_pool: bool = False,
 ) -> Iterable[IngestRecordResult]:
     """Process one chunk of raw_artifacts through the process pool."""
-    if worker_count <= 1:
+    if worker_count <= 1 and not force_process_pool:
         for raw_record in raw_artifacts:
             if progress is not None:
                 progress.in_flight_raw_ids[:] = [raw_record.raw_id]
@@ -816,7 +813,7 @@ def _iter_ingest_results_chunk(
                 progress.in_flight_raw_ids.clear()
         return
     try:
-        with process_pool_executor(max_workers=worker_count) as executor:
+        with process_pool_executor(max_workers=max(1, worker_count)) as executor:
             raw_iter = iter(raw_artifacts)
             futures: dict[Future[IngestRecordResult], str] = {}
             max_in_flight = max(1, worker_count)
@@ -971,7 +968,9 @@ def _consume_ingest_results(
     heartbeat: IngestHeartbeat | None = None,
     progress: _WorkerProgress | None = None,
     ingest_result_chunk_size: int = 0,
-) -> None:
+    suspend_fts_triggers: bool = False,
+    force_process_pool: bool = False,
+) -> bool:
     result_iterator = iter(
         _iter_ingest_results_sync(
             raw_artifacts,
@@ -980,8 +979,10 @@ def _consume_ingest_results(
             heartbeat=heartbeat,
             progress=progress,
             chunk_size=ingest_result_chunk_size,
+            force_process_pool=force_process_pool,
         )
     )
+    transaction_started = False
     while True:
         wait_started = time.perf_counter()
         try:
@@ -990,6 +991,13 @@ def _consume_ingest_results(
             summary.teardown_elapsed_s = time.perf_counter() - wait_started
             break
         summary.result_wait_s += time.perf_counter() - wait_started
+        if not transaction_started:
+            conn.execute("BEGIN IMMEDIATE")
+            if suspend_fts_triggers:
+                from polylogue.storage.fts.fts_lifecycle import suspend_fts_triggers_sync
+
+                suspend_fts_triggers_sync(conn, mark_stale=False)
+            transaction_started = True
         _drain_ingest_result(
             conn,
             ir,
@@ -998,6 +1006,7 @@ def _consume_ingest_results(
             pending_by_parent=pending_by_parent,
             force_write=force_write,
         )
+    return transaction_started
 
 
 def _flush_ingest_results(
@@ -1063,6 +1072,7 @@ def _process_ingest_batch_sync(
     progress: _WorkerProgress | None = None,
     ingest_result_chunk_size: int = 0,
     suspend_fts_triggers: bool = False,
+    force_process_pool: bool = False,
 ) -> _IngestBatchSummary:
     if progress is None:
         progress = _WorkerProgress()
@@ -1080,13 +1090,9 @@ def _process_ingest_batch_sync(
     materialized_ids: set[str] = set()
     pending_by_parent: dict[str, list[_ConversationEntry]] = {}
     _observe_current_rss(summary)
+    transaction_started = False
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        if suspend_fts_triggers:
-            from polylogue.storage.fts.fts_lifecycle import suspend_fts_triggers_sync
-
-            suspend_fts_triggers_sync(conn, mark_stale=False)
-        _consume_ingest_results(
+        transaction_started = _consume_ingest_results(
             conn,
             raw_artifacts,
             worker_request=worker_request,
@@ -1097,6 +1103,8 @@ def _process_ingest_batch_sync(
             heartbeat=heartbeat,
             progress=progress,
             ingest_result_chunk_size=ingest_result_chunk_size,
+            suspend_fts_triggers=suspend_fts_triggers,
+            force_process_pool=force_process_pool,
         )
         _flush_ingest_results(
             conn,
@@ -1104,43 +1112,43 @@ def _process_ingest_batch_sync(
             materialized_ids=materialized_ids,
             pending_by_parent=pending_by_parent,
         )
-        fts_repair_ids = set(summary.fts_repair_conversation_ids)
-        # Side effects (FTS trigger restore + FTS repair + commit) run
-        # BEFORE we release the connection so the data write and post-
-        # write effects share one transaction. The previous arrangement
-        # ran side effects in a `finally` block — they fired even after
-        # a rollback (silently restoring triggers on top of nothing) and
-        # ran AFTER the row commit, so a failure between commit and FTS
-        # repair would leave the index drifted. See #1242.
-        commit_started = time.perf_counter()
-        _commit_sync_ingest_side_effects(
-            conn,
-            db_path=db_path,
-            changed_conversation_ids=tuple(fts_repair_ids),
-            repair_message_fts=repair_message_fts or suspend_fts_triggers,
-            repair_action_fts=repair_action_fts or suspend_fts_triggers,
-        )
-        summary.commit_elapsed_s = time.perf_counter() - commit_started
-        from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_wal
-
-        wal_observation = maybe_checkpoint_wal(db_path, reason="ingest_batch_commit")
-        summary.wal_checkpoint_mode = wal_observation.mode
-        summary.wal_bytes_before_checkpoint = wal_observation.wal_bytes_before
-        summary.wal_bytes_after_checkpoint = wal_observation.wal_bytes_after
-        summary.wal_checkpointed_pages = wal_observation.checkpointed_pages
-        summary.wal_busy_pages = wal_observation.busy_pages
-        summary.wal_checkpoint_elapsed_s = wal_observation.elapsed_s
-        summary.wal_checkpoint_error = wal_observation.error
-        if wal_observation.blocking_processes:
-            logger.warning(
-                "wal_checkpoint_blocked",
-                reason=wal_observation.reason,
-                mode=wal_observation.mode,
-                wal_bytes_before=wal_observation.wal_bytes_before,
-                wal_bytes_after=wal_observation.wal_bytes_after,
-                busy_pages=wal_observation.busy_pages,
-                blocking_processes=wal_observation.blocking_processes[:5],
+        if transaction_started:
+            fts_repair_ids = set(summary.fts_repair_conversation_ids)
+            # Side effects run before releasing the connection so data and post-
+            # write effects share one transaction. The previous arrangement
+            # ran side effects in a `finally` block — they fired even after
+            # a rollback (silently restoring triggers on top of nothing) and
+            # ran AFTER the row commit, so a failure between commit and FTS
+            # repair would leave the index drifted. See #1242.
+            commit_started = time.perf_counter()
+            _commit_sync_ingest_side_effects(
+                conn,
+                db_path=db_path,
+                changed_conversation_ids=tuple(fts_repair_ids),
+                repair_message_fts=repair_message_fts or suspend_fts_triggers,
+                repair_action_fts=repair_action_fts or suspend_fts_triggers,
             )
+            summary.commit_elapsed_s = time.perf_counter() - commit_started
+            from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_wal
+
+            wal_observation = maybe_checkpoint_wal(db_path, reason="ingest_batch_commit")
+            summary.wal_checkpoint_mode = wal_observation.mode
+            summary.wal_bytes_before_checkpoint = wal_observation.wal_bytes_before
+            summary.wal_bytes_after_checkpoint = wal_observation.wal_bytes_after
+            summary.wal_checkpointed_pages = wal_observation.checkpointed_pages
+            summary.wal_busy_pages = wal_observation.busy_pages
+            summary.wal_checkpoint_elapsed_s = wal_observation.elapsed_s
+            summary.wal_checkpoint_error = wal_observation.error
+            if wal_observation.blocking_processes:
+                logger.warning(
+                    "wal_checkpoint_blocked",
+                    reason=wal_observation.reason,
+                    mode=wal_observation.mode,
+                    wal_bytes_before=wal_observation.wal_bytes_before,
+                    wal_bytes_after=wal_observation.wal_bytes_after,
+                    busy_pages=wal_observation.busy_pages,
+                    blocking_processes=wal_observation.blocking_processes[:5],
+                )
     except Exception:
         # Roll back the row writes.  If a caller explicitly opted into
         # dropped-trigger bulk mode, restore triggers before propagating

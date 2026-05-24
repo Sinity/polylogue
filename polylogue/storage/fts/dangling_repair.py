@@ -94,10 +94,153 @@ def insert_missing_action_fts_rows_sync(conn: sqlite3.Connection) -> int:
     return max(0, after - before)
 
 
+def _count_table(conn: sqlite3.Connection, table_name: str) -> int:
+    return int(conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0] or 0)
+
+
+def _repair_keyed_content_fts_sync(
+    conn: sqlite3.Connection,
+    *,
+    source_table: str,
+    fts_table: str,
+    key_column: str,
+    insert_sql: str,
+) -> tuple[int, int, int, int]:
+    if not (_table_exists(conn, source_table) and _table_exists(conn, fts_table)):
+        return (0, 0, 0, 0)
+    before = _count_table(conn, f"{fts_table}_docsize")
+    source = _count_table(conn, source_table)
+    if before == source:
+        return (0, source, before, 0)
+    conn.execute(
+        f"""
+        DELETE FROM {fts_table}
+        WHERE {key_column} NOT IN (SELECT {key_column} FROM {source_table})
+        """
+    )
+    after_delete = _count_table(conn, f"{fts_table}_docsize")
+    conn.execute(insert_sql)
+    after = _count_table(conn, f"{fts_table}_docsize")
+    return (max(0, after - after_delete), source, after, max(0, before - source))
+
+
+def _repair_session_work_events_fts_rows_sync(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
+    return _repair_keyed_content_fts_sync(
+        conn,
+        source_table="session_work_events",
+        fts_table="session_work_events_fts",
+        key_column="event_id",
+        insert_sql="""
+            INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, kind, text)
+            SELECT swe.event_id, swe.conversation_id, swe.provider_name, swe.kind, swe.search_text
+            FROM session_work_events AS swe
+            LEFT JOIN session_work_events_fts AS fts ON fts.event_id = swe.event_id
+            WHERE fts.event_id IS NULL
+        """,
+    )
+
+
+def _repair_work_threads_fts_rows_sync(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
+    return _repair_keyed_content_fts_sync(
+        conn,
+        source_table="work_threads",
+        fts_table="work_threads_fts",
+        key_column="thread_id",
+        insert_sql="""
+            INSERT INTO work_threads_fts (thread_id, root_id, text)
+            SELECT wt.thread_id, wt.root_id, wt.search_text
+            FROM work_threads AS wt
+            LEFT JOIN work_threads_fts AS fts ON fts.thread_id = wt.thread_id
+            WHERE fts.thread_id IS NULL
+        """,
+    )
+
+
+def _record_optional_derived_surface(
+    conn: sqlite3.Connection,
+    *,
+    surface: str,
+    source_rows: int,
+    indexed_rows: int,
+    triggers: tuple[str, ...],
+) -> bool:
+    if not _table_exists(conn, surface):
+        return True
+    ready = source_rows == indexed_rows and _triggers_present_sync(conn, triggers)
+    record_fts_surface_state_sync(
+        conn,
+        surface=surface,
+        state=READY if ready else STALE,
+        source_rows=source_rows,
+        indexed_rows=indexed_rows,
+        detail=None if ready else f"{surface} count/trigger check failed after repair",
+    )
+    return ready
+
+
+def _freshness_state(conn: sqlite3.Connection, surface: str) -> str | None:
+    if not _table_exists(conn, "fts_freshness_state"):
+        return None
+    row = conn.execute("SELECT state FROM fts_freshness_state WHERE surface=?", (surface,)).fetchone()
+    return None if row is None else str(row[0])
+
+
+def _ready_freshness_marker(conn: sqlite3.Connection, surface: str, triggers: tuple[str, ...]) -> bool:
+    return _freshness_state(conn, surface) == READY and _triggers_present_sync(conn, triggers)
+
+
+def repair_stale_fts_rows(conn: sqlite3.Connection) -> DanglingFtsRepairOutcome:
+    """Repair only stale/unknown FTS surfaces when durable freshness is usable."""
+    message_ready = _ready_freshness_marker(
+        conn,
+        "messages_fts",
+        _message_trigger_names(content_blocks_exists=_table_exists(conn, "content_blocks")),
+    )
+    action_ready = not _table_exists(conn, "action_events") or _ready_freshness_marker(
+        conn,
+        "action_events_fts",
+        ("action_events_fts_ai", "action_events_fts_ad", "action_events_fts_au"),
+    )
+    if not (message_ready and action_ready):
+        return repair_missing_fts_rows(conn)
+
+    inserted_work_events, source_work_events, after_work_events, _excess_work_events = (
+        _repair_session_work_events_fts_rows_sync(conn)
+    )
+    inserted_threads, source_threads, after_threads, _excess_threads = _repair_work_threads_fts_rows_sync(conn)
+    work_event_ready = _record_optional_derived_surface(
+        conn,
+        surface="session_work_events_fts",
+        source_rows=source_work_events,
+        indexed_rows=after_work_events,
+        triggers=("session_work_events_fts_ai", "session_work_events_fts_ad", "session_work_events_fts_au"),
+    )
+    thread_ready = _record_optional_derived_surface(
+        conn,
+        surface="work_threads_fts",
+        source_rows=source_threads,
+        indexed_rows=after_threads,
+        triggers=("work_threads_fts_ai", "work_threads_fts_ad", "work_threads_fts_au"),
+    )
+    return DanglingFtsRepairOutcome(
+        repaired_count=inserted_work_events + inserted_threads,
+        success=work_event_ready and thread_ready,
+        detail=(
+            "FTS sync: repaired stale derived surfaces "
+            f"({after_work_events:,}/{source_work_events:,} work events, {after_threads:,}/{source_threads:,} threads)"
+        ),
+    )
+
+
 def repair_missing_fts_rows(conn: sqlite3.Connection) -> DanglingFtsRepairOutcome:
     """Repair missing message/action FTS rows without full invariant snapshots."""
     before_messages = int(conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone()[0] or 0)
-    source_messages = int(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone()[0] or 0)
+    source_messages_sql = (
+        FTS_INDEXABLE_MESSAGE_COUNT_SQL
+        if _table_exists(conn, "content_blocks")
+        else "SELECT COUNT(*) FROM messages WHERE NULLIF(text, '') IS NOT NULL"
+    )
+    source_messages = int(conn.execute(source_messages_sql).fetchone()[0] or 0)
     action_table_exists = _table_exists(conn, "action_events")
     before_actions = int(conn.execute(ACTION_FTS_INDEX_DOC_COUNT_SQL).fetchone()[0] or 0) if action_table_exists else 0
     source_actions = (
@@ -118,6 +261,10 @@ def repair_missing_fts_rows(conn: sqlite3.Connection) -> DanglingFtsRepairOutcom
 
     inserted_messages = insert_missing_message_fts_rows_sync(conn)
     inserted_actions = insert_missing_action_fts_rows_sync(conn)
+    inserted_work_events, source_work_events, after_work_events, _excess_work_events = (
+        _repair_session_work_events_fts_rows_sync(conn)
+    )
+    inserted_threads, source_threads, after_threads, _excess_threads = _repair_work_threads_fts_rows_sync(conn)
     after_messages = int(conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone()[0] or 0)
     after_actions = int(conn.execute(ACTION_FTS_INDEX_DOC_COUNT_SQL).fetchone()[0] or 0) if action_table_exists else 0
     message_ready = after_messages == source_messages and _triggers_present_sync(
@@ -146,13 +293,28 @@ def repair_missing_fts_rows(conn: sqlite3.Connection) -> DanglingFtsRepairOutcom
             indexed_rows=after_actions,
             detail=None if action_ready else "action-event FTS count/trigger check failed after repair",
         )
+    work_event_ready = _record_optional_derived_surface(
+        conn,
+        surface="session_work_events_fts",
+        source_rows=source_work_events,
+        indexed_rows=after_work_events,
+        triggers=("session_work_events_fts_ai", "session_work_events_fts_ad", "session_work_events_fts_au"),
+    )
+    thread_ready = _record_optional_derived_surface(
+        conn,
+        surface="work_threads_fts",
+        source_rows=source_threads,
+        indexed_rows=after_threads,
+        triggers=("work_threads_fts_ai", "work_threads_fts_ad", "work_threads_fts_au"),
+    )
 
     return DanglingFtsRepairOutcome(
-        repaired_count=inserted_messages + inserted_actions,
-        success=message_ready and action_ready,
+        repaired_count=inserted_messages + inserted_actions + inserted_work_events + inserted_threads,
+        success=message_ready and action_ready and work_event_ready and thread_ready,
         detail=(
             "FTS sync: repaired index "
-            f"({after_messages:,}/{source_messages:,} messages, {after_actions:,}/{source_actions:,} actions)"
+            f"({after_messages:,}/{source_messages:,} messages, {after_actions:,}/{source_actions:,} actions, "
+            f"{after_work_events:,}/{source_work_events:,} work events, {after_threads:,}/{source_threads:,} threads)"
         ),
     )
 
@@ -165,4 +327,5 @@ __all__ = [
     "insert_missing_action_fts_rows_sync",
     "insert_missing_message_fts_rows_sync",
     "repair_missing_fts_rows",
+    "repair_stale_fts_rows",
 ]

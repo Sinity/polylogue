@@ -117,6 +117,11 @@ def _enable_faulthandler_if_supported() -> None:
 
 
 async def _ensure_fts_startup_readiness() -> None:
+    """Run daemon startup FTS maintenance without blocking the event loop."""
+    await asyncio.to_thread(_ensure_fts_startup_readiness_sync)
+
+
+def _ensure_fts_startup_readiness_sync() -> None:
     """Ensure FTS triggers and index are healthy on daemon startup.
 
     Three failure modes are recovered here:
@@ -132,11 +137,10 @@ async def _ensure_fts_startup_readiness() -> None:
        death, and subsequent writes silently bypass the FTS index. See
        #1242.
 
-    This path restores obvious broken structure first and records a durable
+    This path restores obvious broken structure first and records durable
     freshness state for search request handlers. It deliberately avoids exact
-    full-archive invariant scans during ordinary startup. If triggers are
-    missing, however, writes may already have bypassed FTS; the only correct
-    recovery is a one-time rebuild before search is served.
+    full-archive invariant scans during ordinary startup; bounded missing-row
+    repair is enough for the normal SIGKILL-after-trigger-suspend failure mode.
     """
     from polylogue.paths import db_path
     from polylogue.storage.sqlite.connection_profile import open_connection
@@ -151,17 +155,21 @@ async def _ensure_fts_startup_readiness() -> None:
         row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
         has_fts_table = row is not None
 
+        from polylogue.storage.fts.dangling_repair import (
+            configure_bounded_repair_connection,
+            repair_missing_fts_rows,
+            repair_stale_fts_rows,
+        )
         from polylogue.storage.fts.freshness import (
             ensure_fts_freshness_table_sync,
-            record_fts_invariant_snapshot_sync,
         )
         from polylogue.storage.fts.fts_lifecycle import (
             ensure_fts_index_sync,
-            fts_invariant_snapshot_sync,
             rebuild_fts_index_sync,
             restore_fts_triggers_sync,
         )
 
+        configure_bounded_repair_connection(conn)
         ensure_fts_freshness_table_sync(conn)
 
         if not has_fts_table:
@@ -179,22 +187,24 @@ async def _ensure_fts_startup_readiness() -> None:
                 ", ".join(missing_triggers),
             )
             restore_fts_triggers_sync(conn)
-            rebuild_fts_index_sync(conn)
+            outcome = repair_missing_fts_rows(conn)
+            if not outcome.success:
+                logger.warning("daemon: bounded FTS repair failed after trigger restore: %s", outcome.detail)
+                rebuild_fts_index_sync(conn)
             conn.commit()
-            logger.info("daemon: FTS rebuild complete after trigger recovery.")
+            logger.info("daemon: FTS trigger recovery complete.")
             return
 
         ensure_fts_index_sync(conn)
-        snapshot = fts_invariant_snapshot_sync(conn)
-        if not snapshot.ready:
-            logger.warning("daemon: FTS invariant failed on startup. Rebuilding before serving search.")
+        outcome = repair_stale_fts_rows(conn)
+        if not outcome.success:
+            logger.warning("daemon: bounded FTS startup repair failed: %s. Rebuilding.", outcome.detail)
             restore_fts_triggers_sync(conn)
             rebuild_fts_index_sync(conn)
             conn.commit()
             logger.info("daemon: FTS rebuild complete.")
             return
 
-        record_fts_invariant_snapshot_sync(conn, snapshot)
         conn.commit()
     except Exception:
         logger.warning("daemon: FTS startup check failed", exc_info=True)
@@ -596,13 +606,6 @@ async def run_daemon_services(
     # daemon's pidfile.
     _pidfile_path = pidfile
 
-    # Ensure FTS structure is usable on startup. Keep this after pidfile
-    # acquisition so operator status sees the live daemon even if SQLite is
-    # busy, and keep the check bounded so daemon restart is not a full-table
-    # maintenance operation.
-    if not watcher_blocked:
-        await _ensure_fts_startup_readiness()
-
     # Periodic maintenance tasks. If schema preflight blocks the watcher, do
     # not start any background loop that opens the archive: a mismatched
     # runtime/database pair must remain observable without doing catch-up,
@@ -678,6 +681,11 @@ async def run_daemon_services(
             )
             api_server_task = asyncio.create_task(asyncio.to_thread(api_server.serve_forever, 0.5))
             tasks.append(api_server_task)
+
+        # Ensure FTS structure after HTTP surfaces are bound. On multi-GB
+        # archives, bounded SQLite maintenance can fault substantial file cache.
+        if not watcher_blocked:
+            maintenance_tasks.append(asyncio.create_task(_ensure_fts_startup_readiness()))
 
         # Preflight already ran at the top of run_daemon_services (see
         # ``watcher_blocked`` above); reuse that result.

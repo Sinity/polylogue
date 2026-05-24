@@ -6,7 +6,8 @@ import sqlite3
 import threading
 from datetime import timedelta
 from pathlib import Path
-from typing import cast
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -18,6 +19,11 @@ from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from tests.infra.frozen_clock import FrozenClock
+
+
+def _record_successful_repair(fake_conn: object, repairs: list[Any]) -> SimpleNamespace:
+    repairs.append(fake_conn)
+    return SimpleNamespace(success=True, repaired_count=0, detail="FTS index in sync")
 
 
 def test_polylogued_help_lists_watch_command() -> None:
@@ -262,7 +268,7 @@ def test_run_live_watcher_stops_on_keyboard_interrupt() -> None:
     assert stopped == [True]
 
 
-def test_ensure_fts_startup_readiness_records_exact_invariant(
+def test_ensure_fts_startup_readiness_runs_bounded_repair(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -329,33 +335,32 @@ def test_ensure_fts_startup_readiness_records_exact_invariant(
     def ensure(fake_conn: FakeConnection) -> None:
         ensured.append(fake_conn)
 
-    class FakeSnapshot:
-        ready = True
-
-    snapshot = FakeSnapshot()
-    recorded: list[FakeSnapshot] = []
+    repairs: list[FakeConnection] = []
 
     monkeypatch.setattr("polylogue.paths.db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", ensure)
-    monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.fts_invariant_snapshot_sync", lambda fake_conn: snapshot)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", rebuild)
     monkeypatch.setattr("polylogue.storage.fts.freshness.ensure_fts_freshness_table_sync", lambda fake_conn: None)
     monkeypatch.setattr(
-        "polylogue.storage.fts.freshness.record_fts_invariant_snapshot_sync",
-        lambda fake_conn, fake_snapshot: recorded.append(fake_snapshot),
+        "polylogue.storage.fts.dangling_repair.configure_bounded_repair_connection",
+        lambda fake_conn: None,
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.fts.dangling_repair.repair_stale_fts_rows",
+        lambda fake_conn: _record_successful_repair(fake_conn, repairs),
     )
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
     assert ensured == [conn]
     assert rebuilds == []
-    assert recorded == [snapshot]
+    assert repairs == [conn]
     assert conn.committed is True
     assert conn.closed is True
 
 
-def test_ensure_fts_startup_readiness_rebuilds_stale_invariant(
+def test_ensure_fts_startup_readiness_rebuilds_when_bounded_repair_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -418,22 +423,23 @@ def test_ensure_fts_startup_readiness_rebuilds_stale_invariant(
     def rebuild(fake_conn: FakeConnection) -> None:
         rebuilds.append(fake_conn)
 
-    class FakeSnapshot:
-        ready = False
-
     monkeypatch.setattr("polylogue.paths.db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", lambda _conn: None)
-    monkeypatch.setattr(
-        "polylogue.storage.fts.fts_lifecycle.fts_invariant_snapshot_sync",
-        lambda fake_conn: FakeSnapshot(),
-    )
     monkeypatch.setattr(
         "polylogue.storage.fts.fts_lifecycle.restore_fts_triggers_sync",
         lambda fake_conn: restored.append(fake_conn),
     )
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", rebuild)
     monkeypatch.setattr("polylogue.storage.fts.freshness.ensure_fts_freshness_table_sync", lambda fake_conn: None)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.dangling_repair.configure_bounded_repair_connection",
+        lambda fake_conn: None,
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.fts.dangling_repair.repair_stale_fts_rows",
+        lambda fake_conn: SimpleNamespace(success=False, repaired_count=1, detail="excess rows"),
+    )
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
@@ -482,8 +488,8 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
                     else FakeCursor(None)
                 )
             if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
-                # One missing trigger must send startup through restore+rebuild
-                # before ensure_fts_index_sync can hide the drift evidence.
+                # One missing trigger must send startup through trigger restore
+                # before bounded repair can mark the FTS surfaces fresh.
                 triggers: list[tuple[object, ...]] = [
                     ("messages_fts_ai",),
                     ("messages_fts_ad",),
@@ -522,13 +528,18 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
 
     monkeypatch.setattr("polylogue.storage.fts.freshness.ensure_fts_freshness_table_sync", lambda fake_conn: None)
     monkeypatch.setattr(
-        "polylogue.storage.fts.freshness.record_fts_invariant_snapshot_sync", lambda fake_conn, fake_snapshot: None
+        "polylogue.storage.fts.dangling_repair.configure_bounded_repair_connection",
+        lambda fake_conn: None,
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.fts.dangling_repair.repair_missing_fts_rows",
+        lambda fake_conn: SimpleNamespace(success=True, repaired_count=3, detail="repaired"),
     )
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
     assert restored == [conn]
-    assert rebuilds == [conn]
+    assert rebuilds == []
     assert conn.committed is True
     assert conn.closed is True
 
