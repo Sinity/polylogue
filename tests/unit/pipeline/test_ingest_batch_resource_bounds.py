@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from concurrent.futures import Future
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 from polylogue.pipeline.services.ingest_batch import _IngestWorkerRequest, _iter_ingest_results_sync
-from polylogue.pipeline.services.ingest_worker import IngestRecordResult
+from polylogue.pipeline.services.ingest_worker import ConversationData, IngestRecordResult
 from polylogue.storage.runtime import RawConversationRecord
 
 
@@ -29,6 +30,21 @@ def _worker_request() -> _IngestWorkerRequest:
         blob_root_str="/tmp/blob-store",
         validation_mode="strict",
         measure_ingest_result_size=False,
+    )
+
+
+def _conversation_data_with_rows(*, conversation_id: str = "conv-large", messages: int = 0) -> ConversationData:
+    return cast(
+        ConversationData,
+        SimpleNamespace(
+            conversation_id=conversation_id,
+            message_tuples=[object()] * messages,
+            block_tuples=[],
+            action_event_tuples=[],
+            provider_event_tuples=[],
+            attachment_tuples=[],
+            attachment_ref_tuples=[],
+        ),
     )
 
 
@@ -111,3 +127,68 @@ def test_consume_ingest_results_delays_write_transaction_until_parse_result(
 
     assert transaction_started is True
     assert events == ["parse-drained", "begin", "drain"]
+
+
+def test_consume_ingest_results_releases_large_result_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cdata = _conversation_data_with_rows(messages=1001)
+    result = IngestRecordResult(raw_id="raw-large", conversations=[cdata])
+    releases: list[str] = []
+
+    class FakeConnection:
+        def execute(self, sql: str) -> object:
+            assert sql == "BEGIN IMMEDIATE"
+            return None
+
+    monkeypatch.setattr(ingest_batch_core, "_iter_ingest_results_sync", lambda *args, **kwargs: [result])
+    monkeypatch.setattr(ingest_batch_core, "_drain_ingest_result", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ingest_batch_core, "release_process_memory", lambda: releases.append("release"))
+    monkeypatch.setattr(ingest_batch_core, "read_current_rss_mb", lambda: 42.0)
+
+    summary = SimpleNamespace(
+        result_wait_s=0.0,
+        teardown_elapsed_s=0.0,
+        worker_count=1,
+        max_current_rss_mb=None,
+    )
+    transaction_started = ingest_batch_core._consume_ingest_results(
+        FakeConnection(),  # type: ignore[arg-type]
+        [_large_raw_record()],
+        worker_request=_worker_request(),
+        summary=summary,  # type: ignore[arg-type]
+        materialized_ids=set(),
+        pending_by_parent={},
+    )
+
+    assert transaction_started is True
+    assert result.conversations == []
+    assert releases == ["release"]
+    assert summary.max_current_rss_mb == 42.0
+
+
+def test_drain_ready_conversation_entries_drops_written_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cdata = _conversation_data_with_rows(messages=3)
+    writes: list[int] = []
+
+    monkeypatch.setattr(ingest_batch_core, "_parent_ready", lambda *args, **kwargs: True)
+
+    def fake_write(*args: object, **kwargs: object) -> bool:
+        del args, kwargs
+        writes.append(len(cdata.message_tuples))
+        return True
+
+    monkeypatch.setattr(ingest_batch_core, "_write_conversation_entry", fake_write)
+
+    ingest_batch_core._drain_ready_conversation_entries(
+        object(),  # type: ignore[arg-type]
+        [("raw-large", cdata)],
+        summary=SimpleNamespace(),  # type: ignore[arg-type]
+        materialized_ids=set(),
+        pending_by_parent={},
+    )
+
+    assert writes == [3]
+    assert cdata.message_tuples == []

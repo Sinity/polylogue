@@ -1081,7 +1081,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 1092
+    loc: 1100
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1627,8 +1627,12 @@ files:
     target: polylogue/pipeline/services/ingest_batch/_append_stats.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_core.py
-    loc: 1492
+    loc: 1500
     target: polylogue/pipeline/services/ingest_batch/_core.py
+    owner: stable
+  - path: polylogue/pipeline/services/ingest_batch/_memory.py
+    loc: 52
+    target: polylogue/pipeline/services/ingest_batch/_memory.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_models.py
     loc: 118
@@ -1638,6 +1642,10 @@ files:
   - path: polylogue/pipeline/services/ingest_batch/_observations.py
     loc: 114
     target: polylogue/pipeline/services/ingest_batch/_observations.py
+    owner: stable
+  - path: polylogue/pipeline/services/ingest_batch/_summary.py
+    loc: 33
+    target: polylogue/pipeline/services/ingest_batch/_summary.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_worker.py
     loc: 1172
@@ -2546,7 +2554,7 @@ files:
     target: polylogue/sources/live/append_ingest.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 1158
+    loc: 1159
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
@@ -2888,7 +2896,7 @@ files:
     target: polylogue/storage/fts/conversation_repair.py
     owner: stable
   - path: polylogue/storage/fts/dangling_repair.py
-    loc: 168
+    loc: 331
     target: polylogue/storage/fts/dangling_repair.py
     owner: stable
   - path: polylogue/storage/fts/freshness.py
@@ -2896,7 +2904,7 @@ files:
     target: polylogue/storage/fts/freshness.py
     owner: stable
   - path: polylogue/storage/fts/fts_lifecycle.py
-    loc: 1099
+    loc: 1057
     target: polylogue/storage/fts/fts_lifecycle.py
     owner: stable
   - path: polylogue/storage/fts/sql.py
@@ -3472,7 +3480,7 @@ files:
     target: polylogue/storage/sqlite/runtime_indexes.py
     owner: stable
   - path: polylogue/storage/sqlite/schema.py
-    loc: 123
+    loc: 119
     target: polylogue/storage/sqlite/schema.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_bootstrap.py
