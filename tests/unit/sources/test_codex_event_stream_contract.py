@@ -451,5 +451,5 @@ class TestCrossMessageReferences:
         conversation = _parse(records, "interleaved_stream")
         compactions = [e for e in conversation.provider_events if e.event_type == "compaction"]
         assert len(compactions) == 1
-        assert compactions[0].payload["has_replacement_history"] is True
+        assert compactions[0].payload["replacement_history_count"] == 1
         assert compactions[0].payload["summary"] == "Conversation compacted"
