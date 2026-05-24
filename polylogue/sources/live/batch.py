@@ -93,7 +93,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
-_FULL_INGEST_SUSPEND_FTS_TRIGGER_BYTES = 32 * 1024 * 1024
+_FULL_INGEST_SUSPEND_FTS_TRIGGER_BYTES = _STREAMING_FULL_INGEST_BYTES
 
 
 class LiveBatchProcessor:
