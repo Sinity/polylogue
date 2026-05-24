@@ -1060,7 +1060,6 @@ class LiveBatchProcessor:
                 FROM conversations AS c
                 JOIN raw_conversations AS r ON r.raw_id = c.raw_id
                 WHERE r.source_path = ?
-                  AND COALESCE(r.source_index, 0) >= 0
                 ORDER BY c.updated_at DESC, c.created_at DESC, c.conversation_id DESC
                 LIMIT 1
                 """,

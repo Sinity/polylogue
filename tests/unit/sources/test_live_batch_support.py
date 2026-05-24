@@ -322,6 +322,97 @@ def test_incomplete_append_is_requeued_not_full_ingested(tmp_path: Path) -> None
     assert metrics.failed_paths == [str(path)]
 
 
+def test_codex_append_plan_uses_append_only_conversation_identity(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.schema import _ensure_schema
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "rollout-2026-05-16T13-50-17-019e309f-7614-7381-a8ac-f9080f304ee6.jsonl"
+    original = b'{"type":"session_meta","payload":{"id":"019e309f-7614-7381-a8ac-f9080f304ee6"}}\n'
+    appended = b'{"type":"event_msg","payload":{"message":"new"}}\n'
+    path.write_bytes(original + appended)
+    db_path = tmp_path / "archive.sqlite"
+    cursor = CursorStore(db_path)
+    with cursor._connect() as conn:
+        _ensure_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO raw_conversations (
+                raw_id, provider_name, payload_provider, source_name, source_path,
+                source_index, blob_size, acquired_at, file_mtime
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "append-raw",
+                "codex",
+                "codex",
+                "codex",
+                str(path),
+                -1,
+                len(original),
+                "2026-05-24T00:00:00+00:00",
+                "2026-05-24T00:00:00+00:00",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO conversations (
+                conversation_id, provider_name, provider_conversation_id, title,
+                created_at, updated_at, sort_key, content_hash, provider_meta,
+                metadata, source_name, working_directories_json, git_branch,
+                git_repository_url, version, parent_conversation_id, branch_type, raw_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "codex:019e309f-7614-7381-a8ac-f9080f304ee6",
+                "codex",
+                "019e309f-7614-7381-a8ac-f9080f304ee6",
+                "hot session",
+                "2026-05-24T00:00:00+00:00",
+                "2026-05-24T00:00:00+00:00",
+                0.0,
+                "base-hash",
+                '{"source":"codex"}',
+                "{}",
+                "codex",
+                None,
+                None,
+                None,
+                1,
+                None,
+                None,
+                "append-raw",
+            ),
+        )
+        conn.commit()
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    stat = path.stat()
+    cursor.set(
+        path,
+        len(original),
+        byte_offset=len(original),
+        last_complete_newline=len(original),
+        parser_fingerprint="test-parser",
+        content_fingerprint="base-cursor",
+        source_name="codex",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+    plan = processor._append_plan(path)
+
+    assert isinstance(plan, _AppendPlan)
+    assert plan.start_offset == len(original)
+    assert plan.payload.startswith(b'{"type":"session_meta","payload":{"id":"019e309f-7614-7381-a8ac-f9080f304ee6"}}\n')
+    assert plan.payload.endswith(appended)
+
+
 def test_append_ingest_preserves_successes_when_other_plan_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
