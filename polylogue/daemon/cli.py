@@ -607,21 +607,28 @@ async def run_daemon_services(
     if not watcher_blocked:
         await _ensure_fts_startup_readiness()
 
-    # Periodic maintenance tasks.
-    wal_task = asyncio.create_task(_periodic_wal_checkpoint())
-    heartbeat_task = asyncio.create_task(_periodic_heartbeat())
-    convergence_task = asyncio.create_task(_periodic_convergence_check(sources))
-    health_task = asyncio.create_task(_periodic_health_check())
-    db_optimize_task = asyncio.create_task(_periodic_db_optimize())
-    status_snapshot_task = asyncio.create_task(_periodic_status_snapshot_refresh())
-    maintenance_tasks = [
-        wal_task,
-        heartbeat_task,
-        convergence_task,
-        health_task,
-        db_optimize_task,
-        status_snapshot_task,
-    ]
+    # Periodic maintenance tasks. If schema preflight blocks the watcher, do
+    # not start any background loop that opens the archive: a mismatched
+    # runtime/database pair must remain observable without doing catch-up,
+    # FTS repair, status snapshots, WAL checkpointing, or convergence work.
+    maintenance_tasks: list[asyncio.Task[None]] = []
+    if not watcher_blocked:
+        wal_task = asyncio.create_task(_periodic_wal_checkpoint())
+        heartbeat_task = asyncio.create_task(_periodic_heartbeat())
+        convergence_task = asyncio.create_task(_periodic_convergence_check(sources))
+        health_task = asyncio.create_task(_periodic_health_check())
+        db_optimize_task = asyncio.create_task(_periodic_db_optimize())
+        status_snapshot_task = asyncio.create_task(_periodic_status_snapshot_refresh())
+        maintenance_tasks.extend(
+            [
+                wal_task,
+                heartbeat_task,
+                convergence_task,
+                health_task,
+                db_optimize_task,
+                status_snapshot_task,
+            ]
+        )
 
     api_server: ThreadingHTTPServer | None = None
     api_server_task: asyncio.Task[None] | None = None
@@ -642,11 +649,12 @@ async def run_daemon_services(
 
         _db = db_path()
 
-        converger = DaemonConverger(
-            stages=make_default_convergence_stages(_db),
-            max_workers=2,
-        )
-        await converger.start()
+        if not watcher_blocked:
+            converger = DaemonConverger(
+                stages=make_default_convergence_stages(_db),
+                max_workers=2,
+            )
+            await converger.start()
 
         if enable_browser_capture:
             server = make_server(
