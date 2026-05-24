@@ -10,7 +10,7 @@ import pytest
 from polylogue.config import Config
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.storage import repair as repair_mod
-from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
+from polylogue.storage.insights.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
 
 
 def _config(tmp_path: Path) -> Config:
@@ -187,6 +187,62 @@ def test_repair_session_insights_noops_when_ready(monkeypatch: pytest.MonkeyPatc
     assert result.success is True
     assert result.repaired_count == 0
     assert result.detail == "Session insights already ready"
+
+
+def test_repair_session_insights_uses_stale_profile_candidates(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, tuple[str, ...] | None]] = []
+
+    class FakeConn:
+        def commit(self) -> None:
+            calls.append(("commit", None))
+
+    @contextmanager
+    def fake_connection_context(_path: Path) -> Iterator[FakeConn]:
+        yield FakeConn()
+
+    stale_status = SessionInsightStatusSnapshot(
+        profile_rows_ready=False,
+        work_event_inference_rows_ready=False,
+        work_event_inference_fts_ready=True,
+        phase_inference_rows_ready=True,
+        threads_ready=True,
+        threads_fts_ready=True,
+        tag_rollups_ready=True,
+        day_summaries_ready=True,
+        week_summaries_ready=True,
+        stale_profile_row_count=2,
+        stale_work_event_inference_count=2,
+        work_event_inference_fts_count=4,
+        work_event_inference_count=4,
+        thread_fts_count=1,
+        thread_count=1,
+    )
+    statuses = iter((stale_status, _ready_session_insight_status()))
+
+    def fake_rebuild(_conn: FakeConn, *, conversation_ids: tuple[str, ...] | None, **_kwargs: object) -> Any:
+        calls.append(("rebuild", conversation_ids))
+        return SessionInsightCounts(profiles=2, work_events=2)
+
+    monkeypatch.setattr("polylogue.storage.sqlite.connection.connection_context", fake_connection_context)
+    monkeypatch.setattr(
+        "polylogue.storage.insights.session.status.session_insight_status_sync",
+        lambda _conn: next(statuses),
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.insights.session.status.session_profile_repair_candidate_ids_sync",
+        lambda _conn: ["conv-a", "conv-b"],
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync",
+        fake_rebuild,
+    )
+
+    result = repair_mod.repair_session_insights(_config(tmp_path), dry_run=False)
+
+    assert result.success is True
+    assert result.repaired_count == 4
+    assert ("rebuild", ("conv-a", "conv-b")) in calls
+    assert ("rebuild", None) not in calls
 
 
 def test_offline_maintenance_refuses_live_daemon(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -737,7 +737,10 @@ def repair_session_insights(
     """
     from polylogue.storage.fts.fts_lifecycle import rebuild_session_insight_fts_sync
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
-    from polylogue.storage.insights.session.status import session_insight_status_sync
+    from polylogue.storage.insights.session.status import (
+        session_insight_status_sync,
+        session_profile_repair_candidate_ids_sync,
+    )
     from polylogue.storage.sqlite.connection import connection_context
 
     try:
@@ -773,15 +776,34 @@ def repair_session_insights(
                 conn.commit()
                 rebuilt_count = assessment.fts_debt
             else:
+                rebuild_conversation_ids = conversation_ids
+                if conversation_ids is None and assessment.row_debt > 0:
+                    candidates = tuple(session_profile_repair_candidate_ids_sync(conn))
+                    if candidates:
+                        rebuild_conversation_ids = candidates
                 rebuilt = rebuild_session_insights_sync(
                     conn,
-                    conversation_ids=conversation_ids,
+                    conversation_ids=rebuild_conversation_ids,
                     progress_callback=progress_callback,
                     progress_total=progress_total,
                 )
                 conn.commit()
                 rebuilt_count = rebuilt.total()
             refreshed = session_insight_status_sync(conn)
+            if (
+                conversation_ids is None
+                and not session_insight_status_ready(refreshed)
+                and assess_session_insight_repairs(refreshed).row_debt > 0
+            ):
+                rebuilt = rebuild_session_insights_sync(
+                    conn,
+                    conversation_ids=None,
+                    progress_callback=progress_callback,
+                    progress_total=progress_total,
+                )
+                conn.commit()
+                rebuilt_count += rebuilt.total()
+                refreshed = session_insight_status_sync(conn)
             if conversation_ids is None and not session_insight_fts_ready(refreshed):
                 fts_debt = assess_session_insight_repairs(refreshed).fts_debt
                 rebuild_session_insight_fts_sync(conn)
