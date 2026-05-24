@@ -508,6 +508,45 @@ def test_fts_readiness_reports_recorded_freshness_counts_without_exact_scan(tmp_
     assert all("messages_fts_docsize" not in query for query in queries)
 
 
+def test_fts_readiness_tolerates_malformed_recorded_counts(tmp_path: Path) -> None:
+    from polylogue.daemon.fts_status import fts_readiness_info
+
+    db_path = tmp_path / "polylogue.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE messages (message_id TEXT, text TEXT);
+            CREATE TABLE messages_fts (text TEXT);
+            CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages BEGIN SELECT 1; END;
+            CREATE TABLE fts_freshness_state (
+                surface TEXT PRIMARY KEY,
+                state TEXT NOT NULL,
+                checked_at TEXT NOT NULL,
+                source_rows TEXT,
+                indexed_rows TEXT,
+                missing_rows TEXT,
+                excess_rows TEXT,
+                duplicate_rows TEXT
+            );
+            INSERT INTO fts_freshness_state
+                (surface, state, checked_at, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows)
+            VALUES
+                ('messages_fts', 'ready', '2026-05-24T00:00:00+00:00', 'not-int', NULL, 'bad', '0', 'bad');
+            """
+        )
+
+    readiness = fts_readiness_info(db_path)
+    surfaces = readiness["surfaces"]
+    assert isinstance(surfaces, dict)
+    messages = surfaces["messages_fts"]
+    assert isinstance(messages, dict)
+    assert messages["source_rows"] == 0
+    assert messages["missing_rows"] == 0
+    assert readiness["message_indexable_count"] == 0
+
+
 def test_daemon_status_insight_freshness_uses_lightweight_counts(tmp_path: Path) -> None:
     db = tmp_path / "polylogue.db"
     with sqlite3.connect(db) as conn:

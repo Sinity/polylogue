@@ -91,11 +91,11 @@ def _freshness_rows(conn: sqlite3.Connection) -> dict[str, dict[str, int | str |
         record = dict(zip(selected, row, strict=True))
         records[str(record["surface"])] = {
             "state": str(record["state"]),
-            "source_rows": int(record.get("source_rows") or 0),
-            "indexed_rows": int(record.get("indexed_rows") or 0),
-            "missing_rows": int(record.get("missing_rows") or 0),
-            "excess_rows": int(record.get("excess_rows") or 0),
-            "duplicate_rows": int(record.get("duplicate_rows") or 0),
+            "source_rows": _int_or_zero(record.get("source_rows")),
+            "indexed_rows": _int_or_zero(record.get("indexed_rows")),
+            "missing_rows": _int_or_zero(record.get("missing_rows")),
+            "excess_rows": _int_or_zero(record.get("excess_rows")),
+            "duplicate_rows": _int_or_zero(record.get("duplicate_rows")),
             "detail": None if "detail" not in record or record["detail"] is None else str(record["detail"]),
         }
     return records
@@ -127,9 +127,27 @@ def _surface_payload(surface: FtsSurfaceInvariant) -> dict[str, int | bool | str
     }
 
 
+def _int_or_zero(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float | str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    if value is None:
+        return 0
+    try:
+        return int(str(value))
+    except ValueError:
+        return 0
+
+
 def _payload_int(surface: dict[str, int | bool | str | None], key: str) -> int:
     value = surface.get(key)
-    return int(value) if isinstance(value, int) and not isinstance(value, bool) else 0
+    return _int_or_zero(value)
 
 
 def _exact_readiness_payload(snapshot: FtsInvariantSnapshot) -> dict[str, object]:
