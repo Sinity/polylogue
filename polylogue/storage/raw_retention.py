@@ -43,6 +43,12 @@ ORDER BY r.blob_size DESC, r.acquired_at ASC, r.raw_id ASC
 LIMIT ?
 """
 
+_PROVIDER_EVENT_RAW_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_provider_events_raw_id
+ON provider_events(raw_id)
+WHERE raw_id IS NOT NULL
+"""
+
 
 @dataclass(frozen=True)
 class RawSnapshotCleanupCandidate:
@@ -62,6 +68,11 @@ class RawSnapshotCleanupResult:
     provider_event_links_cleared: int
     skipped_missing_source_count: int
     errors: tuple[str, ...] = ()
+
+
+def ensure_provider_event_raw_index(conn: sqlite3.Connection) -> None:
+    """Ensure parent raw deletes do not scan provider_events repeatedly."""
+    conn.execute(_PROVIDER_EVENT_RAW_INDEX_SQL)
 
 
 def superseded_raw_snapshot_candidates(
@@ -153,6 +164,7 @@ def cleanup_superseded_raw_snapshots(
             skipped_missing_source_count=0,
         )
 
+    ensure_provider_event_raw_index(conn)
     placeholders = ", ".join("?" for _ in raw_ids)
     provider_links = conn.execute(
         f"UPDATE provider_events SET raw_id = NULL WHERE raw_id IN ({placeholders})",
@@ -239,5 +251,6 @@ __all__ = [
     "RawSnapshotCleanupResult",
     "cleanup_superseded_raw_snapshots",
     "compact_paths_superseded_raw_snapshots",
+    "ensure_provider_event_raw_index",
     "superseded_raw_snapshot_candidates",
 ]
