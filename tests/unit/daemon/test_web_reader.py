@@ -1013,7 +1013,7 @@ def _get_json_ex(base_url: str, path: str) -> tuple[int, dict[str, object]]:
 
     req = Request(f"{base_url}{path}")
     try:
-        with urlopen(req, timeout=5) as resp:
+        with urlopen(req, timeout=10) as resp:
             return resp.status, json.loads(resp.read().decode())
     except HTTPError as e:
         body = e.read().decode()

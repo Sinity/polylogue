@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,7 +50,7 @@ class PreflightReport:
     cost_cap_usd: float
 
 
-def _read_pending_message_count(db_path: Path) -> tuple[int, int, int]:
+def _read_pending_message_count(db_path: Path, *, rebuild: bool = False) -> tuple[int, int, int]:
     """Return ``(total_convs, pending_convs, pending_messages)``.
 
     Pending = no ``embedding_status`` row, or ``needs_reindex = 1``.
@@ -61,6 +62,10 @@ def _read_pending_message_count(db_path: Path) -> tuple[int, int, int]:
     with open_read_connection(db_path) as conn:
         total = int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0])
         try:
+            if rebuild:
+                pending_convs = total
+                pending_messages = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+                return total, pending_convs, pending_messages
             pending_convs = int(
                 conn.execute(
                     """
@@ -89,7 +94,7 @@ def _read_pending_message_count(db_path: Path) -> tuple[int, int, int]:
     return total, pending_convs, pending_messages
 
 
-def _build_preflight_report(env: AppEnv) -> PreflightReport:
+def _build_preflight_report(env: AppEnv, *, rebuild: bool = False) -> PreflightReport:
     """Build a :class:`PreflightReport` without contacting Voyage."""
     from polylogue.config import load_polylogue_config
     from polylogue.storage.search_providers.sqlite_vec_support import (
@@ -98,7 +103,7 @@ def _build_preflight_report(env: AppEnv) -> PreflightReport:
     )
 
     cfg = load_polylogue_config()
-    total, pending, pending_messages = _read_pending_message_count(env.config.db_path)
+    total, pending, pending_messages = _read_pending_message_count(env.config.db_path, rebuild=rebuild)
     estimated_tokens = pending_messages * ESTIMATED_TOKENS_PER_MESSAGE
     estimated_cost = estimated_tokens * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
     return PreflightReport(
@@ -321,24 +326,46 @@ def disable_subcommand(env: AppEnv) -> None:
 
 
 @embed_command.command("preflight")
+@click.option(
+    "--rebuild",
+    is_flag=True,
+    help="Estimate re-embedding every conversation, not just pending ones.",
+)
 @click.pass_obj
-def preflight_subcommand(env: AppEnv) -> None:
+def preflight_subcommand(env: AppEnv, rebuild: bool) -> None:
     """Estimate token count and Voyage cost for the pending backlog.
 
     Read-only — does not touch the embedding provider. Use this before
     ``embed enable`` or ``embed backfill`` to budget the first run.
     """
-    report = _build_preflight_report(env)
+    report = _build_preflight_report(env, rebuild=rebuild)
     _render_preflight(env, report)
 
 
 @embed_command.command("backfill")
 @click.option(
-    "--batch-size",
-    "batch_size",
-    type=int,
+    "--max-conversations",
+    type=click.IntRange(min=1),
     default=None,
-    help="Initial batch size cap (conversations). Defaults to all pending.",
+    help="Maximum conversations to process in this catch-up window.",
+)
+@click.option(
+    "--max-messages",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Maximum messages to include in this catch-up window.",
+)
+@click.option(
+    "--stop-after-seconds",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Stop starting new conversations after this many seconds.",
+)
+@click.option(
+    "--max-errors",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Stop the catch-up window after this many provider errors.",
 )
 @click.option(
     "--rebuild",
@@ -354,7 +381,10 @@ def preflight_subcommand(env: AppEnv) -> None:
 @click.pass_obj
 def backfill_subcommand(
     env: AppEnv,
-    batch_size: int | None,
+    max_conversations: int | None,
+    max_messages: int | None,
+    stop_after_seconds: int | None,
+    max_errors: int | None,
     rebuild: bool,
     yes: bool,
 ) -> None:
@@ -367,6 +397,7 @@ def backfill_subcommand(
     from polylogue.storage.embeddings.materialization import (
         embed_conversation_sync,
         iter_pending_conversations,
+        mark_all_conversations_needs_reindex,
     )
     from polylogue.storage.search_providers import create_vector_provider
     from polylogue.storage.search_providers.sqlite_vec_support import (
@@ -382,11 +413,13 @@ def backfill_subcommand(
         )
         raise click.Abort()
 
-    report = _build_preflight_report(env)
+    report = _build_preflight_report(env, rebuild=rebuild)
     _render_preflight(env, report)
     if not yes and not click.confirm("\nProceed with backfill?", default=False):
         click.echo("Cancelled.")
         return
+    if rebuild:
+        mark_all_conversations_needs_reindex(env.repository.backend)
 
     vec_provider = create_vector_provider(
         voyage_api_key=key,
@@ -398,7 +431,11 @@ def backfill_subcommand(
         click.echo("Error: vector provider unavailable (sqlite-vec or voyage init failed).", err=True)
         raise click.Abort()
 
-    pending = iter_pending_conversations(env.repository.backend, rebuild=rebuild, limit=batch_size)
+    pending = iter_pending_conversations(
+        env.repository.backend,
+        max_conversations=max_conversations,
+        max_messages=max_messages,
+    )
     if not pending:
         click.echo("All conversations are already embedded.")
         return
@@ -408,8 +445,13 @@ def backfill_subcommand(
     embedded = 0
     errors = 0
     console = env.ui.console
+    started_at = time.monotonic()
+    stopped_reason: str | None = None
 
     for index, item in enumerate(pending, start=1):
+        if stop_after_seconds is not None and time.monotonic() - started_at >= stop_after_seconds:
+            stopped_reason = f"time limit reached ({stop_after_seconds}s)"
+            break
         outcome = embed_conversation_sync(env.repository, vec_provider, item.conversation_id)
         if outcome.status == "embedded":
             embedded += 1
@@ -427,11 +469,20 @@ def backfill_subcommand(
                     f"Stopping after {embedded} conversations.[/yellow]"
                 )
                 break
+        elif outcome.status in {"no_messages", "no_embeddable_messages"}:
+            console.print(
+                f"  [{index}/{len(pending)}] {item.title or item.conversation_id[:12]}: no embeddable messages"
+            )
         elif outcome.status == "error":
             errors += 1
             console.print(f"  [{index}/{len(pending)}] {item.conversation_id}: error {outcome.error}")
+            if max_errors is not None and errors >= max_errors:
+                stopped_reason = f"max errors reached ({max_errors})"
+                break
 
     click.echo(f"\nBackfill complete. Embedded {embedded}, errors {errors}, est. cost ~${cumulative_cost:.4f}.")
+    if stopped_reason:
+        click.echo(f"Stopped early: {stopped_reason}.")
 
 
 @embed_command.command("status")
@@ -442,10 +493,15 @@ def backfill_subcommand(
     type=click.Choice(["text", "json"]),
     default="text",
 )
+@click.option(
+    "--detail",
+    is_flag=True,
+    help="Include exact pending-message, freshness, model, and retrieval-band accounting.",
+)
 @click.pass_obj
-def status_subcommand(env: AppEnv, output_format: str) -> None:
+def status_subcommand(env: AppEnv, output_format: str, detail: bool) -> None:
     """Show embedding coverage and freshness."""
-    show_embedding_stats(env, json_output=(output_format == "json"))
+    show_embedding_stats(env, json_output=(output_format == "json"), detail=detail)
 
 
 __all__ = [

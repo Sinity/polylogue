@@ -13,11 +13,9 @@ from polylogue.storage.action_events.status import (
 )
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 from polylogue.storage.embeddings.sql import (
-    CONVERSATIONS_EXISTS_SQL,
     DIMENSION_COUNTS_SQL,
     EMBEDDED_AT_BOUNDS_SQL,
     EMBEDDED_CONVERSATIONS_SQL,
-    EMBEDDED_MESSAGES_SQL,
     EMBEDDING_FAILURE_COUNT_SQL,
     MISSING_META_MESSAGES_SQL,
     MODEL_COUNTS_SQL,
@@ -29,12 +27,16 @@ from polylogue.storage.embeddings.sql import (
 from polylogue.storage.embeddings.support import (
     StatsRow,
     build_retrieval_bands_from_status,
+    embedded_message_count_async,
+    embedded_message_count_sync,
     optional_count_async,
     optional_count_sync,
     optional_row_async,
     optional_row_sync,
     optional_rows_async,
     optional_rows_sync,
+    table_exists_async,
+    table_exists_sync,
 )
 from polylogue.storage.insights.session.status import (
     session_insight_status_async,
@@ -106,35 +108,67 @@ def _dimension_counts(rows: list[sqlite3.Row]) -> dict[int, int]:
     return {int(row["dimension"]): int(row["count"]) for row in rows if row["dimension"] is not None}
 
 
-def _base_parts_sync(conn: sqlite3.Connection) -> _EmbeddingStatsParts:
+def _base_parts_sync(conn: sqlite3.Connection, *, detail: bool) -> _EmbeddingStatsParts:
+    conversations_exist = table_exists_sync(conn, "conversations")
+    if not detail:
+        return _EmbeddingStatsParts(
+            bounds=None,
+            model_rows=[],
+            dimension_rows=[],
+            embedded_conversations=optional_count_sync(conn, EMBEDDED_CONVERSATIONS_SQL),
+            embedded_messages=embedded_message_count_sync(conn),
+            pending_conversations=optional_count_sync(conn, PENDING_CONVERSATIONS_SQL),
+            pending_messages=0,
+            stale_messages=0,
+            missing_provenance=0,
+            conversations_exist=conversations_exist,
+            failure_count=optional_count_sync(conn, EMBEDDING_FAILURE_COUNT_SQL),
+            total_message_count=0,
+        )
     return _EmbeddingStatsParts(
         bounds=optional_row_sync(conn, EMBEDDED_AT_BOUNDS_SQL),
         model_rows=optional_rows_sync(conn, MODEL_COUNTS_SQL),
         dimension_rows=optional_rows_sync(conn, DIMENSION_COUNTS_SQL),
         embedded_conversations=optional_count_sync(conn, EMBEDDED_CONVERSATIONS_SQL),
-        embedded_messages=optional_count_sync(conn, EMBEDDED_MESSAGES_SQL),
+        embedded_messages=embedded_message_count_sync(conn),
         pending_conversations=optional_count_sync(conn, PENDING_CONVERSATIONS_SQL),
         pending_messages=optional_count_sync(conn, PENDING_MESSAGES_SQL),
         stale_messages=optional_count_sync(conn, STALE_MESSAGES_SQL),
         missing_provenance=optional_count_sync(conn, MISSING_META_MESSAGES_SQL),
-        conversations_exist=bool(optional_row_sync(conn, CONVERSATIONS_EXISTS_SQL)),
+        conversations_exist=conversations_exist,
         failure_count=optional_count_sync(conn, EMBEDDING_FAILURE_COUNT_SQL),
         total_message_count=optional_count_sync(conn, TOTAL_MESSAGES_SQL),
     )
 
 
-async def _base_parts_async(conn: aiosqlite.Connection) -> _EmbeddingStatsParts:
+async def _base_parts_async(conn: aiosqlite.Connection, *, detail: bool) -> _EmbeddingStatsParts:
+    conversations_exist = await table_exists_async(conn, "conversations")
+    if not detail:
+        return _EmbeddingStatsParts(
+            bounds=None,
+            model_rows=[],
+            dimension_rows=[],
+            embedded_conversations=await optional_count_async(conn, EMBEDDED_CONVERSATIONS_SQL),
+            embedded_messages=await embedded_message_count_async(conn),
+            pending_conversations=await optional_count_async(conn, PENDING_CONVERSATIONS_SQL),
+            pending_messages=0,
+            stale_messages=0,
+            missing_provenance=0,
+            conversations_exist=conversations_exist,
+            failure_count=await optional_count_async(conn, EMBEDDING_FAILURE_COUNT_SQL),
+            total_message_count=0,
+        )
     return _EmbeddingStatsParts(
         bounds=await optional_row_async(conn, EMBEDDED_AT_BOUNDS_SQL),
         model_rows=await optional_rows_async(conn, MODEL_COUNTS_SQL),
         dimension_rows=await optional_rows_async(conn, DIMENSION_COUNTS_SQL),
         embedded_conversations=await optional_count_async(conn, EMBEDDED_CONVERSATIONS_SQL),
-        embedded_messages=await optional_count_async(conn, EMBEDDED_MESSAGES_SQL),
+        embedded_messages=await embedded_message_count_async(conn),
         pending_conversations=await optional_count_async(conn, PENDING_CONVERSATIONS_SQL),
         pending_messages=await optional_count_async(conn, PENDING_MESSAGES_SQL),
         stale_messages=await optional_count_async(conn, STALE_MESSAGES_SQL),
         missing_provenance=await optional_count_async(conn, MISSING_META_MESSAGES_SQL),
-        conversations_exist=bool(await optional_row_async(conn, CONVERSATIONS_EXISTS_SQL)),
+        conversations_exist=conversations_exist,
         failure_count=await optional_count_async(conn, EMBEDDING_FAILURE_COUNT_SQL),
         total_message_count=await optional_count_async(conn, TOTAL_MESSAGES_SQL),
     )
@@ -145,14 +179,17 @@ def _with_total_conversations(parts: _EmbeddingStatsParts, total_conversations: 
         parts.pending_conversations,
         total_conversations - parts.embedded_conversations,
     )
+    pending_messages = parts.pending_messages
+    if parts.total_message_count > 0:
+        pending_messages = max(
+            parts.pending_messages,
+            parts.total_message_count - parts.embedded_messages if pending_conversations > 0 else 0,
+        )
     return replace(
         parts,
         total_conversations=total_conversations,
         pending_conversations=pending_conversations,
-        pending_messages=max(
-            parts.pending_messages,
-            parts.total_message_count - parts.embedded_messages if pending_conversations > 0 else 0,
-        ),
+        pending_messages=pending_messages,
     )
 
 
@@ -247,9 +284,10 @@ def read_embedding_stats_sync(
     conn: sqlite3.Connection,
     *,
     include_retrieval_bands: bool = True,
+    detail: bool = True,
 ) -> EmbeddingStatsSnapshot:
     """Read embedding stats from a sync SQLite connection."""
-    parts = _base_parts_sync(conn)
+    parts = _base_parts_sync(conn, detail=detail)
     if parts.conversations_exist:
         parts = _with_total_conversations(parts, _total_conversations_sync(conn))
     return _snapshot(
@@ -266,9 +304,10 @@ async def read_embedding_stats_async(
     conn: aiosqlite.Connection,
     *,
     include_retrieval_bands: bool = True,
+    detail: bool = True,
 ) -> EmbeddingStatsSnapshot:
     """Read embedding stats from an async SQLite connection."""
-    parts = await _base_parts_async(conn)
+    parts = await _base_parts_async(conn, detail=detail)
     if parts.conversations_exist:
         parts = _with_total_conversations(parts, await _total_conversations_async(conn))
     return _snapshot(

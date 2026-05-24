@@ -32,6 +32,10 @@ logger = get_logger(__name__)
 _DAEMON_INSIGHT_REBUILD_PAGE_SIZE = 10
 _HOT_INSIGHT_SOURCE_BYTES = 64 * 1024 * 1024
 _HOT_INSIGHT_QUIET_SECONDS = 60.0
+_DAEMON_EMBED_MAX_CONVERSATIONS = 25
+_DAEMON_EMBED_MAX_MESSAGES = 2_500
+_DAEMON_EMBED_STOP_AFTER_SECONDS = 30
+_DAEMON_EMBED_MAX_ERRORS = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +208,7 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
         check_conversations=check_conversations,
         execute_conversations=execute_conversations,
         cpu_bound=False,
+        false_means_pending=True,
     )
 
 
@@ -245,15 +250,19 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
         try:
             conn = open_connection(db_path, timeout=5.0)
             try:
-                conversation_ids = _pending_embedding_conversation_ids(
-                    conn,
-                    _conversation_ids_for_source_path(conn, path),
-                )
+                source_conversation_ids = _conversation_ids_for_source_path(conn, path)
+                conversation_ids = _pending_embedding_conversation_ids(conn, source_conversation_ids)
             finally:
                 conn.close()
             if not conversation_ids:
                 return True
-            return _embed_conversations_sync(db_path, conversation_ids)
+            ok = _embed_conversations_sync(
+                db_path,
+                conversation_ids,
+                max_errors=_DAEMON_EMBED_MAX_ERRORS,
+                stop_after_seconds=_DAEMON_EMBED_STOP_AFTER_SECONDS,
+            )
+            return ok and not _embedding_debt_remaining_for_conversations(db_path, source_conversation_ids)
         except Exception:
             logger.warning("embed: failed", exc_info=True)
             return False
@@ -302,7 +311,13 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
                 conn.close()
             if not pending_ids:
                 return True
-            return _embed_conversations_sync(db_path, pending_ids)
+            ok = _embed_conversations_sync(
+                db_path,
+                pending_ids,
+                max_errors=_DAEMON_EMBED_MAX_ERRORS,
+                stop_after_seconds=_DAEMON_EMBED_STOP_AFTER_SECONDS,
+            )
+            return ok and not _embedding_debt_remaining_for_conversations(db_path, conversation_ids)
         except Exception:
             logger.warning("embed: batch failed", exc_info=True)
             return False
@@ -326,7 +341,14 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
     def execute_conversations(conversation_ids: Sequence[str]) -> bool:
         if not conversation_ids or not _embedding_config_enabled():
             return True
-        return _embed_conversations_sync(db_path, tuple(dict.fromkeys(conversation_ids)))
+        ids = tuple(dict.fromkeys(conversation_ids))
+        ok = _embed_conversations_sync(
+            db_path,
+            ids,
+            max_errors=_DAEMON_EMBED_MAX_ERRORS,
+            stop_after_seconds=_DAEMON_EMBED_STOP_AFTER_SECONDS,
+        )
+        return ok and not _embedding_debt_remaining_for_conversations(db_path, ids)
 
     return ConvergenceStage(
         name="embed",
@@ -338,6 +360,7 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
         check_conversations=check_conversations,
         execute_conversations=execute_conversations,
         cpu_bound=False,
+        false_means_pending=True,
     )
 
 
@@ -709,25 +732,42 @@ def _pending_embedding_conversation_ids(
     conn: sqlite3.Connection,
     conversation_ids: Sequence[str],
 ) -> list[str]:
-    if not conversation_ids or not _table_exists(conn, "embedding_status"):
+    if not conversation_ids:
         return []
-    unique_ids = tuple(dict.fromkeys(conversation_ids))
-    placeholders = ", ".join("?" for _ in unique_ids)
-    rows = conn.execute(
-        f"""
-        SELECT c.conversation_id
-        FROM conversations AS c
-        LEFT JOIN embedding_status AS e ON e.conversation_id = c.conversation_id
-        WHERE c.conversation_id IN ({placeholders})
-          AND (e.conversation_id IS NULL OR e.needs_reindex = 1)
-        ORDER BY COALESCE(c.updated_at, ''), c.conversation_id
-        """,
-        unique_ids,
-    ).fetchall()
-    return [str(row[0]) for row in rows]
+    from polylogue.storage.embeddings.materialization import select_pending_conversation_window
+
+    pending = select_pending_conversation_window(
+        conn,
+        conversation_ids=tuple(dict.fromkeys(conversation_ids)),
+        max_conversations=_DAEMON_EMBED_MAX_CONVERSATIONS,
+        max_messages=_DAEMON_EMBED_MAX_MESSAGES,
+    )
+    return [item.conversation_id for item in pending]
 
 
-def _embed_conversations_sync(db_path: Path, conversation_ids: Sequence[str]) -> bool:
+def _embedding_debt_remaining_for_conversations(db_path: Path, conversation_ids: Sequence[str]) -> bool:
+    if not conversation_ids:
+        return False
+    from polylogue.storage.sqlite.connection_profile import open_connection
+
+    try:
+        conn = open_connection(db_path, timeout=5.0)
+        try:
+            return bool(_pending_embedding_conversation_ids(conn, tuple(dict.fromkeys(conversation_ids))))
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("embed: failed to check remaining debt", exc_info=True)
+        return True
+
+
+def _embed_conversations_sync(
+    db_path: Path,
+    conversation_ids: Sequence[str],
+    *,
+    max_errors: int | None = None,
+    stop_after_seconds: int | None = None,
+) -> bool:
     from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.storage.embeddings.materialization import embed_conversation_sync
     from polylogue.storage.repository import ConversationRepository
@@ -758,8 +798,12 @@ def _embed_conversations_sync(db_path: Path, conversation_ids: Sequence[str]) ->
     errors = 0
     embedded = 0
     cumulative_cost = 0.0
+    started_at = time.monotonic()
     try:
         for conversation_id in dict.fromkeys(conversation_ids):
+            if stop_after_seconds is not None and time.monotonic() - started_at >= stop_after_seconds:
+                logger.info("embed: stop-after-seconds reached (%ds)", stop_after_seconds)
+                break
             outcome = embed_conversation_sync(repo, vec_provider, conversation_id)
             if outcome.status == "embedded":
                 embedded += 1
@@ -779,9 +823,14 @@ def _embed_conversations_sync(db_path: Path, conversation_ids: Sequence[str]) ->
                         embedded,
                     )
                     break
+            elif outcome.status in {"no_messages", "no_embeddable_messages"}:
+                logger.info("embed: %s has no embeddable messages", conversation_id)
             elif outcome.status == "error":
                 errors += 1
                 logger.warning("embed: %s failed: %s", conversation_id, outcome.error)
+                if max_errors is not None and errors >= max_errors:
+                    logger.info("embed: max errors reached (%d)", max_errors)
+                    break
         logger.info("embed: %d done, %d errors, est. cost $%.4f", embedded, errors, cumulative_cost)
         return errors == 0
     finally:

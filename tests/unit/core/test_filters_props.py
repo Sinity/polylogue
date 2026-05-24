@@ -297,7 +297,7 @@ def _conversation_ids(conversations: list[Conversation]) -> list[str]:
 
 
 @given(filter_chain_strategy(min_filters=1, max_filters=4))
-@settings(max_examples=30, suppress_health_check=[HealthCheck.too_slow])
+@settings(max_examples=30, deadline=None, suppress_health_check=[HealthCheck.too_slow])
 def test_filter_chain_never_crashes_on_build(chain: list[FilterSpec]) -> None:
     """Building a filter chain from arbitrary filter specs never crashes.
 

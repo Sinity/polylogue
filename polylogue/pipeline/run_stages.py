@@ -340,7 +340,7 @@ async def execute_embed_stage(
         if outcome.status == "not_found":
             click.echo(f"Error: Conversation {conversation_id} not found", err=True)
             raise click.Abort()
-        if outcome.status == "no_messages":
+        if outcome.status in {"no_messages", "no_embeddable_messages"}:
             click.echo(f"No messages to embed in {outcome.conversation_id}")
             return EmbedStageOutcome(embedded_count=0, error_count=0)
         if outcome.status == "error":
@@ -349,7 +349,7 @@ async def execute_embed_stage(
         click.echo(f"✓ Embedded {outcome.conversation_id[:12]}")
         return EmbedStageOutcome(embedded_count=1, error_count=0)
 
-    pending = iter_pending_conversations(backend, rebuild=rebuild, limit=limit)
+    pending = iter_pending_conversations(backend, rebuild=rebuild, max_conversations=limit)
     if not pending:
         click.echo("All conversations are already embedded.")
         return EmbedStageOutcome(embedded_count=0, error_count=0)
@@ -361,6 +361,8 @@ async def execute_embed_stage(
         outcome = embed_conversation_sync(repo, vec_provider, item.conversation_id)
         if outcome.status == "embedded":
             embedded_count += 1
+        elif outcome.status in {"no_messages", "no_embeddable_messages"}:
+            pass
         elif outcome.status == "error":
             error_count += 1
             label = item.title or item.conversation_id[:12]

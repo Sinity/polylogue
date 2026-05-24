@@ -252,6 +252,107 @@ class TestBackfillCommand:
         assert result.exit_code == 0, result.output
         assert "Embedded 2" in result.output
 
+    def test_backfill_passes_bounded_window_options(
+        self,
+        cli_runner: CliRunner,
+        stub_env: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("VOYAGE_API_KEY", "pa-test")
+        report = _make_report()
+        fake_iter = MagicMock(return_value=[])
+        with (
+            _patch_preflight(report),
+            patch("polylogue.storage.search_providers.create_vector_provider", return_value=MagicMock()),
+            patch("polylogue.storage.embeddings.materialization.iter_pending_conversations", fake_iter),
+        ):
+            result = cli_runner.invoke(
+                embed_command,
+                ["backfill", "--yes", "--max-conversations", "3", "--max-messages", "7"],
+                obj=stub_env,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert fake_iter.call_args.kwargs["max_conversations"] == 3
+        assert fake_iter.call_args.kwargs["max_messages"] == 7
+
+    def test_backfill_stop_after_seconds_stops_before_next_conversation(
+        self,
+        cli_runner: CliRunner,
+        stub_env: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("VOYAGE_API_KEY", "pa-test")
+        from polylogue.storage.embeddings.materialization import (
+            EmbedConversationOutcome,
+            PendingConversation,
+        )
+
+        fake_embed = MagicMock(
+            side_effect=[
+                EmbedConversationOutcome(status="embedded", conversation_id="conv-1", embedded_message_count=1),
+                EmbedConversationOutcome(status="embedded", conversation_id="conv-2", embedded_message_count=1),
+            ]
+        )
+        pending = [
+            PendingConversation(conversation_id="conv-1", title="A", message_count=1),
+            PendingConversation(conversation_id="conv-2", title="B", message_count=1),
+        ]
+        with (
+            _patch_preflight(_make_report()),
+            patch("polylogue.storage.search_providers.create_vector_provider", return_value=MagicMock()),
+            patch("polylogue.storage.embeddings.materialization.iter_pending_conversations", return_value=pending),
+            patch("polylogue.storage.embeddings.materialization.embed_conversation_sync", fake_embed),
+            patch("polylogue.cli.commands.embed.time.monotonic", side_effect=[0.0, 0.0, 2.0]),
+        ):
+            result = cli_runner.invoke(
+                embed_command,
+                ["backfill", "--yes", "--stop-after-seconds", "1"],
+                obj=stub_env,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert fake_embed.call_count == 1
+        assert "Stopped early: time limit reached" in result.output
+
+    def test_backfill_max_errors_stops_after_provider_error(
+        self,
+        cli_runner: CliRunner,
+        stub_env: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("VOYAGE_API_KEY", "pa-test")
+        from polylogue.storage.embeddings.materialization import (
+            EmbedConversationOutcome,
+            PendingConversation,
+        )
+
+        fake_embed = MagicMock(
+            side_effect=[
+                EmbedConversationOutcome(status="error", conversation_id="conv-1", error="provider 429"),
+                EmbedConversationOutcome(status="embedded", conversation_id="conv-2", embedded_message_count=1),
+            ]
+        )
+        pending = [
+            PendingConversation(conversation_id="conv-1", title="A", message_count=1),
+            PendingConversation(conversation_id="conv-2", title="B", message_count=1),
+        ]
+        with (
+            _patch_preflight(_make_report()),
+            patch("polylogue.storage.search_providers.create_vector_provider", return_value=MagicMock()),
+            patch("polylogue.storage.embeddings.materialization.iter_pending_conversations", return_value=pending),
+            patch("polylogue.storage.embeddings.materialization.embed_conversation_sync", fake_embed),
+        ):
+            result = cli_runner.invoke(
+                embed_command,
+                ["backfill", "--yes", "--max-errors", "1"],
+                obj=stub_env,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert fake_embed.call_count == 1
+        assert "Stopped early: max errors reached" in result.output
+
 
 # ---------------------------------------------------------------------------
 # Hybrid auto-elevation

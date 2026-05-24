@@ -6,7 +6,8 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.storage.fts.dangling_repair import repair_missing_fts_rows, repair_stale_fts_rows
-from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync
+from polylogue.storage.fts.freshness import message_fts_recorded_state_sync
+from polylogue.storage.fts.fts_lifecycle import message_fts_search_readiness_sync, restore_fts_triggers_sync
 
 
 def test_repair_missing_fts_rows_marks_derived_surfaces_ready(tmp_path: Path) -> None:
@@ -98,3 +99,79 @@ def test_repair_stale_fts_rows_skips_ready_archive_surfaces(tmp_path: Path) -> N
         "session_work_events_fts": "ready",
         "work_threads_fts": "ready",
     }
+
+
+def test_search_readiness_rejects_poisoned_zero_count_ready_marker(tmp_path: Path) -> None:
+    db = tmp_path / "archive.db"
+    conn = sqlite3.connect(db)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE messages (message_id TEXT, conversation_id TEXT, text TEXT);
+            CREATE TABLE content_blocks (
+                message_id TEXT, conversation_id TEXT, text TEXT, tool_input TEXT, metadata TEXT
+            );
+            CREATE VIRTUAL TABLE messages_fts USING fts5(message_id UNINDEXED, conversation_id UNINDEXED, text);
+            CREATE TABLE fts_freshness_state (
+                surface TEXT PRIMARY KEY, state TEXT NOT NULL, checked_at TEXT NOT NULL,
+                source_rows INTEGER NOT NULL DEFAULT 0, indexed_rows INTEGER NOT NULL DEFAULT 0,
+                missing_rows INTEGER NOT NULL DEFAULT 0, excess_rows INTEGER NOT NULL DEFAULT 0,
+                duplicate_rows INTEGER NOT NULL DEFAULT 0, detail TEXT
+            );
+            INSERT INTO messages VALUES ('msg-1', 'conv-1', 'needle freshness');
+            INSERT INTO fts_freshness_state (surface, state, checked_at, source_rows, indexed_rows, detail)
+            VALUES ('messages_fts', 'ready', 'now', 0, 0, NULL);
+            """
+        )
+
+        readiness = message_fts_search_readiness_sync(conn)
+        state = message_fts_recorded_state_sync(conn)
+        recorded = conn.execute(
+            "SELECT source_rows, indexed_rows, detail FROM fts_freshness_state WHERE surface='messages_fts'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert readiness["ready"] is False
+    assert readiness["total_rows"] == 1
+    assert readiness["indexed_rows"] == 0
+    assert state == "stale"
+    assert recorded == (1, 0, "exact message readiness failed")
+
+
+def test_repair_stale_fts_rows_recomputes_poisoned_archive_counts(tmp_path: Path) -> None:
+    db = tmp_path / "archive.db"
+    conn = sqlite3.connect(db)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE messages (message_id TEXT, conversation_id TEXT, text TEXT);
+            CREATE VIRTUAL TABLE messages_fts USING fts5(message_id UNINDEXED, conversation_id UNINDEXED, text);
+            CREATE TABLE fts_freshness_state (
+                surface TEXT PRIMARY KEY, state TEXT NOT NULL, checked_at TEXT NOT NULL,
+                source_rows INTEGER NOT NULL DEFAULT 0, indexed_rows INTEGER NOT NULL DEFAULT 0,
+                missing_rows INTEGER NOT NULL DEFAULT 0, excess_rows INTEGER NOT NULL DEFAULT 0,
+                duplicate_rows INTEGER NOT NULL DEFAULT 0, detail TEXT
+            );
+            INSERT INTO messages VALUES ('msg-1', 'conv-1', 'repair freshness');
+            INSERT INTO fts_freshness_state (surface, state, checked_at, source_rows, indexed_rows, detail)
+            VALUES ('messages_fts', 'ready', 'now', 0, 0, NULL);
+            """
+        )
+        restore_fts_triggers_sync(conn)
+
+        outcome = repair_stale_fts_rows(conn)
+        messages = conn.execute(
+            """
+            SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows
+            FROM fts_freshness_state
+            WHERE surface='messages_fts'
+            """
+        ).fetchone()
+        indexed = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert outcome.success is True
+    assert indexed == 1
+    assert messages == ("ready", 1, 1, 0, 0, 0)
