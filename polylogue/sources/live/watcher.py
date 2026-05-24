@@ -26,6 +26,7 @@ from polylogue.logging import get_logger
 from polylogue.sources.live.batch import LiveBatchEventEmitter, LiveBatchProcessor, fingerprint_file
 from polylogue.sources.live.batch_support import tail_hash_from_path
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
+from polylogue.sources.live.metrics import LiveBatchMetrics
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
@@ -124,6 +125,7 @@ class LiveWatcher:
             return
 
         await self._catch_up(roots)
+        self._ensure_pending_scheduled()
 
         logger.info("live.watcher: watching %s", ", ".join(str(r) for r in roots))
         async for changes in awatch(*roots, stop_event=self._stop, recursive=True):
@@ -177,11 +179,12 @@ class LiveWatcher:
                     len(chunk),
                     chunk_bytes / 1e6,
                 )
-                await self._ingest_files(
+                metrics = await self._ingest_files(
                     list(chunk),
                     queued_file_count=len(plan.candidates) if index == 1 else len(chunk),
                     skipped_file_count=plan.skipped_file_count if index == 1 else 0,
                 )
+                await self._requeue_failed_paths(metrics)
 
     def _scan_catch_up_candidates(self, roots: list[Path]) -> tuple[CandidateSourceFile, ...]:
         root_set = {root.resolve() for root in roots}
@@ -262,9 +265,28 @@ class LiveWatcher:
     def _enqueue(self, path: Path) -> None:
         """Enqueue a path for batched ingestion after debounce."""
         self._pending_paths.add(path)
+        self._ensure_pending_scheduled()
+
+    def _ensure_pending_scheduled(self) -> None:
+        if not self._pending_paths or self._stop.is_set():
+            return
         if self._drain_task is None or self._drain_task.done():
             self._pending_scheduled = True
             self._drain_task = asyncio.create_task(self._debounced_batch())
+
+    async def _requeue_failed_paths(self, metrics: object) -> None:
+        failed_paths = getattr(metrics, "failed_paths", ())
+        if not failed_paths:
+            return
+        paths = [Path(path) for path in failed_paths if isinstance(path, str) and path]
+        if not paths:
+            return
+        logger.warning(
+            "live.watcher: requeued %d failed file(s) for live retry",
+            len(paths),
+        )
+        async with self._batch_lock:
+            self._pending_paths.update(paths)
 
     async def _debounced_batch(self) -> None:
         """Wait for the debounce window, then drain pending paths serially."""
@@ -313,11 +335,12 @@ class LiveWatcher:
                 return bool(paths)
 
             logger.info("live.watcher: batching %d changed file(s)", len(needed))
-            await self._ingest_files(
+            metrics = await self._ingest_files(
                 needed,
                 queued_file_count=len(paths),
                 skipped_file_count=len(paths) - len(needed),
             )
+            await self._requeue_failed_paths(metrics)
         except sqlite3.OperationalError as exc:
             if not _is_database_locked(exc):
                 raise
@@ -379,14 +402,15 @@ class LiveWatcher:
         *,
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
-    ) -> None:
+    ) -> LiveBatchMetrics:
         """Ingest files through the reusable daemon live batch processor."""
         async with self._ingest_lock:
-            await self._batch_processor.ingest_files(
+            metrics = await self._batch_processor.ingest_files(
                 paths,
                 queued_file_count=queued_file_count,
                 skipped_file_count=skipped_file_count,
             )
+        return metrics
 
     def _source_name_for(self, path: Path) -> str:
         resolved = path.resolve()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -10,6 +11,7 @@ from polylogue.sources.live import WatchSource
 from polylogue.sources.live.append_ingest import ingest_append_plans
 from polylogue.sources.live.batch import _MAX_APPEND_PLAN_PAYLOAD_BYTES, LiveBatchProcessor
 from polylogue.sources.live.batch_support import (
+    _DEFER_APPEND,
     _AppendPlan,
     _AppendResult,
     _detect_provider_from_path_sample,
@@ -242,7 +244,7 @@ def test_append_plan_chunks_large_tail_without_full_ingest(tmp_path: Path) -> No
 
     plan = processor._append_plan(path)
 
-    assert plan is not None
+    assert isinstance(plan, _AppendPlan)
     assert plan.start_offset == len(original)
     assert plan.last_complete_newline == len(original) + len(first_chunk)
     assert plan.stat_size == len(original) + len(appended)
@@ -251,10 +253,73 @@ def test_append_plan_chunks_large_tail_without_full_ingest(tmp_path: Path) -> No
 
     assert processor._record_append_cursor(plan) is True
     next_plan = processor._append_plan(path)
-    assert next_plan is not None
+    assert isinstance(next_plan, _AppendPlan)
     assert next_plan.start_offset == len(original) + len(first_chunk)
     assert next_plan.last_complete_newline == len(original) + len(appended)
     assert next_plan.payload == second_chunk
+
+
+def test_append_plan_defers_when_tail_has_no_complete_line(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "session.jsonl"
+    original = b'{"a":1}\n'
+    path.write_bytes(original + b'{"b":')
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="chatgpt", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+    stat = path.stat()
+    processor._cursor.set(
+        path,
+        len(original),
+        byte_offset=len(original),
+        last_complete_newline=len(original),
+        parser_fingerprint="test-parser",
+        content_fingerprint="base",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+    assert processor._append_plan(path) is _DEFER_APPEND
+
+
+def test_incomplete_append_is_requeued_not_full_ingested(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "session.jsonl"
+    original = b'{"a":1}\n'
+    path.write_bytes(original + b'{"b":')
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="chatgpt", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+    stat = path.stat()
+    processor._cursor.set(
+        path,
+        len(original),
+        byte_offset=len(original),
+        last_complete_newline=len(original),
+        parser_fingerprint="test-parser",
+        content_fingerprint="base",
+        source_name="chatgpt",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+    metrics = asyncio.run(processor.ingest_files([path], emit_event=False))
+
+    assert metrics.full_file_count == 0
+    assert metrics.append_file_count == 0
+    assert metrics.failed_paths == [str(path)]
 
 
 def test_append_ingest_preserves_successes_when_other_plan_fails(
