@@ -599,7 +599,7 @@ def _fts_repair_needs_for_conversations(
             WHERE m.conversation_id IN ({placeholders})
               AND d.id IS NULL
               AND (
-                  m.text IS NOT NULL
+                  NULLIF(m.text, '') IS NOT NULL
                   OR EXISTS (
                       SELECT 1
                       FROM content_blocks AS cb
