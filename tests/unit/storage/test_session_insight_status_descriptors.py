@@ -171,6 +171,32 @@ def test_profile_repair_candidates_match_sort_key_freshness() -> None:
     assert candidates == ["missing-profile", "stale-sort-key"]
 
 
+def test_profile_repair_candidates_do_not_require_row_factory() -> None:
+    with sqlite3.connect(":memory:") as conn:
+        conn.executescript(
+            """
+            CREATE TABLE conversations (
+                conversation_id TEXT PRIMARY KEY,
+                sort_key REAL,
+                updated_at TEXT
+            );
+            CREATE TABLE session_profiles (
+                conversation_id TEXT PRIMARY KEY,
+                materializer_version INTEGER NOT NULL,
+                source_sort_key REAL,
+                source_updated_at TEXT
+            );
+
+            INSERT INTO conversations (conversation_id, sort_key, updated_at)
+            VALUES ('missing-profile', 3.0, '2026-05-01T12:00:00Z');
+            """
+        )
+
+        candidates = session_profile_repair_candidate_ids_sync(conn)
+
+    assert candidates == ["missing-profile"]
+
+
 async def test_status_sync_and_async_match_when_product_tables_are_absent(tmp_path: Path) -> None:
     db_path = tmp_path / "status.db"
     with sqlite3.connect(db_path) as conn:

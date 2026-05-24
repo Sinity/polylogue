@@ -716,7 +716,7 @@ def session_profile_repair_candidate_ids_sync(conn: sqlite3.Connection) -> list[
         SESSION_PROFILE_REPAIR_CANDIDATES_SQL,
         (SESSION_INSIGHT_MATERIALIZER_VERSION,),
     ).fetchall()
-    return [str(row["conversation_id"]) for row in rows]
+    return [str(row["conversation_id"] if isinstance(row, sqlite3.Row) else row[0]) for row in rows]
 
 
 async def session_profile_repair_candidate_ids_async(conn: aiosqlite.Connection) -> list[str]:
