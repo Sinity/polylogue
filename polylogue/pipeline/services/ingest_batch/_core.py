@@ -323,18 +323,44 @@ def _conversation_tuple_with_hash(conversation: ConversationTuple, content_hash:
 def _existing_message_hashes(conn: sqlite3.Connection, message_ids: Sequence[str]) -> dict[str, str]:
     if not message_ids:
         return {}
-    placeholders = ", ".join("?" for _ in message_ids)
-    rows = conn.execute(
-        f"SELECT message_id, content_hash FROM messages WHERE message_id IN ({placeholders})",
-        tuple(message_ids),
-    ).fetchall()
-    return {str(row["message_id"]): str(row["content_hash"]) for row in rows}
+    hashes: dict[str, str] = {}
+    for offset in range(0, len(message_ids), _WRITE_SELECT_CHUNK_SIZE):
+        chunk = message_ids[offset : offset + _WRITE_SELECT_CHUNK_SIZE]
+        placeholders = ", ".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"SELECT message_id, content_hash FROM messages WHERE message_id IN ({placeholders})",
+            tuple(chunk),
+        ).fetchall()
+        hashes.update({str(row["message_id"]): str(row["content_hash"]) for row in rows})
+    return hashes
+
+
+def _existing_provider_event_ids(conn: sqlite3.Connection, event_ids: Sequence[str]) -> set[str]:
+    if not event_ids:
+        return set()
+    existing: set[str] = set()
+    for offset in range(0, len(event_ids), _WRITE_SELECT_CHUNK_SIZE):
+        chunk = event_ids[offset : offset + _WRITE_SELECT_CHUNK_SIZE]
+        placeholders = ", ".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"SELECT event_id FROM provider_events WHERE event_id IN ({placeholders})",
+            tuple(chunk),
+        ).fetchall()
+        existing.update(str(row["event_id"]) for row in rows)
+    return existing
 
 
 def _append_content_hash(existing_hash: str | None, tail_hash: str) -> str:
     if not existing_hash:
         return tail_hash
     return sha256(f"{existing_hash}\0{tail_hash}".encode()).hexdigest()
+
+
+def _tail_content_hash(changed_messages: Sequence[MessageTuple], fallback_hash: str) -> str:
+    if not changed_messages:
+        return fallback_hash
+    joined_hashes = "\0".join(str(message[6]) for message in changed_messages)
+    return sha256(joined_hashes.encode()).hexdigest()
 
 
 def _upsert_stats_from_messages(conn: sqlite3.Connection, conversation_id: str, provider_name: str) -> None:
@@ -367,6 +393,7 @@ def _upsert_stats_from_messages(conn: sqlite3.Connection, conversation_id: str, 
 
 _ACTION_EVENT_INSERT_OR_IGNORE_SQL = _ACTION_EVENT_INSERT_SQL.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1)
 _PROVIDER_EVENT_INSERT_OR_IGNORE_SQL = _PROVIDER_EVENT_INSERT_SQL.replace("INSERT INTO", "INSERT OR IGNORE INTO", 1)
+_WRITE_SELECT_CHUNK_SIZE = 900
 _WRITE_EXECUTEMANY_CHUNK_SIZE = 1_000
 
 
@@ -399,14 +426,23 @@ def _append_conversation(
     changed_messages = [
         message for message in cdata.message_tuples if existing_messages.get(str(message[0])) != str(message[6])
     ]
-    if not changed_messages and not cdata.attachment_tuples:
+    changed_message_ids = {str(message[0]) for message in changed_messages}
+    event_ids = [str(event[0]) for event in cdata.provider_event_tuples]
+    existing_provider_events = _existing_provider_event_ids(conn, event_ids)
+    changed_provider_events = [
+        event for event in cdata.provider_event_tuples if str(event[0]) not in existing_provider_events
+    ]
+    if not changed_messages and not cdata.attachment_tuples and not changed_provider_events:
         counts["skipped_conversations"] = 1
         counts["skipped_messages"] = len(cdata.message_tuples)
         counts["skipped_attachments"] = len(cdata.attachment_tuples)
         counts["skipped_provider_events"] = len(cdata.provider_event_tuples)
         return False, counts
 
-    merged_hash = _append_content_hash(existing_hash, cdata.content_hash)
+    counts["skipped_messages"] = len(cdata.message_tuples) - len(changed_messages)
+    counts["skipped_provider_events"] = len(cdata.provider_event_tuples) - len(changed_provider_events)
+
+    merged_hash = _append_content_hash(existing_hash, _tail_content_hash(changed_messages, cdata.content_hash))
     resolved_tuple = _resolved_conversation_tuple(conn, cdata)
     conn.execute(_CONVERSATION_UPSERT_SQL, _conversation_tuple_with_hash(resolved_tuple, merged_hash))
     # Record the identity mapping so re-ingest after reset preserves conversation_id.
@@ -423,20 +459,32 @@ def _append_conversation(
         ),
     )
 
-    if cdata.message_tuples:
-        sorted_msgs = _topo_sort_message_tuples(cdata.message_tuples)
+    if changed_messages:
+        sorted_msgs = _topo_sort_message_tuples(changed_messages)
         _executemany_chunked(conn, _MESSAGE_UPSERT_SQL, sorted_msgs)
         counts["messages"] = len(changed_messages)
 
-    if cdata.block_tuples:
-        _executemany_chunked(conn, _CONTENT_BLOCK_UPSERT_SQL, cdata.block_tuples)
+    changed_blocks = [block for block in cdata.block_tuples if str(block[1]) in changed_message_ids]
+    if changed_blocks:
+        changed_block_message_ids = sorted({str(block[1]) for block in changed_blocks})
+        placeholders = ", ".join("?" for _ in changed_block_message_ids)
+        conn.execute(
+            f"DELETE FROM content_blocks WHERE message_id IN ({placeholders})", tuple(changed_block_message_ids)
+        )
+        _executemany_chunked(conn, _CONTENT_BLOCK_UPSERT_SQL, changed_blocks)
 
-    if cdata.action_event_tuples:
-        _executemany_chunked(conn, _ACTION_EVENT_INSERT_OR_IGNORE_SQL, cdata.action_event_tuples)
+    changed_action_events = [event for event in cdata.action_event_tuples if str(event[2]) in changed_message_ids]
+    if changed_action_events:
+        changed_action_message_ids = sorted({str(event[2]) for event in changed_action_events})
+        placeholders = ", ".join("?" for _ in changed_action_message_ids)
+        conn.execute(
+            f"DELETE FROM action_events WHERE message_id IN ({placeholders})", tuple(changed_action_message_ids)
+        )
+        _executemany_chunked(conn, _ACTION_EVENT_INSERT_OR_IGNORE_SQL, changed_action_events)
 
-    if cdata.provider_event_tuples:
-        _executemany_chunked(conn, _PROVIDER_EVENT_INSERT_OR_IGNORE_SQL, cdata.provider_event_tuples)
-        counts["provider_events"] = len(cdata.provider_event_tuples)
+    if changed_provider_events:
+        _executemany_chunked(conn, _PROVIDER_EVENT_INSERT_OR_IGNORE_SQL, changed_provider_events)
+        counts["provider_events"] = len(changed_provider_events)
 
     affected_attachment_ids = {str(attachment_id) for attachment_id, *_rest in cdata.attachment_tuples}
     if cdata.attachment_tuples:
@@ -637,6 +685,13 @@ def _write_conversation_entry(
                 cid=cdata.conversation_id[:20],
                 elapsed_s=round(write_elapsed, 2),
                 msgs=len(cdata.message_tuples),
+                changed_messages=counts["messages"],
+                skipped_messages=counts["skipped_messages"],
+                blocks=len(cdata.block_tuples),
+                actions=len(cdata.action_event_tuples),
+                provider_events=len(cdata.provider_event_tuples),
+                changed_provider_events=counts["provider_events"],
+                attachments=len(cdata.attachment_tuples),
             )
         return True
     except Exception as exc:
@@ -1212,7 +1267,12 @@ async def process_ingest_batch(
             messages=batch_summary.total_msgs,
             workers=batch_summary.worker_count,
             changed=len(batch_summary.changed_conversation_ids),
+            result_mb=round(batch_summary.total_result_bytes / (1024 * 1024), 1),
+            max_result_mb=round(batch_summary.max_result_bytes / (1024 * 1024), 1),
+            max_result_raw_id=batch_summary.max_result_raw_id,
+            max_current_rss_mb=batch_summary.max_current_rss_mb,
             write_s=round(batch_summary.write_elapsed_s, 2),
+            max_write_s=round(batch_summary.max_write_elapsed_s, 2),
             commit_s=round(batch_summary.commit_elapsed_s, 2),
             wal_mode=batch_summary.wal_checkpoint_mode,
             wal_before=batch_summary.wal_bytes_before_checkpoint,

@@ -445,6 +445,52 @@ class TestGitContextAndInstructions:
         assert _provider_meta(result)["working_directories"] == ["/repo/other", "/repo/polylogue"]
         assert result.provider_events[0].payload["cwd"] == "/repo/polylogue"
 
+    def test_provider_events_keep_compact_provenance_not_raw_payloads(self) -> None:
+        payload = [
+            {
+                "type": "compacted",
+                "payload": {
+                    "message": "summary",
+                    "replacement_history": [{"role": "user", "content": "large prior text"}],
+                },
+            },
+            {"type": "turn_context", "payload": {"cwd": "/repo/polylogue", "large": "x" * 1024}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "id": "evt-1",
+                    "call_id": "call-1",
+                    "output": "large command output" * 1024,
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert [event.event_type for event in result.provider_events] == [
+            "compaction",
+            "turn_context",
+            "function_call_output",
+        ]
+        assert result.provider_events[0].payload == {
+            "source_index": 1,
+            "summary": "summary",
+            "replacement_history_count": 1,
+        }
+        assert result.provider_events[1].payload == {
+            "source_index": 2,
+            "cwd": "/repo/polylogue",
+        }
+        assert result.provider_events[2].payload == {
+            "source_index": 3,
+            "type": "function_call_output",
+            "id": "evt-1",
+            "call_id": "call-1",
+            "output_chars": len("large command output" * 1024),
+        }
+        assert all("raw" not in event.payload for event in result.provider_events)
+
 
 # =============================================================================
 # Edge Cases

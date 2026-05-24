@@ -161,6 +161,31 @@ def _record_payload(record: dict[str, object]) -> dict[str, object]:
     return {str(key): value for key, value in record.items() if value is not None}
 
 
+def _compact_response_payload(payload: dict[str, object], *, index: int) -> dict[str, object]:
+    compact: dict[str, object] = {"source_index": index}
+    for key in ("type", "id", "call_id", "name", "status"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            compact[key] = value
+    timestamp = _record_timestamp(payload)
+    if timestamp is not None:
+        compact["timestamp"] = timestamp
+    output = payload.get("output")
+    if isinstance(output, str):
+        compact["output_chars"] = len(output)
+    elif output is not None:
+        compact["has_output"] = True
+    arguments = payload.get("arguments")
+    if isinstance(arguments, str):
+        compact["argument_chars"] = len(arguments)
+    elif arguments is not None:
+        compact["has_arguments"] = True
+    cwd = _extract_cwd(payload)
+    if cwd:
+        compact["cwd"] = cwd
+    return compact
+
+
 def _extract_cwd(payload: dict[str, object] | None) -> str | None:
     if not payload:
         return None
@@ -319,11 +344,10 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
             payload = _payload_record(record) or {}
             history = payload.get("replacement_history")
             event_payload: dict[str, object] = {
+                "source_index": idx,
                 "summary": str(payload.get("message", "") or ""),
-                "has_replacement_history": isinstance(history, list) and bool(history),
+                "replacement_history_count": len(history) if isinstance(history, list) else 0,
             }
-            if payload:
-                event_payload["raw"] = payload
             provider_events.append(
                 ParsedProviderEvent(
                     event_type="compaction",
@@ -339,7 +363,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
             tc_payload: dict[str, object] = {}
             turn_payload = _payload_record(record)
             if turn_payload:
-                tc_payload["raw"] = turn_payload
+                tc_payload["source_index"] = idx
                 cwd = _extract_cwd(turn_payload)
                 if cwd:
                     tc_payload["cwd"] = cwd
@@ -356,12 +380,12 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
         if _record_type(record) == "response_item":
             inner = _payload_record(record)
             if inner is not None and not _is_message(inner):
-                event_payload = _record_payload(inner)
+                event_payload = _compact_response_payload(inner, index=idx)
                 provider_events.append(
                     ParsedProviderEvent(
                         event_type=_record_type(inner) or "response_item",
                         timestamp=_iso_or_none(_record_timestamp(inner) or _record_timestamp(record)),
-                        payload={"raw": event_payload},
+                        payload=event_payload,
                     )
                 )
                 tool_message = _codex_tool_message(inner, index=idx)
