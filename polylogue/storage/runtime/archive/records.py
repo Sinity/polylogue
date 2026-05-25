@@ -41,7 +41,6 @@ def _coerce_json_object(value: object) -> JSONObject | None:
 
 class ConversationRecord(BaseModel):
     conversation_id: ConversationId
-    source_name: str
     provider_conversation_id: str
     title: str | None = None
     created_at: str | None = None
@@ -238,3 +237,4 @@ class ProviderEventRecord(BaseModel):
     @classmethod
     def coerce_payload(cls, value: object) -> JSONObject:
         return _coerce_json_object(value) or {}
+

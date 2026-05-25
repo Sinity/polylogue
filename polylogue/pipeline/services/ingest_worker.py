@@ -203,7 +203,6 @@ class ConversationData:
 
     conversation_id: str
     content_hash: str
-    source_name: str
 
     # Tuple matching INSERT INTO conversations column order
     conversation_tuple: ConversationTuple
@@ -1036,7 +1035,6 @@ def _transform_to_tuples(
     return ConversationData(
         conversation_id=materialized.conversation_id,
         content_hash=materialized.content_hash,
-        source_name=materialized.source_name,
         conversation_tuple=_conversation_tuple(materialized, raw_id=raw_id),
         message_tuples=message_tuples,
         block_tuples=block_tuples,
@@ -1170,3 +1168,4 @@ def _build_action_event_tuples(
 
 
 __all__ = ["ConversationData", "IngestRecordResult", "ingest_record"]
+

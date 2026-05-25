@@ -43,7 +43,6 @@ def _row_to_conversation(row: sqlite3.Row) -> ConversationRecord:
     branch_type = _row_text(row, "branch_type")
     return ConversationRecord(
         conversation_id=row["conversation_id"],
-        source_name=row["source_name"],
         provider_conversation_id=row["provider_conversation_id"],
         title=row["title"],
         created_at=row["created_at"],
@@ -117,7 +116,6 @@ def _row_to_raw_conversation(row: sqlite3.Row) -> RawConversationRecord:
     validation_mode = _row_text(row, "validation_mode")
     return RawConversationRecord(
         raw_id=row["raw_id"],
-        source_name=row["source_name"],
         payload_provider=(
             Provider.from_string(_row_text(row, "payload_provider"))
             if _row_text(row, "payload_provider") is not None
@@ -144,7 +142,6 @@ def _row_to_artifact_observation(row: sqlite3.Row) -> ArtifactObservationRecord:
     return ArtifactObservationRecord(
         observation_id=row["observation_id"],
         raw_id=row["raw_id"],
-        source_name=row["source_name"],
         payload_provider=(
             Provider.from_string(_row_text(row, "payload_provider"))
             if _row_text(row, "payload_provider") is not None
@@ -285,3 +282,4 @@ __all__ = [
     "_row_to_provider_event",
     "_row_to_raw_conversation",
 ]
+

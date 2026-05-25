@@ -73,7 +73,7 @@ def enrich_bundle_from_db(
             TopologyEdgeRecord(
                 src_conversation_id=cid,
                 dst_provider_native_id=convo.parent_conversation_provider_id,
-                dst_source_name=convo.source_name,
+                dst_provider_name=convo.source_name,
                 edge_type=edge_type,
                 resolved_dst_conversation_id=candidate_parent if parent_known else None,
                 status=(TopologyEdgeStatus.RESOLVED if parent_known else TopologyEdgeStatus.UNRESOLVED),
@@ -115,7 +115,6 @@ def enrich_bundle_from_db(
 
     conversation_record = ConversationRecord(
         conversation_id=cid,
-        source_name=convo.source_name,
         provider_conversation_id=convo.provider_conversation_id,
         title=convo.title,
         created_at=transform.bundle.conversation.created_at,
@@ -293,3 +292,4 @@ __all__ = [
     "_build_single_cache",
     "enrich_bundle_from_db",
 ]
+

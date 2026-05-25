@@ -158,7 +158,6 @@ def conversation_to_record(conversation: Conversation) -> ConversationRecord:
 
     return ConversationRecord(
         conversation_id=ConversationId(str(conversation.id)),
-        source_name=conversation.provider,
         provider_conversation_id=provider_conversation_id(
             conversation_id=str(conversation.id),
             provider=conversation.provider,
@@ -569,3 +568,4 @@ async def delete_conversation_via_backend(
     if deleted:
         invalidate_search_cache()
     return deleted
+

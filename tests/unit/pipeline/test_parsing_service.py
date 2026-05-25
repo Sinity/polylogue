@@ -501,7 +501,6 @@ class TestPlanningService:
         await backend.save_raw_conversation(
             RawConversationRecord(
                 raw_id="raw-scoped",
-                source_name="chatgpt",
                 source_name="inbox-a",
                 source_path="/tmp/a.json",
                 blob_size=len(b'{"id":"x"}'),
@@ -533,7 +532,6 @@ class TestPlanningService:
             await backend.save_raw_conversation(
                 RawConversationRecord(
                     raw_id=raw_id,
-                    source_name=source_name,
                     source_name=source_name,
                     source_path=source_path,
                     blob_size=len(b'{"id":"x"}'),
@@ -588,7 +586,6 @@ class TestPlanningService:
             await backend.save_raw_conversation(
                 RawConversationRecord(
                     raw_id=backlog_ids[index],
-                    source_name="chatgpt",
                     source_name="inbox-a",
                     source_path=f"/tmp/backlog-{index}.json",
                     blob_size=len(b'{"id":"x"}'),
@@ -630,7 +627,6 @@ class TestPlanningService:
             await backend.save_raw_conversation(
                 RawConversationRecord(
                     raw_id=hashlib.sha256(f"raw-preview-{index}".encode()).hexdigest(),
-                    source_name="chatgpt",
                     source_name="inbox-a",
                     source_path=f"/tmp/p-{index}.json",
                     blob_size=len(b'{"id":"x"}'),
@@ -672,7 +668,6 @@ class TestPlanningService:
             await backend.save_raw_conversation(
                 RawConversationRecord(
                     raw_id=raw_id,
-                    source_name="chatgpt",
                     source_name="inbox-a",
                     source_path=f"/tmp/{raw_id}.json",
                     blob_size=len(b'{"id":"x"}'),
@@ -697,7 +692,6 @@ class TestPlanningService:
         await backend.save_raw_conversation(
             RawConversationRecord(
                 raw_id="raw-validated",
-                source_name="chatgpt",
                 source_name="inbox-a",
                 source_path="/tmp/validated.json",
                 blob_size=len(b'{"id":"x"}'),
@@ -710,7 +704,6 @@ class TestPlanningService:
         await backend.save_raw_conversation(
             RawConversationRecord(
                 raw_id="raw-unvalidated",
-                source_name="chatgpt",
                 source_name="inbox-a",
                 source_path="/tmp/unvalidated.json",
                 blob_size=len(b'{"id":"x"}'),
@@ -722,7 +715,6 @@ class TestPlanningService:
         await backend.save_raw_conversation(
             RawConversationRecord(
                 raw_id="raw-validation-failed",
-                source_name="chatgpt",
                 source_name="inbox-a",
                 source_path="/tmp/validation-failed.json",
                 blob_size=len(b'{"id":"x"}'),
@@ -772,7 +764,6 @@ class TestPlanningService:
 
         record = RawConversationRecord(
             raw_id="raw-existing",
-            source_name="chatgpt",
             source_name="inbox-a",
             source_path="/tmp/existing.json",
             blob_size=len(b'{"id":"x"}'),
@@ -829,7 +820,6 @@ class TestPlanningService:
         records = [
             RawConversationRecord(
                 raw_id=hashlib.sha256(b"existing-passed").hexdigest(),
-                source_name="chatgpt",
                 source_name="inbox-a",
                 source_path="/tmp/existing-passed.json",
                 blob_size=len(b'{"id":"x"}'),
@@ -837,7 +827,6 @@ class TestPlanningService:
             ),
             RawConversationRecord(
                 raw_id=hashlib.sha256(b"existing-unvalidated").hexdigest(),
-                source_name="chatgpt",
                 source_name="inbox-a",
                 source_path="/tmp/existing-unvalidated.json",
                 blob_size=len(b'{"id":"x"}'),
@@ -845,7 +834,6 @@ class TestPlanningService:
             ),
             RawConversationRecord(
                 raw_id=hashlib.sha256(b"existing-failed").hexdigest(),
-                source_name="chatgpt",
                 source_name="inbox-a",
                 source_path="/tmp/existing-failed.json",
                 blob_size=len(b'{"id":"x"}'),
@@ -916,3 +904,4 @@ class TestPlanningService:
 
         assert plan.summary.counts == {count_key: 7}
         backend.count_conversation_ids.assert_awaited_once_with(source_names=None)
+

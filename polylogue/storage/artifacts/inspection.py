@@ -232,7 +232,6 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
         return ArtifactObservationRecord(
             observation_id=observation_id,
             raw_id=record.raw_id,
-            source_name=record.source_name,
             payload_provider=payload_provider,
             source_name=record.source_name,
             source_path=record.source_path,
@@ -271,7 +270,6 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
         return ArtifactObservationRecord(
             observation_id=observation_id,
             raw_id=record.raw_id,
-            source_name=record.source_name,
             payload_provider=Provider.from_string(provider_token),
             source_name=record.source_name,
             source_path=record.source_path,
@@ -309,3 +307,4 @@ __all__ = [
     "artifact_observation_id",
     "inspect_raw_artifact",
 ]
+
