@@ -103,6 +103,8 @@ class SearchableConversationTimelineInsightQuery(ConversationTimelineWindowInsig
 
 class SessionProfileInsightQuery(SessionWindowInsightQuery):
     tier: str = "merged"
+    workflow_shape: str | None = None
+    terminal_state: str | None = None
 
 
 class SessionEnrichmentInsightQuery(SessionWindowInsightQuery):

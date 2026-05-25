@@ -73,6 +73,12 @@ class SessionProfileDocument(TypedDict):
     tool_active_duration_ms: int
     tool_active_minutes: float
     wall_duration_ms: int
+    workflow_shape: str
+    workflow_shape_confidence: float
+    workflow_shape_features: dict[str, object]
+    terminal_state: str
+    terminal_state_confidence: float
+    terminal_state_evidence: dict[str, object]
     cost_is_estimated: bool
     compaction_count: int
     thread_id: str | None

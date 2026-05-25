@@ -73,7 +73,9 @@ from polylogue.storage.sqlite.queries.mappers import (
 )
 from polylogue.storage.sqlite.queries.provider_events import (
     get_provider_event_compaction_counts,
+    get_provider_events_batch,
     sync_provider_event_compaction_counts,
+    sync_provider_events_batch,
 )
 from polylogue.types import ConversationId
 
@@ -435,7 +437,7 @@ def load_sync_batch(
         conversations=conversations,
         messages=messages,
         attachments_by_conversation=sync_attachment_batch(conn, conversation_ids),
-        provider_events_by_conversation={conversation_id: [] for conversation_id in conversation_ids},
+        provider_events_by_conversation=sync_provider_events_batch(conn, conversation_ids),
         compaction_counts_by_conversation=sync_provider_event_compaction_counts(conn, conversation_ids),
         blocks=blocks,
     )
@@ -474,12 +476,13 @@ async def load_async_batch(
         ).fetchall()
     ]
     attachments = await get_attachments_batch(conn, list(conversation_ids))
+    provider_events = await get_provider_events_batch(conn, list(conversation_ids))
     compaction_counts = await get_provider_event_compaction_counts(conn, list(conversation_ids))
     return SessionInsightArchiveBatch(
         conversations=conversations,
         messages=messages,
         attachments_by_conversation=attachments,
-        provider_events_by_conversation={conversation_id: [] for conversation_id in conversation_ids},
+        provider_events_by_conversation=provider_events,
         compaction_counts_by_conversation=compaction_counts,
         blocks=blocks,
     )

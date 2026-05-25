@@ -42,7 +42,7 @@ polylogue --provider claude-code insights profiles --min-wallclock-seconds 300
 
 Fields: conversation ID, provider, raw title, inferred topic, session date,
 first/last session timestamp, timestamp source, wall clock duration, message
-count, engaged minutes.
+count, engaged minutes, workflow shape, and terminal state.
 
 `first_message_at` and `last_message_at` prefer provider-supplied message
 timestamps. For sources that only preserve conversation-level timestamps,
@@ -52,8 +52,9 @@ conversation_timestamp_fallback`. That fallback makes time-bucketed analysis
 complete without pretending the archive recovered per-message timing.
 
 Optional filters: `--first-message-since`, `--first-message-until`,
-`--min-wallclock-seconds`, `--max-wallclock-seconds`, `--sort`, `--tier`
-(`merged`, `evidence`, `inference`), `--query`.
+`--min-wallclock-seconds`, `--max-wallclock-seconds`, `--workflow-shape`,
+`--terminal-state`, `--sort`, `--tier` (`merged`, `evidence`, `inference`),
+`--query`.
 
 The storage column `engaged_duration_ms` is message-clustered wall clock: it
 sums phase intervals separated by no more than the fixed five-minute idle
@@ -75,6 +76,32 @@ materialization prefers the first substantive user turn, strips known context
 dump prefixes, and for Codex sessions with repository evidence prefixes the
 topic with the first inferred repo name. The raw `title` remains unchanged for
 provenance and provider fidelity.
+
+`workflow_shape` is a threshold classifier over observable session features:
+tool-call density, read/edit/run/subagent mix, compaction count, thinking ratio,
+and user/assistant turn counts. `chat` means a short low-tool session;
+`exploratory` means mixed read/search/tool activity without a strong edit loop;
+`agentic_loop` means sustained tool use with edits or repeated commands;
+`subagent_dispatch` means Task/subagent-style delegation is present;
+`batch_review` means read-heavy, low-edit inspection from a small prompt set.
+These labels do not measure task importance, agent quality, correctness, or
+operator productivity. The input vector is stored as
+`evidence.workflow_shape_features` so a reader can audit the rule that fired.
+
+`terminal_state` is a read-only boundary signal. `clean_finish` means the last
+meaningful observed message was assistant-side with no trailing tool error or
+unpaired provider tool event. `question_left` means the final meaningful
+message was user-side. `error_left` means the trailing provider event or final
+assistant text carried an error marker. `tool_left` means a provider tool start
+was observed without a matching output. `agent_hanging` is reserved for future
+session-end evidence with an explicit inactivity boundary. These states do not
+judge whether abandoning a session was good or bad; they only expose the final
+observable archive shape. `evidence.terminal_state_evidence` cites the
+message/provider event or pending-tool count behind the decision.
+
+MCP exposes two convenience readers over the same materialized rows:
+`workflow_shape_distribution(since, until, group_by)` and
+`find_abandoned_sessions(since, repo_path, min_severity)`.
 
 ## Work Events
 

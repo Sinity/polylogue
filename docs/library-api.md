@@ -96,6 +96,10 @@ async with Polylogue() as archive:
 - `engaged_duration_ms`
 - `engaged_minutes`
 - `tool_active_duration_ms`
+- `workflow_shape`
+- `workflow_shape_confidence`
+- `terminal_state`
+- `terminal_state_confidence`
 - `repo_names`
 - `repo_paths`
 

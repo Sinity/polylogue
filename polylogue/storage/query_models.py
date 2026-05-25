@@ -179,6 +179,8 @@ class SessionProfileListQuery:
     session_date_until: str | None = None
     min_wallclock_seconds: int | None = None
     max_wallclock_seconds: int | None = None
+    workflow_shape: str | None = None
+    terminal_state: str | None = None
     sort: str = "source"
     tier: str = "merged"
     limit: int | None = 50

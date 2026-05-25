@@ -290,6 +290,147 @@ def test_build_session_profile_sums_paired_provider_tool_windows() -> None:
     assert profile.tool_active_duration_ms == 720_000
 
 
+def test_build_session_profile_classifies_workflow_shape_from_observable_features() -> None:
+    conversation = make_conv(
+        id="conv-batch-review-shape",
+        provider=Provider.CLAUDE_CODE,
+        title="Batch review",
+        messages=[
+            make_msg(
+                id="u1",
+                role="user",
+                provider=Provider.CLAUDE_CODE,
+                text="Review these files without editing.",
+            ),
+            make_msg(
+                id="a1",
+                role="assistant",
+                provider=Provider.CLAUDE_CODE,
+                text="I inspected the files.",
+                content_blocks=[
+                    {"type": "tool_use", "tool_name": "Read", "tool_input": {"file_path": str(README_PATH)}},
+                    {"type": "tool_use", "tool_name": "Grep", "tool_input": {"pattern": "Polylogue"}},
+                    {"type": "tool_use", "tool_name": "Glob", "tool_input": {"pattern": "*.md"}},
+                ],
+            ),
+        ],
+    )
+
+    profile = build_session_profile(conversation)
+
+    assert profile.workflow_shape == "batch_review"
+    assert profile.workflow_shape_confidence >= 0.8
+    assert profile.workflow_shape_features["read_count"] == 3
+    assert profile.workflow_shape_features["edit_count"] == 0
+
+
+def test_build_session_profile_classifies_subagent_dispatch_shape() -> None:
+    conversation = make_conv(
+        id="conv-subagent-shape",
+        provider=Provider.CLAUDE_CODE,
+        title="Dispatch",
+        messages=[
+            make_msg(id="u1", role="user", provider=Provider.CLAUDE_CODE, text="Split this up."),
+            make_msg(
+                id="a1",
+                role="assistant",
+                provider=Provider.CLAUDE_CODE,
+                text="Launching a worker.",
+                content_blocks=[
+                    {"type": "tool_use", "tool_name": "Task", "tool_input": {"description": "inspect storage"}}
+                ],
+            ),
+        ],
+    )
+
+    profile = build_session_profile(conversation)
+
+    assert profile.workflow_shape == "subagent_dispatch"
+    assert profile.workflow_shape_features["dispatch_count"] == 1
+
+
+def test_build_session_profile_terminal_state_detects_unanswered_user_turn() -> None:
+    conversation = make_conv(
+        id="conv-question-left",
+        provider=Provider.CLAUDE_CODE,
+        title="Question left",
+        messages=[
+            make_msg(id="a1", role="assistant", provider=Provider.CLAUDE_CODE, text="Here is the summary."),
+            make_msg(id="u1", role="user", provider=Provider.CLAUDE_CODE, text="Can you also check the tests?"),
+        ],
+    )
+
+    profile = build_session_profile(conversation)
+
+    assert profile.terminal_state == "question_left"
+    assert profile.terminal_state_evidence == {"message_id": "u1"}
+
+
+def test_build_session_profile_terminal_state_detects_pending_tool() -> None:
+    started_at = datetime(2026, 5, 24, 10, 0, tzinfo=timezone.utc)
+    conversation = make_conv(
+        id="conv-tool-left",
+        provider=Provider.CODEX,
+        title="Tool left",
+        messages=[make_msg(id="u1", role="user", provider=Provider.CODEX, text="Run it", timestamp=started_at)],
+        provider_events=(
+            ProviderEvent(
+                id=ProviderEventId("conv-tool-left:event-0"),
+                conversation_id=ConversationId("conv-tool-left"),
+                provider=Provider.CODEX,
+                event_index=0,
+                event_type="function_call",
+                timestamp=started_at,
+                payload={"call_id": "call-1", "name": "exec_command"},
+            ),
+        ),
+    )
+
+    profile = build_session_profile(conversation)
+
+    assert profile.terminal_state == "tool_left"
+    assert profile.terminal_state_evidence == {"pending_tool_count": 1}
+
+
+def test_build_session_profile_terminal_state_detects_provider_error() -> None:
+    started_at = datetime(2026, 5, 24, 10, 0, tzinfo=timezone.utc)
+    ended_at = datetime(2026, 5, 24, 10, 1, tzinfo=timezone.utc)
+    conversation = make_conv(
+        id="conv-error-left",
+        provider=Provider.CODEX,
+        title="Error left",
+        messages=[
+            make_msg(id="u1", role="user", provider=Provider.CODEX, text="Run it", timestamp=started_at),
+            make_msg(id="a1", role="assistant", provider=Provider.CODEX, text="I hit an error.", timestamp=ended_at),
+        ],
+        provider_events=(
+            ProviderEvent(
+                id=ProviderEventId("conv-error-left:event-0"),
+                conversation_id=ConversationId("conv-error-left"),
+                provider=Provider.CODEX,
+                event_index=0,
+                event_type="function_call",
+                timestamp=started_at,
+                payload={"call_id": "call-1", "name": "exec_command"},
+            ),
+            ProviderEvent(
+                id=ProviderEventId("conv-error-left:event-1"),
+                conversation_id=ConversationId("conv-error-left"),
+                provider=Provider.CODEX,
+                event_index=1,
+                event_type="function_call_output",
+                timestamp=ended_at,
+                payload={"call_id": "call-1", "status": "error"},
+            ),
+        ),
+    )
+
+    profile = build_session_profile(conversation)
+
+    assert profile.terminal_state == "error_left"
+    assert profile.terminal_state_evidence == {"event_id": "conv-error-left:event-1"}
+
+
 def test_build_session_profile_ignores_unpaired_tool_windows() -> None:
     started_at = datetime(2026, 5, 24, 10, 0, tzinfo=timezone.utc)
     conversation = make_conv(

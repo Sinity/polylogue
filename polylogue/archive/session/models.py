@@ -19,6 +19,7 @@ from polylogue.core.payload_coercion import (
     coerce_float,
     coerce_int,
     int_pair,
+    mapping_or_empty,
     mapping_sequence,
     optional_date,
     optional_datetime,
@@ -29,6 +30,14 @@ from polylogue.core.payload_coercion import (
 
 SessionPhasePayload = SessionPhaseDocument
 SessionProfilePayload = SessionProfileDocument
+
+
+def _scalar_mapping(value: object) -> dict[str, int | float | str | None]:
+    return {
+        str(key): item
+        for key, item in mapping_or_empty(value).items()
+        if isinstance(item, int | float | str) or item is None
+    }
 
 
 def _phase_to_dict(phase: SessionPhase) -> SessionPhasePayload:
@@ -120,6 +129,12 @@ class SessionProfile:
     engaged_duration_ms: int = 0
     tool_active_duration_ms: int = 0
     wall_duration_ms: int = 0
+    workflow_shape: str = "unknown"
+    workflow_shape_confidence: float = 0.0
+    workflow_shape_features: dict[str, int | float | str] = field(default_factory=dict)
+    terminal_state: str = "unknown"
+    terminal_state_confidence: float = 0.0
+    terminal_state_evidence: dict[str, int | float | str | None] = field(default_factory=dict)
     cost_is_estimated: bool = False
     thread_id: str | None = None
     continuation_depth: int = 0
@@ -190,6 +205,12 @@ class SessionProfile:
             "tool_active_duration_ms": self.tool_active_duration_ms,
             "tool_active_minutes": round(self.tool_active_duration_ms / 60_000.0, 4),
             "wall_duration_ms": self.wall_duration_ms,
+            "workflow_shape": self.workflow_shape,
+            "workflow_shape_confidence": self.workflow_shape_confidence,
+            "workflow_shape_features": dict(self.workflow_shape_features),
+            "terminal_state": self.terminal_state,
+            "terminal_state_confidence": self.terminal_state_confidence,
+            "terminal_state_evidence": dict(self.terminal_state_evidence),
             "cost_is_estimated": self.cost_is_estimated,
             "compaction_count": self.compaction_count,
             "thread_id": self.thread_id,
@@ -255,6 +276,16 @@ class SessionProfile:
             engaged_duration_ms=coerce_int(payload.get("engaged_duration_ms"), 0),
             tool_active_duration_ms=coerce_int(payload.get("tool_active_duration_ms"), 0),
             wall_duration_ms=coerce_int(payload.get("wall_duration_ms"), 0),
+            workflow_shape=optional_string(payload.get("workflow_shape")) or "unknown",
+            workflow_shape_confidence=coerce_float(payload.get("workflow_shape_confidence"), 0.0),
+            workflow_shape_features={
+                key: value
+                for key, value in _scalar_mapping(payload.get("workflow_shape_features")).items()
+                if value is not None
+            },
+            terminal_state=optional_string(payload.get("terminal_state")) or "unknown",
+            terminal_state_confidence=coerce_float(payload.get("terminal_state_confidence"), 0.0),
+            terminal_state_evidence=_scalar_mapping(payload.get("terminal_state_evidence")),
             cost_is_estimated=bool(payload.get("cost_is_estimated", False)),
             compaction_count=coerce_int(payload.get("compaction_count"), 0),
             thread_id=optional_string(payload.get("thread_id")),

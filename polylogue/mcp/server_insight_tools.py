@@ -8,8 +8,10 @@ lookups) are registered directly.
 from __future__ import annotations
 
 import inspect
+from datetime import date
 from typing import TYPE_CHECKING, Any, cast
 
+from polylogue.insights.archive import SessionProfileInsightQuery
 from polylogue.insights.registry import (
     INSIGHT_REGISTRY,
     InsightType,
@@ -68,6 +70,139 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             _register_list_tool(mcp, hooks, pt)
 
     # --- Special tools ---
+
+    @mcp.tool()
+    async def workflow_shape_distribution(
+        since: str | None = None,
+        until: str | None = None,
+        group_by: str = "week",
+        provider: str | None = None,
+    ) -> str:
+        """Histogram session workflow shapes by week, provider, or project."""
+
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            profiles = await poly.list_session_profile_insights(
+                SessionProfileInsightQuery(
+                    provider=provider,
+                    since=since,
+                    until=until,
+                    limit=None,
+                )
+            )
+            allowed_group_by = {"week", "provider", "project"}
+            if group_by not in allowed_group_by:
+                return hooks.error_json(
+                    "Invalid group_by.",
+                    code="invalid_argument",
+                    detail="group_by must be one of week, provider, project",
+                    tool="workflow_shape_distribution",
+                )
+            buckets: dict[str, dict[str, int]] = {}
+            for profile in profiles:
+                evidence = profile.evidence
+                inference = profile.inference
+                shape = inference.workflow_shape if inference is not None else "unknown"
+                keys: tuple[str, ...]
+                if group_by == "provider":
+                    keys = (profile.provider_name,)
+                elif group_by == "project":
+                    paths = evidence.cwd_paths if evidence is not None else ()
+                    keys = tuple(paths) or ("unattributed",)
+                else:
+                    date_value = evidence.canonical_session_date if evidence is not None else None
+                    if date_value:
+                        try:
+                            parsed = date.fromisoformat(date_value)
+                            iso_year, iso_week, _ = parsed.isocalendar()
+                            week_key = f"{iso_year}-W{iso_week:02d}"
+                        except ValueError:
+                            week_key = date_value[:7]
+                    else:
+                        week_key = "undated"
+                    keys = (week_key,)
+                for key in keys:
+                    bucket = buckets.setdefault(key, {})
+                    bucket[shape] = bucket.get(shape, 0) + 1
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "group_by": group_by,
+                        "total_sessions": len(profiles),
+                        "buckets": buckets,
+                    }
+                )
+            )
+
+        return await hooks.async_safe_call("workflow_shape_distribution", run)
+
+    @mcp.tool()
+    async def find_abandoned_sessions(
+        since: str | None = None,
+        repo_path: str | None = None,
+        min_severity: str = "question_left",
+        limit: int = 20,
+    ) -> str:
+        """Find sessions whose terminal state indicates dangling work."""
+
+        async def run() -> str:
+            severity = {
+                "question_left": 1,
+                "error_left": 2,
+                "tool_left": 3,
+                "agent_hanging": 4,
+            }
+            if min_severity not in severity:
+                return hooks.error_json(
+                    "Invalid min_severity.",
+                    code="invalid_argument",
+                    detail="min_severity must be one of question_left, error_left, tool_left, agent_hanging",
+                    tool="find_abandoned_sessions",
+                )
+            poly = hooks.get_polylogue()
+            profiles = await poly.list_session_profile_insights(
+                SessionProfileInsightQuery(
+                    since=since,
+                    limit=None,
+                )
+            )
+            min_rank = severity[min_severity]
+            items: list[dict[str, object]] = []
+            for profile in profiles:
+                inference = profile.inference
+                evidence = profile.evidence
+                state = inference.terminal_state if inference is not None else "unknown"
+                if severity.get(state, 0) < min_rank:
+                    continue
+                cwd_paths = evidence.cwd_paths if evidence is not None else ()
+                if repo_path and not any(repo_path in path for path in cwd_paths):
+                    continue
+                items.append(
+                    {
+                        "conversation_id": profile.conversation_id,
+                        "provider_name": profile.provider_name,
+                        "title": profile.title,
+                        "terminal_state": state,
+                        "terminal_state_confidence": (
+                            inference.terminal_state_confidence if inference is not None else 0.0
+                        ),
+                        "workflow_shape": inference.workflow_shape if inference is not None else "unknown",
+                        "canonical_session_date": evidence.canonical_session_date if evidence is not None else None,
+                        "evidence": evidence.terminal_state_evidence if evidence is not None else {},
+                    }
+                )
+            items.sort(key=lambda item: str(item.get("canonical_session_date") or ""), reverse=True)
+            capped = items[: hooks.clamp_limit(limit)]
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "total": len(items),
+                        "items": capped,
+                    }
+                )
+            )
+
+        return await hooks.async_safe_call("find_abandoned_sessions", run)
 
     @mcp.tool()
     async def session_profile(conversation_id: str, tier: str = "merged") -> str:

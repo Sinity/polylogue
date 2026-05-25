@@ -45,3 +45,19 @@ Worked examples:
 - Four two-minute tool calls with short replies between them: both values are
   about eight minutes because phase boundaries stay open and the tool pairs are
   timestamped.
+
+## Session Shape Measures
+
+`workflow_shape` and `terminal_state` live on `session_profiles` as
+construct-valid archive signals, not intent labels.
+
+- `workflow_shape` is derived from message/tool counts and tool categories. It
+  distinguishes chat, exploration, agentic loops, subagent dispatch, and batch
+  review. It does not measure quality, importance, or productivity.
+- `terminal_state` is derived from the final meaningful message and provider
+  tool-event pairing. It distinguishes clean finishes from unanswered user
+  turns, trailing errors, and pending tool calls. It does not decide whether the
+  operator should resume the thread.
+
+Both fields carry confidence plus JSON evidence so downstream readers can
+inspect the rule input instead of treating the labels as opaque semantics.

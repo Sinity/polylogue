@@ -138,6 +138,7 @@ class ProductivityRollupInsightQuery(ProviderTimeWindowInsightQuery):
     """
 
     granularity: str = "day"
+    workflow_shape: str | None = None
     limit: int | None = None
 
 
