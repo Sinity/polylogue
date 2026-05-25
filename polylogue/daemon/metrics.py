@@ -51,6 +51,8 @@ varies on a known-bounded dimension):
 - ``polylogue_embedding_conversations`` (gauge) — labels: state
 - ``polylogue_embedding_messages`` (gauge) — labels: state
 - ``polylogue_embedding_coverage_percent`` (gauge)
+- ``polylogue_embedding_status_state`` (gauge) — labels: status
+- ``polylogue_embedding_retrieval_ready`` (gauge, 0/1)
 - ``polylogue_embedding_latest_catchup_run_info`` (gauge) — labels: status, rebuild
 - ``polylogue_embedding_latest_catchup_conversations`` (gauge) — labels: state
 - ``polylogue_embedding_latest_catchup_messages`` (gauge) — labels: state
@@ -82,6 +84,8 @@ class EmbeddingMetricState(TypedDict):
     failed_conversations: int
     embedded_messages: int
     coverage_percent: float
+    status: str
+    retrieval_ready: int
     latest_status: str | None
     latest_rebuild: str
     latest_planned_conversations: int
@@ -345,6 +349,14 @@ def _embedding_state(conn: sqlite3.Connection) -> EmbeddingMetricState:
         if total_conversations > 0
         else 0.0
     )
+    if total_conversations <= 0 and pending_conversations <= 0 and embedded_messages <= 0:
+        status = "empty"
+    elif embedded_messages <= 0:
+        status = "none"
+    elif pending_conversations > 0:
+        status = "partial"
+    else:
+        status = "complete"
 
     latest_run = None
     if _table_exists(conn, "embedding_catchup_runs"):
@@ -359,6 +371,8 @@ def _embedding_state(conn: sqlite3.Connection) -> EmbeddingMetricState:
         "failed_conversations": failed_conversations,
         "embedded_messages": embedded_messages,
         "coverage_percent": coverage_percent,
+        "status": status,
+        "retrieval_ready": 1 if embedded_messages > 0 else 0,
         "latest_status": latest_run["status"] if latest_run is not None else None,
         "latest_rebuild": str(bool(latest_run["rebuild"])).lower() if latest_run is not None else "false",
         "latest_planned_conversations": int(latest_run["planned_conversations"]) if latest_run is not None else 0,
@@ -398,6 +412,24 @@ def _emit_embedding_metrics(lines: list[str], state: EmbeddingMetricState) -> No
         help_text="Percent of conversations with current embeddings.",
         metric_type="gauge",
         samples=[(None, float(state["coverage_percent"]))],
+    )
+    current_status = str(state["status"])
+    _emit_metric(
+        lines,
+        name="polylogue_embedding_status_state",
+        help_text="One-hot embedding materialization state for bounded scrapes.",
+        metric_type="gauge",
+        samples=[
+            ({"status": status}, 1 if current_status == status else 0)
+            for status in ("empty", "none", "partial", "complete")
+        ],
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_embedding_retrieval_ready",
+        help_text="Whether semantic retrieval has at least one materialized vector available.",
+        metric_type="gauge",
+        samples=[(None, int(state["retrieval_ready"]))],
     )
 
     latest_status = str(state["latest_status"] or "none")
@@ -526,6 +558,8 @@ def format_metrics(
             ("polylogue_embedding_conversations", "Embedding conversation counts by state."),
             ("polylogue_embedding_messages", "Embedding message counts by state."),
             ("polylogue_embedding_coverage_percent", "Percent of conversations with current embeddings."),
+            ("polylogue_embedding_status_state", "One-hot embedding materialization state for bounded scrapes."),
+            ("polylogue_embedding_retrieval_ready", "Whether semantic retrieval has a materialized vector available."),
             ("polylogue_embedding_latest_catchup_run_info", "Latest embedding catch-up run status."),
             ("polylogue_embedding_latest_catchup_conversations", "Latest embedding catch-up run conversation counts."),
             ("polylogue_embedding_latest_catchup_messages", "Latest embedding catch-up run message counts."),
