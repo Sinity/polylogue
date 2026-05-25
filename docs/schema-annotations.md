@@ -31,6 +31,9 @@ measures:
 - `engaged_duration_ms`: message-clustered wall clock. It sums phase intervals
   separated by no more than the current five-minute phase idle threshold. This
   does not measure human attention or foreground focus.
+- `phase_idle_threshold_ms`: the idle threshold recorded on every materialized
+  session phase. It is currently 300000ms and explains why message-clustered
+  wall clock split or dropped long gaps.
 - `tool_active_duration_ms`: paired provider tool windows. It sums
   timestamped provider tool-call start/output pairs. This does not infer
   duration for unpaired, untimestamped, or provider-opaque work.

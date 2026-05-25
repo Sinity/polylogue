@@ -176,6 +176,7 @@ class SessionPhaseEvidencePayload(ArchiveInsightModel):
     date_provenance: str = "none"
     message_range: tuple[int, int] = (0, 0)
     duration_ms: int = 0
+    phase_idle_threshold_ms: int = 300_000
     tool_counts: dict[str, int] = Field(default_factory=dict)
     word_count: int = 0
 

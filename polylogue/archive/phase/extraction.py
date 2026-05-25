@@ -20,6 +20,10 @@ if TYPE_CHECKING:
     from polylogue.archive.models import Conversation
 
 
+_PHASE_GAP = timedelta(minutes=5)
+PHASE_IDLE_THRESHOLD_MS = int(_PHASE_GAP.total_seconds() * 1000)
+
+
 @dataclass(frozen=True)
 class SessionPhase:
     """A temporal phase within a conversation session.
@@ -36,11 +40,9 @@ class SessionPhase:
     duration_ms: int
     tool_counts: dict[str, int]
     word_count: int
+    phase_idle_threshold_ms: int = PHASE_IDLE_THRESHOLD_MS
     confidence: float = 0.0
     evidence: tuple[str, ...] = ()
-
-
-_PHASE_GAP = timedelta(minutes=5)
 
 
 def _build_phase(
@@ -70,6 +72,7 @@ def _build_phase(
         duration_ms=duration_ms,
         tool_counts=dict(tool_counts),
         word_count=word_count,
+        phase_idle_threshold_ms=PHASE_IDLE_THRESHOLD_MS,
     )
 
 
@@ -106,4 +109,4 @@ def extract_phases(
     return phases
 
 
-__all__ = ["SessionPhase", "extract_phases"]
+__all__ = ["PHASE_IDLE_THRESHOLD_MS", "SessionPhase", "extract_phases"]

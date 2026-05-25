@@ -12,7 +12,7 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.models import Conversation as ConversationModel
 from polylogue.archive.models import ConversationSummary
-from polylogue.archive.phase.extraction import SessionPhase
+from polylogue.archive.phase.extraction import PHASE_IDLE_THRESHOLD_MS, SessionPhase
 from polylogue.archive.phase.extraction import extract_phases as phase_extract_phases
 from polylogue.archive.provider.events import ProviderEvent
 from polylogue.archive.semantic.facts import (
@@ -249,6 +249,8 @@ def test_build_session_profile_reuses_shared_semantic_facts() -> None:
     assert profile.canonical_session_date is not None
     assert profile.canonical_session_date.isoformat() == "2026-03-23"
     assert profile.engaged_duration_ms > 0
+    assert profile.phases[0].phase_idle_threshold_ms == PHASE_IDLE_THRESHOLD_MS
+    assert profile.to_dict()["phases"][0]["phase_idle_threshold_ms"] == PHASE_IDLE_THRESHOLD_MS
     assert profile.wall_duration_ms == 240000
 
 
