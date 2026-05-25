@@ -48,6 +48,13 @@ varies on a known-bounded dimension):
 - ``polylogue_fts_freshness_ready`` (gauge, 0/1) — labels: surface
 - ``polylogue_live_ingest_memory_mebibytes`` (gauge) — labels: kind
 - ``polylogue_stale_cursor_writes_total`` (counter)
+- ``polylogue_embedding_conversations`` (gauge) — labels: state
+- ``polylogue_embedding_messages`` (gauge) — labels: state
+- ``polylogue_embedding_coverage_percent`` (gauge)
+- ``polylogue_embedding_latest_catchup_run_info`` (gauge) — labels: status, rebuild
+- ``polylogue_embedding_latest_catchup_conversations`` (gauge) — labels: state
+- ``polylogue_embedding_latest_catchup_messages`` (gauge) — labels: state
+- ``polylogue_embedding_latest_catchup_estimated_cost_usd`` (gauge)
 
 The handler signature mirrors ``healthz.py``'s ``ProbeResponder``
 protocol so it is testable without the full ``BaseHTTPRequestHandler``
@@ -59,13 +66,32 @@ from __future__ import annotations
 import sqlite3
 from http import HTTPStatus
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TypedDict
 
 from polylogue.daemon.process_start import uptime_seconds
 from polylogue.logging import get_logger
 from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES as _EXPECTED_FTS_TRIGGERS
 
 logger = get_logger(__name__)
+
+
+class EmbeddingMetricState(TypedDict):
+    total_conversations: int
+    embedded_conversations: int
+    pending_conversations: int
+    failed_conversations: int
+    embedded_messages: int
+    coverage_percent: float
+    latest_status: str | None
+    latest_rebuild: str
+    latest_planned_conversations: int
+    latest_processed_conversations: int
+    latest_embedded_conversations: int
+    latest_skipped_conversations: int
+    latest_error_count: int
+    latest_planned_messages: int
+    latest_embedded_messages: int
+    latest_estimated_cost_usd: float
 
 
 PROMETHEUS_CONTENT_TYPE: str = "text/plain; version=0.0.4; charset=utf-8"
@@ -277,6 +303,145 @@ def _latest_ingest_memory(conn: sqlite3.Connection) -> list[tuple[str, float]]:
     return samples
 
 
+def _embedding_message_count(conn: sqlite3.Connection) -> int:
+    if _table_exists(conn, "message_embeddings_rowids"):
+        return _scalar_int(conn, "SELECT COUNT(*) FROM message_embeddings_rowids")
+    if _table_exists(conn, "message_embeddings"):
+        return _scalar_int(conn, "SELECT COUNT(*) FROM message_embeddings")
+    return 0
+
+
+def _embedding_state(conn: sqlite3.Connection) -> EmbeddingMetricState:
+    """Return bounded embedding backlog and latest catch-up state."""
+
+    has_conversations = _table_exists(conn, "conversations")
+    total_conversations = _scalar_int(conn, "SELECT COUNT(*) FROM conversations") if has_conversations else 0
+    embedded_conversations = 0
+    pending_conversations = total_conversations
+    failed_conversations = 0
+    if _table_exists(conn, "embedding_status"):
+        columns = _columns(conn, "embedding_status")
+        embedded_conversations = _scalar_int(conn, "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 0")
+        if has_conversations:
+            pending_conversations = _scalar_int(
+                conn,
+                """
+                SELECT COUNT(*)
+                FROM conversations c
+                LEFT JOIN embedding_status e ON e.conversation_id = c.conversation_id
+                WHERE e.conversation_id IS NULL OR e.needs_reindex = 1
+                """,
+            )
+        else:
+            pending_conversations = _scalar_int(conn, "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 1")
+        if "error_message" in columns:
+            failed_conversations = _scalar_int(
+                conn,
+                "SELECT COUNT(*) FROM embedding_status WHERE error_message IS NOT NULL",
+            )
+    embedded_messages = _embedding_message_count(conn)
+    coverage_percent = (
+        max(0, total_conversations - pending_conversations) / total_conversations * 100
+        if total_conversations > 0
+        else 0.0
+    )
+
+    latest_run = None
+    if _table_exists(conn, "embedding_catchup_runs"):
+        from polylogue.storage.embeddings.progress import latest_embedding_catchup_run
+
+        latest_run = latest_embedding_catchup_run(conn)
+
+    return {
+        "total_conversations": total_conversations,
+        "embedded_conversations": embedded_conversations,
+        "pending_conversations": pending_conversations,
+        "failed_conversations": failed_conversations,
+        "embedded_messages": embedded_messages,
+        "coverage_percent": coverage_percent,
+        "latest_status": latest_run["status"] if latest_run is not None else None,
+        "latest_rebuild": str(bool(latest_run["rebuild"])).lower() if latest_run is not None else "false",
+        "latest_planned_conversations": int(latest_run["planned_conversations"]) if latest_run is not None else 0,
+        "latest_processed_conversations": int(latest_run["processed_conversations"]) if latest_run is not None else 0,
+        "latest_embedded_conversations": int(latest_run["embedded_conversations"]) if latest_run is not None else 0,
+        "latest_skipped_conversations": int(latest_run["skipped_conversations"]) if latest_run is not None else 0,
+        "latest_error_count": int(latest_run["error_count"]) if latest_run is not None else 0,
+        "latest_planned_messages": int(latest_run["planned_messages"]) if latest_run is not None else 0,
+        "latest_embedded_messages": int(latest_run["embedded_messages"]) if latest_run is not None else 0,
+        "latest_estimated_cost_usd": float(latest_run["estimated_cost_usd"]) if latest_run is not None else 0.0,
+    }
+
+
+def _emit_embedding_metrics(lines: list[str], state: EmbeddingMetricState) -> None:
+    _emit_metric(
+        lines,
+        name="polylogue_embedding_conversations",
+        help_text="Embedding conversation counts by state.",
+        metric_type="gauge",
+        samples=[
+            ({"state": "total"}, int(state["total_conversations"])),
+            ({"state": "embedded"}, int(state["embedded_conversations"])),
+            ({"state": "pending"}, int(state["pending_conversations"])),
+            ({"state": "failed"}, int(state["failed_conversations"])),
+        ],
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_embedding_messages",
+        help_text="Embedding message counts by state. Pending messages are intentionally not counted on scrape.",
+        metric_type="gauge",
+        samples=[({"state": "embedded"}, int(state["embedded_messages"]))],
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_embedding_coverage_percent",
+        help_text="Percent of conversations with current embeddings.",
+        metric_type="gauge",
+        samples=[(None, float(state["coverage_percent"]))],
+    )
+
+    latest_status = str(state["latest_status"] or "none")
+    _emit_metric(
+        lines,
+        name="polylogue_embedding_latest_catchup_run_info",
+        help_text="1 for the latest embedding catch-up run status and rebuild mode, or 0 when none exists.",
+        metric_type="gauge",
+        samples=[
+            ({"status": latest_status, "rebuild": str(state["latest_rebuild"])}, 0 if latest_status == "none" else 1)
+        ],
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_embedding_latest_catchup_conversations",
+        help_text="Latest embedding catch-up run conversation counts by state.",
+        metric_type="gauge",
+        samples=[
+            ({"state": "planned"}, int(state["latest_planned_conversations"])),
+            ({"state": "processed"}, int(state["latest_processed_conversations"])),
+            ({"state": "embedded"}, int(state["latest_embedded_conversations"])),
+            ({"state": "skipped"}, int(state["latest_skipped_conversations"])),
+            ({"state": "failed"}, int(state["latest_error_count"])),
+        ],
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_embedding_latest_catchup_messages",
+        help_text="Latest embedding catch-up run message counts by state.",
+        metric_type="gauge",
+        samples=[
+            ({"state": "planned"}, int(state["latest_planned_messages"])),
+            ({"state": "embedded"}, int(state["latest_embedded_messages"])),
+        ],
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_embedding_latest_catchup_estimated_cost_usd",
+        help_text="Latest embedding catch-up run estimated provider cost in USD.",
+        metric_type="gauge",
+        samples=[(None, float(state["latest_estimated_cost_usd"]))],
+    )
+
+
 # ---------------------------------------------------------------------------
 # Format
 # ---------------------------------------------------------------------------
@@ -358,6 +523,16 @@ def format_metrics(
             ("polylogue_fts_freshness_ready", "1 when the daemon freshness ledger marks an FTS surface ready."),
             ("polylogue_live_ingest_memory_mebibytes", "Latest live ingest memory sample in MiB by kind."),
             ("polylogue_stale_cursor_writes_total", "Total stale-cursor writes observed across ingest attempts."),
+            ("polylogue_embedding_conversations", "Embedding conversation counts by state."),
+            ("polylogue_embedding_messages", "Embedding message counts by state."),
+            ("polylogue_embedding_coverage_percent", "Percent of conversations with current embeddings."),
+            ("polylogue_embedding_latest_catchup_run_info", "Latest embedding catch-up run status."),
+            ("polylogue_embedding_latest_catchup_conversations", "Latest embedding catch-up run conversation counts."),
+            ("polylogue_embedding_latest_catchup_messages", "Latest embedding catch-up run message counts."),
+            (
+                "polylogue_embedding_latest_catchup_estimated_cost_usd",
+                "Latest embedding catch-up run estimated provider cost in USD.",
+            ),
         ):
             metric_type = "counter" if name.endswith("_total") else "gauge"
             _emit_metric(lines, name=name, help_text=help_text, metric_type=metric_type, samples=[])
@@ -487,6 +662,8 @@ def format_metrics(
             metric_type="gauge",
             samples=[({"kind": kind}, value) for kind, value in memory],
         )
+
+        _emit_embedding_metrics(lines, _embedding_state(conn))
     finally:
         conn.close()
 

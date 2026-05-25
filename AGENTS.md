@@ -1265,7 +1265,10 @@ Series are derived from existing daemon state tables via
 in-flight gauge, recent-attempt duration min/mean/max), unresolved
 `live_convergence_debt` grouped by stage, `pending_blob_refs` (pending
 count, distinct operations), and the six expected FTS sync triggers
-from `_EXPECTED_FTS_TRIGGERS`. Missing tables degrade to zero samples
+from `_EXPECTED_FTS_TRIGGERS`. The same scrape also exposes embedding
+backlog counts and the latest `embedding_catchup_runs` progress row so
+semantic-search catch-up is visible in normal daemon dashboards without
+running an operator CLI command. Missing tables degrade to zero samples
 rather than 5xx-ing, so a fresh archive still emits the discovery
 skeleton.
 

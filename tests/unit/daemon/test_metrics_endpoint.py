@@ -56,6 +56,13 @@ EXPECTED_SERIES: frozenset[str] = frozenset(
         "polylogue_fts_freshness_ready",
         "polylogue_live_ingest_memory_mebibytes",
         "polylogue_stale_cursor_writes_total",
+        "polylogue_embedding_conversations",
+        "polylogue_embedding_messages",
+        "polylogue_embedding_coverage_percent",
+        "polylogue_embedding_latest_catchup_run_info",
+        "polylogue_embedding_latest_catchup_conversations",
+        "polylogue_embedding_latest_catchup_messages",
+        "polylogue_embedding_latest_catchup_estimated_cost_usd",
     }
 )
 
@@ -167,6 +174,13 @@ class TestFormatMetricsReadsArchiveState:
                     acquired_at INTEGER
                 );
                 CREATE TABLE messages (message_id TEXT PRIMARY KEY);
+                CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY);
+                CREATE TABLE embedding_status (
+                    conversation_id TEXT PRIMARY KEY,
+                    needs_reindex INTEGER NOT NULL,
+                    error_message TEXT
+                );
+                CREATE TABLE message_embeddings_rowids (message_id TEXT PRIMARY KEY);
                 CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages
                     BEGIN SELECT 1; END;
                 CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages
@@ -215,9 +229,65 @@ class TestFormatMetricsReadsArchiveState:
                     ("hash_c", "op2", 102),
                 ],
             )
+            conn.executemany(
+                "INSERT INTO conversations (conversation_id) VALUES (?)",
+                [("conv-embedded",), ("conv-pending",), ("conv-missing-status",)],
+            )
+            conn.executemany(
+                "INSERT INTO embedding_status (conversation_id, needs_reindex, error_message) VALUES (?, ?, ?)",
+                [
+                    ("conv-embedded", 0, None),
+                    ("conv-pending", 1, "provider timeout"),
+                ],
+            )
+            conn.executemany(
+                "INSERT INTO message_embeddings_rowids (message_id) VALUES (?)",
+                [("msg-1",), ("msg-2",)],
+            )
             conn.commit()
         finally:
             conn.close()
+        from polylogue.storage.embeddings.progress import (
+            CatchupRunDelta,
+            CatchupRunStart,
+            finish_embedding_catchup_run,
+            record_embedding_catchup_progress,
+            start_embedding_catchup_run,
+        )
+
+        run_id = start_embedding_catchup_run(
+            db,
+            CatchupRunStart(
+                rebuild=True,
+                max_conversations=3,
+                max_messages=9,
+                stop_after_seconds=None,
+                max_errors=1,
+                planned_conversations=3,
+                planned_messages=9,
+            ),
+        )
+        record_embedding_catchup_progress(
+            db,
+            run_id,
+            CatchupRunDelta(
+                conversation_id="conv-embedded",
+                embedded=True,
+                embedded_messages=2,
+                estimated_cost_usd=0.003,
+            ),
+        )
+        record_embedding_catchup_progress(
+            db,
+            run_id,
+            CatchupRunDelta(conversation_id="conv-missing-status", skipped=True),
+        )
+        record_embedding_catchup_progress(
+            db,
+            run_id,
+            CatchupRunDelta(conversation_id="conv-pending", errored=True),
+        )
+        finish_embedding_catchup_run(db, run_id, status="stopped", stop_reason="max errors reached (1)")
         return db
 
     def test_attempt_counts_round_trip(self, tmp_path: Path) -> None:
@@ -258,6 +328,41 @@ class TestFormatMetricsReadsArchiveState:
         assert 'polylogue_fts_freshness_ready{surface="action_events_fts"} 0' in body
         assert 'polylogue_live_ingest_memory_mebibytes{kind="rss_current"} 44.0' in body
         assert 'polylogue_live_ingest_memory_mebibytes{kind="cgroup_file"} 23.0' in body
+
+    def test_embedding_backlog_and_latest_catchup_state(self, tmp_path: Path) -> None:
+        body = format_metrics(self._make_db(tmp_path))
+        assert 'polylogue_embedding_conversations{state="total"} 3' in body
+        assert 'polylogue_embedding_conversations{state="embedded"} 1' in body
+        assert 'polylogue_embedding_conversations{state="pending"} 2' in body
+        assert 'polylogue_embedding_conversations{state="failed"} 1' in body
+        assert 'polylogue_embedding_messages{state="embedded"} 2' in body
+        assert "polylogue_embedding_coverage_percent 33.33333333333333" in body
+        assert 'polylogue_embedding_latest_catchup_run_info{rebuild="true",status="stopped"} 1' in body
+        assert 'polylogue_embedding_latest_catchup_conversations{state="planned"} 3' in body
+        assert 'polylogue_embedding_latest_catchup_conversations{state="processed"} 3' in body
+        assert 'polylogue_embedding_latest_catchup_conversations{state="embedded"} 1' in body
+        assert 'polylogue_embedding_latest_catchup_conversations{state="skipped"} 1' in body
+        assert 'polylogue_embedding_latest_catchup_conversations{state="failed"} 1' in body
+        assert 'polylogue_embedding_latest_catchup_messages{state="planned"} 9' in body
+        assert 'polylogue_embedding_latest_catchup_messages{state="embedded"} 2' in body
+        assert "polylogue_embedding_latest_catchup_estimated_cost_usd 0.003" in body
+
+    def test_embedding_metrics_tolerate_partial_tables(self, tmp_path: Path) -> None:
+        db = tmp_path / "archive.db"
+        with sqlite3.connect(db) as conn:
+            conn.executescript("""
+                CREATE TABLE embedding_status (
+                    conversation_id TEXT PRIMARY KEY,
+                    needs_reindex INTEGER NOT NULL,
+                    error_message TEXT
+                );
+                INSERT INTO embedding_status VALUES ('conv-1', 1, NULL);
+            """)
+
+        body = format_metrics(db)
+
+        assert 'polylogue_embedding_conversations{state="pending"} 1' in body
+        assert "polylogue_embedding_coverage_percent 0.0" in body
 
 
 # ---------------------------------------------------------------------------
