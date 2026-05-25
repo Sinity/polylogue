@@ -27,6 +27,7 @@ def _defaults(*, enabled: bool, config_enabled: bool, has_key: bool, model: str,
         "embedding_coverage_percent": 0.0,
         "embedding_failure_count": 0,
         "embedding_estimated_cost_usd": 0.0,
+        "embedding_latest_catchup_run": None,
     }
 
 
@@ -56,10 +57,15 @@ def embedding_readiness_info(db_file: Path, *, detail: bool = False) -> dict[str
 
     pending = pending_messages = stale = failure = total = total_messages = total_conv = embedded_conv = 0
     cost = 0.0
+    latest_catchup_run: object | None = None
     try:
         conn = open_readonly_connection(db_file)
         try:
+            from polylogue.storage.embeddings.progress import latest_embedding_catchup_run
+
             embedded_msg = embedded_message_count_sync(conn)
+            if table_exists_sync(conn, "embedding_catchup_runs"):
+                latest_catchup_run = latest_embedding_catchup_run(conn)
             if _column_exists(conn, "embedding_status", "error_message"):
                 failure = optional_count_sync(
                     conn, "SELECT COUNT(*) FROM embedding_status WHERE error_message IS NOT NULL"
@@ -132,6 +138,7 @@ def embedding_readiness_info(db_file: Path, *, detail: bool = False) -> dict[str
         "embedding_coverage_percent": round(coverage, 1),
         "embedding_failure_count": failure,
         "embedding_estimated_cost_usd": cost,
+        "embedding_latest_catchup_run": latest_catchup_run,
     }
 
 

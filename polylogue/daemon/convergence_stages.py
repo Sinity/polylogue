@@ -17,6 +17,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from polylogue.config import load_polylogue_config
 from polylogue.daemon.convergence import ConvergenceStage
@@ -26,6 +27,9 @@ from polylogue.storage.source_conversations import (
     conversation_ids_for_source_path,
     conversation_ids_for_source_paths,
 )
+
+if TYPE_CHECKING:
+    from polylogue.storage.embeddings.materialization import PendingConversation
 
 logger = get_logger(__name__)
 
@@ -728,21 +732,28 @@ def _stored_dim_from_meta(conn: sqlite3.Connection) -> int:
     return int(row[0]) if row else 0
 
 
-def _pending_embedding_conversation_ids(
+def _pending_embedding_conversation_ids(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> list[str]:
+    return [item.conversation_id for item in _pending_embedding_conversation_window(conn, conversation_ids)]
+
+
+def _pending_embedding_conversation_window(
     conn: sqlite3.Connection,
     conversation_ids: Sequence[str],
-) -> list[str]:
-    if not conversation_ids:
+) -> list[PendingConversation]:
+    unique_ids = tuple(dict.fromkeys(conversation_ids))
+    if not unique_ids:
         return []
-    from polylogue.storage.embeddings.materialization import select_pending_conversation_window
+    from polylogue.storage.embeddings.materialization import PendingConversation, select_pending_conversation_window
 
-    pending = select_pending_conversation_window(
+    if not _table_exists(conn, "conversations"):
+        return [PendingConversation(conversation_id=conversation_id) for conversation_id in unique_ids]
+
+    return select_pending_conversation_window(
         conn,
-        conversation_ids=tuple(dict.fromkeys(conversation_ids)),
+        conversation_ids=unique_ids,
         max_conversations=_DAEMON_EMBED_MAX_CONVERSATIONS,
         max_messages=_DAEMON_EMBED_MAX_MESSAGES,
     )
-    return [item.conversation_id for item in pending]
 
 
 def _embedding_debt_remaining_for_conversations(db_path: Path, conversation_ids: Sequence[str]) -> bool:
@@ -770,6 +781,13 @@ def _embed_conversations_sync(
 ) -> bool:
     from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.storage.embeddings.materialization import embed_conversation_sync
+    from polylogue.storage.embeddings.progress import (
+        CatchupRunDelta,
+        CatchupRunStart,
+        finish_embedding_catchup_run,
+        record_embedding_catchup_progress,
+        start_embedding_catchup_run,
+    )
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.search_providers import create_vector_provider
     from polylogue.storage.search_providers.sqlite_vec_support import (
@@ -777,37 +795,59 @@ def _embed_conversations_sync(
         VOYAGE_4_COST_PER_1M_TOKENS,
     )
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
     cfg = load_polylogue_config()
     voyage_key = cfg.get("voyage_api_key")
     if not voyage_key:
         return True
 
+    with open_readonly_connection(db_path, timeout=5.0) as conn:
+        pending = _pending_embedding_conversation_window(conn, conversation_ids)
+    if not pending:
+        return True
+
     max_cost = float(str(cfg.get("embedding_max_cost_usd", 0.0)))
     model = cfg.embedding_model
     dimension = cfg.embedding_dimension
+    planned_messages = sum(item.message_count for item in pending)
+    run_id = start_embedding_catchup_run(
+        db_path,
+        CatchupRunStart(
+            rebuild=False,
+            max_conversations=_DAEMON_EMBED_MAX_CONVERSATIONS,
+            max_messages=_DAEMON_EMBED_MAX_MESSAGES,
+            stop_after_seconds=stop_after_seconds,
+            max_errors=max_errors,
+            planned_conversations=len(pending),
+            planned_messages=planned_messages,
+        ),
+    )
 
     vec_provider = create_vector_provider(
         voyage_api_key=str(voyage_key), db_path=db_path, model=model, dimension=dimension
     )
     if vec_provider is None:
         logger.warning("embed: vector provider unavailable")
+        finish_embedding_catchup_run(db_path, run_id, status="failed", stop_reason="vector provider unavailable")
         return False
 
     repo = ConversationRepository(backend=SQLiteBackend(db_path=db_path))
     errors = 0
     embedded = 0
     cumulative_cost = 0.0
+    stop_reason: str | None = None
     started_at = time.monotonic()
     try:
-        for conversation_id in dict.fromkeys(conversation_ids):
+        for item in pending:
+            conversation_id = item.conversation_id
             if stop_after_seconds is not None and time.monotonic() - started_at >= stop_after_seconds:
-                logger.info("embed: stop-after-seconds reached (%ds)", stop_after_seconds)
+                stop_reason = f"stop-after-seconds reached ({stop_after_seconds})"
+                logger.info("embed: %s", stop_reason)
                 break
             outcome = embed_conversation_sync(repo, vec_provider, conversation_id)
             if outcome.status == "embedded":
                 embedded += 1
-                # Estimate cost: messages * estimated_tokens_per_message * price_per_token
                 batch_cost = (
                     outcome.embedded_message_count
                     * ESTIMATED_TOKENS_PER_MESSAGE
@@ -815,23 +855,48 @@ def _embed_conversations_sync(
                     / 1_000_000
                 )
                 cumulative_cost += batch_cost
+                record_embedding_catchup_progress(
+                    db_path,
+                    run_id,
+                    CatchupRunDelta(
+                        conversation_id=outcome.conversation_id,
+                        embedded=True,
+                        embedded_messages=outcome.embedded_message_count,
+                        estimated_cost_usd=batch_cost,
+                    ),
+                )
                 if max_cost > 0.0 and cumulative_cost > max_cost:
+                    stop_reason = f"cost cap reached ({cumulative_cost:.4f} > {max_cost:.2f})"
                     logger.info(
-                        "embed: cost cap reached (%.4f > %.2f) — stopping after %d conversations",
-                        cumulative_cost,
-                        max_cost,
+                        "embed: %s — stopping after %d conversations",
+                        stop_reason,
                         embedded,
                     )
                     break
             elif outcome.status in {"no_messages", "no_embeddable_messages"}:
                 logger.info("embed: %s has no embeddable messages", conversation_id)
+                record_embedding_catchup_progress(
+                    db_path,
+                    run_id,
+                    CatchupRunDelta(conversation_id=outcome.conversation_id, skipped=True),
+                )
             elif outcome.status == "error":
                 errors += 1
                 logger.warning("embed: %s failed: %s", conversation_id, outcome.error)
+                record_embedding_catchup_progress(
+                    db_path,
+                    run_id,
+                    CatchupRunDelta(conversation_id=outcome.conversation_id, errored=True),
+                )
                 if max_errors is not None and errors >= max_errors:
-                    logger.info("embed: max errors reached (%d)", max_errors)
+                    stop_reason = f"max errors reached ({max_errors})"
+                    logger.info("embed: %s", stop_reason)
                     break
         logger.info("embed: %d done, %d errors, est. cost $%.4f", embedded, errors, cumulative_cost)
+        if stop_reason is not None:
+            finish_embedding_catchup_run(db_path, run_id, status="stopped", stop_reason=stop_reason)
+        else:
+            finish_embedding_catchup_run(db_path, run_id, status="completed", stop_reason=None)
         return errors == 0
     finally:
         run_coroutine_sync(repo.close())
