@@ -12,7 +12,7 @@ files:
     owner: kernel
     reason: kernel root rule
   - path: polylogue/api/__init__.py
-    loc: 108
+    loc: 109
     target: polylogue/api/__init__.py
     owner: stable
     cross_cut: { api: async }
@@ -59,6 +59,11 @@ files:
   - path: polylogue/api/contracts/write_surface.py
     loc: 165
     target: polylogue/api/contracts/write_surface.py
+    owner: stable
+    cross_cut: { api: async }
+  - path: polylogue/api/embeddings.py
+    loc: 56
+    target: polylogue/api/embeddings.py
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/ingest.py
@@ -1485,7 +1490,7 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 460
+    loc: 480
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
@@ -1493,7 +1498,7 @@ files:
     target: polylogue/operations/__init__.py
     owner: stable
   - path: polylogue/operations/archive.py
-    loc: 1163
+    loc: 1210
     target: polylogue/operations/archive.py
     owner: stable
   - path: polylogue/operations/completion_aggregates.py
