@@ -35,19 +35,6 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
         ),
     ),
     CliSurfaceFamily(
-        slug="enrichments",
-        command_args=("insights", "enrichments"),
-        tags=("insights", "enrichments"),
-        live_variants=(
-            CliSurfaceVariant(
-                name="live-insights-enrichments",
-                description="Live archive probabilistic session-enrichment insight surface",
-                suffix_args=("--limit", "5", "--format", "json"),
-                env="any",
-            ),
-        ),
-    ),
-    CliSurfaceFamily(
         slug="work-events",
         command_args=("insights", "work-events"),
         tags=("insights", "work-events"),

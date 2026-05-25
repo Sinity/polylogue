@@ -49,7 +49,6 @@ from polylogue.insights.archive import (
     DaySessionSummaryInsightQuery,
     ProviderAnalyticsInsightQuery,
     SessionLatencyProfileInsightQuery,
-    SessionEnrichmentInsightQuery,
     SessionPhaseInsightQuery,
     SessionProfileInsightQuery,
     SessionTagRollupQuery,
@@ -70,12 +69,6 @@ async with Polylogue() as archive:
     )
     latency = await archive.list_session_latency_profile_insights(
         SessionLatencyProfileInsightQuery(provider="claude-code", only_stuck=False, limit=25)
-    )
-    enrichments = await archive.list_session_enrichment_insights(
-        SessionEnrichmentInsightQuery(
-            provider="claude-code",
-            limit=25,
-        )
     )
     tags = await archive.list_session_tag_rollup_insights(
         SessionTagRollupQuery(provider="claude-code", since="2026-01-01")
@@ -104,6 +97,8 @@ async with Polylogue() as archive:
 - `workflow_shape_confidence`
 - `terminal_state`
 - `terminal_state_confidence`
+- `enrichment`
+- `enrichment_provenance`
 - `repo_names`
 - `repo_paths`
 
@@ -124,7 +119,7 @@ The latency payload includes a construct-boundary string because these are
 archive-observed timing aggregates. They do not measure correctness, human
 attention, or total wall-clock productivity.
 
-`SessionEnrichmentInsight` exposes the separate enrichment tier directly:
+The merged `SessionProfileInsight` tier exposes probabilistic enrichment:
 
 - `intent_summary`
 - `outcome_summary`
@@ -133,6 +128,11 @@ attention, or total wall-clock productivity.
 - `support_level`
 - `support_signals`
 - `provenance`
+
+The enrichment payload is intentionally folded into session profiles because it
+is derived from the same per-session materialization row. Request
+`SessionProfileInsightQuery(tier="merged")` when callers need both grounded
+profile evidence and probabilistic enrichment in one payload.
 
 Provider analytics and archive debt are public insights too:
 

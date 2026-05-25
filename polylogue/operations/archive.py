@@ -31,8 +31,6 @@ from polylogue.insights.archive import (
     ProviderAnalyticsInsightQuery,
     SessionCostInsight,
     SessionCostInsightQuery,
-    SessionEnrichmentInsight,
-    SessionEnrichmentInsightQuery,
     SessionLatencyProfileInsight,
     SessionLatencyProfileInsightQuery,
     SessionPhaseInsight,
@@ -684,45 +682,6 @@ class ArchiveInsightSessionMixin:
             query=request.query,
         )
         return [SessionProfileInsight.from_record(record, tier=request.tier) for record in records]
-
-    async def get_session_enrichment_insight(
-        self,
-        conversation_id: str,
-    ) -> SessionEnrichmentInsight | None:
-        status = await self._session_insight_status()
-        _require_ready_flag(status, "profile_rows_ready", "Session-profile rows are incomplete.")
-        record = await self.repository.get_session_enrichment_record(conversation_id)
-        return SessionEnrichmentInsight.from_record(record) if record is not None else None
-
-    async def list_session_enrichment_insights(
-        self,
-        query: SessionEnrichmentInsightQuery | None = None,
-    ) -> list[SessionEnrichmentInsight]:
-        request = _default_query(query, SessionEnrichmentInsightQuery)
-        status = await self._session_insight_status()
-        _require_ready_flag(status, "profile_rows_ready", "Session-profile rows are incomplete.")
-        if _query_wants_search(request):
-            _require_ready_flag(
-                status,
-                "profile_enrichment_fts_ready",
-                "Session-profile enrichment search index is incomplete.",
-            )
-        records = await self.repository.list_session_enrichment_records(
-            provider=request.provider,
-            since=request.since,
-            until=request.until,
-            first_message_since=request.first_message_since,
-            first_message_until=request.first_message_until,
-            session_date_since=request.session_date_since,
-            session_date_until=request.session_date_until,
-            min_wallclock_seconds=request.min_wallclock_seconds,
-            max_wallclock_seconds=request.max_wallclock_seconds,
-            sort=request.sort,
-            limit=request.limit,
-            offset=request.offset,
-            query=request.query,
-        )
-        return [SessionEnrichmentInsight.from_record(record) for record in records]
 
     async def get_session_work_event_insights(
         self,

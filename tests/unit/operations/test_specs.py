@@ -34,7 +34,6 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "query-week-session-summaries",
         "query-provider-analytics",
         "query-tool-usage",
-        "query-session-enrichments",
         "query-session-insight-status",
         "query-archive-debt",
         "compile-inferred-corpus-specs",
@@ -84,7 +83,6 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
     assert specs["query-embedding-status"].path_targets == ("embedding-status-query-loop",)
     assert specs["project-session-insight-readiness"].previewable is True
     assert specs["query-session-profiles"].path_targets == ("session-profile-query-loop",)
-    assert specs["query-session-enrichments"].path_targets == ("session-enrichment-query-loop",)
     assert specs["query-session-work-events"].path_targets == ("session-work-event-query-loop",)
     assert specs["query-session-insight-status"].path_targets == ("session-insight-status-query-loop",)
     assert specs["query-archive-debt"].path_targets == ("archive-debt-query-loop",)

@@ -42,35 +42,20 @@ API.
 
 - Evidence payload: `evidence`
 - Inference payload: `inference`
-- Fallback markers: _(none — profile-level fallback is encoded in
-  `inference.support_level` and `inference.engaged_duration_source`,
-  not as a single boolean.)_
-- Confidence field: _(none — profile rigor is multi-signal; see
-  `inference.support_signals`.)_
-- Versions: `materializer_version`, `inference_version`
+- Fallback markers: `enrichment.fallback_reasons`
+- Confidence field: `enrichment.confidence`
+- Versions: `materializer_version`, `inference_version`,
+  `enrichment_version`
 - Readiness: Evidence payload is fully grounded in archive counts and
   timestamps. Inference payload is probabilistic — consult
   `inference.support_level` and `inference.engaged_duration_source`
-  for grounding. Profiles missing an `inference` payload should be
-  treated as evidence-only.
+  for grounding. Enrichment payload is also probabilistic and carries
+  intent/outcome summaries plus `enrichment.support_level` /
+  `enrichment.confidence`. Profiles missing an `inference` payload
+  should be treated as evidence-only.
 - Consumer-facing fields: `conversation_id`, `provider_name`, `title`,
-  `semantic_tier`, `evidence`, `inference`, `provenance`,
-  `inference_provenance`.
-
-### `session_enrichments` — Session Enrichments
-
-- Evidence payload: _(none — enrichments are fully probabilistic)_
-- Inference payload: `enrichment`
-- Fallback markers: _(none — rigor is carried by
-  `enrichment.support_level` and `enrichment.confidence`.)_
-- Confidence field: `enrichment.confidence`
-- Versions: `materializer_version`, `enrichment_version`
-- Readiness: Enrichment payload is fully probabilistic.
-  `enrichment.support_level` and `enrichment.confidence` carry the
-  rigor signal; consumers should filter on these before displaying
-  intent/outcome summaries.
-- Consumer-facing fields: `conversation_id`, `provider_name`, `title`,
-  `enrichment`, `enrichment_provenance`.
+  `semantic_tier`, `evidence`, `inference`, `enrichment`,
+  `provenance`, `inference_provenance`, `enrichment_provenance`.
 
 ### `session_work_events` — Work Events
 

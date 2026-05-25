@@ -7,7 +7,6 @@ import asyncio
 import pytest
 
 from polylogue.insights.archive import (
-    SessionEnrichmentInsight,
     SessionPhaseInsight,
     SessionProfileInsight,
     SessionTagRollupInsight,
@@ -79,6 +78,8 @@ def _profile(conversation_id: str = "c1") -> SessionProfileInsight:
         evidence=SessionEvidencePayload(message_count=10, word_count=200),
         inference_provenance=_inference_provenance(),
         inference=SessionInferencePayload(support_level=ConfidenceBand.STRONG),
+        enrichment_provenance=_enrichment_provenance(),
+        enrichment=SessionEnrichmentPayload(confidence=0.8, support_level=ConfidenceBand.STRONG),
     )
 
 
@@ -110,16 +111,6 @@ def _phase(*, fallback: bool, confidence: float) -> SessionPhaseInsight:
         inference_provenance=_inference_provenance(),
         evidence=SessionPhaseEvidencePayload(),
         inference=SessionPhaseInferencePayload(confidence=confidence, fallback_inference=fallback),
-    )
-
-
-def _enrichment(confidence: float) -> SessionEnrichmentInsight:
-    return SessionEnrichmentInsight(
-        conversation_id="c1",
-        provider_name="claude-code",
-        provenance=_provenance(),
-        enrichment_provenance=_enrichment_provenance(),
-        enrichment=SessionEnrichmentPayload(confidence=confidence, support_level=ConfidenceBand.STRONG),
     )
 
 
@@ -233,10 +224,23 @@ def test_audit_one_detects_stale_version_rows() -> None:
     assert entry.stale_version_count == expected
 
 
-def test_audit_one_enrichment_records_unknown_confidence_when_missing_path() -> None:
-    contract = get_rigor_contract("session_enrichments")
+def test_audit_one_profile_records_folded_enrichment_confidence() -> None:
+    contract = get_rigor_contract("session_profiles")
     assert contract is not None
-    entry = _audit_one([_enrichment(0.8), _enrichment(0.2)], contract)
+    entry = _audit_one(
+        [
+            _profile("c1"),
+            _profile("c2").model_copy(
+                update={
+                    "enrichment": SessionEnrichmentPayload(
+                        confidence=0.2,
+                        support_level=ConfidenceBand.WEAK,
+                    )
+                }
+            ),
+        ],
+        contract,
+    )
     assert entry.confidence_distribution.high == 1
     assert entry.confidence_distribution.low == 1
 
@@ -257,14 +261,12 @@ class _FakeOperations:
         profiles: list[object],
         work_events: list[object],
         phases: list[object],
-        enrichments: list[object],
         tags: list[object],
     ) -> None:
         self._payload = {
             "list_session_profile_insights": profiles,
             "list_session_work_event_insights": work_events,
             "list_session_phase_insights": phases,
-            "list_session_enrichment_insights": enrichments,
             "list_session_tag_rollup_insights": tags,
             "list_work_thread_insights": [],
             "list_day_session_summary_insights": [],
@@ -290,7 +292,6 @@ def test_build_insight_rigor_audit_report_aggregates_across_products() -> None:
             _work_event(fallback=True, confidence=0.2),
         ],
         phases=[_phase(fallback=False, confidence=0.8)],
-        enrichments=[_enrichment(0.75)],
         tags=[_tag_rollup()],
     )
     report = asyncio.run(build_insight_rigor_audit_report(operations, InsightRigorAuditQuery()))
@@ -301,8 +302,6 @@ def test_build_insight_rigor_audit_report_aggregates_across_products() -> None:
     we = by_name["session_work_events"]
     assert we.fallback_count == 1
     assert we.has_fallback_markers is True
-    enr = by_name["session_enrichments"]
-    assert enr.confidence_distribution.high == 1
     tag = by_name["session_tag_rollups"]
     assert tag.sample_size == 1
     assert tag.has_evidence_payload is False  # tag rollups are aggregate
@@ -314,7 +313,6 @@ def test_audit_runner_respects_insight_filter() -> None:
         profiles=[_profile("c1")],
         work_events=[_work_event(fallback=False, confidence=0.9)],
         phases=[],
-        enrichments=[],
         tags=[],
     )
     report = asyncio.run(

@@ -53,7 +53,6 @@ def test_runtime_artifact_specs_expose_the_curated_vertical_paths() -> None:
         "message-fts-readiness-loop",
         "conversation-query-loop",
         "session-profile-query-loop",
-        "session-enrichment-query-loop",
         "session-work-event-query-loop",
         "session-phase-query-loop",
         "work-thread-query-loop",

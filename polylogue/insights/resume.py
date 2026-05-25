@@ -14,7 +14,6 @@ from polylogue.archive.action_event.action_events import build_tool_calls_from_c
 from polylogue.archive.conversation.models import Conversation
 from polylogue.insights.archive import (
     ArchiveInsightUnavailableError,
-    SessionEnrichmentInsight,
     SessionPhaseInsight,
     SessionProfileInsight,
     SessionProfileInsightQuery,
@@ -33,8 +32,8 @@ RESUME_BRIEF_MATERIALIZER_VERSION = 1
 """Bumped whenever the resume-brief composition contract changes shape.
 
 Owned by ``polylogue/insights/resume.py``. The brief is composed on read
-from already-materialized session insights (profile, enrichment, work
-events, phases, work thread); the version bumps when fields or
+from already-materialized session insights (profile with folded enrichment,
+work events, phases, work thread); the version bumps when fields or
 composition semantics change so consumers can invalidate cached
 renderings.
 """
@@ -185,8 +184,6 @@ class ResumeOperations(Protocol):
         *,
         tier: str = "merged",
     ) -> SessionProfileInsight | None: ...
-
-    async def get_session_enrichment_insight(self, conversation_id: str) -> SessionEnrichmentInsight | None: ...
 
     async def get_session_work_event_insights(self, conversation_id: str) -> list[SessionWorkEventInsight]: ...
 
@@ -435,13 +432,12 @@ def _work_thread_summary(thread: WorkThreadInsight | None) -> ResumeWorkThread |
 def _inferences(
     *,
     profile: SessionProfileInsight | None,
-    enrichment: SessionEnrichmentInsight | None,
     events: Sequence[SessionWorkEventInsight],
     phases: Sequence[SessionPhaseInsight],
     work_thread: WorkThreadInsight | None,
 ) -> ResumeInferences:
     profile_inference = profile.inference if profile is not None else None
-    enrichment_payload = enrichment.enrichment if enrichment is not None else None
+    enrichment_payload = profile.enrichment if profile is not None else None
     return ResumeInferences(
         inferred_topic=profile_inference.inferred_topic if profile_inference is not None else None,
         intent_summary=enrichment_payload.intent_summary if enrichment_payload is not None else None,
@@ -581,12 +577,6 @@ async def build_resume_brief(
     except ArchiveInsightUnavailableError as exc:
         uncertainties.append(ResumeUncertainty(source="session_profile", detail=str(exc)))
 
-    enrichment: SessionEnrichmentInsight | None = None
-    try:
-        enrichment = await operations.get_session_enrichment_insight(conversation_id)
-    except ArchiveInsightUnavailableError as exc:
-        uncertainties.append(ResumeUncertainty(source="session_enrichment", detail=str(exc)))
-
     events: list[SessionWorkEventInsight] = []
     try:
         events = await operations.get_session_work_event_insights(conversation_id)
@@ -602,7 +592,6 @@ async def build_resume_brief(
     work_thread = await _find_work_thread(operations, conversation_id, uncertainties)
     inferences = _inferences(
         profile=profile,
-        enrichment=enrichment,
         events=events,
         phases=phases,
         work_thread=work_thread,

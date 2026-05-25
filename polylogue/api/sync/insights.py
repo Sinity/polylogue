@@ -16,8 +16,6 @@ from polylogue.insights.archive import (
     ProviderAnalyticsInsightQuery,
     SessionCostInsight,
     SessionCostInsightQuery,
-    SessionEnrichmentInsight,
-    SessionEnrichmentInsightQuery,
     SessionPhaseInsight,
     SessionPhaseInsightQuery,
     SessionProfileInsight,
@@ -60,15 +58,6 @@ class SyncInsightQueriesMixin:
         query: SessionProfileInsightQuery | None = None,
     ) -> list[SessionProfileInsight]:
         return run_coroutine_sync(self._facade.list_session_profile_insights(query))
-
-    def get_session_enrichment_insight(self, conversation_id: str) -> SessionEnrichmentInsight | None:
-        return run_coroutine_sync(self._facade.get_session_enrichment_insight(conversation_id))
-
-    def list_session_enrichment_insights(
-        self,
-        query: SessionEnrichmentInsightQuery | None = None,
-    ) -> list[SessionEnrichmentInsight]:
-        return run_coroutine_sync(self._facade.list_session_enrichment_insights(query))
 
     def list_session_tag_rollup_insights(
         self,

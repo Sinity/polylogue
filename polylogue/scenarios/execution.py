@@ -68,7 +68,6 @@ _KNOWN_POLYLOGUE_SUBCOMMANDS = frozenset(
 )
 _INSIGHT_OPERATION_BY_METHOD = {
     "list_session_profile_insights": "query-session-profiles",
-    "list_session_enrichment_insights": "query-session-enrichments",
     "list_session_work_event_insights": "query-session-work-events",
     "list_session_phase_insights": "query-session-phases",
     "list_work_thread_insights": "query-work-threads",

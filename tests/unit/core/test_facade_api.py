@@ -15,7 +15,6 @@ from polylogue.insights.archive import (
     CostRollupInsightQuery,
     DaySessionSummaryInsightQuery,
     SessionCostInsightQuery,
-    SessionEnrichmentInsightQuery,
     SessionPhaseInsightQuery,
     SessionProfileInsightQuery,
     SessionTagRollupQuery,
@@ -542,13 +541,6 @@ class TestPolylogueArchiveInsights:
                 limit=10,
             )
         )
-        enrichments = await archive.list_session_enrichment_insights(
-            SessionEnrichmentInsightQuery(
-                provider="claude-code",
-                session_date_since="2026-03-01",
-                limit=10,
-            )
-        )
         phases = await archive.list_session_phase_insights(SessionPhaseInsightQuery(provider="claude-code", limit=10))
         threads = await archive.list_work_thread_insights(WorkThreadInsightQuery(limit=10))
 
@@ -559,6 +551,8 @@ class TestPolylogueArchiveInsights:
         assert profile.evidence.canonical_session_date == "2026-03-01"
         assert profile.inference is not None
         assert profile.inference.engaged_duration_ms >= 0
+        assert profile.enrichment is not None
+        assert profile.enrichment.confidence >= 0.0
 
         evidence_only = await archive.get_session_profile_insight("conv-root", tier="evidence")
         inference_only = await archive.get_session_profile_insight("conv-root", tier="inference")
@@ -570,10 +564,9 @@ class TestPolylogueArchiveInsights:
         assert inference_only.semantic_tier == "inference"
         assert inference_only.evidence is None
         assert inference_only.inference is not None
+        assert inference_only.enrichment is None
 
         assert any(item.conversation_id == "conv-root" for item in profiles)
-        assert any(item.conversation_id == "conv-root" for item in enrichments)
-        assert enrichments[0].enrichment.confidence >= 0.0
         assert any(item.conversation_id == "conv-root" for item in phases)
         assert len(threads) == 1
         assert threads[0].thread.session_count == 2

@@ -323,7 +323,6 @@ def test_insights_status_json(cli_workspace: CliWorkspace) -> None:
     insights = {item["insight_name"]: item for item in json_object_list(payload["insights"])}
     assert set(insights) >= {
         "session_profiles",
-        "session_enrichments",
         "session_work_events",
         "session_phases",
         "work_threads",
@@ -432,7 +431,7 @@ def test_insights_export_json(cli_workspace: CliWorkspace) -> None:
     assert (target / "insights" / "session_profiles.jsonl").exists()
 
 
-def test_insights_enrichments_json(cli_workspace: CliWorkspace) -> None:
+def test_insights_profiles_json_includes_folded_enrichment(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
 
     runner = CliRunner()
@@ -442,7 +441,7 @@ def test_insights_enrichments_json(cli_workspace: CliWorkspace) -> None:
             "--provider",
             "claude-code",
             "insights",
-            "enrichments",
+            "profiles",
             "--session-date-since",
             "2026-03-01",
             "--format",
@@ -454,27 +453,27 @@ def test_insights_enrichments_json(cli_workspace: CliWorkspace) -> None:
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
     assert json_int(payload["total"]) == 2
-    first = json_object_list(payload["session_enrichments"])[0]
+    first = json_object_list(payload["session_profiles"])[0]
     enrichment_provenance = json_object(first["enrichment_provenance"])
     enrichment = json_object(first["enrichment"])
     assert json_int(first["contract_version"]) == ARCHIVE_INSIGHT_CONTRACT_VERSION
-    assert first["insight_kind"] == "session_enrichment"
-    assert first["semantic_tier"] == "enrichment"
+    assert first["insight_kind"] == "session_profile"
+    assert first["semantic_tier"] == "merged"
     assert enrichment_provenance["enrichment_family"] == "scored_session_enrichment"
     assert enrichment["support_level"] in {"weak", "moderate", "strong"}
     assert "input_band_summary" in enrichment
 
 
 def test_insights_callback_rejects_unknown_query_fields() -> None:
-    callback = _make_callback(get_insight_type("session_enrichments"))
+    callback = _make_callback(get_insight_type("session_profiles"))
     env = SimpleNamespace(operations=MagicMock())
     # Build a minimal Click context to satisfy @click.pass_context
-    mock_ctx = click.Context(click.Command("enrichments"))
+    mock_ctx = click.Context(click.Command("profiles"))
     mock_ctx.obj = env
     # No parent — root filter inheritance is a no-op
 
     with pytest.raises(
-        SystemExit, match="insights enrichments: Unknown query field\\(s\\) for session_enrichments: refined_work_kind"
+        SystemExit, match="insights profiles: Unknown query field\\(s\\) for session_profiles: refined_work_kind"
     ):
         wrapped = getattr(callback, "__wrapped__", None)
         assert callable(wrapped)

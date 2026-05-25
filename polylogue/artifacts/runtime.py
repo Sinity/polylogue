@@ -390,17 +390,6 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         readiness_surfaces=("insights", "facade", "mcp"),
     ),
     ArtifactNode(
-        name="session_enrichment_results",
-        layer=ArtifactLayer.PROJECTION,
-        description="Query/read results for durable session enrichments.",
-        depends_on=("session_profile_rows",),
-        code_refs=(
-            "polylogue.operations.archive.ArchiveInsightMixin.list_session_enrichment_insights",
-            "polylogue.cli.commands.insights",
-        ),
-        readiness_surfaces=("insights", "facade", "mcp"),
-    ),
-    ArtifactNode(
         name="session_work_event_results",
         layer=ArtifactLayer.PROJECTION,
         description="Query/read results for durable session work events.",
@@ -725,14 +714,6 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
         nodes=(
             "session_profile_rows",
             "session_profile_results",
-        ),
-    ),
-    ArtifactPath(
-        name="session-enrichment-query-loop",
-        description="Durable session profile rows through enrichment FTS and enrichment query results.",
-        nodes=(
-            "session_profile_rows",
-            "session_enrichment_results",
         ),
     ),
     ArtifactPath(

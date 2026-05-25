@@ -10,8 +10,7 @@ subcommand group.
 
 | Insight Type | CLI Command | Description |
 |-------------|-------------|-------------|
-| Session Profiles | `insights profiles` | Per-session aggregation: repos, tools, costs, durations, message counts |
-| Session Enrichments | `insights enrichments` | Probabilistic session enrichment (support level, enrichment family) |
+| Session Profiles | `insights profiles` | Per-session evidence, inference, and probabilistic enrichment: repos, tools, costs, durations, message counts, workflow shape, terminal state, summaries |
 | Work Events | `insights work-events` | File-level operations detected within sessions |
 | Work Phases | `insights phases` | Session segment classification: planning, implementation, verification, exploration |
 | Work Threads | `insights threads` | Multi-session groupings by repo and work continuity |
@@ -43,7 +42,8 @@ polylogue --provider claude-code insights profiles --min-wallclock-seconds 300
 
 Fields: conversation ID, provider, raw title, inferred topic, session date,
 first/last session timestamp, timestamp source, wall clock duration, message
-count, engaged minutes, workflow shape, and terminal state.
+count, engaged minutes, workflow shape, terminal state, and folded enrichment
+payloads for the merged tier.
 
 `first_message_at` and `last_message_at` prefer provider-supplied message
 timestamps. For sources that only preserve conversation-level timestamps,
@@ -56,6 +56,14 @@ Optional filters: `--first-message-since`, `--first-message-until`,
 `--min-wallclock-seconds`, `--max-wallclock-seconds`, `--workflow-shape`,
 `--terminal-state`, `--sort`, `--tier` (`merged`, `evidence`, `inference`),
 `--query`.
+
+The merged profile tier also includes probabilistic enrichment fields:
+`enrichment.intent_summary`, `enrichment.outcome_summary`,
+`enrichment.blockers`, `enrichment.confidence`,
+`enrichment.support_level`, and `enrichment.support_signals`. These fields are
+derived summaries over the session profile evidence and should be interpreted
+through the confidence/support fields, not as raw archive facts. The evidence
+and inference tiers intentionally omit the enrichment payload.
 
 The storage column `engaged_duration_ms` is message-clustered wall clock: it
 sums phase intervals separated by no more than the fixed five-minute idle
@@ -130,10 +138,10 @@ MCP exposes three readers over these same rows:
 
 Message-range work segments derived from tool calls, message timing, and
 coarse text/action signals. These rows are useful for timeline navigation,
-file/tool context, and rough event grouping. The `kind` label is a weak
-heuristic event label such as `implementation`, `debugging`, `testing`,
-`research`, or `review`; it is not a durable workflow taxonomy and should not
-be treated as the session-level semantic contract. Use `workflow_shape` and
+file/tool context, and rough event grouping. The `heuristic_label` field is a
+weak event label such as `implementation`, `debugging`, `testing`, `research`,
+or `review`; it is not a durable workflow taxonomy and should not be treated
+as the session-level semantic contract. Use `workflow_shape` and
 `terminal_state` on session profiles when the question is about the whole
 session.
 

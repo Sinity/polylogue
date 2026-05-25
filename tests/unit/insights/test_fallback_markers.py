@@ -118,7 +118,7 @@ async def test_readiness_report_classifies_fallback_rows_as_degraded(
 
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
     report: InsightReadinessReport = await archive.insight_readiness_report(
-        InsightReadinessQuery(insights=("session_profiles", "session_enrichments"))
+        InsightReadinessQuery(insights=("session_profiles",))
     )
 
     profile = next(entry for entry in report.insights if entry.insight_name == "session_profiles")

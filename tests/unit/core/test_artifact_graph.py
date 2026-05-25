@@ -49,7 +49,6 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "retrieval_band_readiness",
         "embedding_status_results",
         "session_profile_results",
-        "session_enrichment_results",
         "session_work_event_results",
         "session_phase_results",
         "work_thread_results",
@@ -149,7 +148,6 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert "work_thread_fts" in operations["materialize-session-insights"].produces
     assert operations["project-session-insight-readiness"].consumes == ("session_insight_rows", "session_insight_fts")
     assert operations["query-session-profiles"].produces == ("session_profile_results",)
-    assert operations["query-session-enrichments"].produces == ("session_enrichment_results",)
     assert operations["query-session-work-events"].produces == ("session_work_event_results",)
     assert operations["query-session-phases"].produces == ("session_phase_results",)
     assert operations["query-work-threads"].produces == ("work_thread_results",)
@@ -216,7 +214,6 @@ def test_artifact_graph_paths_reference_only_declared_nodes() -> None:
         "session-insight-repair-loop",
         "raw-session-insight-repair-loop",
         "session-profile-query-loop",
-        "session-enrichment-query-loop",
         "session-work-event-query-loop",
         "session-phase-query-loop",
         "work-thread-query-loop",
@@ -342,9 +339,6 @@ def test_artifact_graph_lists_operations_for_each_runtime_path() -> None:
     )
     assert tuple(operation.name for operation in graph.operations_for_path("session-profile-query-loop")) == (
         "query-session-profiles",
-    )
-    assert tuple(operation.name for operation in graph.operations_for_path("session-enrichment-query-loop")) == (
-        "query-session-enrichments",
     )
     assert tuple(operation.name for operation in graph.operations_for_path("session-work-event-query-loop")) == (
         "query-session-work-events",
