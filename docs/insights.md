@@ -128,16 +128,25 @@ MCP exposes three readers over these same rows:
 
 ## Work Events
 
-File-level operations detected from tool calls and semantic block types.
+Message-range work segments derived from tool calls, message timing, and
+coarse text/action signals. These rows are useful for timeline navigation,
+file/tool context, and rough event grouping. The `kind` label is a weak
+heuristic event label such as `implementation`, `debugging`, `testing`,
+`research`, or `review`; it is not a durable workflow taxonomy and should not
+be treated as the session-level semantic contract. Use `workflow_shape` and
+`terminal_state` on session profiles when the question is about the whole
+session.
 
 ```bash
 polylogue insights work-events
-polylogue insights work-events --kind file_edit
+polylogue insights work-events --kind implementation
 polylogue insights work-events --conversation-id claude-ai:abc123
 ```
 
-Each event has: kind (`file_read`, `file_write`, `file_edit`, `shell`, etc.),
-start/end time, duration, file paths, tools used.
+Each event has: start/end time, duration, file paths, tools used, a short
+summary, and the heuristic event label plus confidence/evidence. File/tool
+categories such as `file_read`, `file_edit`, or `shell` live on action/tool
+surfaces, not in `session_work_events.kind`.
 
 ## Work Phases
 
