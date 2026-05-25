@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from polylogue.archive.message.types import MessageType
 from polylogue.sources.parsers.claude import parse_code
+from polylogue.sources.parsers.claude.common import normalize_timestamp
+
+
+def test_normalize_timestamp_returns_canonical_iso_text() -> None:
+    assert normalize_timestamp(1704067200) == "2024-01-01T00:00:00+00:00"
+    assert normalize_timestamp(1704067200000) == "2024-01-01T00:00:00+00:00"
 
 
 def test_parse_code_classifies_runtime_artifacts() -> None:

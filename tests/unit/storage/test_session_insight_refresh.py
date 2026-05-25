@@ -232,6 +232,56 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
     assert claude_thread["search_text"] == "sentinel thread untouched"
 
 
+def test_session_insight_rebuild_fills_profile_time_from_conversation_timestamp(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "profile-time-fallback.db"
+    with open_connection(db_path) as conn:
+        store_records(
+            conversation=make_conversation(
+                "conv-codex-untimestamped",
+                provider_name="codex",
+                title="Codex untimestamped messages",
+                created_at="2026-05-12T09:00:00+00:00",
+                updated_at="2026-05-12T09:30:00+00:00",
+            ),
+            messages=[
+                make_message(
+                    "conv-codex-untimestamped:msg-1",
+                    "conv-codex-untimestamped",
+                    text="Start work",
+                    sort_key=None,
+                ),
+                make_message(
+                    "conv-codex-untimestamped:msg-2",
+                    "conv-codex-untimestamped",
+                    role="assistant",
+                    text="Finished work",
+                    sort_key=None,
+                ),
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        rebuild_session_insights_sync(conn)
+        row = conn.execute(
+            """
+            SELECT first_message_at, last_message_at, canonical_session_date, evidence_payload_json
+            FROM session_profiles
+            WHERE conversation_id = ?
+            """,
+            ("conv-codex-untimestamped",),
+        ).fetchone()
+
+    assert row is not None
+    assert row["first_message_at"] == "2026-05-12T09:00:00+00:00"
+    assert row["last_message_at"] == "2026-05-12T09:30:00+00:00"
+    assert row["canonical_session_date"] == "2026-05-12"
+    evidence = json.loads(row["evidence_payload_json"])
+    assert evidence["timestamp_coverage"] == "none"
+    assert evidence["timestamp_source"] == "conversation_timestamp_fallback"
+
+
 def test_session_insight_load_skips_plain_text_blocks(tmp_path: Path) -> None:
     db_path = tmp_path / "refresh-block-filter.db"
     with open_connection(db_path) as conn:

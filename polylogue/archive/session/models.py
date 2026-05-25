@@ -110,6 +110,7 @@ class SessionProfile:
     phases: tuple[SessionPhase, ...]
     first_message_at: datetime | None = None
     last_message_at: datetime | None = None
+    timestamp_source: str = "provider_supplied"
     timestamped_message_count: int = 0
     untimestamped_message_count: int = 0
     timestamp_coverage: str = "none"
@@ -174,6 +175,7 @@ class SessionProfile:
             "phases": [_phase_to_dict(phase) for phase in self.phases],
             "first_message_at": self.first_message_at.isoformat() if self.first_message_at else None,
             "last_message_at": self.last_message_at.isoformat() if self.last_message_at else None,
+            "timestamp_source": self.timestamp_source,
             "timestamped_message_count": self.timestamped_message_count,
             "untimestamped_message_count": self.untimestamped_message_count,
             "timestamp_coverage": self.timestamp_coverage,
@@ -236,6 +238,7 @@ class SessionProfile:
             phases=tuple(_phase_from_mapping(item) for item in mapping_sequence(payload.get("phases"))),
             first_message_at=optional_datetime(payload.get("first_message_at")),
             last_message_at=optional_datetime(payload.get("last_message_at")),
+            timestamp_source=optional_string(payload.get("timestamp_source")) or "provider_supplied",
             timestamped_message_count=coerce_int(payload.get("timestamped_message_count"), 0),
             untimestamped_message_count=coerce_int(payload.get("untimestamped_message_count"), 0),
             timestamp_coverage=optional_string(payload.get("timestamp_coverage")) or "none",

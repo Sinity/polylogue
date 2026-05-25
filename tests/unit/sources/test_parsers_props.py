@@ -27,6 +27,7 @@ from hypothesis.strategies import SearchStrategy
 
 from polylogue.config import Source
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.timestamps import parse_timestamp
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.sources import iter_source_conversations
 from polylogue.sources.parsers import chatgpt, claude, codex, drive
@@ -350,14 +351,18 @@ def test_timestamp_normalization_never_crashes(timestamp: NormalizedTimestampInp
 def test_timestamp_normalization_preserves_seconds(epoch: float) -> None:
     result = claude.normalize_timestamp(epoch)
     assert result is not None
-    assert abs(float(result) - epoch) < 1
+    parsed = parse_timestamp(result)
+    assert parsed is not None
+    assert abs(parsed.timestamp() - epoch) < 1
 
 
 @given(st.integers(min_value=1577836800000, max_value=1893456000000))
 def test_timestamp_normalization_handles_milliseconds(epoch_ms: int) -> None:
     result = claude.normalize_timestamp(epoch_ms)
     assert result is not None
-    assert abs(float(result) - (epoch_ms / 1000.0)) < 1
+    parsed = parse_timestamp(result)
+    assert parsed is not None
+    assert abs(parsed.timestamp() - (epoch_ms / 1000.0)) < 1
 
 
 @given(

@@ -70,19 +70,20 @@ def extract_text_from_segments(segments: list[object]) -> str | None:
 def normalize_timestamp(ts: int | float | str | None) -> str | None:
     if ts is None:
         return None
+    from polylogue.core.timestamps import parse_timestamp
+
     try:
         val = float(ts)
         if val > 1e11:
             val = val / 1000.0
-        return str(val)
+        dt = parse_timestamp(val)
+        return dt.isoformat() if dt is not None else None
     except (ValueError, TypeError):
         pass
     if isinstance(ts, str):
-        from polylogue.core.timestamps import parse_timestamp
-
         dt = parse_timestamp(ts)
         if dt is not None:
-            return str(dt.timestamp())
+            return dt.isoformat()
     return None
 
 

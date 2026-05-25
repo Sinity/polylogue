@@ -91,6 +91,7 @@ async with Polylogue() as archive:
 
 - `first_message_at`
 - `canonical_session_date`
+- `timestamp_source`
 - `engaged_duration_ms`
 - `engaged_minutes`
 - `repo_names`

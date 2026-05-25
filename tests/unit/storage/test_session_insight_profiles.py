@@ -8,6 +8,7 @@ from polylogue.archive.session.session_profile import build_session_analysis, bu
 from polylogue.storage.insights.session.profiles import (
     assistant_turn_texts,
     blocker_texts,
+    profile_evidence_payload,
     session_enrichment_payload,
     user_turn_texts,
 )
@@ -89,3 +90,41 @@ def test_session_enrichment_payload_reuses_text_band_outputs() -> None:
         "heuristic_work_events",
         "assistant_outcome_text",
     )
+
+
+def test_session_profile_uses_conversation_timestamp_when_messages_are_untimestamped() -> None:
+    conversation = make_conv(
+        id="conv-fallback-time",
+        provider=Provider.CODEX,
+        title="Untimestamped messages",
+        created_at=datetime(2026, 5, 12, 9, 0, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 5, 12, 9, 30, tzinfo=timezone.utc),
+        messages=[
+            make_msg(id="u1", role="user", provider=Provider.CODEX, text="Start"),
+            make_msg(id="a1", role="assistant", provider=Provider.CODEX, text="Done"),
+        ],
+    )
+
+    profile = build_session_profile(conversation)
+
+    assert profile.first_message_at == datetime(2026, 5, 12, 9, 0, tzinfo=timezone.utc)
+    assert profile.last_message_at == datetime(2026, 5, 12, 9, 30, tzinfo=timezone.utc)
+    assert profile.timestamp_source == "conversation_timestamp_fallback"
+    assert profile.timestamp_coverage == "none"
+
+
+def test_session_profile_evidence_exposes_timestamp_source() -> None:
+    conversation = make_conv(
+        id="conv-evidence-time",
+        provider=Provider.CODEX,
+        title="Evidence timestamp",
+        created_at=datetime(2026, 5, 12, 9, 0, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 5, 12, 9, 30, tzinfo=timezone.utc),
+        messages=[make_msg(id="u1", role="user", provider=Provider.CODEX, text="No message timestamp")],
+    )
+
+    profile = build_session_profile(conversation)
+    record_evidence = profile_evidence_payload(profile)
+
+    assert record_evidence.session_timestamp == "2026-05-12T09:00:00+00:00"
+    assert record_evidence.timestamp_source == "conversation_timestamp_fallback"
