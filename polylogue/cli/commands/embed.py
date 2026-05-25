@@ -17,6 +17,7 @@ The substrate-side primitives (token-count and cost estimation,
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import time
@@ -220,6 +221,54 @@ def _render_preflight(env: AppEnv, report: PreflightReport) -> None:
         "~500 tokens/message. Voyage does not return token counts, so "
         "the figure is approximate.[/dim]"
     )
+
+
+def _preflight_backfill_args(report: PreflightReport) -> list[str] | None:
+    if report.pending_conversations <= 0:
+        return None
+    args = ["embed", "backfill", "--yes"]
+    if report.max_conversations is not None:
+        args.extend(["--max-conversations", str(report.max_conversations)])
+    if report.max_messages is not None:
+        args.extend(["--max-messages", str(report.max_messages)])
+    if report.max_cost_usd is not None:
+        args.extend(["--max-cost-usd", f"{report.max_cost_usd:.4f}".rstrip("0").rstrip(".")])
+    return args
+
+
+def _preflight_payload(report: PreflightReport) -> dict[str, object]:
+    from polylogue.storage.search_providers.sqlite_vec_support import (
+        ESTIMATED_TOKENS_PER_MESSAGE,
+        VOYAGE_4_COST_PER_1M_TOKENS,
+    )
+
+    backfill_args = _preflight_backfill_args(report)
+    return {
+        "total_conversations": report.total_conversations,
+        "pending_conversations": report.pending_conversations,
+        "pending_messages": report.pending_messages,
+        "estimated_tokens": report.estimated_tokens,
+        "estimated_cost_usd": report.estimated_cost_usd,
+        "model": report.model,
+        "dimension": report.dimension,
+        "monthly_cost_cap_usd": report.cost_cap_usd,
+        "effective_cost_cap_usd": _effective_cost_cap(report.cost_cap_usd, report.max_cost_usd),
+        "windowed": report.windowed,
+        "max_conversations": report.max_conversations,
+        "max_messages": report.max_messages,
+        "max_cost_usd": report.max_cost_usd,
+        "pricing": {
+            "estimated_tokens_per_message": ESTIMATED_TOKENS_PER_MESSAGE,
+            "cost_usd_per_1m_tokens": VOYAGE_4_COST_PER_1M_TOKENS,
+            "approximate": True,
+        },
+        "backfill_args": backfill_args,
+        "backfill_command": "polylogue " + " ".join(backfill_args) if backfill_args is not None else None,
+    }
+
+
+def _render_preflight_json(report: PreflightReport) -> None:
+    click.echo(json.dumps(_preflight_payload(report), indent=2, sort_keys=True))
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +482,14 @@ def disable_subcommand(env: AppEnv) -> None:
     is_flag=True,
     help="Estimate re-embedding every conversation, not just pending ones.",
 )
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format.",
+)
 @click.pass_obj
 def preflight_subcommand(
     env: AppEnv,
@@ -440,6 +497,7 @@ def preflight_subcommand(
     max_messages: int | None,
     max_cost_usd: float | None,
     rebuild: bool,
+    output_format: str,
 ) -> None:
     """Estimate token count and Voyage cost for the pending backlog.
 
@@ -453,7 +511,10 @@ def preflight_subcommand(
         max_messages=max_messages,
         max_cost_usd=max_cost_usd,
     )
-    _render_preflight(env, report)
+    if output_format == "json":
+        _render_preflight_json(report)
+    else:
+        _render_preflight(env, report)
 
 
 @embed_command.command("backfill")

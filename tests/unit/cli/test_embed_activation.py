@@ -15,6 +15,7 @@ Covers the new ``polylogue embed`` group:
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
@@ -223,6 +224,56 @@ class TestPreflightCommand:
         assert fake_preflight.call_args.kwargs["max_conversations"] == 2
         assert fake_preflight.call_args.kwargs["max_messages"] == 7
         assert fake_preflight.call_args.kwargs["max_cost_usd"] == 0.10
+
+    def test_preflight_json_emits_machine_readable_window_plan(self, cli_runner: CliRunner, stub_env: Any) -> None:
+        report = _make_report(
+            pending_conversations=2,
+            pending_messages=2000,
+            estimated_tokens=1_000_000,
+            estimated_cost_usd=0.10,
+            windowed=True,
+            max_conversations=3,
+            max_messages=2000,
+            max_cost_usd=0.10,
+        )
+        with _patch_preflight(report):
+            result = cli_runner.invoke(embed_command, ["preflight", "--format", "json"], obj=stub_env)
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["pending_conversations"] == 2
+        assert payload["pending_messages"] == 2000
+        assert payload["estimated_cost_usd"] == 0.10
+        assert payload["monthly_cost_cap_usd"] == 5.0
+        assert payload["effective_cost_cap_usd"] == 0.10
+        assert payload["pricing"]["approximate"] is True
+        assert payload["backfill_args"] == [
+            "embed",
+            "backfill",
+            "--yes",
+            "--max-conversations",
+            "3",
+            "--max-messages",
+            "2000",
+            "--max-cost-usd",
+            "0.1",
+        ]
+        assert (
+            payload["backfill_command"]
+            == "polylogue embed backfill --yes --max-conversations 3 --max-messages 2000 --max-cost-usd 0.1"
+        )
+
+    def test_preflight_json_omits_backfill_command_when_backlog_empty(
+        self, cli_runner: CliRunner, stub_env: Any
+    ) -> None:
+        report = _make_report(pending_conversations=0, pending_messages=0, estimated_tokens=0, estimated_cost_usd=0.0)
+        with _patch_preflight(report):
+            result = cli_runner.invoke(embed_command, ["preflight", "--format", "json"], obj=stub_env)
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["backfill_args"] is None
+        assert payload["backfill_command"] is None
 
 
 class TestDisableCommand:
