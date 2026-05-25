@@ -7,7 +7,7 @@ from datetime import datetime
 import aiosqlite
 
 from polylogue.storage.runtime import AttachmentRecord
-from polylogue.storage.search.models import ConversationSearchEvidenceHit
+from polylogue.storage.search.models import ConversationSearchEvidenceRow
 from polylogue.storage.sqlite.connection import _build_provider_scope_filter
 from polylogue.storage.sqlite.queries.mappers import _json_object, _parse_json
 from polylogue.types import ConversationId
@@ -132,7 +132,7 @@ async def search_attachment_identity_evidence_hits(
     limit: int = 100,
     providers: list[str] | None = None,
     since: str | None = None,
-) -> list[ConversationSearchEvidenceHit]:
+) -> list[ConversationSearchEvidenceRow]:
     """Search selected attachment identity fields and return evidence-bearing hits."""
     identity = query.strip()
     if not identity or limit <= 0:
@@ -237,7 +237,7 @@ async def search_attachment_identity_evidence_hits(
     cursor = await conn.execute(sql, params)
     rows = await cursor.fetchall()
     return [
-        ConversationSearchEvidenceHit(
+        ConversationSearchEvidenceRow(
             conversation_id=str(row["conversation_id"]),
             rank=rank,
             score=None,

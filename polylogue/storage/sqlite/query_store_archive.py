@@ -17,7 +17,7 @@ from polylogue.storage.runtime import (
     MessageRecord,
     ProviderEventRecord,
 )
-from polylogue.storage.search.models import ConversationSearchEvidenceHit, ConversationSearchResult
+from polylogue.storage.search.models import ConversationSearchEvidenceRow, ConversationSearchResult
 from polylogue.storage.sqlite.queries import attachments as attachments_q
 from polylogue.storage.sqlite.queries import conversations as conversations_q
 from polylogue.storage.sqlite.queries import messages as messages_q
@@ -109,7 +109,7 @@ class SQLiteQueryStoreArchiveMixin:
         limit: int = 100,
         providers: list[str] | None = None,
         since: str | None = None,
-    ) -> list[ConversationSearchEvidenceHit]:
+    ) -> list[ConversationSearchEvidenceRow]:
         async with self._connection_factory() as conn:
             return await conversations_q.search_conversation_evidence_hits(conn, query, limit, providers, since)
 
@@ -119,7 +119,7 @@ class SQLiteQueryStoreArchiveMixin:
         limit: int = 100,
         providers: list[str] | None = None,
         since: str | None = None,
-    ) -> list[ConversationSearchEvidenceHit]:
+    ) -> list[ConversationSearchEvidenceRow]:
         async with self._connection_factory() as conn:
             return await attachments_q.search_attachment_identity_evidence_hits(conn, query, limit, providers, since)
 

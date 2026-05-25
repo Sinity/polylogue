@@ -5,7 +5,7 @@ from __future__ import annotations
 import aiosqlite
 
 from polylogue.maintenance.targets import build_maintenance_target_catalog
-from polylogue.storage.search.models import ConversationSearchEvidenceHit, ConversationSearchResult
+from polylogue.storage.search.models import ConversationSearchEvidenceRow, ConversationSearchResult
 
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 _MESSAGE_SEARCH_REPAIR_HINT = _MAINTENANCE_TARGET_CATALOG.repair_hint(("dangling_fts",), include_run_all=True)
@@ -51,7 +51,7 @@ async def search_conversation_evidence_hits(
     limit: int = 100,
     providers: list[str] | None = None,
     since: str | None = None,
-) -> list[ConversationSearchEvidenceHit]:
+) -> list[ConversationSearchEvidenceRow]:
     from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_async
     from polylogue.storage.search import build_ranked_conversation_search_query
 
@@ -76,7 +76,7 @@ async def search_conversation_evidence_hits(
 
     matched_terms = extract_match_terms(query)
     return [
-        ConversationSearchEvidenceHit(
+        ConversationSearchEvidenceRow(
             conversation_id=str(row["conversation_id"]),
             rank=rank,
             score=float(row["relevance"]) if row["relevance"] is not None else None,
