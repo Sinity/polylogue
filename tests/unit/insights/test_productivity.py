@@ -24,6 +24,7 @@ from polylogue.insights.archive_models import (
     ArchiveInferenceProvenance,
     ArchiveInsightProvenance,
     SessionEvidencePayload,
+    SessionInferencePayload,
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
 )
@@ -60,11 +61,21 @@ def _profile(
     canonical_session_date: str | None = "2026-05-12",
     cwd_paths: tuple[str, ...] = ("/repo/polylogue",),
     provider: str = "claude-code",
+    workflow_shape: str = "unknown",
+    engaged_duration_ms: int = 0,
+    tool_active_duration_ms: int = 0,
 ) -> SessionProfileInsight:
     evidence = SessionEvidencePayload(
         first_message_at=first_message_at,
         canonical_session_date=canonical_session_date,
         cwd_paths=cwd_paths,
+        workflow_shape=workflow_shape,
+        tool_active_duration_ms=tool_active_duration_ms,
+    )
+    inference = SessionInferencePayload(
+        workflow_shape=workflow_shape,
+        engaged_duration_ms=engaged_duration_ms,
+        tool_active_duration_ms=tool_active_duration_ms,
     )
     return SessionProfileInsight(
         conversation_id=conversation_id,
@@ -73,6 +84,8 @@ def _profile(
         title=None,
         provenance=_DEFAULT_PROVENANCE,
         evidence=evidence,
+        inference_provenance=_DEFAULT_INFERENCE_PROVENANCE,
+        inference=inference,
     )
 
 
@@ -222,6 +235,47 @@ class TestDayBucketAggregation:
         assert entry.hour_of_day_histogram == {9: 1}
         assert entry.untimed_session_count == 1
         assert insight.total_untimed_sessions == 1
+
+    def test_tool_active_and_message_clustered_duration_totals_are_first_class(self) -> None:
+        profiles = [
+            _profile(
+                conversation_id="tool-1",
+                canonical_session_date="2026-05-12",
+                engaged_duration_ms=30_000,
+                tool_active_duration_ms=120_000,
+            ),
+            _profile(
+                conversation_id="tool-2",
+                canonical_session_date="2026-05-12",
+                engaged_duration_ms=0,
+                tool_active_duration_ms=600_000,
+            ),
+        ]
+        insight = build_productivity_rollup_insight(
+            profiles=profiles,
+            work_events=[],
+            query=ProductivityRollupInsightQuery(granularity="day"),
+            materialized_at="2026-05-17T00:00:00+00:00",
+        )
+        entry = insight.entries[0]
+        assert entry.total_tool_active_duration_ms == 720_000
+        assert entry.total_message_clustered_duration_ms == 30_000
+        assert insight.total_tool_active_duration_ms == 720_000
+        assert insight.total_message_clustered_duration_ms == 30_000
+
+    def test_workflow_shape_breakdown_counts_observed_shapes(self) -> None:
+        profiles = [
+            _profile(conversation_id="c1", canonical_session_date="2026-05-12", workflow_shape="agentic_loop"),
+            _profile(conversation_id="c2", canonical_session_date="2026-05-12", workflow_shape="agentic_loop"),
+            _profile(conversation_id="c3", canonical_session_date="2026-05-12", workflow_shape="batch_review"),
+        ]
+        insight = build_productivity_rollup_insight(
+            profiles=profiles,
+            work_events=[],
+            query=ProductivityRollupInsightQuery(granularity="day"),
+            materialized_at="2026-05-17T00:00:00+00:00",
+        )
+        assert insight.entries[0].workflow_shape_breakdown == {"agentic_loop": 2, "batch_review": 1}
 
 
 class TestProjectGranularity:
@@ -437,6 +491,22 @@ class TestProviderAndWindowFiltering:
         )
         assert insight.total_sessions == 1
         assert insight.entries[0].bucket_key == "2026-05-15"
+
+    def test_workflow_shape_filter_excludes_other_shapes(self) -> None:
+        profiles = [
+            _profile(conversation_id="c1", workflow_shape="agentic_loop"),
+            _profile(conversation_id="c2", workflow_shape="batch_review"),
+        ]
+        insight = build_productivity_rollup_insight(
+            profiles=profiles,
+            work_events=[],
+            query=ProductivityRollupInsightQuery(granularity="day", workflow_shape="agentic_loop"),
+            materialized_at="2026-05-17T00:00:00+00:00",
+        )
+        assert insight.total_sessions == 1
+        assert insight.entries[0].workflow_shape_breakdown == {"agentic_loop": 1}
+        assert "c1" in insight.entries[0].evidence_inputs
+        assert "c2" not in insight.entries[0].evidence_inputs
 
 
 class TestWeekGranularity:

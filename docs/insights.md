@@ -60,7 +60,9 @@ Optional filters: `--first-message-since`, `--first-message-until`,
 The storage column `engaged_duration_ms` is message-clustered wall clock: it
 sums phase intervals separated by no more than the fixed five-minute idle
 threshold. It does not measure human attention, keyboard focus, or operator
-presence.
+presence. Each materialized phase records `phase_idle_threshold_ms`, currently
+300000, so readers do not need to know a hidden global constant to interpret a
+phase split.
 
 `tool_active_duration_ms` is provider-event tool activity: it sums paired
 tool-call start/output events that have explicit timestamps. It does not
@@ -103,6 +105,13 @@ message/provider event or pending-tool count behind the decision.
 MCP exposes two convenience readers over the same materialized rows:
 `workflow_shape_distribution(since, until, group_by)` and
 `find_abandoned_sessions(since, repo_path, min_severity)`.
+
+`productivity_rollups` also carries workflow and timing totals over the same
+session-profile rows: `total_tool_active_duration_ms`,
+`total_message_clustered_duration_ms`, and per-bucket
+`workflow_shape_breakdown`. The `--workflow-shape` filter narrows rollups to
+one observed shape before bucketing, so callers can compare agentic loops,
+batch review, and chat-like sessions without reimplementing profile filters.
 
 ## Session Latency Profiles
 

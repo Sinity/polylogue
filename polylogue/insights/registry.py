@@ -612,6 +612,8 @@ register(
             InsightField("granularity", _attr("granularity"), group=0),
             InsightField("total_sessions", _attr("total_sessions", "0"), group=0),
             InsightField("total_work_events", _attr("total_work_events", "0"), group=0),
+            InsightField("tool_active_ms", _attr("total_tool_active_duration_ms", "0"), group=0),
+            InsightField("clustered_ms", _attr("total_message_clustered_duration_ms", "0"), group=0),
             InsightField("untimed_sessions", _attr("total_untimed_sessions", "0"), group=0),
             InsightField("entries", _attr("entries", "0"), group=0),
         ),

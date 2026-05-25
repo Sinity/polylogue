@@ -30,6 +30,7 @@ class SessionPhaseDocument(TypedDict):
     date_provenance: str
     message_range: list[int]
     duration_ms: int
+    phase_idle_threshold_ms: int
     tool_counts: dict[str, int]
     word_count: int
     confidence: float

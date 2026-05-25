@@ -205,6 +205,13 @@ def session_phase_evidence_from_legacy(
                 _row_int(row, "end_index", legacy_payload, legacy_key="end_index"),
             ),
             "duration_ms": _row_int(row, "duration_ms", legacy_payload, legacy_key="duration_ms"),
+            "phase_idle_threshold_ms": _row_int(
+                row,
+                "phase_idle_threshold_ms",
+                legacy_payload,
+                legacy_key="phase_idle_threshold_ms",
+                default=300_000,
+            ),
             "tool_counts": _row_int_dict(row, "tool_counts_json", legacy_payload, legacy_key="tool_counts"),
             "word_count": _row_int(row, "word_count", legacy_payload, legacy_key="word_count"),
         }
@@ -423,6 +430,7 @@ def _legacy_phase_documents(
                 "date_provenance": _date_provenance(canonical_session_date, start_time, end_time),
                 "message_range": [start_index, end_index],
                 "duration_ms": _legacy_int(item.get("duration_ms")),
+                "phase_idle_threshold_ms": _legacy_int(item.get("phase_idle_threshold_ms"), 300_000),
                 "tool_counts": _legacy_int_dict(item.get("tool_counts")),
                 "word_count": _legacy_int(item.get("word_count")),
                 "confidence": _legacy_float(item.get("confidence")),

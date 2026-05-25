@@ -238,6 +238,7 @@ def phase_evidence_payload(phase: SessionPhase) -> SessionPhaseEvidencePayload:
         date_provenance=_date_provenance(phase.canonical_session_date, phase.start_time, phase.end_time),
         message_range=phase.message_range,
         duration_ms=phase.duration_ms,
+        phase_idle_threshold_ms=phase.phase_idle_threshold_ms,
         tool_counts=dict(phase.tool_counts),
         word_count=phase.word_count,
     )

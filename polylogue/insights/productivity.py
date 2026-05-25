@@ -46,7 +46,7 @@ from polylogue.insights.archive_models import (
     ArchiveInsightProvenance,
 )
 
-PRODUCTIVITY_ROLLUP_INSIGHT_VERSION = 1
+PRODUCTIVITY_ROLLUP_INSIGHT_VERSION = 2
 """Insight materializer version for ``productivity_rollups`` envelopes."""
 
 # Baseline disclaimers that every envelope ships with. These describe the
@@ -84,6 +84,15 @@ class ProductivityRollupEntry(ArchiveInsightModel):
 
     work_event_count: int = 0
     """Number of work events attributed to this bucket."""
+
+    total_tool_active_duration_ms: int = 0
+    """Total paired provider-tool active time across sessions in this bucket."""
+
+    total_message_clustered_duration_ms: int = 0
+    """Total message-clustered wall-clock duration across sessions in this bucket."""
+
+    workflow_shape_breakdown: dict[str, int] = Field(default_factory=dict)
+    """Count of sessions by workflow-shape label within this bucket."""
 
     untimed_session_count: int = 0
     """Sessions in the bucket lacking a canonical timestamp; excluded from histograms."""
@@ -125,6 +134,8 @@ class ProductivityRollupInsight(ArchiveInsightModel):
     total_sessions: int = 0
     total_work_events: int = 0
     total_untimed_sessions: int = 0
+    total_tool_active_duration_ms: int = 0
+    total_message_clustered_duration_ms: int = 0
     provenance: ArchiveInsightProvenance
 
 
@@ -202,6 +213,28 @@ def _session_hour(profile: SessionProfileInsight) -> int | None:
     if parsed is None:
         return None
     return parsed.astimezone(timezone.utc).hour
+
+
+def _profile_workflow_shape(profile: SessionProfileInsight) -> str:
+    if profile.inference is not None and profile.inference.workflow_shape != "unknown":
+        return profile.inference.workflow_shape
+    if profile.evidence is not None and profile.evidence.workflow_shape != "unknown":
+        return profile.evidence.workflow_shape
+    return "unknown"
+
+
+def _profile_tool_active_duration_ms(profile: SessionProfileInsight) -> int:
+    if profile.inference is not None:
+        return max(int(profile.inference.tool_active_duration_ms), 0)
+    if profile.evidence is not None:
+        return max(int(profile.evidence.tool_active_duration_ms), 0)
+    return 0
+
+
+def _profile_message_clustered_duration_ms(profile: SessionProfileInsight) -> int:
+    if profile.inference is not None:
+        return max(int(profile.inference.engaged_duration_ms), 0)
+    return 0
 
 
 def _session_context_switches(profile: SessionProfileInsight) -> int:
@@ -297,6 +330,7 @@ def build_productivity_rollup_insight(
         for profile in profiles
         if (query.provider is None or profile.provider_name == query.provider)
         and _profile_in_window(profile, since=query.since, until=query.until)
+        and (query.workflow_shape is None or _profile_workflow_shape(profile) == query.workflow_shape)
     ]
 
     # Map conversation_id -> set of bucket keys this conversation belongs to.
@@ -321,18 +355,26 @@ def build_productivity_rollup_insight(
     total_sessions = 0
     total_work_events = 0
     total_untimed = 0
+    total_tool_active = 0
+    total_message_clustered = 0
 
     for bucket_key in sorted(sessions_per_bucket):
         bucket_profiles = sessions_per_bucket[bucket_key]
         bucket_events = work_events_per_bucket.get(bucket_key, [])
 
         hour_histogram: Counter[int] = Counter()
+        workflow_shapes: Counter[str] = Counter()
         untimed = 0
+        bucket_tool_active = 0
+        bucket_message_clustered = 0
         project_counter: Counter[str] = Counter()
         context_switches = 0
         evidence_ids: list[str] = []
 
         for profile in bucket_profiles:
+            workflow_shapes[_profile_workflow_shape(profile)] += 1
+            bucket_tool_active += _profile_tool_active_duration_ms(profile)
+            bucket_message_clustered += _profile_message_clustered_duration_ms(profile)
             hour = _session_hour(profile)
             if hour is None:
                 untimed += 1
@@ -367,6 +409,9 @@ def build_productivity_rollup_insight(
                 bucket_key=bucket_key,
                 session_count=len(bucket_profiles),
                 work_event_count=len(bucket_events),
+                total_tool_active_duration_ms=bucket_tool_active,
+                total_message_clustered_duration_ms=bucket_message_clustered,
+                workflow_shape_breakdown=dict(sorted(workflow_shapes.items())),
                 untimed_session_count=untimed,
                 hour_of_day_histogram=dict(sorted(hour_histogram.items())),
                 project_focus_share=focus_share,
@@ -379,6 +424,8 @@ def build_productivity_rollup_insight(
         total_sessions += len(bucket_profiles)
         total_work_events += len(bucket_events)
         total_untimed += untimed
+        total_tool_active += bucket_tool_active
+        total_message_clustered += bucket_message_clustered
 
     # Stable order: day/week ascending by bucket_key (lexicographic ISO is
     # chronological); project descending by session_count then name.
@@ -396,6 +443,8 @@ def build_productivity_rollup_insight(
         total_sessions=total_sessions,
         total_work_events=total_work_events,
         total_untimed_sessions=total_untimed,
+        total_tool_active_duration_ms=total_tool_active,
+        total_message_clustered_duration_ms=total_message_clustered,
         provenance=ArchiveInsightProvenance(
             materializer_version=PRODUCTIVITY_ROLLUP_INSIGHT_VERSION,
             materialized_at=materialized_at,
