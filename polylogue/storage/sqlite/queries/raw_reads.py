@@ -26,6 +26,7 @@ def _raw_select_query(
     select_columns: str,
     *,
     source_names: list[str] | None = None,
+    source_name: str | None = None,
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
     validation_statuses: list[str] | None = None,
@@ -62,6 +63,8 @@ def _raw_select_query(
 
 def raw_id_query(
     *,
+    source_names: list[str] | None = None,
+    source_name: str | None = None,
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
     validation_statuses: list[str] | None = None,
@@ -78,6 +81,8 @@ def raw_id_query(
 
 def raw_header_query(
     *,
+    source_names: list[str] | None = None,
+    source_name: str | None = None,
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
     validation_statuses: list[str] | None = None,
@@ -95,6 +100,8 @@ def raw_header_query(
 async def iter_raw_ids(
     conn: aiosqlite.Connection,
     *,
+    source_names: list[str] | None = None,
+    source_name: str | None = None,
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
     validation_statuses: list[str] | None = None,
@@ -119,6 +126,8 @@ async def iter_raw_ids(
 async def iter_raw_headers(
     conn: aiosqlite.Connection,
     *,
+    source_names: list[str] | None = None,
+    source_name: str | None = None,
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
     validation_statuses: list[str] | None = None,

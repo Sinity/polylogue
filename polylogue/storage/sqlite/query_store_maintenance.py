@@ -20,6 +20,7 @@ class SQLiteQueryStoreMaintenanceMixin:
         self,
         *,
         source_names: list[str] | None = None,
+        source_name: str | None = None,
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,
@@ -35,6 +36,8 @@ class SQLiteQueryStoreMaintenanceMixin:
     async def iter_raw_ids(
         self,
         *,
+        source_names: list[str] | None = None,
+        source_name: str | None = None,
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,
@@ -55,6 +58,8 @@ class SQLiteQueryStoreMaintenanceMixin:
     async def iter_raw_headers(
         self,
         *,
+        source_names: list[str] | None = None,
+        source_name: str | None = None,
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,

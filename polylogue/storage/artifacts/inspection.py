@@ -270,8 +270,8 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
         return ArtifactObservationRecord(
             observation_id=observation_id,
             raw_id=record.raw_id,
-            source_name=record.source_name,
             payload_provider=Provider.from_string(provider_token),
+            source_name=record.source_name,
             source_path=record.source_path,
             source_index=record.source_index,
             file_mtime=record.file_mtime,

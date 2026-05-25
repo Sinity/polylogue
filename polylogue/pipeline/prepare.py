@@ -128,6 +128,7 @@ async def persist_prepared_bundle(
 
 async def prepare_records(
     convo: ParsedConversation,
+    source_name: str,
     *,
     archive_root: Path,
     backend: SQLiteBackend | None = None,

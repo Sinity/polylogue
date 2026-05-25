@@ -31,6 +31,7 @@ class SQLiteRawMixin:
         self,
         *,
         source_names: list[str] | None = None,
+        source_name: str | None = None,
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,
@@ -47,6 +48,8 @@ class SQLiteRawMixin:
     async def iter_raw_ids(
         self,
         *,
+        source_names: list[str] | None = None,
+        source_name: str | None = None,
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,
@@ -66,6 +69,8 @@ class SQLiteRawMixin:
     async def iter_raw_headers(
         self,
         *,
+        source_names: list[str] | None = None,
+        source_name: str | None = None,
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,
@@ -162,6 +167,7 @@ class SQLiteRawMixin:
         self,
         *,
         provider: str | None = None,
+        source_names: list[str] | None = None,
     ) -> int:
         """Clear parsed_at/parse_error to force re-parsing on next run."""
         async with self._get_connection() as conn:
@@ -176,6 +182,7 @@ class SQLiteRawMixin:
         self,
         *,
         provider: str | None = None,
+        source_names: list[str] | None = None,
     ) -> int:
         """Clear validation tracking to force re-validation on next run."""
         async with self._get_connection() as conn:

@@ -464,7 +464,6 @@ def test_chatgpt_metadata_roundtrip_parser_to_hydration(tmp_path: Path) -> None:
 
     # --- Stage 1: Parse ---
     parsed = chatgpt_parse(payload, "roundtrip-test")
-    assert parsed.source_name == "chatgpt"
 
     # The assistant message should have content_blocks with chatgpt_ metadata.
     assistant_msg = next(m for m in parsed.messages if m.role == "assistant")
@@ -745,7 +744,6 @@ def test_chatgpt_metadata_permutation_roundtrip(
 
     # Stage 1: Parse
     parsed = chatgpt_parse(payload, "permutation-test")
-    assert parsed.source_name == "chatgpt"
 
     # Stage 2: Materialize
     materialized = materialize_conversation(parsed, source_name="test", archive_root=tmp_path)

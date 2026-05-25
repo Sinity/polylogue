@@ -86,6 +86,7 @@ class QASessionRequest:
 def build_qa_session_request(
     *,
     synthetic: bool,
+    source_names: tuple[str, ...] | None,
     fresh: bool | None,
     ingest: bool | None,
     regenerate_schemas: bool,

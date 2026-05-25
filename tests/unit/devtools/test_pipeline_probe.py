@@ -235,7 +235,7 @@ async def _seed_archive_source(tmp_path: Path) -> tuple[Path, Path]:
                 )[0],
             ),
         ]
-        for index, (source_name, raw_bytes) in enumerate(raw_payloads):
+        for index, (source_name, source_name, raw_bytes) in enumerate(raw_payloads):
             raw_id, blob_size = blob_store.write_from_bytes(raw_bytes)
             await repository.save_raw_conversation(
                 RawConversationRecord(

@@ -125,6 +125,7 @@ async def _plan_existing_conversation_stages(
 async def _plan_parse_backlog(
     service: PlanningService,
     *,
+    source_names: list[str],
     db_scope_names: list[str] | None,
     summary_stage: PlanStage,
     stage_sequence: list[PlanStage],

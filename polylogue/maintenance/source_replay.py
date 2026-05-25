@@ -156,6 +156,7 @@ def resolve_source_replay_sources(
 async def _persist_artifact(
     repository: ConversationRepository,
     raw_data: RawConversationData,
+    source_name: str,
     result: AcquireResult,
 ) -> None:
     """Convert and persist one artifact via the standard ingest path."""

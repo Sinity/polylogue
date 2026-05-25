@@ -75,6 +75,7 @@ async def count_conversation_ids(
 async def iter_conversation_ids(
     conn: aiosqlite.Connection,
     *,
+    source_names: list[str] | None = None,
     page_size: int = 1000,
 ) -> AsyncIterator[str]:
     sql, params = conversation_id_query(source_names=source_names)

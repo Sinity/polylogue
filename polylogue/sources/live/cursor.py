@@ -863,6 +863,7 @@ class CursorStore:
         parser_fingerprint: str | None = None,
         content_fingerprint: str | None = None,
         tail_hash: str | None = None,
+        source_name: str | None = None,
         st_dev: int | None = None,
         st_ino: int | None = None,
         mtime_ns: int | None = None,

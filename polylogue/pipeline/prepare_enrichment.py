@@ -64,7 +64,6 @@ def enrich_bundle_from_db(
     parent_conversation_id: ConversationId | None = None
     topology_edges: list[TopologyEdgeRecord] = []
     if convo.parent_conversation_provider_id:
-        candidate_parent = make_conversation_id(convo.source_name, convo.parent_conversation_provider_id)
         parent_known = candidate_parent in cache.known_ids
         if parent_known:
             parent_conversation_id = candidate_parent
@@ -73,7 +72,6 @@ def enrich_bundle_from_db(
             TopologyEdgeRecord(
                 src_conversation_id=cid,
                 dst_provider_native_id=convo.parent_conversation_provider_id,
-                dst_provider_name=convo.source_name,
                 edge_type=edge_type,
                 resolved_dst_conversation_id=candidate_parent if parent_known else None,
                 status=(TopologyEdgeStatus.RESOLVED if parent_known else TopologyEdgeStatus.UNRESOLVED),

@@ -113,6 +113,7 @@ class SessionLatencyProfileRecord(BaseModel):
     input_high_water_mark: str | None = None
     input_high_water_mark_source: str | None = None
     input_row_count: int = 0
+    source_name: str
     title: str | None = None
     first_message_at: str | None = None
     last_message_at: str | None = None

@@ -1077,7 +1077,6 @@ class TestCheckCommandSupplementary:
             ArtifactObservationRecord(
                 observation_id="obs-1",
                 raw_id="raw-1",
-                source_name="chatgpt",
                 payload_provider=Provider.CHATGPT,
                 source_name="chatgpt",
                 source_path="/tmp/chatgpt.json",

@@ -62,6 +62,7 @@ def iter_schema_units(
 
 
 def load_samples_from_db(
+    source_name: str | Provider,
     db_path: Path | None = None,
     max_samples: int | None = None,
 ) -> list[JSONDocument]:

@@ -622,6 +622,7 @@ class MCPRawArtifactPayload(SurfacePayloadModel):
     """One raw archive artifact for the raw_artifacts tool."""
 
     raw_id: str
+    source_name: str | None = None
     source_path: str
     blob_size: int
     acquired_at: str

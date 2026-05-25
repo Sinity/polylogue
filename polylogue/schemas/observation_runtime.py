@@ -43,6 +43,7 @@ class _ObservedSchemaUnit:
 
 def _build_observation_context(
     *,
+    source_name: Provider,
     source_path: str | Path | None,
     raw_id: str | None,
     observed_at: str | None,
@@ -155,6 +156,7 @@ def _extract_document_observations(
 def extract_schema_units_from_payload(
     payload: object,
     *,
+    source_name: Provider,
     source_path: str | Path | None,
     raw_id: str | None,
     observed_at: str | None = None,

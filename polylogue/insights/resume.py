@@ -108,6 +108,7 @@ class ResumeInferences(ArchiveInsightModel):
 class ResumeRelatedSession(ArchiveInsightModel):
     conversation_id: str
     relation: str
+    source_name: str
     title: str | None = None
     updated_at: str | None = None
     message_count: int = 0

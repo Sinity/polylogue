@@ -408,7 +408,6 @@ class TestProveRawArtifactCoverage:
         _insert_raw_record(
             db_path=db_path,
             raw_id="raw-subagent-1",
-            source_name="claude-code",
             payload_provider="claude-code",
             source_name="claude-code",
             source_path="/tmp/subagents/agent-a123.jsonl",

@@ -9,8 +9,8 @@ from polylogue.types import ArtifactSupportStatus, Provider, ValidationMode, Val
 
 class RawConversationRecord(BaseModel):
     raw_id: str
-    source_name: str
     payload_provider: Provider | None = None
+    source_name: str | None = None
     source_path: str
     source_index: int | None = None
     blob_size: int
@@ -70,6 +70,7 @@ class ArtifactObservationRecord(BaseModel):
     observation_id: str
     raw_id: str
     payload_provider: Provider | None = None
+    source_name: str | None = None
     source_path: str
     source_index: int | None = None
     file_mtime: str | None = None

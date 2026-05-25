@@ -74,6 +74,7 @@ class SessionPhaseRecord(BaseModel):
     input_high_water_mark: str | None = None
     input_high_water_mark_source: str | None = None
     input_row_count: int = 0
+    source_name: str
     phase_index: int
     kind: str
     start_index: int

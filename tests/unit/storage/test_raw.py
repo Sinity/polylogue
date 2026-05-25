@@ -201,7 +201,6 @@ class TestRawConversationStorage:
         await backend.save_raw_conversation(
             make_raw_conversation(
                 raw_id="raw-generic",
-                source_name="unknown",
                 payload_provider="chatgpt",
                 source_name="inbox",
                 source_path="/path/raw.json",

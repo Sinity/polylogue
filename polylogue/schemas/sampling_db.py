@@ -90,6 +90,7 @@ def _record_sample_limit(
 def _iter_record_stream_units(
     *,
     row: _RawConversationRow,
+    source_name: Provider,
     raw_content: Path,
     config: ProviderConfig,
     max_samples: int | None,
@@ -130,6 +131,7 @@ def _iter_record_stream_units(
 def _build_raw_payload_envelope_for_row(
     row: _RawConversationRow,
     *,
+    source_name: Provider,
     raw_content: Path,
     config: ProviderConfig,
 ) -> RawPayloadEnvelope | None:
@@ -149,6 +151,7 @@ def _build_raw_payload_envelope_for_row(
 
 
 def _iter_schema_units_from_db(
+    source_name: Provider,
     *,
     db_path: Path,
     config: ProviderConfig,
@@ -218,6 +221,7 @@ def _iter_schema_units_from_db(
 
 @overload
 def _iter_samples_from_db(
+    source_name: Provider,
     *,
     db_path: Path,
     config: ProviderConfig,
@@ -227,6 +231,7 @@ def _iter_samples_from_db(
 
 @overload
 def _iter_samples_from_db(
+    source_name: Provider,
     *,
     db_path: Path,
     config: ProviderConfig,
@@ -235,6 +240,7 @@ def _iter_samples_from_db(
 
 
 def _iter_samples_from_db(
+    source_name: Provider,
     *,
     db_path: Path,
     config: ProviderConfig,
@@ -251,6 +257,7 @@ def _iter_samples_from_db(
 
 
 def get_sample_count_from_db(
+    source_name: str | Provider,
     db_path: Path | None = None,
 ) -> int:
     """Get total message count for a provider in the database."""

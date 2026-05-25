@@ -194,6 +194,7 @@ def stream_fileobj_to_blob(
     handle: IO[bytes],
     *,
     status_callback: StatusCallback | None,
+    source_name: str,
     source_path: str,
 ) -> tuple[str, int]:
     heartbeat = make_status_heartbeat(
@@ -211,6 +212,7 @@ def stream_path_to_blob(
     path: Path,
     *,
     status_callback: StatusCallback | None,
+    source_name: str,
 ) -> tuple[str, int]:
     heartbeat = make_status_heartbeat(
         status_callback,
