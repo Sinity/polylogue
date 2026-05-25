@@ -1085,7 +1085,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 1099
+    loc: 1103
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1105,7 +1105,7 @@ files:
     target: polylogue/daemon/convergence_debt_status.py
     owner: stable
   - path: polylogue/daemon/convergence_stages.py
-    loc: 1098
+    loc: 1100
     target: polylogue/daemon/convergence_stages.py
     owner: stable
   - path: polylogue/daemon/cursor_lag_alert.py
@@ -1123,6 +1123,10 @@ files:
   - path: polylogue/daemon/cursor_lag_status.py
     loc: 323
     target: polylogue/daemon/cursor_lag_status.py
+    owner: stable
+  - path: polylogue/daemon/embedding_backlog.py
+    loc: 120
+    target: polylogue/daemon/embedding_backlog.py
     owner: stable
   - path: polylogue/daemon/embedding_readiness.py
     loc: 87

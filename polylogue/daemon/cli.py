@@ -611,21 +611,19 @@ async def run_daemon_services(
     # FTS repair, status snapshots, WAL checkpointing, or convergence work.
     maintenance_tasks: list[asyncio.Task[None]] = []
     if not watcher_blocked:
-        wal_task = asyncio.create_task(_periodic_wal_checkpoint())
-        heartbeat_task = asyncio.create_task(_periodic_heartbeat())
-        convergence_task = asyncio.create_task(_periodic_convergence_check(sources))
-        health_task = asyncio.create_task(_periodic_health_check())
-        db_optimize_task = asyncio.create_task(_periodic_db_optimize())
-        status_snapshot_task = asyncio.create_task(_periodic_status_snapshot_refresh())
+        from polylogue.daemon.embedding_backlog import periodic_embedding_backlog_check
+
         maintenance_tasks.extend(
-            [
-                wal_task,
-                heartbeat_task,
-                convergence_task,
-                health_task,
-                db_optimize_task,
-                status_snapshot_task,
-            ]
+            asyncio.create_task(loop)
+            for loop in (
+                _periodic_wal_checkpoint(),
+                _periodic_heartbeat(),
+                _periodic_convergence_check(sources),
+                periodic_embedding_backlog_check(),
+                _periodic_health_check(),
+                _periodic_db_optimize(),
+                _periodic_status_snapshot_refresh(),
+            )
         )
 
     api_server: ThreadingHTTPServer | None = None

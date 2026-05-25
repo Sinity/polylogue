@@ -570,11 +570,11 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
 
 def make_default_convergence_stages(db_path: Path) -> tuple[ConvergenceStage, ...]:
     """Build the daemon's default post-ingest convergence stage set."""
-    stage_list = [make_fts_stage(db_path)]
-    if _embedding_config_enabled():
-        stage_list.append(make_embed_stage(db_path))
-    stage_list.append(make_insights_stage(db_path))
-    return tuple(stage_list)
+    return (
+        make_fts_stage(db_path),
+        make_embed_stage(db_path),
+        make_insights_stage(db_path),
+    )
 
 
 # ── Helpers ────────────────────────────────────────────────────────
@@ -778,6 +778,7 @@ def _embed_conversations_sync(
     *,
     max_errors: int | None = None,
     stop_after_seconds: int | None = None,
+    max_cost_usd: float | None = None,
 ) -> bool:
     from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.storage.embeddings.materialization import embed_conversation_sync
@@ -807,7 +808,8 @@ def _embed_conversations_sync(
     if not pending:
         return True
 
-    max_cost = float(str(cfg.get("embedding_max_cost_usd", 0.0)))
+    configured_max_cost = float(str(cfg.get("embedding_max_cost_usd", 0.0)))
+    max_cost = configured_max_cost if max_cost_usd is None else max_cost_usd
     model = cfg.embedding_model
     dimension = cfg.embedding_dimension
     planned_messages = sum(item.message_count for item in pending)
