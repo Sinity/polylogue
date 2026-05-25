@@ -526,6 +526,20 @@
     }
   },
   {
+    "name": "embedding_status",
+    "parameters": {
+      "properties": {
+        "detail": {
+          "default": false,
+          "title": "Detail",
+          "type": "boolean"
+        }
+      },
+      "title": "embedding_statusArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "export_conversation",
     "parameters": {
       "properties": {
