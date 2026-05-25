@@ -110,6 +110,28 @@ def test_daemon_status_payload_and_plain_output_include_failed_files(tmp_path: P
     assert f"  {failed}" in lines
 
 
+def test_plain_daemon_status_reports_bounded_embedding_pending_messages() -> None:
+    payload: JSONDocument = {
+        "embedding_readiness": {
+            "embedding_enabled": False,
+            "embedding_has_voyage_key": True,
+            "embedding_status": "none",
+            "embedding_freshness_status": "none",
+            "embedding_retrieval_ready": False,
+            "embedding_pending_count": 7,
+            "embedding_pending_message_count": 0,
+            "embedding_pending_message_count_exact": False,
+        }
+    }
+
+    lines = format_daemon_status_lines(payload)
+
+    assert (
+        "Embeddings: disabled (key present; none/none, not ready; 7 pending convs, pending msgs not calculated)"
+        in lines
+    )
+
+
 def test_daemon_status_caps_failed_file_samples(tmp_path: Path) -> None:
     db = tmp_path / "polylogue.db"
     cursor = CursorStore(db)

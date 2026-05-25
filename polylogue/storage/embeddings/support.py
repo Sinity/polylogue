@@ -163,6 +163,7 @@ def is_missing_table_error(exc: sqlite3.OperationalError) -> bool:
     message = str(exc).lower()
     return (
         "no such table" in message
+        or "no such column" in message
         or "does not exist" in message
         or "table not found" in message
         or "no such module: vec0" in message
