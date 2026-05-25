@@ -46,6 +46,7 @@ class DaySessionSummaryRecord(BaseModel):
     conversation_count: int = 0
     total_cost_usd: float = 0.0
     total_duration_ms: int = 0
+    total_tool_active_duration_ms: int = 0
     total_wall_duration_ms: int = 0
     total_messages: int = 0
     total_words: int = 0

@@ -11,7 +11,7 @@ from polylogue.archive.conversation.attribution import extract_attribution
 from polylogue.archive.conversation.extraction import extract_work_events
 from polylogue.archive.phase.extraction import extract_phases
 from polylogue.archive.semantic.facts import build_conversation_semantic_facts
-from polylogue.archive.semantic.timing import compute_session_timing
+from polylogue.archive.semantic.timing import compute_session_timing, compute_tool_active_duration_ms
 from polylogue.archive.session.models import SessionAnalysis, SessionProfile
 
 if TYPE_CHECKING:
@@ -155,6 +155,7 @@ def build_session_profile(
     engaged_duration_ms = sum(int(phase.duration_ms or 0) for phase in session_analysis.phases)
     if engaged_duration_ms <= 0:
         engaged_duration_ms = max(int(conversation.total_duration_ms or 0), 0)
+    tool_active_duration_ms = compute_tool_active_duration_ms(conversation.provider_events)
     first_message_at, last_message_at, timestamp_source = _profile_timestamp_bounds(conversation, facts)
     canonical_session_at = first_message_at or last_message_at
     timing = compute_session_timing(
@@ -200,6 +201,7 @@ def build_session_profile(
         timestamp_coverage=facts.timestamp_coverage,
         canonical_session_date=canonical_session_at.date() if canonical_session_at else None,
         engaged_duration_ms=engaged_duration_ms,
+        tool_active_duration_ms=tool_active_duration_ms,
         wall_duration_ms=facts.wall_duration_ms,
         cost_is_estimated=cost_is_estimated,
         total_input_tokens=cost_summary.total_input_tokens,

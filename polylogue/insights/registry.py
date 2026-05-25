@@ -350,6 +350,7 @@ register(
             InsightField("ts_cov", _nested("evidence", "timestamp_coverage", "none"), group=1),
             InsightField("messages", _nested("evidence", "message_count", "0"), group=1),
             InsightField("engaged_min", _nested("inference", "engaged_minutes", "0"), group=1),
+            InsightField("tool_active_min", _nested("inference", "tool_active_minutes", "0"), group=1),
             InsightField("think_s", _nested_ms_as_seconds("evidence", "thinking_duration_ms", "0"), group=1),
             InsightField("tool_s", _nested_ms_as_seconds("evidence", "tool_duration_ms", "0"), group=1),
             InsightField("tpm", _nested("evidence", "tool_calls_per_minute", "-"), group=1),

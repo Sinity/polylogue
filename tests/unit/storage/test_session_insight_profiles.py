@@ -8,6 +8,7 @@ from polylogue.archive.session.session_profile import build_session_analysis, bu
 from polylogue.storage.insights.session.profiles import (
     assistant_turn_texts,
     blocker_texts,
+    build_session_profile_record,
     profile_evidence_payload,
     profile_inference_payload,
     profile_inference_search_text,
@@ -149,6 +150,24 @@ def test_session_profile_infers_codex_topic_from_repo_and_first_user_turn() -> N
     assert profile.repo_names == ("polylogue",)
     assert profile.inferred_topic == "polylogue — Implement the daemon workload probe evidence surface and upd"
     assert profile.inferred_topic_source == "repo_plus_first_user_turn"
+
+
+def test_session_profile_record_exposes_tool_active_duration() -> None:
+    conversation = _enrichment_conversation()
+    profile = build_session_profile(conversation)
+    profile = profile.__class__.from_dict(
+        {
+            **profile.to_dict(),
+            "tool_active_duration_ms": 180_000,
+        }
+    )
+
+    record = build_session_profile_record(profile)
+
+    assert record.tool_active_duration_ms == 180_000
+    assert record.evidence_payload.tool_active_duration_ms == 180_000
+    assert record.inference_payload.tool_active_duration_ms == 180_000
+    assert record.inference_payload.tool_active_minutes == 3.0
 
 
 def test_session_profile_uses_conversation_timestamp_when_messages_are_untimestamped() -> None:

@@ -55,6 +55,20 @@ Optional filters: `--first-message-since`, `--first-message-until`,
 `--min-wallclock-seconds`, `--max-wallclock-seconds`, `--sort`, `--tier`
 (`merged`, `evidence`, `inference`), `--query`.
 
+The storage column `engaged_duration_ms` is message-clustered wall clock: it
+sums phase intervals separated by no more than the fixed five-minute idle
+threshold. It does not measure human attention, keyboard focus, or operator
+presence.
+
+`tool_active_duration_ms` is provider-event tool activity: it sums paired
+tool-call start/output events that have explicit timestamps. It does not
+measure human attention and it does not invent duration for unpaired or
+untimestamped tool events. A 12-minute Bash call with a matching output counts
+as 12 minutes of tool-active time even when message clustering drops the
+inter-message gap; ten user messages six minutes apart count as neither
+message-clustered nor tool-active time; four two-minute tool calls interleaved
+with short replies count in both measures.
+
 `inference.inferred_topic` is a deterministic label for search and scan
 ergonomics. It is not the provider title and it is not a semantic summary:
 materialization prefers the first substantive user turn, strips known context

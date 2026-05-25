@@ -17,6 +17,7 @@ class DaySessionSummary:
     session_count: int
     total_cost_usd: float
     total_duration_ms: int
+    total_tool_active_duration_ms: int
     total_wall_duration_ms: int
     total_messages: int
     total_words: int
@@ -30,6 +31,7 @@ class DaySessionSummary:
             "session_count": self.session_count,
             "total_cost_usd": round(self.total_cost_usd, 4),
             "total_duration_ms": self.total_duration_ms,
+            "total_tool_active_duration_ms": self.total_tool_active_duration_ms,
             "total_wall_duration_ms": self.total_wall_duration_ms,
             "total_messages": self.total_messages,
             "total_words": self.total_words,
@@ -46,6 +48,7 @@ class WeekSessionSummary:
     session_count: int
     total_cost_usd: float
     total_duration_ms: int
+    total_tool_active_duration_ms: int
     total_messages: int
 
     def to_dict(self) -> dict[str, object]:
@@ -55,6 +58,7 @@ class WeekSessionSummary:
             "session_count": self.session_count,
             "total_cost_usd": round(self.total_cost_usd, 4),
             "total_duration_ms": self.total_duration_ms,
+            "total_tool_active_duration_ms": self.total_tool_active_duration_ms,
             "total_messages": self.total_messages,
         }
 
@@ -77,12 +81,14 @@ def summarize_day(
     providers: Counter[str] = Counter()
     total_cost = 0.0
     total_duration = 0
+    total_tool_active = 0
     total_wall = 0
     total_messages = 0
     total_words = 0
     for profile in profiles:
         total_cost += profile.total_cost_usd
         total_duration += profile.total_duration_ms
+        total_tool_active += profile.tool_active_duration_ms
         total_wall += profile.wall_duration_ms
         total_messages += profile.message_count
         total_words += profile.word_count
@@ -96,6 +102,7 @@ def summarize_day(
         session_count=len(profiles),
         total_cost_usd=total_cost,
         total_duration_ms=total_duration,
+        total_tool_active_duration_ms=total_tool_active,
         total_wall_duration_ms=total_wall,
         total_messages=total_messages,
         total_words=total_words,
@@ -113,6 +120,7 @@ def summarize_week(day_summaries: Sequence[DaySessionSummary]) -> WeekSessionSum
             session_count=0,
             total_cost_usd=0.0,
             total_duration_ms=0,
+            total_tool_active_duration_ms=0,
             total_messages=0,
         )
     first_date = day_summaries[0].date
@@ -123,6 +131,7 @@ def summarize_week(day_summaries: Sequence[DaySessionSummary]) -> WeekSessionSum
         session_count=sum(day.session_count for day in day_summaries),
         total_cost_usd=sum(day.total_cost_usd for day in day_summaries),
         total_duration_ms=sum(day.total_duration_ms for day in day_summaries),
+        total_tool_active_duration_ms=sum(day.total_tool_active_duration_ms for day in day_summaries),
         total_messages=sum(day.total_messages for day in day_summaries),
     )
 

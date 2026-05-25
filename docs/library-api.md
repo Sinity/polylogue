@@ -95,6 +95,7 @@ async with Polylogue() as archive:
 - `timestamp_source`
 - `engaged_duration_ms`
 - `engaged_minutes`
+- `tool_active_duration_ms`
 - `repo_names`
 - `repo_paths`
 

@@ -70,6 +70,8 @@ class SessionProfileDocument(TypedDict):
     canonical_session_date: str | None
     engaged_duration_ms: int
     engaged_minutes: float
+    tool_active_duration_ms: int
+    tool_active_minutes: float
     wall_duration_ms: int
     cost_is_estimated: bool
     compaction_count: int

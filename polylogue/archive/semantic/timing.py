@@ -18,6 +18,13 @@ from polylogue.core.json import JSONDocument, json_document
 
 if TYPE_CHECKING:
     from polylogue.archive.message.models import Message
+    from polylogue.archive.provider.events import ProviderEvent
+
+
+TOOL_ACTIVE_START_EVENT_TYPES = frozenset({"function_call", "custom_tool_call", "web_search_call", "tool_search_call"})
+TOOL_ACTIVE_OUTPUT_EVENT_TYPES = frozenset(
+    {"function_call_output", "custom_tool_call_output", "web_search_output", "tool_search_output"}
+)
 
 
 def _gap_ms(earlier: datetime | None, later: datetime | None) -> int:
@@ -148,7 +155,44 @@ def compute_session_timing(
     )
 
 
+def compute_tool_active_duration_ms(provider_events: Sequence[ProviderEvent]) -> int:
+    """Sum paired provider tool-call windows with explicit event timestamps.
+
+    This is a provider-event measurement, not an inter-message estimate: a
+    start event opens a tool window and the matching output event closes it.
+    Unpaired or untimestamped events are ignored because they cannot establish
+    a bounded active interval.
+    """
+
+    pending_by_call_id: dict[str, datetime] = {}
+    pending_without_call_id: list[datetime] = []
+    total_ms = 0
+    for event in sorted(provider_events, key=lambda item: item.event_index):
+        if event.timestamp is None:
+            continue
+        event_type = str(event.event_type).strip().lower()
+        call_id_value = event.payload.get("call_id")
+        call_id = call_id_value.strip() if isinstance(call_id_value, str) and call_id_value.strip() else None
+        if event_type in TOOL_ACTIVE_START_EVENT_TYPES:
+            if call_id is not None:
+                pending_by_call_id[call_id] = event.timestamp
+            else:
+                pending_without_call_id.append(event.timestamp)
+            continue
+        if event_type not in TOOL_ACTIVE_OUTPUT_EVENT_TYPES:
+            continue
+        started_at: datetime | None = None
+        if call_id is not None:
+            started_at = pending_by_call_id.pop(call_id, None)
+        elif pending_without_call_id:
+            started_at = pending_without_call_id.pop(0)
+        if started_at is not None:
+            total_ms += max(int((event.timestamp - started_at).total_seconds() * 1000), 0)
+    return total_ms
+
+
 __all__ = [
     "SessionTimingFacts",
     "compute_session_timing",
+    "compute_tool_active_duration_ms",
 ]
