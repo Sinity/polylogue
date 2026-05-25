@@ -11,7 +11,7 @@ from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZ
 class SessionTagRollupRecord(BaseModel):
     tag: str
     bucket_day: str
-    provider_name: str
+    source_name: str
     materializer_version: int = SESSION_INSIGHT_MATERIALIZER_VERSION
     materialized_at: str
     source_updated_at: str | None = None
@@ -27,7 +27,7 @@ class SessionTagRollupRecord(BaseModel):
     repo_breakdown: dict[str, int]
     search_text: str
 
-    @field_validator("tag", "bucket_day", "provider_name", "materialized_at", "search_text")
+    @field_validator("tag", "bucket_day", "source_name", "materialized_at", "search_text")
     @classmethod
     def tag_rollup_non_empty_string(cls, value: str) -> str:
         if not value or not value.strip():
@@ -37,7 +37,7 @@ class SessionTagRollupRecord(BaseModel):
 
 class DaySessionSummaryRecord(BaseModel):
     day: str
-    provider_name: str
+    source_name: str
     materializer_version: int = SESSION_INSIGHT_MATERIALIZER_VERSION
     materialized_at: str
     source_updated_at: str | None = None
@@ -59,7 +59,7 @@ class DaySessionSummaryRecord(BaseModel):
     payload: DaySessionSummaryPayload
     search_text: str
 
-    @field_validator("day", "provider_name", "materialized_at", "search_text")
+    @field_validator("day", "source_name", "materialized_at", "search_text")
     @classmethod
     def day_summary_non_empty_string(cls, value: str) -> str:
         if not value or not value.strip():

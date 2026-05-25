@@ -129,7 +129,7 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
 
     provider_token = Provider.from_string(request.provider)
     config = PROVIDERS.get(provider_token)
-    if config is None or not config.db_provider_name:
+    if config is None or not config.db_source_name:
         corpus_specs, corpus_scenarios = _build_inferred_outputs(
             provider=request.provider,
             package_version=package_version,
@@ -143,7 +143,7 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
         )
 
     samples = load_samples_from_db(
-        config.db_provider_name,
+        config.db_source_name,
         db_path=request.db_path,
         max_samples=request.max_samples or request.cluster_sample_limit,
     )
@@ -186,9 +186,9 @@ def list_inferred_corpus_specs(
     registry = registry or _typed_registry()
     providers = (provider,) if provider is not None else tuple(registry.list_providers())
     specs: list[CorpusSpec] = []
-    for provider_name in providers:
-        catalog = registry.load_package_catalog(provider_name)
-        manifest = registry.load_cluster_manifest(provider_name)
+    for source_name in providers:
+        catalog = registry.load_package_catalog(source_name)
+        manifest = registry.load_cluster_manifest(source_name)
         package_version = "default"
         sample_count = 0
         if catalog is not None:
@@ -202,7 +202,7 @@ def list_inferred_corpus_specs(
             package_version = manifest.default_version
         specs.extend(
             build_inferred_corpus_specs(
-                provider=provider_name,
+                provider=source_name,
                 package_version=package_version,
                 manifest=manifest,
                 sample_count=sample_count,
@@ -286,11 +286,11 @@ def promote_schema_cluster(request: SchemaPromoteRequest) -> SchemaPromoteResult
             raise ValueError(f"Unknown provider: {request.provider}")
         all_samples = (
             load_samples_from_db(
-                config.db_provider_name,
+                config.db_source_name,
                 db_path=request.db_path,
                 max_samples=request.max_samples,
             )
-            if config.db_provider_name
+            if config.db_source_name
             else []
         )
         samples = [

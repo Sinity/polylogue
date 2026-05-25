@@ -129,7 +129,7 @@ def provider_event_from_record(record: ProviderEventRecord) -> ProviderEvent:
     return ProviderEvent(
         id=record.event_id,
         conversation_id=record.conversation_id,
-        provider=Provider.from_string(record.provider_name),
+        provider=Provider.from_string(record.source_name),
         event_index=record.event_index,
         event_type=record.event_type,
         timestamp=parse_timestamp(record.timestamp),
@@ -149,7 +149,7 @@ def conversation_summary_from_record(
     """Hydrate a ConversationSummary domain model from a ConversationRecord."""
     return ConversationSummary(
         id=record.conversation_id,
-        provider=Provider.from_string(record.provider_name),
+        provider=Provider.from_string(record.source_name),
         title=record.title,
         created_at=parse_timestamp(record.created_at),
         updated_at=parse_timestamp(record.updated_at),
@@ -187,7 +187,7 @@ def conversation_from_records(
         if att.message_id:
             att_map.setdefault(att.message_id, []).append(att)
 
-    conv_provider = Provider.from_string(conversation.provider_name)
+    conv_provider = Provider.from_string(conversation.source_name)
     rich_messages = [
         message_from_record(
             msg,

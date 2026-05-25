@@ -80,7 +80,7 @@ class ConversationFormatter:
         conversation = projection.conversation
         conversation_id = str(conversation.conversation_id)
         title = conversation.title or conversation_id
-        provider = conversation.provider_name or "unknown"
+        provider = conversation.source_name or "unknown"
         normalized_messages = [
             _normalize_markdown_message(
                 message_id=message.message_id,

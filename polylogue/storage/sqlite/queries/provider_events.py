@@ -156,7 +156,7 @@ async def replace_provider_events(
             (
                 record.event_id,
                 record.conversation_id,
-                record.provider_name,
+                record.source_name,
                 record.event_index,
                 record.event_type,
                 projection.normalized_kind,

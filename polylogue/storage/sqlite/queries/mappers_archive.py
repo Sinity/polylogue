@@ -43,7 +43,6 @@ def _row_to_conversation(row: sqlite3.Row) -> ConversationRecord:
     branch_type = _row_text(row, "branch_type")
     return ConversationRecord(
         conversation_id=row["conversation_id"],
-        provider_name=row["provider_name"],
         provider_conversation_id=row["provider_conversation_id"],
         title=row["title"],
         created_at=row["created_at"],
@@ -80,7 +79,7 @@ def _row_to_message(row: sqlite3.Row) -> MessageRecord:
         version=row["version"],
         parent_message_id=MessageId(parent_message_id) if parent_message_id is not None else None,
         branch_index=_row_int(row, "branch_index", 0) or 0,
-        provider_name=_row_text(row, "provider_name") or "",
+        source_name=_row_text(row, "source_name") or "",
         word_count=_row_int(row, "word_count", 0) or 0,
         has_tool_use=_row_int(row, "has_tool_use", 0) or 0,
         has_thinking=_row_int(row, "has_thinking", 0) or 0,
@@ -117,7 +116,6 @@ def _row_to_raw_conversation(row: sqlite3.Row) -> RawConversationRecord:
     validation_mode = _row_text(row, "validation_mode")
     return RawConversationRecord(
         raw_id=row["raw_id"],
-        provider_name=row["provider_name"],
         payload_provider=(
             Provider.from_string(_row_text(row, "payload_provider"))
             if _row_text(row, "payload_provider") is not None
@@ -144,7 +142,6 @@ def _row_to_artifact_observation(row: sqlite3.Row) -> ArtifactObservationRecord:
     return ArtifactObservationRecord(
         observation_id=row["observation_id"],
         raw_id=row["raw_id"],
-        provider_name=row["provider_name"],
         payload_provider=(
             Provider.from_string(_row_text(row, "payload_provider"))
             if _row_text(row, "payload_provider") is not None
@@ -184,7 +181,7 @@ def _row_to_action_event(row: sqlite3.Row) -> ActionEventRecord:
         timestamp=_row_text(row, "timestamp"),
         sort_key=_row_float(row, "sort_key"),
         sequence_index=row["sequence_index"],
-        provider_name=_row_text(row, "provider_name"),
+        source_name=_row_text(row, "source_name"),
         action_kind=row["action_kind"],
         tool_name=_row_text(row, "tool_name"),
         normalized_tool_name=row["normalized_tool_name"],
@@ -264,7 +261,7 @@ def _row_to_provider_event(row: sqlite3.Row) -> ProviderEventRecord:
     return ProviderEventRecord(
         event_id=ProviderEventId(row["event_id"]),
         conversation_id=ConversationId(row["conversation_id"]),
-        provider_name=_row_text(row, "provider_name") or "unknown",
+        source_name=_row_text(row, "source_name") or "unknown",
         event_index=_row_int(row, "event_index", 0) or 0,
         event_type=event_type,
         timestamp=_row_text(row, "timestamp"),

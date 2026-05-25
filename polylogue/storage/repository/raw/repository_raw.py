@@ -208,7 +208,7 @@ class RepositoryRawMixin:
         self,
         *,
         source_names: list[str] | None = None,
-        provider_name: str | None = None,
+        source_name: str | None = None,
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,
@@ -218,7 +218,7 @@ class RepositoryRawMixin:
             async for header in raw_queries.iter_raw_headers(
                 conn,
                 source_names=source_names,
-                provider_name=provider_name,
+                source_name=source_name,
                 require_unparsed=require_unparsed,
                 require_unvalidated=require_unvalidated,
                 validation_statuses=validation_statuses,

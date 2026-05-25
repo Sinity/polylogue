@@ -256,7 +256,7 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedConversation
         conv_meta["is_archived"] = True
 
     return ParsedConversation(
-        provider_name=Provider.CHATGPT,
+        source_name=Provider.CHATGPT,
         provider_conversation_id=str(conv_id or fallback_id),
         title=str(title),
         created_at=str(payload.get("create_time")) if payload.get("create_time") is not None else None,

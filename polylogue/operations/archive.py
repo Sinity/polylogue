@@ -164,8 +164,7 @@ def _conversation_search_hit(
     snippet = _build_search_snippet(matching_message.text or "", query) if matching_message else ""
     return SearchHit(
         conversation_id=str(conversation.id),
-        provider_name=conversation.provider,
-        source_name=None,
+        source_name=conversation.provider,
         message_id=message_id,
         title=conversation.display_title,
         timestamp=timestamp,
@@ -232,11 +231,11 @@ def _provider_coverage_insight(row: ProviderMetricsRow) -> ArchiveCoverageInsigh
     conversations_with_thinking = row["conversations_with_thinking"]
     tool_use_percentage = (conversations_with_tools / conversation_count) * 100 if conversation_count > 0 else 0.0
     thinking_percentage = (conversations_with_thinking / conversation_count) * 100 if conversation_count > 0 else 0.0
-    provider_name = row["provider_name"] or "unknown"
+    source_name = row["source_name"] or "unknown"
     return ArchiveCoverageInsight(
         group_by="provider",
-        bucket=provider_name,
-        provider_name=provider_name,
+        bucket=source_name,
+        source_name=source_name,
         conversation_count=conversation_count,
         message_count=message_count,
         user_message_count=user_message_count,
@@ -284,8 +283,8 @@ def _week_coverage_insight(insight: WeekSessionSummaryInsight) -> ArchiveCoverag
         total_words += day.total_words
         total_wall_duration_ms += day.total_wall_duration_ms
         repos_active.update(day.repos_active)
-        for provider_name, count in day.providers.items():
-            provider_breakdown[provider_name] = provider_breakdown.get(provider_name, 0) + count
+        for source_name, count in day.providers.items():
+            provider_breakdown[source_name] = provider_breakdown.get(source_name, 0) + count
         for label, count in day.work_event_breakdown.items():
             work_event_breakdown[label] = work_event_breakdown.get(label, 0) + count
     return ArchiveCoverageInsight(
@@ -311,7 +310,7 @@ def _session_cost_insight(conversation: Conversation, *, materialized_at: str) -
     source_updated = conversation.updated_at or conversation.created_at
     return SessionCostInsight(
         conversation_id=str(conversation.id),
-        provider_name=str(conversation.provider),
+        source_name=str(conversation.provider),
         title=conversation.title,
         created_at=conversation.created_at.isoformat() if conversation.created_at is not None else None,
         updated_at=conversation.updated_at.isoformat() if conversation.updated_at is not None else None,
@@ -556,7 +555,7 @@ class ArchiveSearchMixin:
         messages_by_id: dict[str, list[Message]] = {}
         for conversation_id in ids:
             messages = [
-                message_from_record(record, attachments=[], provider=record.provider_name)
+                message_from_record(record, attachments=[], provider=record.source_name)
                 for record in records_by_id.get(conversation_id, [])
             ]
             messages_by_id[conversation_id] = project_message_content(messages, content_projection)
@@ -683,7 +682,7 @@ class ArchiveStatsMixin:
 
     async def provider_counts(self) -> list[tuple[str, int]]:
         rows = await self.backend.get_provider_conversation_counts()
-        return [(row["provider_name"] or "unknown", row["conversation_count"]) for row in rows]
+        return [(row["source_name"] or "unknown", row["conversation_count"]) for row in rows]
 
     async def get_session_insight_status(self) -> SessionInsightStatusSnapshot:
         return await self.backend.get_session_insight_status()
@@ -911,7 +910,7 @@ class ArchiveInsightAggregateMixin:
             provider_rows = await self.backend.get_provider_metrics_rows()
             insights = [_provider_coverage_insight(row) for row in provider_rows]
             if request.provider:
-                insights = [insight for insight in insights if insight.provider_name == request.provider]
+                insights = [insight for insight in insights if insight.source_name == request.provider]
             return _slice_insights(insights, offset=request.offset, limit=request.limit)
 
         if request.group_by not in {"day", "week"}:

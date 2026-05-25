@@ -115,7 +115,7 @@ class RepositoryArchiveConversationMixin:
         offset: int = 0,
     ) -> tuple[list[Message], int]:
         conv_record = await self.queries.get_conversation(conversation_id)
-        provider_name = conv_record.provider_name if conv_record else None
+        source_name = conv_record.source_name if conv_record else None
         records, total = await self.queries.get_messages_paginated(
             conversation_id,
             message_role=message_role,
@@ -123,7 +123,7 @@ class RepositoryArchiveConversationMixin:
             limit=limit,
             offset=offset,
         )
-        messages = [message_from_record(r, attachments=[], provider=provider_name) for r in records]
+        messages = [message_from_record(r, attachments=[], provider=source_name) for r in records]
         return messages, total
 
     async def get_conversations_batch(self, ids: list[str]) -> list[ConversationRecord]:
@@ -224,14 +224,14 @@ class RepositoryArchiveConversationMixin:
         limit: int | None = None,
     ) -> AsyncIterator[Message]:
         conv_record = await self.queries.get_conversation(conversation_id)
-        provider_name = conv_record.provider_name if conv_record else None
+        source_name = conv_record.source_name if conv_record else None
         async for record in self.queries.iter_messages(
             conversation_id,
             dialogue_only=dialogue_only,
             message_roles=message_roles,
             limit=limit,
         ):
-            yield message_from_record(record, attachments=[], provider=provider_name)
+            yield message_from_record(record, attachments=[], provider=source_name)
 
 
 __all__ = ["RepositoryArchiveConversationMixin"]

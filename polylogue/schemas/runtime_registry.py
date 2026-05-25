@@ -533,7 +533,7 @@ class SchemaRegistry:
         fallback_bundle_scope = derive_bundle_scope(provider_token, source_path)
         units = extract_schema_units_from_payload(
             payload,
-            provider_name=Provider.from_string(provider_token),
+            source_name=Provider.from_string(provider_token),
             source_path=source_path,
             raw_id=None,
             observed_at=None,

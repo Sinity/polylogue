@@ -77,11 +77,11 @@ def _normalize_for_hash(value: HashScalar) -> JSONValue:
     return value
 
 
-def attachment_seed(provider_name: str, attachment: ParsedAttachment) -> str:
+def attachment_seed(source_name: str, attachment: ParsedAttachment) -> str:
     return "|".join(
         str(value) if value is not None else "<null>"
         for value in [
-            provider_name,
+            source_name,
             attachment.provider_attachment_id,
             attachment.message_provider_id,
             attachment.name,
@@ -93,7 +93,7 @@ def attachment_seed(provider_name: str, attachment: ParsedAttachment) -> str:
 
 
 def attachment_content_id(
-    provider_name: str,
+    source_name: str,
     attachment: ParsedAttachment,
     *,
     archive_root: Path,
@@ -129,28 +129,28 @@ def attachment_content_id(
             target = asset_path(archive_root, digest)
             updated_path = str(target if target != path else path)
             return (digest, meta, updated_path)
-    seed = attachment_seed(provider_name, attachment)
+    seed = attachment_seed(source_name, attachment)
     return (hash_text(seed), meta, updated_path)
 
 
-def conversation_id(provider_name: str, provider_conversation_id: str) -> ConversationId:
+def conversation_id(source_name: str, provider_conversation_id: str) -> ConversationId:
     """Generate deterministic conversation ID from provider info.
 
     Args:
-        provider_name: Name of the provider (e.g., "chatgpt", "claude-ai").
+        source_name: Name of the provider (e.g., "chatgpt", "claude-ai").
         provider_conversation_id: Provider's conversation identifier.
 
     Returns:
         Formatted conversation ID.
 
     Raises:
-        ValueError: If provider_name or provider_conversation_id is empty.
+        ValueError: If source_name or provider_conversation_id is empty.
     """
-    if not provider_name or not provider_name.strip():
-        raise ValueError("provider_name cannot be empty")
+    if not source_name or not source_name.strip():
+        raise ValueError("source_name cannot be empty")
     if not provider_conversation_id or not provider_conversation_id.strip():
         raise ValueError("provider_conversation_id cannot be empty")
-    return ConversationId(f"{provider_name}:{provider_conversation_id}")
+    return ConversationId(f"{source_name}:{provider_conversation_id}")
 
 
 def message_id(conversation_id: ConversationId, provider_message_id: str) -> MessageId:

@@ -102,7 +102,7 @@ def prove_raw_artifact_coverage(
     total_records = len(observations)
 
     for observation in observations:
-        provider = str(observation.payload_provider or Provider.from_string(observation.provider_name))
+        provider = str(observation.payload_provider or Provider.from_string(observation.source_name))
         stats = stats_by_provider.setdefault(
             provider,
             ProviderArtifactProof(provider=provider),

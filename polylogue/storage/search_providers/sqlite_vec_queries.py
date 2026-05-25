@@ -55,13 +55,13 @@ class SqliteVecQueryMixin:
 
         conn = self._get_connection()
         try:
-            provider_name = "unknown"
+            source_name = "unknown"
             row = conn.execute(
-                "SELECT provider_name FROM conversations WHERE conversation_id = ?",
+                "SELECT source_name FROM conversations WHERE conversation_id = ?",
                 (conversation_id,),
             ).fetchone()
             if row:
-                provider_name = row[0] or "unknown"
+                source_name = row[0] or "unknown"
 
             for msg, embedding in zip(embeddable, embeddings, strict=True):
                 embedding_blob = _serialize_f32(embedding)
@@ -71,10 +71,10 @@ class SqliteVecQueryMixin:
                 )
                 conn.execute(
                     """
-                    INSERT INTO message_embeddings (message_id, embedding, provider_name, conversation_id)
+                    INSERT INTO message_embeddings (message_id, embedding, source_name, conversation_id)
                     VALUES (?, ?, ?, ?)
                     """,
-                    (msg.message_id, embedding_blob, provider_name, msg.conversation_id),
+                    (msg.message_id, embedding_blob, source_name, msg.conversation_id),
                 )
                 conn.execute(
                     """
@@ -157,7 +157,7 @@ class SqliteVecQueryMixin:
                 FROM message_embeddings
                 WHERE embedding MATCH ?
                   AND k = ?
-                  AND provider_name = ?
+                  AND source_name = ?
                 ORDER BY distance
                 """,
                 (query_embedding, limit, provider),

@@ -114,7 +114,7 @@ def print_summary_impl(
         if verbose:
             metrics = run_coroutine_sync(list_archive_coverage_insights_fn(services=env.services))
             counts: list[tuple[str, int]] = [
-                (metric.provider_name or metric.bucket, metric.conversation_count) for metric in metrics
+                (metric.source_name or metric.bucket, metric.conversation_count) for metric in metrics
             ]
         else:
             counts = run_coroutine_sync(get_provider_counts_fn(services=env.services))
@@ -135,7 +135,7 @@ def print_summary_impl(
                 )
 
             max_width = 30
-            for provider_name, conv_count in counts:
+            for source_name, conv_count in counts:
                 if total_convs > 0:
                     pct = (conv_count / total_convs) * 100
                     bar_len = int((conv_count / total_convs) * max_width)
@@ -144,9 +144,9 @@ def print_summary_impl(
                     bar_len = 0
 
                 bar = "█" * bar_len
-                color = provider_color(provider_name).hex
+                color = provider_color(source_name).hex
 
-                name_padded = f"{provider_name}:".ljust(14)
+                name_padded = f"{source_name}:".ljust(14)
                 count_padded = f"{conv_count:,}".rjust(5)
                 pct_padded = f"({pct:.0f}%)".rjust(5)
 
@@ -156,7 +156,7 @@ def print_summary_impl(
                 ui.console.print()
                 ui.console.print("[bold]Deep Dive:[/bold]")
                 for metric in metrics:
-                    ui.console.print(f"[bold]{metric.provider_name}[/bold]")
+                    ui.console.print(f"[bold]{metric.source_name}[/bold]")
                     ui.console.print(
                         f"  Messages: {metric.message_count:,} (avg {metric.avg_messages_per_conversation:.1f}/conv)"
                     )

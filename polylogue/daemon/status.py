@@ -393,7 +393,7 @@ def _raw_failure_info() -> dict[str, object]:
             # Bounded failure samples (most recent 50), typed.
             samples: list[RawFailureSample] = []
             for row in conn.execute(
-                "SELECT raw_id, provider_name, parse_error, validation_status, validation_error "
+                "SELECT raw_id, source_name, parse_error, validation_status, validation_error "
                 "FROM raw_conversations "
                 "WHERE parse_error IS NOT NULL OR validation_status = 'FAILED' "
                 "ORDER BY acquired_at DESC LIMIT 50"

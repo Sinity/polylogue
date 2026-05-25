@@ -47,7 +47,7 @@ def transform_to_records(convo: ParsedConversation, source_name: str, *, archive
 
     conversation_record = ConversationRecord(
         conversation_id=materialized.conversation_id,
-        provider_name=materialized.provider_name,
+        source_name=materialized.source_name,
         provider_conversation_id=materialized.provider_conversation_id,
         title=materialized.title,
         created_at=materialized.created_at,
@@ -71,7 +71,7 @@ def transform_to_records(convo: ParsedConversation, source_name: str, *, archive
             content_hash=message.content_hash,
             parent_message_id=message.parent_message_id,
             branch_index=message.branch_index,
-            provider_name=materialized.provider_name,
+            source_name=materialized.source_name,
             word_count=message.word_count,
             has_tool_use=message.has_tool_use,
             has_thinking=message.has_thinking,
@@ -128,7 +128,7 @@ def transform_to_records(convo: ParsedConversation, source_name: str, *, archive
         ProviderEventRecord(
             event_id=event.event_id,
             conversation_id=event.conversation_id,
-            provider_name=str(event.provider_name),
+            source_name=str(event.source_name),
             event_index=event.event_index,
             event_type=event.event_type,
             timestamp=event.timestamp,

@@ -51,7 +51,7 @@ def existing_message_signatures(conn: sqlite3.Connection, message_ids: Sequence[
 def upsert_stats_for_append(
     conn: sqlite3.Connection,
     conversation_id: str,
-    provider_name: str,
+    source_name: str,
     changed_messages: Sequence[MessageTuple],
     existing_messages: dict[str, MessageSignature],
     *,
@@ -62,7 +62,7 @@ def upsert_stats_for_append(
         (conversation_id,),
     ).fetchone()
     if current is None:
-        full_recount(conn, conversation_id, provider_name)
+        full_recount(conn, conversation_id, source_name)
         return
     if not changed_messages:
         return
@@ -83,7 +83,7 @@ def upsert_stats_for_append(
     conn.execute(
         """
         UPDATE conversation_stats
-        SET provider_name = ?,
+        SET source_name = ?,
             message_count = message_count + ?,
             word_count = word_count + ?,
             tool_use_count = tool_use_count + ?,
@@ -92,7 +92,7 @@ def upsert_stats_for_append(
         WHERE conversation_id = ?
         """,
         (
-            provider_name,
+            source_name,
             message_delta,
             word_delta,
             tool_delta,

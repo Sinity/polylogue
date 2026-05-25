@@ -12,17 +12,17 @@ from polylogue.storage.runtime import ArtifactObservationRecord
 from polylogue.storage.sqlite.queries.mappers import _row_to_artifact_observation
 from polylogue.types import ArtifactSupportStatus, Provider
 
-_EFFECTIVE_PROVIDER_SQL = "COALESCE(payload_provider, provider_name)"
+_EFFECTIVE_PROVIDER_SQL = "COALESCE(payload_provider, source_name)"
 _MAX_SAMPLE_PATHS = 5
 
 
 def _effective_provider(record: ArtifactObservationRecord) -> str:
-    return str(record.payload_provider or Provider.from_string(record.provider_name))
+    return str(record.payload_provider or Provider.from_string(record.source_name))
 
 
 @dataclass(slots=True)
 class _ArtifactCohortBucket:
-    provider_name: str
+    source_name: str
     payload_provider: Provider | None
     artifact_kind: str
     support_status: ArtifactSupportStatus
@@ -121,7 +121,7 @@ def list_artifact_cohorts(
         bucket = grouped.setdefault(
             key,
             _ArtifactCohortBucket(
-                provider_name=provider,
+                source_name=provider,
                 payload_provider=Provider.from_string(provider),
                 artifact_kind=observation.artifact_kind,
                 support_status=observation.support_status,
@@ -159,7 +159,7 @@ def list_artifact_cohorts(
 
     summaries = [
         ArtifactCohortSummary(
-            provider_name=bucket.provider_name,
+            source_name=bucket.source_name,
             payload_provider=bucket.payload_provider,
             artifact_kind=bucket.artifact_kind,
             support_status=bucket.support_status,
@@ -182,7 +182,7 @@ def list_artifact_cohorts(
         summaries,
         key=lambda item: (
             -item.observation_count,
-            item.provider_name,
+            item.source_name,
             item.artifact_kind,
             str(item.support_status),
             item.cohort_id or "",

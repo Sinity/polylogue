@@ -147,7 +147,7 @@ async def prepare_records(
         backend = repository.backend
 
     if not convo.messages:
-        cid = make_conversation_id(convo.provider_name, convo.provider_conversation_id)
+        cid = make_conversation_id(convo.source_name, convo.provider_conversation_id)
         logger.debug("Skipping empty conversation (no messages)", conversation_id=cid)
         return PersistedConversationResult(
             conversation_id=cid,

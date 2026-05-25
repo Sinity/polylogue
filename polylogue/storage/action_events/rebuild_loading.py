@@ -21,7 +21,7 @@ _ALL_ACTION_EVENT_CONVERSATION_IDS_SQL = (
 _ACTION_EVENT_CONVERSATION_SQL_TEMPLATE = """
 SELECT
     conversation_id,
-    provider_name,
+    source_name,
     provider_conversation_id,
     content_hash
 FROM conversations
@@ -58,7 +58,7 @@ async def iter_conversation_id_pages_async(
 def _row_to_action_event_conversation(row: sqlite3.Row) -> ConversationRecord:
     return ConversationRecord(
         conversation_id=row["conversation_id"],
-        provider_name=row["provider_name"],
+        source_name=row["source_name"],
         provider_conversation_id=row["provider_conversation_id"],
         content_hash=row["content_hash"],
     )

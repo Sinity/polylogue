@@ -42,7 +42,7 @@ class InsightVersionCoverage(ArchiveInsightModel):
 
 
 class InsightProviderCoverage(ArchiveInsightModel):
-    provider_name: str
+    source_name: str
     row_count: int
     min_time: str | None = None
     max_time: str | None = None
@@ -94,7 +94,7 @@ class InsightReadinessSpec:
     orphan_count_attr: str | None = None
     ready_flags: tuple[str, ...] = ()
     artifacts: tuple[str, ...] = ()
-    provider_column: str | None = "provider_name"
+    provider_column: str | None = "source_name"
     time_column: str | None = "source_updated_at"
     version_fields: tuple[tuple[str, int], ...] = (("materializer_version", SESSION_INSIGHT_MATERIALIZER_VERSION),)
     fallback_payload_columns: tuple[str, ...] = ()
@@ -182,7 +182,7 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
         row_count_attr="total_conversations",
         ready_flags=(),
         artifacts=("conversations",),
-        provider_column="provider_name",
+        provider_column="source_name",
         time_column="updated_at",
         version_fields=(),
     ),
@@ -332,14 +332,14 @@ async def _provider_coverage(
     time_min = f"MIN({spec.time_column})" if spec.time_column and spec.time_column in columns else "NULL"
     time_max = f"MAX({spec.time_column})" if spec.time_column and spec.time_column in columns else "NULL"
     sql = (
-        f"SELECT {spec.provider_column} AS provider_name, COUNT(*) AS row_count, "
+        f"SELECT {spec.provider_column} AS source_name, COUNT(*) AS row_count, "
         f"{time_min} AS min_time, {time_max} AS max_time "
         f"FROM {spec.table_name}{where} GROUP BY {spec.provider_column} ORDER BY {spec.provider_column}"
     )
     rows = await (await conn.execute(sql, tuple(params))).fetchall()
     return tuple(
         InsightProviderCoverage(
-            provider_name=str(row["provider_name"] or "unknown"),
+            source_name=str(row["source_name"] or "unknown"),
             row_count=int(row["row_count"]),
             min_time=str(row["min_time"]) if row["min_time"] is not None else None,
             max_time=str(row["max_time"]) if row["max_time"] is not None else None,

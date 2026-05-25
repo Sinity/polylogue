@@ -34,8 +34,8 @@ def verification_provider_clause(providers: list[str]) -> tuple[str, tuple[str, 
     runtime_placeholders = ",".join("?" for _ in CORE_RUNTIME_PROVIDERS)
     clause = (
         f"payload_provider IN ({provider_placeholders}) "
-        f"OR (payload_provider IS NULL AND provider_name IN ({provider_placeholders})) "
-        f"OR (payload_provider IS NULL AND provider_name NOT IN ({runtime_placeholders}))"
+        f"OR (payload_provider IS NULL AND source_name IN ({provider_placeholders})) "
+        f"OR (payload_provider IS NULL AND source_name NOT IN ({runtime_placeholders}))"
     )
     params: tuple[str, ...] = (*providers, *providers, *CORE_RUNTIME_PROVIDERS)
     return clause, params
@@ -44,7 +44,7 @@ def verification_provider_clause(providers: list[str]) -> tuple[str, tuple[str, 
 def _row_payload_data(row: sqlite3.Row) -> VerificationRow:
     return (
         str(row["raw_id"]),
-        str(row["provider_name"]),
+        str(row["source_name"]),
         row["payload_provider"],
         str(row["source_path"] or ""),
     )
@@ -77,7 +77,7 @@ def iter_verification_rows(
                 return
             last_rowid = row[0]
 
-        base_query = "SELECT rowid, raw_id, provider_name, payload_provider, source_path FROM raw_conversations "
+        base_query = "SELECT rowid, raw_id, source_name, payload_provider, source_path FROM raw_conversations "
         records_fetched = 0
         while True:
             if bounded_limit is not None:

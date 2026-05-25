@@ -38,7 +38,7 @@ def _timestamp_to_iso(value: datetime | None) -> str | None:
 
 
 def _record_message_provider(conversation: ConversationRecord) -> Provider:
-    return Provider.from_string(conversation.provider_name)
+    return Provider.from_string(conversation.source_name)
 
 
 def hydrate_action_event(record: ActionEventRecord) -> ActionEvent:
@@ -50,7 +50,7 @@ def hydrate_action_event(record: ActionEventRecord) -> ActionEvent:
             timestamp = datetime.fromisoformat(normalized)
         except ValueError:
             timestamp = None
-    provider = Provider.from_string(record.provider_name) if record.provider_name else None
+    provider = Provider.from_string(record.source_name) if record.source_name else None
     return ActionEvent(
         event_id=record.event_id,
         message_id=str(record.message_id),
@@ -70,7 +70,7 @@ def hydrate_action_event(record: ActionEventRecord) -> ActionEvent:
         search_text=record.search_text,
         raw={
             "source_block_id": record.source_block_id,
-            "provider_name": record.provider_name,
+            "source_name": record.source_name,
         },
     )
 
@@ -108,7 +108,7 @@ def build_action_event_records(
                     timestamp=_timestamp_to_iso(event.timestamp),
                     sort_key=message.sort_key,
                     sequence_index=event.sequence_index,
-                    provider_name=conversation.provider_name,
+                    source_name=conversation.source_name,
                     action_kind=event.kind.value,
                     tool_name=event.tool_name,
                     normalized_tool_name=event.normalized_tool_name,

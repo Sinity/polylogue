@@ -63,7 +63,7 @@ class SimilarHit:
     score: float
     confidence: str
     title: str | None
-    provider_name: str | None
+    source_name: str | None
     matched_message_count: int
 
 
@@ -228,7 +228,7 @@ def _hydrate_conversation_metadata(
     placeholders = ",".join("?" * len(conversation_ids))
     rows = conn.execute(
         f"""
-        SELECT conversation_id, title, provider_name
+        SELECT conversation_id, title, source_name
         FROM conversations
         WHERE conversation_id IN ({placeholders})
         """,
@@ -349,7 +349,7 @@ def build_similar_payload(
         for conv_id, agg in ranked:
             distance = float(agg["best_distance"])
             score = _l2_to_cosine_similarity(distance)
-            title, provider_name = metadata.get(conv_id, (None, None))
+            title, source_name = metadata.get(conv_id, (None, None))
             hits.append(
                 {
                     "conversation_id": conv_id,
@@ -357,7 +357,7 @@ def build_similar_payload(
                     "distance": round(distance, 4),
                     "confidence": _confidence_for_score(score),
                     "title": title,
-                    "provider_name": provider_name,
+                    "source_name": source_name,
                     "matched_message_count": int(agg["matched_messages"]),
                 }
             )

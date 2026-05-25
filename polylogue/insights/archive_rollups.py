@@ -84,14 +84,14 @@ def build_session_tag_rollup_records(
             bucket.source_sort_key.extend(sort_keys)
 
     rows: list[SessionTagRollupRecord] = []
-    for (provider_name, bucket_day_text, tag), bucket in sorted(grouped.items()):
-        search_text = " \n".join(part for part in (tag, provider_name, *sorted(bucket.repos.keys())) if part)
+    for (source_name, bucket_day_text, tag), bucket in sorted(grouped.items()):
+        search_text = " \n".join(part for part in (tag, source_name, *sorted(bucket.repos.keys())) if part)
         hwm = max(bucket.source_updated_at) if bucket.source_updated_at else None
         rows.append(
             SessionTagRollupRecord(
                 tag=tag,
                 bucket_day=bucket_day_text,
-                provider_name=provider_name,
+                source_name=source_name,
                 materialized_at=built_at,
                 source_updated_at=hwm,
                 source_sort_key=max(bucket.source_sort_key) if bucket.source_sort_key else None,
@@ -120,7 +120,7 @@ def aggregate_session_tag_rollup_insights(
         bucket.logical_conversation_ids.update(row.logical_conversation_ids)
         bucket.explicit_count += row.explicit_count
         bucket.auto_count += row.auto_count
-        bucket.provider_breakdown[row.provider_name] += row.conversation_count
+        bucket.provider_breakdown[row.source_name] += row.conversation_count
         bucket.repo_breakdown.update(row.repo_breakdown)
         bucket.rows.append(row)
 
@@ -207,18 +207,18 @@ def aggregate_cost_rollup_insights(
 ) -> list[CostRollupInsight]:
     """Group ``SessionCostInsight`` rows into ``CostRollupInsight`` rows.
 
-    Grouping is keyed by ``(provider_name, normalized_model_or_model_name)``.
+    Grouping is keyed by ``(source_name, normalized_model_or_model_name)``.
     Each row aggregates the basis axes, ``unavailable_reason_counts``, and a
     per-model breakdown across the sessions in the group.
     """
 
     grouped: dict[tuple[str, str | None], list[SessionCostInsight]] = {}
     for insight in session_costs:
-        key = (insight.provider_name, insight.estimate.normalized_model or insight.estimate.model_name)
+        key = (insight.source_name, insight.estimate.normalized_model or insight.estimate.model_name)
         grouped.setdefault(key, []).append(insight)
 
     rollups: list[CostRollupInsight] = []
-    for (provider_name, normalized_model), insights in sorted(
+    for (source_name, normalized_model), insights in sorted(
         grouped.items(),
         key=lambda item: (item[0][0], item[0][1] or ""),
     ):
@@ -263,7 +263,7 @@ def aggregate_cost_rollup_insights(
         per_model_breakdown = tuple(sorted(per_model_acc.values(), key=lambda entry: entry.total_usd, reverse=True))
         rollups.append(
             CostRollupInsight(
-                provider_name=provider_name,
+                source_name=source_name,
                 model_name=model_names.most_common(1)[0][0] if model_names else None,
                 normalized_model=normalized_model,
                 session_count=len(insights),

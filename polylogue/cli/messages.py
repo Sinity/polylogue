@@ -124,7 +124,7 @@ def run_raw(
                     "artifacts": [
                         {
                             "raw_id": r.get("raw_id", ""),
-                            "provider_name": r.get("provider_name", ""),
+                            "source_name": r.get("source_name", ""),
                             "source_path": r.get("source_path", ""),
                             "blob_size": r.get("blob_size", 0),
                         }

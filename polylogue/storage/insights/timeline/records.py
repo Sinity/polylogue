@@ -28,7 +28,7 @@ class SessionWorkEventRecord(BaseModel):
     input_high_water_mark: str | None = None
     input_high_water_mark_source: str | None = None
     input_row_count: int = 0
-    provider_name: str
+    source_name: str
     event_index: int
     heuristic_label: str
     confidence: float
@@ -51,7 +51,7 @@ class SessionWorkEventRecord(BaseModel):
         "event_id",
         "conversation_id",
         "materialized_at",
-        "provider_name",
+        "source_name",
         "heuristic_label",
         "summary",
         "search_text",
@@ -74,7 +74,7 @@ class SessionPhaseRecord(BaseModel):
     input_high_water_mark: str | None = None
     input_high_water_mark_source: str | None = None
     input_row_count: int = 0
-    provider_name: str
+    source_name: str
     phase_index: int
     kind: str
     start_index: int
@@ -97,7 +97,7 @@ class SessionPhaseRecord(BaseModel):
         "phase_id",
         "conversation_id",
         "materialized_at",
-        "provider_name",
+        "source_name",
         "kind",
         "search_text",
         "inference_family",

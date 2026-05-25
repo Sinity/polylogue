@@ -23,7 +23,7 @@ _MAX_NESTED_PROFILE_TOKENS = 8
 
 @dataclass(frozen=True)
 class _ObservationContext:
-    provider_name: Provider
+    source_name: Provider
     source_path: Path | None
     source_path_text: str | None
     raw_id: str | None
@@ -43,17 +43,17 @@ class _ObservedSchemaUnit:
 
 def _build_observation_context(
     *,
-    provider_name: Provider,
+    source_name: Provider,
     source_path: str | Path | None,
     raw_id: str | None,
     observed_at: str | None,
     config: ProviderConfig,
     max_samples: int | None,
 ) -> _ObservationContext:
-    provider_token = Provider.from_string(provider_name)
+    provider_token = Provider.from_string(source_name)
     source_path_obj = Path(source_path) if source_path is not None else None
     return _ObservationContext(
-        provider_name=provider_token,
+        source_name=provider_token,
         source_path=source_path_obj,
         source_path_text=str(source_path_obj) if source_path_obj is not None else None,
         raw_id=raw_id,
@@ -85,7 +85,7 @@ def _eligible_artifact_kind(
 ) -> str | None:
     artifact = classify_artifact(
         payload,
-        provider=context.provider_name,
+        provider=context.source_name,
         source_path=context.source_path,
     )
     return artifact.cohort if artifact.schema_eligible else None
@@ -156,7 +156,7 @@ def _extract_document_observations(
 def extract_schema_units_from_payload(
     payload: object,
     *,
-    provider_name: Provider,
+    source_name: Provider,
     source_path: str | Path | None,
     raw_id: str | None,
     observed_at: str | None = None,
@@ -168,7 +168,7 @@ def extract_schema_units_from_payload(
         return []
     normalized_payload: JSONValue = payload
     context = _build_observation_context(
-        provider_name=provider_name,
+        source_name=source_name,
         source_path=source_path,
         raw_id=raw_id,
         observed_at=observed_at,

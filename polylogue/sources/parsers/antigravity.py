@@ -237,7 +237,7 @@ def parse_brain_metadata(payload: JSONDocument, source_path: Path, fallback_id: 
         provider_meta["missing_markdown_body"] = True
 
     return ParsedConversation(
-        provider_name=Provider.ANTIGRAVITY,
+        source_name=Provider.ANTIGRAVITY,
         provider_conversation_id=conversation_id,
         title=title,
         created_at=None,
@@ -272,7 +272,7 @@ def parse_markdown_export(
         provider_meta["snippet"] = summary.snippet
 
     return ParsedConversation(
-        provider_name=Provider.ANTIGRAVITY,
+        source_name=Provider.ANTIGRAVITY,
         provider_conversation_id=summary.cascade_id,
         title=summary.title,
         created_at=None,

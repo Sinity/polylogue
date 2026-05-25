@@ -70,7 +70,6 @@ def search_messages_impl(
         hits.append(
             SearchHit(
                 conversation_id=conversation_id,
-                provider_name=row["provider_name"],
                 source_name=row["source_name"],
                 message_id=row["message_id"],
                 title=row["title"],

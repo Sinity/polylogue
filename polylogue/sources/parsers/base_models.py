@@ -77,7 +77,7 @@ class ParsedAttachment(BaseModel):
     path. See `polylogue/storage/sqlite/schema_ddl_archive.py:attachments`.
 
     `upload_origin` is a closed vocabulary ({"drive","paste","url","oauth"}
-    or None); the attachment-library UI (#1199) groups by `(provider_name,
+    or None); the attachment-library UI (#1199) groups by `(source_name,
     upload_origin)` without scanning JSON.
     """
 
@@ -127,7 +127,7 @@ class ParsedProviderEvent(BaseModel):
 
 
 class ParsedConversation(BaseModel):
-    provider_name: Provider
+    source_name: Provider
     provider_conversation_id: str
     title: str | None = None
     created_at: str | None = None
@@ -147,7 +147,7 @@ class ParsedConversation(BaseModel):
     git_branch: str | None = None
     git_repository_url: str | None = None
 
-    @field_validator("provider_name", mode="before")
+    @field_validator("source_name", mode="before")
     @classmethod
     def coerce_provider(cls, v: object) -> Provider:
         if isinstance(v, Provider):

@@ -12,7 +12,7 @@ SESSION_INSIGHT_LATENCY_DDL = (
             conversation_id TEXT PRIMARY KEY REFERENCES conversations(conversation_id) ON DELETE CASCADE,"""
     + MATERIALIZATION_COLUMNS_SQL
     + """
-            provider_name TEXT NOT NULL,
+            source_name TEXT NOT NULL,
             title TEXT,
             first_message_at TEXT,
             last_message_at TEXT,
@@ -29,7 +29,7 @@ SESSION_INSIGHT_LATENCY_DDL = (
         );
 
         CREATE INDEX IF NOT EXISTS idx_session_latency_profiles_provider
-        ON session_latency_profiles(provider_name);
+        ON session_latency_profiles(source_name);
 
         CREATE INDEX IF NOT EXISTS idx_session_latency_profiles_date
         ON session_latency_profiles(canonical_session_date DESC);

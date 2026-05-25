@@ -110,7 +110,7 @@ _SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS = 4_096
 _SESSION_INSIGHT_CONVERSATION_SQL_TEMPLATE = """
 SELECT
     conversation_id,
-    provider_name,
+    source_name,
     provider_conversation_id,
     title,
     created_at,
@@ -146,7 +146,7 @@ SELECT
     version,
     parent_message_id,
     branch_index,
-    provider_name,
+    source_name,
     word_count,
     has_tool_use,
     has_thinking,
@@ -306,7 +306,7 @@ def _row_to_session_insight_conversation(row: sqlite3.Row) -> ConversationRecord
 
     return ConversationRecord(
         conversation_id=row["conversation_id"],
-        provider_name=row["provider_name"],
+        source_name=row["source_name"],
         provider_conversation_id=row["provider_conversation_id"],
         title=row["title"],
         created_at=row["created_at"],

@@ -31,7 +31,7 @@ class SQLiteRawMixin:
         self,
         *,
         source_names: list[str] | None = None,
-        provider_name: str | None = None,
+        source_name: str | None = None,
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,
@@ -39,7 +39,7 @@ class SQLiteRawMixin:
         """Build the canonical scoped raw-ID query."""
         return self.queries.raw_id_query(
             source_names=source_names,
-            provider_name=provider_name,
+            source_name=source_name,
             require_unparsed=require_unparsed,
             require_unvalidated=require_unvalidated,
             validation_statuses=validation_statuses,
@@ -49,7 +49,7 @@ class SQLiteRawMixin:
         self,
         *,
         source_names: list[str] | None = None,
-        provider_name: str | None = None,
+        source_name: str | None = None,
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,
@@ -58,7 +58,7 @@ class SQLiteRawMixin:
         """Iterate raw conversation IDs for a pipeline state slice."""
         async for rid in self.queries.iter_raw_ids(
             source_names=source_names,
-            provider_name=provider_name,
+            source_name=source_name,
             require_unparsed=require_unparsed,
             require_unvalidated=require_unvalidated,
             validation_statuses=validation_statuses,
@@ -70,7 +70,7 @@ class SQLiteRawMixin:
         self,
         *,
         source_names: list[str] | None = None,
-        provider_name: str | None = None,
+        source_name: str | None = None,
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,
@@ -79,7 +79,7 @@ class SQLiteRawMixin:
         """Iterate raw conversation IDs with blob sizes for lightweight batching."""
         async for raw_header in self.queries.iter_raw_headers(
             source_names=source_names,
-            provider_name=provider_name,
+            source_name=source_name,
             require_unparsed=require_unparsed,
             require_unvalidated=require_unvalidated,
             validation_statuses=validation_statuses,

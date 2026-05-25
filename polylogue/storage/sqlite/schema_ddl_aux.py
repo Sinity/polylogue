@@ -6,7 +6,7 @@ VEC0_DDL = """
     CREATE VIRTUAL TABLE IF NOT EXISTS message_embeddings USING vec0(
         message_id TEXT PRIMARY KEY,
         embedding float[1024],
-        +provider_name TEXT,
+        +source_name TEXT,
         +conversation_id TEXT
     )
 """
@@ -16,7 +16,7 @@ ARTIFACT_OBSERVATION_DDL = """
         CREATE TABLE IF NOT EXISTS artifact_observations (
             observation_id TEXT PRIMARY KEY,
             raw_id TEXT NOT NULL REFERENCES raw_conversations(raw_id) ON DELETE CASCADE,
-            provider_name TEXT NOT NULL,
+            source_name TEXT NOT NULL,
             payload_provider TEXT,
             source_name TEXT,
             source_path TEXT NOT NULL,

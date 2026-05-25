@@ -226,7 +226,7 @@ def _build_source_scope_filter(
 def _build_provider_scope_filter(
     names: Sequence[str] | None,
     *,
-    provider_column: str = "provider_name",
+    provider_column: str = "source_name",
 ) -> tuple[str, list[str]]:
     """Build a provider-name predicate."""
     return _build_scope_filter(names, column=provider_column)

@@ -31,12 +31,12 @@ class _MessageAggregate(TypedDict):
 
 
 class ProviderConversationCountRow(TypedDict):
-    provider_name: str
+    source_name: str
     conversation_count: int
 
 
 class ProviderMetricsRow(TypedDict):
-    provider_name: str
+    source_name: str
     conversation_count: int
     message_count: int
     user_message_count: int
@@ -129,12 +129,12 @@ async def aggregate_message_stats(
 
         prov_rows = await (
             await conn.execute("""
-            SELECT provider_name, COUNT(*) as cnt
+            SELECT source_name, COUNT(*) as cnt
             FROM conversations WHERE conversation_id IN (SELECT cid FROM _stat_ids)
-            GROUP BY provider_name ORDER BY cnt DESC
+            GROUP BY source_name ORDER BY cnt DESC
         """)
         ).fetchall()
-        providers = {str(r["provider_name"]): _row_int(r, "cnt") for r in prov_rows}
+        providers = {str(r["source_name"]): _row_int(r, "cnt") for r in prov_rows}
 
         att_row = await (
             await conn.execute("""
@@ -166,10 +166,10 @@ async def aggregate_message_stats(
 
     prov_rows = await (
         await conn.execute(
-            "SELECT provider_name, COUNT(*) as cnt FROM conversations GROUP BY provider_name ORDER BY cnt DESC"
+            "SELECT source_name, COUNT(*) as cnt FROM conversations GROUP BY source_name ORDER BY cnt DESC"
         )
     ).fetchall()
-    providers = {str(r["provider_name"]): _row_int(r, "cnt") for r in prov_rows}
+    providers = {str(r["source_name"]): _row_int(r, "cnt") for r in prov_rows}
 
     att_row = await (
         await conn.execute("""
@@ -193,7 +193,7 @@ async def aggregate_message_stats(
 async def upsert_conversation_stats(
     conn: aiosqlite.Connection,
     conversation_id: str,
-    provider_name: str,
+    source_name: str,
     messages: list[MessageRecord],
     transaction_depth: int,
 ) -> None:
@@ -205,7 +205,7 @@ async def upsert_conversation_stats(
     paste_count = sum(1 for m in messages if m.has_paste)
     await conn.execute(
         _STATS_UPSERT_SQL,
-        (conversation_id, provider_name, message_count, word_count, tool_use_count, thinking_count, paste_count),
+        (conversation_id, source_name, message_count, word_count, tool_use_count, thinking_count, paste_count),
     )
     if transaction_depth == 0:
         await conn.commit()
@@ -240,9 +240,9 @@ async def get_stats_by(conn: aiosqlite.Connection, group_by: str = "provider") -
     elif group_by == "provider":
         cursor = await conn.execute(
             """
-            SELECT provider_name as period, COUNT(*) as count
+            SELECT source_name as period, COUNT(*) as count
             FROM conversations
-            GROUP BY provider_name ORDER BY count DESC
+            GROUP BY source_name ORDER BY count DESC
             """
         )
     else:
@@ -257,16 +257,16 @@ async def get_provider_conversation_counts(
     """Return conversation counts per provider — fast, conversations-table-only query."""
     cursor = await conn.execute(
         """
-        SELECT provider_name, COUNT(*) AS conversation_count
+        SELECT source_name, COUNT(*) AS conversation_count
         FROM conversations
-        GROUP BY provider_name
+        GROUP BY source_name
         ORDER BY conversation_count DESC
         """
     )
     rows = await cursor.fetchall()
     return [
         {
-            "provider_name": str(row["provider_name"] or "unknown"),
+            "source_name": str(row["source_name"] or "unknown"),
             "conversation_count": int(row["conversation_count"] or 0),
         }
         for row in rows
@@ -290,7 +290,7 @@ async def get_provider_metrics_rows(
     stats_cursor = await conn.execute(
         """
         SELECT
-            COALESCE(NULLIF(cs.provider_name, ''), 'unknown')        AS provider_name,
+            COALESCE(NULLIF(cs.source_name, ''), 'unknown')        AS source_name,
             COUNT(*)                                                  AS conversation_count,
             COALESCE(SUM(cs.message_count), 0)                        AS message_count,
             COALESCE(SUM(cs.tool_use_count), 0)                       AS tool_use_count,
@@ -298,7 +298,7 @@ async def get_provider_metrics_rows(
             SUM(CASE WHEN cs.tool_use_count > 0 THEN 1 ELSE 0 END)    AS conversations_with_tools,
             SUM(CASE WHEN cs.thinking_count > 0 THEN 1 ELSE 0 END)    AS conversations_with_thinking
         FROM conversation_stats cs
-        GROUP BY COALESCE(NULLIF(cs.provider_name, ''), 'unknown')
+        GROUP BY COALESCE(NULLIF(cs.source_name, ''), 'unknown')
         """
     )
     stats_rows = await stats_cursor.fetchall()
@@ -309,7 +309,7 @@ async def get_provider_metrics_rows(
     role_cursor = await conn.execute(
         """
         SELECT
-            COALESCE(NULLIF(m.provider_name, ''), c.provider_name, 'unknown') AS provider_name,
+            COALESCE(NULLIF(m.source_name, ''), c.source_name, 'unknown') AS source_name,
             SUM(CASE WHEN m.role = 'user'      THEN 1 ELSE 0 END)             AS user_message_count,
             SUM(CASE WHEN m.role = 'assistant' THEN 1 ELSE 0 END)             AS assistant_message_count,
             SUM(CASE WHEN m.role = 'user'      THEN m.word_count ELSE 0 END)  AS user_word_sum,
@@ -317,12 +317,12 @@ async def get_provider_metrics_rows(
         FROM messages m
         LEFT JOIN conversations c ON c.conversation_id = m.conversation_id
         WHERE m.role IN ('user', 'assistant')
-        GROUP BY COALESCE(NULLIF(m.provider_name, ''), c.provider_name, 'unknown')
+        GROUP BY COALESCE(NULLIF(m.source_name, ''), c.source_name, 'unknown')
         """
     )
     role_rows = await role_cursor.fetchall()
     role_by_provider: dict[str, dict[str, int]] = {
-        str(row["provider_name"] or "unknown"): {
+        str(row["source_name"] or "unknown"): {
             "user_message_count": int(row["user_message_count"] or 0),
             "assistant_message_count": int(row["assistant_message_count"] or 0),
             "user_word_sum": int(row["user_word_sum"] or 0),
@@ -333,7 +333,7 @@ async def get_provider_metrics_rows(
 
     merged: list[ProviderMetricsRow] = []
     for row in stats_rows:
-        provider = str(row["provider_name"] or "unknown")
+        provider = str(row["source_name"] or "unknown")
         role_split = role_by_provider.get(
             provider,
             {
@@ -345,7 +345,7 @@ async def get_provider_metrics_rows(
         )
         merged.append(
             {
-                "provider_name": provider,
+                "source_name": provider,
                 "conversation_count": int(row["conversation_count"] or 0),
                 "message_count": int(row["message_count"] or 0),
                 "user_message_count": role_split["user_message_count"],

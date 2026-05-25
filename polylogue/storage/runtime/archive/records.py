@@ -41,7 +41,7 @@ def _coerce_json_object(value: object) -> JSONObject | None:
 
 class ConversationRecord(BaseModel):
     conversation_id: ConversationId
-    provider_name: str
+    source_name: str
     provider_conversation_id: str
     title: str | None = None
     created_at: str | None = None
@@ -61,7 +61,7 @@ class ConversationRecord(BaseModel):
 
     @property
     def provider(self) -> Provider:
-        return Provider.from_string(self.provider_name)
+        return Provider.from_string(self.source_name)
 
     @field_validator("conversation_id", "provider_conversation_id", "content_hash")
     @classmethod
@@ -134,7 +134,7 @@ class MessageRecord(BaseModel):
     parent_message_id: MessageId | None = None
     branch_index: int = 0
     content_blocks: list[ContentBlockRecord] = Field(default_factory=list)
-    provider_name: str = ""
+    source_name: str = ""
     word_count: int = 0
     has_tool_use: int = 0
     has_thinking: int = 0
@@ -217,7 +217,7 @@ class AttachmentRecord(BaseModel):
 class ProviderEventRecord(BaseModel):
     event_id: ProviderEventId
     conversation_id: ConversationId
-    provider_name: str
+    source_name: str
     event_index: int
     event_type: str
     timestamp: str | None = None
@@ -227,7 +227,7 @@ class ProviderEventRecord(BaseModel):
     raw_id: str | None = None
     materializer_version: int = 1
 
-    @field_validator("event_id", "conversation_id", "provider_name", "event_type")
+    @field_validator("event_id", "conversation_id", "source_name", "event_type")
     @classmethod
     def non_empty_string(cls, v: str) -> str:
         if not v or not v.strip():

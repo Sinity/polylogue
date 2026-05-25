@@ -195,7 +195,7 @@ class MCPConversationRefPayload(SurfacePayloadModel):
     """One conversation reference inside a topology payload (#1261)."""
 
     conversation_id: str
-    provider_name: str = ""
+    source_name: str = ""
     title: str | None = None
     depth: int = 0
 
@@ -316,7 +316,7 @@ def _ref_payload(ref: object) -> MCPConversationRefPayload:
     assert isinstance(ref, ConversationRef)
     return MCPConversationRefPayload(
         conversation_id=str(ref.conversation_id),
-        provider_name=ref.provider_name,
+        source_name=ref.source_name,
         title=ref.title,
         depth=ref.depth,
     )
@@ -622,7 +622,7 @@ class MCPRawArtifactPayload(SurfacePayloadModel):
     """One raw archive artifact for the raw_artifacts tool."""
 
     raw_id: str
-    provider_name: str
+    source_name: str
     source_name: str | None = None
     source_path: str
     blob_size: int
@@ -637,7 +637,6 @@ class MCPRawArtifactPayload(SurfacePayloadModel):
     def from_record(cls, record: RawConversationRecord) -> MCPRawArtifactPayload:
         return cls(
             raw_id=record.raw_id,
-            provider_name=record.provider_name,
             source_name=record.source_name,
             source_path=record.source_path,
             blob_size=record.blob_size,

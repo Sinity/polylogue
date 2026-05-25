@@ -207,7 +207,7 @@ def append_artifact_observation_lines(lines: list[str], result: CheckCommandResu
             if row.resolved_package_version and row.resolved_element_kind:
                 resolved = f" -> {row.resolved_package_version}/{row.resolved_element_kind} [{row.resolution_reason}]"
             lines.append(
-                f"  {row.support_status} {row.payload_provider or row.provider_name} "
+                f"  {row.support_status} {row.payload_provider or row.source_name} "
                 f"{row.artifact_kind} {row.source_path}{resolved}"
             )
 
@@ -215,7 +215,7 @@ def append_artifact_observation_lines(lines: list[str], result: CheckCommandResu
         lines.extend(["", f"Artifact cohorts: {len(result.cohort_rows):,} cohorts"])
         for cohort in result.cohort_rows:
             lines.append(
-                f"  {cohort.provider_name} {cohort.artifact_kind} {cohort.support_status} "
+                f"  {cohort.source_name} {cohort.artifact_kind} {cohort.support_status} "
                 f"count={cohort.observation_count:,} cohort={cohort.cohort_id or '-'} "
                 f"version={cohort.resolved_package_version or '-'} "
                 f"element={cohort.resolved_element_kind or '-'}"

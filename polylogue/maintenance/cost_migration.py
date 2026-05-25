@@ -83,7 +83,7 @@ class LegacyCostRow:
     """One legacy session-profile row identified for cost migration."""
 
     conversation_id: str
-    provider_name: str
+    source_name: str
     total_cost_usd: float
     cost_provenance: str
 
@@ -167,7 +167,7 @@ def plan_cost_migration(
         json_document(
             {
                 "conversation_id": row.conversation_id,
-                "provider_name": row.provider_name,
+                "source_name": row.source_name,
                 "total_cost_usd": row.total_cost_usd,
                 "cost_provenance": row.cost_provenance,
                 "source": LEGACY_COST_SOURCE,

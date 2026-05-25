@@ -89,7 +89,7 @@ def parse(payload: object, fallback_id: str) -> ParsedConversation:
 
     provider = envelope.session.provider if envelope.session.provider is not Provider.UNKNOWN else Provider.UNKNOWN
     return ParsedConversation(
-        provider_name=provider,
+        source_name=provider,
         provider_conversation_id=envelope.session.provider_session_id or fallback_id,
         title=envelope.session.title or envelope.provenance.page_title or fallback_id,
         created_at=envelope.session.created_at,

@@ -360,9 +360,8 @@ class PolylogueArchiveMixin:
             result.append(
                 {
                     "raw_id": getattr(r, "raw_id", ""),
-                    "provider_name": getattr(r, "provider_name", ""),
+                    "source_name": getattr(r, "source_name", ""),
                     "source_path": getattr(r, "source_path", ""),
-                    "source_name": getattr(r, "source_name", None),
                     "blob_size": getattr(r, "blob_size", 0),
                     "acquired_at": getattr(r, "acquired_at", None),
                     "parsed_at": getattr(r, "parsed_at", None),

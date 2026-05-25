@@ -15,9 +15,8 @@ Concept                Examples                Where used
                        gemini-cli, aistudio,   daemon source discovery, watcher roots,
                        hermes, antigravity     MCP list/search params, docs + help text.
 
-**provider / lab**     OpenAI, Google,         Physical schema column ``provider_name``
-                       Anthropic              (storage compat), provider-wire schemas,
-                                              lab/model pricing lookups.
+**provider / lab**     OpenAI, Google,         Provider-wire schemas, lab/model pricing
+                       Anthropic              lookups, schema identity classification.
 
 **model identity**     gpt-5, claude-opus-4-7, provider_meta payloads, cost rollups,
                        gemini-2.5-pro         stats by model.
@@ -33,8 +32,8 @@ Surviving ``provider`` uses and their classification
 =================================== ===================================================
 Location                             Classification
 =================================== ===================================================
-DB column ``provider_name``          Physical schema compatibility — do not rename
-                                     without a reviewed migration.
+DB column ``source_name``             Canonical source-family column — renamed from
+                                     ``provider_name`` per ADR 001 (#1022).
 ``Provider`` enum in types.py        Backend canonical form; maps source-family tokens
                                      to storage values via ``canonical_runtime_provider``.
 CLI ``--provider`` / ``--exclude-provider``

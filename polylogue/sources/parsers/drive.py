@@ -235,7 +235,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         else _select_timestamp(observed_timestamps, latest=True)
     )
     return ParsedConversation(
-        provider_name=runtime_provider,
+        source_name=runtime_provider,
         provider_conversation_id=str(payload.get("id") or fallback_id),
         title=title,
         created_at=create_time_str,

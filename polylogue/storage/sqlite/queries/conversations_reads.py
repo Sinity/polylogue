@@ -192,7 +192,7 @@ async def list_conversation_summaries(
         select_clause = """
         SELECT
             c.conversation_id,
-            c.provider_name,
+            c.source_name,
             c.provider_conversation_id,
             c.title,
             c.created_at,
@@ -212,7 +212,7 @@ async def list_conversation_summaries(
         select_clause = """
         SELECT
             conversation_id,
-            provider_name,
+            source_name,
             provider_conversation_id,
             title,
             created_at,

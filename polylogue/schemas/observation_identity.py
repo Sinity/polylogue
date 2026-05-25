@@ -9,19 +9,19 @@ from polylogue.schemas.observation_models import PROVIDERS, ProviderConfig, Sche
 from polylogue.types import Provider
 
 
-def resolve_provider_config(provider_name: str | Provider) -> ProviderConfig:
-    canonical_provider = Provider.from_string(provider_name)
+def resolve_provider_config(source_name: str | Provider) -> ProviderConfig:
+    canonical_provider = Provider.from_string(source_name)
     if canonical_provider in PROVIDERS:
         return PROVIDERS[canonical_provider]
 
-    config = next((c for c in PROVIDERS.values() if c.db_provider_name == canonical_provider), None)
+    config = next((c for c in PROVIDERS.values() if c.db_source_name == canonical_provider), None)
     if config is not None:
         return config
 
     return ProviderConfig(
         name=canonical_provider,
         description=f"{canonical_provider} export format",
-        db_provider_name=canonical_provider,
+        db_source_name=canonical_provider,
         sample_granularity="document",
     )
 
@@ -55,14 +55,14 @@ def profile_similarity(left: set[str], right: set[str]) -> float:
 
 
 def derive_bundle_scope(
-    provider_name: str | Provider,
+    source_name: str | Provider,
     source_path: str | Path | None,
 ) -> str | None:
     """Return the provider-specific bundle scope for a raw artifact path."""
     if source_path is None:
         return None
 
-    provider_token = Provider.from_string(provider_name)
+    provider_token = Provider.from_string(source_name)
     path = Path(str(source_path))
     normalized = str(path)
 

@@ -183,7 +183,7 @@ def _cost_panel_payload(insight: Any) -> dict[str, object]:
     estimate = insight.estimate
     return {
         "conversation_id": insight.conversation_id,
-        "provider": insight.provider_name,
+        "provider": insight.source_name,
         "model_name": estimate.model_name,
         "normalized_model": estimate.normalized_model,
         "status": estimate.status,
@@ -364,7 +364,7 @@ def _work_event_panel_payload(events: list[Any]) -> dict[str, object]:
                 "event_id": ev.event_id,
                 "event_index": int(ev.event_index),
                 "conversation_id": ev.conversation_id,
-                "provider": ev.provider_name,
+                "provider": ev.source_name,
                 "evidence": ev.evidence.model_dump(mode="json"),
                 "inference": ev.inference.model_dump(mode="json"),
                 "provenance": _provenance_dict(ev.provenance),
@@ -386,7 +386,7 @@ def _phase_panel_payload(phases: list[Any]) -> dict[str, object]:
                 "phase_id": ph.phase_id,
                 "phase_index": int(ph.phase_index),
                 "conversation_id": ph.conversation_id,
-                "provider": ph.provider_name,
+                "provider": ph.source_name,
                 "evidence": ph.evidence.model_dump(mode="json"),
                 "inference": ph.inference.model_dump(mode="json"),
                 "provenance": _provenance_dict(ph.provenance),

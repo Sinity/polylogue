@@ -134,7 +134,7 @@ async def list_work_events(
         where.append("swe.conversation_id = ?")
         params.append(query.conversation_id)
     if query.provider:
-        where.append("swe.provider_name = ?")
+        where.append("swe.source_name = ?")
         params.append(query.provider)
     if query.heuristic_label:
         where.append("swe.heuristic_label = ?")
@@ -174,7 +174,7 @@ async def list_session_phases(
         where.append("conversation_id = ?")
         params.append(query.conversation_id)
     if query.provider:
-        where.append("provider_name = ?")
+        where.append("source_name = ?")
         params.append(query.provider)
     if query.kind:
         where.append("kind = ?")

@@ -326,7 +326,7 @@ def _existing_provider_event_ids(conn: sqlite3.Connection, event_ids: Sequence[s
     return existing
 
 
-def _upsert_stats_from_messages(conn: sqlite3.Connection, conversation_id: str, provider_name: str) -> None:
+def _upsert_stats_from_messages(conn: sqlite3.Connection, conversation_id: str, source_name: str) -> None:
     row = conn.execute(
         """
         SELECT
@@ -344,7 +344,7 @@ def _upsert_stats_from_messages(conn: sqlite3.Connection, conversation_id: str, 
         _STATS_UPSERT_SQL,
         (
             conversation_id,
-            provider_name,
+            source_name,
             int(row["message_count"] or 0),
             int(row["word_count"] or 0),
             int(row["tool_use_count"] or 0),
@@ -407,7 +407,7 @@ def _append_conversation(
         upsert_stats_for_append(
             conn,
             cdata.conversation_id,
-            cdata.provider_name,
+            cdata.source_name,
             changed_messages,
             existing_messages,
             full_recount=_upsert_stats_from_messages,
@@ -427,7 +427,7 @@ def _append_conversation(
     resolved_tuple = conversation_tuple_without_raw_id(_resolved_conversation_tuple(conn, cdata))
     conn.execute(_CONVERSATION_UPSERT_SQL, _conversation_tuple_with_hash(resolved_tuple, merged_hash))
     # Record the identity mapping so re-ingest after reset preserves conversation_id.
-    # Tuple indices: 1=provider_name, 2=provider_conversation_id, 13=raw_id, 14=source_name
+    # Tuple indices: 1=source_name, 2=provider_conversation_id, 13=raw_id, 14=source_name
     conn.execute(
         _IDENTITY_LEDGER_UPSERT_SQL,
         (
@@ -478,7 +478,7 @@ def _append_conversation(
     upsert_stats_for_append(
         conn,
         cdata.conversation_id,
-        cdata.provider_name,
+        cdata.source_name,
         changed_messages,
         existing_messages,
         full_recount=_upsert_stats_from_messages,

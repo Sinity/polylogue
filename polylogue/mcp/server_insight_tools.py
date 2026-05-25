@@ -205,7 +205,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 shape = inference.workflow_shape if inference is not None else "unknown"
                 keys: tuple[str, ...]
                 if group_by == "provider":
-                    keys = (profile.provider_name,)
+                    keys = (profile.source_name,)
                 elif group_by == "project":
                     paths = evidence.cwd_paths if evidence is not None else ()
                     keys = tuple(paths) or ("unattributed",)
@@ -280,7 +280,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 items.append(
                     {
                         "conversation_id": profile.conversation_id,
-                        "provider_name": profile.provider_name,
+                        "source_name": profile.source_name,
                         "title": profile.title,
                         "terminal_state": state,
                         "terminal_state_confidence": (

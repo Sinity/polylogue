@@ -120,11 +120,11 @@ async def search_action_results(
     from polylogue.errors import DatabaseError
 
     query = search_query_text(plan)
-    provider_names = list(provider_values(plan.providers)) or None
+    source_names = list(provider_values(plan.providers)) or None
     if not await action_search_ready(plan, repository):
         raise DatabaseError("Action search index is not fresh; daemon repair must complete before search.")
     try:
-        return await repository.search_actions(query, limit=limit, providers=provider_names)
+        return await repository.search_actions(query, limit=limit, providers=source_names)
     except Exception as exc:
         logger.warning(
             "action search failed",
@@ -147,8 +147,8 @@ async def search_hybrid_results(
     lane_ranks maps conversation_id -> {"text": rank_or_None, "action": rank_or_None, "vector": rank_or_None}.
     """
     query = search_query_text(plan)
-    provider_names = list(provider_values(plan.providers)) or None
-    text_results = await repository.search(query, limit=limit * 3, providers=provider_names)
+    source_names = list(provider_values(plan.providers)) or None
+    text_results = await repository.search(query, limit=limit * 3, providers=source_names)
     action_results = await search_action_results(plan, repository, limit=limit * 3)
     vector_results: list[Conversation] = []
     if plan.vector_provider is not None:

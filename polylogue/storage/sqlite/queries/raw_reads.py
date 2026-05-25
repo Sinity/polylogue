@@ -26,7 +26,7 @@ def _raw_select_query(
     select_columns: str,
     *,
     source_names: list[str] | None = None,
-    provider_name: str | None = None,
+    source_name: str | None = None,
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
     validation_statuses: list[str] | None = None,
@@ -38,9 +38,9 @@ def _raw_select_query(
         where_clauses.append("parsed_at IS NULL")
     if require_unvalidated:
         where_clauses.append("validated_at IS NULL")
-    if provider_name:
+    if source_name:
         where_clauses.append(f"{EFFECTIVE_RAW_PROVIDER_SQL} = ?")
-        params.append(provider_name)
+        params.append(source_name)
     if validation_statuses:
         placeholders = ",".join("?" for _ in validation_statuses)
         where_clauses.append(f"validation_status IN ({placeholders})")
@@ -64,7 +64,7 @@ def _raw_select_query(
 def raw_id_query(
     *,
     source_names: list[str] | None = None,
-    provider_name: str | None = None,
+    source_name: str | None = None,
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
     validation_statuses: list[str] | None = None,
@@ -72,7 +72,7 @@ def raw_id_query(
     return _raw_select_query(
         "raw_id",
         source_names=source_names,
-        provider_name=provider_name,
+        source_name=source_name,
         require_unparsed=require_unparsed,
         require_unvalidated=require_unvalidated,
         validation_statuses=validation_statuses,
@@ -82,7 +82,7 @@ def raw_id_query(
 def raw_header_query(
     *,
     source_names: list[str] | None = None,
-    provider_name: str | None = None,
+    source_name: str | None = None,
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
     validation_statuses: list[str] | None = None,
@@ -90,7 +90,7 @@ def raw_header_query(
     return _raw_select_query(
         "raw_id, blob_size",
         source_names=source_names,
-        provider_name=provider_name,
+        source_name=source_name,
         require_unparsed=require_unparsed,
         require_unvalidated=require_unvalidated,
         validation_statuses=validation_statuses,
@@ -101,7 +101,7 @@ async def iter_raw_ids(
     conn: aiosqlite.Connection,
     *,
     source_names: list[str] | None = None,
-    provider_name: str | None = None,
+    source_name: str | None = None,
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
     validation_statuses: list[str] | None = None,
@@ -109,7 +109,7 @@ async def iter_raw_ids(
 ) -> AsyncIterator[str]:
     sql, params = raw_id_query(
         source_names=source_names,
-        provider_name=provider_name,
+        source_name=source_name,
         require_unparsed=require_unparsed,
         require_unvalidated=require_unvalidated,
         validation_statuses=validation_statuses,
@@ -127,7 +127,7 @@ async def iter_raw_headers(
     conn: aiosqlite.Connection,
     *,
     source_names: list[str] | None = None,
-    provider_name: str | None = None,
+    source_name: str | None = None,
     require_unparsed: bool = False,
     require_unvalidated: bool = False,
     validation_statuses: list[str] | None = None,
@@ -135,7 +135,7 @@ async def iter_raw_headers(
 ) -> AsyncIterator[tuple[str, int]]:
     sql, params = raw_header_query(
         source_names=source_names,
-        provider_name=provider_name,
+        source_name=source_name,
         require_unparsed=require_unparsed,
         require_unvalidated=require_unvalidated,
         validation_statuses=validation_statuses,

@@ -17,7 +17,7 @@ class ActionEventRecord(BaseModel):
     timestamp: str | None = None
     sort_key: float | None = None
     sequence_index: int
-    provider_name: str | None = None
+    source_name: str | None = None
     action_kind: str
     tool_name: str | None = None
     normalized_tool_name: str

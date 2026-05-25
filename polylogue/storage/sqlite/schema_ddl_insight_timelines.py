@@ -13,7 +13,7 @@ SESSION_INSIGHT_TIMELINE_DDL = (
             conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,"""
     + MATERIALIZATION_COLUMNS_SQL
     + """
-            provider_name TEXT NOT NULL,
+            source_name TEXT NOT NULL,
             event_index INTEGER NOT NULL,
             heuristic_label TEXT NOT NULL,
             confidence REAL NOT NULL DEFAULT 0,
@@ -40,7 +40,7 @@ SESSION_INSIGHT_TIMELINE_DDL = (
         ON session_work_events(heuristic_label);
 
         CREATE INDEX IF NOT EXISTS idx_session_work_events_provider
-        ON session_work_events(provider_name);
+        ON session_work_events(source_name);
 
         CREATE INDEX IF NOT EXISTS idx_session_work_events_time
         ON session_work_events(start_time DESC, end_time DESC);
@@ -48,7 +48,7 @@ SESSION_INSIGHT_TIMELINE_DDL = (
         CREATE VIRTUAL TABLE IF NOT EXISTS session_work_events_fts USING fts5(
             event_id UNINDEXED,
             conversation_id UNINDEXED,
-            provider_name UNINDEXED,
+            source_name UNINDEXED,
             heuristic_label UNINDEXED,
             text,
             tokenize='unicode61'
@@ -56,8 +56,8 @@ SESSION_INSIGHT_TIMELINE_DDL = (
 
         CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ai
         AFTER INSERT ON session_work_events BEGIN
-            INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, heuristic_label, text)
-            VALUES (new.event_id, new.conversation_id, new.provider_name, new.heuristic_label, new.search_text);
+            INSERT INTO session_work_events_fts (event_id, conversation_id, source_name, heuristic_label, text)
+            VALUES (new.event_id, new.conversation_id, new.source_name, new.heuristic_label, new.search_text);
         END;
 
         CREATE TABLE IF NOT EXISTS session_phases (
@@ -65,7 +65,7 @@ SESSION_INSIGHT_TIMELINE_DDL = (
             conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,"""
     + MATERIALIZATION_COLUMNS_SQL
     + """
-            provider_name TEXT NOT NULL,
+            source_name TEXT NOT NULL,
             phase_index INTEGER NOT NULL,
             kind TEXT NOT NULL,
             start_index INTEGER NOT NULL DEFAULT 0,
@@ -92,7 +92,7 @@ SESSION_INSIGHT_TIMELINE_DDL = (
         ON session_phases(kind);
 
         CREATE INDEX IF NOT EXISTS idx_session_phases_provider
-        ON session_phases(provider_name);
+        ON session_phases(source_name);
 
         CREATE INDEX IF NOT EXISTS idx_session_phases_time
         ON session_phases(start_time DESC, end_time DESC);
@@ -105,8 +105,8 @@ SESSION_INSIGHT_TIMELINE_DDL = (
         CREATE TRIGGER IF NOT EXISTS session_work_events_fts_au
         AFTER UPDATE ON session_work_events BEGIN
             DELETE FROM session_work_events_fts WHERE event_id = old.event_id;
-            INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, heuristic_label, text)
-            VALUES (new.event_id, new.conversation_id, new.provider_name, new.heuristic_label, new.search_text);
+            INSERT INTO session_work_events_fts (event_id, conversation_id, source_name, heuristic_label, text)
+            VALUES (new.event_id, new.conversation_id, new.source_name, new.heuristic_label, new.search_text);
         END;
 """
 )

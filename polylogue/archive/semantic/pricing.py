@@ -75,7 +75,7 @@ class CostUsagePayload(PricingModel):
 
 
 class CostPricePayload(PricingModel):
-    provider_name: str
+    source_name: str
     model_name: str
     normalized_model: str
     currency: str = "USD"
@@ -137,7 +137,7 @@ class CostModelBreakdown(PricingModel):
 
 
 class CostEstimatePayload(PricingModel):
-    provider_name: str
+    source_name: str
     conversation_id: str | None = None
     message_id: str | None = None
     model_name: str | None = None
@@ -167,7 +167,7 @@ class CostEstimatePayload(PricingModel):
 class ModelPricing:
     """Per-million-token pricing for a normalized model identifier."""
 
-    provider_name: str
+    source_name: str
     input_usd_per_1m: float
     output_usd_per_1m: float
     cache_read_usd_per_1m: float = 0.0
@@ -179,7 +179,7 @@ class ModelPricing:
 
     def to_payload(self, *, model_name: str, normalized_model: str) -> CostPricePayload:
         return CostPricePayload(
-            provider_name=self.provider_name,
+            source_name=self.source_name,
             model_name=model_name,
             normalized_model=normalized_model,
             currency=self.currency,
@@ -384,7 +384,7 @@ def estimate_cost(
 
 def _exact_estimate(
     *,
-    provider_name: str,
+    source_name: str,
     total_usd: float,
     conversation_id: str | None = None,
     message_id: str | None = None,
@@ -406,7 +406,7 @@ def _exact_estimate(
         catalog_priced_usd=catalog_usd,
     )
     return CostEstimatePayload(
-        provider_name=provider_name,
+        source_name=source_name,
         conversation_id=conversation_id,
         message_id=message_id,
         model_name=model_name,
@@ -423,7 +423,7 @@ def _exact_estimate(
 
 def _estimate_from_usage(
     *,
-    provider_name: str,
+    source_name: str,
     model_name: str | None,
     usage: CostUsagePayload,
     conversation_id: str | None = None,
@@ -432,7 +432,7 @@ def _estimate_from_usage(
 ) -> CostEstimatePayload:
     if model_name is None or not model_name.strip():
         return CostEstimatePayload(
-            provider_name=provider_name,
+            source_name=source_name,
             conversation_id=conversation_id,
             message_id=message_id,
             status="unavailable",
@@ -444,7 +444,7 @@ def _estimate_from_usage(
         )
     if usage.billable_tokens <= 0:
         return CostEstimatePayload(
-            provider_name=provider_name,
+            source_name=source_name,
             conversation_id=conversation_id,
             message_id=message_id,
             model_name=model_name,
@@ -460,7 +460,7 @@ def _estimate_from_usage(
     pricing = PRICING.get(normalized_model)
     if pricing is None:
         return CostEstimatePayload(
-            provider_name=provider_name,
+            source_name=source_name,
             conversation_id=conversation_id,
             message_id=message_id,
             model_name=model_name,
@@ -475,7 +475,7 @@ def _estimate_from_usage(
     components = _cost_components(usage, pricing)
     total = sum(component.usd for component in components)
     return CostEstimatePayload(
-        provider_name=provider_name,
+        source_name=source_name,
         conversation_id=conversation_id,
         message_id=message_id,
         model_name=model_name,
@@ -497,7 +497,7 @@ def _estimate_from_usage(
 def estimate_message_cost(
     message: Message,
     *,
-    provider_name: str,
+    source_name: str,
     conversation_id: str | None = None,
     fallback_model: str | None = None,
 ) -> CostEstimatePayload:
@@ -525,7 +525,7 @@ def estimate_message_cost(
             cache_write_tokens=_coerce_int(getattr(message, "cache_write_tokens", 0)),
         )
     return _estimate_from_usage(
-        provider_name=provider_name,
+        source_name=source_name,
         conversation_id=conversation_id,
         message_id=str(message.id),
         model_name=model_name,
@@ -535,7 +535,7 @@ def estimate_message_cost(
 
 
 def _conversation_level_estimate(conversation: Conversation) -> CostEstimatePayload | None:
-    provider_name = _provider_text(conversation.provider)
+    source_name = _provider_text(conversation.provider)
     provider_meta = _record(conversation.provider_meta)
     raw = _record(provider_meta.get("raw")) or provider_meta
     exact = (
@@ -550,7 +550,7 @@ def _conversation_level_estimate(conversation: Conversation) -> CostEstimatePayl
     usage = _usage_payload(raw.get("usage") or raw.get("tokens") or raw)
     if exact is not None and exact > 0.0:
         return _exact_estimate(
-            provider_name=provider_name,
+            source_name=source_name,
             conversation_id=str(conversation.id),
             model_name=model_name,
             usage=usage,
@@ -558,7 +558,7 @@ def _conversation_level_estimate(conversation: Conversation) -> CostEstimatePayl
         )
     if usage.billable_tokens > 0 or model_name:
         return _estimate_from_usage(
-            provider_name=provider_name,
+            source_name=source_name,
             conversation_id=str(conversation.id),
             model_name=model_name,
             usage=usage,
@@ -580,7 +580,7 @@ def _dominant_model(estimates: Iterable[CostEstimatePayload]) -> tuple[str | Non
 def estimate_conversation_cost(conversation: Conversation) -> CostEstimatePayload:
     """Estimate cost for a conversation/session with confidence metadata."""
 
-    provider_name = _provider_text(conversation.provider)
+    source_name = _provider_text(conversation.provider)
     conversation_estimate = _conversation_level_estimate(conversation)
     if conversation_estimate is not None and conversation_estimate.status == "exact":
         return conversation_estimate
@@ -588,7 +588,7 @@ def estimate_conversation_cost(conversation: Conversation) -> CostEstimatePayloa
     message_estimates = [
         estimate_message_cost(
             message,
-            provider_name=provider_name,
+            source_name=source_name,
             conversation_id=str(conversation.id),
             fallback_model=conversation_estimate.model_name if conversation_estimate else None,
         )
@@ -603,7 +603,7 @@ def estimate_conversation_cost(conversation: Conversation) -> CostEstimatePayloa
         missing = ("missing_token_usage",) if message_estimates else ("no_messages",)
         unavailable: CostUnavailableReason = "no_tokens" if message_estimates else "no_messages"
         return CostEstimatePayload(
-            provider_name=provider_name,
+            source_name=source_name,
             conversation_id=str(conversation.id),
             status="unavailable",
             confidence=0.0,
@@ -668,7 +668,7 @@ def estimate_conversation_cost(conversation: Conversation) -> CostEstimatePayloa
         # per-message fallbacks from providers that report only session totals.
         return conversation_estimate
     return CostEstimatePayload(
-        provider_name=provider_name,
+        source_name=source_name,
         conversation_id=str(conversation.id),
         model_name=model_name,
         normalized_model=normalized_model,

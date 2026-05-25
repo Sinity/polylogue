@@ -49,8 +49,8 @@ class CorpusManifest:
 
 
 def representatives_dir(provider: Provider | str) -> Path:
-    provider_name = getattr(provider, "value", str(provider))
-    return Path(__file__).resolve().parents[1] / "schemas" / "providers" / provider_name / "representatives"
+    source_name = getattr(provider, "value", str(provider))
+    return Path(__file__).resolve().parents[1] / "schemas" / "providers" / source_name / "representatives"
 
 
 __all__ = ["CorpusManifest", "representatives_dir"]

@@ -12,7 +12,7 @@ from polylogue.types import ArtifactSupportStatus, Provider
 class ArtifactCohortSummary(BaseModel):
     """Aggregate summary for one observed artifact cohort."""
 
-    provider_name: str
+    source_name: str
     payload_provider: Provider | None = None
     artifact_kind: str
     support_status: ArtifactSupportStatus

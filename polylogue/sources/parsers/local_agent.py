@@ -41,7 +41,7 @@ def parse_gemini_cli(payload: JSONDocument, fallback_id: str) -> ParsedConversat
         source_family="gemini-cli",
     )
     return ParsedConversation(
-        provider_name=Provider.GEMINI_CLI,
+        source_name=Provider.GEMINI_CLI,
         provider_conversation_id=session_id,
         title=_string(payload.get("summary")) or session_id,
         created_at=_string(payload.get("startTime")),
@@ -75,7 +75,7 @@ def parse_hermes(payload: JSONDocument, fallback_id: str) -> ParsedConversation:
         source_family="hermes",
     )
     return ParsedConversation(
-        provider_name=Provider.HERMES,
+        source_name=Provider.HERMES,
         provider_conversation_id=session_id,
         title=session_id,
         created_at=_string(payload.get("session_start")),

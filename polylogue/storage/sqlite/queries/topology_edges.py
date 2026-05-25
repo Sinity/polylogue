@@ -7,7 +7,7 @@ Two operations are exposed:
   ``resolved`` → ``unresolved`` if a later ingest carries less information
   than the prior one.
 - :func:`resolve_topology_edges_for_conversation` — flip pending
-  ``unresolved`` rows pointing at ``(provider_name, provider_conversation_id)``
+  ``unresolved`` rows pointing at ``(source_name, provider_conversation_id)``
   to ``resolved`` once their parent has been ingested. Used by
   ``save_via_backend`` so out-of-order ingest backfills the resolver state
   the moment the parent lands.
@@ -234,7 +234,7 @@ async def resolve_topology_edges_for_conversation(
     conn: aiosqlite.Connection,
     *,
     conversation_id: str,
-    provider_name: str,
+    source_name: str,
     provider_conversation_id: str,
     resolved_at: str,
 ) -> int:
@@ -271,7 +271,7 @@ async def resolve_topology_edges_for_conversation(
            AND dst_provider_name = ?
            AND dst_provider_native_id = ?
         """,
-        (provider_name, provider_conversation_id),
+        (source_name, provider_conversation_id),
     )
     pending_rows = list(await cursor.fetchall())
 
@@ -297,7 +297,7 @@ async def resolve_topology_edges_for_conversation(
                 conn,
                 edge_id=None,
                 src_conversation_id=child_id,
-                dst_provider_name=provider_name,
+                dst_provider_name=source_name,
                 dst_provider_native_id=provider_conversation_id,
                 cycle_path=cycle_path,
                 observed_at=resolved_at,
@@ -315,7 +315,7 @@ async def resolve_topology_edges_for_conversation(
                AND dst_provider_name = ?
                AND dst_provider_native_id = ?
             """,
-            (conversation_id, resolved_at, child_id, provider_name, provider_conversation_id),
+            (conversation_id, resolved_at, child_id, source_name, provider_conversation_id),
         )
         flipped += 1
         # Backfill the resolved fast-path on the child conversation. The
@@ -352,7 +352,7 @@ async def resolve_unresolved_edges_for_child(
     :func:`resolve_topology_edges_for_conversation` pass ran before the
     child's edge was upserted. After the child's edge lands, this helper
     sweeps every unresolved edge it just wrote, joins against
-    ``conversations`` on ``(provider_name, provider_conversation_id)``,
+    ``conversations`` on ``(source_name, provider_conversation_id)``,
     and flips the edge if a matching parent row now exists.
 
     Backfills the same ``conversations.parent_conversation_id`` /
@@ -365,7 +365,7 @@ async def resolve_unresolved_edges_for_child(
         SELECT te.edge_id, te.edge_type, c.conversation_id AS parent_cid
           FROM topology_edges AS te
           JOIN conversations  AS c
-            ON c.provider_name = te.dst_provider_name
+            ON c.source_name = te.dst_provider_name
            AND c.provider_conversation_id = te.dst_provider_native_id
          WHERE te.src_conversation_id = ?
            AND te.status = 'unresolved'

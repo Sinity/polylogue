@@ -160,7 +160,7 @@ async def search_attachment_identity_evidence_hits(
                 r.provider_attachment_id AS r_provider_attachment_id,
                 r.provider_file_id AS r_provider_file_id,
                 r.provider_drive_id AS r_provider_drive_id,
-                c.provider_name,
+                c.source_name,
                 COALESCE(m.sort_key, c.sort_key, 0) AS sort_key,
                 COALESCE(
                     json_extract(a.provider_meta, '$.name'),
@@ -177,7 +177,7 @@ async def search_attachment_identity_evidence_hits(
     params: list[str | int | float] = []
 
     if providers:
-        scope_sql, scope_params = _build_provider_scope_filter(providers, provider_column="c.provider_name")
+        scope_sql, scope_params = _build_provider_scope_filter(providers, provider_column="c.source_name")
         sql += f" AND {scope_sql}"
         params.extend(scope_params)
 

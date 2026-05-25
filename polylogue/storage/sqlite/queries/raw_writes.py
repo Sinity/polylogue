@@ -16,7 +16,7 @@ async def save_raw_conversation(
         """
         INSERT OR IGNORE INTO raw_conversations (
             raw_id,
-            provider_name,
+            source_name,
             payload_provider,
             source_name,
             source_path,
@@ -37,7 +37,7 @@ async def save_raw_conversation(
         """,
         (
             record.raw_id,
-            record.provider_name,
+            record.source_name,
             record.payload_provider,
             record.source_name,
             record.source_path,

@@ -263,12 +263,12 @@ async def search_hits_for_plan(
         return []
 
     if _simple_message_hit_plan(plan):
-        provider_names = list(provider_values(plan.providers)) or None
+        source_names = list(provider_values(plan.providers)) or None
         limit = plan.limit or search_limit(plan)
         return await repository.search_summary_hits(
             query_text,
             limit=limit,
-            providers=provider_names,
+            providers=source_names,
             since=plan.since.isoformat() if plan.since else None,
         )
 

@@ -55,11 +55,11 @@ def parsed_block_from_harmonized(block: ContentBlock) -> ParsedContentBlock | No
     return None
 
 
-def canonicalize_message_content(provider_name: str, message: ParsedMessage) -> ParsedMessage:
+def canonicalize_message_content(source_name: str, message: ParsedMessage) -> ParsedMessage:
     if message.provider_meta is None:
         return message
     harmonized = harmonize_parsed_message(
-        provider_name,
+        source_name,
         message.provider_meta,
         message_id=message.provider_message_id,
         role=str(message.role),
@@ -86,7 +86,7 @@ def canonicalize_message_content(provider_name: str, message: ParsedMessage) -> 
 
 
 def canonicalize_conversation_content(convo: ParsedConversation) -> ParsedConversation:
-    messages = [canonicalize_message_content(str(convo.provider_name), message) for message in convo.messages]
+    messages = [canonicalize_message_content(str(convo.source_name), message) for message in convo.messages]
     if all(original == updated for original, updated in zip(convo.messages, messages, strict=True)):
         return convo
     return convo.model_copy(update={"messages": messages})
