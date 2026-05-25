@@ -69,6 +69,17 @@ def _run_status(db_path: Path, *args: str, cfg: _Cfg | None = None) -> dict[str,
     return _payload(result.output)
 
 
+def _run_status_text(db_path: Path, *, cfg: _Cfg | None = None) -> str:
+    runner = CliRunner(env={"POLYLOGUE_FORCE_PLAIN": "1"})
+    with patch(
+        "polylogue.config.load_polylogue_config",
+        return_value=cfg or _Cfg(embedding_enabled=False, voyage_api_key=None),
+    ):
+        result = runner.invoke(embed_command, ["status"], obj=_env(db_path), catch_exceptions=False)
+    assert result.exit_code == 0
+    return str(result.output)
+
+
 def test_status_json_fast_path_handles_absent_embedding_tables(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.db"
     _seed_archive_without_embedding_ledgers(db_path)
@@ -179,3 +190,25 @@ def test_status_json_includes_latest_catchup_run(tmp_path: Path) -> None:
     assert latest["stop_reason"] == "keyboard interrupt"
     assert latest["rebuild"] is True
     assert latest["planned_conversations"] == 2
+
+
+def test_status_text_prints_bounded_next_actions(tmp_path: Path) -> None:
+    db_path = tmp_path / "archive.db"
+    _seed_archive_without_embedding_ledgers(db_path)
+
+    output = _run_status_text(db_path, cfg=_Cfg(embedding_enabled=False, voyage_api_key="vk-live"))
+
+    assert "Activation:            polylogue embed enable --yes" in output
+    assert "Next preflight:        polylogue embed preflight --max-conversations 10" in output
+    assert "Catch-up:              after enabling, run:" in output
+    assert "polylogue embed backfill --max-conversations 10" in output
+
+
+def test_status_text_prints_daemon_catchup_when_enabled(tmp_path: Path) -> None:
+    db_path = tmp_path / "archive.db"
+    _seed_archive_without_embedding_ledgers(db_path)
+
+    output = _run_status_text(db_path, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+
+    assert "Activation:" not in output
+    assert "Catch-up:              polylogued will process bounded batches, or run:" in output

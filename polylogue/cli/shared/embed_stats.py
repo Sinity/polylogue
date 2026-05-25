@@ -68,6 +68,23 @@ def _render_latest_catchup_run(payload: EmbeddingStatusPayload) -> None:
         click.echo(f"    reason: {latest['stop_reason']}")
 
 
+def _render_next_actions(payload: EmbeddingStatusPayload) -> None:
+    if payload["total_conversations"] <= 0:
+        return
+    if not payload["daemon_stage_enabled"]:
+        if payload["has_voyage_api_key"]:
+            click.echo("  Activation:            polylogue embed enable --yes")
+        else:
+            click.echo("  Activation:            polylogue embed enable --voyage-api-key ...")
+    if payload["pending_conversations"] > 0:
+        click.echo("  Next preflight:        polylogue embed preflight --max-conversations 10")
+        if payload["daemon_stage_enabled"]:
+            click.echo("  Catch-up:              polylogued will process bounded batches, or run:")
+        else:
+            click.echo("  Catch-up:              after enabling, run:")
+        click.echo("                         polylogue embed backfill --max-conversations 10")
+
+
 def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool = False) -> None:
     """Render an embedding statistics payload."""
     if json_output:
@@ -94,11 +111,7 @@ def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool
     click.echo(f"  Stale messages:        {payload['stale_messages']}")
     click.echo(f"  Missing provenance:    {payload['messages_missing_provenance']}")
     click.echo(f"  Estimated total cost:  ~${payload['total_estimated_cost_usd']:.2f}")
-    if payload["total_conversations"] > 0 and not payload["daemon_stage_enabled"]:
-        if payload["has_voyage_api_key"]:
-            click.echo("  Activation:            polylogue embed enable --yes")
-        else:
-            click.echo("  Activation:            polylogue embed enable --voyage-api-key ...")
+    _render_next_actions(payload)
     _render_embedding_window(payload)
     _render_named_counts("Models", payload["embedding_models"])
     _render_named_counts("Dimensions", payload["embedding_dimensions"])
