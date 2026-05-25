@@ -145,22 +145,44 @@ def select_pending_conversation_window(
         params.extend(unique_ids)
 
     status_exists = _table_exists(conn, "embedding_status")
+    stats_exists = max_messages is None and _table_exists(conn, "conversation_stats")
     where_clause = "1 = 1" if rebuild or not status_exists else "(e.conversation_id IS NULL OR e.needs_reindex = 1)"
 
     join_clause = "LEFT JOIN embedding_status e ON c.conversation_id = e.conversation_id" if status_exists else ""
-    cursor = conn.execute(
-        f"""
-        SELECT c.conversation_id, c.title, COUNT(m.message_id) AS message_count
-        FROM conversations c
-        {join_clause}
-        LEFT JOIN messages m ON m.conversation_id = c.conversation_id
-        WHERE {where_clause}
-          {id_filter}
-        GROUP BY c.conversation_id, c.title, c.updated_at
-        ORDER BY COALESCE(c.updated_at, ''), c.conversation_id
-        """,
-        tuple(params),
-    )
+    if stats_exists:
+        cursor = conn.execute(
+            f"""
+            SELECT
+                c.conversation_id,
+                c.title,
+                COALESCE(
+                    cs.message_count,
+                    (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.conversation_id)
+                ) AS message_count
+            FROM conversations c
+            {join_clause}
+            LEFT JOIN conversation_stats cs ON cs.conversation_id = c.conversation_id
+            WHERE {where_clause}
+              {id_filter}
+            ORDER BY COALESCE(c.updated_at, ''), c.conversation_id
+            """,
+            tuple(params),
+        )
+    else:
+        cursor = conn.execute(
+            f"""
+            SELECT
+                c.conversation_id,
+                c.title,
+                (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.conversation_id) AS message_count
+            FROM conversations c
+            {join_clause}
+            WHERE {where_clause}
+              {id_filter}
+            ORDER BY COALESCE(c.updated_at, ''), c.conversation_id
+            """,
+            tuple(params),
+        )
     while True:
         rows = cursor.fetchmany(500)
         if not rows:
