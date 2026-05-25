@@ -9,6 +9,7 @@ from polylogue.config import ConfigError
 from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
     MCPConversationSummaryPayload,
+    MCPEmbeddingPreflightPayload,
     MCPEmbeddingStatusPayload,
     MCPMessagePayload,
     MCPMessagesListPayload,
@@ -217,6 +218,29 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             return hooks.json_payload(MCPEmbeddingStatusPayload.from_payload(dict(payload)))
 
         return hooks.safe_call("embedding_status", run)
+
+    @mcp.tool()
+    def embedding_preflight(
+        rebuild: bool = False,
+        max_conversations: int | None = None,
+        max_messages: int | None = None,
+        max_cost_usd: float | None = None,
+    ) -> str:
+        def run() -> str:
+            from polylogue.storage.embeddings.preflight import build_preflight_report, preflight_payload
+
+            payload = preflight_payload(
+                build_preflight_report(
+                    hooks.get_config().db_path,
+                    rebuild=rebuild,
+                    max_conversations=max_conversations,
+                    max_messages=max_messages,
+                    max_cost_usd=max_cost_usd,
+                )
+            )
+            return hooks.json_payload(MCPEmbeddingPreflightPayload.from_payload(payload))
+
+        return hooks.safe_call("embedding_preflight", run)
 
     async def _facets(**kwargs: object) -> str:
         # Reuse the conversation query request so MCP facets share the

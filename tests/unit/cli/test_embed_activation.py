@@ -27,16 +27,18 @@ from click.testing import CliRunner
 
 from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.cli.commands.embed import (
-    PreflightReport,
-    _effective_cost_cap,
-    _message_window_for_cost,
-    _read_pending_message_count,
     _splice_embedding_section,
     embed_command,
 )
 from polylogue.cli.query import _maybe_elevate_to_hybrid
 from polylogue.cli.query_contracts import QueryExecutionPlan
 from polylogue.cli.root_request import RootModeRequest
+from polylogue.storage.embeddings.preflight import (
+    PreflightReport,
+    effective_cost_cap,
+    message_window_for_cost,
+    read_pending_message_count,
+)
 
 
 def _make_plan(spec: ConversationQuerySpec) -> QueryExecutionPlan:
@@ -186,12 +188,12 @@ class TestEnableCommand:
 
 class TestPreflightCommand:
     def test_cost_window_translates_to_message_window(self) -> None:
-        assert _message_window_for_cost(0.10) == 2000
+        assert message_window_for_cost(0.10) == 2000
 
     def test_run_cost_cap_takes_the_lower_positive_bound(self) -> None:
-        assert _effective_cost_cap(5.0, 0.10) == 0.10
-        assert _effective_cost_cap(0.0, 0.10) == 0.10
-        assert _effective_cost_cap(5.0, None) == 5.0
+        assert effective_cost_cap(5.0, 0.10) == 0.10
+        assert effective_cost_cap(0.0, 0.10) == 0.10
+        assert effective_cost_cap(5.0, None) == 5.0
 
     def test_preflight_count_bypasses_schema_version_gate_for_readiness(self, tmp_path: Path) -> None:
         db_path = tmp_path / "archive.db"
@@ -202,7 +204,7 @@ class TestPreflightCommand:
             conn.execute("INSERT INTO messages (message_id, conversation_id) VALUES ('msg-1', 'conv-1')")
             conn.execute("PRAGMA user_version = 9")
 
-        assert _read_pending_message_count(db_path) == (1, 1, 1)
+        assert read_pending_message_count(db_path) == (1, 1, 1)
 
     def test_preflight_does_not_touch_provider(self, cli_runner: CliRunner, stub_env: Any) -> None:
         report = _make_report(pending_conversations=4, estimated_cost_usd=0.42)

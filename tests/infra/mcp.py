@@ -20,6 +20,7 @@ EXPECTED_TOOL_NAMES = {
     "neighbor_candidates",
     "stats",
     "embedding_status",
+    "embedding_preflight",
     "facets",
     "add_tag",
     "remove_tag",
