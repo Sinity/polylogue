@@ -32,10 +32,6 @@ from polylogue.insights.archive import (
     WorkThreadInsight,
     WorkThreadInsightQuery,
 )
-from polylogue.insights.productivity import (
-    ProductivityRollupInsight,
-    ProductivityRollupInsightQuery,
-)
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.insights.topology import ConversationRef, LogicalSession, SessionTopology
 from polylogue.types import ConversationId
@@ -94,11 +90,6 @@ if TYPE_CHECKING:
             self,
             query: ToolUsageInsightQuery | None = None,
         ) -> list[ToolUsageInsight]: ...
-
-        async def list_productivity_rollup_insights(
-            self,
-            query: ProductivityRollupInsightQuery | None = None,
-        ) -> list[ProductivityRollupInsight]: ...
 
         async def list_session_cost_insights(
             self,
@@ -208,12 +199,6 @@ class PolylogueInsightsMixin:
         query: ToolUsageInsightQuery | None = None,
     ) -> list[ToolUsageInsight]:
         return await self.operations.list_tool_usage_insights(query)
-
-    async def list_productivity_rollup_insights(
-        self,
-        query: ProductivityRollupInsightQuery | None = None,
-    ) -> list[ProductivityRollupInsight]:
-        return await self.operations.list_productivity_rollup_insights(query)
 
     async def list_session_cost_insights(
         self,
