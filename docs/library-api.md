@@ -89,6 +89,7 @@ async with Polylogue() as archive:
 
 `SessionProfileInsight` exposes stable session semantics directly:
 
+- `inferred_topic`
 - `first_message_at`
 - `canonical_session_date`
 - `timestamp_source`

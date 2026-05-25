@@ -11,7 +11,7 @@ from polylogue.archive.session.documents import SessionPhaseDocument, WorkEventD
 from polylogue.insights.confidence import ConfidenceBand
 from polylogue.insights.fallback import FallbackReason
 
-ARCHIVE_INSIGHT_CONTRACT_VERSION = 8
+ARCHIVE_INSIGHT_CONTRACT_VERSION = 9
 
 
 class ArchiveInsightModel(BaseModel):
@@ -89,6 +89,8 @@ class SessionEvidencePayload(ArchiveInsightModel):
 
 
 class SessionInferencePayload(ArchiveInsightModel):
+    inferred_topic: str | None = None
+    inferred_topic_source: str = "absent"
     repo_names: tuple[str, ...] = ()
     work_event_count: int = 0
     phase_count: int = 0

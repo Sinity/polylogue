@@ -40,6 +40,8 @@ class SessionProfileDocument(TypedDict):
     conversation_id: str
     provider: str
     title: str | None
+    inferred_topic: str | None
+    inferred_topic_source: str
     created_at: str | None
     updated_at: str | None
     message_count: int
