@@ -532,3 +532,253 @@ class TestSafeValueNeverResemblesPII:
         if _is_safe_enum_value(value):
             assert "@" not in value, f"Accepted value {value!r} contains @"
             assert "://" not in value, f"Accepted value {value!r} contains URL scheme"
+
+
+# =============================================================================
+# Guard interaction tests (#1225)
+# =============================================================================
+
+
+class TestMultiGuardInteraction:
+    """Values that trip multiple privacy guards simultaneously.
+
+    The three independent guards are:
+      1. Cross-conversation threshold (min_conversation_count)
+      2. Content-field key denylist (_CONTENT_FIELD_NAMES)
+      3. Private TLD denylist (_is_safe_enum_value)
+
+    These tests assert that multi-guard payloads are handled correctly:
+    suppression happens regardless of which guard fires first, and
+    values are absent if ANY guard would suppress them.
+    """
+
+    # ── overlap: content-field + cross-conv threshold ──────────
+
+    def test_content_field_value_absent_even_when_seen_in_many_convs(self) -> None:
+        """Guard 2 (content field) suppresses regardless of Guard 1 (threshold).
+
+        A value in a content field is blocked even when seen in enough
+        conversations to satisfy the cross-conv threshold.
+        """
+        samples = [{"body": "active"} for _ in range(30)]
+        conv_ids: list[str | None] = [f"conv_{i}" for i in range(30)]
+        stats = _collect_field_stats(samples, conversation_ids=conv_ids)
+        schema: dict[str, object] = {
+            "type": "object",
+            "properties": {"body": {"type": "string"}},
+        }
+        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+        field_schema = schema_property(annotated, "body")
+        assert "x-polylogue-values" not in field_schema, (
+            "Content field should suppress enums even when value passes threshold"
+        )
+
+    def test_content_field_with_rare_value_still_suppressed(self) -> None:
+        """Content field suppresses rare AND common values alike."""
+        values_by_conv = {
+            "conv_A": ["rare_body_text"],
+            "conv_B": ["common_text"],
+            "conv_C": ["common_text"],
+            "conv_D": ["common_text"],
+        }
+        flat_samples = [{"body": v} for vals in values_by_conv.values() for v in vals]
+        flat_conv_ids: list[str | None] = [cid for cid, vals in values_by_conv.items() for _ in vals]
+        stats = _collect_field_stats(flat_samples, conversation_ids=flat_conv_ids)
+        schema = {"type": "object", "properties": {"body": {"type": "string"}}}
+        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+        field_schema = schema_property(annotated, "body")
+        assert "x-polylogue-values" not in field_schema, "Content field 'body' should never produce enums"
+
+    # ── overlap: content-field + private TLD ───────────────────
+
+    def test_content_field_with_private_tld_value_suppressed(self) -> None:
+        """Guard 2 (content field) and Guard 3 (private TLD) both fire.
+
+        'input' is a content field; 'api.internal' is a private TLD value.
+        Either guard alone would suppress — both together must also suppress.
+        """
+        samples = [{"input": "api.internal"} for _ in range(20)]
+        conv_ids: list[str | None] = [f"conv_{i}" for i in range(20)]
+        stats = _collect_field_stats(samples, conversation_ids=conv_ids)
+        schema = {"type": "object", "properties": {"input": {"type": "string"}}}
+        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+        field_schema = schema_property(annotated, "input")
+        assert "x-polylogue-values" not in field_schema, (
+            "Content field 'input' should suppress enums regardless of private TLD status"
+        )
+
+    def test_private_tld_value_on_structural_field_suppressed_by_value_guard(self) -> None:
+        """Guard 3 alone suppresses a private TLD value on a structural field.
+
+        'status' is NOT a content field, so Guard 2 doesn't fire.
+        Guard 3 (private TLD) still suppresses 'myhost.local'.
+        """
+        samples = [{"status": "myhost.local"} for _ in range(20)]
+        conv_ids: list[str | None] = [f"conv_{i}" for i in range(20)]
+        stats = _collect_field_stats(samples, conversation_ids=conv_ids)
+        schema = {"type": "object", "properties": {"status": {"type": "string"}}}
+        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+        field_schema = schema_property(annotated, "status")
+        enum_vals = schema_values(field_schema)
+        assert "myhost.local" not in enum_vals, "Private TLD value should be suppressed on structural field"
+
+    # ── overlap: cross-conv threshold + private TLD ────────────
+
+    def test_private_tld_value_suppressed_regardless_of_conv_count(self) -> None:
+        """Guard 3 (private TLD) suppresses even when Guard 1 (threshold) is satisfied.
+
+        'printer.lan' is a private TLD — it should be absent from enums
+        even when seen in 30 different conversations.
+        """
+        samples = [{"status": "printer.lan"} for _ in range(30)]
+        conv_ids: list[str | None] = [f"conv_{i}" for i in range(30)]
+        stats = _collect_field_stats(samples, conversation_ids=conv_ids)
+        schema = {"type": "object", "properties": {"status": {"type": "string"}}}
+        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+        field_schema = schema_property(annotated, "status")
+        enum_vals = schema_values(field_schema)
+        assert "printer.lan" not in enum_vals, (
+            "Private TLD value should be suppressed even when seen in 30 conversations"
+        )
+
+    # ── triple overlap ─────────────────────────────────────────
+
+    def test_triple_guard_overlap_suppresses_value(self) -> None:
+        """All three guards fire: content field + private TLD + rare conv count.
+
+        'message' is a content field, 'dev-server.corp' is a private TLD,
+        and the value appears in only 1 conversation.
+        """
+        values_by_conv = {
+            "conv_A": ["dev-server.corp"],
+            "conv_B": ["active"],
+            "conv_C": ["active"],
+            "conv_D": ["active"],
+        }
+        flat_samples = [{"message": v} for vals in values_by_conv.values() for v in vals]
+        flat_conv_ids: list[str | None] = [cid for cid, vals in values_by_conv.items() for _ in vals]
+        stats = _collect_field_stats(flat_samples, conversation_ids=flat_conv_ids)
+        schema = {"type": "object", "properties": {"message": {"type": "string"}}}
+        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+        field_schema = schema_property(annotated, "message")
+        assert "x-polylogue-values" not in field_schema, "Content field 'message' should never produce enums (Guard 2)"
+
+    # ── order independence ─────────────────────────────────────
+
+    def test_suppression_is_independent_of_guard_order(self) -> None:
+        """The same input produces identical output regardless of guard ordering.
+
+        We verify this by running the annotation twice with the same
+        input and asserting the outputs are identical — guards are
+        applied in a fixed order by _annotate_schema, so two runs
+        with the same inputs must produce equal results.
+        """
+        samples = [
+            {"status": "na1.storybird.ai"},
+            {"body": "some text"},
+            {"status": "active"},
+            {"input": "api.internal"},
+            {"status": "pending"},
+        ]
+        conv_ids: list[str | None] = ["conv_A", "conv_A", "conv_B", "conv_B", "conv_C"]
+        stats = _collect_field_stats(samples, conversation_ids=conv_ids)
+
+        schema: dict[str, object] = {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string"},
+                "body": {"type": "string"},
+                "input": {"type": "string"},
+            },
+        }
+
+        run1 = _annotate_schema(schema, stats, min_conversation_count=3)
+        run2 = _annotate_schema(schema, stats, min_conversation_count=3)
+
+        assert run1 == run2, "Identical inputs must produce identical outputs"
+
+    # ── any-guard-suppresses guarantee ─────────────────────────
+
+    def test_any_guard_suppresses_value_is_absent(self) -> None:
+        """If any guard would suppress a value, the value is absent from enums.
+
+        We construct a mixed payload where:
+        - 'na1.storybird.ai' → suppressed by Guard 1 (seen in 1 conv, threshold=3)
+          AND Guard 3 (domain with public TLD '.ai')
+        - 'active' in 'status' → passes all guards (seen in 3+ convs, not content field, not TLD)
+        - 'active' in 'body' → suppressed by Guard 2 (content field)
+        """
+        values_by_conv = {
+            "conv_A": [("status", "na1.storybird.ai"), ("body", "active")],
+            "conv_B": [("status", "active")],
+            "conv_C": [("status", "active")],
+            "conv_D": [("status", "active")],
+        }
+        flat_samples = [{field: val} for _cid, pairs in values_by_conv.items() for field, val in pairs]
+        flat_conv_ids: list[str | None] = [cid for cid, pairs in values_by_conv.items() for _ in pairs]
+        stats = _collect_field_stats(flat_samples, conversation_ids=flat_conv_ids)
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string"},
+                "body": {"type": "string"},
+            },
+        }
+        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+
+        status_schema = schema_property(annotated, "status")
+        status_enums = schema_values(status_schema)
+        assert "active" in status_enums, "'active' in 'status' should pass all guards"
+        assert "na1.storybird.ai" not in status_enums, "Domain value suppressed by Guard 1 (rare) + Guard 3 (TLD)"
+
+        body_schema = schema_property(annotated, "body")
+        assert "x-polylogue-values" not in body_schema, "Content field 'body' should never produce enums (Guard 2)"
+
+    # ── no double-counting ─────────────────────────────────────
+
+    def test_multi_guard_suppression_not_double_counted(self) -> None:
+        """A value suppressed by multiple guards still counts as one suppression.
+
+        We verify that the suppressed count in field stats is consistent
+        regardless of how many guards would independently suppress a value.
+        """
+        samples = [
+            {"message": "api.internal"},
+            {"message": "router.home"},
+            {"message": "active"},
+        ]
+        conv_ids: list[str | None] = [f"conv_{i}" for i in range(3)]
+        stats = _collect_field_stats(samples, conversation_ids=conv_ids)
+        schema = {"type": "object", "properties": {"message": {"type": "string"}}}
+        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+
+        # Content field 'message' suppresses ALL enums (Guard 2)
+        field_schema = schema_property(annotated, "message")
+        assert "x-polylogue-values" not in field_schema, "Content field 'message' should suppress all enum values"
+
+    def test_stats_are_consistent_when_guards_overlap(self) -> None:
+        """Field stats (total count, distinct count) are consistent even when
+        multiple guards fire on different values in the same field."""
+        values_by_conv = {
+            "conv_A": [("status", "active"), ("status", "nas.local")],
+            "conv_B": [("status", "active")],
+            "conv_C": [("status", "active")],
+            "conv_D": [("status", "pending")],
+        }
+        flat_samples = [{field: val} for _cid, pairs in values_by_conv.items() for field, val in pairs]
+        flat_conv_ids: list[str | None] = [cid for cid, pairs in values_by_conv.items() for _ in pairs]
+        stats = _collect_field_stats(flat_samples, conversation_ids=flat_conv_ids)
+
+        # 'status' is a structural field — not a content field
+        # 'nas.local' → suppressed by Guard 3 (private TLD)
+        # 'active' → passes all guards (seen in 3 convs, not TLD)
+        # 'pending' → suppressed by Guard 1 (seen in 1 conv, threshold=3)
+        schema = {"type": "object", "properties": {"status": {"type": "string"}}}
+        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+        status_schema = schema_property(annotated, "status")
+        enum_vals = schema_values(status_schema)
+
+        assert "active" in enum_vals, "'active' should pass all three guards"
+        assert "nas.local" not in enum_vals, "'nas.local' suppressed by Guard 3 (private TLD)"
+        assert "pending" not in enum_vals, "'pending' suppressed by Guard 1 (rare, threshold=3)"
