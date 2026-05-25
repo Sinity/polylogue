@@ -24,14 +24,16 @@ class SearchResult:
 
 
 @dataclass(frozen=True)
-class ConversationSearchHit:
+class ConversationSearchIdHit:
     conversation_id: str
     rank: int
     score: float | None = None
 
 
 @dataclass(frozen=True)
-class ConversationSearchEvidenceHit:
+class ConversationSearchEvidenceRow:
+    """Storage-level ranked evidence row before archive summary hydration."""
+
     conversation_id: str
     rank: int
     score: float | None = None
@@ -52,13 +54,13 @@ class ConversationSearchEvidenceHit:
 
 @dataclass(frozen=True)
 class ConversationSearchResult:
-    hits: list[ConversationSearchHit]
+    hits: list[ConversationSearchIdHit]
 
     @classmethod
     def from_ids(cls, conversation_ids: Sequence[str]) -> ConversationSearchResult:
         return cls(
             hits=[
-                ConversationSearchHit(conversation_id=conversation_id, rank=rank)
+                ConversationSearchIdHit(conversation_id=conversation_id, rank=rank)
                 for rank, conversation_id in enumerate(conversation_ids, start=1)
             ]
         )
@@ -68,8 +70,8 @@ class ConversationSearchResult:
 
 
 __all__ = [
-    "ConversationSearchEvidenceHit",
-    "ConversationSearchHit",
+    "ConversationSearchEvidenceRow",
+    "ConversationSearchIdHit",
     "ConversationSearchResult",
     "SearchHit",
     "SearchResult",

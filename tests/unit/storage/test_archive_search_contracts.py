@@ -15,11 +15,11 @@ from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.repository.archive.search import RepositoryArchiveSearchMixin
 from polylogue.storage.runtime import ConversationRecord
 from polylogue.storage.search.models import (
-    ConversationSearchEvidenceHit,
+    ConversationSearchEvidenceRow,
     ConversationSearchResult,
 )
 from polylogue.storage.search.models import (
-    ConversationSearchHit as StorageConversationSearchHit,
+    ConversationSearchIdHit as StorageConversationSearchIdHit,
 )
 from polylogue.storage.search_providers.hybrid_conversations import (
     _resolve_ranked_conversation_hits,
@@ -43,7 +43,7 @@ def _conversation_record(conversation_id: str, *, title: str, provider_name: str
 class _FakeQueries(SQLiteQueryStore):
     hits: ConversationSearchResult
     records_by_id: dict[str, ConversationRecord]
-    attachment_hits: list[ConversationSearchEvidenceHit] | None = None
+    attachment_hits: list[ConversationSearchEvidenceRow] | None = None
     last_batch_ids: list[str] | None = None
 
     async def search_conversation_hits(
@@ -70,10 +70,10 @@ class _FakeQueries(SQLiteQueryStore):
         limit: int = 20,
         providers: list[str] | None = None,
         since: str | None = None,
-    ) -> list[ConversationSearchEvidenceHit]:
+    ) -> list[ConversationSearchEvidenceRow]:
         del query, limit, providers, since
         return [
-            ConversationSearchEvidenceHit(
+            ConversationSearchEvidenceRow(
                 conversation_id=hit.conversation_id,
                 rank=hit.rank,
                 score=hit.score,
@@ -93,7 +93,7 @@ class _FakeQueries(SQLiteQueryStore):
         limit: int = 20,
         providers: list[str] | None = None,
         since: str | None = None,
-    ) -> list[ConversationSearchEvidenceHit]:
+    ) -> list[ConversationSearchEvidenceRow]:
         del query, limit, providers, since
         return self.attachment_hits or []
 
@@ -176,8 +176,8 @@ def test_resolve_ranked_conversation_hits_preserves_order_and_provider_scope() -
 async def test_repository_search_summaries_follow_conversation_hit_order() -> None:
     hits = ConversationSearchResult(
         hits=[
-            StorageConversationSearchHit(conversation_id="conv-b", rank=1, score=1.0),
-            StorageConversationSearchHit(conversation_id="conv-a", rank=2, score=2.0),
+            StorageConversationSearchIdHit(conversation_id="conv-b", rank=1, score=1.0),
+            StorageConversationSearchIdHit(conversation_id="conv-a", rank=2, score=2.0),
         ]
     )
     queries = _FakeQueries(
@@ -200,8 +200,8 @@ async def test_repository_search_summaries_follow_conversation_hit_order() -> No
 async def test_repository_search_summary_hits_keep_evidence_and_conversation_order() -> None:
     hits = ConversationSearchResult(
         hits=[
-            StorageConversationSearchHit(conversation_id="conv-b", rank=1, score=1.0),
-            StorageConversationSearchHit(conversation_id="conv-a", rank=2, score=2.0),
+            StorageConversationSearchIdHit(conversation_id="conv-b", rank=1, score=1.0),
+            StorageConversationSearchIdHit(conversation_id="conv-a", rank=2, score=2.0),
         ]
     )
     queries = _FakeQueries(
@@ -228,7 +228,7 @@ async def test_repository_search_summary_hits_keep_evidence_and_conversation_ord
 @pytest.mark.asyncio
 async def test_repository_search_summary_hits_prioritize_attachment_identity_evidence() -> None:
     hits = ConversationSearchResult.from_ids(["conv-b", "conv-a"])
-    attachment_hit = ConversationSearchEvidenceHit(
+    attachment_hit = ConversationSearchEvidenceRow(
         conversation_id="conv-a",
         rank=1,
         message_id="msg-attachment",

@@ -10,25 +10,25 @@ if TYPE_CHECKING:
     from polylogue.archive.conversation.models import Conversation, ConversationSummary
     from polylogue.archive.query.search_hits import ConversationSearchHit
     from polylogue.storage.runtime import ConversationRecord
-    from polylogue.storage.search.models import ConversationSearchEvidenceHit, ConversationSearchResult
+    from polylogue.storage.search.models import ConversationSearchEvidenceRow, ConversationSearchResult
     from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
 
 def _rerank_evidence_hits(
-    hits: builtins.list[ConversationSearchEvidenceHit],
-) -> builtins.list[ConversationSearchEvidenceHit]:
+    hits: builtins.list[ConversationSearchEvidenceRow],
+) -> builtins.list[ConversationSearchEvidenceRow]:
     return [replace(hit, rank=rank) for rank, hit in enumerate(hits, start=1)]
 
 
 def _merge_evidence_hits(
     *,
-    attachment_hits: builtins.list[ConversationSearchEvidenceHit],
-    message_hits: builtins.list[ConversationSearchEvidenceHit],
+    attachment_hits: builtins.list[ConversationSearchEvidenceRow],
+    message_hits: builtins.list[ConversationSearchEvidenceRow],
     limit: int,
-) -> builtins.list[ConversationSearchEvidenceHit]:
+) -> builtins.list[ConversationSearchEvidenceRow]:
     if limit <= 0:
         return []
-    merged: builtins.list[ConversationSearchEvidenceHit] = []
+    merged: builtins.list[ConversationSearchEvidenceRow] = []
     seen: set[str] = set()
     for hit in (*attachment_hits, *message_hits):
         if hit.conversation_id in seen:
