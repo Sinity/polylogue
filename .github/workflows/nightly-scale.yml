@@ -1,18 +1,21 @@
 name: Nightly Scale
 
 # Runs the large-tier scale fixtures (issue #1183) outside the normal
-# CI critical path. The default ``devtools verify`` baseline deselects
-# ``scale_large``; this workflow exists so a regression in the large
-# tier still produces a visible signal without burning CI minutes on
-# every PR.
+# CI critical path, captures benchmark results as structured JSON, and
+# compares against the committed baseline to detect regressions (#1220).
 
 on:
   schedule:
     - cron: "37 6 * * *"  # 06:37 UTC daily
   workflow_dispatch:
+    inputs:
+      update-baseline:
+        description: "Update the committed benchmark baseline after a successful run"
+        type: boolean
+        default: false
 
 permissions:
-  contents: read
+  contents: write  # needed to push baseline updates
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -28,8 +31,50 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync --extra dev --frozen
+
       - name: Run large-tier scale tests
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
           HYPOTHESIS_PROFILE: ci
-        run: uv run pytest -q --tb=short --ignore=tests/integration -m "scale_large" -p no:randomly -n 0 tests/benchmarks
+        run: |
+          uv run pytest -q --tb=short --ignore=tests/integration \
+            -m "scale_large" -p no:randomly -n 0 \
+            --benchmark-json=nightly-results.json \
+            --benchmark-group-by=group \
+            tests/benchmarks
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v5
+        with:
+          name: nightly-benchmark-${{ github.run_id }}
+          path: nightly-results.json
+          retention-days: 30
+
+      - name: Compare against baseline
+        id: compare
+        run: |
+          BASELINE="tests/benchmarks/baselines/nightly-baseline.json"
+          if [ ! -f "$BASELINE" ]; then
+            echo "No baseline file yet — saving first baseline."
+            cp nightly-results.json "$BASELINE"
+            echo "comparison=first-run" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Comparing against committed baseline..."
+          uv run python3 devtools/benchmark_compare_nightly.py "$BASELINE" nightly-results.json --fail-pct 20
+          echo "comparison=completed" >> "$GITHUB_OUTPUT"
+
+      - name: Report regression
+        if: failure() && steps.compare.outcome == 'failure'
+        run: |
+          echo "::warning::Benchmark regression detected — nightly results exceed 20% degradation threshold vs baseline."
+
+      - name: Update baseline
+        if: inputs.update-baseline
+        run: |
+          cp nightly-results.json tests/benchmarks/baselines/nightly-baseline.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add tests/benchmarks/baselines/nightly-baseline.json
+          git commit -m "chore(benchmarks): update nightly baseline" || true
+          git push
