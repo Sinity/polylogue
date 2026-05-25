@@ -510,8 +510,20 @@ def estimate_message_cost(
     blob-shaped totals.
     """
 
-    model_name = message_model_name(message) or (fallback_model.strip() if fallback_model else None) or None
+    model_name = (
+        message_model_name(message)
+        or str(getattr(message, "model_name", "") or "").strip()
+        or (fallback_model.strip() if fallback_model else None)
+        or None
+    )
     usage = _token_usage_payload(message_tokens(message))
+    if usage.billable_tokens <= 0:
+        usage = CostUsagePayload(
+            input_tokens=_coerce_int(getattr(message, "input_tokens", 0)),
+            output_tokens=_coerce_int(getattr(message, "output_tokens", 0)),
+            cache_read_tokens=_coerce_int(getattr(message, "cache_read_tokens", 0)),
+            cache_write_tokens=_coerce_int(getattr(message, "cache_write_tokens", 0)),
+        )
     return _estimate_from_usage(
         provider_name=provider_name,
         conversation_id=conversation_id,
@@ -531,7 +543,10 @@ def _conversation_level_estimate(conversation: Conversation) -> CostEstimatePayl
         or _coerce_float(raw.get("costUSD"))
         or _coerce_float(raw.get("cost_usd"))
     )
-    model_name = str(raw.get("model") or raw.get("model_slug") or "").strip() or None
+    raw_models_used = raw.get("models_used")
+    models_used = raw_models_used if isinstance(raw_models_used, list) else []
+    first_model = next((item for item in models_used if isinstance(item, str) and item.strip()), None)
+    model_name = str(raw.get("model") or raw.get("model_slug") or first_model or "").strip() or None
     usage = _usage_payload(raw.get("usage") or raw.get("tokens") or raw)
     if exact is not None and exact > 0.0:
         return _exact_estimate(

@@ -282,6 +282,104 @@ def test_session_insight_rebuild_fills_profile_time_from_conversation_timestamp(
     assert evidence["timestamp_source"] == "conversation_timestamp_fallback"
 
 
+def test_session_insight_rebuild_materializes_message_token_costs(tmp_path: Path) -> None:
+    db_path = tmp_path / "profile-token-costs.db"
+    with open_connection(db_path) as conn:
+        store_records(
+            conversation=make_conversation(
+                "conv-token-costs",
+                provider_name="claude-code",
+                title="Token costs",
+                created_at="2026-05-12T09:00:00+00:00",
+            ),
+            messages=[
+                make_message(
+                    "conv-token-costs:msg-1",
+                    "conv-token-costs",
+                    text="Run the plan",
+                    model_name="claude-sonnet-4-5",
+                    input_tokens=1_000,
+                    output_tokens=500,
+                    cache_read_tokens=200,
+                    cache_write_tokens=100,
+                ),
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        rebuild_session_insights_sync(conn)
+        row = conn.execute(
+            """
+            SELECT
+                total_input_tokens,
+                total_output_tokens,
+                total_cache_read_tokens,
+                total_cache_write_tokens,
+                total_cost_usd,
+                total_credit_cost,
+                cost_provenance,
+                per_model_cost_json
+            FROM session_profiles
+            WHERE conversation_id = ?
+            """,
+            ("conv-token-costs",),
+        ).fetchone()
+
+    assert row is not None
+    assert row["total_input_tokens"] == 1_000
+    assert row["total_output_tokens"] == 500
+    assert row["total_cache_read_tokens"] == 200
+    assert row["total_cache_write_tokens"] == 100
+    assert row["total_cost_usd"] > 0
+    assert row["total_credit_cost"] > 0
+    assert row["cost_provenance"] == "provider_reported"
+    per_model = json.loads(row["per_model_cost_json"])
+    assert per_model[0]["provider_model_name"] == "claude-sonnet-4-5"
+
+
+def test_session_insight_rebuild_preserves_conversation_provider_cost(tmp_path: Path) -> None:
+    db_path = tmp_path / "profile-provider-cost.db"
+    with open_connection(db_path) as conn:
+        store_records(
+            conversation=make_conversation(
+                "conv-provider-cost",
+                provider_name="claude-code",
+                title="Provider cost",
+                created_at="2026-05-12T09:00:00+00:00",
+                provider_meta={
+                    "total_cost_usd": 1.25,
+                    "total_duration_ms": 42_000,
+                    "models_used": ["claude-opus-4-5"],
+                },
+            ),
+            messages=[
+                make_message(
+                    "conv-provider-cost:msg-1",
+                    "conv-provider-cost",
+                    text="Provider reported total",
+                ),
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        rebuild_session_insights_sync(conn)
+        row = conn.execute(
+            """
+            SELECT total_cost_usd, total_duration_ms, cost_provenance, per_model_cost_json
+            FROM session_profiles
+            WHERE conversation_id = ?
+            """,
+            ("conv-provider-cost",),
+        ).fetchone()
+
+    assert row is not None
+    assert row["total_cost_usd"] == 1.25
+    assert row["total_duration_ms"] == 42_000
+    assert row["cost_provenance"] == "provider_reported"
+    per_model = json.loads(row["per_model_cost_json"])
+    assert per_model[0]["provider_model_name"] == "claude-opus-4-5"
+
+
 def test_session_insight_load_skips_plain_text_blocks(tmp_path: Path) -> None:
     db_path = tmp_path / "refresh-block-filter.db"
     with open_connection(db_path) as conn:

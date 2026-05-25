@@ -115,7 +115,10 @@ SELECT
     raw_id,
     json_extract(provider_meta, '$.cwd') AS provider_meta_cwd,
     json_extract(provider_meta, '$.gitBranch') AS provider_meta_git_branch,
-    json_extract(provider_meta, '$.git') AS provider_meta_git
+    json_extract(provider_meta, '$.git') AS provider_meta_git,
+    json_extract(provider_meta, '$.total_cost_usd') AS provider_meta_total_cost_usd,
+    json_extract(provider_meta, '$.total_duration_ms') AS provider_meta_total_duration_ms,
+    json_extract(provider_meta, '$.models_used') AS provider_meta_models_used
 FROM conversations
 WHERE conversation_id IN ({placeholders})
 """
@@ -277,6 +280,17 @@ def _row_to_session_insight_conversation(row: sqlite3.Row) -> ConversationRecord
         parsed_git = _parse_json(git_raw, field="provider_meta.git", record_id=row["conversation_id"])
         if isinstance(parsed_git, dict) and parsed_git:
             provider_meta["git"] = parsed_git
+    total_cost = _row_get(row, "provider_meta_total_cost_usd")
+    if isinstance(total_cost, int | float):
+        provider_meta["total_cost_usd"] = float(total_cost)
+    total_duration = _row_get(row, "provider_meta_total_duration_ms")
+    if isinstance(total_duration, int | float):
+        provider_meta["total_duration_ms"] = int(total_duration)
+    models_used = _row_get(row, "provider_meta_models_used")
+    if isinstance(models_used, str) and models_used:
+        parsed_models = _parse_json(models_used, field="provider_meta.models_used", record_id=row["conversation_id"])
+        if isinstance(parsed_models, list):
+            provider_meta["models_used"] = [item for item in parsed_models if isinstance(item, str)]
     parent_conversation_id = _row_text(row, "parent_conversation_id")
     branch_type = _row_text(row, "branch_type")
 

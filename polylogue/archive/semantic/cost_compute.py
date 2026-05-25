@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from polylogue.archive.semantic.cost_records import SessionCostBreakdown, SessionCostSummary
-from polylogue.archive.semantic.pricing import _normalize_model, estimate_cost
+from polylogue.archive.semantic.pricing import _normalize_model, estimate_conversation_cost, estimate_cost
 from polylogue.archive.semantic.subscription_pricing import compute_credit_cost, get_credit_rate
 from polylogue.archive.semantic.tokenizer import TOKENIZER_VERSION, estimate_tokens_from_words
 
@@ -17,6 +17,42 @@ _PRICE_SNAPSHOT_VERSION = "polylogue-curated-litellm-shaped-seed"
 
 def compute_session_cost(conversation: Conversation) -> SessionCostSummary:
     """Compute per-model cost breakdown and aggregate cost summary."""
+    conversation_estimate = estimate_conversation_cost(conversation)
+    if conversation_estimate.status == "exact":
+        return SessionCostSummary(
+            total_input_tokens=conversation_estimate.usage.input_tokens,
+            total_output_tokens=conversation_estimate.usage.output_tokens,
+            total_cache_read_tokens=conversation_estimate.usage.cache_read_tokens,
+            total_cache_write_tokens=conversation_estimate.usage.cache_write_tokens,
+            total_api_cost_usd=round(conversation_estimate.total_usd, 6),
+            total_credit_cost=0.0,
+            total_subscription_equivalent_usd=round(
+                conversation_estimate.basis.subscription_equivalent_usd,
+                6,
+            ),
+            cost_provenance="provider_reported",
+            cost_confidence="reported",
+            tokenizer_version=TOKENIZER_VERSION,
+            price_snapshot_version=_PRICE_SNAPSHOT_VERSION,
+            per_model=(
+                SessionCostBreakdown(
+                    normalized_model=conversation_estimate.normalized_model,
+                    provider_model_name=conversation_estimate.model_name,
+                    input_tokens=conversation_estimate.usage.input_tokens,
+                    output_tokens=conversation_estimate.usage.output_tokens,
+                    cache_read_tokens=conversation_estimate.usage.cache_read_tokens,
+                    cache_write_tokens=conversation_estimate.usage.cache_write_tokens,
+                    total_tokens=conversation_estimate.usage.total_tokens,
+                    api_cost_usd=round(conversation_estimate.total_usd, 6),
+                    subscription_equivalent_usd=round(
+                        conversation_estimate.basis.subscription_equivalent_usd,
+                        6,
+                    ),
+                    confidence="reported",
+                    provenance="provider_reported",
+                ),
+            ),
+        )
     per_model: dict[str, SessionCostBreakdown] = {}
 
     for message in conversation.messages:
@@ -140,6 +176,20 @@ def _get_message_token_counts(message: object) -> object | None:
     if harmonized is not None:
         result: object | None = getattr(harmonized, "tokens", None)
         return result
+    input_tokens = int(getattr(message, "input_tokens", 0) or 0)
+    output_tokens = int(getattr(message, "output_tokens", 0) or 0)
+    cache_read_tokens = int(getattr(message, "cache_read_tokens", 0) or 0)
+    cache_write_tokens = int(getattr(message, "cache_write_tokens", 0) or 0)
+    if input_tokens or output_tokens or cache_read_tokens or cache_write_tokens:
+        from polylogue.archive.semantic.pricing import CostUsagePayload
+
+        return CostUsagePayload(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
+            total_tokens=input_tokens + output_tokens + cache_read_tokens + cache_write_tokens,
+        )
     return None
 
 

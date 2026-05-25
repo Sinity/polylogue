@@ -117,6 +117,11 @@ def message_from_record(
         has_tool_use=bool(record.has_tool_use),
         has_thinking=bool(record.has_thinking),
         has_paste=bool(record.has_paste),
+        input_tokens=record.input_tokens,
+        output_tokens=record.output_tokens,
+        cache_read_tokens=record.cache_read_tokens,
+        cache_write_tokens=record.cache_write_tokens,
+        model_name=record.model_name,
     )
 
 
