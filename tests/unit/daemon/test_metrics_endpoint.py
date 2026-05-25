@@ -59,6 +59,8 @@ EXPECTED_SERIES: frozenset[str] = frozenset(
         "polylogue_embedding_conversations",
         "polylogue_embedding_messages",
         "polylogue_embedding_coverage_percent",
+        "polylogue_embedding_status_state",
+        "polylogue_embedding_retrieval_ready",
         "polylogue_embedding_latest_catchup_run_info",
         "polylogue_embedding_latest_catchup_conversations",
         "polylogue_embedding_latest_catchup_messages",
@@ -337,6 +339,9 @@ class TestFormatMetricsReadsArchiveState:
         assert 'polylogue_embedding_conversations{state="failed"} 1' in body
         assert 'polylogue_embedding_messages{state="embedded"} 2' in body
         assert "polylogue_embedding_coverage_percent 33.33333333333333" in body
+        assert 'polylogue_embedding_status_state{status="partial"} 1' in body
+        assert 'polylogue_embedding_status_state{status="complete"} 0' in body
+        assert "polylogue_embedding_retrieval_ready 1" in body
         assert 'polylogue_embedding_latest_catchup_run_info{rebuild="true",status="stopped"} 1' in body
         assert 'polylogue_embedding_latest_catchup_conversations{state="planned"} 3' in body
         assert 'polylogue_embedding_latest_catchup_conversations{state="processed"} 3' in body
@@ -363,6 +368,8 @@ class TestFormatMetricsReadsArchiveState:
 
         assert 'polylogue_embedding_conversations{state="pending"} 1' in body
         assert "polylogue_embedding_coverage_percent 0.0" in body
+        assert 'polylogue_embedding_status_state{status="none"} 1' in body
+        assert "polylogue_embedding_retrieval_ready 0" in body
 
 
 # ---------------------------------------------------------------------------
