@@ -222,6 +222,15 @@ ASSURANCE_REGISTRY: tuple[OutputAssurance, ...] = (
         streaming=False,
     ),
     OutputAssurance(
+        command="resume-candidates",
+        family=QUERY_FAMILY,
+        json_contract=True,
+        snapshot=True,
+        plain=True,
+        streaming=False,
+        notes="Ranks read-pull resume candidates; --format json emits a typed success envelope.",
+    ),
+    OutputAssurance(
         command="feedback",
         family=QUERY_FAMILY,
         json_contract=True,

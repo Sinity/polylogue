@@ -11,7 +11,6 @@ import pytest
 
 from polylogue.cli.shared.embed_runtime import embed_batch, embed_single
 from polylogue.cli.shared.embed_stats import show_embedding_stats
-from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 
 MessageRow: TypeAlias = dict[str, str]
 
@@ -60,6 +59,49 @@ _MOCK_MESSAGES: list[MessageRow] = [
 ]
 
 
+def _embedding_status_payload(
+    *,
+    total_conversations: int = 0,
+    embedded_conversations: int = 0,
+    embedded_messages: int = 0,
+    pending_conversations: int = 0,
+    retrieval_bands: dict[str, dict[str, object]] | None = None,
+) -> dict[str, object]:
+    status = "empty" if total_conversations == 0 else "none" if embedded_conversations == 0 else "partial"
+    if total_conversations > 0 and pending_conversations == 0 and embedded_conversations > 0:
+        status = "complete"
+    return {
+        "config_enabled": False,
+        "has_voyage_api_key": False,
+        "daemon_stage_enabled": False,
+        "status": status,
+        "total_conversations": total_conversations,
+        "embedded_conversations": embedded_conversations,
+        "embedded_messages": embedded_messages,
+        "pending_conversations": pending_conversations,
+        "pending_messages": None,
+        "pending_messages_exact": False,
+        "embedding_coverage_percent": round(
+            embedded_conversations / total_conversations * 100,
+            1,
+        )
+        if total_conversations
+        else 0.0,
+        "retrieval_ready": embedded_messages > 0,
+        "freshness_status": status,
+        "stale_messages": 0,
+        "messages_missing_provenance": 0,
+        "oldest_embedded_at": None,
+        "newest_embedded_at": None,
+        "embedding_models": {},
+        "embedding_dimensions": {},
+        "retrieval_bands": retrieval_bands or {},
+        "failure_count": 0,
+        "total_estimated_cost_usd": 0.0,
+        "latest_catchup_run": None,
+    }
+
+
 @pytest.fixture
 def mock_repository() -> MagicMock:
     repo = MagicMock()
@@ -94,23 +136,15 @@ class TestShowEmbeddingStats:
         expected_coverage: str,
         expected_pending: str,
     ) -> None:
-        mock_conn = MagicMock()
-        mock_conn.execute.return_value.fetchone.return_value = query_results[0]
-
-        with (
-            patch("polylogue.storage.sqlite.connection.open_connection") as mock_open,
-            patch(
-                "polylogue.storage.embeddings.embedding_stats.read_embedding_stats_sync",
-                return_value=EmbeddingStatsSnapshot(
-                    embedded_conversations=int(query_results[1][0]),
-                    embedded_messages=int(query_results[2][0]),
-                    pending_conversations=int(query_results[3][0]),
-                ),
+        with patch(
+            "polylogue.cli.shared.embed_stats.embedding_status_payload",
+            return_value=_embedding_status_payload(
+                total_conversations=int(query_results[0][0]),
+                embedded_conversations=int(query_results[1][0]),
+                embedded_messages=int(query_results[2][0]),
+                pending_conversations=int(query_results[3][0]),
             ),
-            patch("polylogue.storage.embeddings.support.table_exists_sync", return_value=False),
         ):
-            mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
-            mock_open.return_value.__exit__ = MagicMock(return_value=False)
             show_embedding_stats(mock_env)
 
         captured = capsys.readouterr()
@@ -120,48 +154,29 @@ class TestShowEmbeddingStats:
         assert "Retrieval ready:" in captured.out
 
     def test_show_stats_embedding_status_missing(self, mock_env: MagicMock, capsys: pytest.CaptureFixture[str]) -> None:
-        mock_conn = MagicMock()
-        mock_conn.execute.return_value.fetchone.return_value = (100,)
-
-        with (
-            patch("polylogue.storage.sqlite.connection.open_connection") as mock_open,
-            patch(
-                "polylogue.storage.embeddings.embedding_stats.read_embedding_stats_sync",
-                return_value=EmbeddingStatsSnapshot(),
-            ),
-            patch("polylogue.storage.embeddings.support.table_exists_sync", return_value=False),
+        with patch(
+            "polylogue.cli.shared.embed_stats.embedding_status_payload",
+            return_value=_embedding_status_payload(total_conversations=100, pending_conversations=100),
         ):
-            mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
-            mock_open.return_value.__exit__ = MagicMock(return_value=False)
             show_embedding_stats(mock_env)
 
         captured = capsys.readouterr()
         assert "Embedding Statistics" in captured.out
 
     def test_show_stats_json_output(self, mock_env: MagicMock, capsys: pytest.CaptureFixture[str]) -> None:
-        mock_conn = MagicMock()
-        mock_conn.execute.side_effect = [
-            MagicMock(fetchone=MagicMock(return_value=(100,))),
-        ]
-
-        with (
-            patch("polylogue.storage.sqlite.connection.open_connection") as mock_open,
-            patch(
-                "polylogue.storage.embeddings.embedding_stats.read_embedding_stats_sync",
-                return_value=EmbeddingStatsSnapshot(
-                    embedded_conversations=40,
-                    embedded_messages=200,
-                    pending_conversations=60,
-                    retrieval_bands={
-                        "transcript_embeddings": {"ready": False, "status": "partial"},
-                        "evidence_retrieval": {"ready": True, "status": "ready"},
-                    },
-                ),
+        with patch(
+            "polylogue.cli.shared.embed_stats.embedding_status_payload",
+            return_value=_embedding_status_payload(
+                total_conversations=100,
+                embedded_conversations=40,
+                embedded_messages=200,
+                pending_conversations=60,
+                retrieval_bands={
+                    "transcript_embeddings": {"ready": False, "status": "partial"},
+                    "evidence_retrieval": {"ready": True, "status": "ready"},
+                },
             ),
-            patch("polylogue.storage.embeddings.support.table_exists_sync", return_value=False),
         ):
-            mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
-            mock_open.return_value.__exit__ = MagicMock(return_value=False)
             show_embedding_stats(mock_env, json_output=True)
 
         payload = json.loads(capsys.readouterr().out)

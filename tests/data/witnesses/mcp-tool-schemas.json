@@ -1298,6 +1298,47 @@
     }
   },
   {
+    "name": "find_resume_candidates",
+    "parameters": {
+      "properties": {
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        },
+        "limit": {
+          "default": 10,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "recent_files": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Recent Files",
+          "type": "array"
+        },
+        "repo_path": {
+          "title": "Repo Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo_path"
+      ],
+      "title": "find_resume_candidatesArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "find_stuck_sessions",
     "parameters": {
       "properties": {
@@ -1352,6 +1393,22 @@
         "id"
       ],
       "title": "get_conversation_summaryArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_logical_session",
+    "parameters": {
+      "properties": {
+        "conversation_id": {
+          "title": "Conversation Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation_id"
+      ],
+      "title": "get_logical_sessionArguments",
       "type": "object"
     }
   },
