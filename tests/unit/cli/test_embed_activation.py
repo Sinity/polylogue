@@ -27,6 +27,7 @@ from click.testing import CliRunner
 from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.cli.commands.embed import (
     PreflightReport,
+    _effective_cost_cap,
     _message_window_for_cost,
     _read_pending_message_count,
     _splice_embedding_section,
@@ -185,6 +186,11 @@ class TestEnableCommand:
 class TestPreflightCommand:
     def test_cost_window_translates_to_message_window(self) -> None:
         assert _message_window_for_cost(0.10) == 2000
+
+    def test_run_cost_cap_takes_the_lower_positive_bound(self) -> None:
+        assert _effective_cost_cap(5.0, 0.10) == 0.10
+        assert _effective_cost_cap(0.0, 0.10) == 0.10
+        assert _effective_cost_cap(5.0, None) == 5.0
 
     def test_preflight_count_bypasses_schema_version_gate_for_readiness(self, tmp_path: Path) -> None:
         db_path = tmp_path / "archive.db"
@@ -388,6 +394,44 @@ class TestBackfillCommand:
         assert result.exit_code == 0, result.output
         assert fake_embed.call_count == 1
         assert "Stopped early: max errors reached" in result.output
+
+    def test_backfill_run_cost_cap_stops_after_window_overshoot(
+        self,
+        cli_runner: CliRunner,
+        stub_env: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("VOYAGE_API_KEY", "pa-test")
+        from polylogue.storage.embeddings.materialization import (
+            EmbedConversationOutcome,
+            PendingConversation,
+        )
+
+        fake_embed = MagicMock(
+            side_effect=[
+                EmbedConversationOutcome(status="embedded", conversation_id="conv-1", embedded_message_count=2),
+                EmbedConversationOutcome(status="embedded", conversation_id="conv-2", embedded_message_count=2),
+            ]
+        )
+        pending = [
+            PendingConversation(conversation_id="conv-1", title="A", message_count=2),
+            PendingConversation(conversation_id="conv-2", title="B", message_count=2),
+        ]
+        with (
+            _patch_preflight(_make_report(max_cost_usd=0.00005)),
+            patch("polylogue.storage.search_providers.create_vector_provider", return_value=MagicMock()),
+            patch("polylogue.storage.embeddings.materialization.iter_pending_conversations", return_value=pending),
+            patch("polylogue.storage.embeddings.materialization.embed_conversation_sync", fake_embed),
+        ):
+            result = cli_runner.invoke(
+                embed_command,
+                ["backfill", "--yes", "--max-cost-usd", "0.00005"],
+                obj=stub_env,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert fake_embed.call_count == 1
+        assert "Stopped early: cost cap reached" in result.output
 
 
 # ---------------------------------------------------------------------------

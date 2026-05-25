@@ -75,6 +75,14 @@ def _effective_message_window(max_messages: int | None, max_cost_usd: float | No
     return min(max_messages, cost_messages)
 
 
+def _effective_cost_cap(config_cap_usd: float, run_cap_usd: float | None) -> float:
+    if run_cap_usd is None:
+        return config_cap_usd
+    if config_cap_usd <= 0:
+        return run_cap_usd
+    return min(config_cap_usd, run_cap_usd)
+
+
 def _read_pending_message_count(
     db_path: Path,
     *,
@@ -567,7 +575,7 @@ def backfill_subcommand(
         click.echo("All conversations are already embedded.")
         return
 
-    cap = report.cost_cap_usd
+    cap = _effective_cost_cap(report.cost_cap_usd, report.max_cost_usd)
     cumulative_cost = 0.0
     embedded = 0
     errors = 0
