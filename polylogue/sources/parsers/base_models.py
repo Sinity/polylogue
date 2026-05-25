@@ -157,6 +157,11 @@ class ParsedConversation(BaseModel):
     working_directories: list[str] = Field(default_factory=list)
     git_branch: str | None = None
     git_repository_url: str | None = None
+    # Specific commit the agent session was anchored to (codex records this
+    # per-session in their meta.git.commit_hash). Lets downstream attribution
+    # pin a session to an exact commit instead of the looser "session_date
+    # +/- N hours" window. Empty string treated as None.
+    git_commit_hash: str | None = None
 
     @field_validator("source_name", mode="before")
     @classmethod

@@ -106,7 +106,7 @@ def _record_id(record: dict[str, object]) -> str | None:
 
 def _record_timestamp(record: dict[str, object]) -> str | int | float | None:
     value = record.get("timestamp")
-    return value if isinstance(value, (str, int, float)) else None
+    return value if isinstance(value, str | int | float) else None
 
 
 def _record_instructions(record: dict[str, object]) -> str | None:
@@ -469,6 +469,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
 
     git_branch_typed: str | None = None
     git_repo_url_typed: str | None = None
+    git_commit_hash_typed: str | None = None
     if session_git is not None:
         branch_val = session_git.get("branch")
         if isinstance(branch_val, str) and branch_val.strip():
@@ -476,6 +477,13 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
         repo_val = session_git.get("repository_url")
         if isinstance(repo_val, str) and repo_val.strip():
             git_repo_url_typed = repo_val.strip()
+        # commit_hash pins the session to an exact commit — the strongest
+        # attribution signal codex provides. Previously kept only inside
+        # provider_meta.git where downstream readers had to JSON-extract;
+        # now graduated to a typed top-level field.
+        commit_val = session_git.get("commit_hash")
+        if isinstance(commit_val, str) and commit_val.strip():
+            git_commit_hash_typed = commit_val.strip()
 
     return ParsedConversation(
         source_name=Provider.CODEX,
@@ -491,6 +499,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
         working_directories=sorted(working_directories),
         git_branch=git_branch_typed,
         git_repository_url=git_repo_url_typed,
+        git_commit_hash=git_commit_hash_typed,
     )
 
 
