@@ -417,6 +417,28 @@ class TestQueryTools:
         mock_ops.diagnose_query_miss.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_search_counts_through_archive_operations(self, mcp_server: MCPServerUnderTest) -> None:
+        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
+            mock_ops = MagicMock()
+            mock_ops.search_conversation_hits = AsyncMock(return_value=[])
+            mock_ops.count_conversations = AsyncMock(return_value=42)
+            mock_ops.diagnose_query_miss = AsyncMock(return_value=None)
+            mock_get_archive_ops.return_value = mock_ops
+
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["search"].fn,
+                query="semantic planning",
+                similar_text="semantic planning",
+                limit=10,
+            )
+
+        parsed = json.loads(result)
+        assert parsed["total"] == 42
+        mock_ops.count_conversations.assert_awaited_once()
+        spec = mock_ops.count_conversations.await_args.args[0]
+        assert spec.similar_text == "semantic planning"
+
+    @pytest.mark.asyncio
     async def test_query_tools_reject_unknown_message_type(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
             mock_ops = MagicMock()

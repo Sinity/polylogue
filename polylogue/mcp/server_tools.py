@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -50,6 +51,25 @@ class _MCPEmbeddingStatusEnv:
     config: Config
 
 
+async def _count_query_results(
+    ops: Any,
+    request_spec: Any,
+    fallback_store: Any,
+) -> int:
+    """Count query results through archive operations when available.
+
+    Unit tests often use plain ``MagicMock`` operation objects. In production,
+    ``ArchiveOperations.count_conversations`` is present and keeps semantic
+    readiness/vector-provider handling aligned with the fetch path.
+    """
+    count_method = getattr(ops, "count_conversations", None)
+    if callable(count_method):
+        result = count_method(request_spec)
+        if inspect.isawaitable(result):
+            return int(await result)
+    return int(await request_spec.count(fallback_store))
+
+
 def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def _search(**kwargs: object) -> str:
         if "query" not in kwargs:
@@ -80,7 +100,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     limit=(spec.limit or clamped_limit) + clamped_limit,
                 )
             results = await ops.search_conversation_hits(spec)
-            total = await spec.count(hooks.get_query_store())
+            total = await _count_query_results(ops, spec, hooks.get_query_store())
             diagnostics = await ops.diagnose_query_miss(spec) if not results else None
             return hooks.json_payload(
                 conversation_search_result_payload(
@@ -115,7 +135,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             clamped_offset = max(0, request.offset)
             spec = request.build_spec(hooks.clamp_limit)
             conversations = await ops.query_conversations(spec)
-            total = await spec.count(hooks.get_query_store())
+            total = await _count_query_results(ops, spec, hooks.get_query_store())
             diagnostics = None
             if not conversations:
                 try:

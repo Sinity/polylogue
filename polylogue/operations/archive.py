@@ -18,6 +18,7 @@ from polylogue.archive.semantic.pricing import (
 )
 from polylogue.config import ConfigError
 from polylogue.core.timestamps import parse_timestamp
+from polylogue.errors import DatabaseError
 from polylogue.insights.archive import (
     ArchiveDebtInsight,
     ArchiveDebtInsightQuery,
@@ -116,6 +117,7 @@ if TYPE_CHECKING:
     from polylogue.archive.stats import ArchiveStats as StorageArchiveStats
     from polylogue.config import Config
     from polylogue.pipeline.services.indexing import IndexStatus
+    from polylogue.protocols import VectorProvider
     from polylogue.storage.archive_views import ConversationRenderProjection
     from polylogue.storage.insights.session.runtime import SessionInsightCounts
     from polylogue.storage.repository import ConversationRepository
@@ -303,6 +305,45 @@ class ArchiveSearchMixin:
         @property
         def config(self) -> Config: ...
 
+        @property
+        def backend(self) -> SQLiteBackend: ...
+
+    async def _vector_provider_for_query_spec(self, spec: ConversationQuerySpec) -> VectorProvider | None:
+        """Return a vector provider for explicit semantic/hybrid query specs.
+
+        ``auto`` is intentionally not promoted here. CLI auto-elevation has
+        its own UX path; archive operations only enforce that explicit
+        semantic requests and explicit hybrid requests do not silently run
+        without usable vectors.
+        """
+        if not spec.similar_text and spec.retrieval_lane != "hybrid":
+            return None
+
+        archive_stats = await self.repository.get_archive_stats()
+        retrieval_ready = getattr(archive_stats, "retrieval_ready", None)
+        if not isinstance(retrieval_ready, bool):
+            embedded_messages = int(getattr(archive_stats, "embedded_messages", 0) or 0)
+            stale_messages = int(getattr(archive_stats, "stale_embedding_messages", 0) or 0)
+            retrieval_ready = max(embedded_messages - stale_messages, 0) > 0
+        if not retrieval_ready:
+            status = getattr(archive_stats, "embedding_readiness_status", None) or "none"
+            raise DatabaseError(
+                "Semantic or hybrid retrieval requires retrieval-ready embeddings "
+                f"(current status: {status}). Run `polylogue embed status`, then "
+                "`polylogue embed backfill` or let polylogued converge after enabling embeddings."
+            )
+
+        from polylogue.storage.search_providers import create_vector_provider
+
+        vector_provider = create_vector_provider(self.config, db_path=self.backend.db_path)
+        if vector_provider is None:
+            raise DatabaseError(
+                "Semantic or hybrid retrieval requires vector search support, but vector provider initialization "
+                "failed or embeddings are disabled. Run `polylogue embed status`, then `polylogue embed enable` "
+                "if needed."
+            )
+        return vector_provider
+
     async def get_conversation(
         self,
         conversation_id: str,
@@ -355,7 +396,8 @@ class ArchiveSearchMixin:
         *,
         content_projection: ContentProjectionSpec | None = None,
     ) -> list[Conversation]:
-        conversations = await spec.list(self.repository)
+        vector_provider = await self._vector_provider_for_query_spec(spec)
+        conversations = await spec.list(self.repository, vector_provider=vector_provider)
         if content_projection is None or not content_projection.filters_content():
             return conversations
         return [conversation.with_content_projection(content_projection) for conversation in conversations]
@@ -363,11 +405,16 @@ class ArchiveSearchMixin:
     async def search_conversation_hits(self, spec: ConversationQuerySpec) -> list[ConversationSearchHit]:
         from polylogue.archive.query.search_hits import search_hits_for_plan
 
-        hits = await search_hits_for_plan(spec.to_plan(), self.repository)
+        vector_provider = await self._vector_provider_for_query_spec(spec)
+        hits = await search_hits_for_plan(spec.to_plan(vector_provider=vector_provider), self.repository)
         if not hits:
             return hits
         counts = await self.repository.get_message_counts_batch([hit.conversation_id for hit in hits])
         return [hit.with_message_count(counts.get(hit.conversation_id)) for hit in hits]
+
+    async def count_conversations(self, spec: ConversationQuerySpec) -> int:
+        vector_provider = await self._vector_provider_for_query_spec(spec)
+        return await spec.count(self.repository, vector_provider=vector_provider)
 
     async def neighbor_candidates(
         self,
