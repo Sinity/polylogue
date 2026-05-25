@@ -8,7 +8,7 @@ import re
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -83,6 +83,7 @@ class EmbeddingReadiness(BaseModel):
     embedding_coverage_percent: float = 0.0
     embedding_failure_count: int = 0
     embedding_estimated_cost_usd: float = 0.0
+    embedding_latest_catchup_run: dict[str, object] | None = None
 
 
 class LiveCursorFileState(BaseModel):
@@ -964,6 +965,10 @@ def build_daemon_status(
             embedding_coverage_percent=_safe_float(embedding_info.get("embedding_coverage_percent")),
             embedding_failure_count=_safe_int(embedding_info.get("embedding_failure_count", 0)),
             embedding_estimated_cost_usd=_safe_float(embedding_info.get("embedding_estimated_cost_usd")),
+            embedding_latest_catchup_run=cast(
+                dict[str, object] | None,
+                embedding_info.get("embedding_latest_catchup_run"),
+            ),
         ),
         health=health,
         browser_capture_active=browser_capture_spool_path is not None,
@@ -1262,6 +1267,15 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                 model = str(embedding.get("embedding_model", ""))
                 dimension = _safe_int(embedding.get("embedding_dimension"))
                 lines.append(f"  model: {model} ({dimension}d), est. cost: ${cost:.2f}")
+            latest = embedding.get("embedding_latest_catchup_run")
+            if isinstance(latest, dict):
+                lines.append(
+                    "  latest catch-up: "
+                    f"{latest.get('status', 'unknown')}, "
+                    f"{_safe_int(latest.get('processed_conversations'))}/"
+                    f"{_safe_int(latest.get('planned_conversations'))} convs, "
+                    f"{_safe_int(latest.get('embedded_messages')):,} msgs embedded"
+                )
         else:
             pending = _safe_int(embedding.get("embedding_pending_count"))
             pending_messages = _safe_int(embedding.get("embedding_pending_message_count"))
@@ -1269,4 +1283,12 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
             lines.append(
                 f"Embeddings: disabled ({key_state}; {pending} pending convs, {pending_messages:,} pending msgs)"
             )
+            latest = embedding.get("embedding_latest_catchup_run")
+            if isinstance(latest, dict):
+                lines.append(
+                    "  latest catch-up: "
+                    f"{latest.get('status', 'unknown')}, "
+                    f"{_safe_int(latest.get('processed_conversations'))}/"
+                    f"{_safe_int(latest.get('planned_conversations'))} convs"
+                )
     return lines
