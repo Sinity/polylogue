@@ -243,6 +243,81 @@ def test_profile_repair_candidates_ignore_hot_recent_sources() -> None:
     assert candidates == ["cold-missing-profile"]
 
 
+def test_session_insight_status_requires_latency_rows_for_ready_profiles() -> None:
+    with sqlite3.connect(":memory:") as conn:
+        conn.executescript(
+            f"""
+            CREATE TABLE conversations (
+                conversation_id TEXT PRIMARY KEY,
+                parent_conversation_id TEXT,
+                sort_key REAL,
+                updated_at TEXT
+            );
+            CREATE TABLE session_profiles (
+                conversation_id TEXT PRIMARY KEY,
+                provider_name TEXT NOT NULL,
+                canonical_session_date TEXT,
+                first_message_at TEXT,
+                last_message_at TEXT,
+                source_updated_at TEXT,
+                evidence_payload_json TEXT,
+                tags_json TEXT,
+                auto_tags_json TEXT,
+                materializer_version INTEGER NOT NULL,
+                source_sort_key REAL,
+                work_event_count INTEGER NOT NULL,
+                phase_count INTEGER NOT NULL
+            );
+            CREATE TABLE session_latency_profiles (
+                conversation_id TEXT PRIMARY KEY,
+                materializer_version INTEGER NOT NULL,
+                source_sort_key REAL
+            );
+
+            INSERT INTO conversations (conversation_id, parent_conversation_id, sort_key, updated_at)
+            VALUES ('ready', NULL, 1.0, '2026-05-01T12:00:00Z');
+            INSERT INTO conversations (conversation_id, parent_conversation_id, sort_key, updated_at)
+            VALUES ('missing-latency', NULL, 2.0, '2026-05-01T12:00:00Z');
+            INSERT INTO conversations (conversation_id, parent_conversation_id, sort_key, updated_at)
+            VALUES ('stale-latency', NULL, 3.0, '2026-05-01T12:00:00Z');
+
+            INSERT INTO session_profiles (
+                conversation_id, provider_name, canonical_session_date, tags_json, auto_tags_json,
+                first_message_at, last_message_at, source_updated_at, evidence_payload_json,
+                materializer_version, source_sort_key, work_event_count, phase_count
+            ) VALUES
+                (
+                    'ready', 'codex', '2026-05-01', '[]', '[]',
+                    NULL, NULL, '2026-05-01T12:00:00Z', '{{}}',
+                    {SESSION_INSIGHT_MATERIALIZER_VERSION}, 1.0, 0, 0
+                ),
+                (
+                    'missing-latency', 'codex', '2026-05-01', '[]', '[]',
+                    NULL, NULL, '2026-05-01T12:00:00Z', '{{}}',
+                    {SESSION_INSIGHT_MATERIALIZER_VERSION}, 2.0, 0, 0
+                ),
+                (
+                    'stale-latency', 'codex', '2026-05-01', '[]', '[]',
+                    NULL, NULL, '2026-05-01T12:00:00Z', '{{}}',
+                    {SESSION_INSIGHT_MATERIALIZER_VERSION}, 3.0, 0, 0
+                );
+
+            INSERT INTO session_latency_profiles (conversation_id, materializer_version, source_sort_key)
+            VALUES
+                ('ready', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 1.0),
+                ('stale-latency', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 2.5);
+            """
+        )
+
+        status = session_insight_status_sync(conn)
+
+    assert status.profile_rows_ready is True
+    assert status.latency_profile_rows_ready is False
+    assert status.latency_profile_row_count == 2
+    assert status.missing_latency_profile_row_count == 1
+    assert status.stale_latency_profile_row_count == 1
+
+
 async def test_status_sync_and_async_match_when_product_tables_are_absent(tmp_path: Path) -> None:
     db_path = tmp_path / "status.db"
     with sqlite3.connect(db_path) as conn:

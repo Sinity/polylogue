@@ -22,6 +22,7 @@ from polylogue.archive.semantic.facts import (
     build_projection_semantic_facts,
 )
 from polylogue.archive.semantic.pricing import harmonize_session_cost
+from polylogue.archive.semantic.timing import compute_session_latency_profile
 from polylogue.archive.session import runtime as session_profile_runtime
 from polylogue.archive.session.session_profile import build_session_profile
 from polylogue.storage.archive_views import ConversationRenderProjection
@@ -288,6 +289,68 @@ def test_build_session_profile_sums_paired_provider_tool_windows() -> None:
 
     assert profile.engaged_duration_ms == 0
     assert profile.tool_active_duration_ms == 720_000
+
+
+def test_compute_session_latency_profile_aggregates_tool_and_turn_latencies() -> None:
+    start = datetime(2026, 5, 24, 10, 0, tzinfo=timezone.utc)
+    agent = datetime(2026, 5, 24, 10, 1, tzinfo=timezone.utc)
+    followup = datetime(2026, 5, 24, 10, 3, tzinfo=timezone.utc)
+    conversation = make_conv(
+        id="conv-latency-profile",
+        provider=Provider.CODEX,
+        title="Latency profile",
+        messages=[
+            make_msg(id="u1", role="user", provider=Provider.CODEX, text="Run", timestamp=start),
+            make_msg(id="a1", role="assistant", provider=Provider.CODEX, text="Done", timestamp=agent),
+            make_msg(id="u2", role="user", provider=Provider.CODEX, text="Follow up", timestamp=followup),
+        ],
+        updated_at=datetime(2026, 5, 24, 10, 12, tzinfo=timezone.utc),
+        provider_events=(
+            ProviderEvent(
+                id=ProviderEventId("conv-latency-profile:event-0"),
+                conversation_id=ConversationId("conv-latency-profile"),
+                provider=Provider.CODEX,
+                event_index=0,
+                event_type="function_call",
+                timestamp=start,
+                payload={"call_id": "call-1", "name": "exec_command"},
+            ),
+            ProviderEvent(
+                id=ProviderEventId("conv-latency-profile:event-1"),
+                conversation_id=ConversationId("conv-latency-profile"),
+                provider=Provider.CODEX,
+                event_index=1,
+                event_type="function_call_output",
+                timestamp=datetime(2026, 5, 24, 10, 2, tzinfo=timezone.utc),
+                payload={"call_id": "call-1", "output_chars": 10},
+            ),
+            ProviderEvent(
+                id=ProviderEventId("conv-latency-profile:event-2"),
+                conversation_id=ConversationId("conv-latency-profile"),
+                provider=Provider.CODEX,
+                event_index=2,
+                event_type="function_call",
+                timestamp=datetime(2026, 5, 24, 10, 4, tzinfo=timezone.utc),
+                payload={"call_id": "call-2", "name": "exec_command"},
+            ),
+        ),
+    )
+
+    facts = compute_session_latency_profile(
+        list(conversation.messages),
+        conversation.provider_events,
+        session_end=conversation.updated_at,
+        tool_call_count_by_category={"shell": 2},
+        stuck_threshold_ms=300_000,
+    )
+
+    assert facts.median_tool_call_ms == 120_000
+    assert facts.p90_tool_call_ms == 120_000
+    assert facts.max_tool_call_ms == 120_000
+    assert facts.stuck_tool_count == 1
+    assert facts.median_agent_response_ms == 60_000
+    assert facts.median_user_response_ms == 120_000
+    assert facts.tool_call_count_by_category == {"shell": 2}
 
 
 def test_build_session_profile_classifies_workflow_shape_from_observable_features() -> None:

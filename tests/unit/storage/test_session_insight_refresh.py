@@ -145,7 +145,12 @@ async def test_apply_session_insight_conversation_updates_async_uses_provider_ev
     db_path = tmp_path / "refresh-provider-terminal.db"
     with open_connection(db_path) as conn:
         store_records(
-            conversation=make_conversation("conv-provider-terminal", provider_name="codex", title="Terminal Test"),
+            conversation=make_conversation(
+                "conv-provider-terminal",
+                provider_name="codex",
+                title="Terminal Test",
+                updated_at="2026-04-01T10:05:30+00:00",
+            ),
             messages=[
                 make_message(
                     "conv-provider-terminal:msg-1",
@@ -195,9 +200,15 @@ async def test_apply_session_insight_conversation_updates_async_uses_provider_ev
             "SELECT evidence_payload_json FROM session_profiles WHERE conversation_id = ?",
             ("conv-provider-terminal",),
         ).fetchone()
+        latency_row = conn.execute(
+            "SELECT stuck_tool_count FROM session_latency_profiles WHERE conversation_id = ?",
+            ("conv-provider-terminal",),
+        ).fetchone()
 
     assert row is not None
     assert json.loads(row["evidence_payload_json"])["terminal_state"] == "tool_left"
+    assert latency_row is not None
+    assert latency_row["stuck_tool_count"] == 0
 
 
 def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roots(

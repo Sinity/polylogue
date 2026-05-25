@@ -61,3 +61,22 @@ construct-valid archive signals, not intent labels.
 
 Both fields carry confidence plus JSON evidence so downstream readers can
 inspect the rule input instead of treating the labels as opaque semantics.
+
+## Session Latency Measures
+
+`session_latency_profiles` separates response and provider-tool timing from
+the broader session profile:
+
+- `median_tool_call_ms`, `p90_tool_call_ms`, and `max_tool_call_ms` summarize
+  timestamped provider tool-call start/output pairs.
+- `stuck_tool_count` counts provider tool starts left open past the fixed
+  stuck threshold when the session end is known.
+- `median_agent_response_ms` summarizes user-to-assistant message gaps.
+- `median_user_response_ms` summarizes assistant-to-user message gaps with a
+  cap on long idle pauses.
+- `tool_call_count_by_category_json` carries category counts from the same
+  session-profile tool classifier.
+
+These measures do not infer hidden provider work, correctness, human attention,
+or operator productivity. Missing provider timestamps lower coverage; they do
+not create synthetic latency rows.

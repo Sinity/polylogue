@@ -35,6 +35,13 @@ def _stub_profile_no_events() -> object:
         file_paths_touched: tuple[str, ...] = ()
         cwd_paths: tuple[str, ...] = ()
         engaged_duration_ms: int = 0
+        tool_active_duration_ms: int = 0
+        workflow_shape: str = "unknown"
+        workflow_shape_confidence: float = 0.0
+        terminal_state: str = "unknown"
+        terminal_state_confidence: float = 0.0
+        inferred_topic: str | None = None
+        inferred_topic_source: str = "absent"
         auto_tags: tuple[str, ...] = ()
 
     return _P()

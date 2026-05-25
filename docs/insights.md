@@ -15,6 +15,7 @@ subcommand group.
 | Work Events | `insights work-events` | File-level operations detected within sessions |
 | Work Phases | `insights phases` | Session segment classification: planning, implementation, verification, exploration |
 | Work Threads | `insights threads` | Multi-session groupings by repo and work continuity |
+| Session Latency Profiles | API / MCP | Per-session response/tool latency aggregates and stuck-tool counts |
 | Tag Rollups | `insights tags` | Tag usage across conversations |
 | Day Summaries | `insights day-summaries` | Per-day session and message counts |
 | Week Summaries | `insights week-summaries` | Per-week session and message counts |
@@ -102,6 +103,26 @@ message/provider event or pending-tool count behind the decision.
 MCP exposes two convenience readers over the same materialized rows:
 `workflow_shape_distribution(since, until, group_by)` and
 `find_abandoned_sessions(since, repo_path, min_severity)`.
+
+## Session Latency Profiles
+
+Session latency profiles are materialized in `session_latency_profiles` and
+read through the Python API and MCP. They expose per-session aggregates:
+median, p90, and max paired provider tool-call latency; count of provider tool
+starts left open beyond the fixed stuck threshold; median user-to-assistant and
+assistant-to-user response gaps; and tool-call counts by category.
+
+These fields are runtime-shape signals, not quality judgments. Agent response
+latency includes model output delay and any intervening tool execution visible
+in the archive. Provider tool latency requires timestamped start/output event
+pairs; unpaired starts contribute only to `stuck_tool_count` when the session
+end is far enough past the start. User response latency caps long idle gaps so
+calendar-scale pauses do not masquerade as conversational latency.
+
+MCP exposes three readers over these same rows:
+`session_latency_profile(conversation_id)`,
+`tool_call_latency_distribution(since, until, provider, tool_category)`, and
+`find_stuck_sessions(since, limit)`.
 
 ## Work Events
 

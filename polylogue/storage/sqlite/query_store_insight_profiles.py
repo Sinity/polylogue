@@ -9,9 +9,12 @@ from typing import TYPE_CHECKING
 import aiosqlite
 
 from polylogue.storage.query_models import SessionProfileListQuery
-from polylogue.storage.runtime import SessionProfileRecord
+from polylogue.storage.runtime import SessionLatencyProfileRecord, SessionProfileRecord
 from polylogue.storage.sqlite.queries import (
     session_insight_profile_reads as session_insight_profiles_q,
+)
+from polylogue.storage.sqlite.queries import (
+    session_latency_profile_reads as session_latency_profiles_q,
 )
 
 
@@ -22,6 +25,37 @@ class SQLiteQueryStoreInsightProfilesMixin:
     async def get_session_profile(self, conversation_id: str) -> SessionProfileRecord | None:
         async with self._connection_factory() as conn:
             return await session_insight_profiles_q.get_session_profile(conn, conversation_id)
+
+    async def get_session_latency_profile(self, conversation_id: str) -> SessionLatencyProfileRecord | None:
+        async with self._connection_factory() as conn:
+            return await session_latency_profiles_q.get_session_latency_profile(conn, conversation_id)
+
+    async def find_stuck_session_latency_profiles(
+        self, *, since: str | None = None, limit: int = 50
+    ) -> list[SessionLatencyProfileRecord]:
+        async with self._connection_factory() as conn:
+            return await session_latency_profiles_q.find_stuck_session_latency_profiles(
+                conn,
+                since=since,
+                limit=limit,
+            )
+
+    async def list_session_latency_profiles(
+        self,
+        *,
+        provider: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int | None = 500,
+    ) -> list[SessionLatencyProfileRecord]:
+        async with self._connection_factory() as conn:
+            return await session_latency_profiles_q.list_session_latency_profiles(
+                conn,
+                provider=provider,
+                since=since,
+                until=until,
+                limit=limit,
+            )
 
     async def get_session_profiles_batch(
         self,

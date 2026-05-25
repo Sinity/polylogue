@@ -10,6 +10,7 @@ from typing_extensions import TypedDict
 ProviderDayGroup: TypeAlias = tuple[str, str]
 SessionInsightReadyFlag: TypeAlias = Literal[
     "profile_rows_ready",
+    "latency_profile_rows_ready",
     "profile_merged_fts_ready",
     "profile_evidence_fts_ready",
     "profile_inference_fts_ready",
@@ -94,6 +95,7 @@ class SessionInsightStatusSnapshot:
     total_conversations: int = 0
     root_threads: int = 0
     profile_row_count: int = 0
+    latency_profile_row_count: int = 0
     work_event_inference_count: int = 0
     work_event_inference_fts_count: int = 0
     work_event_inference_fts_duplicate_count: int = 0
@@ -106,6 +108,9 @@ class SessionInsightStatusSnapshot:
     missing_profile_row_count: int = 0
     stale_profile_row_count: int = 0
     orphan_profile_row_count: int = 0
+    missing_latency_profile_row_count: int = 0
+    stale_latency_profile_row_count: int = 0
+    orphan_latency_profile_row_count: int = 0
     expected_work_event_inference_count: int = 0
     stale_work_event_inference_count: int = 0
     orphan_work_event_inference_count: int = 0
@@ -127,6 +132,7 @@ class SessionInsightStatusSnapshot:
     profile_merged_fts_count: int = 0
     profile_merged_fts_duplicate_count: int = 0
     profile_rows_ready: bool = False
+    latency_profile_rows_ready: bool = False
     profile_merged_fts_ready: bool = False
     profile_evidence_fts_ready: bool = False
     profile_inference_fts_ready: bool = False

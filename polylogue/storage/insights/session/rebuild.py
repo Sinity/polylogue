@@ -26,6 +26,10 @@ from polylogue.storage.insights.session.aggregates import (
     refresh_async_provider_day_aggregates,
     refresh_sync_provider_day_aggregates,
 )
+from polylogue.storage.insights.session.latency_profiles import (
+    build_latency_profile_facts,
+    build_session_latency_profile_record,
+)
 from polylogue.storage.insights.session.profiles import (
     build_session_profile_record,
     hydrate_session_profile,
@@ -33,6 +37,7 @@ from polylogue.storage.insights.session.profiles import (
 )
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
 from polylogue.storage.insights.session.storage import (
+    replace_session_latency_profiles_bulk_sync,
     replace_session_phases_bulk_sync,
     replace_session_profiles_bulk_sync,
     replace_session_work_events_bulk_sync,
@@ -56,6 +61,7 @@ from polylogue.storage.runtime import (
     ConversationRecord,
     MessageRecord,
     ProviderEventRecord,
+    SessionLatencyProfileRecord,
     SessionPhaseRecord,
     SessionProfileRecord,
     SessionWorkEventRecord,
@@ -199,6 +205,7 @@ class SessionInsightArchiveBatch:
 @dataclass(slots=True)
 class SessionInsightRecordBundle:
     profile_record: SessionProfileRecord
+    latency_profile_record: SessionLatencyProfileRecord
     work_event_records: list[SessionWorkEventRecord]
     phase_records: list[SessionPhaseRecord]
     repo_observations: tuple[object, ...] = ()
@@ -539,10 +546,17 @@ def build_session_insight_records(
         analysis.attribution,
         git_repository_url=git_repository_url,
     )
+    latency_facts = build_latency_profile_facts(conversation, profile)
     return SessionInsightRecordBundle(
         profile_record=build_session_profile_record(
             profile,
             analysis=analysis,
+            materialized_at=materialized_at,
+        ),
+        latency_profile_record=build_session_latency_profile_record(
+            conversation,
+            profile,
+            latency_facts,
             materialized_at=materialized_at,
         ),
         work_event_records=build_session_work_event_records(profile, materialized_at=materialized_at),
@@ -648,6 +662,7 @@ def rebuild_session_insights_sync(
     if conversation_ids is None:
         conn.execute("DELETE FROM session_work_events")
         conn.execute("DELETE FROM session_phases")
+        conn.execute("DELETE FROM session_latency_profiles")
         conn.execute("DELETE FROM session_profiles")
         conn.execute("DELETE FROM session_tag_rollups")
         conn.execute("DELETE FROM day_session_summaries")
@@ -689,6 +704,10 @@ def rebuild_session_insights_sync(
         )
         chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
         replace_session_profiles_bulk_sync(conn, [bundle.profile_record for bundle in record_bundles])
+        replace_session_latency_profiles_bulk_sync(
+            conn,
+            [bundle.latency_profile_record for bundle in record_bundles],
+        )
         replace_session_work_events_bulk_sync(
             conn,
             {bundle.conversation_id: bundle.work_event_records for bundle in record_bundles},
@@ -793,6 +812,7 @@ async def rebuild_session_insights_async(
     progress_total: int | None = None,
 ) -> SessionInsightCounts:
     from polylogue.storage.sqlite.queries.session_insight_profile_writes import (
+        replace_session_latency_profile,
         replace_session_profile,
     )
     from polylogue.storage.sqlite.queries.session_insight_thread_queries import replace_work_thread
@@ -804,6 +824,7 @@ async def rebuild_session_insights_async(
     if conversation_ids is None:
         await conn.execute("DELETE FROM session_work_events")
         await conn.execute("DELETE FROM session_phases")
+        await conn.execute("DELETE FROM session_latency_profiles")
         await conn.execute("DELETE FROM session_profiles")
         await conn.execute("DELETE FROM session_tag_rollups")
         await conn.execute("DELETE FROM day_session_summaries")
@@ -812,6 +833,7 @@ async def rebuild_session_insights_async(
     elif not conversation_ids:
         await conn.execute("DELETE FROM work_threads")
         await conn.execute("DELETE FROM session_phases")
+        await conn.execute("DELETE FROM session_latency_profiles")
         await conn.execute("DELETE FROM session_tag_rollups")
         await conn.execute("DELETE FROM day_session_summaries")
         return _empty_rebuild_counts()
@@ -829,6 +851,7 @@ async def rebuild_session_insights_async(
             chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
             for bundle in record_bundles:
                 await replace_session_profile(conn, bundle.profile_record, transaction_depth)
+                await replace_session_latency_profile(conn, bundle.latency_profile_record, transaction_depth)
                 await replace_session_work_events(
                     conn,
                     bundle.conversation_id,
@@ -877,6 +900,7 @@ async def rebuild_session_insights_async(
             chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
             for bundle in record_bundles:
                 await replace_session_profile(conn, bundle.profile_record, transaction_depth)
+                await replace_session_latency_profile(conn, bundle.latency_profile_record, transaction_depth)
                 await replace_session_work_events(
                     conn,
                     bundle.conversation_id,

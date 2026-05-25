@@ -20,6 +20,8 @@ from polylogue.insights.archive import (
     ProviderAnalyticsInsightQuery,
     SessionCostInsight,
     SessionCostInsightQuery,
+    SessionLatencyProfileInsight,
+    SessionLatencyProfileInsightQuery,
     SessionPhaseInsight,
     SessionPhaseInsightQuery,
     SessionTagRollupInsight,
@@ -104,6 +106,21 @@ if TYPE_CHECKING:
             self,
             query: SessionCostInsightQuery | None = None,
         ) -> list[SessionCostInsight]: ...
+
+        async def get_session_latency_profile_insight(
+            self,
+            conversation_id: str,
+        ) -> SessionLatencyProfileInsight | None: ...
+
+        async def list_session_latency_profile_insights(
+            self,
+            query: SessionLatencyProfileInsightQuery | None = None,
+        ) -> list[SessionLatencyProfileInsight]: ...
+
+        async def find_stuck_session_latency_profile_insights(
+            self,
+            query: SessionLatencyProfileInsightQuery | None = None,
+        ) -> list[SessionLatencyProfileInsight]: ...
 
         async def list_cost_rollup_insights(
             self,
@@ -214,6 +231,24 @@ class PolylogueInsightsMixin:
         query: SessionCostInsightQuery | None = None,
     ) -> list[SessionCostInsight]:
         return await self.operations.list_session_cost_insights(query)
+
+    async def get_session_latency_profile_insight(
+        self,
+        conversation_id: str,
+    ) -> SessionLatencyProfileInsight | None:
+        return await self.operations.get_session_latency_profile_insight(conversation_id)
+
+    async def list_session_latency_profile_insights(
+        self,
+        query: SessionLatencyProfileInsightQuery | None = None,
+    ) -> list[SessionLatencyProfileInsight]:
+        return await self.operations.list_session_latency_profile_insights(query)
+
+    async def find_stuck_session_latency_profile_insights(
+        self,
+        query: SessionLatencyProfileInsightQuery | None = None,
+    ) -> list[SessionLatencyProfileInsight]:
+        return await self.operations.find_stuck_session_latency_profile_insights(query)
 
     async def list_cost_rollup_insights(
         self,

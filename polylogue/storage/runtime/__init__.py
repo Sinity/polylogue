@@ -12,7 +12,11 @@ from polylogue.storage.insights.aggregate.records import (
     DaySessionSummaryRecord,
     SessionTagRollupRecord,
 )
-from polylogue.storage.insights.session.records import SessionProfileRecord, WorkThreadRecord
+from polylogue.storage.insights.session.records import (
+    SessionLatencyProfileRecord,
+    SessionProfileRecord,
+    WorkThreadRecord,
+)
 from polylogue.storage.insights.timeline.records import SessionPhaseRecord, SessionWorkEventRecord
 from polylogue.storage.runtime.action.records import ActionEventRecord
 from polylogue.storage.runtime.archive.records import (
@@ -76,6 +80,7 @@ __all__ = [
     "SESSION_INFERENCE_VERSION",
     "SESSION_INSIGHT_MATERIALIZER_VERSION",
     "SessionPhaseRecord",
+    "SessionLatencyProfileRecord",
     "SessionProfileRecord",
     "SessionTagRollupRecord",
     "SessionWorkEventRecord",

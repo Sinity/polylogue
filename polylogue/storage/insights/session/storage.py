@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from polylogue.storage.runtime import (
     DaySessionSummaryRecord,
+    SessionLatencyProfileRecord,
     SessionPhaseRecord,
     SessionProfileRecord,
     SessionTagRollupRecord,
@@ -92,6 +93,30 @@ _SESSION_PROFILE_PAYLOAD_COLUMNS = (
     "enrichment_family",
     "inference_version",
     "inference_family",
+)
+_SESSION_LATENCY_PROFILE_COLUMNS = (
+    "conversation_id",
+    "materializer_version",
+    "materialized_at",
+    "source_updated_at",
+    "source_sort_key",
+    "input_high_water_mark",
+    "input_high_water_mark_source",
+    "input_row_count",
+    "provider_name",
+    "title",
+    "first_message_at",
+    "last_message_at",
+    "canonical_session_date",
+    "median_tool_call_ms",
+    "p90_tool_call_ms",
+    "max_tool_call_ms",
+    "stuck_tool_count",
+    "median_agent_response_ms",
+    "median_user_response_ms",
+    "tool_call_count_by_category_json",
+    "evidence_payload_json",
+    "search_text",
 )
 _SESSION_WORK_EVENT_BASE_COLUMNS = (
     "event_id",
@@ -303,6 +328,33 @@ def session_profile_insert_values(
         payload_values,
         has_legacy_payload=has_legacy_payload,
         legacy_payload_json=_legacy_profile_payload_json(record),
+    )
+
+
+def session_latency_profile_insert_values(record: SessionLatencyProfileRecord) -> SqlBindings:
+    return (
+        record.conversation_id,
+        record.materializer_version,
+        record.materialized_at,
+        record.source_updated_at,
+        record.source_sort_key,
+        record.input_high_water_mark,
+        record.input_high_water_mark_source,
+        record.input_row_count,
+        record.provider_name,
+        record.title,
+        record.first_message_at,
+        record.last_message_at,
+        record.canonical_session_date,
+        record.median_tool_call_ms,
+        record.p90_tool_call_ms,
+        record.max_tool_call_ms,
+        record.stuck_tool_count,
+        record.median_agent_response_ms,
+        record.median_user_response_ms,
+        record.tool_call_count_by_category_json,
+        record.evidence_payload_json,
+        record.search_text,
     )
 
 
@@ -526,6 +578,21 @@ def replace_session_profiles_bulk_sync(
     conn.executemany(
         build_insert_sql("session_profiles", columns),
         [session_profile_insert_values(record, has_legacy_payload=has_legacy_payload) for record in records],
+    )
+
+
+def replace_session_latency_profiles_bulk_sync(
+    conn: sqlite3.Connection,
+    records: Sequence[SessionLatencyProfileRecord],
+) -> None:
+    if not records:
+        return
+    _delete_where_in(
+        conn, "session_latency_profiles", "conversation_id", [record.conversation_id for record in records]
+    )
+    conn.executemany(
+        build_insert_sql("session_latency_profiles", _SESSION_LATENCY_PROFILE_COLUMNS),
+        [session_latency_profile_insert_values(record) for record in records],
     )
 
 
@@ -766,6 +833,7 @@ __all__ = [
     "replace_day_session_summaries_sync",
     "replace_session_phases_bulk_sync",
     "replace_session_phases_sync",
+    "replace_session_latency_profiles_bulk_sync",
     "replace_session_profiles_bulk_sync",
     "replace_session_profile_sync",
     "replace_session_tag_rollup_rows_sync",
@@ -777,6 +845,7 @@ __all__ = [
     "session_phase_insert_values",
     "session_profile_insert_columns",
     "session_profile_insert_values",
+    "session_latency_profile_insert_values",
     "session_tag_rollup_insert_values",
     "session_work_event_insert_columns",
     "session_work_event_insert_values",

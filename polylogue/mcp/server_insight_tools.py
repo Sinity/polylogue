@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import inspect
 from datetime import date
+from math import ceil
 from typing import TYPE_CHECKING, Any, cast
 
-from polylogue.insights.archive import SessionProfileInsightQuery
+from polylogue.insights.archive import SessionLatencyProfileInsightQuery, SessionProfileInsightQuery
 from polylogue.insights.registry import (
     INSIGHT_REGISTRY,
     InsightType,
@@ -70,6 +71,105 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             _register_list_tool(mcp, hooks, pt)
 
     # --- Special tools ---
+
+    @mcp.tool()
+    async def tool_call_latency_distribution(
+        since: str | None = None,
+        until: str | None = None,
+        provider: str | None = None,
+        tool_category: str | None = None,
+        limit: int = 500,
+    ) -> str:
+        """Distribution of materialized per-session tool-call latency."""
+
+        def percentile(values: list[int], p: float) -> int:
+            if not values:
+                return 0
+            sorted_values = sorted(values)
+            rank = max(0, ceil(p / 100.0 * len(sorted_values)) - 1)
+            return sorted_values[rank]
+
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            insights = await poly.list_session_latency_profile_insights(
+                SessionLatencyProfileInsightQuery(
+                    provider=provider,
+                    since=since,
+                    until=until,
+                    limit=hooks.clamp_limit(limit),
+                )
+            )
+            if tool_category:
+                insights = [
+                    insight
+                    for insight in insights
+                    if insight.latency.tool_call_count_by_category.get(tool_category, 0) > 0
+                ]
+            medians = [
+                insight.latency.median_tool_call_ms for insight in insights if insight.latency.median_tool_call_ms
+            ]
+            p90s = [insight.latency.p90_tool_call_ms for insight in insights if insight.latency.p90_tool_call_ms]
+            maxes = [insight.latency.max_tool_call_ms for insight in insights if insight.latency.max_tool_call_ms]
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "total_sessions": len(insights),
+                        "tool_category": tool_category,
+                        "median_tool_call_ms": percentile(medians, 50),
+                        "p90_tool_call_ms": percentile(p90s, 90),
+                        "max_tool_call_ms": max(maxes) if maxes else 0,
+                        "stuck_tool_count": sum(insight.latency.stuck_tool_count for insight in insights),
+                        "construct_boundary": (
+                            "distribution is over materialized per-session aggregates; "
+                            "agent-response time includes both LLM inference and tool execution"
+                        ),
+                    }
+                )
+            )
+
+        return await hooks.async_safe_call("tool_call_latency_distribution", run)
+
+    @mcp.tool()
+    async def session_latency_profile(conversation_id: str) -> str:
+        """Get per-session latency profile by conversation ID."""
+
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            insight = await poly.get_session_latency_profile_insight(conversation_id)
+            if insight is None:
+                return hooks.error_json(
+                    "Conversation not found",
+                    code="not_found",
+                    conversation_id=conversation_id,
+                )
+            return hooks.json_payload(insight, exclude_none=True)
+
+        return await hooks.async_safe_call("session_latency_profile", run)
+
+    @mcp.tool()
+    async def find_stuck_sessions(since: str | None = None, limit: int = 20) -> str:
+        """Find sessions with provider tool calls bounded as stuck."""
+
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            insights = await poly.find_stuck_session_latency_profile_insights(
+                SessionLatencyProfileInsightQuery(
+                    since=since,
+                    limit=hooks.clamp_limit(limit),
+                    only_stuck=True,
+                )
+            )
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "total": len(insights),
+                        "items": [insight.model_dump(mode="json") for insight in insights],
+                    }
+                ),
+                exclude_none=True,
+            )
+
+        return await hooks.async_safe_call("find_stuck_sessions", run)
 
     @mcp.tool()
     async def workflow_shape_distribution(

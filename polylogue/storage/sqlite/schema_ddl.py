@@ -59,6 +59,9 @@ from polylogue.storage.sqlite.schema_ddl_identity import (
 from polylogue.storage.sqlite.schema_ddl_insight_aggregates import (
     SESSION_INSIGHT_AGGREGATE_DDL as _SESSION_INSIGHT_AGGREGATE_DDL,
 )
+from polylogue.storage.sqlite.schema_ddl_insight_latency import (
+    SESSION_INSIGHT_LATENCY_DDL as _SESSION_INSIGHT_LATENCY_DDL,
+)
 from polylogue.storage.sqlite.schema_ddl_insight_profiles import (
     SESSION_INSIGHT_PROFILE_DDL as _SESSION_INSIGHT_PROFILE_DDL,
 )
@@ -72,7 +75,7 @@ from polylogue.storage.sqlite.schema_ddl_repo_identity import (
     REPO_IDENTITY_DDL as _REPO_IDENTITY_DDL,
 )
 
-SCHEMA_VERSION = 11  # Canonical schema. No migration chain: mismatch → re-ingest from source (#1212, #1190, #1240, #1241, #1252, #1258, #1260, #1253, #1486, #1526, #1527, #1528).
+SCHEMA_VERSION = 12  # Canonical schema. No migration chain: mismatch → re-ingest from source (#1212, #1190, #1240, #1241, #1252, #1258, #1260, #1253, #1486, #1526, #1527, #1528, #1530).
 
 
 # Complete target schema applied to fresh databases.
@@ -96,7 +99,12 @@ SCHEMA_DDL += "\n\n" + _USER_CORRECTIONS_DDL
 SCHEMA_DDL += "\n\n" + _TOPOLOGY_EDGES_DDL
 SCHEMA_DDL += "\n\n" + _REPO_IDENTITY_DDL
 
-_SESSION_INSIGHT_DDL = _SESSION_INSIGHT_PROFILE_DDL + _SESSION_INSIGHT_TIMELINE_DDL + _SESSION_INSIGHT_AGGREGATE_DDL
+_SESSION_INSIGHT_DDL = (
+    _SESSION_INSIGHT_PROFILE_DDL
+    + _SESSION_INSIGHT_TIMELINE_DDL
+    + _SESSION_INSIGHT_LATENCY_DDL
+    + _SESSION_INSIGHT_AGGREGATE_DDL
+)
 
 SCHEMA_DDL += _SESSION_INSIGHT_DDL
 
@@ -115,6 +123,7 @@ __all__ = [
     "_REPO_IDENTITY_DDL",
     "_READER_WORKSPACES_DDL",
     "_SESSION_INSIGHT_DDL",
+    "_SESSION_INSIGHT_LATENCY_DDL",
     "_SOURCE_FILE_CURSOR_DDL",
     "_RECALL_PACKS_DDL",
     "_SAVED_VIEWS_DDL",
