@@ -74,7 +74,13 @@ from polylogue.insights.readiness import (
     InsightReadinessReport,
     build_insight_readiness_report,
 )
-from polylogue.insights.resume import ResumeBrief, ResumeOperations, build_resume_brief
+from polylogue.insights.resume import (
+    ResumeBrief,
+    ResumeCandidate,
+    ResumeOperations,
+    build_resume_brief,
+    find_resume_candidates,
+)
 from polylogue.insights.tool_usage import (
     ToolUsageInsight,
     ToolUsageInsightQuery,
@@ -1127,6 +1133,23 @@ class ArchiveResumeMixin:
     ) -> ResumeBrief | None:
         """Build a compact resume handoff brief for an archived session."""
         return await build_resume_brief(cast(ResumeOperations, self), session_id, related_limit=related_limit)
+
+    async def find_resume_candidates(
+        self,
+        *,
+        repo_path: str,
+        cwd: str | None = None,
+        recent_files: Sequence[str] = (),
+        limit: int = 10,
+    ) -> tuple[ResumeCandidate, ...]:
+        """Rank logical sessions that match the operator's current context."""
+        return await find_resume_candidates(
+            cast(ResumeOperations, self),
+            repo_path=repo_path,
+            cwd=cwd,
+            recent_files=recent_files,
+            limit=limit,
+        )
 
 
 class ArchiveOperations(

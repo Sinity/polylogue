@@ -364,6 +364,35 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("get_resume_brief", run)
 
     @mcp.tool()
+    async def find_resume_candidates(
+        repo_path: str,
+        cwd: str | None = None,
+        recent_files: tuple[str, ...] = (),
+        limit: int = 10,
+    ) -> str:
+        """Rank logical sessions likely to match the operator's current context."""
+
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            candidates = await poly.find_resume_candidates(
+                repo_path=repo_path,
+                cwd=cwd,
+                recent_files=recent_files,
+                limit=hooks.clamp_limit(limit),
+            )
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "candidates": [candidate.model_dump(mode="json") for candidate in candidates],
+                        "total": len(candidates),
+                    }
+                ),
+                exclude_none=False,
+            )
+
+        return await hooks.async_safe_call("find_resume_candidates", run)
+
+    @mcp.tool()
     async def cost_outlook(plan: str, method: str = "linear") -> str:
         """Project the current billing cycle for a subscription plan (#1138).
 

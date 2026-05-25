@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
     from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport
-    from polylogue.insights.resume import ResumeBrief
+    from polylogue.insights.resume import ResumeBrief, ResumeCandidate
     from polylogue.operations import ArchiveOperations, ArchiveStats
     from polylogue.readiness import ReadinessReport
     from polylogue.storage.insights.session.runtime import SessionInsightCounts
@@ -283,6 +283,13 @@ class PolylogueArchiveMixin:
     ) -> ResumeBrief | None:
         """Build a compact handoff brief for an archived session."""
         return await self.operations.build_resume_brief(session_id, related_limit=related_limit)
+
+    async def find_resume_candidates(
+        self, *, repo_path: str, cwd: str | None = None, recent_files: Sequence[str] = (), limit: int = 10
+    ) -> tuple[ResumeCandidate, ...]:
+        return await self.operations.find_resume_candidates(
+            repo_path=repo_path, cwd=cwd, recent_files=recent_files, limit=limit
+        )
 
     async def insight_readiness_report(
         self,

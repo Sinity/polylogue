@@ -159,41 +159,43 @@ Options:
   --help                          Show this message and exit.
 
 Commands:
-  auth          Authenticate optional external services.
-  backup        Create a timestamped backup of the archive database.
-  bulk-export   Bulk export every matched conversation in one process.
-  completions   Emit shell completion setup for polylogue.
-  config        Show configuration paths and resolved settings.
-  context-pack  Build a provenance-rich context pack for agent analysis.
-  cost          Summarize conversation cost telemetry.
-  count         Print count of matched conversations.
-  dashboard     Open the local dashboard.
-  delete        Delete matched conversations.
-  diagnostics   Temporal session diagnostics
-  doctor        Run archive health checks and repairs.
-  embed         Enable, preflight, and backfill the embedding pipeline.
-  export        Export conversations.
+  auth               Authenticate optional external services.
+  backup             Create a timestamped backup of the archive database.
+  bulk-export        Bulk export every matched conversation in one process.
+  completions        Emit shell completion setup for polylogue.
+  config             Show configuration paths and resolved settings.
+  context-pack       Build a provenance-rich context pack for agent analysis.
+  cost               Summarize conversation cost telemetry.
+  count              Print count of matched conversations.
+  dashboard          Open the local dashboard.
+  delete             Delete matched conversations.
+  diagnostics        Temporal session diagnostics
+  doctor             Run archive health checks and repairs.
+  embed              Enable, preflight, and backfill the embedding pipeline.
+  export             Export conversations.
   facets
-  feedback      Record learning corrections for derived insights.
-  ingest        Import conversations from configured sources.
-  init          Detect chat sources and write a starter polylogue.toml.
-  insights      Rebuild and inspect derived session insights.
-  list          List matched conversations.
-  maintenance   Preview and run maintenance backfill operations.
-  messages      List messages from matched conversations.
-  neighbors     Show semantic neighbors for a conversation.
-  open          Open matched conversation in the daemon web reader.
-  raw           Show raw archive payloads for matched conversations.
-  reset         Reset local archive state.
-  resume        Resume from recent conversation context.
-  schema        Inspect and audit provider schemas.
-  select        Select one matched conversation and print a field.
-  show          Show matched conversations with default full-content output.
-  stats         Show statistics for matched conversations.
-  status        Show daemon and archive status.
-  tags          Manage conversation tags.
-  tutorial      Interactive first-run walk-through.
-  user-state    Manage durable reader user state.
+  feedback           Record learning corrections for derived insights.
+  ingest             Import conversations from configured sources.
+  init               Detect chat sources and write a starter polylogue.toml.
+  insights           Rebuild and inspect derived session insights.
+  list               List matched conversations.
+  maintenance        Preview and run maintenance backfill operations.
+  messages           List messages from matched conversations.
+  neighbors          Show semantic neighbors for a conversation.
+  open               Open matched conversation in the daemon web reader.
+  raw                Show raw archive payloads for matched conversations.
+  reset              Reset local archive state.
+  resume             Resume from recent conversation context.
+  resume-candidates  Rank resume candidates for the current context.
+  schema             Inspect and audit provider schemas.
+  select             Select one matched conversation and print a field.
+  show               Show matched conversations with default full-content
+                     output.
+  stats              Show statistics for matched conversations.
+  status             Show daemon and archive status.
+  tags               Manage conversation tags.
+  tutorial           Interactive first-run walk-through.
+  user-state         Manage durable reader user state.
 ```
 
 ## List Verb

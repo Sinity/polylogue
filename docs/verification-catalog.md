@@ -8,7 +8,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `613`
+- subjects: `614`
 - claims: `37`
 - runner bindings: `37`
 - proof obligations: `478`
@@ -40,7 +40,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 20 |
 | `assurance.coverage_item` | 107 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 76 |
+| `cli.command` | 77 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -124,6 +124,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue raw` | `polylogue/cli/click_app.py` `polylogue raw` |
 | `polylogue reset` | `polylogue/cli/click_app.py` `polylogue reset` |
 | `polylogue resume` | `polylogue/cli/click_app.py` `polylogue resume` |
+| `polylogue resume-candidates` | `polylogue/cli/click_app.py` `polylogue resume-candidates` |
 | `polylogue schema` | `polylogue/cli/click_app.py` `polylogue schema` |
 | `polylogue schema compare` | `polylogue/cli/commands/schema.py:56` `polylogue.cli.commands.schema.schema_compare` |
 | `polylogue schema explain` | `polylogue/cli/commands/schema.py:96` `polylogue.cli.commands.schema.schema_explain` |
