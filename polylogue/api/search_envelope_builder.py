@@ -21,6 +21,7 @@ from polylogue.surfaces.payloads import (
     SearchEnvelope,
     build_search_envelope,
     decode_search_cursor,
+    search_cursor_lane_matches_request,
 )
 
 if TYPE_CHECKING:
@@ -58,7 +59,7 @@ async def build_archive_search_envelope(
     from polylogue.archive.query.spec import ConversationQuerySpec
 
     decoded_cursor = decode_search_cursor(cursor) if cursor else None
-    if decoded_cursor is not None and decoded_cursor.lane not in {"", retrieval_lane}:
+    if decoded_cursor is not None and not search_cursor_lane_matches_request(decoded_cursor.lane, retrieval_lane):
         raise InvalidSearchCursorError(
             f"cursor was minted for retrieval_lane={decoded_cursor.lane!r} but this request is {retrieval_lane!r}"
         )

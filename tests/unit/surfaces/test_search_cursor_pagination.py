@@ -153,6 +153,20 @@ def test_apply_cursor_rejects_lane_mismatch() -> None:
         apply_search_cursor(hits, cursor, retrieval_lane="dialogue")
 
 
+def test_apply_cursor_accepts_auto_request_for_resolved_lane_cursor() -> None:
+    hits = _payloads(
+        [
+            _hit(conv_id="a", rank=1, score=-5.0),
+            _hit(conv_id="b", rank=2, score=-4.0),
+        ]
+    )
+    cursor = SearchCursor(v=1, r=1, s=-5.0, c="a", lane="dialogue")
+
+    survived = apply_search_cursor(hits, cursor, retrieval_lane="auto")
+
+    assert [h.conversation.id for h in survived] == ["b"]
+
+
 # ---------------------------------------------------------------------------
 # Page-after-page stability (the load-bearing invariant)
 # ---------------------------------------------------------------------------
