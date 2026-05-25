@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from polylogue.api.search_envelope_builder import build_archive_search_envelope
+from polylogue.api.search_envelope_builder import build_archive_search_envelope, build_search_envelope_for_spec
 from polylogue.archive.conversation.models import ConversationSummary
 from polylogue.archive.query.search_hits import conversation_search_hit_from_summary
 from polylogue.archive.query.spec import ConversationQuerySpec
@@ -33,15 +33,16 @@ def _dialogue_cursor() -> str:
     return token
 
 
+async def _fake_count(self: ConversationQuerySpec, repository: object, *, vector_provider: object = None) -> int:
+    del self, repository, vector_provider
+    return 0
+
+
 @pytest.mark.asyncio
 async def test_search_envelope_builder_accepts_auto_followup_for_resolved_cursor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def fake_count(self: ConversationQuerySpec, repository: object, *, vector_provider: object = None) -> int:
-        del self, repository, vector_provider
-        return 0
-
-    monkeypatch.setattr(ConversationQuerySpec, "count", fake_count)
+    monkeypatch.setattr(ConversationQuerySpec, "count", _fake_count)
     operations = AsyncMock()
     operations.search_conversation_hits = AsyncMock(return_value=[])
 
@@ -58,3 +59,45 @@ async def test_search_envelope_builder_accepts_auto_followup_for_resolved_cursor
     spec = operations.search_conversation_hits.await_args.args[0]
     assert isinstance(spec, ConversationQuerySpec)
     assert spec.retrieval_lane == "auto"
+
+
+@pytest.mark.asyncio
+async def test_spec_builder_preserves_filters_when_advancing_cursor_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ConversationQuerySpec, "count", _fake_count)
+    operations = AsyncMock()
+    operations.search_conversation_hits = AsyncMock(return_value=[])
+    operations.diagnose_query_miss = AsyncMock(side_effect=RuntimeError("diagnostics unavailable"))
+    cursor = _dialogue_cursor()
+    spec = ConversationQuerySpec.from_params(
+        {
+            "query": "needle",
+            "provider": "chatgpt",
+            "tag": "important",
+            "since": "2026-05-01",
+            "limit": 10,
+            "offset": 20,
+            "cursor": cursor,
+        }
+    )
+
+    envelope = await build_search_envelope_for_spec(
+        operations,
+        object(),  # type: ignore[arg-type]
+        spec,
+        limit=10,
+        offset=20,
+    )
+
+    operations.search_conversation_hits.assert_awaited_once()
+    fetch_spec = operations.search_conversation_hits.await_args.args[0]
+    assert isinstance(fetch_spec, ConversationQuerySpec)
+    assert fetch_spec.providers == (Provider.CHATGPT,)
+    assert fetch_spec.tags == ("important",)
+    assert fetch_spec.since == "2026-05-01"
+    assert fetch_spec.offset == 1
+    assert fetch_spec.limit == 20
+    assert fetch_spec.cursor == cursor
+    assert envelope.limit == 10
+    assert envelope.offset == 20
