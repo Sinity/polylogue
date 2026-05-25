@@ -225,7 +225,6 @@ def test_artifact_graph_paths_reference_only_declared_nodes() -> None:
         "week-summary-query-loop",
         "provider-analytics-query-loop",
         "tool-usage-query-loop",
-        "productivity-rollup-query-loop",
         "session-insight-status-query-loop",
         "archive-debt-query-loop",
         "inferred-corpus-compilation-loop",

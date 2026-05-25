@@ -113,7 +113,6 @@ READ_NULLARY_METHODS: frozenset[str] = frozenset(
         "list_week_session_summary_insights",
         "list_provider_analytics_insights",
         "list_tool_usage_insights",
-        "list_productivity_rollup_insights",
         "list_session_cost_insights",
         "list_cost_rollup_insights",
         "list_archive_debt_insights",
@@ -355,7 +354,6 @@ EMPTY_ARCHIVE_LIST_METHODS: tuple[str, ...] = (
     "list_week_session_summary_insights",
     "list_provider_analytics_insights",
     "list_tool_usage_insights",
-    "list_productivity_rollup_insights",
     "list_session_cost_insights",
     "list_cost_rollup_insights",
     "list_archive_debt_insights",
@@ -370,7 +368,6 @@ EMPTY_ARCHIVE_LIST_METHODS: tuple[str, ...] = (
 _AUTO_MATERIALIZED_INSIGHTS: frozenset[str] = frozenset(
     {
         "list_archive_debt_insights",
-        "list_productivity_rollup_insights",
         "list_tool_usage_insights",
     }
 )
@@ -386,7 +383,7 @@ async def test_list_methods_return_iterable_on_empty_archive(
     Most list methods return an empty list for an empty archive. The
     insight methods in :data:`_AUTO_MATERIALIZED_INSIGHTS` synthesize
     default placeholder rows even on an empty archive (archive-debt
-    bookkeeping, productivity-rollup skeletons, etc.) — for them the
+    bookkeeping, tool-usage coverage skeletons, etc.) — for them the
     contract is "returns a real iterable of the declared row type",
     not "returns an empty iterable".
     """

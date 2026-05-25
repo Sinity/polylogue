@@ -27,7 +27,6 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
         "day-summary-query-loop",
         "week-summary-query-loop",
         "provider-analytics-query-loop",
-        "productivity-rollup-query-loop",
         "tool-usage-query-loop",
         "session-insight-status-query-loop",
         "archive-debt-query-loop",

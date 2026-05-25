@@ -31,10 +31,6 @@ from polylogue.insights.archive import (
     WorkThreadInsight,
     WorkThreadInsightQuery,
 )
-from polylogue.insights.productivity import (
-    ProductivityRollupInsight,
-    ProductivityRollupInsightQuery,
-)
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 
@@ -130,12 +126,6 @@ class SyncInsightQueriesMixin:
         query: ToolUsageInsightQuery | None = None,
     ) -> list[ToolUsageInsight]:
         return run_coroutine_sync(self._facade.list_tool_usage_insights(query))
-
-    def list_productivity_rollup_insights(
-        self,
-        query: ProductivityRollupInsightQuery | None = None,
-    ) -> list[ProductivityRollupInsight]:
-        return run_coroutine_sync(self._facade.list_productivity_rollup_insights(query))
 
     def list_session_cost_insights(
         self,
