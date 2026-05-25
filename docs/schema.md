@@ -148,7 +148,7 @@ retrieval lane.
 | Table | Description |
 |-------|-------------|
 | `session_profiles` | Per-session aggregates: repos, tools, costs, durations, message counts |
-| `session_work_events` | File-level work events within sessions |
+| `session_work_events` | Message-range work events with file/tool evidence and weak event labels |
 | `session_phases` | Session segments: planning, implementation, verification, exploration |
 | `work_threads` | Multi-session work groupings |
 | `session_tag_rollups` | Pre-aggregated tag usage stats |
