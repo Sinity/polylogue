@@ -12,6 +12,7 @@ adapters stay thin and the per-file LOC budget on
 from __future__ import annotations
 
 from contextlib import suppress
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from polylogue.surfaces.payloads import (
@@ -25,8 +26,78 @@ from polylogue.surfaces.payloads import (
 )
 
 if TYPE_CHECKING:
+    from polylogue.archive.query.spec import ConversationQuerySpec
     from polylogue.operations import ArchiveOperations
     from polylogue.storage.repository import ConversationRepository
+
+
+def _search_query_text(spec: ConversationQuerySpec) -> str:
+    plan = spec.to_plan()
+    if plan.fts_terms:
+        return " ".join(plan.fts_terms)
+    if plan.similar_text:
+        return plan.similar_text
+    return ""
+
+
+async def build_search_envelope_for_spec(
+    operations: ArchiveOperations,
+    repository: ConversationRepository,
+    spec: ConversationQuerySpec,
+    *,
+    limit: int | None = None,
+    offset: int | None = None,
+    query: str | None = None,
+) -> SearchEnvelope:
+    """Build a :class:`SearchEnvelope` from an already-normalized query spec.
+
+    Daemon HTTP accepts the full ``ConversationQuerySpec`` filter surface,
+    while the public Python API exposes a smaller keyword facade. Keeping the
+    cursor, diagnostics, and hit-payload assembly here prevents those surfaces
+    from drifting while still letting each caller own parameter parsing.
+    """
+    display_limit = limit if limit is not None else (spec.limit or 50)
+    display_offset = offset if offset is not None else spec.offset
+    decoded_cursor = decode_search_cursor(spec.cursor) if spec.cursor else None
+    if decoded_cursor is not None and not search_cursor_lane_matches_request(decoded_cursor.lane, spec.retrieval_lane):
+        raise InvalidSearchCursorError(
+            f"cursor was minted for retrieval_lane={decoded_cursor.lane!r} but this request is {spec.retrieval_lane!r}"
+        )
+
+    fetch_spec = spec
+    if decoded_cursor is not None:
+        # Advance the SQL fetch past the cursor anchor; the builder will drop
+        # any straggler rows whose (score, conversation_id) sort at or before
+        # the anchor under the lane's natural ordering.
+        fetch_spec = replace(
+            spec,
+            offset=decoded_cursor.r,
+            limit=(spec.limit or display_limit) + display_limit,
+            cursor=spec.cursor,
+        )
+
+    hits = await operations.search_conversation_hits(fetch_spec)
+    total = await spec.count(repository)
+    diagnostics_payload: QueryMissDiagnosticsPayload | None = None
+    if not hits and spec.has_filters():
+        with suppress(Exception):
+            raw_diag = await operations.diagnose_query_miss(spec)
+            diagnostics_payload = QueryMissDiagnosticsPayload.from_diagnostics(raw_diag)
+    hit_payloads = [
+        ConversationSearchHitPayload.from_search_hit(hit, message_count=hit.summary.message_count) for hit in hits
+    ]
+    resolved_lane = hits[0].retrieval_lane if hits else spec.retrieval_lane
+    return build_search_envelope(
+        hit_payloads,
+        total=total,
+        limit=display_limit,
+        offset=display_offset,
+        query=query if query is not None else _search_query_text(spec),
+        retrieval_lane=resolved_lane,
+        sort=spec.sort,
+        diagnostics=diagnostics_payload,
+        cursor=decoded_cursor,
+    )
 
 
 async def build_archive_search_envelope(
@@ -58,16 +129,6 @@ async def build_archive_search_envelope(
     """
     from polylogue.archive.query.spec import ConversationQuerySpec
 
-    decoded_cursor = decode_search_cursor(cursor) if cursor else None
-    if decoded_cursor is not None and not search_cursor_lane_matches_request(decoded_cursor.lane, retrieval_lane):
-        raise InvalidSearchCursorError(
-            f"cursor was minted for retrieval_lane={decoded_cursor.lane!r} but this request is {retrieval_lane!r}"
-        )
-
-    # Advance the SQL fetch past the cursor anchor; the builder will drop
-    # any straggler rows whose (score, conversation_id) sort at or before
-    # the anchor under the lane's natural ordering.
-    effective_offset = decoded_cursor.r if decoded_cursor is not None else offset
     spec = ConversationQuerySpec.from_params(
         {
             "query": query,
@@ -76,36 +137,20 @@ async def build_archive_search_envelope(
             "until": until,
             "retrieval_lane": retrieval_lane,
             "sort": sort,
-            # Fetch one extra page worth so the post-fetch cursor trim
-            # cannot starve the response when the anchor row drifts.
-            "limit": limit + (limit if decoded_cursor is not None else 0),
-            "offset": effective_offset,
+            "limit": limit,
+            "offset": offset,
             "cursor": cursor,
         },
         strict=True,
     )
-    hits = await operations.search_conversation_hits(spec)
-    total = await spec.count(repository)
-    diagnostics_payload: QueryMissDiagnosticsPayload | None = None
-    if not hits and spec.has_filters():
-        with suppress(Exception):
-            raw_diag = await operations.diagnose_query_miss(spec)
-            diagnostics_payload = QueryMissDiagnosticsPayload.from_diagnostics(raw_diag)
-    hit_payloads = [
-        ConversationSearchHitPayload.from_search_hit(hit, message_count=hit.summary.message_count) for hit in hits
-    ]
-    resolved_lane = hits[0].retrieval_lane if hits else retrieval_lane
-    return build_search_envelope(
-        hit_payloads,
-        total=total,
+    return await build_search_envelope_for_spec(
+        operations,
+        repository,
+        spec,
         limit=limit,
         offset=offset,
         query=query,
-        retrieval_lane=resolved_lane,
-        sort=sort,
-        diagnostics=diagnostics_payload,
-        cursor=decoded_cursor,
     )
 
 
-__all__ = ["build_archive_search_envelope"]
+__all__ = ["build_archive_search_envelope", "build_search_envelope_for_spec"]

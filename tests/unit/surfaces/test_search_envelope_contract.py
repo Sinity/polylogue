@@ -73,7 +73,10 @@ def _hit(rank: int = 1) -> ConversationSearchHit:
         snippet="…matched [needle]…",
         score=-7.42,
         matched_terms=("needle",),
-        score_components={},
+        score_components={"bm25_raw": -7.42},
+        lane_rank=rank,
+        lane_contribution=-7.42,
+        raw_score=-7.42,
     )
 
 
@@ -113,12 +116,31 @@ def test_envelope_ranking_policy_defaults_are_declared() -> None:
 def _normalise_envelope_dict(payload: dict[str, Any]) -> dict[str, Any]:
     """Reduce an envelope to the comparable cross-surface invariants.
 
-    We do not compare ``hits`` payloads byte-for-byte — surfaces may attach
-    extra evidence (e.g., target_ref actions). What MUST match across
-    surfaces is the envelope-level metadata: pagination, query echo,
-    ranking-policy declaration, and the per-hit identity fields.
+    We do not compare ``hits`` payloads byte-for-byte because surfaces may
+    attach extra presentation evidence (e.g., target_ref actions). What MUST
+    match across surfaces is the envelope-level metadata plus the canonical
+    per-hit ranked-search explanation carried by ``match``.
     """
     hits: list[dict[str, Any]] = list(payload["hits"])
+
+    def normalise_match(hit: dict[str, Any]) -> dict[str, Any]:
+        match = dict(hit["match"])
+        return {
+            "conversation_id": hit["conversation"]["id"],
+            "rank": match["rank"],
+            "retrieval_lane": match["retrieval_lane"],
+            "match_surface": match["match_surface"],
+            "message_id": match["message_id"],
+            "snippet": match["snippet"],
+            "score": match["score"],
+            "score_kind": match["score_kind"],
+            "matched_terms": tuple(match["matched_terms"]),
+            "score_components": match["score_components"],
+            "lane_rank": match["lane_rank"],
+            "lane_contribution": match["lane_contribution"],
+            "raw_score": match["raw_score"],
+        }
+
     return {
         "total": payload.get("total"),
         "limit": payload["limit"],
@@ -131,6 +153,7 @@ def _normalise_envelope_dict(payload: dict[str, Any]) -> dict[str, Any]:
         "hit_conversation_ids": tuple(hit["conversation"]["id"] for hit in hits),
         "hit_ranks": tuple(hit["match"]["rank"] for hit in hits),
         "hit_lanes": tuple(hit["match"]["retrieval_lane"] for hit in hits),
+        "hit_matches": tuple(normalise_match(hit) for hit in hits),
     }
 
 
@@ -202,6 +225,7 @@ def test_all_surfaces_emit_semantically_equivalent_envelope() -> None:
     assert api_norm["hit_conversation_ids"] == mcp_norm["hit_conversation_ids"] == cli_norm["hit_conversation_ids"]
     assert api_norm["hit_ranks"] == mcp_norm["hit_ranks"] == cli_norm["hit_ranks"] == (1, 2)
     assert api_norm["hit_lanes"] == mcp_norm["hit_lanes"] == cli_norm["hit_lanes"]
+    assert api_norm["hit_matches"] == mcp_norm["hit_matches"] == cli_norm["hit_matches"]
 
 
 # ---------------------------------------------------------------------------
