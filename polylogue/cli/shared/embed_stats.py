@@ -69,20 +69,13 @@ def _render_latest_catchup_run(payload: EmbeddingStatusPayload) -> None:
 
 
 def _render_next_actions(payload: EmbeddingStatusPayload) -> None:
-    if payload["total_conversations"] <= 0:
+    action = payload["next_action"]
+    command = action["command"]
+    if command is None:
         return
-    if not payload["daemon_stage_enabled"]:
-        if payload["has_voyage_api_key"]:
-            click.echo("  Activation:            polylogue embed enable --yes")
-        else:
-            click.echo("  Activation:            polylogue embed enable --voyage-api-key ...")
-    if payload["pending_conversations"] > 0:
-        click.echo("  Next preflight:        polylogue embed preflight --max-conversations 10")
-        if payload["daemon_stage_enabled"]:
-            click.echo("  Catch-up:              polylogued will process bounded batches, or run:")
-        else:
-            click.echo("  Catch-up:              after enabling, run:")
-        click.echo("                         polylogue embed backfill --max-conversations 10")
+    click.echo(f"  Next action:           {action['code']}")
+    click.echo(f"  Reason:                {action['reason']}")
+    click.echo(f"  Command:               {command}")
 
 
 def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool = False) -> None:
@@ -95,6 +88,11 @@ def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool
     click.echo(f"  Config enabled:        {'yes' if payload['config_enabled'] else 'no'}")
     click.echo(f"  Voyage key:            {'present' if payload['has_voyage_api_key'] else 'missing'}")
     click.echo(f"  Daemon stage:          {'enabled' if payload['daemon_stage_enabled'] else 'disabled'}")
+    click.echo(f"  Configured model:      {payload['configured_model']} ({payload['configured_dimension']}d)")
+    if payload["monthly_cost_cap_usd"] > 0:
+        click.echo(f"  Monthly cost cap:      ${payload['monthly_cost_cap_usd']:.2f}")
+    else:
+        click.echo("  Monthly cost cap:      unbounded")
     click.echo(f"  Status:                {payload['status']}")
     click.echo(f"  Total conversations:   {payload['total_conversations']}")
     click.echo(f"  Embedded conversations:{payload['embedded_conversations']:>4}")

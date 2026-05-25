@@ -74,6 +74,9 @@ def _embedding_status_payload(
         "config_enabled": False,
         "has_voyage_api_key": False,
         "daemon_stage_enabled": False,
+        "configured_model": "voyage-4",
+        "configured_dimension": 1024,
+        "monthly_cost_cap_usd": 5.0,
         "status": status,
         "total_conversations": total_conversations,
         "embedded_conversations": embedded_conversations,
@@ -99,6 +102,13 @@ def _embedding_status_payload(
         "failure_count": 0,
         "total_estimated_cost_usd": 0.0,
         "latest_catchup_run": None,
+        "next_action": {
+            "code": "archive_empty" if total_conversations == 0 else "set_voyage_key",
+            "command": None if total_conversations == 0 else "polylogue embed enable --voyage-api-key ...",
+            "reason": "Archive contains no conversations to embed."
+            if total_conversations == 0
+            else "Semantic retrieval needs a Voyage API key before embedding can run.",
+        },
     }
 
 

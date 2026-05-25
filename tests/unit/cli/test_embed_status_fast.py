@@ -24,6 +24,9 @@ class _Cfg:
     def __init__(self, *, embedding_enabled: bool, voyage_api_key: str | None) -> None:
         self.embedding_enabled = embedding_enabled
         self.voyage_api_key = voyage_api_key
+        self.embedding_model = "voyage-4"
+        self.embedding_dimension = 1024
+        self.embedding_max_cost_usd = 5.0
 
 
 def _env(db_path: Path) -> Any:
@@ -106,7 +109,15 @@ def test_status_json_bypasses_schema_version_gate_for_operator_readiness(tmp_pat
     assert payload["status"] == "none"
     assert payload["config_enabled"] is False
     assert payload["has_voyage_api_key"] is True
+    assert payload["configured_model"] == "voyage-4"
+    assert payload["configured_dimension"] == 1024
+    assert payload["monthly_cost_cap_usd"] == 5.0
     assert payload["pending_conversations"] == 2
+    assert payload["next_action"] == {
+        "code": "enable_embeddings",
+        "command": "polylogue embed enable --yes",
+        "reason": "A Voyage key is available, but embedding convergence is disabled in config.",
+    }
 
 
 def test_status_json_counts_empty_vec0_rowids_as_zero_embeddings(tmp_path: Path) -> None:
@@ -142,6 +153,7 @@ def test_status_json_reports_config_gate_combinations(
     assert payload["config_enabled"] is config_enabled
     assert payload["has_voyage_api_key"] is has_key
     assert payload["daemon_stage_enabled"] is stage_enabled
+    assert payload["next_action"]["code"] == ("set_voyage_key" if not has_key else "enable_embeddings")
 
 
 def test_status_json_detail_mode_runs_exact_retrieval_accounting(
@@ -206,16 +218,16 @@ def test_status_json_includes_latest_catchup_run(tmp_path: Path) -> None:
     assert latest["planned_conversations"] == 2
 
 
-def test_status_text_prints_bounded_next_actions(tmp_path: Path) -> None:
+def test_status_text_prints_machine_readable_next_action(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.db"
     _seed_archive_without_embedding_ledgers(db_path)
 
     output = _run_status_text(db_path, cfg=_Cfg(embedding_enabled=False, voyage_api_key="vk-live"))
 
-    assert "Activation:            polylogue embed enable --yes" in output
-    assert "Next preflight:        polylogue embed preflight --max-conversations 10" in output
-    assert "Catch-up:              after enabling, run:" in output
-    assert "polylogue embed backfill --max-conversations 10" in output
+    assert "Configured model:      voyage-4 (1024d)" in output
+    assert "Monthly cost cap:      $5.00" in output
+    assert "Next action:           enable_embeddings" in output
+    assert "Command:               polylogue embed enable --yes" in output
 
 
 def test_status_text_prints_daemon_catchup_when_enabled(tmp_path: Path) -> None:
@@ -224,5 +236,38 @@ def test_status_text_prints_daemon_catchup_when_enabled(tmp_path: Path) -> None:
 
     output = _run_status_text(db_path, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
-    assert "Activation:" not in output
-    assert "Catch-up:              polylogued will process bounded batches, or run:" in output
+    assert "Next action:           drain_backlog" in output
+    assert "Command:               polylogue embed backfill --max-conversations 10" in output
+
+
+def test_status_json_reports_ready_next_action(tmp_path: Path) -> None:
+    db_path = tmp_path / "archive.db"
+    _seed_archive_without_embedding_ledgers(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE embedding_status (
+                conversation_id TEXT PRIMARY KEY,
+                embedded_message_count INTEGER,
+                needs_reindex INTEGER DEFAULT 0,
+                error_message TEXT
+            )
+            """
+        )
+        conn.execute("CREATE TABLE message_embeddings (message_id TEXT PRIMARY KEY)")
+        conn.executemany(
+            "INSERT INTO embedding_status (conversation_id, embedded_message_count, needs_reindex) VALUES (?, ?, 0)",
+            [("conv-1", 1), ("conv-2", 1)],
+        )
+        conn.executemany("INSERT INTO message_embeddings (message_id) VALUES (?)", [("msg-1",), ("msg-2",)])
+        conn.commit()
+
+    payload = _run_status(db_path, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+
+    assert payload["status"] == "complete"
+    assert payload["retrieval_ready"] is True
+    assert payload["next_action"] == {
+        "code": "ready",
+        "command": "polylogue --semantic <query>",
+        "reason": "Embeddings are retrieval-ready.",
+    }
