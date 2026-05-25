@@ -11,7 +11,7 @@ from polylogue.archive.session.documents import SessionPhaseDocument, WorkEventD
 from polylogue.insights.confidence import ConfidenceBand
 from polylogue.insights.fallback import FallbackReason
 
-ARCHIVE_INSIGHT_CONTRACT_VERSION = 7
+ARCHIVE_INSIGHT_CONTRACT_VERSION = 8
 
 
 class ArchiveInsightModel(BaseModel):
@@ -47,6 +47,8 @@ class SessionEvidencePayload(ArchiveInsightModel):
     updated_at: str | None = None
     first_message_at: str | None = None
     last_message_at: str | None = None
+    session_timestamp: str | None = None
+    timestamp_source: str = "provider_supplied"
     timestamped_message_count: int = 0
     untimestamped_message_count: int = 0
     timestamp_coverage: str = "none"

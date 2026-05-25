@@ -61,6 +61,7 @@ class SessionProfileDocument(TypedDict):
     phases: list[SessionPhaseDocument]
     first_message_at: str | None
     last_message_at: str | None
+    timestamp_source: str
     timestamped_message_count: int
     untimestamped_message_count: int
     timestamp_coverage: str

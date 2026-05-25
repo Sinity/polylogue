@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json as _json
 from dataclasses import replace
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from polylogue.archive.conversation.attribution import extract_attribution
@@ -16,6 +17,27 @@ from polylogue.archive.session.models import SessionAnalysis, SessionProfile
 if TYPE_CHECKING:
     from polylogue.archive.models import Conversation
     from polylogue.archive.semantic.facts import ConversationSemanticFacts
+
+
+def _profile_timestamp_bounds(
+    conversation: Conversation,
+    facts: ConversationSemanticFacts,
+) -> tuple[datetime | None, datetime | None, str]:
+    if facts.first_message_at is not None or facts.last_message_at is not None:
+        return (
+            facts.first_message_at or facts.last_message_at,
+            facts.last_message_at or facts.first_message_at,
+            "provider_supplied",
+        )
+    conversation_start = conversation.created_at or conversation.updated_at
+    conversation_end = conversation.updated_at or conversation.created_at
+    if conversation_start is not None or conversation_end is not None:
+        return (
+            conversation_start or conversation_end,
+            conversation_end or conversation_start,
+            "conversation_timestamp_fallback",
+        )
+    return (None, None, "absent")
 
 
 def build_session_analysis(
@@ -70,9 +92,8 @@ def build_session_profile(
     engaged_duration_ms = sum(int(phase.duration_ms or 0) for phase in session_analysis.phases)
     if engaged_duration_ms <= 0:
         engaged_duration_ms = max(int(conversation.total_duration_ms or 0), 0)
-    canonical_session_at = (
-        facts.first_message_at or conversation.created_at or conversation.updated_at or facts.last_message_at
-    )
+    first_message_at, last_message_at, timestamp_source = _profile_timestamp_bounds(conversation, facts)
+    canonical_session_at = first_message_at or last_message_at
     timing = compute_session_timing(
         list(conversation.messages),
         tool_use_count=facts.tool_messages,
@@ -101,8 +122,9 @@ def build_session_profile(
         repo_names=attribution.repo_names,
         work_events=session_analysis.work_events,
         phases=session_analysis.phases,
-        first_message_at=facts.first_message_at,
-        last_message_at=facts.last_message_at,
+        first_message_at=first_message_at,
+        last_message_at=last_message_at,
+        timestamp_source=timestamp_source,
         timestamped_message_count=facts.timestamped_messages,
         untimestamped_message_count=facts.untimestamped_messages,
         timestamp_coverage=facts.timestamp_coverage,

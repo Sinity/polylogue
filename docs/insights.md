@@ -40,8 +40,16 @@ polylogue insights profiles --tier merged --sort first-message
 polylogue --provider claude-code insights profiles --min-wallclock-seconds 300
 ```
 
-Fields: conversation ID, provider, title, session date, first/last message
-timestamp, wall clock duration, message count, engaged minutes.
+Fields: conversation ID, provider, title, session date, first/last session
+timestamp, timestamp source, wall clock duration, message count, engaged
+minutes.
+
+`first_message_at` and `last_message_at` prefer provider-supplied message
+timestamps. For sources that only preserve conversation-level timestamps,
+session profile materialization falls back to the conversation created/updated
+timestamps and records `evidence.timestamp_source =
+conversation_timestamp_fallback`. That fallback makes time-bucketed analysis
+complete without pretending the archive recovered per-message timing.
 
 Optional filters: `--first-message-since`, `--first-message-until`,
 `--min-wallclock-seconds`, `--max-wallclock-seconds`, `--sort`, `--tier`
