@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from polylogue.config import ConfigError
 from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
     MCPConversationSummaryPayload,
+    MCPEmbeddingStatusPayload,
     MCPMessagePayload,
     MCPMessagesListPayload,
     MCPRawArtifactPayload,
@@ -37,8 +39,14 @@ from polylogue.mcp.server_support import role_allows
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
+    from polylogue.config import Config
     from polylogue.mcp.server_support import ServerCallbacks
     from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
+
+
+@dataclass(frozen=True)
+class _MCPEmbeddingStatusEnv:
+    config: Config
 
 
 def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
@@ -195,6 +203,20 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             )
 
         return await hooks.async_safe_call("stats", run)
+
+    @mcp.tool()
+    def embedding_status(detail: bool = False) -> str:
+        def run() -> str:
+            from polylogue.storage.embeddings.status_payload import embedding_status_payload
+
+            payload = embedding_status_payload(
+                _MCPEmbeddingStatusEnv(hooks.get_config()),
+                include_retrieval_bands=detail,
+                include_detail=detail,
+            )
+            return hooks.json_payload(MCPEmbeddingStatusPayload.from_payload(dict(payload)))
+
+        return hooks.safe_call("embedding_status", run)
 
     async def _facets(**kwargs: object) -> str:
         # Reuse the conversation query request so MCP facets share the

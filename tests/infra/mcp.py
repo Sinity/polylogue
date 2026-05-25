@@ -19,6 +19,7 @@ EXPECTED_TOOL_NAMES = {
     "get_conversation",
     "neighbor_candidates",
     "stats",
+    "embedding_status",
     "facets",
     "add_tag",
     "remove_tag",
