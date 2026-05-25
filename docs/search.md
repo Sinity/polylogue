@@ -250,6 +250,10 @@ read-only and return the canonical JSON payloads used by the CLI, so agents do
 not need to scrape terminal output before deciding whether semantic search is
 actually usable.
 
+Python API clients use the same contracts through
+`Polylogue.embedding_status(detail=False)` and
+`Polylogue.embedding_preflight(...)`.
+
 ### Auto Elevation
 
 When `retrieval_lane=auto` (the default), the planner picks a concrete

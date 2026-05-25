@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.api.archive import PolylogueArchiveMixin
+from polylogue.api.embeddings import PolylogueEmbeddingsMixin
 from polylogue.api.ingest import PolylogueIngestMixin
 from polylogue.api.insights import PolylogueInsightsMixin
 from polylogue.config import Config
@@ -40,7 +41,7 @@ def select_pending_embedding_conversation_window(
     )
 
 
-class Polylogue(PolylogueArchiveMixin, PolylogueInsightsMixin, PolylogueIngestMixin):
+class Polylogue(PolylogueArchiveMixin, PolylogueEmbeddingsMixin, PolylogueInsightsMixin, PolylogueIngestMixin):
     """High-level async facade for the Polylogue library."""
 
     def __init__(
