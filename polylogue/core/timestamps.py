@@ -78,6 +78,20 @@ def format_timestamp(ts: int | float | datetime) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds")
 
 
+def canonical_timestamp_text(value: str | int | float | datetime | None) -> str | None:
+    """Return canonical UTC ISO-8601 text for a supported timestamp.
+
+    Unlike :func:`parse_timestamp_pair`, this does not preserve epoch strings
+    verbatim. It is intended for archive storage columns where SQL date
+    functions need one timestamp representation.
+    """
+    parsed = value if isinstance(value, datetime) else parse_timestamp(value)
+    if parsed is None:
+        return None
+    parsed = parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+    return parsed.isoformat()
+
+
 def parse_timestamp_pair(
     value: str | int | float | None,
 ) -> tuple[datetime, str] | None:
@@ -97,4 +111,4 @@ def parse_timestamp_pair(
     return (parsed, format_timestamp(parsed))
 
 
-__all__ = ["parse_timestamp", "parse_timestamp_pair", "format_timestamp"]
+__all__ = ["canonical_timestamp_text", "parse_timestamp", "parse_timestamp_pair", "format_timestamp"]

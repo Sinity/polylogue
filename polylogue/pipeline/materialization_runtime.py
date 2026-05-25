@@ -15,7 +15,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.json import dumps as json_dumps
-from polylogue.core.timestamps import parse_timestamp
+from polylogue.core.timestamps import canonical_timestamp_text, parse_timestamp
 from polylogue.pipeline.ids import (
     attachment_content_id,
     conversation_content_hashes,
@@ -424,8 +424,8 @@ def materialize_conversation(
         provider_name=normalized_convo.provider_name,
         provider_conversation_id=normalized_convo.provider_conversation_id,
         title=normalized_convo.title,
-        created_at=normalized_convo.created_at,
-        updated_at=normalized_convo.updated_at,
+        created_at=canonical_timestamp_text(normalized_convo.created_at),
+        updated_at=canonical_timestamp_text(normalized_convo.updated_at),
         sort_key=_timestamp_sort_key(normalized_convo.updated_at),
         content_hash=content_hash,
         provider_meta=provider_meta,

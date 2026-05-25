@@ -18,6 +18,7 @@ from typing import TypeAlias
 import pytest
 
 from polylogue.config import Config
+from polylogue.core.timestamps import canonical_timestamp_text
 from polylogue.rendering.core import (
     ConversationFormatter,
     FormattedConversation,
@@ -654,8 +655,8 @@ async def test_metadata_comprehensive(workspace_env: WorkspaceEnv, label: str, d
         (ConversationBuilder(db_path, conv_id).title("Test").created_at(created).updated_at(updated).save())
         formatter = ConversationFormatter(workspace_env["archive_root"], db_path=db_path)
         result = await formatter.format(conv_id)
-        assert result.metadata.created_at == created, f"Failed {desc}"
-        assert result.metadata.updated_at == updated, f"Failed {desc}"
+        assert result.metadata.created_at == canonical_timestamp_text(created), f"Failed {desc}"
+        assert result.metadata.updated_at == canonical_timestamp_text(updated), f"Failed {desc}"
 
 
 MARKDOWN_STRUCTURE_CASES = [

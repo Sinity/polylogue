@@ -353,6 +353,20 @@ class TestMessageFromRecord:
 
 
 class TestConversationSummaryFromRecord:
+    def test_conversation_record_canonicalizes_epoch_timestamp_text(self) -> None:
+        record = make_conversation(
+            conversation_id="c-epoch",
+            created_at="1705312200.123",
+            updated_at="1705314600",
+        )
+
+        assert record.created_at == "2024-01-15T09:50:00.123000+00:00"
+        assert record.updated_at == "2024-01-15T10:30:00+00:00"
+
+    def test_conversation_record_rejects_unparseable_timestamp_text(self) -> None:
+        with pytest.raises(ValueError, match="Unsupported archive timestamp"):
+            make_conversation(conversation_id="c-bad", created_at="not-a-timestamp")
+
     def test_from_record_projects_metadata(self) -> None:
         record = make_conversation(
             conversation_id="c1",

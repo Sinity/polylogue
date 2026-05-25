@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from polylogue.archive.conversation.branch_type import BranchType
@@ -10,6 +12,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.core.hashing import hash_text
 from polylogue.core.json import json_document
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
+from polylogue.core.timestamps import canonical_timestamp_text
 from polylogue.types import (
     AttachmentId,
     ContentBlockType,
@@ -71,6 +74,20 @@ class ConversationRecord(BaseModel):
     @classmethod
     def coerce_json_document(cls, value: object) -> JSONObject | None:
         return _coerce_json_object(value)
+
+    @field_validator("created_at", "updated_at", mode="before")
+    @classmethod
+    def coerce_archive_timestamp(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            raise ValueError(f"Unsupported archive timestamp: {value!r}")
+        if not isinstance(value, (str, int, float, datetime)):
+            raise ValueError(f"Unsupported archive timestamp: {value!r}")
+        canonical = canonical_timestamp_text(value)
+        if canonical is None:
+            raise ValueError(f"Unsupported archive timestamp: {value!r}")
+        return canonical
 
 
 class ContentBlockRecord(BaseModel):
