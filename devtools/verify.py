@@ -131,18 +131,6 @@ TESTMON_DATA = Path(".testmondata")
 TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
-TESTMON_GLOBAL_INVALIDATORS = (
-    ".python-version",
-    "conftest.py",
-    "noxfile.py",
-    "pyproject.toml",
-    "pytest.ini",
-    "setup.cfg",
-    "tox.ini",
-    "uv.lock",
-    "tests/conftest.py",
-    "tests/infra/",
-)
 
 
 def _load_history() -> list[dict[str, Any]]:
@@ -315,7 +303,6 @@ def build_verify_steps(
     commit: bool = False,
     seed_testmon: bool = False,
     full_pytest: bool = False,
-    testmon_global: bool = False,
 ) -> list[tuple[str, list[str]]]:
     steps: list[tuple[str, list[str]]] = [
         ("ruff format", ["ruff", "format", "--check", "polylogue/", "tests/", "devtools/"]),
@@ -392,13 +379,9 @@ def build_verify_steps(
         elif full_pytest:
             pytest_cmd.extend(_pytest_worker_args(default="16"))
             steps.append(("pytest full", pytest_cmd))
-        elif testmon_global:
-            pytest_cmd.extend(["--testmon", "--testmon-noselect", *_pytest_worker_args(default="16")])
-            steps.append(("pytest testmon-global", pytest_cmd))
         else:
-            pytest_cmd.extend(["--testmon", *_pytest_worker_args(default="8")])
-            if skip_slow:
-                pytest_cmd.append("--testmon-forceselect")
+            pytest_cmd.extend(["--testmon", *_pytest_worker_args(default="0")])
+            pytest_cmd.append("--testmon-forceselect")
             steps.append(("pytest testmon", pytest_cmd))
 
     if lab:
@@ -479,49 +462,6 @@ def _file_fingerprint(path: Path) -> str:
 def _pytest_worker_args(*, default: str) -> list[str]:
     workers = os.environ.get("POLYLOGUE_PYTEST_WORKERS", default).strip() or default
     return ["-n", workers]
-
-
-def _read_testmon_seed_stamp() -> dict[str, Any] | None:
-    try:
-        raw: object = json.loads(TESTMON_SEED_STAMP.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
-    return raw if isinstance(raw, dict) else None
-
-
-def _git_changed_paths(base: str | None) -> set[str] | None:
-    changed: set[str] = set()
-    commands: list[list[str]] = []
-    if base:
-        commands.append(["git", "diff", "--name-only", f"{base}..HEAD"])
-    commands.append(["git", "diff", "--name-only", "HEAD"])
-    commands.append(["git", "ls-files", "--others", "--exclude-standard"])
-
-    for command in commands:
-        result = subprocess.run(command, capture_output=True, text=True)
-        if result.returncode != 0:
-            return None
-        changed.update(line for line in result.stdout.splitlines() if line.strip())
-    return changed
-
-
-def _is_testmon_global_invalidator(path: str) -> bool:
-    if not path:
-        return False
-    if path.endswith((".toml", ".ini", ".cfg")) and (
-        path.startswith("tests/") or path in {"pyproject.toml", "setup.cfg", "tox.ini", "pytest.ini"}
-    ):
-        return True
-    return any(path == invalidator or path.startswith(invalidator) for invalidator in TESTMON_GLOBAL_INVALIDATORS)
-
-
-def _testmon_requires_global_collection() -> bool:
-    seed = _read_testmon_seed_stamp()
-    base = seed.get("git_head") if seed else None
-    changed = _git_changed_paths(base if isinstance(base, str) else None)
-    if changed is None:
-        return True
-    return any(_is_testmon_global_invalidator(path) for path in changed)
 
 
 def _testmon_preflight(*, seed_testmon: bool, full_pytest: bool, quick: bool, commit: bool) -> str | None:
@@ -613,10 +553,6 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(preflight_error)
         return 2
 
-    testmon_global = (
-        not (args.quick or args.commit or args.seed_testmon or full_pytest) and _testmon_requires_global_collection()
-    )
-
     head = _git_head()
     t0 = time.monotonic()
 
@@ -635,7 +571,6 @@ def main(argv: list[str] | None = None) -> int:
         skip_slow=bool(args.skip_slow),
         seed_testmon=bool(args.seed_testmon),
         full_pytest=full_pytest,
-        testmon_global=testmon_global,
     )
 
     step_results: list[dict[str, Any]] = []
@@ -685,7 +620,7 @@ def main(argv: list[str] | None = None) -> int:
     _save_history(history_entry)
     if exit_code == 0:
         _stamp_head()
-        if args.seed_testmon or testmon_global:
+        if args.seed_testmon:
             _write_testmon_seed_stamp(history_entry)
 
     # Notify on long-running verify.

@@ -261,11 +261,15 @@ not a substitute for the default baseline. The default command fails fast when
 silent full-suite fallback.
 
 `devtools verify` does not replay a prior verify result. It always runs the
-static gates and lets pytest-testmon decide affected tests from the current
-source, dependency, and Python-version state. If pytest configuration,
-dependency locks, or shared test infrastructure changed since the seed, the
-default command automatically widens the pytest step to `--testmon-noselect`
-and refreshes dependency data.
+static gates and then invokes pytest-testmon for affected-test selection from
+the current source, dependency, and Python-version state. The default pytest
+step combines marker filters with `--testmon-forceselect` so scale-tier
+deselection does not silently expand the run back to the whole suite; affected
+testmon runs are single-process by default to avoid xdist collection skew.
+Polylogue does not maintain a parallel changed-file router for helper/config
+paths; use `devtools verify --seed-testmon` when you intentionally want to
+refresh the dependency database and `devtools verify --all` for an explicit full
+diagnostic.
 
 Add `devtools build-package` or `nix flake check` when touching packaging or
 Nix expressions. See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md)

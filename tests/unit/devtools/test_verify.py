@@ -11,7 +11,6 @@ from devtools.verify import (
     PYTEST_REPORT_PATH,
     ROOT,
     _format_completion_notification,
-    _is_testmon_global_invalidator,
     _parse_pytest_test_count,
     _pytest_command_metadata,
     _pytest_metadata_from_report,
@@ -60,8 +59,9 @@ def test_default_verify_uses_pytest_testmon() -> None:
     assert label == "pytest testmon"
     assert "--testmon" in command
     assert "--testmon-noselect" not in command
+    assert "--testmon-forceselect" in command
     assert "-n" in command
-    assert command[command.index("-n") + 1] == "8"
+    assert command[command.index("-n") + 1] == "0"
 
 
 def test_pytest_step_requests_structured_json_report() -> None:
@@ -69,7 +69,6 @@ def test_pytest_step_requests_structured_json_report() -> None:
     for kwargs in (
         {"seed_testmon": True},
         {"full_pytest": True},
-        {"testmon_global": True},
         {},  # default testmon
     ):
         steps = build_verify_steps(quick=False, lab=False, skip_slow=False, **kwargs)
@@ -124,19 +123,18 @@ def test_default_testmon_worker_count_can_be_overridden(monkeypatch: pytest.Monk
     assert command[command.index("-n") + 1] == "3"
 
 
-def test_global_testmon_invalidator_runs_full_collection(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("POLYLOGUE_PYTEST_WORKERS", raising=False)
-
-    steps = build_verify_steps(quick=False, lab=False, skip_slow=False, testmon_global=True)
+def test_marker_filters_keep_testmon_selection_forced() -> None:
+    steps = build_verify_steps(quick=False, lab=False, skip_slow=False)
 
     label, command = steps[-1]
-    assert label == "pytest testmon-global"
-    assert "--testmon" in command
-    assert "--testmon-noselect" in command
-    assert command[command.index("-n") + 1] == "16"
+    assert label == "pytest testmon"
+    marker_expr = command[command.index("-m") + 1]
+    assert "not scale_medium" in marker_expr
+    assert "not scale_large" in marker_expr
+    assert "--testmon-forceselect" in command
 
 
-def test_skip_slow_keeps_testmon_selection_forced() -> None:
+def test_skip_slow_composes_with_forced_testmon_selection() -> None:
     steps = build_verify_steps(quick=False, lab=False, skip_slow=True)
 
     label, command = steps[-1]
@@ -174,16 +172,6 @@ def test_lab_verify_includes_medium_scale_marker() -> None:
     assert "not scale_large" in marker_expr
     assert "not scale_medium" not in marker_expr
     assert "scale_small" not in marker_expr
-
-
-def test_global_testmon_invalidators_cover_harness_and_config() -> None:
-    assert _is_testmon_global_invalidator("pyproject.toml")
-    assert _is_testmon_global_invalidator("uv.lock")
-    assert _is_testmon_global_invalidator("tests/conftest.py")
-    assert _is_testmon_global_invalidator("tests/infra/storage_records.py")
-    assert _is_testmon_global_invalidator("tests/unit/pytest.ini")
-    assert not _is_testmon_global_invalidator("polylogue/cli/click_app.py")
-    assert not _is_testmon_global_invalidator("docs/execution-plan.md")
 
 
 def test_lab_verify_delegates_to_lab_scenario() -> None:
