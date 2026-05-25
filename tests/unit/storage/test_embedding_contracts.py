@@ -219,6 +219,22 @@ def test_embedding_catchup_latest_run_uses_insert_order_for_timestamp_ties(tmp_p
     assert payload["rebuild"] is True
 
 
+def test_embedding_catchup_progress_fails_for_missing_run(tmp_path: Path) -> None:
+    """A DB/path mismatch must not silently drop progress updates."""
+    db_path = tmp_path / "archive.db"
+    _setup_minimal_embedding_file(db_path)
+
+    with pytest.raises(LookupError, match="progress update"):
+        record_embedding_catchup_progress(
+            db_path,
+            "missing-run",
+            CatchupRunDelta(conversation_id="conv-1", embedded=True, embedded_messages=1),
+        )
+
+    with pytest.raises(LookupError, match="finalization"):
+        finish_embedding_catchup_run(db_path, "missing-run", status="failed", stop_reason="missing")
+
+
 # ---------------------------------------------------------------------------
 # Lifecycle state catalog
 # ---------------------------------------------------------------------------

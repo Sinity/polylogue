@@ -130,7 +130,7 @@ def record_embedding_catchup_progress(db_path: Path, run_id: str, delta: Catchup
 
     with _connect(db_path) as conn:
         ensure_embedding_catchup_runs_table(conn)
-        conn.execute(
+        cursor = conn.execute(
             """
             UPDATE embedding_catchup_runs
             SET updated_at = datetime('now'),
@@ -153,6 +153,8 @@ def record_embedding_catchup_progress(db_path: Path, run_id: str, delta: Catchup
                 run_id,
             ),
         )
+        if cursor.rowcount != 1:
+            raise LookupError(f"embedding catch-up run not found for progress update: {run_id}")
         conn.commit()
 
 
@@ -167,7 +169,7 @@ def finish_embedding_catchup_run(
 
     with _connect(db_path) as conn:
         ensure_embedding_catchup_runs_table(conn)
-        conn.execute(
+        cursor = conn.execute(
             """
             UPDATE embedding_catchup_runs
             SET updated_at = datetime('now'),
@@ -178,6 +180,8 @@ def finish_embedding_catchup_run(
             """,
             (status, stop_reason, run_id),
         )
+        if cursor.rowcount != 1:
+            raise LookupError(f"embedding catch-up run not found for finalization: {run_id}")
         conn.commit()
 
 
