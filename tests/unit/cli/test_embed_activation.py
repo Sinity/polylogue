@@ -27,6 +27,7 @@ from click.testing import CliRunner
 from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.cli.commands.embed import (
     PreflightReport,
+    _message_window_for_cost,
     _read_pending_message_count,
     _splice_embedding_section,
     embed_command,
@@ -182,6 +183,9 @@ class TestEnableCommand:
 
 
 class TestPreflightCommand:
+    def test_cost_window_translates_to_message_window(self) -> None:
+        assert _message_window_for_cost(0.10) == 2000
+
     def test_preflight_count_bypasses_schema_version_gate_for_readiness(self, tmp_path: Path) -> None:
         db_path = tmp_path / "archive.db"
         with sqlite3.connect(db_path) as conn:
@@ -205,13 +209,14 @@ class TestPreflightCommand:
         with patch("polylogue.cli.commands.embed._build_preflight_report", fake_preflight):
             result = cli_runner.invoke(
                 embed_command,
-                ["preflight", "--max-conversations", "2", "--max-messages", "7"],
+                ["preflight", "--max-conversations", "2", "--max-messages", "7", "--max-cost-usd", "0.10"],
                 obj=stub_env,
             )
 
         assert result.exit_code == 0, result.output
         assert fake_preflight.call_args.kwargs["max_conversations"] == 2
         assert fake_preflight.call_args.kwargs["max_messages"] == 7
+        assert fake_preflight.call_args.kwargs["max_cost_usd"] == 0.10
 
 
 class TestDisableCommand:
@@ -286,7 +291,7 @@ class TestBackfillCommand:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("VOYAGE_API_KEY", "pa-test")
-        report = _make_report()
+        report = _make_report(max_messages=2000)
         fake_iter = MagicMock(return_value=[])
         fake_preflight = MagicMock(return_value=report)
         with (
@@ -296,15 +301,16 @@ class TestBackfillCommand:
         ):
             result = cli_runner.invoke(
                 embed_command,
-                ["backfill", "--yes", "--max-conversations", "3", "--max-messages", "7"],
+                ["backfill", "--yes", "--max-conversations", "3", "--max-messages", "7000", "--max-cost-usd", "0.10"],
                 obj=stub_env,
             )
 
         assert result.exit_code == 0, result.output
         assert fake_preflight.call_args.kwargs["max_conversations"] == 3
-        assert fake_preflight.call_args.kwargs["max_messages"] == 7
+        assert fake_preflight.call_args.kwargs["max_messages"] == 7000
+        assert fake_preflight.call_args.kwargs["max_cost_usd"] == 0.10
         assert fake_iter.call_args.kwargs["max_conversations"] == 3
-        assert fake_iter.call_args.kwargs["max_messages"] == 7
+        assert fake_iter.call_args.kwargs["max_messages"] == 2000
 
     def test_backfill_stop_after_seconds_stops_before_next_conversation(
         self,
