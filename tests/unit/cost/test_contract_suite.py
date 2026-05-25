@@ -415,24 +415,24 @@ def test_session_costs_aggregation_excludes_unpriced() -> None:
     insights = [
         SessionCostInsight(
             conversation_id="c1",
-            provider_name="claude-code",
+            source_name="claude-code",
             created_at="2026-05-01T10:00:00+00:00",
             estimate=_priced_estimate(),
             provenance=_provenance(),
         ),
         SessionCostInsight(
             conversation_id="c2",
-            provider_name="claude-code",
+            source_name="claude-code",
             created_at=None,  # excluded: no timestamp
             estimate=_priced_estimate(),
             provenance=_provenance(),
         ),
         SessionCostInsight(
             conversation_id="c3",
-            provider_name="claude-code",
+            source_name="claude-code",
             created_at="2026-05-02T10:00:00+00:00",
             estimate=CostEstimatePayload(
-                provider_name="claude-code",
+                source_name="claude-code",
                 conversation_id="c3",
                 status="unavailable",
                 total_usd=0.0,

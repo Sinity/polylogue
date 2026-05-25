@@ -34,9 +34,8 @@ def _insert_raw_record(
     *,
     db_path: Path,
     raw_id: str = "",  # ignored — raw_id is the sha256 of content
-    provider_name: str,
-    payload_provider: str | None = None,
     source_name: str,
+    payload_provider: str | None = None,
     source_path: str,
     raw_content: bytes,
 ) -> str:
@@ -50,13 +49,13 @@ def _insert_raw_record(
         conn.execute(
             """
             INSERT INTO raw_conversations (
-                raw_id, provider_name, payload_provider, source_name, source_path, source_index,
+                raw_id, source_name, payload_provider, source_name, source_path, source_index,
                 blob_size, acquired_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 raw_id,
-                provider_name,
+                source_name,
                 payload_provider,
                 source_name,
                 source_path,
@@ -173,8 +172,8 @@ class TestSchemaVerificationReport:
             total_records=3,
         )
         d = report.to_dict()
-        provider_names = list(d["providers"].keys())
-        assert provider_names == ["alpha", "beta", "zebra"]
+        source_names = list(d["providers"].keys())
+        assert source_names == ["alpha", "beta", "zebra"]
 
     def test_max_samples_none_displays_as_all(self) -> None:
         report = SchemaVerificationReport(
@@ -395,23 +394,21 @@ class TestProveRawArtifactCoverage:
         _insert_raw_record(
             db_path=db_path,
             raw_id="raw-chatgpt-1",
-            provider_name="chatgpt",
-            source_name="chatgpt",
+                        source_name="chatgpt",
             source_path="/tmp/chatgpt.json",
             raw_content=b'{"id":"one","mapping":{}}',
         )
         _insert_raw_record(
             db_path=db_path,
             raw_id="raw-sidecar-1",
-            provider_name="claude-code",
-            source_name="claude-code",
+                        source_name="claude-code",
             source_path="/tmp/subagents/agent-a123.meta.json",
             raw_content=b'{"agentType":"general-purpose"}',
         )
         _insert_raw_record(
             db_path=db_path,
             raw_id="raw-subagent-1",
-            provider_name="claude-code",
+            source_name="claude-code",
             payload_provider="claude-code",
             source_name="claude-code",
             source_path="/tmp/subagents/agent-a123.jsonl",
@@ -420,16 +417,14 @@ class TestProveRawArtifactCoverage:
         _insert_raw_record(
             db_path=db_path,
             raw_id="raw-unknown-1",
-            provider_name="inbox",
-            source_name="inbox",
+                        source_name="inbox",
             source_path="/tmp/unknown.json",
             raw_content=b"42",
         )
         _insert_raw_record(
             db_path=db_path,
             raw_id="raw-codex-1",
-            provider_name="codex",
-            source_name="codex",
+                        source_name="codex",
             source_path="/tmp/session.jsonl",
             raw_content=(
                 b'{"type":"session_meta"}\nnot json at all\n{"type":"response_item","payload":{"type":"message"}}\n'
@@ -526,8 +521,7 @@ class TestProveRawArtifactCoverage:
         source_path = "/tmp/chatgpt-stale.json"
         actual_raw_id = _insert_raw_record(
             db_path=db_path,
-            provider_name="chatgpt",
-            source_name=source_name,
+                        source_name=source_name,
             source_path=source_path,
             raw_content=b'{"id":"one","mapping":{}}',
         )
@@ -543,7 +537,7 @@ class TestProveRawArtifactCoverage:
                 INSERT INTO artifact_observations (
                     observation_id,
                     raw_id,
-                    provider_name,
+                    source_name,
                     payload_provider,
                     source_name,
                     source_path,
@@ -682,24 +676,21 @@ class TestProveRawArtifactCoverage:
         _insert_raw_record(
             db_path=db_path,
             raw_id="raw-chatgpt-1",
-            provider_name="chatgpt",
-            source_name="chatgpt",
+                        source_name="chatgpt",
             source_path="/tmp/chatgpt.json",
             raw_content=b'{"id":"one","mapping":{}}',
         )
         _insert_raw_record(
             db_path=db_path,
             raw_id="raw-sidecar-1",
-            provider_name="claude-code",
-            source_name="claude-code",
+                        source_name="claude-code",
             source_path="/tmp/subagents/agent-a123.meta.json",
             raw_content=b'{"agentType":"general-purpose"}',
         )
         _insert_raw_record(
             db_path=db_path,
             raw_id="raw-subagent-1",
-            provider_name="claude-code",
-            source_name="claude-code",
+                        source_name="claude-code",
             source_path="/tmp/subagents/agent-a123.jsonl",
             raw_content=(b'{"type":"session_meta"}\n{"type":"response_item","payload":{"type":"message"}}\n'),
         )
@@ -776,7 +767,7 @@ class TestProveRawArtifactCoverage:
             request=ArtifactObservationQuery(),
         )
         assert len(cohorts) == 3
-        chatgpt_cohort = next(row for row in cohorts if row.provider_name == "chatgpt")
+        chatgpt_cohort = next(row for row in cohorts if row.source_name == "chatgpt")
         assert chatgpt_cohort.support_status.value == "supported_parseable"
         assert chatgpt_cohort.resolved_package_version == "v1"
         sidecar_cohort = next(row for row in cohorts if row.artifact_kind == "agent_sidecar_meta")
@@ -806,8 +797,7 @@ class TestProveRawArtifactCoverage:
 
         _insert_raw_record(
             db_path=db_path,
-            provider_name="claude-ai",
-            source_name="claude-ai",
+                        source_name="claude-ai",
             source_path="/tmp/claude-large.json",
             raw_content=raw_content,
         )

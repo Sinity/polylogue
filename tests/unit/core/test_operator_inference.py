@@ -39,7 +39,7 @@ from polylogue.schemas.tooling_models import ClusterManifest, SchemaCluster, Sch
 
 @dataclass(frozen=True)
 class _ProviderConfig:
-    db_provider_name: str | None
+    db_source_name: str | None
 
 
 class _FakeSchemaRegistry(SchemaRegistryLike):
@@ -93,8 +93,8 @@ class _FakeSchemaRegistry(SchemaRegistryLike):
         return [package.version for package in catalog.packages] if catalog is not None else []
 
     def list_providers(self) -> list[str]:
-        provider_names = set(self._catalogs) | set(self._manifests)
-        return sorted(provider_names)
+        source_names = set(self._catalogs) | set(self._manifests)
+        return sorted(source_names)
 
     def get_schema_age_days(self, provider: str) -> int | None:
         return self._schema_age_days.get(provider)
@@ -194,7 +194,7 @@ def test_infer_schema_emits_cluster_backed_corpus_specs_when_manifest_exists(tmp
         clustered_manifest=manifest,
         manifest_path=tmp_path / "manifest.json",
     )
-    fake_provider = _ProviderConfig(db_provider_name="chatgpt")
+    fake_provider = _ProviderConfig(db_source_name="chatgpt")
 
     with (
         patch("polylogue.schemas.generation.workflow.generate_provider_schema", return_value=generation),
@@ -391,7 +391,7 @@ def test_infer_schema_coerces_privacy_config_and_falls_back_without_db_provider(
         sample_count=5,
         default_version="v2",
     )
-    fake_provider = _ProviderConfig(db_provider_name=None)
+    fake_provider = _ProviderConfig(db_source_name=None)
 
     def _generate_provider_schema(*args: object, **kwargs: object) -> GenerationResult:
         captured_privacy.append(cast(PrivacyConfig | None, kwargs["privacy_config"]))
@@ -516,7 +516,7 @@ def test_promote_schema_cluster_with_samples_filters_matching_cluster(tmp_path: 
         promoted_package=promoted_package,
         promoted_schema={"type": "object"},
     )
-    fake_provider = _ProviderConfig(db_provider_name="chatgpt")
+    fake_provider = _ProviderConfig(db_source_name="chatgpt")
 
     with (
         patch("polylogue.schemas.operator.inference.schema_registry", return_value=fake_registry),
@@ -560,7 +560,7 @@ def test_promote_schema_cluster_rejects_unknown_provider_and_missing_cluster_sam
                 )
             )
 
-    fake_provider = _ProviderConfig(db_provider_name="chatgpt")
+    fake_provider = _ProviderConfig(db_source_name="chatgpt")
     with (
         patch("polylogue.schemas.operator.inference.schema_registry", return_value=fake_registry),
         patch.dict("polylogue.schemas.observation.PROVIDERS", {"chatgpt": fake_provider}, clear=False),

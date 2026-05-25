@@ -298,7 +298,6 @@ class SQLiteQueryStoreArchiveMixin:
     async def iter_conversation_ids(
         self,
         *,
-        source_names: list[str] | None = None,
         page_size: int = 1000,
     ) -> AsyncIterator[str]:
         async with self._connection_factory() as conn:

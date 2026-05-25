@@ -84,7 +84,7 @@ async def test_search_includes_conversation_metadata(
 ) -> None:
     """search_messages() includes conversation metadata in results."""
     conv = make_conversation(
-        "conv1", provider_name="claude-ai", title="My Conversation", provider_meta={"source": "my-source"}
+        "conv1", source_name="claude-ai", title="My Conversation", provider_meta={"source": "my-source"}
     )
     msg = make_message("msg1", "conv1", text="search query", timestamp="2024-01-01T10:30:00Z")
 
@@ -96,7 +96,7 @@ async def test_search_includes_conversation_metadata(
     assert len(results.hits) == 1
     hit = results.hits[0]
     assert hit.conversation_id == "conv1"
-    assert hit.provider_name == "claude-ai"
+    assert hit.source_name == "claude-ai"
     assert hit.title == "My Conversation"
     assert hit.message_id == "msg1"
     assert hit.timestamp is not None and "2024-01-01" in hit.timestamp
@@ -252,7 +252,7 @@ async def test_search_returns_searchresult_object(
         hit = results.hits[0]
         assert hasattr(hit, "conversation_id")
         assert hasattr(hit, "message_id")
-        assert hasattr(hit, "provider_name")
+        assert hasattr(hit, "source_name")
         assert hasattr(hit, "snippet")
         assert hasattr(hit, "title")
         assert hasattr(hit, "timestamp")
@@ -542,10 +542,10 @@ async def test_batch_index_search_returns_correct_provider(
     workspace_env: dict[str, Path],
     storage_repository: ConversationRepository,
 ) -> None:
-    """Verify batch indexing allows retrieving correct provider_name via search."""
+    """Verify batch indexing allows retrieving correct source_name via search."""
     # Create conversations with different providers
-    conv1 = make_conversation("conv1", provider_name="claude-ai", title="Claude Conv")
-    conv2 = make_conversation("conv2", provider_name="chatgpt", title="ChatGPT Conv")
+    conv1 = make_conversation("conv1", source_name="claude-ai", title="Claude Conv")
+    conv2 = make_conversation("conv2", source_name="chatgpt", title="ChatGPT Conv")
 
     messages1 = [make_message(f"msg1-{i}", "conv1", text=f"claude text {i}") for i in range(5)]
     messages2 = [make_message(f"msg2-{i}", "conv2", text=f"chatgpt text {i}") for i in range(5)]
@@ -561,11 +561,11 @@ async def test_batch_index_search_returns_correct_provider(
 
     # Verify provider names via search
     results1 = search_messages("claude", archive_root=workspace_env["archive_root"], limit=10)
-    assert all(hit.provider_name == "claude-ai" for hit in results1.hits)
+    assert all(hit.source_name == "claude-ai" for hit in results1.hits)
     assert len(results1.hits) == 1
 
     results2 = search_messages("chatgpt", archive_root=workspace_env["archive_root"], limit=10)
-    assert all(hit.provider_name == "chatgpt" for hit in results2.hits)
+    assert all(hit.source_name == "chatgpt" for hit in results2.hits)
     assert len(results2.hits) == 1
 
 
@@ -878,7 +878,7 @@ class TestFTS5Provider:
         """FTS provider with indexed test data."""
         conv = make_conversation(
             "fts-conv-1",
-            provider_name="claude-ai",
+            source_name="claude-ai",
             title="FTS Test",
             created_at="1970-01-02T00:00:00+00:00",
             updated_at="1970-01-02T00:00:00+00:00",
@@ -926,7 +926,7 @@ class TestFTS5Provider:
             updated_at="1970-01-02T00:00:00+00:00",
             provider_meta={"source": "inbox"},
         )
-        # First save the conversation so provider_name lookup works
+        # First save the conversation so source_name lookup works
         backend = SQLiteBackend(db_path=db_path)
         await backend.begin()
         await backend.save_conversation_record(conv)
@@ -1108,7 +1108,7 @@ async def _seed_conversation(storage_repository: ConversationRepository) -> None
     """Helper to seed a test conversation."""
     await save_bundle(
         RecordBundle(
-            conversation=make_conversation("conv:hash", provider_name="codex", title="Demo"),
+            conversation=make_conversation("conv:hash", source_name="codex", title="Demo"),
             messages=[make_message("msg:hash", "conv:hash", text="hello world")],
             attachments=[],
         ),
@@ -1193,10 +1193,10 @@ async def test_search_returns_daemon_reader_url(
 ) -> None:
     """Search results point to the daemon reader, not rendered files."""
     archive_root = workspace_env["archive_root"]
-    provider_name = "legacy-provider"
+    source_name = "legacy-provider"
     conversation_id = "conv-one"
     bundle = RecordBundle(
-        conversation=make_conversation(conversation_id, provider_name=provider_name, title="Legacy"),
+        conversation=make_conversation(conversation_id, source_name=source_name, title="Legacy"),
         messages=[make_message("msg:legacy", conversation_id, text="hello legacy")],
         attachments=[],
     )
@@ -1535,7 +1535,7 @@ def test_fts_triggers_restored_after_exception() -> None:
     try:
         conn.executescript(SCHEMA_DDL)
         conn.execute(
-            "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) VALUES(?,?,?,1)",
+            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) VALUES(?,?,?,1)",
             ("c1", "test", "pc1"),
         )
         conn.commit()
@@ -1543,7 +1543,7 @@ def test_fts_triggers_restored_after_exception() -> None:
         # Simulate ingest: suspend, insert, exception, restore in finally
         suspend_fts_triggers_sync(conn)
         conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
+            "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
             ("m1", "c1", "user", "test message", "test"),
         )
         try:
@@ -1557,7 +1557,7 @@ def test_fts_triggers_restored_after_exception() -> None:
 
         # Insert another message — FTS should pick it up since triggers are active
         conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
+            "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
             ("m2", "c1", "assistant", "another message", "test"),
         )
         conn.commit()
@@ -1588,14 +1588,14 @@ def test_fts_index_recovers_from_corrupt_trigger_state() -> None:
     conn = sqlite3.connect(":memory:")
     conn.executescript(SCHEMA_DDL)
     conn.execute(
-        "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) VALUES(?,?,?,1)",
+        "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) VALUES(?,?,?,1)",
         ("c1", "test", "pc1"),
     )
     conn.commit()
 
     # Normal insert with triggers active
     conn.execute(
-        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
+        "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
         ("m1", "c1", "user", "hello world this is a test message", "test"),
     )
     conn.commit()
@@ -1604,7 +1604,7 @@ def test_fts_index_recovers_from_corrupt_trigger_state() -> None:
     # Simulate crash recovery: triggers suspended, data inserted, triggers restored
     suspend_fts_triggers_sync(conn)
     conn.execute(
-        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
+        "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
         ("m2", "c1", "assistant", "another message for testing", "test"),
     )
     restore_fts_triggers_sync(conn)
@@ -1612,7 +1612,7 @@ def test_fts_index_recovers_from_corrupt_trigger_state() -> None:
 
     # New message should be picked up
     conn.execute(
-        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
+        "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
         ("m3", "c1", "user", "third message here", "test"),
     )
     conn.commit()

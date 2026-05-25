@@ -502,7 +502,7 @@ class TestEdgeCases:
         result = parse([], "fallback")
         assert result.provider_conversation_id == "fallback"
         assert result.messages == []
-        assert result.provider_name == "codex"
+        assert result.source_name == "codex"
 
     def test_all_state_records(self) -> None:
         payload = [{"record_type": "state"} for _ in range(5)]
@@ -527,7 +527,7 @@ class TestEdgeCases:
 
     def test_provider_is_codex(self) -> None:
         result = parse([], "fallback")
-        assert result.provider_name == "codex"
+        assert result.source_name == "codex"
 
     def test_timestamp_preserved_on_messages(self) -> None:
         """Message timestamps are preserved from record."""

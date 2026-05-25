@@ -78,7 +78,7 @@ async def test_session_insight_refresh_materializes_logical_session_identity(
             store_records(
                 conversation=make_conversation(
                     conversation_id,
-                    provider_name="claude-code",
+                    source_name="claude-code",
                     title=conversation_id,
                     parent_conversation_id=parent_id,
                     updated_at="2026-05-25T10:00:00+00:00",
@@ -123,7 +123,7 @@ async def test_session_insight_refresh_materializes_logical_session_identity(
             """
             SELECT conversation_count, logical_session_count, logical_conversation_ids_json
             FROM session_tag_rollups
-            WHERE provider_name = 'claude-code'
+            WHERE source_name = 'claude-code'
               AND bucket_day = '2026-05-25'
               AND tag = 'provider:claude-code'
             """
@@ -147,7 +147,7 @@ async def test_apply_session_insight_conversation_updates_async_counts_provider_
     db_path = tmp_path / "refresh-provider-events.db"
     with open_connection(db_path) as conn:
         store_records(
-            conversation=make_conversation("conv-provider-event", provider_name="codex", title="Compaction Test"),
+            conversation=make_conversation("conv-provider-event", source_name="codex", title="Compaction Test"),
             messages=[
                 make_message(
                     "conv-provider-event:msg-1",
@@ -163,7 +163,7 @@ async def test_apply_session_insight_conversation_updates_async_counts_provider_
             INSERT INTO provider_events (
                 event_id,
                 conversation_id,
-                provider_name,
+                source_name,
                 event_index,
                 event_type,
                 timestamp,
@@ -219,7 +219,7 @@ async def test_apply_session_insight_conversation_updates_async_uses_provider_ev
         store_records(
             conversation=make_conversation(
                 "conv-provider-terminal",
-                provider_name="codex",
+                source_name="codex",
                 title="Terminal Test",
                 updated_at="2026-04-01T10:05:30+00:00",
             ),
@@ -238,7 +238,7 @@ async def test_apply_session_insight_conversation_updates_async_uses_provider_ev
             INSERT INTO provider_events (
                 event_id,
                 conversation_id,
-                provider_name,
+                source_name,
                 event_index,
                 event_type,
                 timestamp,
@@ -291,7 +291,7 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
         store_records(
             conversation=make_conversation(
                 "conv-chatgpt-a",
-                provider_name="chatgpt",
+                source_name="chatgpt",
                 title="ChatGPT A",
                 created_at="2026-04-02T10:00:00+00:00",
                 updated_at="2026-04-02T10:05:00+00:00",
@@ -310,7 +310,7 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
         store_records(
             conversation=make_conversation(
                 "conv-claude-a",
-                provider_name="claude-ai",
+                source_name="claude-ai",
                 title="Claude A",
                 created_at="2026-04-03T09:00:00+00:00",
                 updated_at="2026-04-03T09:05:00+00:00",
@@ -328,7 +328,7 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
         )
         rebuild_session_insights_sync(conn)
         conn.execute(
-            "UPDATE session_tag_rollups SET search_text = ? WHERE provider_name = ?",
+            "UPDATE session_tag_rollups SET search_text = ? WHERE source_name = ?",
             ("sentinel tag untouched", "claude-ai"),
         )
         conn.execute(
@@ -338,7 +338,7 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
         store_records(
             conversation=make_conversation(
                 "conv-chatgpt-b",
-                provider_name="chatgpt",
+                source_name="chatgpt",
                 title="ChatGPT B",
                 created_at="2026-04-02T11:00:00+00:00",
                 updated_at="2026-04-02T11:05:00+00:00",
@@ -357,10 +357,10 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
         counts = rebuild_session_insights_sync(conn, conversation_ids=["conv-chatgpt-b"])
         tag_rows = conn.execute(
             """
-            SELECT provider_name, bucket_day, conversation_count, search_text
+            SELECT source_name, bucket_day, conversation_count, search_text
             FROM session_tag_rollups
-            WHERE tag = 'provider:' || provider_name
-            ORDER BY provider_name, bucket_day
+            WHERE tag = 'provider:' || source_name
+            ORDER BY source_name, bucket_day
             """
         ).fetchall()
         claude_thread = conn.execute(
@@ -369,11 +369,11 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
         ).fetchone()
 
     assert counts.profiles == 1
-    assert [(row["provider_name"], row["bucket_day"], row["conversation_count"]) for row in tag_rows] == [
+    assert [(row["source_name"], row["bucket_day"], row["conversation_count"]) for row in tag_rows] == [
         ("chatgpt", "2026-04-02", 2),
         ("claude-ai", "2026-04-03", 1),
     ]
-    assert [row["search_text"] for row in tag_rows if row["provider_name"] == "claude-ai"] == ["sentinel tag untouched"]
+    assert [row["search_text"] for row in tag_rows if row["source_name"] == "claude-ai"] == ["sentinel tag untouched"]
     assert claude_thread is not None
     assert claude_thread["search_text"] == "sentinel thread untouched"
 
@@ -386,7 +386,7 @@ def test_session_insight_rebuild_fills_profile_time_from_conversation_timestamp(
         store_records(
             conversation=make_conversation(
                 "conv-codex-untimestamped",
-                provider_name="codex",
+                source_name="codex",
                 title="Codex untimestamped messages",
                 created_at="2026-05-12T09:00:00+00:00",
                 updated_at="2026-05-12T09:30:00+00:00",
@@ -434,7 +434,7 @@ def test_session_insight_rebuild_materializes_message_token_costs(tmp_path: Path
         store_records(
             conversation=make_conversation(
                 "conv-token-costs",
-                provider_name="claude-code",
+                source_name="claude-code",
                 title="Token costs",
                 created_at="2026-05-12T09:00:00+00:00",
             ),
@@ -489,7 +489,7 @@ def test_session_insight_rebuild_preserves_conversation_provider_cost(tmp_path: 
         store_records(
             conversation=make_conversation(
                 "conv-provider-cost",
-                provider_name="claude-code",
+                source_name="claude-code",
                 title="Provider cost",
                 created_at="2026-05-12T09:00:00+00:00",
                 provider_meta={
@@ -530,7 +530,7 @@ def test_session_insight_load_skips_plain_text_blocks(tmp_path: Path) -> None:
     db_path = tmp_path / "refresh-block-filter.db"
     with open_connection(db_path) as conn:
         store_records(
-            conversation=make_conversation("conv-blocks", provider_name="codex", title="Block Filter"),
+            conversation=make_conversation("conv-blocks", source_name="codex", title="Block Filter"),
             messages=[
                 make_message(
                     "conv-blocks:msg-1",
@@ -565,7 +565,7 @@ def test_session_insight_load_includes_provider_events_for_profile_classifiers(t
     db_path = tmp_path / "refresh-provider-event-load.db"
     with open_connection(db_path) as conn:
         store_records(
-            conversation=make_conversation("conv-provider-event-load", provider_name="codex", title="Event Load"),
+            conversation=make_conversation("conv-provider-event-load", source_name="codex", title="Event Load"),
             messages=[
                 make_message(
                     "conv-provider-event-load:msg-1",
@@ -581,7 +581,7 @@ def test_session_insight_load_includes_provider_events_for_profile_classifiers(t
             INSERT INTO provider_events (
                 event_id,
                 conversation_id,
-                provider_name,
+                source_name,
                 event_index,
                 event_type,
                 timestamp,
@@ -610,7 +610,7 @@ def test_session_insight_load_bounds_large_text_payloads(tmp_path: Path) -> None
     large_tool_output = "o" * (_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS + 100)
     with open_connection(db_path) as conn:
         store_records(
-            conversation=make_conversation("conv-large-text", provider_name="codex", title="Large Text"),
+            conversation=make_conversation("conv-large-text", source_name="codex", title="Large Text"),
             messages=[
                 make_message(
                     "conv-large-text:msg-1",
@@ -660,7 +660,7 @@ def test_targeted_session_insight_rebuild_splits_large_message_batches(
             """
             INSERT OR REPLACE INTO conversation_stats (
                 conversation_id,
-                provider_name,
+                source_name,
                 message_count,
                 word_count,
                 tool_use_count,
@@ -796,7 +796,7 @@ async def test_apply_session_insight_conversation_updates_async_splits_large_mes
             """
             INSERT OR REPLACE INTO conversation_stats (
                 conversation_id,
-                provider_name,
+                source_name,
                 message_count,
                 word_count,
                 tool_use_count,
@@ -970,7 +970,7 @@ async def test_refresh_async_provider_day_aggregates_batches_multiple_groups(
         store_records(
             conversation=make_conversation(
                 "conv-chatgpt-a",
-                provider_name="chatgpt",
+                source_name="chatgpt",
                 title="ChatGPT A",
                 created_at="2026-04-02T10:00:00+00:00",
                 updated_at="2026-04-02T10:05:00+00:00",
@@ -989,7 +989,7 @@ async def test_refresh_async_provider_day_aggregates_batches_multiple_groups(
         store_records(
             conversation=make_conversation(
                 "conv-chatgpt-b",
-                provider_name="chatgpt",
+                source_name="chatgpt",
                 title="ChatGPT B",
                 created_at="2026-04-02T11:00:00+00:00",
                 updated_at="2026-04-02T11:05:00+00:00",
@@ -1008,7 +1008,7 @@ async def test_refresh_async_provider_day_aggregates_batches_multiple_groups(
         store_records(
             conversation=make_conversation(
                 "conv-claude-a",
-                provider_name="claude-ai",
+                source_name="claude-ai",
                 title="Claude A",
                 created_at="2026-04-03T09:00:00+00:00",
                 updated_at="2026-04-03T09:05:00+00:00",
@@ -1044,14 +1044,14 @@ async def test_refresh_async_provider_day_aggregates_batches_multiple_groups(
     with open_connection(db_path) as conn:
         tag_rows = conn.execute(
             """
-            SELECT provider_name, bucket_day, conversation_count
+            SELECT source_name, bucket_day, conversation_count
             FROM session_tag_rollups
-            WHERE tag = 'provider:' || provider_name
-            ORDER BY provider_name, bucket_day
+            WHERE tag = 'provider:' || source_name
+            ORDER BY source_name, bucket_day
             """
         ).fetchall()
 
-    assert [(row["provider_name"], row["bucket_day"], row["conversation_count"]) for row in tag_rows] == [
+    assert [(row["source_name"], row["bucket_day"], row["conversation_count"]) for row in tag_rows] == [
         ("chatgpt", "2026-04-02", 2),
         ("claude-ai", "2026-04-03", 1),
     ]

@@ -199,7 +199,6 @@ async def reset_validation_status(
     conn: aiosqlite.Connection,
     *,
     provider: str | None = None,
-    source_names: list[str] | None = None,
     transaction_depth: int,
 ) -> int:
     where_clauses = ["(validated_at IS NOT NULL OR validation_status IS NOT NULL OR validation_error IS NOT NULL)"]

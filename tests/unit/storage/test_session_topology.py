@@ -143,14 +143,14 @@ def test_topology_sync_derivation_cycle_detected() -> None:
 
     a = ConversationRecord(
         conversation_id=ConversationId("A"),
-        provider_name="test",
+        source_name="test",
         provider_conversation_id="ext-A",
         content_hash=ContentHash("hash-a"),
         parent_conversation_id=ConversationId("B"),
     )
     b = ConversationRecord(
         conversation_id=ConversationId("B"),
-        provider_name="test",
+        source_name="test",
         provider_conversation_id="ext-B",
         content_hash=ContentHash("hash-b"),
         parent_conversation_id=ConversationId("A"),
@@ -173,13 +173,13 @@ def test_topology_sync_derivation_resolves_full_tree() -> None:
 
     root = ConversationRecord(
         conversation_id=ConversationId("root"),
-        provider_name="codex",
+        source_name="codex",
         provider_conversation_id="ext-root",
         content_hash=ContentHash("h-root"),
     )
     cont = ConversationRecord(
         conversation_id=ConversationId("cont"),
-        provider_name="codex",
+        source_name="codex",
         provider_conversation_id="ext-cont",
         content_hash=ContentHash("h-cont"),
         parent_conversation_id=ConversationId("root"),

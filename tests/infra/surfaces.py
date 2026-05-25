@@ -32,7 +32,7 @@ def _sorted_unique(values: list[str] | tuple[str, ...] | set[str]) -> tuple[str,
 
 def _provider_ids_from_connection(conn: sqlite3.Connection, provider: str) -> tuple[str, ...]:
     rows = conn.execute(
-        "SELECT conversation_id FROM conversations WHERE provider_name = ? ORDER BY conversation_id",
+        "SELECT conversation_id FROM conversations WHERE source_name = ? ORDER BY conversation_id",
         (provider,),
     ).fetchall()
     return tuple(str(row["conversation_id"]) for row in rows)

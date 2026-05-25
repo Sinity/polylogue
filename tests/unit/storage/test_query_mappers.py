@@ -131,7 +131,7 @@ class TestRowToConversation:
         row = make_row(
             {
                 "conversation_id": "conv-1",
-                "provider_name": "claude-ai",
+                "source_name": "claude-ai",
                 "provider_conversation_id": "ext-conv-1",
                 "title": "Test Chat",
                 "created_at": "2024-01-01T00:00:00Z",
@@ -149,7 +149,7 @@ class TestRowToConversation:
         result = _row_to_conversation(row)
         assert isinstance(result, ConversationRecord)
         assert result.conversation_id == "conv-1"
-        assert result.provider_name == "claude-ai"
+        assert result.source_name == "claude-ai"
         assert result.title == "Test Chat"
         assert result.content_hash == "abcdef1234567890"
 
@@ -161,7 +161,7 @@ class TestRowToConversation:
         row = make_row(
             {
                 "conversation_id": "conv-2",
-                "provider_name": "claude-ai",
+                "source_name": "claude-ai",
                 "provider_conversation_id": "ext-2",
                 "title": "With Meta",
                 "created_at": None,
@@ -202,7 +202,7 @@ class TestRowToMessage:
                 "version": 1,
                 "parent_message_id": None,
                 "branch_index": 0,
-                "provider_name": "claude-ai",
+                "source_name": "claude-ai",
                 "word_count": 2,
                 "has_tool_use": 0,
                 "has_thinking": 0,
@@ -230,7 +230,7 @@ class TestRowToMessage:
                 "version": 1,
                 "parent_message_id": None,
                 "branch_index": None,
-                "provider_name": "",
+                "source_name": "",
                 "word_count": 0,
                 "has_tool_use": 0,
                 "has_thinking": 0,
@@ -253,7 +253,7 @@ class TestRowToRawConversation:
         row = make_row(
             {
                 "raw_id": "sha256hash",
-                "provider_name": "chatgpt",
+                "source_name": "chatgpt",
                 "payload_provider": None,
                 "source_name": "inbox",
                 "source_path": "/tmp/data.json",
@@ -274,5 +274,5 @@ class TestRowToRawConversation:
         result = _row_to_raw_conversation(row)
         assert isinstance(result, RawConversationRecord)
         assert result.raw_id == "sha256hash"
-        assert result.provider_name == "chatgpt"
+        assert result.source_name == "chatgpt"
         assert result.source_name == "inbox"

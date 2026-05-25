@@ -55,7 +55,7 @@ class TestAsyncRebuildIndex:
             now = datetime.now(timezone.utc).isoformat()
             conversation = make_conversation(
                 conversation_id="test:rebuild",
-                provider_name="test",
+                source_name="test",
                 provider_conversation_id="ext-1",
                 title="Rebuild Test",
                 created_at=now,
@@ -90,7 +90,7 @@ class TestAsyncRebuildIndex:
             now = datetime.now(timezone.utc).isoformat()
             conversation = make_conversation(
                 conversation_id="test:stale",
-                provider_name="test",
+                source_name="test",
                 provider_conversation_id="ext-stale",
                 title="Stale Test",
                 created_at=now,
@@ -133,7 +133,7 @@ class TestAsyncUpdateIndex:
             for conversation_id in ["test:a", "test:b"]:
                 conversation = make_conversation(
                     conversation_id=conversation_id,
-                    provider_name="test",
+                    source_name="test",
                     provider_conversation_id=conversation_id.split(":")[1],
                     title=f"Conv {conversation_id}",
                     created_at=now,

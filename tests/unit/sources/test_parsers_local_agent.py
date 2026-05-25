@@ -43,7 +43,7 @@ def test_gemini_cli_session_document_parses_through_dispatch() -> None:
 
     [conversation] = parse_payload("gemini-cli", payload, "fallback")
 
-    assert conversation.provider_name is Provider.GEMINI_CLI
+    assert conversation.source_name is Provider.GEMINI_CLI
     assert conversation.provider_conversation_id == "gemini-session-1"
     assert conversation.created_at == "2026-04-08T20:45:00.000Z"
     assert conversation.updated_at == "2026-04-08T20:47:00.000Z"
@@ -89,7 +89,7 @@ def test_hermes_session_document_parses_through_dispatch() -> None:
 
     [conversation] = parse_payload("hermes", payload, "fallback")
 
-    assert conversation.provider_name is Provider.HERMES
+    assert conversation.source_name is Provider.HERMES
     assert conversation.provider_conversation_id == "hermes-session-1"
     assert conversation.created_at == "2026-05-07T08:39:43.000000"
     assert conversation.updated_at == "2026-05-07T08:46:00.000000"
@@ -171,7 +171,7 @@ def test_antigravity_brain_artifact_metadata_parses_sibling_markdown(tmp_path: P
         source_path=str(metadata),
     )
 
-    assert conversation.provider_name is Provider.ANTIGRAVITY
+    assert conversation.source_name is Provider.ANTIGRAVITY
     assert conversation.provider_conversation_id == "03c22aa3-8b7f-438d-baa8-d12567249cd9:implementation_plan.md"
     assert conversation.updated_at == "2026-01-07T19:08:15.216541610Z"
     assert conversation.messages[0].text == "# Implementation Plan\n\nDo the work.\n"
@@ -204,7 +204,7 @@ Checks passed.
 
     conversation = antigravity.parse_markdown_export(markdown, summary)
 
-    assert conversation.provider_name is Provider.ANTIGRAVITY
+    assert conversation.source_name is Provider.ANTIGRAVITY
     assert conversation.provider_conversation_id == "e85783e3-f047-49b8-9035-4029f58dd04a"
     assert conversation.title == "Refactoring and Executing Plan"
     assert conversation.updated_at == "2026-03-05T04:21:34.468316671Z"
@@ -272,4 +272,4 @@ def test_antigravity_source_walk_ingests_metadata_not_config(tmp_path: Path) -> 
     conversations = list(iter_source_conversations(Source(name="antigravity", path=tmp_path)))
 
     assert len(conversations) == 1
-    assert conversations[0].provider_name is Provider.ANTIGRAVITY
+    assert conversations[0].source_name is Provider.ANTIGRAVITY

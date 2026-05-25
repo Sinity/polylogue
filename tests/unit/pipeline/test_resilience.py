@@ -71,7 +71,6 @@ def _make_raw_record(
 
     return RawConversationRecord(
         raw_id=actual_raw_id,  # Use the actual hash as raw_id
-        provider_name=provider,
         source_name="test",
         source_path=path,
         source_index=None,
@@ -181,7 +180,7 @@ def test_parse_mixed_valid_invalid_jsonl_lines(tmp_path: Path) -> None:
     result = ingest_record(record, str(tmp_path / "archive"), "off")
     assert result.conversations is not None
     if result.conversations:
-        assert result.conversations[0].provider_name == "claude-code"
+        assert result.conversations[0].source_name == "claude-code"
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +188,7 @@ def test_parse_mixed_valid_invalid_jsonl_lines(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_parse_unknown_provider_name(tmp_path: Path) -> None:
+def test_parse_unknown_source_name(tmp_path: Path) -> None:
     """Unknown provider name falls back gracefully."""
     from polylogue.pipeline.services.ingest_worker import ingest_record
 
@@ -398,7 +397,7 @@ async def test_acquisition_law_counts_unique_raws_and_normalizes_provider_hints(
 
                 raw_bytes = load_raw_content(raw_id)
                 payload_id = json.loads(raw_bytes)["id"]
-                assert stored.provider_name == expected_first_provider[payload_id]
+                assert stored.source_name == expected_first_provider[payload_id]
                 assert stored.payload_provider is None
         finally:
             await backend.close()
@@ -411,14 +410,14 @@ async def test_validation_law_matches_mode_and_payload_contract(case: Validation
     from polylogue.schemas import ValidationResult
     from polylogue.storage.blob_store import get_blob_store
 
-    raw_content, provider_name, source_path = build_validation_payload(case)
+    raw_content, source_name, source_path = build_validation_payload(case)
     blob_store = get_blob_store()
     raw_id, blob_size = blob_store.write_from_bytes(raw_content)
 
     raw_record = MagicMock(
         raw_id=raw_id,
         raw_content=raw_content,  # Keep for backwards compatibility in mocks
-        provider_name=provider_name,
+        source_name=source_name,
         source_path=source_path,
         payload_provider=None,
         blob_size=blob_size,
@@ -434,7 +433,7 @@ async def test_validation_law_matches_mode_and_payload_contract(case: Validation
     object.__setattr__(service.repository, "mark_raw_parsed", mark_parsed)
 
     class _SyntheticValidator:
-        provider = provider_name
+        provider = source_name
 
         def __init__(self) -> None:
             self.max_samples_seen: int | None | Literal["unset"] = "unset"
@@ -646,7 +645,7 @@ def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: 
     from polylogue.pipeline.services.ingest_worker import _transform_to_tuples
 
     conversation = ParsedConversation(
-        provider_name=Provider.CODEX,
+        source_name=Provider.CODEX,
         provider_conversation_id="tool-conv-1",
         title="Tool Conversation",
         created_at="2026-04-02T00:00:00Z",
@@ -685,7 +684,7 @@ def test_transform_deduplicates_materialized_message_rows_by_primary_key(tmp_pat
     from polylogue.pipeline.services.ingest_worker import _transform_to_tuples
 
     conversation = ParsedConversation(
-        provider_name=Provider.CODEX,
+        source_name=Provider.CODEX,
         provider_conversation_id="duplicate-message-conv",
         title="Duplicate Message Conversation",
         created_at="2026-04-02T00:00:00Z",
@@ -750,7 +749,7 @@ def test_ingest_record_streams_codex_jsonl_without_full_envelope_decode(tmp_path
 
     assert result.error is None
     assert len(result.conversations) == 1
-    assert result.conversations[0].provider_name == "codex"
+    assert result.conversations[0].source_name == "codex"
 
 
 def test_ingest_record_streams_detected_codex_jsonl_without_full_envelope_decode(tmp_path: Path) -> None:
@@ -771,7 +770,7 @@ def test_ingest_record_streams_detected_codex_jsonl_without_full_envelope_decode
 
     assert result.error is None
     assert len(result.conversations) == 1
-    assert result.conversations[0].provider_name == "codex"
+    assert result.conversations[0].source_name == "codex"
 
 
 def test_ingest_record_stream_plan_trusts_known_provider(tmp_path: Path) -> None:
@@ -792,4 +791,4 @@ def test_ingest_record_stream_plan_trusts_known_provider(tmp_path: Path) -> None
 
     assert result.error is None
     assert len(result.conversations) == 1
-    assert result.conversations[0].provider_name == "codex"
+    assert result.conversations[0].source_name == "codex"

@@ -38,7 +38,7 @@ def _seed_raw_table(db: Path, parse_error: str | None = None, validation_status:
             """
             CREATE TABLE raw_conversations (
                 raw_id TEXT PRIMARY KEY,
-                provider_name TEXT NOT NULL,
+                source_name TEXT NOT NULL,
                 payload_provider TEXT,
                 source_name TEXT,
                 source_path TEXT NOT NULL,
@@ -60,7 +60,7 @@ def _seed_raw_table(db: Path, parse_error: str | None = None, validation_status:
         )
         if parse_error is not None or validation_status is not None:
             conn.execute(
-                "INSERT INTO raw_conversations (raw_id, provider_name, source_path, blob_size, acquired_at, parse_error, validation_status) "
+                "INSERT INTO raw_conversations (raw_id, source_name, source_path, blob_size, acquired_at, parse_error, validation_status) "
                 "VALUES (?,?,?,?,?,?,?)",
                 ("raw-1", "claude-code", "/x/y", 1, "2026-01-01T00:00:00Z", parse_error, validation_status),
             )

@@ -22,7 +22,7 @@ class TestArchiveCoverageInsight:
     def test_tool_use_percentage_with_data(self: object) -> None:
         """Tool use percentage is calculated correctly."""
         metrics = ArchiveCoverageInsight(
-            provider_name="test",
+            source_name="test",
             conversation_count=100,
             message_count=500,
             user_message_count=200,
@@ -42,7 +42,7 @@ class TestArchiveCoverageInsight:
     def test_tool_use_percentage_zero_conversations(self: object) -> None:
         """Tool use percentage returns 0 when no conversations."""
         metrics = ArchiveCoverageInsight(
-            provider_name="empty",
+            source_name="empty",
             conversation_count=0,
             message_count=0,
             user_message_count=0,
@@ -62,7 +62,7 @@ class TestArchiveCoverageInsight:
     def test_thinking_percentage_with_data(self: object) -> None:
         """Thinking percentage is calculated correctly."""
         metrics = ArchiveCoverageInsight(
-            provider_name="test",
+            source_name="test",
             conversation_count=50,
             message_count=200,
             user_message_count=100,
@@ -82,7 +82,7 @@ class TestArchiveCoverageInsight:
     def test_thinking_percentage_zero_conversations(self: object) -> None:
         """Thinking percentage returns 0 when no conversations."""
         metrics = ArchiveCoverageInsight(
-            provider_name="empty",
+            source_name="empty",
             conversation_count=0,
             message_count=0,
             user_message_count=0,
@@ -115,7 +115,7 @@ class TestListArchiveCoverageInsights:
         """Single provider aggregation."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
-        conv = make_conversation("conv-1", provider_name="claude-ai", provider_meta={"source": "inbox"})
+        conv = make_conversation("conv-1", source_name="claude-ai", provider_meta={"source": "inbox"})
         msgs = [
             make_message("msg-1", "conv-1", text="Hello world test"),
             make_message(
@@ -127,7 +127,7 @@ class TestListArchiveCoverageInsights:
         result = await list_archive_coverage_insights(db_path=db_path)
 
         assert len(result) == 1
-        assert result[0].provider_name == "claude-ai"
+        assert result[0].source_name == "claude-ai"
         assert result[0].conversation_count == 1
         assert result[0].message_count == 2
         assert result[0].user_message_count == 1
@@ -142,7 +142,7 @@ class TestListArchiveCoverageInsights:
         # Create 2 claude conversations
         for i in range(2):
             conv = make_conversation(
-                f"claude-{i}", provider_name="claude-ai", title=f"Claude {i}", provider_meta={"source": "inbox"}
+                f"claude-{i}", source_name="claude-ai", title=f"Claude {i}", provider_meta={"source": "inbox"}
             )
             msgs = [make_message(f"cmsg-{i}", f"claude-{i}", text="Hello")]
             await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
@@ -150,7 +150,7 @@ class TestListArchiveCoverageInsights:
         # Create 3 chatgpt conversations
         for i in range(3):
             conv = make_conversation(
-                f"chatgpt-{i}", provider_name="chatgpt", title=f"ChatGPT {i}", provider_meta={"source": "inbox"}
+                f"chatgpt-{i}", source_name="chatgpt", title=f"ChatGPT {i}", provider_meta={"source": "inbox"}
             )
             msgs = [make_message(f"gmsg-{i}", f"chatgpt-{i}", text="Hi")]
             await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
@@ -159,9 +159,9 @@ class TestListArchiveCoverageInsights:
 
         assert len(result) == 2
         # ChatGPT has more conversations, should be first
-        assert result[0].provider_name == "chatgpt"
+        assert result[0].source_name == "chatgpt"
         assert result[0].conversation_count == 3
-        assert result[1].provider_name == "claude-ai"
+        assert result[1].source_name == "claude-ai"
         assert result[1].conversation_count == 2
 
     async def test_user_assistant_segregation(
@@ -223,7 +223,7 @@ class TestListArchiveCoverageInsights:
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
         conv = make_conversation(
-            "tool-conv", provider_name="claude-ai", title="Tool Use Test", provider_meta={"source": "inbox"}
+            "tool-conv", source_name="claude-ai", title="Tool Use Test", provider_meta={"source": "inbox"}
         )
         msgs = [
             make_message(
@@ -250,7 +250,7 @@ class TestListArchiveCoverageInsights:
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
         conv = make_conversation(
-            "think-conv", provider_name="claude-ai", title="Thinking Test", provider_meta={"source": "inbox"}
+            "think-conv", source_name="claude-ai", title="Thinking Test", provider_meta={"source": "inbox"}
         )
         msgs = [
             make_message(
@@ -277,7 +277,7 @@ class TestListArchiveCoverageInsights:
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
         conv = make_conversation(
-            "multi-tool", provider_name="claude-ai", title="Multi Tool", provider_meta={"source": "inbox"}
+            "multi-tool", source_name="claude-ai", title="Multi Tool", provider_meta={"source": "inbox"}
         )
         msgs = [
             make_message(
@@ -360,7 +360,7 @@ async def _seed_db(tmp_path: Path, rows: AnalyticsRows) -> Path:
     for provider, messages in convos_by_provider.items():
         conv = make_conversation(
             f"conv-{provider}",
-            provider_name=provider,
+            source_name=provider,
             title=f"{provider} Test Conversation",
             provider_meta={"source": "test"},
         )
@@ -581,6 +581,6 @@ class TestCrossProviderConsistency:
         )
         results = await list_archive_coverage_insights(db_path=db)
 
-        by_provider = {r.provider_name: r for r in results}
+        by_provider = {r.source_name: r for r in results}
         assert by_provider["chatgpt"].tool_use_count == 1
         assert by_provider["claude-ai"].tool_use_count == 1

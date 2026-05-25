@@ -616,7 +616,7 @@ class TestInsightTools:
         insight = SessionProfileInsight(
             conversation_id="conv-1",
             logical_conversation_id="conv-1",
-            provider_name="claude-code",
+            source_name="claude-code",
             title="Profiled Session",
             semantic_tier="merged",
             provenance=_provenance(),
@@ -643,7 +643,7 @@ class TestInsightTools:
         profile = SessionProfileInsight(
             conversation_id="conv-1",
             logical_conversation_id="conv-1",
-            provider_name="claude-code",
+            source_name="claude-code",
             title="Profiled Session",
             semantic_tier="merged",
             provenance=_provenance(),
@@ -672,7 +672,7 @@ class TestInsightTools:
         work_event = SessionWorkEventInsight(
             event_id="evt-1",
             conversation_id="conv-1",
-            provider_name="claude-code",
+            source_name="claude-code",
             event_index=0,
             provenance=_provenance(),
             inference_provenance=_inference_provenance(),
@@ -686,7 +686,7 @@ class TestInsightTools:
         phase = SessionPhaseInsight(
             phase_id="phase-1",
             conversation_id="conv-1",
-            provider_name="claude-code",
+            source_name="claude-code",
             phase_index=0,
             provenance=_provenance(),
             inference_provenance=_inference_provenance(),
@@ -728,7 +728,7 @@ class TestInsightTools:
         coverage = ArchiveCoverageInsight(
             group_by="provider",
             bucket="claude-code",
-            provider_name="claude-code",
+            source_name="claude-code",
             conversation_count=1,
             message_count=2,
             user_message_count=1,
@@ -745,10 +745,10 @@ class TestInsightTools:
         )
         session_cost = SessionCostInsight(
             conversation_id="conv-root",
-            provider_name="claude-code",
+            source_name="claude-code",
             title="Root Thread",
             estimate=CostEstimatePayload(
-                provider_name="claude-code",
+                source_name="claude-code",
                 conversation_id="conv-root",
                 model_name="claude-sonnet-4-5",
                 normalized_model="claude-sonnet-4-5",
@@ -760,7 +760,7 @@ class TestInsightTools:
             provenance=_provenance(),
         )
         cost_rollup = CostRollupInsight(
-            provider_name="claude-code",
+            source_name="claude-code",
             model_name="claude-sonnet-4-5",
             normalized_model="claude-sonnet-4-5",
             session_count=1,

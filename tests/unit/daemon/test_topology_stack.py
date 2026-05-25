@@ -103,7 +103,7 @@ def _make_topology(
     node_tuple = tuple(
         TopologyNode(
             conversation_id=ConversationId(cid),
-            provider_name="claude-code",
+            source_name="claude-code",
             title=cid.title(),
             depth=depth,
             is_root=is_root,

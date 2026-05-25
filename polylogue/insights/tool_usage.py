@@ -78,7 +78,6 @@ class ToolUsageEntry(ArchiveInsightModel):
 class ToolUsageCoverageEntry(ArchiveInsightModel):
     """Per-provider tool-data coverage signal."""
 
-    source_name: str
     conversation_count: int
     action_event_count: int
     distinct_tool_count: int

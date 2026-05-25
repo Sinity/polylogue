@@ -160,7 +160,6 @@ class RepositoryRawMixin:
         self,
         *,
         provider: str | None = None,
-        source_names: list[str] | None = None,
     ) -> int:
         async with self._backend.connection() as conn:
             return await raw_queries.reset_validation_status(
@@ -207,8 +206,6 @@ class RepositoryRawMixin:
     async def iter_raw_headers(
         self,
         *,
-        source_names: list[str] | None = None,
-        source_name: str | None = None,
         require_unparsed: bool = False,
         require_unvalidated: bool = False,
         validation_statuses: list[str] | None = None,

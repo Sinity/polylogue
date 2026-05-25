@@ -28,7 +28,7 @@ def _archive_coverage_insight() -> ArchiveCoverageInsight:
     return ArchiveCoverageInsight(
         group_by="provider",
         bucket="claude-code",
-        provider_name="claude-code",
+        source_name="claude-code",
         conversation_count=1,
         message_count=2,
         user_message_count=1,
@@ -47,7 +47,7 @@ def _archive_coverage_insight() -> ArchiveCoverageInsight:
 
 def test_registry_accessors_format_values_and_defaults() -> None:
     item = SimpleNamespace(
-        provider_name="claude-code",
+        source_name="claude-code",
         thread_id="thread-1",
         nested=SimpleNamespace(value="nested-value"),
         values=("a", "b", "c", "d"),
@@ -108,7 +108,7 @@ def test_insight_items_payload_and_rendering_cover_json_plain_and_empty_paths() 
 
     payload = insight_items_payload([insight], insight_type, item_key="items")
     assert payload["total"] == 1
-    assert payload["items"][0]["provider_name"] == "claude-code"
+    assert payload["items"][0]["source_name"] == "claude-code"
 
     with patch("polylogue.cli.shared.machine_errors.emit_success") as mock_emit:
         render_insight_items([insight], insight_type, json_mode=True)

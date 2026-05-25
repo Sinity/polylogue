@@ -276,7 +276,6 @@ def emit_conversation_appended(
 def emit_message_appended(
     *,
     conversation_id: str | None,
-    source_name: str | None = None,
     appended_count: int = 0,
     source_path: str | None = None,
 ) -> None:

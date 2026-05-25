@@ -324,7 +324,7 @@ def _check(name: str, status: str, detail: str) -> SimpleNamespace:
 
 
 def _metric(
-    provider_name: str,
+    source_name: str,
     conversation_count: int,
     message_count: int = 0,
     avg_messages_per_conversation: float = 0.0,
@@ -336,7 +336,7 @@ def _metric(
     thinking_percentage: float = 0.0,
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        provider_name=provider_name,
+        source_name=source_name,
         conversation_count=conversation_count,
         message_count=message_count,
         avg_messages_per_conversation=avg_messages_per_conversation,

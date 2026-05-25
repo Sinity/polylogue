@@ -157,8 +157,8 @@ async def test_browser_tree_populated(
         assert len(tree.root.children) >= 1
 
         # Find the chatgpt provider node
-        provider_names = [str(child.label) for child in tree.root.children]
-        assert "Chatgpt" in provider_names
+        source_names = [str(child.label) for child in tree.root.children]
+        assert "Chatgpt" in source_names
 
         # Expand chatgpt node — should have our conversation
         chatgpt_node = [c for c in tree.root.children if str(c.label) == "Chatgpt"][0]

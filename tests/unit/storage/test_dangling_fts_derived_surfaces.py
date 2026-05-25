@@ -22,10 +22,10 @@ def test_repair_missing_fts_rows_marks_derived_surfaces_ready(tmp_path: Path) ->
                 normalized_tool_name TEXT, search_text TEXT);
             CREATE VIRTUAL TABLE action_events_fts USING fts5(event_id UNINDEXED, message_id UNINDEXED,
                 conversation_id UNINDEXED, action_kind UNINDEXED, normalized_tool_name UNINDEXED, search_text);
-            CREATE TABLE session_work_events (event_id TEXT PRIMARY KEY, conversation_id TEXT, provider_name TEXT,
+            CREATE TABLE session_work_events (event_id TEXT PRIMARY KEY, conversation_id TEXT, source_name TEXT,
                 heuristic_label TEXT, search_text TEXT);
             CREATE VIRTUAL TABLE session_work_events_fts USING fts5(event_id UNINDEXED, conversation_id UNINDEXED,
-                provider_name UNINDEXED, heuristic_label UNINDEXED, text);
+                source_name UNINDEXED, heuristic_label UNINDEXED, text);
             CREATE TABLE work_threads (thread_id TEXT PRIMARY KEY, root_id TEXT, search_text TEXT);
             CREATE VIRTUAL TABLE work_threads_fts USING fts5(thread_id UNINDEXED, root_id UNINDEXED, text);
             INSERT INTO session_work_events VALUES ('event-1', 'conv-1', 'codex', 'decision', 'ship it');
@@ -59,10 +59,10 @@ def test_repair_stale_fts_rows_skips_ready_archive_surfaces(tmp_path: Path) -> N
                 normalized_tool_name TEXT, search_text TEXT);
             CREATE VIRTUAL TABLE action_events_fts USING fts5(event_id UNINDEXED, message_id UNINDEXED,
                 conversation_id UNINDEXED, action_kind UNINDEXED, normalized_tool_name UNINDEXED, search_text);
-            CREATE TABLE session_work_events (event_id TEXT PRIMARY KEY, conversation_id TEXT, provider_name TEXT,
+            CREATE TABLE session_work_events (event_id TEXT PRIMARY KEY, conversation_id TEXT, source_name TEXT,
                 heuristic_label TEXT, search_text TEXT);
             CREATE VIRTUAL TABLE session_work_events_fts USING fts5(event_id UNINDEXED, conversation_id UNINDEXED,
-                provider_name UNINDEXED, heuristic_label UNINDEXED, text);
+                source_name UNINDEXED, heuristic_label UNINDEXED, text);
             CREATE TABLE work_threads (thread_id TEXT PRIMARY KEY, root_id TEXT, search_text TEXT);
             CREATE VIRTUAL TABLE work_threads_fts USING fts5(thread_id UNINDEXED, root_id UNINDEXED, text);
             CREATE TABLE fts_freshness_state (

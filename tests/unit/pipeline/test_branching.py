@@ -411,7 +411,7 @@ class TestBranchPipelinePersistence:
             parent_id, _, _ = _prepare_fields(
                 await prepare_records(
                     ParsedConversation(
-                        provider_name=Provider.CODEX,
+                        source_name=Provider.CODEX,
                         provider_conversation_id="parent-id",
                         title="Parent Session",
                         messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="Parent message")],
@@ -425,7 +425,7 @@ class TestBranchPipelinePersistence:
             child_id, _, _ = _prepare_fields(
                 await prepare_records(
                     ParsedConversation(
-                        provider_name=Provider.CODEX,
+                        source_name=Provider.CODEX,
                         provider_conversation_id="child-id",
                         title="Child Session",
                         messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="Hello")],
@@ -441,7 +441,7 @@ class TestBranchPipelinePersistence:
             branch_id, _, _ = _prepare_fields(
                 await prepare_records(
                     ParsedConversation(
-                        provider_name=Provider.CHATGPT,
+                        source_name=Provider.CHATGPT,
                         provider_conversation_id="conv-1",
                         title="Branched Session",
                         messages=[

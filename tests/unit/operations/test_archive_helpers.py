@@ -42,9 +42,9 @@ def test_archive_helper_snippets_rows_queries_and_slices() -> None:
 def test_archive_cost_product_filters() -> None:
     product = SessionCostInsight(
         conversation_id="conv-cost",
-        provider_name="claude-ai",
+        source_name="claude-ai",
         estimate=CostEstimatePayload(
-            provider_name="claude-ai",
+            source_name="claude-ai",
             conversation_id="conv-cost",
             model_name="claude-sonnet-4-5",
             normalized_model="claude-sonnet-4-5",

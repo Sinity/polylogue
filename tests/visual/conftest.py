@@ -202,7 +202,7 @@ def seed_reader_archive(
             conn.execute(
                 """
                 INSERT INTO conversations(
-                    conversation_id, provider_name, provider_conversation_id, title,
+                    conversation_id, source_name, provider_conversation_id, title,
                     content_hash, provider_meta, version
                 )
                 VALUES(?, ?, ?, ?, ?, ?, ?)
@@ -213,7 +213,7 @@ def seed_reader_archive(
                 conn.execute(
                     """
                     INSERT INTO messages(
-                        message_id, conversation_id, role, text, sort_key, provider_name,
+                        message_id, conversation_id, role, text, sort_key, source_name,
                         content_hash, version, word_count, has_tool_use, has_thinking,
                         has_paste, message_type
                     )

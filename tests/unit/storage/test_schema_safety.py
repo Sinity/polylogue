@@ -333,7 +333,7 @@ class TestFTS5CountGuard:
         with open_connection(test_db) as conn:
             # Insert test data
             conn.execute("""
-                INSERT INTO conversations (conversation_id, provider_name,
+                INSERT INTO conversations (conversation_id, source_name,
                     provider_conversation_id, content_hash, version)
                 VALUES ('c1', 'test', 'pc1', 'hash1', 1)
             """)
@@ -523,25 +523,25 @@ class TestFetchLimitPagination:
 class TestAnalyticsQueryPlan:
     """Analytics queries must use indexes, not full table scans.
 
-    The provider breakdown query (GROUP BY provider_name) should use
+    The provider breakdown query (GROUP BY source_name) should use
     idx_conversations_provider. Without this index, large archives
     would require a full table scan.
     """
 
     def test_provider_group_by_uses_index(self, tmp_path: Path) -> None:
-        """GROUP BY provider_name should use idx_conversations_provider."""
+        """GROUP BY source_name should use idx_conversations_provider."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
         try:
             conn.executescript(SCHEMA_DDL)
             # EXPLAIN QUERY PLAN shows the access method
             cursor = conn.execute(
-                "EXPLAIN QUERY PLAN SELECT provider_name, COUNT(*) FROM conversations GROUP BY provider_name"
+                "EXPLAIN QUERY PLAN SELECT source_name, COUNT(*) FROM conversations GROUP BY source_name"
             )
             plan = " ".join(row[3] if len(row) > 3 else str(row) for row in cursor.fetchall())
             # Should scan the covering index, not the table
             assert "idx_conversations_provider" in plan or "COVERING" in plan or "INDEX" in plan.upper(), (
-                f"Expected index usage for GROUP BY provider_name, got: {plan}"
+                f"Expected index usage for GROUP BY source_name, got: {plan}"
             )
         finally:
             conn.close()

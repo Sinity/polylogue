@@ -37,7 +37,6 @@ class SessionTagRollupRecord(BaseModel):
 
 class DaySessionSummaryRecord(BaseModel):
     day: str
-    source_name: str
     materializer_version: int = SESSION_INSIGHT_MATERIALIZER_VERSION
     materialized_at: str
     source_updated_at: str | None = None

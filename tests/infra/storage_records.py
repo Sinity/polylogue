@@ -334,7 +334,7 @@ def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) ->
         """
         INSERT INTO conversations (
             conversation_id,
-            provider_name,
+            source_name,
             provider_conversation_id,
             title,
             created_at,
@@ -372,7 +372,7 @@ def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) ->
         """,
         (
             record.conversation_id,
-            record.provider_name,
+            record.source_name,
             record.provider_conversation_id,
             record.title,
             record.created_at,
@@ -405,7 +405,7 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             version,
             parent_message_id,
             branch_index,
-            provider_name,
+            source_name,
             word_count,
             has_tool_use,
             has_thinking,
@@ -424,7 +424,7 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             content_hash = excluded.content_hash,
             parent_message_id = excluded.parent_message_id,
             branch_index = excluded.branch_index,
-            provider_name = excluded.provider_name,
+            source_name = excluded.source_name,
             word_count = excluded.word_count,
             has_tool_use = excluded.has_tool_use,
             has_thinking = excluded.has_thinking,
@@ -460,7 +460,7 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             record.version,
             record.parent_message_id,
             record.branch_index,
-            record.provider_name,
+            record.source_name,
             record.word_count,
             record.has_tool_use,
             record.has_thinking,
@@ -692,7 +692,7 @@ def _upsert_conversation_stats_sync(
         SQL_STATS_UPSERT,
         (
             conversation.conversation_id,
-            conversation.provider_name,
+            conversation.source_name,
             message_count,
             word_count,
             tool_use_count,
@@ -727,7 +727,7 @@ class ConversationBuilder:
         now = datetime.now(timezone.utc).isoformat()
         self.conv = ConversationRecord(
             conversation_id=_conversation_id(conversation_id),
-            provider_name="test",
+            source_name="test",
             provider_conversation_id=f"ext-{conversation_id}",
             title="Test Conversation",
             created_at=now,
@@ -743,7 +743,7 @@ class ConversationBuilder:
         return self
 
     def provider(self, provider: str) -> ConversationBuilder:
-        self.conv = self.conv.model_copy(update={"provider_name": provider})
+        self.conv = self.conv.model_copy(update={"source_name": provider})
         return self
 
     def created_at(self, created_at: str) -> ConversationBuilder:
@@ -882,7 +882,7 @@ def make_hash(s: str) -> str:
 
 def make_conversation(
     conversation_id: str = "conv1",
-    provider_name: str = "test",
+    source_name: str = "test",
     title: str = "Test Conversation",
     created_at: str | None = None,
     updated_at: str | None = None,
@@ -892,7 +892,7 @@ def make_conversation(
     default_content_hash = uuid4().hex
     payload: RecordPayload = {
         "conversation_id": _conversation_id(conversation_id),
-        "provider_name": provider_name,
+        "source_name": source_name,
         "provider_conversation_id": _coerce_str(
             kwargs.pop("provider_conversation_id", f"ext-{conversation_id}"),
             f"ext-{conversation_id}",
@@ -984,7 +984,7 @@ def make_attachment(
 
 def make_raw_conversation(
     raw_id: str = "raw1",
-    provider_name: str = "test",
+    source_name: str = "test",
     source_path: str = "/tmp/test.json",
     *,
     blob_size: int = 2,
@@ -998,7 +998,7 @@ def make_raw_conversation(
     timestamp = acquired_at or datetime.now(timezone.utc).isoformat()
     payload: RecordPayload = {
         "raw_id": raw_id,
-        "provider_name": provider_name,
+        "source_name": source_name,
         "source_path": source_path,
         "blob_size": blob_size,
         "acquired_at": timestamp,

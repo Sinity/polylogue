@@ -30,7 +30,7 @@ def _make_db() -> sqlite3.Connection:
 
 def _seed_conversation(conn: sqlite3.Connection, conversation_id: str) -> None:
     conn.execute(
-        "INSERT INTO conversations (conversation_id, provider_name, provider_conversation_id, version) "
+        "INSERT INTO conversations (conversation_id, source_name, provider_conversation_id, version) "
         "VALUES (?, ?, ?, ?)",
         (conversation_id, "claude-code", f"pcid-{conversation_id}", 1),
     )
@@ -207,17 +207,17 @@ def test_list_conversations_for_repo_async(lookup: dict[str, Any], expected: tup
             conn.row_factory = aiosqlite.Row
             await conn.executescript(SCHEMA_DDL)
             await conn.execute(
-                "INSERT INTO conversations (conversation_id, provider_name, provider_conversation_id, version) "
+                "INSERT INTO conversations (conversation_id, source_name, provider_conversation_id, version) "
                 "VALUES (?, ?, ?, ?)",
                 ("conv-x", "claude-code", "px", 1),
             )
             await conn.execute(
-                "INSERT INTO conversations (conversation_id, provider_name, provider_conversation_id, version) "
+                "INSERT INTO conversations (conversation_id, source_name, provider_conversation_id, version) "
                 "VALUES (?, ?, ?, ?)",
                 ("conv-y", "codex", "py", 1),
             )
             await conn.execute(
-                "INSERT INTO conversations (conversation_id, provider_name, provider_conversation_id, version) "
+                "INSERT INTO conversations (conversation_id, source_name, provider_conversation_id, version) "
                 "VALUES (?, ?, ?, ?)",
                 ("conv-z", "chatgpt", "pz", 1),
             )
@@ -265,7 +265,7 @@ def test_list_repo_identities_filter_by_name() -> None:
             conn.row_factory = aiosqlite.Row
             await conn.executescript(SCHEMA_DDL)
             await conn.execute(
-                "INSERT INTO conversations (conversation_id, provider_name, provider_conversation_id, version) "
+                "INSERT INTO conversations (conversation_id, source_name, provider_conversation_id, version) "
                 "VALUES (?, ?, ?, ?)",
                 ("conv-list", "claude-code", "pl", 1),
             )

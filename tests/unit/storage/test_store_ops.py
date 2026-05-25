@@ -151,7 +151,7 @@ def _content_block(
 def _conversation_record(
     *,
     conversation_id: str,
-    provider_name: str,
+    source_name: str,
     provider_conversation_id: str,
     content_hash: str,
     title: str | None = None,
@@ -162,7 +162,7 @@ def _conversation_record(
 ) -> ConversationRecord:
     return ConversationRecord(
         conversation_id=_conversation_id(conversation_id),
-        provider_name=provider_name,
+        source_name=source_name,
         provider_conversation_id=provider_conversation_id,
         title=title,
         created_at=created_at,
@@ -381,7 +381,7 @@ async def test_list_summaries_by_query_omits_large_provider_meta_payloads(tmp_pa
             conn,
             make_conversation(
                 "conv-large-meta",
-                provider_name="codex",
+                source_name="codex",
                 title="Large Meta Conversation",
                 provider_meta=large_meta,
                 metadata={"tag": "kept"},
@@ -893,7 +893,7 @@ def test_upsert_optional_and_attachment_contracts(test_conn: sqlite3.Connection)
     """Optional-field upserts and attachment metadata updates must round-trip cleanly."""
     conversation = _conversation_record(
         conversation_id="conv-optional",
-        provider_name="test",
+        source_name="test",
         provider_conversation_id="ext-conv1",
         title=None,
         created_at=None,
@@ -916,7 +916,7 @@ def test_upsert_optional_and_attachment_contracts(test_conn: sqlite3.Connection)
         text=None,
         sort_key=None,
         content_hash=_content_hash("msg-optional-hash"),
-        provider_name="",
+        source_name="",
         word_count=0,
         has_tool_use=0,
         has_thinking=0,
@@ -1133,16 +1133,16 @@ def test_attachment_size_bytes_contract(size_bytes: int | None, valid: bool) -> 
 
 
 @pytest.mark.parametrize("name", ["claude-ai", "claude-code", "Provider123"])
-def test_provider_name_accepts_valid(name: str) -> None:
+def test_source_name_accepts_valid(name: str) -> None:
     """Representative provider-name formats should validate."""
     record = _conversation_record(
         conversation_id="test",
-        provider_name=name,
+        source_name=name,
         provider_conversation_id="ext1",
         title="Test",
         content_hash="hash123",
     )
-    assert record.provider_name == name
+    assert record.source_name == name
 
 
 # ============================================================================
@@ -1174,7 +1174,7 @@ class TestCrudLaws:
 
             conv = make_conversation(
                 conversation_id=conv_id,
-                provider_name=provider,
+                source_name=provider,
                 title=raw_title,
                 created_at=raw_created_at,
             )
@@ -1201,7 +1201,7 @@ class TestCrudLaws:
             retrieved = await backend.get_conversation(conv_id)
             assert retrieved is not None
             assert retrieved.conversation_id == conv_id
-            assert retrieved.provider_name == provider
+            assert retrieved.source_name == provider
 
             retrieved_msgs = await backend.get_messages(conv_id)
             assert len(retrieved_msgs) == len(messages)
@@ -1225,7 +1225,7 @@ class TestCrudLaws:
             assert isinstance(raw_title, str)
             conv = make_conversation(
                 conversation_id=conv_id,
-                provider_name=raw_provider,
+                source_name=raw_provider,
                 title=raw_title,
             )
 

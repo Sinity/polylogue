@@ -214,7 +214,7 @@ def test_cost_rollup_aggregates_basis_and_per_model_breakdown() -> None:
 
     # Synthesize a rollup row directly to assert the typed contract.
     rollup = CostRollupInsight(
-        provider_name="anthropic",
+        source_name="anthropic",
         model_name="claude-sonnet-4-5",
         normalized_model="claude-sonnet-4-5",
         session_count=3,

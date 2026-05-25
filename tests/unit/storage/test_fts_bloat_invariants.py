@@ -51,13 +51,13 @@ def test_messages_fts_storage_does_not_duplicate_message_bodies(tmp_path: Path) 
     try:
         conn.executescript(SCHEMA_DDL)
         conn.execute(
-            "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) "
+            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) "
             "VALUES('c1','test','pc1',1)"
         )
         body = "lorem ipsum dolor sit amet consectetur adipiscing elit " * 100
         for i in range(2000):
             conn.execute(
-                "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) "
+                "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) "
                 "VALUES(?,?,?,?,?,1)",
                 (f"m{i}", "c1", "user", body, "test"),
             )
@@ -105,15 +105,15 @@ def test_messages_fts_deletion_consistency_with_external_content(tmp_path: Path)
     try:
         conn.executescript(SCHEMA_DDL)
         conn.execute(
-            "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) "
+            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) "
             "VALUES('c1','test','pc1',1)"
         )
         conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) "
+            "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) "
             "VALUES('m1','c1','user','unique_token_alpha here','test',1)"
         )
         conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) "
+            "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) "
             "VALUES('m2','c1','user','unique_token_beta here','test',1)"
         )
         conn.commit()
@@ -150,11 +150,11 @@ def test_conversation_replacement_purges_fts_when_delete_triggers_missing(tmp_pa
     try:
         conn.executescript(SCHEMA_DDL)
         conn.execute(
-            "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) "
+            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) "
             "VALUES('c1','test','pc1',1)"
         )
         conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) "
+            "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) "
             "VALUES('m1','c1','user','replace orphan needle','test',1)"
         )
         conn.execute(

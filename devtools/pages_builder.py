@@ -130,7 +130,7 @@ def _site_archive_stats() -> dict[str, Any]:
                 SELECT
                     COUNT(*) AS total_conversations,
                     COALESCE(SUM(message_count), 0) AS total_messages,
-                    COUNT(DISTINCT provider_name) AS provider_count
+                    COUNT(DISTINCT source_name) AS provider_count
                 FROM conversation_stats
                 """
             ).fetchone()

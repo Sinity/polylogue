@@ -26,7 +26,7 @@ def _seed_minimal_archive(db: Path, source: Path) -> str:
         conn.execute(
             """
             INSERT INTO raw_conversations (
-                raw_id, provider_name, source_path, blob_size, acquired_at
+                raw_id, source_name, source_path, blob_size, acquired_at
             ) VALUES ('raw-1', 'codex', ?, 0, '2026-01-01T00:00:00Z')
             """,
             (str(source),),
@@ -34,7 +34,7 @@ def _seed_minimal_archive(db: Path, source: Path) -> str:
         conn.execute(
             """
             INSERT INTO conversations (
-                conversation_id, provider_name, provider_conversation_id,
+                conversation_id, source_name, provider_conversation_id,
                 source_name, content_hash, version, raw_id
             ) VALUES ('conv-1', 'codex', 'provider-1', 'codex', 'hash-1', 1, 'raw-1')
             """
@@ -169,7 +169,7 @@ def test_compare_computes_structured_delta(tmp_path: Path) -> None:
         conn.execute(
             """
             INSERT INTO raw_conversations (
-                raw_id, provider_name, source_path, blob_size, acquired_at
+                raw_id, source_name, source_path, blob_size, acquired_at
             ) VALUES ('raw-2', 'codex', ?, 0, '2026-01-02T00:00:00Z')
             """,
             (str(second_source),),
@@ -177,7 +177,7 @@ def test_compare_computes_structured_delta(tmp_path: Path) -> None:
         conn.execute(
             """
             INSERT INTO conversations (
-                conversation_id, provider_name, provider_conversation_id,
+                conversation_id, source_name, provider_conversation_id,
                 source_name, content_hash, version, raw_id
             ) VALUES ('conv-2', 'codex', 'provider-2', 'codex', 'hash-2', 1, 'raw-2')
             """

@@ -40,7 +40,7 @@ def _parsed_attachment(name: str | None = None) -> ParsedAttachment:
 
 
 def _parsed_conversation(
-    provider_name: Provider,
+    source_name: Provider,
     provider_conversation_id: str,
     title: str,
     messages: list[ParsedMessage],
@@ -49,7 +49,7 @@ def _parsed_conversation(
     provider_meta: dict[str, object] | None = None,
 ) -> ParsedConversation:
     return ParsedConversation(
-        provider_name=provider_name,
+        source_name=source_name,
         provider_conversation_id=provider_conversation_id,
         title=title,
         created_at=None,
@@ -288,7 +288,7 @@ class TestClaudeCodeAssemblySpec:
     def test_enrich_conversation_from_index_preserves_semantic_fields(self, tmp_path: Path) -> None:
         session_file = tmp_path / "session-1.jsonl"
         conversation = ParsedConversation(
-            provider_name=Provider.CLAUDE_CODE,
+            source_name=Provider.CLAUDE_CODE,
             provider_conversation_id="session-1",
             title="session-1",
             created_at="2025-01-01T00:00:00Z",

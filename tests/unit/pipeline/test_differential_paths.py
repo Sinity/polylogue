@@ -149,7 +149,7 @@ class TestHealthRepairConvergence:
         with open_connection(db_path) as conn:
             conn.execute("PRAGMA foreign_keys = OFF")
             conn.execute(
-                "INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version, provider_name, word_count, has_tool_use, has_thinking) "
+                "INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version, source_name, word_count, has_tool_use, has_thinking) "
                 "VALUES ('orphan-msg-1', 'nonexistent-conv', 'user', 'orphan', 'hash1', 1, 'test', 1, 0, 0)"
             )
             conn.commit()
@@ -174,7 +174,7 @@ class TestHealthRepairConvergence:
         db_path = db_setup(workspace_env)
         with open_connection(db_path) as conn:
             conn.execute(
-                "INSERT INTO conversations (conversation_id, provider_name, provider_conversation_id, content_hash, version) "
+                "INSERT INTO conversations (conversation_id, source_name, provider_conversation_id, content_hash, version) "
                 "VALUES ('empty-conv', 'test', 'empty-prov-id', 'hash', 1)"
             )
             conn.commit()
@@ -205,11 +205,11 @@ class TestRepairPreviewConvergence:
         with open_connection(db_path) as conn:
             conn.execute("PRAGMA foreign_keys = OFF")
             conn.execute(
-                "INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version, provider_name, word_count, has_tool_use, has_thinking) "
+                "INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version, source_name, word_count, has_tool_use, has_thinking) "
                 "VALUES ('orphan-1', 'ghost-conv', 'user', 'orphan text', 'ohash', 1, 'test', 2, 0, 0)"
             )
             conn.execute(
-                "INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version, provider_name, word_count, has_tool_use, has_thinking) "
+                "INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version, source_name, word_count, has_tool_use, has_thinking) "
                 "VALUES ('orphan-2', 'ghost-conv', 'assistant', 'orphan reply', 'ohash2', 1, 'test', 2, 0, 0)"
             )
             conn.commit()

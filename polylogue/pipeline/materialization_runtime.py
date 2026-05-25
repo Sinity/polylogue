@@ -119,7 +119,6 @@ class MaterializedConversationStats:
 @dataclass(frozen=True, slots=True)
 class MaterializedConversation:
     conversation_id: ConversationId
-    source_name: Provider
     provider_conversation_id: str
     title: str | None
     created_at: str | None
@@ -284,7 +283,6 @@ def _materialize_content_block(
 def materialize_conversation(
     convo: ParsedConversation,
     *,
-    source_name: str,
     archive_root: Path,
 ) -> MaterializedConversation:
     normalized_convo = canonicalize_conversation_content(convo)

@@ -181,7 +181,7 @@ class TestRawConversationEdgeCases:
             conn.execute(
                 """
                 INSERT INTO raw_conversations
-                (raw_id, provider_name, source_path, blob_size, acquired_at)
+                (raw_id, source_name, source_path, blob_size, acquired_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 ("raw-123", "claude-ai", "/path/to/file.jsonl", blob_size, "2024-01-01T00:00:00Z"),
@@ -191,7 +191,7 @@ class TestRawConversationEdgeCases:
         # Create conversation linked to raw data
         conv = make_conversation(
             conversation_id="conv-with-raw",
-            provider_name="claude-ai",
+            source_name="claude-ai",
             provider_conversation_id="claude-123",
             content_hash=make_hash("conv-with-raw"),
             title="Test Conv",
@@ -216,7 +216,7 @@ class TestRawConversationEdgeCases:
 
         parent = make_conversation(
             conversation_id="parent",
-            provider_name="test",
+            source_name="test",
             provider_conversation_id="p",
             content_hash=make_hash("parent"),
             title="Parent",
@@ -228,7 +228,7 @@ class TestRawConversationEdgeCases:
         # Create child with branch_type
         child = make_conversation(
             conversation_id="child",
-            provider_name="test",
+            source_name="test",
             provider_conversation_id="c",
             content_hash=make_hash("child"),
             title="Child",

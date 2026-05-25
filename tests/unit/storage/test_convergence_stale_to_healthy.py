@@ -34,12 +34,12 @@ def archive_with_orphans(workspace_env: dict[str, Path]) -> Config:
         conn.execute("PRAGMA foreign_keys = OFF")
         conn.execute(
             "INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version, "
-            "provider_name, word_count, has_tool_use, has_thinking) "
+            "source_name, word_count, has_tool_use, has_thinking) "
             "VALUES ('orphan-m1', 'deleted-conv', 'user', 'orphan text', 'oh1', 1, 'test', 2, 0, 0)"
         )
         conn.execute(
             "INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version, "
-            "provider_name, word_count, has_tool_use, has_thinking) "
+            "source_name, word_count, has_tool_use, has_thinking) "
             "VALUES ('orphan-m2', 'deleted-conv', 'assistant', 'orphan reply', 'oh2', 1, 'test', 2, 0, 0)"
         )
         conn.commit()
@@ -61,11 +61,11 @@ def archive_with_empty_conversations(workspace_env: dict[str, Path]) -> Config:
 
     with open_connection(db_path) as conn:
         conn.execute(
-            "INSERT INTO conversations (conversation_id, provider_name, provider_conversation_id, content_hash, version) "
+            "INSERT INTO conversations (conversation_id, source_name, provider_conversation_id, content_hash, version) "
             "VALUES ('empty-1', 'test', 'empty-prov-1', 'eh1', 1)"
         )
         conn.execute(
-            "INSERT INTO conversations (conversation_id, provider_name, provider_conversation_id, content_hash, version) "
+            "INSERT INTO conversations (conversation_id, source_name, provider_conversation_id, content_hash, version) "
             "VALUES ('empty-2', 'test', 'empty-prov-2', 'eh2', 1)"
         )
         conn.commit()

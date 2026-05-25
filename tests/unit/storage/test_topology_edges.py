@@ -85,7 +85,7 @@ async def _ingest_synthetic_child(
     branch_type: BranchType,
 ) -> str:
     parsed = ParsedConversation(
-        provider_name=provider,
+        source_name=provider,
         provider_conversation_id=child_id,
         title=f"Child {child_id}",
         messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hi")],
@@ -189,7 +189,7 @@ class TestTopologyEdgeUnresolvedAC:
         db_path = db_setup(workspace_env)
         async with _make_repository(db_path) as repo:
             parsed = ParsedConversation(
-                provider_name=Provider.CHATGPT,
+                source_name=Provider.CHATGPT,
                 provider_conversation_id="forked-chat",
                 title="Forked Chat",
                 messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hi")],
@@ -224,7 +224,7 @@ class TestTopologyEdgeFastPathPreserved:
         db_path = db_setup(workspace_env)
         async with _make_repository(db_path) as repo:
             parent_parsed = ParsedConversation(
-                provider_name=Provider.CODEX,
+                source_name=Provider.CODEX,
                 provider_conversation_id="parent-id",
                 title="Parent",
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
@@ -288,7 +288,7 @@ class TestTopologyEdgeOutOfOrderResolve:
 
             # Now the parent lands.
             parent_parsed = ParsedConversation(
-                provider_name=Provider.CODEX,
+                source_name=Provider.CODEX,
                 provider_conversation_id="ooo-parent",
                 title="Parent (late)",
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
@@ -397,7 +397,7 @@ class TestTopologyLateParentRepair:
             assert row["branch_type"] == BranchType.SIDECHAIN.value
 
             parent_parsed = ParsedConversation(
-                provider_name=Provider.CODEX,
+                source_name=Provider.CODEX,
                 provider_conversation_id="late-parent",
                 title="Late parent",
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
@@ -438,7 +438,7 @@ class TestTopologyLateParentRepair:
             )
 
             parent_parsed = ParsedConversation(
-                provider_name=Provider.CODEX,
+                source_name=Provider.CODEX,
                 provider_conversation_id="idem-repair-parent",
                 title="Idem parent",
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
@@ -494,7 +494,7 @@ class TestTopologyLateParentRepair:
             # Ingest a different conversation — its arrival must not
             # spuriously repair the unrelated unresolved edge.
             unrelated = ParsedConversation(
-                provider_name=Provider.CODEX,
+                source_name=Provider.CODEX,
                 provider_conversation_id="unrelated-parent",
                 title="Unrelated",
                 messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="x")],
@@ -548,7 +548,7 @@ class TestTopologyLateParentRepair:
             )
 
             parent_parsed = ParsedConversation(
-                provider_name=Provider.CODEX,
+                source_name=Provider.CODEX,
                 provider_conversation_id="shared-parent",
                 title="Shared parent",
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
@@ -591,7 +591,7 @@ class TestTopologyLateParentRepair:
         db_path = db_setup(workspace_env)
         async with _make_repository(db_path) as repo:
             parent_parsed = ParsedConversation(
-                provider_name=Provider.CODEX,
+                source_name=Provider.CODEX,
                 provider_conversation_id="preserve-parent",
                 title="Parent",
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
@@ -650,7 +650,7 @@ class TestTopologyLateParentRepair:
         db_path = db_setup(workspace_env)
         async with _make_repository(db_path) as repo:
             child_parsed = ParsedConversation(
-                provider_name=Provider.CODEX,
+                source_name=Provider.CODEX,
                 provider_conversation_id="race-child",
                 title="Race child",
                 messages=[ParsedMessage(provider_message_id="cm1", role=Role.USER, text="c")],
@@ -658,7 +658,7 @@ class TestTopologyLateParentRepair:
                 branch_type=BranchType.CONTINUATION,
             )
             parent_parsed = ParsedConversation(
-                provider_name=Provider.CODEX,
+                source_name=Provider.CODEX,
                 provider_conversation_id="race-parent",
                 title="Race parent",
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],

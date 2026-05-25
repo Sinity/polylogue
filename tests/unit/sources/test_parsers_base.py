@@ -661,7 +661,7 @@ def test_seeded_messages_have_expected_role_and_text_shapes(seeded_db: Path, pro
         SELECT m.message_id, m.role, m.text
         FROM messages m
         JOIN conversations c ON m.conversation_id = c.conversation_id
-        WHERE c.provider_name = ?
+        WHERE c.source_name = ?
         LIMIT 20
         """,
         (provider,),
@@ -686,7 +686,7 @@ def test_seeded_claude_code_tool_use_blocks_have_names(seeded_db: Path) -> None:
         FROM content_blocks cb
         JOIN messages m ON cb.message_id = m.message_id
         JOIN conversations c ON m.conversation_id = c.conversation_id
-        WHERE c.provider_name = 'claude-code' AND cb.type = 'tool_use'
+        WHERE c.source_name = 'claude-code' AND cb.type = 'tool_use'
         LIMIT 100
         """
     )
@@ -766,7 +766,7 @@ def test_claude_code_cost_usd_non_numeric_string() -> None:
     # The parser uses _safe_float() which returns 0.0 for non-numeric strings
     result = parse_code(payload, "test-session")
     assert result is not None
-    assert result.provider_name == "claude-code"
+    assert result.source_name == "claude-code"
     # The parser only includes messages that validate properly via ClaudeCodeRecord
     # At least one message should be parsed
     assert len(result.messages) >= 1
@@ -1037,7 +1037,7 @@ def test_chatgpt_full_parse_with_string_author() -> None:
 
     result = chatgpt_parse(payload, "test-conv")
     assert result is not None
-    assert result.provider_name == "chatgpt"
+    assert result.source_name == "chatgpt"
     # Should have only 1 message (msg2), msg1 skipped due to string author
     assert len(result.messages) == 1
     assert result.messages[0].role == "user"

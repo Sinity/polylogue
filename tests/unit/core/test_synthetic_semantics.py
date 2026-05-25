@@ -252,7 +252,7 @@ class TestSyntheticConversationEnvelope:
         assert written.files[0].exists()
         assert written.batch.report.generated_count == 1
 
-    def test_write_specs_artifacts_avoids_same_provider_name_collisions(self, tmp_path: Path) -> None:
+    def test_write_specs_artifacts_avoids_same_source_name_collisions(self, tmp_path: Path) -> None:
         specs = (
             CorpusSpec(
                 provider="chatgpt",

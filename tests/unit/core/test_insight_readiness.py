@@ -78,7 +78,7 @@ async def test_insight_readiness_report_marks_rebuilt_insights_ready(cli_workspa
     # The sparse seed materializes weak work-events and tool-less phases.
     assert profile.fallback_reason_counts  # non-empty
     assert profile.row_count == 1
-    assert profile.provider_coverage[0].provider_name == "codex"
+    assert profile.provider_coverage[0].source_name == "codex"
     assert profile.version_coverage[0].versions[str(SESSION_INSIGHT_MATERIALIZER_VERSION)] == 1
 
 
@@ -158,11 +158,11 @@ async def test_insight_readiness_report_marks_missing_insight_tables(tmp_path: P
             CREATE TABLE conversations (
                 conversation_id TEXT PRIMARY KEY,
                 parent_conversation_id TEXT,
-                provider_name TEXT,
+                source_name TEXT,
                 sort_key REAL,
                 updated_at TEXT
             );
-            INSERT INTO conversations (conversation_id, parent_conversation_id, provider_name, sort_key, updated_at)
+            INSERT INTO conversations (conversation_id, parent_conversation_id, source_name, sort_key, updated_at)
             VALUES ('missing-root', NULL, 'codex', 1.0, '2026-04-01T00:00:00Z');
             """
         )

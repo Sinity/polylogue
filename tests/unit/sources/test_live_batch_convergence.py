@@ -41,7 +41,7 @@ def test_live_batch_converges_known_paths_by_conversation_id(tmp_path: Path) -> 
     conn.execute(
         """
         INSERT INTO raw_conversations (
-            raw_id, provider_name, source_path, blob_size, acquired_at
+            raw_id, source_name, source_path, blob_size, acquired_at
         ) VALUES ('raw-1', 'codex', ?, 0, '2026-01-01T00:00:00Z')
         """,
         (str(source),),
@@ -49,7 +49,7 @@ def test_live_batch_converges_known_paths_by_conversation_id(tmp_path: Path) -> 
     conn.execute(
         """
         INSERT INTO conversations (
-            conversation_id, provider_name, provider_conversation_id,
+            conversation_id, source_name, provider_conversation_id,
             source_name, content_hash, version, raw_id
         ) VALUES ('conv-1', 'codex', 'provider-1', 'codex', 'hash-1', 1, 'raw-1')
         """

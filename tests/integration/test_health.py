@@ -22,13 +22,13 @@ RUN_ALL_REPAIRS_EXPECTED = {
 
 
 def _insert_conversation(
-    conn: sqlite3.Connection, conversation_id: str, provider_name: str = "test", title: str = "Test"
+    conn: sqlite3.Connection, conversation_id: str, source_name: str = "test", title: str = "Test"
 ) -> None:
     """Helper to insert a conversation with all required fields."""
-    content_hash = hashlib.sha256(f"{provider_name}:{conversation_id}".encode()).hexdigest()
+    content_hash = hashlib.sha256(f"{source_name}:{conversation_id}".encode()).hexdigest()
     conn.execute(
-        "INSERT INTO conversations (conversation_id, provider_name, provider_conversation_id, title, content_hash, version) VALUES (?, ?, ?, ?, ?, ?)",
-        (conversation_id, provider_name, f"{provider_name}-id", title, content_hash, 1),
+        "INSERT INTO conversations (conversation_id, source_name, provider_conversation_id, title, content_hash, version) VALUES (?, ?, ?, ?, ?, ?)",
+        (conversation_id, source_name, f"{source_name}-id", title, content_hash, 1),
     )
 
 
@@ -865,7 +865,7 @@ class TestMaintenanceSelection:
         with connection_context(None) as conn:
             event = conn.execute(
                 """
-                SELECT event_id, conversation_id, provider_name, heuristic_label, search_text
+                SELECT event_id, conversation_id, source_name, heuristic_label, search_text
                 FROM session_work_events
                 LIMIT 1
                 """
@@ -881,13 +881,13 @@ class TestMaintenanceSelection:
             assert thread is not None
             conn.execute(
                 """
-                INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, heuristic_label, text)
+                INSERT INTO session_work_events_fts (event_id, conversation_id, source_name, heuristic_label, text)
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     event["event_id"],
                     event["conversation_id"],
-                    event["provider_name"],
+                    event["source_name"],
                     event["heuristic_label"],
                     event["search_text"],
                 ),

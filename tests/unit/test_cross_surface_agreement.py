@@ -142,10 +142,10 @@ class TestArchiveFactsConsistency:
 
 
 class TestSyntheticRoundtripFactAgreement:
-    @pytest.mark.parametrize("provider_name", ["chatgpt", "claude-code", "claude-ai", "codex", "gemini"])
+    @pytest.mark.parametrize("source_name", ["chatgpt", "claude-code", "claude-ai", "codex", "gemini"])
     def test_parsed_vs_hydrated_facts_agree(
         self,
-        provider_name: str,
+        source_name: str,
         workspace_env: Mapping[str, Path],
     ) -> None:
         from polylogue.schemas.synthetic.core import SyntheticCorpus
@@ -153,14 +153,14 @@ class TestSyntheticRoundtripFactAgreement:
         from tests.infra.pipeline_roundtrip import parse_and_transform_payload, save_transform_and_hydrate
         from tests.infra.storage_records import db_setup
 
-        corpus = SyntheticCorpus.for_provider(provider_name)
+        corpus = SyntheticCorpus.for_provider(source_name)
         raw_bytes = corpus.generate(count=1, seed=99)[0]
 
         roundtrip = parse_and_transform_payload(
-            provider_name,
+            source_name,
             raw_bytes,
             workspace_env["archive_root"],
-            f"xsurf-{provider_name}",
+            f"xsurf-{source_name}",
         )
 
         db_path = db_setup(workspace_env)
@@ -169,5 +169,5 @@ class TestSyntheticRoundtripFactAgreement:
             hydrated_facts = ConversationFacts.from_domain_conversation(hydrated)
 
             assert hydrated_facts.message_count == len(roundtrip.parsed.messages)
-            assert hydrated_facts.provider == str(roundtrip.parsed.provider_name)
+            assert hydrated_facts.provider == str(roundtrip.parsed.source_name)
             assert hydrated_facts.title == roundtrip.parsed.title

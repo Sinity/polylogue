@@ -204,7 +204,6 @@ async def execute_index_stage(
     *,
     config: Config,
     stage: str,
-    source_names: Sequence[str] | None,
     processed_ids: set[str],
     backend: SQLiteBackend,
     progress_callback: ProgressCallback | None = None,

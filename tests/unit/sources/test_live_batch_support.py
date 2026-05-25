@@ -379,7 +379,7 @@ def test_codex_append_plan_uses_append_only_conversation_identity(tmp_path: Path
         conn.execute(
             """
             INSERT INTO raw_conversations (
-                raw_id, provider_name, payload_provider, source_name, source_path,
+                raw_id, source_name, payload_provider, source_name, source_path,
                 source_index, blob_size, acquired_at, file_mtime
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -398,7 +398,7 @@ def test_codex_append_plan_uses_append_only_conversation_identity(tmp_path: Path
         conn.execute(
             """
             INSERT INTO conversations (
-                conversation_id, provider_name, provider_conversation_id, title,
+                conversation_id, source_name, provider_conversation_id, title,
                 created_at, updated_at, sort_key, content_hash, provider_meta,
                 metadata, source_name, working_directories_json, git_branch,
                 git_repository_url, version, parent_conversation_id, branch_type, raw_id

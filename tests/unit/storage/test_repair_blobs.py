@@ -27,7 +27,7 @@ def _reference_blob(db_path: Path, blob_hash: str, blob_size: int) -> None:
         conn.execute(
             """
             INSERT INTO raw_conversations (
-                raw_id, provider_name, source_name, source_path, source_index,
+                raw_id, source_name, source_path, source_index,
                 blob_size, acquired_at
             )
             VALUES (?, 'test', 'test', 'referenced.json', 0, ?, '2026-05-23T00:00:00+00:00')

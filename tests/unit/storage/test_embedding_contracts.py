@@ -60,7 +60,7 @@ _MESSAGE_EMBEDDINGS_DDL = """
 _CONVERSATIONS_DDL = """
     CREATE TABLE IF NOT EXISTS conversations (
         conversation_id TEXT PRIMARY KEY,
-        provider_name   TEXT NOT NULL DEFAULT '',
+        source_name   TEXT NOT NULL DEFAULT '',
         title           TEXT,
         created_at      TEXT,
         updated_at      TEXT,
@@ -109,7 +109,7 @@ def _setup_minimal_embedding_file(path: Path) -> None:
 def _insert_conversation(conn: sqlite3.Connection, conversation_id: str, *, message_count: int) -> None:
     conn.execute(
         """
-        INSERT INTO conversations (conversation_id, provider_name, title, updated_at, content_hash)
+        INSERT INTO conversations (conversation_id, source_name, title, updated_at, content_hash)
         VALUES (?, 'test', ?, ?, ?)
         """,
         (conversation_id, conversation_id, conversation_id, f"hash-{conversation_id}"),
@@ -384,7 +384,7 @@ def test_embedding_status_lifecycle(
         # Seed conversations
         for conv_id, _last_embedded, _needs_reindex, _error_msg in seed_rows:
             conn.execute(
-                "INSERT INTO conversations (conversation_id, provider_name, title) VALUES (?, ?, ?)",
+                "INSERT INTO conversations (conversation_id, source_name, title) VALUES (?, ?, ?)",
                 (conv_id, "test", f"Test {conv_id}"),
             )
             conn.execute(
@@ -428,7 +428,7 @@ def test_missing_embedding_status_rows_count_as_pending_messages() -> None:
     try:
         _setup_minimal_embedding_db(conn)
         conn.execute(
-            "INSERT INTO conversations (conversation_id, provider_name, title) VALUES (?, ?, ?)",
+            "INSERT INTO conversations (conversation_id, source_name, title) VALUES (?, ?, ?)",
             ("conv-new", "test", "New"),
         )
         conn.execute(

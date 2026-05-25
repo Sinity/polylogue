@@ -37,7 +37,7 @@ class TestIndexService:
         # Create test data using backend-compatible records
         conv = make_conversation(
             conversation_id="conv1",
-            provider_name="chatgpt",
+            source_name="chatgpt",
             provider_conversation_id="prov_conv1",
             title="Test",
             content_hash="hash123",
@@ -64,7 +64,7 @@ class TestIndexService:
         await sqlite_backend.save_conversation_record(
             make_conversation(
                 conversation_id="conv-stream",
-                provider_name="chatgpt",
+                source_name="chatgpt",
                 provider_conversation_id="prov-conv-stream",
                 title="Stream Test",
                 content_hash="hash-stream",
@@ -109,7 +109,7 @@ class TestIndexService:
             await sqlite_backend.save_conversation_record(
                 make_conversation(
                     conversation_id=conversation_id,
-                    provider_name="chatgpt",
+                    source_name="chatgpt",
                     provider_conversation_id=f"prov-{index}",
                     title=f"Conversation {index}",
                     content_hash=f"hash-{index}",
@@ -150,7 +150,7 @@ class TestIndexService:
         await sqlite_backend.save_conversation_record(
             make_conversation(
                 conversation_id="conv-plain",
-                provider_name="chatgpt",
+                source_name="chatgpt",
                 provider_conversation_id="prov-plain",
                 title="Plain Conversation",
                 content_hash="hash-plain",
@@ -171,7 +171,7 @@ class TestIndexService:
         await sqlite_backend.save_conversation_record(
             make_conversation(
                 conversation_id="conv-action",
-                provider_name="chatgpt",
+                source_name="chatgpt",
                 provider_conversation_id="prov-action",
                 title="Action Conversation",
                 content_hash="hash-action",

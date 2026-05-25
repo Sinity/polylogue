@@ -88,7 +88,6 @@ class TopologyNode(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     conversation_id: ConversationId
-    source_name: str = ""
     title: str | None = None
     depth: int = 0
     """Distance from the topology root (root has depth 0)."""

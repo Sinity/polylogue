@@ -19,7 +19,7 @@ def _profile() -> SessionProfileInsight:
     return SessionProfileInsight(
         conversation_id="conv-1",
         logical_conversation_id="conv-1",
-        provider_name="claude-code",
+        source_name="claude-code",
         title="Profiled Session",
         semantic_tier="merged",
         provenance=_provenance(),
@@ -43,7 +43,7 @@ def _profile() -> SessionProfileInsight:
 def _latency_profile() -> SessionLatencyProfileInsight:
     return SessionLatencyProfileInsight(
         conversation_id="conv-1",
-        provider_name="claude-code",
+        source_name="claude-code",
         title="Profiled Session",
         provenance=_provenance(),
         latency=SessionLatencyProfilePayload(

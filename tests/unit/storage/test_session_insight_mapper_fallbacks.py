@@ -86,7 +86,7 @@ def test_row_to_session_profile_record_falls_back_to_legacy_payloads(typed_paylo
         {
             "conversation_id": "conv-profile-legacy",
             "materialized_at": "2026-04-10T09:06:00+00:00",
-            "provider_name": "claude-code",
+            "source_name": "claude-code",
             "title": "Legacy Profile",
             "message_count": 12,
             "repo_paths_json": json.dumps(["/workspace/polylogue/app.py", "/workspace/polylogue/tests.py"]),
@@ -107,7 +107,7 @@ def test_row_to_session_profile_record_falls_back_to_legacy_payloads(typed_paylo
     record = _row_to_session_profile_record(row)
 
     assert str(record.conversation_id) == "conv-profile-legacy"
-    assert record.provider_name == "claude-code"
+    assert record.source_name == "claude-code"
     assert record.title == "Legacy Profile"
     assert record.repo_paths == ("/workspace/polylogue/app.py", "/workspace/polylogue/tests.py")
     assert record.search_text == "legacy profile search text"
@@ -161,7 +161,7 @@ def test_row_to_session_profile_record_normalizes_legacy_typed_inference_events(
         {
             "conversation_id": "conv-profile-typed-legacy",
             "materialized_at": "2026-05-07T09:06:00+00:00",
-            "provider_name": "codex",
+            "source_name": "codex",
             "title": "Typed legacy profile",
             "message_count": 3,
             "repo_paths_json": "[]",
@@ -201,7 +201,7 @@ def test_row_to_session_work_event_record_falls_back_to_legacy_payloads(typed_pa
             "event_id": "event-legacy",
             "conversation_id": "conv-event-legacy",
             "materialized_at": "2026-04-11T10:05:00+00:00",
-            "provider_name": "claude-code",
+            "source_name": "claude-code",
             "event_index": 1,
             "heuristic_label": "file_edit",
             "summary": "Patched the failing test path",
@@ -249,7 +249,7 @@ def test_row_to_session_phase_record_falls_back_to_legacy_payloads(typed_payload
             "phase_id": "phase-legacy",
             "conversation_id": "conv-phase-legacy",
             "materialized_at": "2026-04-12T11:07:00+00:00",
-            "provider_name": "claude-code",
+            "source_name": "claude-code",
             "phase_index": 0,
             "kind": "implementation",
             "search_text": "legacy phase search text",

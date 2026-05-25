@@ -137,7 +137,6 @@ class CostModelBreakdown(PricingModel):
 
 
 class CostEstimatePayload(PricingModel):
-    source_name: str
     conversation_id: str | None = None
     message_id: str | None = None
     model_name: str | None = None
@@ -167,7 +166,6 @@ class CostEstimatePayload(PricingModel):
 class ModelPricing:
     """Per-million-token pricing for a normalized model identifier."""
 
-    source_name: str
     input_usd_per_1m: float
     output_usd_per_1m: float
     cache_read_usd_per_1m: float = 0.0
@@ -384,7 +382,6 @@ def estimate_cost(
 
 def _exact_estimate(
     *,
-    source_name: str,
     total_usd: float,
     conversation_id: str | None = None,
     message_id: str | None = None,
@@ -423,7 +420,6 @@ def _exact_estimate(
 
 def _estimate_from_usage(
     *,
-    source_name: str,
     model_name: str | None,
     usage: CostUsagePayload,
     conversation_id: str | None = None,
@@ -497,7 +493,6 @@ def _estimate_from_usage(
 def estimate_message_cost(
     message: Message,
     *,
-    source_name: str,
     conversation_id: str | None = None,
     fallback_model: str | None = None,
 ) -> CostEstimatePayload:

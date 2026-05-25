@@ -247,7 +247,6 @@ class SQLiteArchiveMixin:
     async def iter_conversation_ids(
         self,
         *,
-        source_names: list[str] | None = None,
         page_size: int = 1000,
     ) -> AsyncIterator[str]:
         """Iterate conversation IDs in bounded fetch batches."""

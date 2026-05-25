@@ -158,7 +158,7 @@ def test_run_raw_emits_json_yaml_and_empty_error(tmp_path: Path) -> None:
             [
                 {
                     "raw_id": "raw-1",
-                    "provider_name": "codex",
+                    "source_name": "codex",
                     "source_path": "/tmp/source.jsonl",
                     "blob_size": 42,
                 }

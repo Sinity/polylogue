@@ -184,14 +184,14 @@ def _resolved_corpus_request(request: PipelineProbeRequest) -> CorpusRequest:
 
 
 def _resolve_synthetic_provider(request: PipelineProbeRequest) -> str:
-    provider_names = tuple(_resolved_corpus_request(request).providers or ("chatgpt",))
-    provider_name = provider_names[0] if provider_names else "chatgpt"
+    source_names = tuple(_resolved_corpus_request(request).providers or ("chatgpt",))
+    source_name = source_names[0] if source_names else "chatgpt"
     available = set(SyntheticCorpus.available_providers())
-    if provider_name not in available:
+    if source_name not in available:
         raise ValueError(f"--provider must be one of {sorted(available)} in synthetic mode")
-    if len(provider_names) > 1:
+    if len(source_names) > 1:
         raise ValueError("synthetic mode accepts exactly one --provider")
-    return provider_name
+    return source_name
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -388,12 +388,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def _request_from_args(args: argparse.Namespace) -> PipelineProbeRequest:
     """Project argparse input onto the authored pipeline-probe request contract."""
-    provider_names = tuple(_names(getattr(args, "provider", None)))
+    source_names = tuple(_names(getattr(args, "provider", None)))
     corpus_request: CorpusRequest | None = None
     input_mode = PipelineProbeInputMode(_probe_mode(args))
     if input_mode is PipelineProbeInputMode.SYNTHETIC:
         corpus_request = CorpusRequest(
-            providers=provider_names or ("chatgpt",),
+            providers=source_names or ("chatgpt",),
             source=CorpusSourceKind(getattr(args, "corpus_source", CorpusSourceKind.DEFAULT.value)),
             count=args.count,
             messages_min=args.messages_min,

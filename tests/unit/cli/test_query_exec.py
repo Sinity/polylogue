@@ -820,7 +820,7 @@ async def test_stream_conversation_output_contract(
         return_value=SimpleNamespace(
             conversation=SimpleNamespace(
                 title="Test Title",
-                provider_name=None,
+                source_name=None,
                 updated_at=None,
                 created_at=None,
             )
@@ -882,7 +882,7 @@ async def test_stream_conversation_applies_content_projection_when_requested() -
         return_value=SimpleNamespace(
             conversation=SimpleNamespace(
                 title="Projected Stream",
-                provider_name=None,
+                source_name=None,
                 updated_at=None,
                 created_at=None,
             )

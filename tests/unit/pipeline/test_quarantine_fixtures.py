@@ -51,7 +51,6 @@ def _make_raw_record(content: bytes, provider: str, path: str) -> RawConversatio
     now = datetime.now(timezone.utc).isoformat()
     return RawConversationRecord(
         raw_id=raw_id,
-        provider_name=provider,
         source_name="quarantine-fixture",
         source_path=path,
         source_index=None,

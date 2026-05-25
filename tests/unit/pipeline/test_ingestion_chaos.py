@@ -54,7 +54,6 @@ def _make_raw_record(
 
     return RawConversationRecord(
         raw_id=actual_raw_id,  # Use the actual hash as raw_id
-        provider_name=provider,
         source_name="test",
         source_path=path,
         source_index=None,
@@ -313,7 +312,7 @@ class TestParsingServiceCorruption:
         result = ingest_record(record, str(tmp_path / "archive"), "off")
         assert result.error is None
         if result.conversations:
-            assert result.conversations[0].provider_name in ("codex", "codex-cli")
+            assert result.conversations[0].source_name in ("codex", "codex-cli")
 
     def test_truncated_jsonl_line_in_codex_raw(self, tmp_path: Path) -> None:
         """Codex JSONL with 1 truncated line: parsing succeeds."""
@@ -720,7 +719,7 @@ class TestRerunIdempotency:
         assert len(result_1.conversations) == len(result_2.conversations)
         for conv1, conv2 in zip(result_1.conversations, result_2.conversations, strict=True):
             assert conv1.conversation_id == conv2.conversation_id
-            assert conv1.provider_name == conv2.provider_name
+            assert conv1.source_name == conv2.source_name
             assert len(conv1.message_tuples) == len(conv2.message_tuples)
 
     def test_reparse_with_corruption_then_clean(self, tmp_path: Path) -> None:

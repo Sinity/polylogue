@@ -386,7 +386,7 @@ def test_day_summary_and_aggregate_products_preserve_repo_names() -> None:
         [
             DaySessionSummaryRecord(
                 day="2026-03-24",
-                provider_name="claude-code",
+                source_name="claude-code",
                 materialized_at="2026-03-24T10:10:00+00:00",
                 work_event_breakdown={},
                 repos_active=("polylogue",),

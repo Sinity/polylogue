@@ -139,7 +139,7 @@ def _conversation_data(
     return ConversationData(
         conversation_id=conversation_id,
         content_hash=content_hash,
-        provider_name="codex",
+        source_name="codex",
         conversation_tuple=conversation_tuple,
         message_tuples=list(message_tuples or []),
         block_tuples=list(block_tuples or []),
@@ -609,7 +609,7 @@ def test_write_conversation_skips_shorter_duplicate_raw_source(tmp_path: Path) -
         conn.executemany(
             """
             INSERT INTO raw_conversations (
-                raw_id, provider_name, source_path, blob_size, acquired_at
+                raw_id, source_name, source_path, blob_size, acquired_at
             ) VALUES (?, ?, ?, ?, ?)
             """,
             [
@@ -740,14 +740,14 @@ def test_iter_ingest_results_sync_runs_inline_for_single_worker(
     raw_artifacts = [
         RawConversationRecord(
             raw_id="raw-1",
-            provider_name="codex",
+            source_name="codex",
             source_path="/tmp/raw-1.jsonl",
             blob_size=12,
             acquired_at="2026-04-02T00:00:00Z",
         ),
         RawConversationRecord(
             raw_id="raw-2",
-            provider_name="codex",
+            source_name="codex",
             source_path="/tmp/raw-2.jsonl",
             blob_size=12,
             acquired_at="2026-04-02T00:00:00Z",
@@ -796,7 +796,7 @@ def test_iter_ingest_results_sync_bounds_in_flight_process_results(
     raw_artifacts = [
         RawConversationRecord(
             raw_id=f"raw-{index}",
-            provider_name="codex",
+            source_name="codex",
             source_path=f"/tmp/raw-{index}.jsonl",
             blob_size=12,
             acquired_at="2026-04-02T00:00:00Z",
@@ -864,7 +864,7 @@ def test_iter_ingest_results_sync_emits_heartbeat_while_workers_are_pending(
     raw_artifacts = [
         RawConversationRecord(
             raw_id="raw-1",
-            provider_name="codex",
+            source_name="codex",
             source_path="/tmp/raw-1.jsonl",
             blob_size=12,
             acquired_at="2026-04-02T00:00:00Z",
@@ -950,7 +950,6 @@ def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cac
 
     raw_record = RawConversationRecord(
         raw_id=raw_id,
-        provider_name="codex",
         source_name="codex",
         source_path=str(source_path),
         blob_size=source_path.stat().st_size,
@@ -983,12 +982,12 @@ def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cac
         conn.execute(
             """
             INSERT INTO raw_conversations
-                (raw_id, provider_name, source_name, source_path, blob_size, acquired_at)
+                (raw_id, source_name, source_path, blob_size, acquired_at)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 raw_record.raw_id,
-                raw_record.provider_name,
+                raw_record.source_name,
                 raw_record.source_name,
                 raw_record.source_path,
                 raw_record.blob_size,

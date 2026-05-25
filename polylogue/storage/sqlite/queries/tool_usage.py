@@ -40,7 +40,6 @@ class ToolUsageRow(TypedDict):
 class ToolUsageProviderCoverageRow(TypedDict):
     """Per-provider coverage signal — does the substrate carry tool data?"""
 
-    source_name: str
     conversation_count: int
     action_event_count: int
     distinct_tool_count: int

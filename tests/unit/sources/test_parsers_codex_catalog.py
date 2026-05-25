@@ -365,5 +365,5 @@ def test_codex_catalog_parser_only_smoke() -> None:
         payload = factory()
         assert codex_looks_like(payload), f"[{label}] looks_like rejected the catalog payload"
         parsed = codex_parse(copy.deepcopy(payload), f"fb-{label}")
-        assert parsed.provider_name == "codex", f"[{label}] wrong provider: {parsed.provider_name}"
+        assert parsed.source_name == "codex", f"[{label}] wrong provider: {parsed.source_name}"
         assert parsed.messages, f"[{label}] parser produced no messages"

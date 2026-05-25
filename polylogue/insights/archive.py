@@ -244,7 +244,6 @@ class SessionLatencyProfileInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
     insight_kind: str = "session_latency_profile"
     conversation_id: str
-    source_name: str
     title: str | None = None
     provenance: ArchiveInsightProvenance
     latency: SessionLatencyProfilePayload
@@ -285,7 +284,6 @@ class SessionWorkEventInsight(ArchiveInsightModel):
     semantic_tier: str = "inference"
     event_id: str
     conversation_id: str
-    source_name: str
     event_index: int
     provenance: ArchiveInsightProvenance
     inference_provenance: ArchiveInferenceProvenance
@@ -312,7 +310,6 @@ class SessionPhaseInsight(ArchiveInsightModel):
     semantic_tier: str = "inference"
     phase_id: str
     conversation_id: str
-    source_name: str
     phase_index: int
     provenance: ArchiveInsightProvenance
     inference_provenance: ArchiveInferenceProvenance
@@ -392,7 +389,6 @@ class ArchiveCoverageInsight(ArchiveInsightModel):
     insight_kind: str = "archive_coverage"
     group_by: str = "provider"
     bucket: str = ""
-    source_name: str | None = None
     conversation_count: int
     logical_session_count: int = 0
     message_count: int = 0
@@ -423,7 +419,6 @@ class SessionCostInsight(ArchiveInsightModel):
     insight_kind: str = "session_cost"
     semantic_tier: str = "estimate"
     conversation_id: str
-    source_name: str
     title: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -435,7 +430,6 @@ class CostRollupInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
     insight_kind: str = "cost_rollup"
     semantic_tier: str = "estimate"
-    source_name: str
     model_name: str | None = None
     normalized_model: str | None = None
     session_count: int = 0

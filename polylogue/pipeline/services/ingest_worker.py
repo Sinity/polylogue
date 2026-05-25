@@ -243,7 +243,6 @@ class IngestRecordResult:
     parse_error: str | None = None
     error: str | None = None
     conversations: list[ConversationData] = field(default_factory=list)
-    source_name: str | None = None
     serialized_size_bytes: int | None = None
 
 
@@ -263,7 +262,6 @@ class _IngestContext:
     archive_root: Path
     validation_mode: ValidationMode
     measure_serialized_size: bool
-    source_name: str
     fallback_timestamp: str | None
 
 
@@ -1009,7 +1007,6 @@ def _attachment_tuples(
 def _transform_to_tuples(
     convo: ParsedConversation,
     *,
-    source_name: str,
     archive_root: Path,
     raw_id: str | None,
     append_only: bool = False,

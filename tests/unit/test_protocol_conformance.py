@@ -179,7 +179,7 @@ class TestOutputRendererConformance:
                 conn,
                 make_conversation(
                     conversation_id=conv_id,
-                    provider_name="chatgpt",
+                    source_name="chatgpt",
                     provider_conversation_id=conv_id,
                     title="Smoke Test Conversation",
                     content_hash="hash-smoke-001",

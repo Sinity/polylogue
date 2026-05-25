@@ -331,7 +331,7 @@ def test_live_full_ingest_caps_workers_below_batch_policy(monkeypatch: pytest.Mo
     records = [
         RawConversationRecord(
             raw_id=f"raw-{index}",
-            provider_name="claude-code",
+            source_name="claude-code",
             source_path=f"/tmp/session-{index}.jsonl",
             blob_size=2 * 1024 * 1024,
             acquired_at="2026-05-01T00:00:00+00:00",
@@ -340,7 +340,7 @@ def test_live_full_ingest_caps_workers_below_batch_policy(monkeypatch: pytest.Mo
     ]
     giant = RawConversationRecord(
         raw_id="raw-giant",
-        provider_name="codex",
+        source_name="codex",
         source_path="/tmp/giant.jsonl",
         blob_size=600 * 1024 * 1024,
         acquired_at="2026-05-01T00:00:00+00:00",
@@ -356,7 +356,7 @@ def test_live_full_ingest_worker_cap_can_be_overridden(monkeypatch: pytest.Monke
     records = [
         RawConversationRecord(
             raw_id=f"raw-{index}",
-            provider_name="claude-code",
+            source_name="claude-code",
             source_path=f"/tmp/session-{index}.jsonl",
             blob_size=2 * 1024 * 1024,
             acquired_at="2026-05-01T00:00:00+00:00",

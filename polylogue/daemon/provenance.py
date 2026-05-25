@@ -52,7 +52,6 @@ class ProvenanceRow:
     content_hash: str
     raw_id: str | None
     source_path: str | None
-    source_name: str | None
     blob_size: int | None
     acquired_at: str | None
     file_mtime: str | None

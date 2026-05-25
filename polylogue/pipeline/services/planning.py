@@ -37,7 +37,6 @@ class PlanningService:
     async def collect_parse_backlog(
         self,
         *,
-        source_names: list[str] | None,
         exclude_raw_ids: list[str] | None = None,
         force_reparse: bool = False,
     ) -> list[str]:

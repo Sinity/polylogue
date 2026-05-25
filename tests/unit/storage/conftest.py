@@ -80,7 +80,7 @@ def sample_sessions_index(tmp_path: Path) -> Path:
 def sample_conversation() -> ParsedConversation:
     """Create a sample parsed conversation."""
     return ParsedConversation(
-        provider_name=Provider.CLAUDE_CODE,
+        source_name=Provider.CLAUDE_CODE,
         provider_conversation_id="abc123-def456",
         title="abc123-def456",  # Default title is session ID
         created_at=None,

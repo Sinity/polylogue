@@ -351,7 +351,7 @@ def test_parse_conversation(parse_fn: ParseFn, conv_data: ChatGPTMapping, check_
     elif check_type == "fallback":
         assert result.provider_conversation_id == "fallback-id", f"Failed {desc}"
     elif check_type == "provider":
-        assert result.provider_name in ["claude-ai", "claude-code"], f"Failed {desc}"
+        assert result.source_name in ["claude-ai", "claude-code"], f"Failed {desc}"
 
 
 # -----------------------------------------------------------------------------
@@ -378,7 +378,7 @@ def test_chatgpt_parse_synthetic_simple() -> None:
 
     result = chatgpt_parse(data, "simple-test")
 
-    assert result.provider_name == "chatgpt"
+    assert result.source_name == "chatgpt"
     assert len(result.messages) > 0
     assert all(m.text is not None for m in result.messages)
 
@@ -402,7 +402,7 @@ def test_chatgpt_parse_synthetic_branching() -> None:
 
     result = chatgpt_parse(data, "branching-test")
 
-    assert result.provider_name == "chatgpt"
+    assert result.source_name == "chatgpt"
     assert len(result.messages) > 10  # Multiple messages like branching conversations
 
 
@@ -464,7 +464,7 @@ def test_chatgpt_metadata_roundtrip_parser_to_hydration(tmp_path: Path) -> None:
 
     # --- Stage 1: Parse ---
     parsed = chatgpt_parse(payload, "roundtrip-test")
-    assert parsed.provider_name == "chatgpt"
+    assert parsed.source_name == "chatgpt"
 
     # The assistant message should have content_blocks with chatgpt_ metadata.
     assistant_msg = next(m for m in parsed.messages if m.role == "assistant")
@@ -545,7 +545,7 @@ def test_chatgpt_metadata_roundtrip_parser_to_hydration(tmp_path: Path) -> None:
         parent_message_id=mat_assistant.parent_message_id,
         branch_index=mat_assistant.branch_index,
         content_blocks=content_block_records,
-        provider_name="chatgpt",
+        source_name="chatgpt",
         word_count=mat_assistant.word_count,
         has_tool_use=mat_assistant.has_tool_use,
         has_thinking=mat_assistant.has_thinking,
@@ -745,7 +745,7 @@ def test_chatgpt_metadata_permutation_roundtrip(
 
     # Stage 1: Parse
     parsed = chatgpt_parse(payload, "permutation-test")
-    assert parsed.provider_name == "chatgpt"
+    assert parsed.source_name == "chatgpt"
 
     # Stage 2: Materialize
     materialized = materialize_conversation(parsed, source_name="test", archive_root=tmp_path)
@@ -784,7 +784,7 @@ def test_chatgpt_metadata_permutation_roundtrip(
         parent_message_id=msg.parent_message_id,
         branch_index=msg.branch_index,
         content_blocks=content_block_records,
-        provider_name="chatgpt",
+        source_name="chatgpt",
         word_count=msg.word_count,
         has_tool_use=msg.has_tool_use,
         has_thinking=msg.has_thinking,

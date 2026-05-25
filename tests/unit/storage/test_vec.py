@@ -37,7 +37,7 @@ def make_message(
     role: str = "user",
     text: str = "This is a sufficiently long test message for embedding.",
     content_hash: str = "hash-1",
-    provider_name: str = "test-provider",
+    source_name: str = "test-provider",
 ) -> MessageRecord:
     return MessageRecord(
         message_id=MessageId(message_id),
@@ -45,7 +45,7 @@ def make_message(
         role=Role.normalize(role),
         text=text,
         content_hash=ContentHash(content_hash),
-        provider_name=provider_name,
+        source_name=source_name,
         version=1,
     )
 
@@ -253,13 +253,13 @@ def test_upsert_noop_contract(
 
 
 @pytest.mark.parametrize(
-    ("provider_name", "expected_provider"),
+    ("source_name", "expected_provider"),
     [("claude-ai", "claude-ai"), (None, "unknown")],
     ids=["provider-row", "missing-provider-row"],
 )
 def test_upsert_persistence_contract(
     mock_provider: MutableSqliteVecProvider,
-    provider_name: str | None,
+    source_name: str | None,
     expected_provider: str,
 ) -> None:
     """Upsert must filter messages, persist embeddings, and stamp provider metadata."""
@@ -281,8 +281,8 @@ def test_upsert_persistence_contract(
     def capture_execute(sql: str, params: tuple[object, ...] | None = None) -> MagicMock:
         insert_calls.append((sql, params))
         cursor = MagicMock()
-        if "SELECT provider_name FROM conversations" in sql:
-            cursor.fetchone.return_value = (provider_name,) if provider_name is not None else None
+        if "SELECT source_name FROM conversations" in sql:
+            cursor.fetchone.return_value = (source_name,) if source_name is not None else None
         return cursor
 
     mock_provider._get_embeddings = capture_embeddings
@@ -367,9 +367,9 @@ def test_query_route_contract(
         assert result == [("msg-1", 0.5), ("msg-2", 0.7)]
         assert connection.close.called
         if provider is None:
-            assert all("provider_name = ?" not in sql for sql, _ in executed_queries)
+            assert all("source_name = ?" not in sql for sql, _ in executed_queries)
         else:
-            assert any("provider_name = ?" in sql for sql, _ in executed_queries)
+            assert any("source_name = ?" in sql for sql, _ in executed_queries)
             assert any(provider in str(params) for _, params in executed_queries)
     else:
         assert result == []

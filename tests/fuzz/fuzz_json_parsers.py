@@ -54,8 +54,8 @@ def fuzz_chatgpt_parser(data: bytes) -> None:
         # Verify result structure
         assert result is not None, "parse() returned None"
         assert hasattr(result, "messages"), "Missing messages attribute"
-        assert hasattr(result, "provider_name"), "Missing provider_name attribute"
-        assert result.provider_name == "chatgpt", f"Wrong provider: {result.provider_name}"
+        assert hasattr(result, "source_name"), "Missing source_name attribute"
+        assert result.source_name == "chatgpt", f"Wrong provider: {result.source_name}"
 
     except (ValueError, TypeError, KeyError, AttributeError):
         # These are acceptable handling of malformed input
@@ -106,8 +106,8 @@ def fuzz_codex_parser(data: bytes) -> None:
         # Verify result structure
         assert result is not None, "parse() returned None"
         assert hasattr(result, "messages"), "Missing messages attribute"
-        assert hasattr(result, "provider_name"), "Missing provider_name attribute"
-        assert result.provider_name == "codex", f"Wrong provider: {result.provider_name}"
+        assert hasattr(result, "source_name"), "Missing source_name attribute"
+        assert result.source_name == "codex", f"Wrong provider: {result.source_name}"
 
     except (ValueError, TypeError, KeyError, AttributeError):
         pass
@@ -154,8 +154,8 @@ def fuzz_claude_code_parser(data: bytes) -> None:
         # Verify result structure
         assert result is not None, "parse_code() returned None"
         assert hasattr(result, "messages"), "Missing messages attribute"
-        assert hasattr(result, "provider_name"), "Missing provider_name attribute"
-        assert result.provider_name == "claude-code", f"Wrong provider: {result.provider_name}"
+        assert hasattr(result, "source_name"), "Missing source_name attribute"
+        assert result.source_name == "claude-code", f"Wrong provider: {result.source_name}"
 
     except (ValueError, TypeError, KeyError, AttributeError):
         pass
@@ -192,8 +192,8 @@ def fuzz_claude_ai_parser(data: bytes) -> None:
         # Verify result structure
         assert result is not None, "parse_ai() returned None"
         assert hasattr(result, "messages"), "Missing messages attribute"
-        assert hasattr(result, "provider_name"), "Missing provider_name attribute"
-        assert result.provider_name == "claude-ai", f"Wrong provider: {result.provider_name}"
+        assert hasattr(result, "source_name"), "Missing source_name attribute"
+        assert result.source_name == "claude-ai", f"Wrong provider: {result.source_name}"
 
     except (ValueError, TypeError, KeyError, AttributeError):
         pass
@@ -228,7 +228,7 @@ def fuzz_drive_parser(data: bytes) -> None:
         result = drive.parse_chunked_prompt("gemini", payload, "fuzz-fallback-id")
         assert result is not None, "parse_chunked_prompt() returned None"
         assert hasattr(result, "messages"), "Missing messages attribute"
-        assert hasattr(result, "provider_name"), "Missing provider_name attribute"
+        assert hasattr(result, "source_name"), "Missing source_name attribute"
     except (ValueError, TypeError, KeyError, AttributeError, UnicodeDecodeError):
         pass
     except RecursionError:
@@ -262,7 +262,7 @@ def fuzz_antigravity_parser(data: bytes) -> None:
         result = antigravity.parse_markdown_export_payload(payload, "fuzz-fallback-id")
         assert result is not None, "parse_markdown_export_payload() returned None"
         assert hasattr(result, "messages"), "Missing messages attribute"
-        assert hasattr(result, "provider_name"), "Missing provider_name attribute"
+        assert hasattr(result, "source_name"), "Missing source_name attribute"
     except (ValueError, TypeError, KeyError, AttributeError, UnicodeDecodeError):
         pass
     except RecursionError:
@@ -299,7 +299,7 @@ def fuzz_browser_capture_parser(data: bytes) -> None:
         result = browser_capture.parse(payload, "fuzz-fallback-id")
         assert result is not None, "parse() returned None"
         assert hasattr(result, "messages"), "Missing messages attribute"
-        assert hasattr(result, "provider_name"), "Missing provider_name attribute"
+        assert hasattr(result, "source_name"), "Missing source_name attribute"
     except (ValueError, TypeError, KeyError, AttributeError, UnicodeDecodeError, ValidationError):
         pass
     except RecursionError:
@@ -332,12 +332,12 @@ def fuzz_local_agent_parser(data: bytes) -> None:
             result = local_agent.parse_gemini_cli(payload, "fuzz-fallback-id")
             assert result is not None, "parse_gemini_cli() returned None"
             assert hasattr(result, "messages"), "Missing messages attribute"
-            assert hasattr(result, "provider_name"), "Missing provider_name attribute"
+            assert hasattr(result, "source_name"), "Missing source_name attribute"
         if local_agent.looks_like_hermes(payload):
             result = local_agent.parse_hermes(payload, "fuzz-fallback-id")
             assert result is not None, "parse_hermes() returned None"
             assert hasattr(result, "messages"), "Missing messages attribute"
-            assert hasattr(result, "provider_name"), "Missing provider_name attribute"
+            assert hasattr(result, "source_name"), "Missing source_name attribute"
     except (ValueError, TypeError, KeyError, AttributeError, UnicodeDecodeError):
         pass
     except RecursionError:

@@ -139,7 +139,7 @@ class TestGetSampleCountFromDb:
         with open_connection(db_path) as conn:
             conn.execute(
                 """INSERT INTO conversations
-                   (conversation_id, provider_name, provider_conversation_id,
+                   (conversation_id, source_name, provider_conversation_id,
                     title, created_at, updated_at, content_hash,
                     provider_meta, metadata, version,
                     parent_conversation_id, branch_type, raw_id)
@@ -179,7 +179,7 @@ class TestGetSampleCountFromDb:
         with open_connection(db_path) as conn:
             conn.execute(
                 """INSERT INTO conversations
-                   (conversation_id, provider_name, provider_conversation_id,
+                   (conversation_id, source_name, provider_conversation_id,
                     title, created_at, updated_at, content_hash,
                     provider_meta, metadata, version,
                     parent_conversation_id, branch_type, raw_id)

@@ -41,7 +41,7 @@ class TestHybridSearchProvider:
         for i in range(5):
             conv = make_conversation(
                 conversation_id=f"conv-{i}",
-                provider_name="test",
+                source_name="test",
                 provider_conversation_id=f"p{i}",
                 content_hash=make_hash(f"conv-{i}"),
                 title=f"Conv {i}",
@@ -108,21 +108,21 @@ class TestHybridSearchProvider:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
         # Add conversations from different providers
-        for provider_name in ["claude-ai", "chatgpt"]:
+        for source_name in ["claude-ai", "chatgpt"]:
             for i in range(2):
                 conv = make_conversation(
-                    conversation_id=f"{provider_name}-conv-{i}",
-                    provider_name=provider_name,
+                    conversation_id=f"{source_name}-conv-{i}",
+                    source_name=source_name,
                     provider_conversation_id=f"p{i}",
-                    content_hash=make_hash(f"{provider_name}-{i}"),
-                    title=f"{provider_name} Conv {i}",
+                    content_hash=make_hash(f"{source_name}-{i}"),
+                    title=f"{source_name} Conv {i}",
                     created_at=f"2024-01-0{i + 1}T00:00:00Z",
                     updated_at=f"2024-01-0{i + 1}T00:00:00Z",
                 )
                 msg = make_message(
-                    message_id=f"{provider_name}-msg-{i}",
-                    conversation_id=f"{provider_name}-conv-{i}",
-                    content_hash=make_hash(f"{provider_name}-msg-{i}"),
+                    message_id=f"{source_name}-msg-{i}",
+                    conversation_id=f"{source_name}-conv-{i}",
+                    content_hash=make_hash(f"{source_name}-msg-{i}"),
                     role="user",
                     text="test message",
                     timestamp=f"2024-01-0{i + 1}T00:00:00Z",
@@ -566,11 +566,11 @@ class TestSearchProviderSourceFiltering:
 
             provider.search_conversations("test", limit=10, providers=["specific-source"])
 
-            # Provider filtering should stay scoped to provider_name only.
+            # Provider filtering should stay scoped to source_name only.
             execute_call = mock_context.execute.call_args
             assert execute_call is not None
             sql = execute_call.args[0]
-            assert "conversations.provider_name" in sql
+            assert "conversations.source_name" in sql
             assert "conversations.source_name" not in sql
 
 
@@ -590,7 +590,7 @@ class TestListConversationsByParent:
         await backend.save_conversation_record(
             make_conversation(
                 conversation_id="parent-conv",
-                provider_name="test",
+                source_name="test",
                 provider_conversation_id="p1",
                 content_hash=make_hash("parent-conv"),
                 title="Parent",
@@ -601,7 +601,7 @@ class TestListConversationsByParent:
         await backend.save_conversation_record(
             make_conversation(
                 conversation_id="child-conv",
-                provider_name="test",
+                source_name="test",
                 provider_conversation_id="p2",
                 content_hash=make_hash("child-conv"),
                 title="Child",
@@ -623,7 +623,7 @@ class TestListConversationsByParent:
         await backend.save_conversation_record(
             make_conversation(
                 conversation_id="parent",
-                provider_name="test",
+                source_name="test",
                 provider_conversation_id="p",
                 content_hash=make_hash("parent"),
                 title="Parent",
@@ -635,7 +635,7 @@ class TestListConversationsByParent:
             await backend.save_conversation_record(
                 make_conversation(
                     conversation_id=f"child-{i}",
-                    provider_name="test",
+                    source_name="test",
                     provider_conversation_id=f"p{i}",
                     content_hash=make_hash(f"child-{i}"),
                     title=f"Child {i}",

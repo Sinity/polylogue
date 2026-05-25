@@ -751,7 +751,6 @@ class LiveBatchProcessor:
         self,
         paths: list[Path],
         *,
-        source_name: str,
         heartbeat: _FullIngestHeartbeat | None = None,
         attempt_id: str | None = None,
     ) -> _FullIngestResult:
@@ -763,7 +762,6 @@ class LiveBatchProcessor:
         self,
         paths: list[Path],
         *,
-        source_name: str,
         heartbeat: _FullIngestHeartbeat | None = None,
         attempt_id: str | None = None,
     ) -> _FullIngestResult:

@@ -43,7 +43,6 @@ async def collect_validation_backlog(
 async def collect_parse_backlog(
     backend: SQLiteBackend,
     *,
-    source_names: list[str] | None,
     exclude_raw_ids: list[str] | None = None,
     force_reparse: bool = False,
 ) -> list[str]:

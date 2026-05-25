@@ -110,7 +110,7 @@ def _seed_conversation(
     dbp: Path,
     *,
     conversation_id: str,
-    provider_name: str = "claude-code",
+    source_name: str = "claude-code",
     title: str = "stub",
 ) -> None:
     conn = sqlite3.connect(str(dbp))
@@ -118,13 +118,13 @@ def _seed_conversation(
         conn.execute(
             """
             INSERT INTO conversations(
-                conversation_id, provider_name, provider_conversation_id,
+                conversation_id, source_name, provider_conversation_id,
                 title, content_hash, version, raw_id
             ) VALUES (?,?,?,?,?,?,?)
             """,
             (
                 conversation_id,
-                provider_name,
+                source_name,
                 f"p-{conversation_id}",
                 title,
                 "h" * 40,

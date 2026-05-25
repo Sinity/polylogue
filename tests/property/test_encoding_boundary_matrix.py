@@ -191,7 +191,7 @@ class TestContentHashNormalization:
     def test_conversation_content_hash_normalizes_title_and_text(self) -> None:
         def _build(title: str, text: str) -> ParsedConversation:
             return ParsedConversation(
-                provider_name=Provider.CHATGPT,
+                source_name=Provider.CHATGPT,
                 provider_conversation_id="conv-1",
                 title=title,
                 created_at="2026-01-01T00:00:00Z",
@@ -279,7 +279,7 @@ class TestFtsUnicodeTokenizer:
         workspace_env: dict[str, Path],
         storage_repository: ConversationRepository,
     ) -> None:
-        conv = make_conversation("conv-ar", provider_name="claude-ai", title="Arabic")
+        conv = make_conversation("conv-ar", source_name="claude-ai", title="Arabic")
         msg = make_message("conv-ar-m1", "conv-ar", text=ARABIC_HELLO)
         await save_bundle(
             RecordBundle(conversation=conv, messages=[msg], attachments=[]),
@@ -300,7 +300,7 @@ class TestFtsUnicodeTokenizer:
         # weaker "stores and indexes without crashing, regardless of whether
         # a substring query resolves" contract, with a stable English-word
         # sentinel mixed in to give the test a positive observation.
-        conv = make_conversation("conv-cjk", provider_name="claude-ai", title="CJK")
+        conv = make_conversation("conv-cjk", source_name="claude-ai", title="CJK")
         msg = make_message("conv-cjk-m1", "conv-cjk", text=f"{CJK_TEXT} cjkmarker")
         await save_bundle(
             RecordBundle(conversation=conv, messages=[msg], attachments=[]),
@@ -320,7 +320,7 @@ class TestFtsUnicodeTokenizer:
     ) -> None:
         # Whitespace-tokenized "visible" + "spaces" should remain searchable
         # even though zero-width characters are interleaved.
-        conv = make_conversation("conv-zw", provider_name="claude-ai", title="zerowidth")
+        conv = make_conversation("conv-zw", source_name="claude-ai", title="zerowidth")
         msg = make_message("conv-zw-m1", "conv-zw", text=ZERO_WIDTH + " " + BIDI_OVERRIDE)
         await save_bundle(
             RecordBundle(conversation=conv, messages=[msg], attachments=[]),
@@ -338,7 +338,7 @@ class TestFtsUnicodeTokenizer:
         # FTS index stores the raw text bytes that hit it. Storage does NOT
         # normalize text before indexing (only content_hash does). This test
         # documents that contract.
-        conv = make_conversation("conv-nfc", provider_name="claude-ai", title="cafe")
+        conv = make_conversation("conv-nfc", source_name="claude-ai", title="cafe")
         msg = make_message("conv-nfc-m1", "conv-nfc", text=NFC_CAFE)
         await save_bundle(
             RecordBundle(conversation=conv, messages=[msg], attachments=[]),

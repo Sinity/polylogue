@@ -34,7 +34,7 @@ def decode_source_payload(raw_bytes: bytes) -> JSONValue:
 
 
 def parse_and_transform_payload(
-    provider_name: str,
+    source_name: str,
     raw_bytes: bytes,
     archive_root: Path,
     unique_id: str = "default",
@@ -42,14 +42,14 @@ def parse_and_transform_payload(
     """Run parse -> transform for one payload."""
     payload = decode_source_payload(raw_bytes)
     detected = detect_provider(payload)
-    assert detected is not None, f"Provider detection failed for {provider_name}"
+    assert detected is not None, f"Provider detection failed for {source_name}"
 
     parsed_list = parse_payload(detected, payload, f"rt-{unique_id}")
     assert parsed_list, "Parser returned no conversations"
     parsed = parsed_list[0]
     return PipelineRoundtrip(
         parsed=parsed,
-        transform=transform_to_records(parsed, f"test-{provider_name}", archive_root=archive_root),
+        transform=transform_to_records(parsed, f"test-{source_name}", archive_root=archive_root),
     )
 
 

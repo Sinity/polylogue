@@ -76,7 +76,7 @@ def _planted_db(tmp_path: Path, *, planted_version: int) -> Path:
         """
         CREATE TABLE raw_conversations (
             raw_id TEXT PRIMARY KEY,
-            provider_name TEXT NOT NULL DEFAULT '',
+            source_name TEXT NOT NULL DEFAULT '',
             source_path TEXT NOT NULL DEFAULT '',
             blob_size INTEGER NOT NULL DEFAULT 0,
             acquired_at TEXT NOT NULL DEFAULT ''

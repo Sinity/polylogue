@@ -61,7 +61,6 @@ class ProviderDayAggregateWrite:
 def load_sync_provider_day_profile_records(
     conn: sqlite3.Connection,
     *,
-    source_name: str,
     bucket_day: str,
 ) -> list[SessionProfileRecord]:
     return load_sync_provider_day_profile_records_by_groups(
@@ -82,7 +81,6 @@ def list_sync_provider_day_groups(
 async def load_async_provider_day_profile_records(
     conn: aiosqlite.Connection,
     *,
-    source_name: str,
     bucket_day: str,
 ) -> list[SessionProfileRecord]:
     return (

@@ -36,7 +36,6 @@ class ProviderConversationCountRow(TypedDict):
 
 
 class ProviderMetricsRow(TypedDict):
-    source_name: str
     conversation_count: int
     message_count: int
     user_message_count: int
@@ -193,7 +192,6 @@ async def aggregate_message_stats(
 async def upsert_conversation_stats(
     conn: aiosqlite.Connection,
     conversation_id: str,
-    source_name: str,
     messages: list[MessageRecord],
     transaction_depth: int,
 ) -> None:

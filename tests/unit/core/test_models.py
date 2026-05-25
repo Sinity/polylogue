@@ -370,7 +370,7 @@ class TestConversationSummaryFromRecord:
     def test_from_record_projects_metadata(self) -> None:
         record = make_conversation(
             conversation_id="c1",
-            provider_name="claude-ai",
+            source_name="claude-ai",
             provider_conversation_id="prov-c1",
             title="Test",
             created_at="2024-01-01T00:00:00Z",
@@ -390,7 +390,7 @@ class TestConversationFromRecords:
     def test_from_records_attaches_records_to_messages(self) -> None:
         conversation_record = make_conversation(
             conversation_id="c1",
-            provider_name="claude-ai",
+            source_name="claude-ai",
             provider_conversation_id="prov-c1",
             title="Test",
         )
