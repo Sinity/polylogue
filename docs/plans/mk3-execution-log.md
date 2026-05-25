@@ -182,7 +182,8 @@ Target:
 Outcome:
 
 - `devtools verify` now runs the static/generated gates plus
-  `pytest --testmon -n 0` for affected per-test selection.
+  `pytest --testmon --testmon-forceselect` for affected per-test selection
+  under the default scale-tier marker filter.
 - `devtools verify --seed-testmon --skip-slow` is the explicit full
   non-integration seed/update path. It writes `.testmondata` and
   `.cache/testmon/seed.json`; default verify refuses ad hoc or missing seed
@@ -191,13 +192,15 @@ Outcome:
   diagnostic. `--affected` and `_affected_test_files()` were removed.
 - The verify runner now stops after the first failed step, preventing format or
   lint failures from cascading into expensive pytest runs.
-- Full/seed pytest worker count defaults to 8 and can be adjusted with
-  `POLYLOGUE_PYTEST_WORKERS`; affected testmon runs use `-n 0` to avoid xdist
-  overhead for small selections.
+- Full/seed pytest worker count defaults to 16, affected testmon runs default
+  to `-n 0` single-process to avoid xdist collection skew under
+  `--testmon-forceselect`, and both can be adjusted with
+  `POLYLOGUE_PYTEST_WORKERS`.
 - The extra `devtools` worktree-result replay cache was removed. Every
   invocation now reaches pytest-testmon, which owns package/Python/source
-  invalidation; harness/config/dependency-lock changes automatically widen to
-  `--testmon-noselect` instead of relying on a manual full-suite bypass.
+  invalidation. The later #1549 cleanup removed Polylogue's hand-maintained
+  changed-file invalidator; explicit full collection is now limited to
+  `--seed-testmon` and `--all` / `--full`.
 
 Measured locally:
 

@@ -9,7 +9,8 @@ All commands below assume you are inside the project devshell. See
 # Normal repository verification
 devtools verify
 
-# First run after checkout or dependency/test harness changes
+# First run after checkout, or when you intentionally want to refresh
+# pytest-testmon's dependency database
 devtools verify --seed-testmon --skip-slow
 
 # Stop on first failure
@@ -34,16 +35,18 @@ whole suite.
 
 Plain focused `pytest` runs are single-process by default so small inner-loop
 checks do not spawn a worker pool. `devtools verify` keeps pytest-testmon as
-the affected-test selector and runs the selected tests with xdist workers
-(`-n 8` by default, override with `POLYLOGUE_PYTEST_WORKERS`). Full diagnostic
-and seed runs use the same worker override and default to `-n 16`.
+the affected-test selector and runs selected tests single-process (`-n 0` by
+default, override with `POLYLOGUE_PYTEST_WORKERS`). Because the default gate
+also applies marker filters for scale tiers, it passes `--testmon-forceselect`
+so pytest-testmon still selects affected tests instead of letting pytest marker
+selection expand the run. Full diagnostic and seed runs use the same worker
+override and default to `-n 16`.
 
 The default path does not replay cached verify results. Every invocation runs
-the static gates and lets pytest-testmon evaluate current source, package, and
-Python-version state. Changes to pytest configuration, dependency locks, or
-shared test infrastructure automatically widen the pytest step to
-`--testmon-noselect` so the dependency database is refreshed without requiring
-a manual full-suite bypass.
+the static gates and then invokes pytest-testmon for affected-test selection.
+Polylogue does not maintain a parallel changed-file router for helper/config
+paths; explicit full collection is limited to `devtools verify --seed-testmon`
+for dependency-database refreshes and `devtools verify --all` for diagnostics.
 
 For the generated validation-lane, mutation-campaign, and benchmark inventory,
 see [docs/test-quality-workflows.md](docs/test-quality-workflows.md).
