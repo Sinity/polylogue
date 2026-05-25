@@ -325,7 +325,13 @@ def materialize_conversation(
         message_type = msg.message_type
         # Aggregate session stats are rebuilt later, but these per-message
         # flags are part of the archive row itself and drive query filters.
-        word_count = 0
+        # word_count is the dialogue word count — counts words in msg.text
+        # (the joined human-readable text). Tool-only messages get 0
+        # naturally because msg.text is empty/None for those. Was previously
+        # hard-coded to 0, leaving every messages row with word_count=0
+        # across 2.4M rows; downstream analytics (cost, substantive ratio,
+        # productivity rollups) saw a dead signal.
+        word_count = len((msg.text or "").split())
         has_tool_use = int(
             has_tool_block
             or has_tool_result_block
@@ -367,6 +373,14 @@ def materialize_conversation(
                 has_paste=has_paste,
                 message_type=message_type,
                 blocks=blocks,
+                # Token counts flow through from parsers that populated them
+                # (e.g., claude code's record.message.usage). Other parsers
+                # leave the defaults of 0 until they're extended similarly.
+                input_tokens=getattr(msg, "input_tokens", 0) or 0,
+                output_tokens=getattr(msg, "output_tokens", 0) or 0,
+                cache_read_tokens=getattr(msg, "cache_read_tokens", 0) or 0,
+                cache_write_tokens=getattr(msg, "cache_write_tokens", 0) or 0,
+                model_name=getattr(msg, "model_name", None),
             )
         )
 

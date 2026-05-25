@@ -152,8 +152,16 @@ def session_enrichment_payload(
         + (0.1 if profile.work_events else 0.0)
         + (0.05 if blockers_val else 0.0),
     )
-    intent_summary = user_turns[0] if user_turns else (profile.title or None)
-    outcome_summary = assistant_turns[-1] if assistant_turns else (user_turns[-1] if user_turns else None)
+    from polylogue.archive.session.runtime import _clean_topic_text
+
+    # Strip the Claude Code "Caveat: The messages below..." preamble and
+    # similar known noise prefixes from the heuristic intent/outcome — they
+    # otherwise contaminate the field with system text rather than the
+    # user's actual ask. Same cleaner used for inferred_topic.
+    raw_intent = user_turns[0] if user_turns else (profile.title or None)
+    intent_summary = _clean_topic_text(raw_intent, width=220) if raw_intent else None
+    raw_outcome = assistant_turns[-1] if assistant_turns else (user_turns[-1] if user_turns else None)
+    outcome_summary = _clean_topic_text(raw_outcome, width=220) if raw_outcome else None
     fallback_reasons = enrichment_fallback_reasons(analysis, user_turns=user_turns)
     return SessionEnrichmentPayload(
         intent_summary=intent_summary,

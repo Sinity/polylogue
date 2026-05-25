@@ -841,6 +841,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path, params = self._parse_path()
 
+        # OTLP receiver endpoints — unauthenticated, same posture as
+        # /metrics and /healthz/*.  OTLP exporters don't carry credentials
+        # and the daemon binds to loopback by default.  gated behind
+        # observability_enabled config flag (#1321).
+        if path == ["v1", "traces"] or path == ["v1", "metrics"] or path == ["v1", "logs"]:
+            self._handle_otlp_post(path)
+            return
+
         if not self._check_auth():
             return
         if not self._check_cross_origin():
@@ -1862,6 +1870,32 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------
 
     @daemon_safe_handler
+    def _handle_otlp_post(self, path: list[str]) -> None:
+        """Accept OTLP telemetry and respond with the matching protobuf/JSON envelope.
+
+        Routes to ``handle_traces``, ``handle_metrics``, or ``handle_logs``
+        in ``polylogue/daemon/otlp_receiver.py`` based on *path*.
+        """
+        from polylogue.daemon.otlp_receiver import handle_logs, handle_metrics, handle_traces
+
+        signal = path[1]  # 'traces', 'metrics', or 'logs'
+        content_type = self.headers.get("Content-Type", "application/x-protobuf")
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length > 0 else b""
+
+        if signal == "traces":
+            result = handle_traces(body, content_type, db_path=str(db_path()))
+        elif signal == "metrics":
+            result = handle_metrics(body, content_type, db_path=str(db_path()))
+        else:
+            result = handle_logs(body, content_type, db_path=str(db_path()))
+
+        self.send_response(result.status)
+        self.send_header("Content-Type", result.content_type)
+        self.send_header("Content-Length", str(len(result.body)))
+        self.end_headers()
+        self.wfile.write(result.body)
+
     def _handle_ingest(self) -> None:
         content_length = int(self.headers.get("Content-Length", 0))
         body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
