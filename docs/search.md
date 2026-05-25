@@ -144,7 +144,7 @@ elevate — see below).
 |------|-------------|------------|
 | `auto` | Surface left the lane to the planner. May elevate to `hybrid` when embeddings are enabled and an FTS query is present (see [Auto Elevation](#auto-elevation)). | depends on chosen lane |
 | `dialogue` | FTS5 over message text (`messages_fts` virtual table, `unicode61` tokenizer). Default lexical lane. | `bm25` |
-| `actions` | FTS5 over action event text (`action_events_fts`). Targets tool/file/shell evidence rather than prose. | `bm25` |
+| `actions` | FTS5 over action event text (`action_events_fts`). Targets tool/file/shell evidence rather than prose. Public ranked-hit payloads currently carry action rank/evidence without a numeric action BM25 score. | `null` |
 | `hybrid` | Reciprocal Rank Fusion combining FTS5 and vector similarity (requires embeddings). | `rrf` |
 | `semantic` | Pure vector similarity over Voyage-4 embeddings via sqlite-vec. Triggered by `--similar` or `--semantic`. | `vector_distance` |
 
@@ -161,10 +161,10 @@ Implementation: `polylogue/storage/search_providers/fts5.py`,
   tokenization. **Porter stemming is not available** in this SQLite build,
   so `refactor` and `refactoring` are distinct tokens. Use prefix queries
   (`refactor*`) when you want morphological breadth.
-- Raw score is **BM25**: lower magnitude is a better match, values are
+- Raw score is **BM25**: lower is better in SQLite FTS5, values are
   typically negative, and they are **not comparable across queries**.
-- Match evidence: `matched_terms`, `snippet`, `match_surface=
-  "message_text"`, `message_id`, and `target_ref` point at the hit message.
+- Match evidence: `matched_terms`, `snippet`, `match_surface="message"`,
+  `message_id`, and `target_ref` point at the hit message.
 
 #### `actions` (FTS5 over action events)
 
@@ -172,6 +172,10 @@ Implementation: `polylogue/storage/search_providers/fts5.py`,
   `action_events_fts` — normalized records of file reads/writes/edits,
   shell commands, web fetches, agent invocations, and other tool
   evidence (see `--action` / `--tool` filters above).
+- Current public action-lane hits preserve rank and action match surface
+  but do not expose the underlying action FTS BM25 score in the shared
+  `SearchEnvelope`; consumers should treat `score_kind=null` as the
+  contract for action-only hits until the action evidence path is widened.
 - Useful when you remember an action ("the conversation where I edited
   `connection_profile.py`") rather than its prose.
 
@@ -270,10 +274,14 @@ Every `SearchEnvelope` declares its `ranking_policy` and
 `ranking_policy_version`. The current policy identifier is
 `mixed-bm25-rrf-vector` (version `1`):
 
-- `dialogue` and `actions` lanes order hits by FTS5 BM25 (best match
-  first; raw scores negative).
-- `hybrid` fuses dialogue + semantic with RRF at `k=60` and orders by
-  fused score, breaking ties on `(−fused_score, conversation_id)`.
+- `dialogue` orders hits by FTS5 BM25 (lower is better; raw scores are
+  usually negative).
+- `actions` orders through the action-event FTS read model, but the
+  public action-lane hit payload does not currently expose a numeric
+  action score.
+- `hybrid` fuses dialogue + action + semantic lanes with RRF at `k=60`
+  and orders by fused score, breaking ties on `(−fused_score,
+  conversation_id)`.
 - `semantic` orders by ascending vector distance.
 
 Consumers should pin the `ranking_policy_version` they validate against
@@ -296,9 +304,9 @@ via the daemon under
 | `total` | Total matching conversations, or `null` when the lane cannot compute it cheaply. |
 | `limit` / `offset` | Applied page size and row offset. Offset-based pagination is **best-effort** for ranked results. |
 | `next_offset` | Convenience offset pointer; only set when more results are likely. |
-| `next_cursor` | Opaque keyset cursor encoding `(rank, conversation_id)`. **Preferred** for stable rank-first pagination across pages — pass it back unchanged in the next request. |
+| `next_cursor` | Opaque keyset cursor encoding rank, score, conversation id, and resolved retrieval lane. **Preferred** for stable rank-first pagination across pages — pass it back unchanged in the next request. |
 | `query` | The FTS query text actually applied after CLI/MCP/HTTP coercion. Empty when no FTS query was given. |
-| `sort` | Applied sort field — `"rank"` (default for ranked search), `"date"`, `"messages"`, or `null` to preserve lane order. Ranked search will not silently fall back to date sort. |
+| `sort` | Applied explicit sort field (`"date"`, `"messages"`, `"words"`, etc.) or `null` to preserve the lane's natural rank order. Ranked search will not silently fall back to date sort. |
 | `retrieval_lane` | Resolved lane that actually ran (`dialogue` / `actions` / `hybrid` / `semantic` / `auto`). |
 | `ranking_policy` / `ranking_policy_version` | Declared ordering semantics; see above. |
 | `diagnostics` | Optional `QueryMissDiagnosticsPayload` when the query produced zero hits but filters were applied. |
@@ -309,7 +317,7 @@ Each hit's `match` (a `ConversationSearchMatchPayload`) carries:
 |-------|---------|
 | `rank` | 1-based position in the result list. |
 | `retrieval_lane` | Lane that produced this hit (matches envelope, unless future per-hit attribution differs). |
-| `match_surface` | Indexed surface that matched — e.g. `message_text`, `action_event_text`, `attachment_identity`. |
+| `match_surface` | Indexed surface that matched — e.g. `message`, `action`, `hybrid`, `semantic`, or `attachment`. |
 | `score` | Raw lane score (semantics depend on `score_kind`). |
 | `score_kind` | One of `"bm25"`, `"rrf"`, `"vector_distance"`, or `null` for identity-only lanes. **Always check this before comparing or ordering by `score` directly.** |
 | `score_components` | Map of per-component contributions explaining the rank. Dialogue (FTS5) hits carry `{"bm25_raw": <relevance>}`; hybrid hits carry per-lane `<lane>_rank` and `<lane>_rrf` entries summed into `score` ([#1267](https://github.com/Sinity/polylogue/issues/1267)). Identity-only lanes (e.g. attachment) carry `{}`. |
@@ -322,7 +330,7 @@ Each hit's `match` (a `ConversationSearchMatchPayload`) carries:
 
 ### Score-kind cheatsheet
 
-- `bm25` — lower magnitude = better match. Values are typically negative.
+- `bm25` — lower = better match in SQLite FTS5. Values are typically negative.
   **Never display raw BM25 as a percent or compare across queries**;
   rank position is the durable signal.
 - `rrf` — higher = better; bounded by `Σ 1/(k+1)` over contributing
@@ -344,7 +352,7 @@ the hit:
 | Lane | `matched_terms` | `score_kind` | `score_components` |
 |------|-----------------|--------------|--------------------|
 | `dialogue` (FTS5 over messages) | tokenized query terms (lowercased, FTS5 operators stripped) | `bm25` | `{"bm25_raw": <relevance>}` |
-| `actions` (FTS5 over action events) | tokenized query terms | `bm25` | `{"bm25_raw": <relevance>}` when surfaced via the evidence path; `{}` for legacy id-only paths |
+| `actions` (FTS5 over action events) | tokenized query terms | `null` today | `{}` today; action rank is preserved, but action BM25 is not part of the public hit evidence contract yet |
 | `hybrid` (RRF fusion) | tokenized query terms | `rrf` | `<lane>_rank` and `<lane>_rrf` for every contributing lane (`text` / `action` / `vector`); `score` equals the sum of `*_rrf` |
 | `semantic` (vector-only) | the query string passed to `--similar` / `--semantic` (single term) | `vector_distance` | `{}` (raw distance lives in `score`) |
 | `attachment` (identity lookup) | the matched identifier (single term) | `null` | `{}` (identity hits have no numeric rank) |
