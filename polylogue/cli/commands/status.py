@@ -284,6 +284,50 @@ def _render_diagnostic(env: AppEnv, diag: Any) -> None:
         env.ui.console.print(f"  {diag.detail}")
 
 
+def _render_direct_embedding_status(env: AppEnv, payload: dict[str, Any]) -> None:
+    """Render bounded embedding readiness in direct SQLite fallback status."""
+    if int(payload.get("total_conversations", 0) or 0) <= 0:
+        return
+
+    status = str(payload.get("status", "unknown"))
+    freshness = str(payload.get("freshness_status", status))
+    retrieval_ready = bool(payload.get("retrieval_ready", False))
+    embedded_messages = int(payload.get("embedded_messages", 0) or 0)
+    embedded_conversations = int(payload.get("embedded_conversations", 0) or 0)
+    total_conversations = int(payload.get("total_conversations", 0) or 0)
+    pending_conversations = int(payload.get("pending_conversations", 0) or 0)
+    coverage = float(payload.get("embedding_coverage_percent", 0.0) or 0.0)
+    stale_messages = int(payload.get("stale_messages", 0) or 0)
+    failure_count = int(payload.get("failure_count", 0) or 0)
+
+    color = "green" if retrieval_ready and freshness != "stale" else "yellow" if embedded_messages else "dim"
+    ready_text = "ready" if retrieval_ready else "not ready"
+    line = (
+        f"  Embeddings: [{color}]{status}/{freshness}, {ready_text}; "
+        f"{embedded_messages:,} msgs, {embedded_conversations:,}/{total_conversations:,} convs "
+        f"({coverage:.1f}%), {pending_conversations:,} pending convs"
+    )
+    if stale_messages:
+        line += f", {stale_messages:,} stale msgs"
+    line += f"[/{color}]"
+    env.ui.console.print(line)
+
+    if failure_count:
+        env.ui.console.print(f"  Embedding failures: [yellow]{failure_count:,}[/yellow]")
+
+    latest = payload.get("latest_catchup_run")
+    if isinstance(latest, dict):
+        processed = int(latest.get("processed_conversations", 0) or 0)
+        planned = int(latest.get("planned_conversations", 0) or 0)
+        embedded = int(latest.get("embedded_messages", 0) or 0)
+        errors = int(latest.get("error_count", 0) or 0)
+        env.ui.console.print(
+            "  Embedding catch-up: "
+            f"{latest.get('status', 'unknown')}, {processed:,}/{planned:,} convs, "
+            f"{embedded:,} msgs embedded, {errors:,} errors"
+        )
+
+
 def _show_direct_status(env: AppEnv, *, compact: bool = False) -> None:
     """Fallback status when daemon is not running."""
     from polylogue.cli.commands.status_diagnostics import diagnose_first_run
@@ -330,14 +374,7 @@ def _show_direct_status(env: AppEnv, *, compact: bool = False) -> None:
             from polylogue.storage.embeddings.status_payload import embedding_status_payload
 
             ep = embedding_status_payload(env, include_retrieval_bands=False)
-            if ep["total_conversations"] > 0:
-                emb_pct = ep["embedding_coverage_percent"]
-                emb_color = "green" if ep["retrieval_ready"] else "dim"
-                env.ui.console.print(
-                    f"  Embeddings: [{emb_color}]{ep['embedded_messages']:,} msgs, "
-                    f"{ep['embedded_conversations']:,}/{ep['total_conversations']:,} convs "
-                    f"({emb_pct:.1f}%)[/{emb_color}]"
-                )
+            _render_direct_embedding_status(env, dict(ep))
         except Exception:
             pass
         # When the archive is empty (no ingest has run yet), surface the

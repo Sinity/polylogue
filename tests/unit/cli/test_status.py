@@ -132,6 +132,73 @@ class TestNoArchiveStatus:
         assert any("SUM(message_count)" in query for query in queries)
         assert not any("messages_fts_docsize" in query for query in queries)
 
+    def test_direct_status_reports_embedding_readiness_not_raw_coverage(self) -> None:
+        """Daemon-offline status should expose semantic-readiness state."""
+        env = _make_app_env()
+        fake_root = Path("/tmp/archive-root")
+        fake_db = MagicMock()
+        fake_db.exists.return_value = True
+
+        class FakeCursor:
+            def __init__(self, value: int) -> None:
+                self._value = value
+
+            def fetchone(self) -> list[int]:
+                return [self._value]
+
+        class FakeConn:
+            def execute(self, sql: str, params: tuple[object, ...] | None = None) -> FakeCursor:
+                if "sqlite_master" in sql and params == ("conversation_stats",):
+                    return FakeCursor(1)
+                if "SUM(message_count)" in sql:
+                    return FakeCursor(30)
+                if "conversations" in sql:
+                    return FakeCursor(3)
+                if "raw_conversations" in sql:
+                    return FakeCursor(4)
+                return FakeCursor(0)
+
+            def close(self) -> None:
+                pass
+
+        embedding_payload = {
+            "total_conversations": 3,
+            "embedded_conversations": 1,
+            "embedded_messages": 10,
+            "pending_conversations": 2,
+            "embedding_coverage_percent": 33.3,
+            "retrieval_ready": False,
+            "status": "partial",
+            "freshness_status": "stale",
+            "stale_messages": 10,
+            "failure_count": 1,
+            "latest_catchup_run": {
+                "status": "stopped",
+                "processed_conversations": 2,
+                "planned_conversations": 3,
+                "embedded_messages": 10,
+                "error_count": 1,
+            },
+        }
+
+        with patch("polylogue.paths.db_path", return_value=fake_db):
+            with patch("polylogue.paths.archive_root", return_value=fake_root):
+                with patch(
+                    "polylogue.storage.sqlite.connection_profile.open_readonly_connection", return_value=FakeConn()
+                ):
+                    with patch(
+                        "polylogue.storage.embeddings.status_payload.embedding_status_payload",
+                        return_value=embedding_payload,
+                    ):
+                        _show_direct_status(env)
+
+        combined = _combined_calls(env)
+        assert "Embeddings:" in combined
+        assert "partial/stale, not ready" in combined
+        assert "10 msgs, 1/3 convs (33.3%), 2 pending convs, 10 stale msgs" in combined
+        assert "Embedding failures:" in combined
+        assert "Embedding catch-up: stopped, 2/3 convs, 10 msgs embedded, 1 errors" in combined
+
     def test_explicit_status_has_short_daemon_timeout_before_direct_fallback(self) -> None:
         """Explicit status must not hide behind a daemon blocked on ingest."""
         env = _make_app_env()
