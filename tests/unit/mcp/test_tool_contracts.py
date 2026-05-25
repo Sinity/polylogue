@@ -25,7 +25,6 @@ from polylogue.insights.archive import (
     DaySessionSummaryInsight,
     ProviderAnalyticsInsight,
     SessionCostInsight,
-    SessionEnrichmentInsight,
     SessionEnrichmentPayload,
     SessionEvidencePayload,
     SessionInferencePayload,
@@ -644,12 +643,6 @@ class TestInsightTools:
                 terminal_state="question_left",
                 terminal_state_confidence=0.72,
             ),
-        )
-        enrichment = SessionEnrichmentInsight(
-            conversation_id="conv-1",
-            provider_name="claude-code",
-            title="Profiled Session",
-            provenance=_provenance(),
             enrichment_provenance=_enrichment_provenance(),
             enrichment=SessionEnrichmentPayload(
                 intent_summary="Plan the refactor",
@@ -781,7 +774,6 @@ class TestInsightTools:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
             mock_poly.list_session_profile_insights = AsyncMock(return_value=[profile])
-            mock_poly.list_session_enrichment_insights = AsyncMock(return_value=[enrichment])
             mock_poly.list_session_work_event_insights = AsyncMock(return_value=[work_event])
             mock_poly.list_session_phase_insights = AsyncMock(return_value=[phase])
             mock_poly.list_session_tag_rollup_insights = AsyncMock(return_value=[tag_rollup])
@@ -806,11 +798,6 @@ class TestInsightTools:
             events_raw = await invoke_surface_async(
                 mcp_server._tool_manager._tools["session_work_events"].fn,
                 heuristic_label="implementation",
-                limit=5,
-            )
-            enrichments_raw = await invoke_surface_async(
-                mcp_server._tool_manager._tools["session_enrichments"].fn,
-                provider="claude-code",
                 limit=5,
             )
             phases_raw = await invoke_surface_async(
@@ -864,7 +851,6 @@ class TestInsightTools:
 
         profiles_payload = json.loads(profiles_raw)
         events_payload = json.loads(events_raw)
-        enrichments_payload = json.loads(enrichments_raw)
         phases_payload = json.loads(phases_raw)
         threads_payload = json.loads(threads_raw)
         tags_payload = json.loads(tags_raw)
@@ -877,7 +863,7 @@ class TestInsightTools:
 
         assert profiles_payload["total"] == 1
         assert profiles_payload["items"][0]["insight_kind"] == "session_profile"
-        assert enrichments_payload["items"][0]["insight_kind"] == "session_enrichment"
+        assert profiles_payload["items"][0]["enrichment"]["intent_summary"] == "Plan the refactor"
         assert events_payload["items"][0]["insight_kind"] == "session_work_event"
         assert phases_payload["items"][0]["insight_kind"] == "session_phase"
         assert tags_payload["items"][0]["insight_kind"] == "session_tag_rollup"
@@ -895,24 +881,6 @@ class TestInsightTools:
         debt_query = mock_poly.list_archive_debt_insights.await_args.args[0]
         assert debt_query.category == "insights"
         assert debt_query.only_actionable is True
-
-    @pytest.mark.asyncio
-    async def test_session_enrichments_tool_rejects_unknown_query_fields(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
-            mock_ops = MagicMock()
-            mock_ops.list_session_enrichment_insights = AsyncMock(return_value=[])
-            mock_get_archive_ops.return_value = mock_ops
-
-            with pytest.raises(PolylogueError, match="Unknown query field"):
-                await invoke_surface_async(
-                    mcp_server._tool_manager._tools["session_enrichments"].fn,
-                    provider="claude-code",
-                    refined_work_kind="planning",
-                    limit=5,
-                )
-
-        mock_ops.list_session_enrichment_insights.assert_not_called()
-        mock_ops.list_session_enrichment_insights.assert_not_awaited()
 
 
 class TestStatsTool:

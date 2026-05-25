@@ -30,7 +30,6 @@ from polylogue.insights.archive import (
     DaySessionSummaryInsightQuery,
     ProviderAnalyticsInsightQuery,
     SessionCostInsightQuery,
-    SessionEnrichmentInsightQuery,
     SessionPhaseInsightQuery,
     SessionProfileInsightQuery,
     SessionTagRollupQuery,
@@ -358,30 +357,6 @@ register(
             InsightField("tool_s", _nested_ms_as_seconds("evidence", "tool_duration_ms", "0"), group=1),
             InsightField("tpm", _nested("evidence", "tool_calls_per_minute", "-"), group=1),
             InsightField("prov", _nested("evidence", "timing_provenance", "-"), group=1),
-        ),
-    )
-)
-
-register(
-    InsightType(
-        name="session_enrichments",
-        display_name="Session Enrichments",
-        json_key="session_enrichments",
-        empty_message="No session enrichments matched.",
-        query_model=SessionEnrichmentInsightQuery,
-        operations_method_name="list_session_enrichment_insights",
-        cli_command_name="enrichments",
-        cli_help="List durable probabilistic session-enrichment insights.",
-        cli_options=(
-            *_SESSION_TIME_OPTIONS,
-            _SESSION_TIME_SORT_OPTION,
-            _QUERY_OPTION,
-        ),
-        fields=(
-            InsightField("", _id_with_provider("conversation_id"), group=0),
-            InsightField("", _attr("title", "(untitled)"), group=0),
-            InsightField("support", _nested("enrichment", "support_level"), group=1),
-            InsightField("family", _nested("enrichment_provenance", "enrichment_family"), group=1),
         ),
     )
 )

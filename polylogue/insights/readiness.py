@@ -13,7 +13,6 @@ from polylogue.insights.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION, 
 from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.runtime.store_constants import (
-    SESSION_ENRICHMENT_VERSION,
     SESSION_INFERENCE_VERSION,
     SESSION_INSIGHT_MATERIALIZER_VERSION,
 )
@@ -121,24 +120,6 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
         fallback_payload_columns=("inference_payload_json",),
     ),
     InsightReadinessSpec(
-        insight_name="session_enrichments",
-        display_name="Session Enrichments",
-        table_name="session_profiles",
-        row_count_attr="profile_row_count",
-        expected_count_attr="total_conversations",
-        missing_count_attr="missing_profile_row_count",
-        stale_count_attr="stale_profile_row_count",
-        orphan_count_attr="orphan_profile_row_count",
-        ready_flags=("profile_rows_ready",),
-        artifacts=("session_profiles",),
-        time_column="source_updated_at",
-        version_fields=(
-            ("materializer_version", SESSION_INSIGHT_MATERIALIZER_VERSION),
-            ("enrichment_version", SESSION_ENRICHMENT_VERSION),
-        ),
-        fallback_payload_columns=("enrichment_payload_json",),
-    ),
-    InsightReadinessSpec(
         insight_name="session_work_events",
         display_name="Work Events",
         table_name="session_work_events",
@@ -233,7 +214,6 @@ _SPEC_BY_NAME = {spec.insight_name: spec for spec in _SPECS}
 _ALIASES = {
     **{spec.insight_name.replace("_", "-"): spec.insight_name for spec in _SPECS},
     "profiles": "session_profiles",
-    "enrichments": "session_enrichments",
     "work-events": "session_work_events",
     "phases": "session_phases",
     "threads": "work_threads",

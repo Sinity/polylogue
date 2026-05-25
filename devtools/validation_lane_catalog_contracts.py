@@ -545,7 +545,6 @@ COMPOSITE_LANES: dict[str, LaneEntry] = {
             "live-session-insight-repair",
             "live-insights-status",
             "live-insights-profiles-inference",
-            "live-insights-enrichments",
             "live-embed-stats",
             "live-readiness-json",
             "memory-budget",

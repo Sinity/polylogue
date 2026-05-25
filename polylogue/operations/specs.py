@@ -344,21 +344,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead",),
     ),
     OperationSpec(
-        name="query-session-enrichments",
-        kind=OperationKind.QUERY,
-        description="Resolve durable session enrichments from profile rows and enrichment FTS.",
-        consumes=("session_profile_rows",),
-        produces=("session_enrichment_results",),
-        path_targets=("session-enrichment-query-loop",),
-        code_refs=(
-            "polylogue.operations.archive.ArchiveInsightMixin.list_session_enrichment_insights",
-            "polylogue.cli.commands.insights",
-        ),
-        surfaces=("insights", "facade", "mcp"),
-        previewable=True,
-        effects=("DbRead",),
-    ),
-    OperationSpec(
         name="query-session-work-events",
         kind=OperationKind.QUERY,
         description="Resolve durable session work-event insights from work-event rows and work-event FTS.",

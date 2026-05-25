@@ -66,7 +66,6 @@ async def test_insight_readiness_report_marks_rebuilt_insights_ready(cli_workspa
     assert report.aggregate_verdict == "degraded"
     assert {insight.insight_name for insight in report.insights} >= {
         "session_profiles",
-        "session_enrichments",
         "session_work_events",
         "session_phases",
         "work_threads",

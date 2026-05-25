@@ -157,8 +157,6 @@ def test_sync_product_queries_forward_through_sync_bridge() -> None:
         get_session_insight_status=lambda: "status-coro",
         get_session_profile_insight=lambda conversation_id, **kwargs: ("profile", conversation_id, kwargs),
         list_session_profile_insights=lambda query=None: ("profiles", query),
-        get_session_enrichment_insight=lambda conversation_id: ("enrichment", conversation_id),
-        list_session_enrichment_insights=lambda query=None: ("enrichments", query),
         list_session_tag_rollup_insights=lambda query=None: ("tags", query),
         get_session_work_event_insights=lambda conversation_id: ("events", conversation_id),
         list_session_work_event_insights=lambda query=None: ("events-list", query),
@@ -169,6 +167,9 @@ def test_sync_product_queries_forward_through_sync_bridge() -> None:
         list_day_session_summary_insights=lambda query=None: ("days", query),
         list_week_session_summary_insights=lambda query=None: ("weeks", query),
         list_provider_analytics_insights=lambda query=None: ("analytics", query),
+        list_tool_usage_insights=lambda query=None: ("tool-usage", query),
+        list_session_cost_insights=lambda query=None: ("session-costs", query),
+        list_cost_rollup_insights=lambda query=None: ("cost-rollups", query),
         list_archive_debt_insights=lambda query=None: ("debt", query),
         insight_readiness_report=lambda query=None: ("readiness", query),
     )
@@ -183,8 +184,6 @@ def test_sync_product_queries_forward_through_sync_bridge() -> None:
             {"tier": "evidence"},
         )
         assert archive.list_session_profile_insights("query") == ("profiles", "query")
-        assert archive.get_session_enrichment_insight("conv-1") == ("enrichment", "conv-1")
-        assert archive.list_session_enrichment_insights("query") == ("enrichments", "query")
         assert archive.list_session_tag_rollup_insights("query") == ("tags", "query")
         assert archive.get_session_work_event_insights("conv-1") == ("events", "conv-1")
         assert archive.list_session_work_event_insights("query") == ("events-list", "query")
@@ -195,10 +194,13 @@ def test_sync_product_queries_forward_through_sync_bridge() -> None:
         assert archive.list_day_session_summary_insights("query") == ("days", "query")
         assert archive.list_week_session_summary_insights("query") == ("weeks", "query")
         assert archive.list_provider_analytics_insights("query") == ("analytics", "query")
+        assert archive.list_tool_usage_insights("query") == ("tool-usage", "query")
+        assert archive.list_session_cost_insights("query") == ("session-costs", "query")
+        assert archive.list_cost_rollup_insights("query") == ("cost-rollups", "query")
         assert archive.list_archive_debt_insights("query") == ("debt", "query")
         assert archive.insight_readiness_report("query") == ("readiness", "query")
 
-    assert mock_run.call_count == 17
+    assert mock_run.call_count == 18
 
 
 def test_sync_polylogue_wraps_async_facade_and_context_manager() -> None:
@@ -234,6 +236,9 @@ async def test_polylogue_products_mixin_forwards_all_product_calls() -> None:
         list_day_session_summary_insights=AsyncMock(return_value=["days"]),
         list_week_session_summary_insights=AsyncMock(return_value=["weeks"]),
         list_provider_analytics_insights=AsyncMock(return_value=["analytics"]),
+        list_tool_usage_insights=AsyncMock(return_value=["tool-usage"]),
+        list_session_cost_insights=AsyncMock(return_value=["session-costs"]),
+        list_cost_rollup_insights=AsyncMock(return_value=["cost-rollups"]),
         list_archive_debt_insights=AsyncMock(return_value=["debt"]),
     )
 
@@ -257,6 +262,9 @@ async def test_polylogue_products_mixin_forwards_all_product_calls() -> None:
     assert await archive.list_day_session_summary_insights("query") == ["days"]
     assert await archive.list_week_session_summary_insights("query") == ["weeks"]
     assert await archive.list_provider_analytics_insights("query") == ["analytics"]
+    assert await archive.list_tool_usage_insights("query") == ["tool-usage"]
+    assert await archive.list_session_cost_insights("query") == ["session-costs"]
+    assert await archive.list_cost_rollup_insights("query") == ["cost-rollups"]
     assert await archive.list_archive_debt_insights("query") == ["debt"]
 
     operations.list_session_tag_rollup_insights.assert_awaited_once_with("query")
@@ -269,4 +277,7 @@ async def test_polylogue_products_mixin_forwards_all_product_calls() -> None:
     operations.list_day_session_summary_insights.assert_awaited_once_with("query")
     operations.list_week_session_summary_insights.assert_awaited_once_with("query")
     operations.list_provider_analytics_insights.assert_awaited_once_with("query")
+    operations.list_tool_usage_insights.assert_awaited_once_with("query")
+    operations.list_session_cost_insights.assert_awaited_once_with("query")
+    operations.list_cost_rollup_insights.assert_awaited_once_with("query")
     operations.list_archive_debt_insights.assert_awaited_once_with("query")

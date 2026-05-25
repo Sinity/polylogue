@@ -121,7 +121,6 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "maintenance_list": ("envelope", frozenset({"items", "total"})),
     # ------- insight registry tools -------
     "session_profiles": ("envelope", frozenset({"items", "total"})),
-    "session_enrichments": ("envelope", frozenset({"items", "total"})),
     "session_phases": ("envelope", frozenset({"items", "total"})),
     "session_tag_rollups": ("envelope", frozenset({"items", "total"})),
     "session_work_events": ("envelope", frozenset({"items", "total"})),

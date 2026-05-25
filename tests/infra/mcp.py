@@ -63,7 +63,6 @@ EXPECTED_TOOL_NAMES = {
     "cost_outlook",
     "archive_debt",
     "session_profiles",
-    "session_enrichments",
     "session_work_events",
     "session_phases",
     "session_tag_rollups",
@@ -230,7 +229,6 @@ def make_polylogue_mock() -> MagicMock:
         return_value=MagicMock(to_dict=MagicMock(return_value={}), total=MagicMock(return_value=0))
     )
     poly.list_session_profile_insights = AsyncMock(return_value=[])
-    poly.list_session_enrichment_insights = AsyncMock(return_value=[])
     poly.list_session_work_event_insights = AsyncMock(return_value=[])
     poly.list_session_phase_insights = AsyncMock(return_value=[])
     poly.list_session_tag_rollup_insights = AsyncMock(return_value=[])

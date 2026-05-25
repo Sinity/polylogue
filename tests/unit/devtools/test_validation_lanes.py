@@ -516,14 +516,6 @@ class TestLaneAssertions:
         assert "--format" in cmd
         assert "json" in cmd
 
-    def test_live_insights_enrichments_lane_uses_enrichment_entrypoint(self) -> None:
-        cmd = build_lane_command(LANES["live-insights-enrichments"])
-        assert cmd[:1] == ["polylogue"]
-        assert "insights" in cmd
-        assert "enrichments" in cmd
-        assert "--format" in cmd
-        assert "json" in cmd
-
     def test_live_session_insight_repair_lane_uses_doctor_repair_target(self) -> None:
         cmd = build_lane_command(LANES["live-session-insight-repair"])
         assert cmd[:1] == ["polylogue"]

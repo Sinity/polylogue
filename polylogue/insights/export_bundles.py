@@ -16,7 +16,6 @@ from polylogue.insights.archive import (
     ArchiveInsightUnavailableError,
     DaySessionSummaryInsight,
     ProviderAnalyticsInsight,
-    SessionEnrichmentInsight,
     SessionPhaseInsight,
     SessionProfileInsight,
     SessionTagRollupInsight,
@@ -33,7 +32,6 @@ InsightExportFormat = Literal["jsonl"]
 INSIGHT_EXPORT_BUNDLE_VERSION = 1
 DEFAULT_EXPORT_INSIGHTS: tuple[str, ...] = (
     "session_profiles",
-    "session_enrichments",
     "session_work_events",
     "session_phases",
     "work_threads",
@@ -44,7 +42,6 @@ DEFAULT_EXPORT_INSIGHTS: tuple[str, ...] = (
 )
 _INSIGHT_MODEL_BY_NAME: dict[str, type[ArchiveInsightModel]] = {
     "session_profiles": SessionProfileInsight,
-    "session_enrichments": SessionEnrichmentInsight,
     "session_work_events": SessionWorkEventInsight,
     "session_phases": SessionPhaseInsight,
     "work_threads": WorkThreadInsight,

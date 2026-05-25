@@ -148,7 +148,6 @@ async def test_resume_brief_degrades_when_insights_are_unavailable(cli_workspace
     assert brief.facts.message_count == 2
     assert {uncertainty.source for uncertainty in brief.uncertainties} >= {
         "session_profile",
-        "session_enrichment",
         "work_thread",
     }
     assert all("session_insights" in uncertainty.detail for uncertainty in brief.uncertainties)

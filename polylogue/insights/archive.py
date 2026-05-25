@@ -112,10 +112,6 @@ class SessionLatencyProfileInsightQuery(ProviderTimeWindowInsightQuery):
     only_stuck: bool = False
 
 
-class SessionEnrichmentInsightQuery(SessionWindowInsightQuery):
-    pass
-
-
 class SessionWorkEventInsightQuery(SearchableConversationTimelineInsightQuery):
     heuristic_label: str | None = None
 
@@ -222,6 +218,8 @@ class SessionProfileInsight(ArchiveInsightModel):
     evidence: SessionEvidencePayload | None = None
     inference_provenance: ArchiveInferenceProvenance | None = None
     inference: SessionInferencePayload | None = None
+    enrichment_provenance: ArchiveEnrichmentProvenance | None = None
+    enrichment: SessionEnrichmentPayload | None = None
 
     @classmethod
     def from_record(
@@ -232,6 +230,7 @@ class SessionProfileInsight(ArchiveInsightModel):
     ) -> SessionProfileInsight:
         include_evidence = tier in {"merged", "evidence"}
         include_inference = tier in {"merged", "inference"}
+        include_enrichment = tier == "merged"
         return cls(
             semantic_tier=tier,
             conversation_id=str(record.conversation_id),
@@ -242,6 +241,8 @@ class SessionProfileInsight(ArchiveInsightModel):
             evidence=(record.evidence_payload if include_evidence else None),
             inference_provenance=(_record_inference_provenance(record) if include_inference else None),
             inference=(record.inference_payload if include_inference else None),
+            enrichment_provenance=(_record_enrichment_provenance(record) if include_enrichment else None),
+            enrichment=(record.enrichment_payload if include_enrichment else None),
         )
 
 
@@ -281,29 +282,6 @@ class SessionLatencyProfileInsight(ArchiveInsightModel):
             title=record.title,
             provenance=_record_provenance(record),
             latency=payload,
-        )
-
-
-class SessionEnrichmentInsight(ArchiveInsightModel):
-    contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
-    insight_kind: str = "session_enrichment"
-    semantic_tier: str = "enrichment"
-    conversation_id: str
-    provider_name: str
-    title: str | None = None
-    provenance: ArchiveInsightProvenance
-    enrichment_provenance: ArchiveEnrichmentProvenance
-    enrichment: SessionEnrichmentPayload
-
-    @classmethod
-    def from_record(cls, record: SessionProfileRecord) -> SessionEnrichmentInsight:
-        return cls(
-            conversation_id=record.conversation_id,
-            provider_name=record.provider_name,
-            title=record.title,
-            provenance=_record_provenance(record),
-            enrichment_provenance=_record_enrichment_provenance(record),
-            enrichment=record.enrichment_payload,
         )
 
 
@@ -594,8 +572,6 @@ __all__ = [
     "SessionCostInsight",
     "SessionCostInsightQuery",
     "SessionEnrichmentPayload",
-    "SessionEnrichmentInsight",
-    "SessionEnrichmentInsightQuery",
     "SessionEvidencePayload",
     "SessionInferencePayload",
     "SessionLatencyProfileInsight",

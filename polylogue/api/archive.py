@@ -11,8 +11,6 @@ from polylogue.archive.message.roles import MessageRoleFilter
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.errors import PolylogueError
 from polylogue.insights.archive import (
-    SessionEnrichmentInsight,
-    SessionEnrichmentInsightQuery,
     SessionProfileInsight,
     SessionProfileInsightQuery,
 )
@@ -160,18 +158,6 @@ class PolylogueArchiveMixin:
         query: SessionProfileInsightQuery | None = None,
     ) -> list[SessionProfileInsight]:
         return await self.operations.list_session_profile_insights(query)
-
-    async def get_session_enrichment_insight(
-        self,
-        conversation_id: str,
-    ) -> SessionEnrichmentInsight | None:
-        return await self.operations.get_session_enrichment_insight(conversation_id)
-
-    async def list_session_enrichment_insights(
-        self,
-        query: SessionEnrichmentInsightQuery | None = None,
-    ) -> list[SessionEnrichmentInsight]:
-        return await self.operations.list_session_enrichment_insights(query)
 
     def filter(self) -> ConversationFilter:
         from polylogue.archive.filter.filters import ConversationFilter

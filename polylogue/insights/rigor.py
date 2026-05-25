@@ -88,12 +88,14 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         display_name="Session Profiles",
         evidence_payload=("evidence",),
         inference_payload=("inference",),
-        fallback_markers=(),
-        confidence_field=(),
+        fallback_markers=(("enrichment", "fallback_reasons"),),
+        confidence_field=("enrichment", "confidence"),
         readiness_semantics=(
             "Evidence payload is fully grounded in archive counts and timestamps. "
             "Inference payload is probabilistic — consult ``inference.support_level`` "
             "and ``inference.engaged_duration_source`` for grounding. "
+            "Enrichment payload is also probabilistic and carries intent/outcome "
+            "summaries plus ``enrichment.support_level`` / ``enrichment.confidence``. "
             "Profiles missing an ``inference`` payload should be treated as "
             "evidence-only."
         ),
@@ -104,35 +106,14 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             "semantic_tier",
             "evidence",
             "inference",
+            "enrichment",
             "provenance",
             "inference_provenance",
-        ),
-        version_fields=(
-            RigorVersionField(name="materializer_version", current_version=SESSION_INSIGHT_MATERIALIZER_VERSION),
-            RigorVersionField(name="inference_version", current_version=SESSION_INFERENCE_VERSION),
-        ),
-    ),
-    RigorContract(
-        insight_name="session_enrichments",
-        display_name="Session Enrichments",
-        evidence_payload=(),
-        inference_payload=("enrichment",),
-        fallback_markers=(),
-        confidence_field=("enrichment", "confidence"),
-        readiness_semantics=(
-            "Enrichment payload is fully probabilistic. ``enrichment.support_level`` "
-            "and ``enrichment.confidence`` carry the rigor signal; consumers should "
-            "filter on these before displaying intent/outcome summaries."
-        ),
-        consumer_fields=(
-            "conversation_id",
-            "provider_name",
-            "title",
-            "enrichment",
             "enrichment_provenance",
         ),
         version_fields=(
             RigorVersionField(name="materializer_version", current_version=SESSION_INSIGHT_MATERIALIZER_VERSION),
+            RigorVersionField(name="inference_version", current_version=SESSION_INFERENCE_VERSION),
             RigorVersionField(name="enrichment_version", current_version=SESSION_ENRICHMENT_VERSION),
         ),
     ),
@@ -145,7 +126,7 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         confidence_field=("inference", "confidence"),
         readiness_semantics=(
             "Evidence payload describes the message-range and timing footprint "
-            "of the event. Inference payload classifies kind/summary; rows with "
+            "of the event. Inference payload carries heuristic label/summary; rows with "
             "``inference.fallback_inference == True`` were emitted by the "
             "heuristic fallback and should be treated as low-rigor."
         ),

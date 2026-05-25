@@ -285,7 +285,6 @@ Commands:
   costs           List session-level cost estimates.
   day-summaries   List durable day-level session summary insights.
   debt            List archive debt and maintenance readiness insights.
-  enrichments     List durable probabilistic session-enrichment insights.
   export          Export versioned archive-insight bundles.
   phases          List durable session-phase insights.
   profiles        List durable session-profile insights.

@@ -57,7 +57,6 @@ _ALL_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("insights", "costs"),
     ("insights", "day-summaries"),
     ("insights", "debt"),
-    ("insights", "enrichments"),
     ("insights", "export"),
     ("insights", "phases"),
     ("insights", "profiles"),
