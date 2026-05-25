@@ -13,6 +13,7 @@ from polylogue.archive.phase.extraction import extract_phases
 from polylogue.archive.semantic.facts import build_conversation_semantic_facts
 from polylogue.archive.semantic.timing import compute_session_timing, compute_tool_active_duration_ms
 from polylogue.archive.session.models import SessionAnalysis, SessionProfile
+from polylogue.core.timestamps import parse_timestamp
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Conversation
@@ -23,11 +24,38 @@ def _profile_timestamp_bounds(
     conversation: Conversation,
     facts: ConversationSemanticFacts,
 ) -> tuple[datetime | None, datetime | None, str]:
+    """Resolve (first_message_at, last_message_at, source) for a session.
+
+    Order of preference:
+      1. facts.{first,last}_message_at — provider-supplied per-message
+         timestamps, the strongest signal.
+      2. provider_event timestamps — codex pre-Dec-2025 has empty
+         message-level timestamps but rich provider_events with timestamps.
+         Mining those yields a real session window instead of forcing a
+         single-instant fallback.
+      3. conversation.{created,updated}_at — last resort when neither
+         messages nor events have timestamps.
+    """
     if facts.first_message_at is not None or facts.last_message_at is not None:
         return (
             facts.first_message_at or facts.last_message_at,
             facts.last_message_at or facts.first_message_at,
             "provider_supplied",
+        )
+    # Codex pre-Dec-2025: messages carry no timestamps, but provider_events
+    # (function_call, response_item, session_meta) do. Use them to derive
+    # a real session window rather than collapsing to a single conversation
+    # timestamp.
+    event_timestamps: list[datetime] = []
+    for event in conversation.provider_events:
+        parsed = parse_timestamp(event.timestamp) if event.timestamp else None
+        if parsed is not None:
+            event_timestamps.append(parsed)
+    if event_timestamps:
+        return (
+            min(event_timestamps),
+            max(event_timestamps),
+            "provider_events_fallback",
         )
     conversation_start = conversation.created_at or conversation.updated_at
     conversation_end = conversation.updated_at or conversation.created_at
