@@ -1092,7 +1092,7 @@ def test_build_session_profile_ignores_context_dump_wrappers_for_work_event_inte
     profile = build_session_profile(conversation)
 
     assert profile.work_events
-    assert profile.work_events[0].kind.value == "planning"
+    assert profile.work_events[0].heuristic_label.value == "planning"
 
 
 def test_build_mcp_summary_semantic_facts_uses_canonical_summary_shape() -> None:

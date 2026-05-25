@@ -15,7 +15,7 @@ SESSION_INSIGHT_TIMELINE_DDL = (
     + """
             provider_name TEXT NOT NULL,
             event_index INTEGER NOT NULL,
-            kind TEXT NOT NULL,
+            heuristic_label TEXT NOT NULL,
             confidence REAL NOT NULL DEFAULT 0,
             start_index INTEGER NOT NULL DEFAULT 0,
             end_index INTEGER NOT NULL DEFAULT 0,
@@ -36,8 +36,8 @@ SESSION_INSIGHT_TIMELINE_DDL = (
         CREATE INDEX IF NOT EXISTS idx_session_work_events_conversation
         ON session_work_events(conversation_id, event_index);
 
-        CREATE INDEX IF NOT EXISTS idx_session_work_events_kind
-        ON session_work_events(kind);
+        CREATE INDEX IF NOT EXISTS idx_session_work_events_heuristic_label
+        ON session_work_events(heuristic_label);
 
         CREATE INDEX IF NOT EXISTS idx_session_work_events_provider
         ON session_work_events(provider_name);
@@ -49,15 +49,15 @@ SESSION_INSIGHT_TIMELINE_DDL = (
             event_id UNINDEXED,
             conversation_id UNINDEXED,
             provider_name UNINDEXED,
-            kind UNINDEXED,
+            heuristic_label UNINDEXED,
             text,
             tokenize='unicode61'
         );
 
         CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ai
         AFTER INSERT ON session_work_events BEGIN
-            INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, kind, text)
-            VALUES (new.event_id, new.conversation_id, new.provider_name, new.kind, new.search_text);
+            INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, heuristic_label, text)
+            VALUES (new.event_id, new.conversation_id, new.provider_name, new.heuristic_label, new.search_text);
         END;
 
         CREATE TABLE IF NOT EXISTS session_phases (
@@ -105,8 +105,8 @@ SESSION_INSIGHT_TIMELINE_DDL = (
         CREATE TRIGGER IF NOT EXISTS session_work_events_fts_au
         AFTER UPDATE ON session_work_events BEGIN
             DELETE FROM session_work_events_fts WHERE event_id = old.event_id;
-            INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, kind, text)
-            VALUES (new.event_id, new.conversation_id, new.provider_name, new.kind, new.search_text);
+            INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, heuristic_label, text)
+            VALUES (new.event_id, new.conversation_id, new.provider_name, new.heuristic_label, new.search_text);
         END;
 """
 )

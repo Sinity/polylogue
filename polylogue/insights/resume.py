@@ -69,7 +69,7 @@ class ResumeFacts(ArchiveInsightModel):
 
 
 class ResumeWorkEvent(ArchiveInsightModel):
-    kind: str
+    heuristic_label: str
     summary: str
     confidence: float
     support_level: str
@@ -397,7 +397,7 @@ def _facts_from_conversation(
 def _event_summary(events: Sequence[SessionWorkEventInsight]) -> tuple[ResumeWorkEvent, ...]:
     return tuple(
         ResumeWorkEvent(
-            kind=event.inference.kind,
+            heuristic_label=event.inference.heuristic_label,
             summary=event.inference.summary,
             confidence=event.inference.confidence,
             support_level=event.inference.support_level,

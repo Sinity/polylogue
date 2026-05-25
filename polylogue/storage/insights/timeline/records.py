@@ -30,7 +30,7 @@ class SessionWorkEventRecord(BaseModel):
     input_row_count: int = 0
     provider_name: str
     event_index: int
-    kind: str
+    heuristic_label: str
     confidence: float
     start_index: int
     end_index: int
@@ -52,7 +52,7 @@ class SessionWorkEventRecord(BaseModel):
         "conversation_id",
         "materialized_at",
         "provider_name",
-        "kind",
+        "heuristic_label",
         "summary",
         "search_text",
         "inference_family",

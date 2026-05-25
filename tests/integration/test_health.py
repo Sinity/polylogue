@@ -865,7 +865,7 @@ class TestMaintenanceSelection:
         with connection_context(None) as conn:
             event = conn.execute(
                 """
-                SELECT event_id, conversation_id, provider_name, kind, search_text
+                SELECT event_id, conversation_id, provider_name, heuristic_label, search_text
                 FROM session_work_events
                 LIMIT 1
                 """
@@ -881,14 +881,14 @@ class TestMaintenanceSelection:
             assert thread is not None
             conn.execute(
                 """
-                INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, kind, text)
+                INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, heuristic_label, text)
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     event["event_id"],
                     event["conversation_id"],
                     event["provider_name"],
-                    event["kind"],
+                    event["heuristic_label"],
                     event["search_text"],
                 ),
             )

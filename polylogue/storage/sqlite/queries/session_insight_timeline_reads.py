@@ -136,9 +136,9 @@ async def list_work_events(
     if query.provider:
         where.append("swe.provider_name = ?")
         params.append(query.provider)
-    if query.kind:
-        where.append("swe.kind = ?")
-        params.append(query.kind)
+    if query.heuristic_label:
+        where.append("swe.heuristic_label = ?")
+        params.append(query.heuristic_label)
     if query.since:
         where.append("COALESCE(swe.end_time, swe.start_time, swe.source_updated_at, swe.materialized_at) >= ?")
         params.append(query.since)

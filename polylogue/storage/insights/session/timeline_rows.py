@@ -50,7 +50,9 @@ def _event_id(
     *,
     summary: str,
 ) -> str:
-    seed = f"{conversation_id}:{event_index}:{event.kind.value}:{event.start_index}:{event.end_index}:{summary}"
+    seed = (
+        f"{conversation_id}:{event_index}:{event.heuristic_label.value}:{event.start_index}:{event.end_index}:{summary}"
+    )
     return f"wev-{hash_text(seed)[:16]}"
 
 
@@ -89,7 +91,7 @@ def _event_inference_payload(
     fallback: bool,
 ) -> WorkEventInferencePayload:
     return WorkEventInferencePayload(
-        kind=event.kind.value,
+        heuristic_label=event.heuristic_label.value,
         summary=summary,
         confidence=event.confidence,
         evidence=event.evidence,
@@ -116,14 +118,14 @@ def _event_search_text(
     parts = [
         profile.provider,
         profile.title or "",
-        event.kind.value,
+        event.heuristic_label.value,
         summary,
         *profile.repo_names,
         *event.file_paths,
         *event.tools_used,
     ]
     search_text = " \n".join(part.strip() for part in parts if part and str(part).strip())
-    return search_text or f"{profile.conversation_id}:{event.kind.value}"
+    return search_text or f"{profile.conversation_id}:{event.heuristic_label.value}"
 
 
 def build_session_work_event_records(
@@ -157,7 +159,7 @@ def build_session_work_event_records(
                 input_row_count=input_row_count,
                 provider_name=profile.provider,
                 event_index=index,
-                kind=event.kind.value,
+                heuristic_label=event.heuristic_label.value,
                 confidence=event.confidence,
                 start_index=event.start_index,
                 end_index=event.end_index,
@@ -185,7 +187,7 @@ def build_session_work_event_records(
 
 def hydrate_work_event(record: SessionWorkEventRecord) -> WorkEvent:
     payload: WorkEventDocument = {
-        "kind": record.inference_payload.kind,
+        "heuristic_label": record.inference_payload.heuristic_label,
         "start_index": record.evidence_payload.start_index,
         "end_index": record.evidence_payload.end_index,
         "start_time": record.evidence_payload.start_time,

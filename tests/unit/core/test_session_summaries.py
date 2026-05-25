@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from polylogue.archive.conversation.extraction import WorkEvent, WorkEventKind
+from polylogue.archive.conversation.extraction import WorkEvent, WorkEventHeuristicLabel
 from polylogue.archive.session.session_profile import SessionProfile
 from polylogue.archive.session.session_summaries import summarize_day, summarize_days, summarize_week, summarize_weeks
 
@@ -54,16 +54,16 @@ def _profile(
     )
 
 
-def _work_event(kind: WorkEventKind, index: int) -> WorkEvent:
+def _work_event(heuristic_label: WorkEventHeuristicLabel, index: int) -> WorkEvent:
     return WorkEvent(
-        kind=kind,
+        heuristic_label=heuristic_label,
         start_index=index,
         end_index=index,
         confidence=1.0,
-        evidence=(kind.value,),
+        evidence=(heuristic_label.value,),
         file_paths=(),
-        tools_used=(kind.value,),
-        summary=f"{kind.value} event",
+        tools_used=(heuristic_label.value,),
+        summary=f"{heuristic_label.value} event",
         start_time=datetime(2026, 4, 23, 12, index),
         end_time=datetime(2026, 4, 23, 12, index, 1),
     )
@@ -77,7 +77,10 @@ def test_summarize_day_aggregates_cost_duration_words_and_repos() -> None:
         first_message_at=None,
         canonical_session_date=date(2026, 4, 23),
         repo_names=("polylogue",),
-        work_events=(_work_event(WorkEventKind.TESTING, 0), _work_event(WorkEventKind.RESEARCH, 1)),
+        work_events=(
+            _work_event(WorkEventHeuristicLabel.TESTING, 0),
+            _work_event(WorkEventHeuristicLabel.RESEARCH, 1),
+        ),
         total_cost_usd=0.125,
         total_duration_ms=900,
         tool_active_duration_ms=600,

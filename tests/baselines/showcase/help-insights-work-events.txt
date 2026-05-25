@@ -4,7 +4,7 @@ Usage: polylogue insights work-events [OPTIONS]
 
 Options:
   --conversation-id TEXT  Only events from one conversation
-  --kind TEXT             Only this work-event kind
+  --heuristic-label TEXT  Only this weak heuristic work-event label
   --query TEXT            FTS query against insight search text
   --limit INTEGER         Maximum rows  [default: 50]
   --offset INTEGER        Start offset  [default: 0]

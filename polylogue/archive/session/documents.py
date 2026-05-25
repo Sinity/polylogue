@@ -6,7 +6,7 @@ from typing_extensions import TypedDict
 
 
 class WorkEventDocument(TypedDict):
-    kind: str
+    heuristic_label: str
     start_index: int
     end_index: int
     start_time: str | None

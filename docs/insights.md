@@ -139,14 +139,14 @@ session.
 
 ```bash
 polylogue insights work-events
-polylogue insights work-events --kind implementation
+polylogue insights work-events --heuristic-label implementation
 polylogue insights work-events --conversation-id claude-ai:abc123
 ```
 
 Each event has: start/end time, duration, file paths, tools used, a short
 summary, and the heuristic event label plus confidence/evidence. File/tool
 categories such as `file_read`, `file_edit`, or `shell` live on action/tool
-surfaces, not in `session_work_events.kind`.
+surfaces, not in `session_work_events.heuristic_label`.
 
 ## Work Phases
 

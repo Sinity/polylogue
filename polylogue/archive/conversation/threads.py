@@ -269,7 +269,8 @@ def build_session_threads(profiles: Iterable[SessionProfile]) -> list[WorkThread
             repo_counter.update(profile.repo_names or normalize_repo_names(repo_paths=profile.repo_paths))
             provider_counter.update((profile.provider,))
             work_event_counter.update(
-                event.kind.value if hasattr(event.kind, "value") else str(event.kind) for event in profile.work_events
+                event.heuristic_label.value if hasattr(event.heuristic_label, "value") else str(event.heuristic_label)
+                for event in profile.work_events
             )
         dominant_repo = repo_counter.most_common(1)[0][0] if repo_counter else None
         member_depths = _member_depths(children, root.conversation_id)

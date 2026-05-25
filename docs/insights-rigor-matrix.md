@@ -83,8 +83,8 @@ API.
   footprint of the event. Inference payload classifies kind/summary;
   rows with `inference.fallback_inference == True` were emitted by the
   heuristic fallback and should be treated as low-rigor.
-- Boundary: `inference.kind` is a coarse event label inferred from local
-  file/tool/text signals. It is not the session-level workflow taxonomy;
+- Boundary: `inference.heuristic_label` is a coarse event label inferred from
+  local file/tool/text signals. It is not the session-level workflow taxonomy;
   consumers that need whole-session semantics should use
   `session_profiles.workflow_shape` and `session_profiles.terminal_state`.
 - Consumer-facing fields: `event_id`, `conversation_id`,

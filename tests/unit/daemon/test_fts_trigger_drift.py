@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS session_work_events (
     event_id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL,
     provider_name TEXT NOT NULL,
-    kind TEXT NOT NULL,
+    heuristic_label TEXT NOT NULL,
     search_text TEXT NOT NULL
 )
 """
@@ -94,7 +94,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS session_work_events_fts USING fts5(
     event_id UNINDEXED,
     conversation_id UNINDEXED,
     provider_name UNINDEXED,
-    kind UNINDEXED,
+    heuristic_label UNINDEXED,
     text,
     tokenize='unicode61'
 )

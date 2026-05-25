@@ -753,7 +753,7 @@ class ArchiveInsightSessionMixin:
             until=request.until,
             session_date_since=request.session_date_since,
             session_date_until=request.session_date_until,
-            kind=request.kind,
+            heuristic_label=request.heuristic_label,
             limit=request.limit,
             offset=request.offset,
             query=request.query,

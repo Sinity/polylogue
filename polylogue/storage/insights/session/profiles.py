@@ -80,7 +80,7 @@ def profile_inference_search_text(profile: SessionProfile) -> str:
         *profile.repo_names,
         *profile.auto_tags,
         *(event.summary for event in profile.work_events),
-        *(event.kind.value for event in profile.work_events),
+        *(event.heuristic_label.value for event in profile.work_events),
     ]
     search_text = " \n".join(part.strip() for part in parts if part and str(part).strip())
     return search_text or profile.conversation_id
@@ -490,7 +490,7 @@ def _work_event_document(payload: WorkEventPayload) -> WorkEventDocument:
     end_time = payload["end_time"]
     canonical_session_date = payload["canonical_session_date"]
     return {
-        "kind": payload["kind"],
+        "heuristic_label": payload["heuristic_label"],
         "start_index": payload["start_index"],
         "end_index": payload["end_index"],
         "start_time": start_time,
@@ -527,7 +527,7 @@ def now_iso() -> str:
 
 def event_summary(event: WorkEvent) -> str:
     summary = str(event.summary or "").strip()
-    return summary or event.kind.value
+    return summary or event.heuristic_label.value
 
 
 def support_level(

@@ -79,7 +79,7 @@ def test_row_to_session_profile_record_falls_back_to_legacy_payloads(typed_paylo
         "engaged_duration_source": "timeline",
         "repo_inference_strength": "strong",
         "auto_tags": ["bugfix"],
-        "work_events": [{"kind": "file_edit"}],
+        "work_events": [{"heuristic_label": "file_edit"}],
         "phases": [{"kind": "implementation"}],
     }
     row = _make_row(
@@ -141,7 +141,7 @@ def test_row_to_session_profile_record_normalizes_legacy_typed_inference_events(
         "auto_tags": ["provider:codex"],
         "work_events": [
             {
-                "kind": "planning",
+                "heuristic_label": "planning",
                 "start_index": 0,
                 "end_index": 2,
                 "start_time": None,
@@ -203,7 +203,7 @@ def test_row_to_session_work_event_record_falls_back_to_legacy_payloads(typed_pa
             "materialized_at": "2026-04-11T10:05:00+00:00",
             "provider_name": "claude-code",
             "event_index": 1,
-            "kind": "file_edit",
+            "heuristic_label": "file_edit",
             "summary": "Patched the failing test path",
             "search_text": "legacy work event search text",
             "payload_json": json.dumps(legacy_payload),
@@ -215,7 +215,7 @@ def test_row_to_session_work_event_record_falls_back_to_legacy_payloads(typed_pa
 
     assert record.event_id == "event-legacy"
     assert str(record.conversation_id) == "conv-event-legacy"
-    assert record.kind == "file_edit"
+    assert record.heuristic_label == "file_edit"
     assert record.summary == "Patched the failing test path"
     assert record.search_text == "legacy work event search text"
 
@@ -224,7 +224,7 @@ def test_row_to_session_work_event_record_falls_back_to_legacy_payloads(typed_pa
     assert record.evidence_payload.file_paths == ("/workspace/polylogue/app.py",)
     assert record.evidence_payload.timing_provenance == "timestamped_range"
     assert record.evidence_payload.date_provenance == "event_timestamp"
-    assert record.inference_payload.kind == "file_edit"
+    assert record.inference_payload.heuristic_label == "file_edit"
     assert record.inference_payload.summary == "Patched the failing test path"
     assert record.inference_payload.confidence == pytest.approx(0.91)
     assert record.inference_payload.evidence == ("read app.py before patching",)

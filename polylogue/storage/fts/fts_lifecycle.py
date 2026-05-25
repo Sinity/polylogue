@@ -263,8 +263,8 @@ _ACTION_FTS_TRIGGER_DDL = [
 _SESSION_WORK_EVENT_FTS_TRIGGER_DDL = [
     """CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ai
        AFTER INSERT ON session_work_events BEGIN
-           INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, kind, text)
-           VALUES (new.event_id, new.conversation_id, new.provider_name, new.kind, new.search_text);
+           INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, heuristic_label, text)
+           VALUES (new.event_id, new.conversation_id, new.provider_name, new.heuristic_label, new.search_text);
        END""",
     """CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ad
        AFTER DELETE ON session_work_events BEGIN
@@ -273,8 +273,8 @@ _SESSION_WORK_EVENT_FTS_TRIGGER_DDL = [
     """CREATE TRIGGER IF NOT EXISTS session_work_events_fts_au
        AFTER UPDATE ON session_work_events BEGIN
            DELETE FROM session_work_events_fts WHERE event_id = old.event_id;
-           INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, kind, text)
-           VALUES (new.event_id, new.conversation_id, new.provider_name, new.kind, new.search_text);
+           INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, heuristic_label, text)
+           VALUES (new.event_id, new.conversation_id, new.provider_name, new.heuristic_label, new.search_text);
        END""",
 ]
 
@@ -432,8 +432,8 @@ def _rebuild_session_work_events_fts_sync(conn: sqlite3.Connection) -> None:
     conn.execute("DELETE FROM session_work_events_fts")
     conn.execute(
         """
-        INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, kind, text)
-        SELECT event_id, conversation_id, provider_name, kind, search_text
+        INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, heuristic_label, text)
+        SELECT event_id, conversation_id, provider_name, heuristic_label, search_text
         FROM session_work_events
         """
     )

@@ -4026,7 +4026,7 @@
           "default": null,
           "title": "Conversation Id"
         },
-        "kind": {
+        "heuristic_label": {
           "anyOf": [
             {
               "type": "string"
@@ -4036,7 +4036,7 @@
             }
           ],
           "default": null,
-          "title": "Kind"
+          "title": "Heuristic Label"
         },
         "limit": {
           "default": 50,
