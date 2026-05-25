@@ -73,6 +73,7 @@ def _enrichment_provenance() -> ArchiveEnrichmentProvenance:
 def _profile(conversation_id: str = "c1") -> SessionProfileInsight:
     return SessionProfileInsight(
         conversation_id=conversation_id,
+        logical_conversation_id=conversation_id,
         provider_name="claude-code",
         provenance=_provenance(),
         evidence=SessionEvidencePayload(message_count=10, word_count=200),

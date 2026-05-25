@@ -270,9 +270,11 @@ async def _apply_session_insight_conversation_update_async(
             affected_groups={old_group} if old_group is not None else set(),
         )
 
+    thread_root_id = await thread_root_id_async(conn, conversation_id)
     record_bundle = build_session_insight_records(
         hydrated[0],
         compaction_count=batch.compaction_counts_by_conversation.get(conversation_id),
+        logical_conversation_id=thread_root_id,
     )
     await replace_session_profile(conn, record_bundle.profile_record, transaction_depth)
     await replace_session_latency_profile(conn, record_bundle.latency_profile_record, transaction_depth)
@@ -310,7 +312,7 @@ async def _apply_session_insight_conversation_update_async(
             work_events=record_bundle.work_event_count,
             phases=record_bundle.phase_count,
         ),
-        thread_root_id=await thread_root_id_async(conn, conversation_id),
+        thread_root_id=thread_root_id,
         affected_groups=affected_groups,
     )
 
@@ -497,6 +499,7 @@ async def _apply_session_insight_conversation_updates_async(
             record_bundle = build_session_insight_records(
                 hydrated_conversation,
                 compaction_count=batch.compaction_counts_by_conversation.get(conversation_id),
+                logical_conversation_id=root_ids_by_conversation.get(conversation_id),
             )
             record_bundles.append(record_bundle)
 

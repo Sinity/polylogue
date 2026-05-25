@@ -39,6 +39,8 @@ EXPECTED_TOOL_NAMES = {
     "delete_conversation",
     "get_conversation_summary",
     "get_session_tree",
+    "get_session_topology",
+    "get_logical_session",
     "get_stats_by",
     "readiness_check",
     "rebuild_index",
@@ -216,6 +218,8 @@ def make_polylogue_mock() -> MagicMock:
     poly.get_conversation_summary = AsyncMock(return_value=None)
     poly.get_conversation_stats = AsyncMock(return_value={})
     poly.get_session_tree = AsyncMock(return_value=[])
+    poly.get_session_topology = AsyncMock(return_value=None)
+    poly.get_logical_session = AsyncMock(return_value=None)
     poly.get_messages_paginated = AsyncMock(return_value=([], 0))
     poly.get_conversation = AsyncMock(return_value=None)
     poly.get_session_profile_insight = AsyncMock(return_value=None)

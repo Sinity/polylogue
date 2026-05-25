@@ -18,6 +18,7 @@ from tests.unit.mcp.test_tool_contracts import _inference_provenance, _provenanc
 def _profile() -> SessionProfileInsight:
     return SessionProfileInsight(
         conversation_id="conv-1",
+        logical_conversation_id="conv-1",
         provider_name="claude-code",
         title="Profiled Session",
         semantic_tier="merged",

@@ -40,7 +40,8 @@ from polylogue.insights.productivity import (
     ProductivityRollupInsightQuery,
 )
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
-from polylogue.insights.topology import ConversationRef, SessionTopology
+from polylogue.insights.topology import ConversationRef, LogicalSession, SessionTopology
+from polylogue.types import ConversationId
 
 if TYPE_CHECKING:
 
@@ -391,3 +392,21 @@ class PolylogueInsightsMixin:
         if topology is None:
             return []
         return topology.thread_refs(resolved)
+
+    async def get_logical_session(self, conversation_id: str) -> LogicalSession | None:
+        """Return the compact logical-session read-pull envelope."""
+
+        resolved = await self._resolve_for_topology(conversation_id)
+        if resolved is None:
+            return None
+        topology = await self.repository.get_session_topology(resolved)
+        if topology is None:
+            return None
+        return LogicalSession(
+            conversation_id=ConversationId(resolved),
+            root_id=topology.root_id,
+            thread=tuple(topology.thread_refs(resolved)),
+            siblings=tuple(topology.sibling_refs(resolved)),
+            descendants=tuple(topology.descendant_refs(resolved)),
+            cycle_detected=topology.cycle_detected,
+        )

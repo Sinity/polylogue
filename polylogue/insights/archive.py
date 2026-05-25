@@ -216,6 +216,7 @@ class SessionProfileInsight(ArchiveInsightModel):
     insight_kind: str = "session_profile"
     semantic_tier: str = "merged"
     conversation_id: str
+    logical_conversation_id: str
     provider_name: str
     title: str | None = None
     provenance: ArchiveInsightProvenance
@@ -234,7 +235,8 @@ class SessionProfileInsight(ArchiveInsightModel):
         include_inference = tier in {"merged", "inference"}
         return cls(
             semantic_tier=tier,
-            conversation_id=record.conversation_id,
+            conversation_id=str(record.conversation_id),
+            logical_conversation_id=str(record.logical_conversation_id),
             provider_name=record.provider_name,
             title=record.title,
             provenance=_record_provenance(record),
@@ -390,6 +392,7 @@ class SessionTagRollupInsight(ArchiveInsightModel):
     insight_kind: str = "session_tag_rollup"
     tag: str
     conversation_count: int
+    logical_session_count: int = 0
     explicit_count: int
     auto_count: int
     provider_breakdown: dict[str, int]

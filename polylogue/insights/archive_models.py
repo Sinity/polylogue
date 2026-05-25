@@ -81,6 +81,7 @@ class SessionEvidencePayload(ArchiveInsightModel):
     tags: tuple[str, ...] = ()
     is_continuation: bool = False
     parent_id: str | None = None
+    logical_conversation_id: str | None = None
     thinking_duration_ms: int = 0
     output_duration_ms: int = 0
     tool_duration_ms: int = 0
@@ -271,6 +272,7 @@ class WorkThreadPayload(ArchiveInsightModel):
 class DaySessionSummaryPayload(ArchiveInsightModel):
     date: str
     session_count: int = 0
+    logical_session_count: int = 0
     total_cost_usd: float = 0.0
     total_duration_ms: int = 0
     total_tool_active_duration_ms: int = 0
@@ -286,6 +288,7 @@ class WeekSessionSummaryPayload(ArchiveInsightModel):
     iso_week: str
     day_summaries: tuple[DaySessionSummaryPayload, ...] = ()
     session_count: int = 0
+    logical_session_count: int = 0
     total_cost_usd: float = 0.0
     total_duration_ms: int = 0
     total_tool_active_duration_ms: int = 0

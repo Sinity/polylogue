@@ -67,6 +67,7 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
         )
     return SessionProfileRecord(
         conversation_id=ConversationId(row["conversation_id"]),
+        logical_conversation_id=ConversationId(_row_text(row, "logical_conversation_id") or row["conversation_id"]),
         materializer_version=int(_row_int(row, "materializer_version", 1) or 1),
         materialized_at=row["materialized_at"],
         source_updated_at=_row_text(row, "source_updated_at"),

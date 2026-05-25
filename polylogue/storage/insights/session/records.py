@@ -22,6 +22,7 @@ from polylogue.types import ConversationId
 
 class SessionProfileRecord(BaseModel):
     conversation_id: ConversationId
+    logical_conversation_id: ConversationId
     materializer_version: int = SESSION_INSIGHT_MATERIALIZER_VERSION
     materialized_at: str
     source_updated_at: str | None = None
@@ -86,6 +87,7 @@ class SessionProfileRecord(BaseModel):
 
     @field_validator(
         "conversation_id",
+        "logical_conversation_id",
         "provider_name",
         "materialized_at",
         "search_text",

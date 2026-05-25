@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.api import Polylogue
-from polylogue.insights.topology import ConversationRef, SessionTopology
+from polylogue.insights.topology import ConversationRef, LogicalSession, SessionTopology
 from tests.infra.storage_records import ConversationBuilder, db_setup
 
 
@@ -145,6 +145,26 @@ async def test_get_thread_orders_ancestors_self_descendants(workspace_env: dict[
 
 
 @pytest.mark.asyncio
+async def test_get_logical_session_returns_compact_read_pull_view(workspace_env: dict[str, Path]) -> None:
+    db_path = db_setup(workspace_env)
+    _seed_lineage(db_path)
+
+    polylogue = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    try:
+        logical = await polylogue.get_logical_session("continuation")
+    finally:
+        await polylogue.close()
+
+    assert isinstance(logical, LogicalSession)
+    assert str(logical.conversation_id) == "continuation"
+    assert str(logical.root_id) == "root"
+    assert [str(ref.conversation_id) for ref in logical.thread] == ["root", "continuation", "fork"]
+    assert {str(ref.conversation_id) for ref in logical.siblings} == {"subagent", "sidechain"}
+    assert [str(ref.conversation_id) for ref in logical.descendants] == ["fork"]
+    assert logical.cycle_detected is False
+
+
+@pytest.mark.asyncio
 async def test_topology_api_unknown_conversation_returns_empty(workspace_env: dict[str, Path]) -> None:
     db_path = db_setup(workspace_env)
     _seed_lineage(db_path)
@@ -156,6 +176,7 @@ async def test_topology_api_unknown_conversation_returns_empty(workspace_env: di
         descendants = await polylogue.get_descendants("never-ingested")
         siblings = await polylogue.get_siblings("never-ingested")
         thread = await polylogue.get_thread("never-ingested")
+        logical = await polylogue.get_logical_session("never-ingested")
     finally:
         await polylogue.close()
 
@@ -164,6 +185,7 @@ async def test_topology_api_unknown_conversation_returns_empty(workspace_env: di
     assert descendants == []
     assert siblings == []
     assert thread == []
+    assert logical is None
 
 
 @pytest.mark.asyncio

@@ -31,6 +31,7 @@ SqlBindings = tuple[SqlValue, ...]
 
 _SESSION_PROFILE_BASE_COLUMNS = (
     "conversation_id",
+    "logical_conversation_id",
     "materializer_version",
     "materialized_at",
     "source_updated_at",
@@ -236,6 +237,7 @@ def _legacy_profile_payload_json(record: SessionProfileRecord) -> str | None:
             **record.evidence_payload.model_dump(mode="json"),
             **record.inference_payload.model_dump(mode="json"),
             "conversation_id": str(record.conversation_id),
+            "logical_conversation_id": str(record.logical_conversation_id),
             "provider": record.provider_name,
             "title": record.title,
         }
@@ -260,6 +262,7 @@ def session_profile_insert_values(
 ) -> SqlBindings:
     base_values: list[SqlValue] = [
         record.conversation_id,
+        record.logical_conversation_id,
         record.materializer_version,
         record.materialized_at,
         record.source_updated_at,
@@ -519,6 +522,8 @@ def session_tag_rollup_insert_values(record: SessionTagRollupRecord) -> SqlBindi
         record.input_high_water_mark_source,
         record.input_row_count,
         record.conversation_count,
+        record.logical_session_count,
+        _json_array_or_none(record.logical_conversation_ids),
         record.explicit_count,
         record.auto_count,
         _json_or_none(record.repo_breakdown),
@@ -538,6 +543,8 @@ def day_session_summary_insert_values(record: DaySessionSummaryRecord) -> SqlBin
         record.input_high_water_mark_source,
         record.input_row_count,
         record.conversation_count,
+        record.logical_session_count,
+        _json_array_or_none(record.logical_conversation_ids),
         record.total_cost_usd,
         record.total_duration_ms,
         record.total_tool_active_duration_ms,
@@ -775,6 +782,8 @@ def replace_session_tag_rollup_rows_sync(
                     "input_high_water_mark_source",
                     "input_row_count",
                     "conversation_count",
+                    "logical_session_count",
+                    "logical_conversation_ids_json",
                     "explicit_count",
                     "auto_count",
                     "repo_breakdown_json",
@@ -811,6 +820,8 @@ def replace_day_session_summaries_sync(
                     "input_high_water_mark_source",
                     "input_row_count",
                     "conversation_count",
+                    "logical_session_count",
+                    "logical_conversation_ids_json",
                     "total_cost_usd",
                     "total_duration_ms",
                     "total_tool_active_duration_ms",

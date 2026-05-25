@@ -136,6 +136,7 @@ class SessionProfile:
     terminal_state_confidence: float = 0.0
     terminal_state_evidence: dict[str, int | float | str | None] = field(default_factory=dict)
     cost_is_estimated: bool = False
+    logical_conversation_id: str | None = None
     thread_id: str | None = None
     continuation_depth: int = 0
     compaction_count: int = 0
@@ -212,6 +213,7 @@ class SessionProfile:
             "terminal_state_confidence": self.terminal_state_confidence,
             "terminal_state_evidence": dict(self.terminal_state_evidence),
             "cost_is_estimated": self.cost_is_estimated,
+            "logical_conversation_id": self.logical_conversation_id,
             "compaction_count": self.compaction_count,
             "thread_id": self.thread_id,
             "continuation_depth": self.continuation_depth,
@@ -287,6 +289,7 @@ class SessionProfile:
             terminal_state_confidence=coerce_float(payload.get("terminal_state_confidence"), 0.0),
             terminal_state_evidence=_scalar_mapping(payload.get("terminal_state_evidence")),
             cost_is_estimated=bool(payload.get("cost_is_estimated", False)),
+            logical_conversation_id=optional_string(payload.get("logical_conversation_id")),
             compaction_count=coerce_int(payload.get("compaction_count"), 0),
             thread_id=optional_string(payload.get("thread_id")),
             continuation_depth=coerce_int(payload.get("continuation_depth"), 0),

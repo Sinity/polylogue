@@ -20,6 +20,8 @@ class SessionTagRollupRecord(BaseModel):
     input_high_water_mark_source: str | None = None
     input_row_count: int = 0
     conversation_count: int = 0
+    logical_session_count: int = 0
+    logical_conversation_ids: tuple[str, ...] = ()
     explicit_count: int = 0
     auto_count: int = 0
     repo_breakdown: dict[str, int]
@@ -44,6 +46,8 @@ class DaySessionSummaryRecord(BaseModel):
     input_high_water_mark_source: str | None = None
     input_row_count: int = 0
     conversation_count: int = 0
+    logical_session_count: int = 0
+    logical_conversation_ids: tuple[str, ...] = ()
     total_cost_usd: float = 0.0
     total_duration_ms: int = 0
     total_tool_active_duration_ms: int = 0

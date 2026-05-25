@@ -31,6 +31,7 @@ from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZ
 @dataclass(slots=True)
 class _TagRollupBucket:
     conversation_count: int = 0
+    logical_conversation_ids: set[str] = field(default_factory=set)
     explicit_count: int = 0
     auto_count: int = 0
     repos: Counter[str] = field(default_factory=Counter)
@@ -41,6 +42,7 @@ class _TagRollupBucket:
 @dataclass(slots=True)
 class _TagAggregateBucket:
     conversation_count: int = 0
+    logical_conversation_ids: set[str] = field(default_factory=set)
     explicit_count: int = 0
     auto_count: int = 0
     provider_breakdown: Counter[str] = field(default_factory=Counter)
@@ -72,6 +74,7 @@ def build_session_tag_rollup_records(
             key = (profile.provider, bucket_day_text, tag)
             bucket = grouped.setdefault(key, _TagRollupBucket())
             bucket.conversation_count += 1
+            bucket.logical_conversation_ids.add(profile.logical_conversation_id or profile.conversation_id)
             if tag in explicit_tags:
                 bucket.explicit_count += 1
             if tag in auto_tags:
@@ -96,6 +99,8 @@ def build_session_tag_rollup_records(
                 input_high_water_mark_source=classify_aggregate_hwm_source(bucket.source_updated_at),
                 input_row_count=bucket.conversation_count,
                 conversation_count=bucket.conversation_count,
+                logical_session_count=len(bucket.logical_conversation_ids),
+                logical_conversation_ids=tuple(sorted(bucket.logical_conversation_ids)),
                 explicit_count=bucket.explicit_count,
                 auto_count=bucket.auto_count,
                 repo_breakdown=dict(bucket.repos),
@@ -112,6 +117,7 @@ def aggregate_session_tag_rollup_insights(
     for row in rows:
         bucket = grouped.setdefault(row.tag, _TagAggregateBucket())
         bucket.conversation_count += row.conversation_count
+        bucket.logical_conversation_ids.update(row.logical_conversation_ids)
         bucket.explicit_count += row.explicit_count
         bucket.auto_count += row.auto_count
         bucket.provider_breakdown[row.provider_name] += row.conversation_count
@@ -124,6 +130,7 @@ def aggregate_session_tag_rollup_insights(
             SessionTagRollupInsight(
                 tag=tag,
                 conversation_count=bucket.conversation_count,
+                logical_session_count=len(bucket.logical_conversation_ids),
                 explicit_count=bucket.explicit_count,
                 auto_count=bucket.auto_count,
                 provider_breakdown=dict(bucket.provider_breakdown),

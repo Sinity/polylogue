@@ -15,6 +15,8 @@ from polylogue.archive.session.session_profile import SessionProfile
 class DaySessionSummary:
     date: date
     session_count: int
+    logical_session_count: int
+    logical_conversation_ids: tuple[str, ...]
     total_cost_usd: float
     total_duration_ms: int
     total_tool_active_duration_ms: int
@@ -29,6 +31,7 @@ class DaySessionSummary:
         return {
             "date": self.date.isoformat(),
             "session_count": self.session_count,
+            "logical_session_count": self.logical_session_count,
             "total_cost_usd": round(self.total_cost_usd, 4),
             "total_duration_ms": self.total_duration_ms,
             "total_tool_active_duration_ms": self.total_tool_active_duration_ms,
@@ -46,6 +49,7 @@ class WeekSessionSummary:
     iso_week: str
     day_summaries: tuple[DaySessionSummary, ...]
     session_count: int
+    logical_session_count: int
     total_cost_usd: float
     total_duration_ms: int
     total_tool_active_duration_ms: int
@@ -56,6 +60,7 @@ class WeekSessionSummary:
             "iso_week": self.iso_week,
             "day_summaries": [day.to_dict() for day in self.day_summaries],
             "session_count": self.session_count,
+            "logical_session_count": self.logical_session_count,
             "total_cost_usd": round(self.total_cost_usd, 4),
             "total_duration_ms": self.total_duration_ms,
             "total_tool_active_duration_ms": self.total_tool_active_duration_ms,
@@ -85,6 +90,11 @@ def summarize_day(
     total_wall = 0
     total_messages = 0
     total_words = 0
+    logical_ids = {
+        profile.logical_conversation_id or profile.conversation_id
+        for profile in profiles
+        if (profile.logical_conversation_id or profile.conversation_id)
+    }
     for profile in profiles:
         total_cost += profile.total_cost_usd
         total_duration += profile.total_duration_ms
@@ -100,6 +110,8 @@ def summarize_day(
     return DaySessionSummary(
         date=target_date,
         session_count=len(profiles),
+        logical_session_count=len(logical_ids),
+        logical_conversation_ids=tuple(sorted(logical_ids)),
         total_cost_usd=total_cost,
         total_duration_ms=total_duration,
         total_tool_active_duration_ms=total_tool_active,
@@ -118,6 +130,7 @@ def summarize_week(day_summaries: Sequence[DaySessionSummary]) -> WeekSessionSum
             iso_week="",
             day_summaries=(),
             session_count=0,
+            logical_session_count=0,
             total_cost_usd=0.0,
             total_duration_ms=0,
             total_tool_active_duration_ms=0,
@@ -129,6 +142,9 @@ def summarize_week(day_summaries: Sequence[DaySessionSummary]) -> WeekSessionSum
         iso_week=f"{iso[0]}-W{iso[1]:02d}",
         day_summaries=tuple(day_summaries),
         session_count=sum(day.session_count for day in day_summaries),
+        logical_session_count=len(
+            {logical_id for day in day_summaries for logical_id in day.logical_conversation_ids if logical_id}
+        ),
         total_cost_usd=sum(day.total_cost_usd for day in day_summaries),
         total_duration_ms=sum(day.total_duration_ms for day in day_summaries),
         total_tool_active_duration_ms=sum(day.total_tool_active_duration_ms for day in day_summaries),

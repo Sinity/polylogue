@@ -598,6 +598,7 @@ class TestInsightTools:
     async def test_session_profile_tool_uses_archive_insight_contract(self, mcp_server: MCPServerUnderTest) -> None:
         insight = SessionProfileInsight(
             conversation_id="conv-1",
+            logical_conversation_id="conv-1",
             provider_name="claude-code",
             title="Profiled Session",
             semantic_tier="merged",
@@ -624,6 +625,7 @@ class TestInsightTools:
     async def test_insight_list_tools_use_archive_queries(self, mcp_server: MCPServerUnderTest) -> None:
         profile = SessionProfileInsight(
             conversation_id="conv-1",
+            logical_conversation_id="conv-1",
             provider_name="claude-code",
             title="Profiled Session",
             semantic_tier="merged",

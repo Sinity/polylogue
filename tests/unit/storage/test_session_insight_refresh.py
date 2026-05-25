@@ -69,6 +69,76 @@ async def test_apply_session_insight_conversation_updates_async_batches_hydrated
 
 
 @pytest.mark.asyncio
+async def test_session_insight_refresh_materializes_logical_session_identity(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "logical-session.db"
+    with open_connection(db_path) as conn:
+        for conversation_id, parent_id in (("root", None), ("continuation", "root"), ("fork", "continuation")):
+            store_records(
+                conversation=make_conversation(
+                    conversation_id,
+                    provider_name="claude-code",
+                    title=conversation_id,
+                    parent_conversation_id=parent_id,
+                    updated_at="2026-05-25T10:00:00+00:00",
+                ),
+                messages=[
+                    make_message(
+                        f"{conversation_id}:msg-1",
+                        conversation_id,
+                        text=f"{conversation_id} logical identity test",
+                        timestamp="2026-05-25T10:00:00+00:00",
+                    )
+                ],
+                attachments=[],
+                conn=conn,
+            )
+        conn.commit()
+
+    backend = SQLiteBackend(db_path=db_path)
+    async with backend.connection() as conn:
+        await _apply_session_insight_conversation_updates_async(
+            conn,
+            ["root", "continuation", "fork"],
+            transaction_depth=1,
+            page_size=10,
+        )
+        await refresh_async_provider_day_aggregates(
+            conn,
+            {("claude-code", "2026-05-25")},
+            transaction_depth=1,
+        )
+        await conn.commit()
+
+    with open_connection(db_path) as conn:
+        profile_rows = conn.execute(
+            """
+            SELECT conversation_id, logical_conversation_id
+            FROM session_profiles
+            ORDER BY conversation_id
+            """
+        ).fetchall()
+        day_summary = conn.execute(
+            """
+            SELECT conversation_count, logical_session_count, logical_conversation_ids_json
+            FROM day_session_summaries
+            WHERE provider_name = 'claude-code' AND day = '2026-05-25'
+            """
+        ).fetchone()
+
+    assert {tuple(row) for row in profile_rows} == {
+        ("continuation", "root"),
+        ("fork", "root"),
+        ("root", "root"),
+    }
+    assert day_summary is not None
+    assert int(day_summary["conversation_count"]) == 3
+    assert int(day_summary["logical_session_count"]) == 1
+    assert json.loads(day_summary["logical_conversation_ids_json"]) == ["root"]
+
+
+@pytest.mark.asyncio
 async def test_apply_session_insight_conversation_updates_async_counts_provider_event_compactions(
     tmp_path: Path,
 ) -> None:
