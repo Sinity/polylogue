@@ -71,9 +71,9 @@ def _read_pending_message_count(
     with open_read_connection(db_path) as conn:
         total = int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0])
         if max_conversations is not None or max_messages is not None:
-            from polylogue.storage.embeddings.materialization import select_pending_conversation_window
+            from polylogue.api import select_pending_embedding_conversation_window
 
-            pending = select_pending_conversation_window(
+            pending = select_pending_embedding_conversation_window(
                 conn,
                 rebuild=rebuild,
                 max_conversations=max_conversations,

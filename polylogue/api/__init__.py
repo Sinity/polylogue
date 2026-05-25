@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from polylogue.api.archive import PolylogueArchiveMixin
 from polylogue.api.ingest import PolylogueIngestMixin
@@ -12,6 +14,30 @@ from polylogue.operations import ArchiveOperations, ArchiveStats
 from polylogue.services import build_runtime_services
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+
+if TYPE_CHECKING:
+    from polylogue.storage.embeddings.materialization import PendingConversation
+
+
+def select_pending_embedding_conversation_window(
+    conn: sqlite3.Connection,
+    *,
+    conversation_ids: list[str] | tuple[str, ...] | None = None,
+    rebuild: bool = False,
+    max_conversations: int | None = None,
+    max_messages: int | None = None,
+) -> list[PendingConversation]:
+    """Return a bounded pending embedding window for public surface adapters."""
+
+    from polylogue.storage.embeddings.materialization import select_pending_conversation_window
+
+    return select_pending_conversation_window(
+        conn,
+        conversation_ids=conversation_ids,
+        rebuild=rebuild,
+        max_conversations=max_conversations,
+        max_messages=max_messages,
+    )
 
 
 class Polylogue(PolylogueArchiveMixin, PolylogueInsightsMixin, PolylogueIngestMixin):
@@ -79,4 +105,4 @@ class Polylogue(PolylogueArchiveMixin, PolylogueInsightsMixin, PolylogueIngestMi
         return f"Polylogue(archive_root={self._config.archive_root!r})"
 
 
-__all__ = ["ArchiveStats", "Polylogue"]
+__all__ = ["ArchiveStats", "Polylogue", "select_pending_embedding_conversation_window"]
