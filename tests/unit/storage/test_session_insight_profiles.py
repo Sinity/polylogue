@@ -170,6 +170,32 @@ def test_session_profile_record_exposes_tool_active_duration() -> None:
     assert record.inference_payload.tool_active_minutes == 3.0
 
 
+def test_session_profile_record_exposes_shape_and_terminal_state() -> None:
+    profile = build_session_profile(_enrichment_conversation())
+    profile = profile.__class__.from_dict(
+        {
+            **profile.to_dict(),
+            "workflow_shape": "agentic_loop",
+            "workflow_shape_confidence": 0.86,
+            "workflow_shape_features": {"edit_count": 1, "tool_ratio": 0.4},
+            "terminal_state": "clean_finish",
+            "terminal_state_confidence": 0.68,
+            "terminal_state_evidence": {"message_id": "a2"},
+        }
+    )
+
+    record = build_session_profile_record(profile)
+
+    assert record.workflow_shape == "agentic_loop"
+    assert record.terminal_state == "clean_finish"
+    assert record.evidence_payload.workflow_shape_features == {"edit_count": 1, "tool_ratio": 0.4}
+    assert record.evidence_payload.terminal_state_evidence == {"message_id": "a2"}
+    assert record.inference_payload.workflow_shape == "agentic_loop"
+    assert record.inference_payload.terminal_state == "clean_finish"
+    assert "agentic_loop" in record.search_text
+    assert "clean_finish" in record.search_text
+
+
 def test_session_profile_uses_conversation_timestamp_when_messages_are_untimestamped() -> None:
     conversation = make_conv(
         id="conv-fallback-time",

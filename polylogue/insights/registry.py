@@ -337,6 +337,8 @@ register(
                 show_default=True,
                 help="Return merged, evidence-only, or inference-only profile insights",
             ),
+            CliOption("workflow_shape", ("--workflow-shape",), help="Only this workflow-shape label"),
+            CliOption("terminal_state", ("--terminal-state",), help="Only this terminal-state label"),
             _QUERY_OPTION,
         ),
         fields=(
@@ -351,6 +353,8 @@ register(
             InsightField("messages", _nested("evidence", "message_count", "0"), group=1),
             InsightField("engaged_min", _nested("inference", "engaged_minutes", "0"), group=1),
             InsightField("tool_active_min", _nested("inference", "tool_active_minutes", "0"), group=1),
+            InsightField("shape", _nested("inference", "workflow_shape", "unknown"), group=1),
+            InsightField("state", _nested("inference", "terminal_state", "unknown"), group=1),
             InsightField("think_s", _nested_ms_as_seconds("evidence", "thinking_duration_ms", "0"), group=1),
             InsightField("tool_s", _nested_ms_as_seconds("evidence", "tool_duration_ms", "0"), group=1),
             InsightField("tpm", _nested("evidence", "tool_calls_per_minute", "-"), group=1),
@@ -601,6 +605,7 @@ register(
             CliOption("provider", ("--provider", "-p"), help="Only sessions from this provider"),
             CliOption("since", ("--since",), help="Only sessions on/after this ISO date"),
             CliOption("until", ("--until",), help="Only sessions on/before this ISO date"),
+            CliOption("workflow_shape", ("--workflow-shape",), help="Only sessions with this workflow-shape label"),
         ),
         mcp_default_limit=200,
         fields=(

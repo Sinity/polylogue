@@ -51,6 +51,8 @@ EXPECTED_TOOL_NAMES = {
     "maintenance_status",
     "maintenance_list",
     "session_profile",
+    "workflow_shape_distribution",
+    "find_abandoned_sessions",
     "session_classification",
     "get_resume_brief",
     "cost_outlook",

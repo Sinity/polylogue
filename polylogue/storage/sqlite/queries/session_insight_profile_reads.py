@@ -100,6 +100,12 @@ async def list_session_profiles(
     if query.max_wallclock_seconds is not None:
         where.append("sp.wall_duration_ms <= ?")
         params.append(query.max_wallclock_seconds * 1000)
+    if query.workflow_shape:
+        where.append("sp.workflow_shape = ?")
+        params.append(query.workflow_shape)
+    if query.terminal_state:
+        where.append("sp.terminal_state = ?")
+        params.append(query.terminal_state)
     sql = "SELECT sp.* " + from_clause
     if where:
         sql += " WHERE " + " AND ".join(where)

@@ -103,6 +103,98 @@ def _infer_topic(
     return (None, "absent")
 
 
+def _workflow_shape(
+    analysis: SessionAnalysis, *, compaction_count: int, tool_active_duration_ms: int
+) -> tuple[str, float, dict[str, int | float | str]]:
+    facts = analysis.facts
+    message_count = max(facts.total_messages, 1)
+    category_counts = facts.tool_category_counts
+    tool_call_count = sum(category_counts.values())
+    tool_ratio = round(tool_call_count / message_count, 4)
+    thinking_ratio = round(facts.thinking_messages / message_count, 4)
+    read_count = sum(category_counts.get(name, 0) for name in ("file_read", "search", "web"))
+    edit_count = sum(category_counts.get(name, 0) for name in ("file_write", "file_edit"))
+    run_count = sum(category_counts.get(name, 0) for name in ("shell", "git"))
+    dispatch_count = category_counts.get("subagent", 0)
+    user_count = facts.text_role_counts.get("user", 0)
+    assistant_count = facts.text_role_counts.get("assistant", 0)
+    features: dict[str, int | float | str] = {
+        "message_count": facts.total_messages,
+        "tool_call_count": tool_call_count,
+        "tool_message_count": facts.tool_messages,
+        "tool_ratio": tool_ratio,
+        "read_count": read_count,
+        "edit_count": edit_count,
+        "run_count": run_count,
+        "dispatch_count": dispatch_count,
+        "compaction_count": compaction_count,
+        "thinking_ratio": thinking_ratio,
+        "user_turn_count": user_count,
+        "assistant_turn_count": assistant_count,
+        "tool_active_duration_ms": tool_active_duration_ms,
+    }
+    if dispatch_count:
+        return "subagent_dispatch", 0.92, features
+    if facts.total_messages <= 8 and tool_ratio < 0.1:
+        return "chat", 0.76, features
+    if read_count >= 3 and edit_count == 0 and user_count <= 2:
+        return "batch_review", 0.82, features
+    if (edit_count > 0 or run_count >= 3) and tool_ratio >= 0.2 and facts.total_messages >= 10:
+        return "agentic_loop", 0.86, features
+    if read_count > 0 or tool_ratio >= 0.1:
+        return "exploratory", 0.66, features
+    return "unknown", 0.2, features
+
+
+_TOOL_START_TYPES = {"function_call", "custom_tool_call", "web_search_call", "tool_search_call"}
+_TOOL_OUTPUT_TYPES = {"function_call_output", "custom_tool_call_output", "web_search_output", "tool_search_output"}
+_ERROR_MARKERS = ("error", "failed", "failure", "traceback", "exception", "panic")
+
+
+def _terminal_state(
+    conversation: Conversation, analysis: SessionAnalysis
+) -> tuple[str, float, dict[str, int | float | str | None]]:
+    pending: set[str] = set()
+    pending_without_id = 0
+    trailing_error_event_id: str | None = None
+    for event in sorted(conversation.provider_events, key=lambda item: item.event_index):
+        event_type = str(event.event_type).strip().lower()
+        call_id_value = event.payload.get("call_id")
+        call_id = call_id_value.strip() if isinstance(call_id_value, str) and call_id_value.strip() else None
+        if event_type in _TOOL_START_TYPES:
+            if call_id is None:
+                pending_without_id += 1
+            else:
+                pending.add(call_id)
+        elif event_type in _TOOL_OUTPUT_TYPES:
+            if call_id is None and pending_without_id:
+                pending_without_id -= 1
+            elif call_id is not None:
+                pending.discard(call_id)
+            status = str(event.payload.get("status") or "").lower()
+            if status in {"error", "failed", "failure"}:
+                trailing_error_event_id = str(event.id)
+    if pending or pending_without_id:
+        return "tool_left", 0.9, {"pending_tool_count": len(pending) + pending_without_id}
+
+    meaningful = [
+        message for message in analysis.facts.message_facts if message.text.strip() and not message.is_protocol_artifact
+    ]
+    last = meaningful[-1] if meaningful else None
+    if trailing_error_event_id is not None:
+        return "error_left", 0.78, {"event_id": trailing_error_event_id}
+    if last is None:
+        return "unknown", 0.1, {}
+    text_lower = last.text.lower()
+    if last.is_user:
+        return "question_left", 0.72, {"message_id": last.message_id}
+    if last.is_assistant and any(marker in text_lower for marker in _ERROR_MARKERS):
+        return "error_left", 0.7, {"message_id": last.message_id}
+    if last.is_assistant:
+        return "clean_finish", 0.68, {"message_id": last.message_id}
+    return "unknown", 0.2, {"message_id": last.message_id}
+
+
 def build_session_analysis(
     conversation: Conversation,
     *,
@@ -156,6 +248,15 @@ def build_session_profile(
     if engaged_duration_ms <= 0:
         engaged_duration_ms = max(int(conversation.total_duration_ms or 0), 0)
     tool_active_duration_ms = compute_tool_active_duration_ms(conversation.provider_events)
+    workflow_shape, workflow_shape_confidence, workflow_shape_features = _workflow_shape(
+        session_analysis,
+        compaction_count=resolved_compaction_count,
+        tool_active_duration_ms=tool_active_duration_ms,
+    )
+    terminal_state, terminal_state_confidence, terminal_state_evidence = _terminal_state(
+        conversation,
+        session_analysis,
+    )
     first_message_at, last_message_at, timestamp_source = _profile_timestamp_bounds(conversation, facts)
     canonical_session_at = first_message_at or last_message_at
     timing = compute_session_timing(
@@ -203,6 +304,12 @@ def build_session_profile(
         engaged_duration_ms=engaged_duration_ms,
         tool_active_duration_ms=tool_active_duration_ms,
         wall_duration_ms=facts.wall_duration_ms,
+        workflow_shape=workflow_shape,
+        workflow_shape_confidence=workflow_shape_confidence,
+        workflow_shape_features=workflow_shape_features,
+        terminal_state=terminal_state,
+        terminal_state_confidence=terminal_state_confidence,
+        terminal_state_evidence=terminal_state_evidence,
         cost_is_estimated=cost_is_estimated,
         total_input_tokens=cost_summary.total_input_tokens,
         total_output_tokens=cost_summary.total_output_tokens,

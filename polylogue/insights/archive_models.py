@@ -63,6 +63,12 @@ class SessionEvidencePayload(ArchiveInsightModel):
     total_duration_ms: int = 0
     wall_duration_ms: int = 0
     tool_active_duration_ms: int = 0
+    workflow_shape: str = "unknown"
+    workflow_shape_confidence: float = 0.0
+    workflow_shape_features: dict[str, object] = Field(default_factory=dict)
+    terminal_state: str = "unknown"
+    terminal_state_confidence: float = 0.0
+    terminal_state_evidence: dict[str, object] = Field(default_factory=dict)
     cost_is_estimated: bool = False
     compaction_count: int = 0
     has_compaction: bool = False
@@ -99,6 +105,10 @@ class SessionInferencePayload(ArchiveInsightModel):
     engaged_minutes: float = 0.0
     tool_active_duration_ms: int = 0
     tool_active_minutes: float = 0.0
+    workflow_shape: str = "unknown"
+    workflow_shape_confidence: float = 0.0
+    terminal_state: str = "unknown"
+    terminal_state_confidence: float = 0.0
     support_level: ConfidenceBand = ConfidenceBand.WEAK
     support_signals: tuple[str, ...] = ()
     engaged_duration_source: str = "session_total_fallback"

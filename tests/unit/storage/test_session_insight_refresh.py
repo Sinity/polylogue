@@ -138,6 +138,68 @@ async def test_apply_session_insight_conversation_updates_async_counts_provider_
     assert json.loads(row["evidence_payload_json"])["compaction_count"] == 1
 
 
+@pytest.mark.asyncio
+async def test_apply_session_insight_conversation_updates_async_uses_provider_events_for_terminal_state(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "refresh-provider-terminal.db"
+    with open_connection(db_path) as conn:
+        store_records(
+            conversation=make_conversation("conv-provider-terminal", provider_name="codex", title="Terminal Test"),
+            messages=[
+                make_message(
+                    "conv-provider-terminal:msg-1",
+                    "conv-provider-terminal",
+                    text="Run the command",
+                )
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        conn.execute(
+            """
+            INSERT INTO provider_events (
+                event_id,
+                conversation_id,
+                provider_name,
+                event_index,
+                event_type,
+                timestamp,
+                materializer_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "conv-provider-terminal:provider-event:000000",
+                "conv-provider-terminal",
+                "codex",
+                0,
+                "function_call",
+                "2026-04-01T10:05:00+00:00",
+                1,
+            ),
+        )
+        conn.commit()
+
+    backend = SQLiteBackend(db_path=db_path)
+    async with backend.connection() as conn:
+        await _apply_session_insight_conversation_updates_async(
+            conn,
+            ["conv-provider-terminal"],
+            transaction_depth=1,
+            page_size=10,
+        )
+        await conn.commit()
+
+    with open_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT evidence_payload_json FROM session_profiles WHERE conversation_id = ?",
+            ("conv-provider-terminal",),
+        ).fetchone()
+
+    assert row is not None
+    assert json.loads(row["evidence_payload_json"])["terminal_state"] == "tool_left"
+
+
 def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roots(
     tmp_path: Path,
 ) -> None:
@@ -413,6 +475,49 @@ def test_session_insight_load_skips_plain_text_blocks(tmp_path: Path) -> None:
         batch = load_sync_batch(conn, ["conv-blocks"])
 
     assert [str(block.message_id) for block in batch.blocks] == ["conv-blocks:msg-2"]
+
+
+def test_session_insight_load_includes_provider_events_for_profile_classifiers(tmp_path: Path) -> None:
+    db_path = tmp_path / "refresh-provider-event-load.db"
+    with open_connection(db_path) as conn:
+        store_records(
+            conversation=make_conversation("conv-provider-event-load", provider_name="codex", title="Event Load"),
+            messages=[
+                make_message(
+                    "conv-provider-event-load:msg-1",
+                    "conv-provider-event-load",
+                    text="Run the tool",
+                )
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        conn.execute(
+            """
+            INSERT INTO provider_events (
+                event_id,
+                conversation_id,
+                provider_name,
+                event_index,
+                event_type,
+                timestamp,
+                materializer_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "conv-provider-event-load:provider-event:000000",
+                "conv-provider-event-load",
+                "codex",
+                0,
+                "function_call",
+                "2026-04-01T10:05:00+00:00",
+                1,
+            ),
+        )
+        batch = load_sync_batch(conn, ["conv-provider-event-load"])
+        hydrated = batch.provider_events_by_conversation["conv-provider-event-load"]
+
+    assert [event.event_type for event in hydrated] == ["function_call"]
 
 
 def test_session_insight_load_bounds_large_text_payloads(tmp_path: Path) -> None:

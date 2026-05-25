@@ -122,6 +122,8 @@ class TestServerSurfaceRegistration:
         signature = inspect.signature(mcp_server._tool_manager._tools["session_profiles"].fn)
 
         assert "provider" in signature.parameters
+        assert "workflow_shape" in signature.parameters
+        assert "terminal_state" in signature.parameters
         assert "limit" in signature.parameters
         assert not any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
 

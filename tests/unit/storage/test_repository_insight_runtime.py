@@ -54,6 +54,8 @@ async def test_repository_insight_profile_reads_build_typed_queries() -> None:
             session_date_until="2026-01-02",
             min_wallclock_seconds=300,
             max_wallclock_seconds=900,
+            workflow_shape="agentic_loop",
+            terminal_state="clean_finish",
             sort="wallclock",
             tier="evidence",
             limit=5,
@@ -70,6 +72,8 @@ async def test_repository_insight_profile_reads_build_typed_queries() -> None:
     assert list_query.session_date_until == "2026-01-02"
     assert list_query.min_wallclock_seconds == 300
     assert list_query.max_wallclock_seconds == 900
+    assert list_query.workflow_shape == "agentic_loop"
+    assert list_query.terminal_state == "clean_finish"
     assert list_query.sort == "wallclock"
     assert list_query.tier == "evidence"
     assert list_query.limit == 5

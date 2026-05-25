@@ -650,6 +650,8 @@ class ArchiveInsightSessionMixin:
             session_date_until=request.session_date_until,
             min_wallclock_seconds=request.min_wallclock_seconds,
             max_wallclock_seconds=request.max_wallclock_seconds,
+            workflow_shape=request.workflow_shape,
+            terminal_state=request.terminal_state,
             sort=request.sort,
             tier=request.tier,
             limit=request.limit,
@@ -895,6 +897,7 @@ class ArchiveInsightAggregateMixin:
                 provider=request.provider,
                 since=request.since,
                 until=request.until,
+                workflow_shape=request.workflow_shape,
                 limit=None,
             )
         )

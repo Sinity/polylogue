@@ -628,9 +628,20 @@ class TestInsightTools:
             title="Profiled Session",
             semantic_tier="merged",
             provenance=_provenance(),
-            evidence=SessionEvidencePayload(canonical_session_date="2026-03-24", message_count=2),
+            evidence=SessionEvidencePayload(
+                canonical_session_date="2026-03-24",
+                message_count=2,
+                cwd_paths=("/realm/project/polylogue",),
+                terminal_state_evidence={"message_id": "u1"},
+            ),
             inference_provenance=_inference_provenance(),
-            inference=SessionInferencePayload(engaged_duration_ms=120000),
+            inference=SessionInferencePayload(
+                engaged_duration_ms=120000,
+                workflow_shape="agentic_loop",
+                workflow_shape_confidence=0.86,
+                terminal_state="question_left",
+                terminal_state_confidence=0.72,
+            ),
         )
         enrichment = SessionEnrichmentInsight(
             conversation_id="conv-1",
@@ -1470,13 +1481,9 @@ def test_mcp_search_params_match_query_spec() -> None:
         "referenced_path",
     }
     missing = mcp_params - spec_fields
-    # MCP exposes user-friendly aliases that map to longer spec field names.
-    # Each entry below is intentionally a surface-only name with a documented
-    # corresponding spec field; new MCP params without a spec mapping should
-    # fail this test until the spec catches up.
     surface_aliases: set[str] = {
-        "limit",  # passthrough
-        "offset",  # passthrough
+        "limit",
+        "offset",
         "tag",  # → tags
         "tags",  # passthrough
         "query",  # → query_terms
