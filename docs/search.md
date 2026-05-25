@@ -224,7 +224,10 @@ materialized. The activation path is deliberately bounded:
    configured model/dimension, monthly cost cap, backlog, latest catch-up
    progress, and `next_action` (`code`, `reason`, `command`) for automation.
 2. `polylogue embed preflight --max-conversations 10` estimates the next
-   bounded window without contacting Voyage.
+   bounded window without contacting Voyage. Use `--format json` for the
+   scriptable form: it reports the exact window, pricing assumptions,
+   effective cost cap, and a ready-to-run `backfill_args` list for the same
+   bounded catch-up slice.
 3. `polylogue embed enable --yes` enables the daemon stage when a Voyage key is
    already configured, or `polylogue embed enable --voyage-api-key ...` records
    the key and enables the stage.
