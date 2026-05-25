@@ -87,6 +87,8 @@ async def search_conversation_evidence_hits(
             matched_terms=matched_terms,
             score_components=({"bm25_raw": float(row["relevance"])} if row["relevance"] is not None else {}),
             score_kind="bm25" if row["relevance"] is not None else None,
+            lane_rank=rank,
+            raw_score=float(row["relevance"]) if row["relevance"] is not None else None,
         )
         for rank, row in enumerate(rows, start=1)
     ]

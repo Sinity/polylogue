@@ -247,6 +247,7 @@ async def search_attachment_identity_evidence_hits(
             retrieval_lane="attachment",
             matched_terms=(identity.lower(),),
             score_kind=None,
+            lane_rank=rank,
         )
         for rank, row in enumerate(rows, start=1)
     ]

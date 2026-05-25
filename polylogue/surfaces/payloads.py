@@ -412,6 +412,12 @@ class ConversationSearchMatchPayload(SurfacePayloadModel):
     score_kind: str | None = None
     matched_terms: tuple[str, ...] = ()
     score_components: dict[str, float] = Field(default_factory=dict)
+    lane_rank: int | None = Field(default=None, description="Rank within the primary contributing lane, when known.")
+    lane_contribution: float | None = Field(
+        default=None,
+        description="Primary lane contribution to the public score, when known.",
+    )
+    raw_score: float | None = Field(default=None, description="Backend-native score before public interpretation.")
 
 
 class ConversationSearchHitPayload(SurfacePayloadModel):
@@ -453,6 +459,9 @@ class ConversationSearchHitPayload(SurfacePayloadModel):
                 score_kind=hit.score_kind,
                 matched_terms=hit.matched_terms,
                 score_components=hit.score_components,
+                lane_rank=hit.lane_rank,
+                lane_contribution=hit.lane_contribution,
+                raw_score=hit.raw_score,
             ),
         )
 

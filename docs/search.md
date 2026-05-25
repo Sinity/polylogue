@@ -313,6 +313,8 @@ Each hit's `match` (a `ConversationSearchMatchPayload`) carries:
 | `score` | Raw lane score (semantics depend on `score_kind`). |
 | `score_kind` | One of `"bm25"`, `"rrf"`, `"vector_distance"`, or `null` for identity-only lanes. **Always check this before comparing or ordering by `score` directly.** |
 | `score_components` | Map of per-component contributions explaining the rank. Dialogue (FTS5) hits carry `{"bm25_raw": <relevance>}`; hybrid hits carry per-lane `<lane>_rank` and `<lane>_rrf` entries summed into `score` ([#1267](https://github.com/Sinity/polylogue/issues/1267)). Identity-only lanes (e.g. attachment) carry `{}`. |
+| `lane_rank` / `lane_contribution` | Primary lane rank and contribution when the backend can identify one. For hybrid, this is the strongest contributing RRF lane; all lane details still live in `score_components`. |
+| `raw_score` | Backend-native score before public interpretation. For FTS this is BM25 relevance; for hybrid it is the fused RRF score. |
 | `matched_terms` | FTS terms that triggered the match. |
 | `snippet` | Highlighted excerpt around the match (FTS5 snippet). |
 | `message_id` / `target_ref` / `anchor` | Stable identifiers pointing the reader at the matching message or sub-block. |

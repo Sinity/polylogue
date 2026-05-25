@@ -41,6 +41,9 @@ class ConversationSearchHit:
     matched_terms: tuple[str, ...] = ()
     score_components: dict[str, float] = field(default_factory=dict)
     score_kind: str | None = None
+    lane_rank: int | None = None
+    lane_contribution: float | None = None
+    raw_score: float | None = None
 
     @property
     def conversation_id(self) -> str:
@@ -100,6 +103,9 @@ def conversation_search_hit_from_conversation(
     matched_terms: tuple[str, ...] = (),
     score_components: dict[str, float] | None = None,
     score_kind: str | None = None,
+    lane_rank: int | None = None,
+    lane_contribution: float | None = None,
+    raw_score: float | None = None,
 ) -> ConversationSearchHit:
     terms = search_terms(query_terms)
     matching_message = next(
@@ -122,6 +128,9 @@ def conversation_search_hit_from_conversation(
         matched_terms=matched_terms,
         score_components=score_components or {},
         score_kind=score_kind or default_score_kind(retrieval_lane),
+        lane_rank=lane_rank,
+        lane_contribution=lane_contribution,
+        raw_score=raw_score,
     )
 
 
@@ -137,6 +146,9 @@ def conversation_search_hit_from_summary(
     matched_terms: tuple[str, ...] = (),
     score_components: dict[str, float] | None = None,
     score_kind: str | None = None,
+    lane_rank: int | None = None,
+    lane_contribution: float | None = None,
+    raw_score: float | None = None,
 ) -> ConversationSearchHit:
     return ConversationSearchHit(
         summary=summary,
@@ -149,6 +161,9 @@ def conversation_search_hit_from_summary(
         matched_terms=matched_terms,
         score_components=score_components or {},
         score_kind=score_kind or default_score_kind(retrieval_lane),
+        lane_rank=lane_rank,
+        lane_contribution=lane_contribution,
+        raw_score=raw_score,
     )
 
 
@@ -179,6 +194,24 @@ def _hybrid_score_components(
         components[f"{lane_name}_rrf"] = contribution
         fused += contribution
     return components, (fused if any_lane else None)
+
+
+def primary_lane_evidence(score_components: dict[str, float]) -> tuple[int | None, float | None]:
+    """Return the strongest lane rank/contribution from RRF components."""
+    best_rank: int | None = None
+    best_contribution: float | None = None
+    for key, value in score_components.items():
+        if not key.endswith("_rank"):
+            continue
+        lane = key.removesuffix("_rank")
+        contribution = score_components.get(f"{lane}_rrf")
+        rank = int(value)
+        if contribution is None:
+            continue
+        if best_contribution is None or contribution > best_contribution:
+            best_rank = rank
+            best_contribution = contribution
+    return best_rank, best_contribution
 
 
 def default_score_kind(retrieval_lane: str) -> str | None:
@@ -252,6 +285,7 @@ async def search_hits_for_plan(
             conv_id = str(conversation.id)
             lane_info = lane_ranks.get(conv_id, {})
             score_components, fused_score = _hybrid_score_components(lane_info)
+            lane_rank, lane_contribution = primary_lane_evidence(score_components)
             hits.append(
                 conversation_search_hit_from_conversation(
                     conversation,
@@ -262,6 +296,9 @@ async def search_hits_for_plan(
                     score_kind="rrf" if fused_score is not None else None,
                     score_components=score_components,
                     matched_terms=terms,
+                    lane_rank=lane_rank,
+                    lane_contribution=lane_contribution,
+                    raw_score=fused_score,
                 )
             )
         return hits
@@ -289,6 +326,7 @@ __all__ = [
     "conversation_search_hit_from_summary",
     "default_score_kind",
     "plan_has_search_hit_evidence",
+    "primary_lane_evidence",
     "search_hit_surface",
     "search_hits_for_plan",
     "search_query_text",

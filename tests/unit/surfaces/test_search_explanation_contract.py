@@ -64,6 +64,9 @@ def _hybrid_hit() -> ConversationSearchHit:
         score=components["text_rrf"] + components["vector_rrf"],
         matched_terms=("needle",),
         score_components=components,
+        lane_rank=1,
+        lane_contribution=components["text_rrf"],
+        raw_score=components["text_rrf"] + components["vector_rrf"],
     )
 
 
@@ -99,6 +102,9 @@ def test_hybrid_hit_carries_rrf_score_and_per_lane_components() -> None:
     assert "text_rrf" in payload.match.score_components
     assert "vector_rank" in payload.match.score_components
     assert "vector_rrf" in payload.match.score_components
+    assert payload.match.lane_rank == 1
+    assert payload.match.lane_contribution == payload.match.score_components["text_rrf"]
+    assert payload.match.raw_score == payload.match.score
     # Fused score equals the sum of lane RRF contributions.
     expected = payload.match.score_components["text_rrf"] + payload.match.score_components["vector_rrf"]
     assert abs(payload.match.score - expected) < 1e-12
@@ -118,6 +124,9 @@ def test_match_payload_required_field_set_is_stable() -> None:
         "score_kind",
         "matched_terms",
         "score_components",
+        "lane_rank",
+        "lane_contribution",
+        "raw_score",
     }
     missing = required - declared
     assert not missing, f"ConversationSearchMatchPayload lost required fields: {missing}"

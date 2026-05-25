@@ -170,6 +170,27 @@ components:
             type: number
           title: Score Components
           type: object
+        lane_rank:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          description: Rank within the primary contributing lane, when known.
+          title: Lane Rank
+        lane_contribution:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default: null
+          description: Primary lane contribution to the public score, when known.
+          title: Lane Contribution
+        raw_score:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default: null
+          description: Backend-native score before public interpretation.
+          title: Raw Score
       required:
       - rank
       - retrieval_lane
