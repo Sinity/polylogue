@@ -183,6 +183,7 @@ def test_probe_only_archive_debt_skips_large_message_scans(monkeypatch: pytest.M
 def _ready_session_insight_status() -> SessionInsightStatusSnapshot:
     return SessionInsightStatusSnapshot(
         profile_rows_ready=True,
+        latency_profile_rows_ready=True,
         work_event_inference_rows_ready=True,
         work_event_inference_fts_ready=True,
         phase_inference_rows_ready=True,
@@ -232,6 +233,7 @@ def test_repair_session_insights_uses_stale_profile_candidates(monkeypatch: pyte
 
     stale_status = SessionInsightStatusSnapshot(
         profile_rows_ready=False,
+        latency_profile_rows_ready=True,
         work_event_inference_rows_ready=False,
         work_event_inference_fts_ready=True,
         phase_inference_rows_ready=True,

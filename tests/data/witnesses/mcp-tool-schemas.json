@@ -1255,6 +1255,75 @@
     }
   },
   {
+    "name": "find_abandoned_sessions",
+    "parameters": {
+      "properties": {
+        "limit": {
+          "default": 20,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "min_severity": {
+          "default": "question_left",
+          "title": "Min Severity",
+          "type": "string"
+        },
+        "repo_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Repo Path"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since"
+        }
+      },
+      "title": "find_abandoned_sessionsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "find_stuck_sessions",
+    "parameters": {
+      "properties": {
+        "limit": {
+          "default": 20,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since"
+        }
+      },
+      "title": "find_stuck_sessionsArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "get_conversation",
     "parameters": {
       "properties": {
@@ -2510,6 +2579,18 @@
           ],
           "default": null,
           "title": "Until"
+        },
+        "workflow_shape": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workflow Shape"
         }
       },
       "title": "productivity_rollupsArguments",
@@ -3577,6 +3658,22 @@
     }
   },
   {
+    "name": "session_latency_profile",
+    "parameters": {
+      "properties": {
+        "conversation_id": {
+          "title": "Conversation Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation_id"
+      ],
+      "title": "session_latency_profileArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "session_phases",
     "parameters": {
       "properties": {
@@ -3831,6 +3928,18 @@
           "title": "Sort",
           "type": "string"
         },
+        "terminal_state": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Terminal State"
+        },
         "tier": {
           "default": "merged",
           "title": "Tier",
@@ -3847,6 +3956,18 @@
           ],
           "default": null,
           "title": "Until"
+        },
+        "workflow_shape": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workflow Shape"
         }
       },
       "title": "session_profilesArguments",
@@ -4074,6 +4195,68 @@
     }
   },
   {
+    "name": "tool_call_latency_distribution",
+    "parameters": {
+      "properties": {
+        "limit": {
+          "default": 500,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since"
+        },
+        "tool_category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Category"
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Until"
+        }
+      },
+      "title": "tool_call_latency_distributionArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "tool_usage",
     "parameters": {
       "properties": {
@@ -4272,6 +4455,56 @@
         }
       },
       "title": "work_threadsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "workflow_shape_distribution",
+    "parameters": {
+      "properties": {
+        "group_by": {
+          "default": "week",
+          "title": "Group By",
+          "type": "string"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since"
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Until"
+        }
+      },
+      "title": "workflow_shape_distributionArguments",
       "type": "object"
     }
   }

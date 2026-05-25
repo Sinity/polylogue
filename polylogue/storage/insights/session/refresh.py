@@ -29,7 +29,12 @@ from polylogue.storage.insights.session.threads import (
     thread_root_id_async,
     thread_root_ids_async,
 )
-from polylogue.storage.runtime import SessionPhaseRecord, SessionProfileRecord, SessionWorkEventRecord
+from polylogue.storage.runtime import (
+    SessionLatencyProfileRecord,
+    SessionPhaseRecord,
+    SessionProfileRecord,
+    SessionWorkEventRecord,
+)
 from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
 
 # Keep incremental refreshes on the same bounded chunk size as full rebuilds.
@@ -168,6 +173,7 @@ async def delete_session_insights_for_conversation_async(
     row = await cursor.fetchone()
     old_group = profile_provider_day(_row_to_session_profile_record(row)) if row else None
     await conn.execute("DELETE FROM session_profiles WHERE conversation_id = ?", (conversation_id,))
+    await conn.execute("DELETE FROM session_latency_profiles WHERE conversation_id = ?", (conversation_id,))
     await replace_session_work_events(conn, conversation_id, [], transaction_depth)
     await replace_session_phases(conn, conversation_id, [], transaction_depth)
     if old_group is not None:
@@ -230,6 +236,7 @@ async def _apply_session_insight_conversation_update_async(
     transaction_depth: int,
 ) -> _SessionInsightRefreshUpdate:
     from polylogue.storage.sqlite.queries.session_insight_profile_writes import (
+        replace_session_latency_profile,
         replace_session_profile,
     )
     from polylogue.storage.sqlite.queries.session_insight_timeline_writes import (
@@ -247,6 +254,7 @@ async def _apply_session_insight_conversation_update_async(
     hydrated = hydrate_conversations(batch)
     if not hydrated:
         await conn.execute("DELETE FROM session_profiles WHERE conversation_id = ?", (conversation_id,))
+        await conn.execute("DELETE FROM session_latency_profiles WHERE conversation_id = ?", (conversation_id,))
         await conn.execute(
             "DELETE FROM conversation_repo_observations WHERE conversation_id = ?",
             (conversation_id,),
@@ -267,6 +275,7 @@ async def _apply_session_insight_conversation_update_async(
         compaction_count=batch.compaction_counts_by_conversation.get(conversation_id),
     )
     await replace_session_profile(conn, record_bundle.profile_record, transaction_depth)
+    await replace_session_latency_profile(conn, record_bundle.latency_profile_record, transaction_depth)
     await replace_session_work_events(
         conn,
         conversation_id,
@@ -386,15 +395,22 @@ def _chunk_conversation_ids_by_message_budget(
 
 def _flatten_record_bundles(
     bundles: Sequence[SessionInsightRecordBundle],
-) -> tuple[list[SessionProfileRecord], list[SessionWorkEventRecord], list[SessionPhaseRecord]]:
+) -> tuple[
+    list[SessionProfileRecord],
+    list[SessionLatencyProfileRecord],
+    list[SessionWorkEventRecord],
+    list[SessionPhaseRecord],
+]:
     profile_records: list[SessionProfileRecord] = []
+    latency_profile_records: list[SessionLatencyProfileRecord] = []
     work_event_records: list[SessionWorkEventRecord] = []
     phase_records: list[SessionPhaseRecord] = []
     for bundle in bundles:
         profile_records.append(bundle.profile_record)
+        latency_profile_records.append(bundle.latency_profile_record)
         work_event_records.extend(bundle.work_event_records)
         phase_records.extend(bundle.phase_records)
-    return profile_records, work_event_records, phase_records
+    return profile_records, latency_profile_records, work_event_records, phase_records
 
 
 def _refresh_chunk_observation(
@@ -435,6 +451,7 @@ async def _apply_session_insight_conversation_updates_async(
     page_size: int = _SESSION_INSIGHT_REFRESH_PAGE_SIZE,
 ) -> _SessionInsightBulkRefreshUpdate:
     from polylogue.storage.sqlite.queries.session_insight_profile_writes import (
+        replace_session_latency_profiles_bulk,
         replace_session_profiles_bulk,
     )
     from polylogue.storage.sqlite.queries.session_insight_timeline_writes import (
@@ -502,13 +519,22 @@ async def _apply_session_insight_conversation_updates_async(
         build_elapsed_ms = round((time.perf_counter() - build_started) * 1000.0, 1)
 
         write_started = time.perf_counter()
-        profile_records_to_write, work_event_records_to_write, phase_records_to_write = _flatten_record_bundles(
-            record_bundles
-        )
+        (
+            profile_records_to_write,
+            latency_profile_records_to_write,
+            work_event_records_to_write,
+            phase_records_to_write,
+        ) = _flatten_record_bundles(record_bundles)
         await replace_session_profiles_bulk(
             conn,
             chunk.conversation_ids,
             profile_records_to_write,
+            transaction_depth,
+        )
+        await replace_session_latency_profiles_bulk(
+            conn,
+            chunk.conversation_ids,
+            latency_profile_records_to_write,
             transaction_depth,
         )
         await replace_session_work_events_bulk(
@@ -566,6 +592,7 @@ async def _apply_session_insight_conversation_updates_async(
                 hydrated_by_id,
                 record_bundles,
                 profile_records_to_write,
+                latency_profile_records_to_write,
                 work_event_records_to_write,
                 phase_records_to_write,
                 hydrated_ids,

@@ -7,10 +7,12 @@ from collections.abc import Sequence
 import aiosqlite
 
 from polylogue.storage.insights.session.storage import (
+    _SESSION_LATENCY_PROFILE_COLUMNS,
+    session_latency_profile_insert_values,
     session_profile_insert_columns,
     session_profile_insert_values,
 )
-from polylogue.storage.runtime import SessionProfileRecord
+from polylogue.storage.runtime import SessionLatencyProfileRecord, SessionProfileRecord
 from polylogue.storage.sqlite.queries._bulk_replace import replace_insight_rows
 
 _ASYNC_COLUMN_CACHE: dict[tuple[int, str], bool] = {}
@@ -28,7 +30,12 @@ async def _table_has_column(conn: aiosqlite.Connection, table: str, column: str)
     return found
 
 
-__all__ = ["replace_session_profile", "replace_session_profiles_bulk"]
+__all__ = [
+    "replace_session_latency_profile",
+    "replace_session_latency_profiles_bulk",
+    "replace_session_profile",
+    "replace_session_profiles_bulk",
+]
 
 
 async def replace_session_profiles_bulk(
@@ -57,6 +64,37 @@ async def replace_session_profile(
     transaction_depth: int,
 ) -> None:
     await replace_session_profiles_bulk(
+        conn,
+        [record.conversation_id],
+        [record],
+        transaction_depth,
+    )
+
+
+async def replace_session_latency_profiles_bulk(
+    conn: aiosqlite.Connection,
+    conversation_ids: Sequence[str],
+    records: Sequence[SessionLatencyProfileRecord],
+    transaction_depth: int,
+) -> None:
+    await replace_insight_rows(
+        conn,
+        table="session_latency_profiles",
+        id_column="conversation_id",
+        id_values=conversation_ids,
+        columns=_SESSION_LATENCY_PROFILE_COLUMNS,
+        records=records,
+        extractor=session_latency_profile_insert_values,
+        transaction_depth=transaction_depth,
+    )
+
+
+async def replace_session_latency_profile(
+    conn: aiosqlite.Connection,
+    record: SessionLatencyProfileRecord,
+    transaction_depth: int,
+) -> None:
+    await replace_session_latency_profiles_bulk(
         conn,
         [record.conversation_id],
         [record],

@@ -48,6 +48,7 @@ from polylogue.insights.archive import (
     ArchiveDebtInsightQuery,
     DaySessionSummaryInsightQuery,
     ProviderAnalyticsInsightQuery,
+    SessionLatencyProfileInsightQuery,
     SessionEnrichmentInsightQuery,
     SessionPhaseInsightQuery,
     SessionProfileInsightQuery,
@@ -66,6 +67,9 @@ async with Polylogue() as archive:
     )
     phases = await archive.list_session_phase_insights(
         SessionPhaseInsightQuery(provider="claude-code", kind="execution", limit=25)
+    )
+    latency = await archive.list_session_latency_profile_insights(
+        SessionLatencyProfileInsightQuery(provider="claude-code", only_stuck=False, limit=25)
     )
     enrichments = await archive.list_session_enrichment_insights(
         SessionEnrichmentInsightQuery(
@@ -105,6 +109,20 @@ async with Polylogue() as archive:
 
 `SessionWorkEventInsight` and `SessionPhaseInsight` expose timestamped timeline
 rows that can be queried directly.
+
+`SessionLatencyProfileInsight` exposes per-session runtime-shape signals:
+
+- `median_tool_call_ms`
+- `p90_tool_call_ms`
+- `max_tool_call_ms`
+- `stuck_tool_count`
+- `median_agent_response_ms`
+- `median_user_response_ms`
+- `tool_call_count_by_category`
+
+The latency payload includes a construct-boundary string because these are
+archive-observed timing aggregates. They do not measure correctness, human
+attention, or total wall-clock productivity.
 
 `SessionEnrichmentInsight` exposes the separate enrichment tier directly:
 
@@ -289,6 +307,9 @@ asyncio.run(main())
 | `get_session_insight_status()` | Durable insight readiness/freshness summary |
 | `get_session_profile_insight(id)` | Get one durable session-profile insight |
 | `list_session_profile_insights(query)` | List durable session-profile insights |
+| `get_session_latency_profile_insight(id)` | Get one durable session-latency insight |
+| `list_session_latency_profile_insights(query)` | List durable session-latency insights |
+| `find_stuck_session_latency_profile_insights(query)` | List sessions with stuck tool starts |
 | `list_session_work_event_insights(query)` | List durable work-event insights |
 | `list_work_thread_insights(query)` | List durable work-thread insights |
 | `list_session_tag_rollup_insights(query)` | List durable tag-rollup insights |

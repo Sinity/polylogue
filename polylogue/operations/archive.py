@@ -33,6 +33,8 @@ from polylogue.insights.archive import (
     SessionCostInsightQuery,
     SessionEnrichmentInsight,
     SessionEnrichmentInsightQuery,
+    SessionLatencyProfileInsight,
+    SessionLatencyProfileInsightQuery,
     SessionPhaseInsight,
     SessionPhaseInsightQuery,
     SessionProfileInsight,
@@ -626,6 +628,47 @@ class ArchiveInsightSessionMixin:
         _require_ready_flag(status, "profile_rows_ready", "Session-profile rows are incomplete.")
         record = await self.repository.get_session_profile_record(conversation_id)
         return SessionProfileInsight.from_record(record, tier=tier) if record is not None else None
+
+    async def get_session_latency_profile_insight(
+        self,
+        conversation_id: str,
+    ) -> SessionLatencyProfileInsight | None:
+        status = await self._session_insight_status()
+        _require_ready_flag(status, "latency_profile_rows_ready", "Session-latency rows are incomplete.")
+        record = await self.repository.get_session_latency_profile_record(conversation_id)
+        return SessionLatencyProfileInsight.from_record(record) if record is not None else None
+
+    async def find_stuck_session_latency_profile_insights(
+        self,
+        query: SessionLatencyProfileInsightQuery | None = None,
+    ) -> list[SessionLatencyProfileInsight]:
+        request = _default_query(query, SessionLatencyProfileInsightQuery)
+        status = await self._session_insight_status()
+        _require_ready_flag(status, "latency_profile_rows_ready", "Session-latency rows are incomplete.")
+        records = await self.repository.find_stuck_session_latency_profile_records(
+            since=request.since,
+            limit=request.limit or 50,
+        )
+        return [SessionLatencyProfileInsight.from_record(record) for record in records]
+
+    async def list_session_latency_profile_insights(
+        self,
+        query: SessionLatencyProfileInsightQuery | None = None,
+    ) -> list[SessionLatencyProfileInsight]:
+        request = _default_query(query, SessionLatencyProfileInsightQuery)
+        status = await self._session_insight_status()
+        _require_ready_flag(status, "latency_profile_rows_ready", "Session-latency rows are incomplete.")
+        records = await self.repository.list_session_latency_profile_records(
+            provider=request.provider,
+            since=request.since,
+            until=request.until,
+            limit=request.limit,
+        )
+        if request.conversation_id:
+            records = [record for record in records if str(record.conversation_id) == request.conversation_id]
+        if request.only_stuck:
+            records = [record for record in records if record.stuck_tool_count > 0]
+        return [SessionLatencyProfileInsight.from_record(record) for record in records]
 
     async def list_session_profile_insights(
         self,

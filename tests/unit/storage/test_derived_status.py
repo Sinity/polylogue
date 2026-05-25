@@ -55,6 +55,7 @@ def test_collect_derived_statuses_skips_retrieval_band_recomputation(
             verify_calls.append(("session", verify_freshness))
             return SessionInsightStatusSnapshot(
                 profile_rows_ready=True,
+                latency_profile_rows_ready=True,
                 profile_merged_fts_ready=True,
                 profile_evidence_fts_ready=True,
                 profile_inference_fts_ready=True,

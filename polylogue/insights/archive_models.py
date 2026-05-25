@@ -129,6 +129,20 @@ class SessionInferencePayload(ArchiveInsightModel):
         return _normalize_timed_documents(value)
 
 
+class SessionLatencyProfilePayload(ArchiveInsightModel):
+    median_tool_call_ms: int = 0
+    p90_tool_call_ms: int = 0
+    max_tool_call_ms: int = 0
+    stuck_tool_count: int = 0
+    median_agent_response_ms: int = 0
+    median_user_response_ms: int = 0
+    tool_call_count_by_category: dict[str, int] = Field(default_factory=dict)
+    construct_boundary: str = (
+        "agent-response time includes both model output delay and any intervening tool execution; "
+        "provider tool latency requires timestamped provider-event pairs"
+    )
+
+
 class WorkEventEvidencePayload(ArchiveInsightModel):
     start_index: int
     end_index: int

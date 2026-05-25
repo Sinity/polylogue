@@ -12,7 +12,7 @@ from polylogue.storage.insights.insight_read_support import (
 )
 from polylogue.storage.insights.session.profiles import hydrate_session_profile
 from polylogue.storage.query_models import SessionProfileListQuery
-from polylogue.storage.runtime import SessionProfileRecord
+from polylogue.storage.runtime import SessionLatencyProfileRecord, SessionProfileRecord
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.query_store import SQLiteQueryStore
@@ -24,6 +24,32 @@ class RepositoryInsightProfileReadMixin:
 
     async def get_session_profile_record(self, conversation_id: str) -> SessionProfileRecord | None:
         return await self.queries.get_session_profile(conversation_id)
+
+    async def get_session_latency_profile_record(self, conversation_id: str) -> SessionLatencyProfileRecord | None:
+        return await self.queries.get_session_latency_profile(conversation_id)
+
+    async def find_stuck_session_latency_profile_records(
+        self,
+        *,
+        since: str | None = None,
+        limit: int = 50,
+    ) -> list[SessionLatencyProfileRecord]:
+        return await self.queries.find_stuck_session_latency_profiles(since=since, limit=limit)
+
+    async def list_session_latency_profile_records(
+        self,
+        *,
+        provider: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int | None = 500,
+    ) -> list[SessionLatencyProfileRecord]:
+        return await self.queries.list_session_latency_profiles(
+            provider=provider,
+            since=since,
+            until=until,
+            limit=limit,
+        )
 
     async def get_session_profile(self, conversation_id: str) -> SessionProfile | None:
         record = await self.get_session_profile_record(conversation_id)

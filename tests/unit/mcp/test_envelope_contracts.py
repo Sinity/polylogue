@@ -56,6 +56,8 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     ),
     "get_messages": ("envelope", frozenset({"messages", "total"})),
     "raw_artifacts": ("envelope", frozenset({"raw_artifacts", "total"})),
+    "find_abandoned_sessions": ("envelope", frozenset({"items", "total"})),
+    "find_stuck_sessions": ("envelope", frozenset({"items", "total"})),
     # ------- mutation list -------
     "list_tags": "stats_map",  # RootModel[dict[tag, count]]; small, by design
     "list_marks": ("envelope", frozenset({"items", "total"})),
@@ -68,6 +70,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "get_conversation_summary": "single_object",
     "get_metadata": "single_object",
     "session_profile": "single_object",
+    "session_latency_profile": "single_object",
     "session_classification": "single_object",
     "get_resume_brief": "single_object",
     "archive_coverage": "single_object",
@@ -79,6 +82,8 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "insight_rigor_audit": "single_object",
     # ------- stats / map -------
     "get_stats_by": "stats_map",
+    "tool_call_latency_distribution": "single_object",
+    "workflow_shape_distribution": "single_object",
     # ------- mutation tools -------
     "add_tag": "operation_result",
     "add_mark": "operation_result",

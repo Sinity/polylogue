@@ -8,6 +8,7 @@ from polylogue.storage.insights.session.runtime import SessionInsightReadyFlag, 
 
 _SESSION_INSIGHT_READY_FLAGS: tuple[SessionInsightReadyFlag, ...] = (
     "profile_rows_ready",
+    "latency_profile_rows_ready",
     "work_event_inference_rows_ready",
     "work_event_inference_fts_ready",
     "phase_inference_rows_ready",
@@ -57,6 +58,9 @@ def _session_insight_row_repair_count(status: SessionInsightStatusSnapshot) -> i
         status.missing_profile_row_count
         + status.stale_profile_row_count
         + status.orphan_profile_row_count
+        + status.missing_latency_profile_row_count
+        + status.stale_latency_profile_row_count
+        + status.orphan_latency_profile_row_count
         + status.stale_work_event_inference_count
         + status.orphan_work_event_inference_count
         + status.stale_phase_inference_count

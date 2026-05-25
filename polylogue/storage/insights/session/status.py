@@ -173,6 +173,7 @@ class SessionInsightReadyDescriptor:
 # ---------------------------------------------------------------------------
 
 SESSION_PROFILE_COUNT_SQL = "SELECT COUNT(*) FROM session_profiles"
+SESSION_LATENCY_PROFILE_COUNT_SQL = "SELECT COUNT(*) FROM session_latency_profiles"
 SESSION_WORK_EVENT_COUNT_SQL = "SELECT COUNT(*) FROM session_work_events"
 SESSION_WORK_EVENT_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT event_id) FROM session_work_events_fts"
 SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT event_id) FROM session_work_events_fts"
@@ -213,6 +214,30 @@ ORPHAN_SESSION_PROFILE_COUNT_SQL = """
     SELECT COUNT(*)
     FROM session_profiles sp
     LEFT JOIN conversations c ON c.conversation_id = sp.conversation_id
+    WHERE c.conversation_id IS NULL
+"""
+MISSING_SESSION_LATENCY_PROFILE_COUNT_SQL = f"""
+    SELECT COUNT(*)
+    FROM session_profiles sp
+    JOIN conversations c ON c.conversation_id = sp.conversation_id
+    LEFT JOIN session_latency_profiles slp ON slp.conversation_id = sp.conversation_id
+    WHERE slp.conversation_id IS NULL
+      AND COALESCE(c.sort_key, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
+"""
+STALE_SESSION_LATENCY_PROFILE_COUNT_SQL = f"""
+    SELECT COUNT(*)
+    FROM session_latency_profiles slp
+    JOIN conversations c ON c.conversation_id = slp.conversation_id
+    WHERE COALESCE(c.sort_key, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
+      AND (
+           slp.materializer_version != ?
+        OR ABS(COALESCE(slp.source_sort_key, 0.0) - COALESCE(c.sort_key, 0.0)) > 0.000001
+      )
+"""
+ORPHAN_SESSION_LATENCY_PROFILE_COUNT_SQL = """
+    SELECT COUNT(*)
+    FROM session_latency_profiles slp
+    LEFT JOIN conversations c ON c.conversation_id = slp.conversation_id
     WHERE c.conversation_id IS NULL
 """
 EXPECTED_WORK_EVENT_COUNT_SQL = "SELECT COALESCE(SUM(work_event_count), 0) FROM session_profiles"
@@ -375,6 +400,12 @@ _TABLE_DESCRIPTORS: tuple[SessionInsightTableDescriptor, ...] = (
         count_sql=SESSION_PROFILE_COUNT_SQL,
     ),
     SessionInsightTableDescriptor(
+        key="session_latency_profiles",
+        table_name="session_latency_profiles",
+        count_key="latency_profile_row_count",
+        count_sql=SESSION_LATENCY_PROFILE_COUNT_SQL,
+    ),
+    SessionInsightTableDescriptor(
         key="session_work_events",
         table_name="session_work_events",
         count_key="work_event_inference_count",
@@ -455,6 +486,25 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         count_key="orphan_profile_row_count",
         table_key="session_profiles",
         sql=ORPHAN_SESSION_PROFILE_COUNT_SQL,
+        requires_freshness=True,
+    ),
+    SessionInsightCountDescriptor(
+        count_key="missing_latency_profile_row_count",
+        table_key="session_latency_profiles",
+        sql=MISSING_SESSION_LATENCY_PROFILE_COUNT_SQL,
+        fallback_count_key="profile_row_count",
+    ),
+    SessionInsightCountDescriptor(
+        count_key="stale_latency_profile_row_count",
+        table_key="session_latency_profiles",
+        sql=STALE_SESSION_LATENCY_PROFILE_COUNT_SQL,
+        params=(SESSION_INSIGHT_MATERIALIZER_VERSION,),
+        requires_freshness=True,
+    ),
+    SessionInsightCountDescriptor(
+        count_key="orphan_latency_profile_row_count",
+        table_key="session_latency_profiles",
+        sql=ORPHAN_SESSION_LATENCY_PROFILE_COUNT_SQL,
         requires_freshness=True,
     ),
     SessionInsightCountDescriptor(
@@ -541,6 +591,16 @@ _READY_DESCRIPTORS: tuple[SessionInsightReadyDescriptor, ...] = (
         ready_key="profile_rows_ready",
         table_key="session_profiles",
         zero_counts=("missing_profile_row_count", "stale_profile_row_count", "orphan_profile_row_count"),
+    ),
+    SessionInsightReadyDescriptor(
+        ready_key="latency_profile_rows_ready",
+        table_key="session_latency_profiles",
+        equal_counts=(("latency_profile_row_count", "profile_row_count"),),
+        zero_counts=(
+            "missing_latency_profile_row_count",
+            "stale_latency_profile_row_count",
+            "orphan_latency_profile_row_count",
+        ),
     ),
     SessionInsightReadyDescriptor(
         ready_key="work_event_inference_rows_ready",
@@ -714,6 +774,7 @@ def _status_payload(
     return SessionInsightStatusSnapshot(
         **counts,  # type: ignore[arg-type]
         profile_rows_ready=ready_flags["profile_rows_ready"],
+        latency_profile_rows_ready=ready_flags["latency_profile_rows_ready"],
         work_event_inference_rows_ready=ready_flags["work_event_inference_rows_ready"],
         work_event_inference_fts_ready=ready_flags["work_event_inference_fts_ready"],
         phase_inference_rows_ready=ready_flags["phase_inference_rows_ready"],

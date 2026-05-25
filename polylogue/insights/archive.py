@@ -24,6 +24,7 @@ from polylogue.insights.archive_models import (
     SessionEnrichmentPayload,
     SessionEvidencePayload,
     SessionInferencePayload,
+    SessionLatencyProfilePayload,
     SessionPhaseEvidencePayload,
     SessionPhaseInferencePayload,
     WeekSessionSummaryPayload,
@@ -105,6 +106,11 @@ class SessionProfileInsightQuery(SessionWindowInsightQuery):
     tier: str = "merged"
     workflow_shape: str | None = None
     terminal_state: str | None = None
+
+
+class SessionLatencyProfileInsightQuery(ProviderTimeWindowInsightQuery):
+    conversation_id: str | None = None
+    only_stuck: bool = False
 
 
 class SessionEnrichmentInsightQuery(SessionWindowInsightQuery):
@@ -235,6 +241,45 @@ class SessionProfileInsight(ArchiveInsightModel):
             evidence=(record.evidence_payload if include_evidence else None),
             inference_provenance=(_record_inference_provenance(record) if include_inference else None),
             inference=(record.inference_payload if include_inference else None),
+        )
+
+
+class SessionLatencyProfileInsight(ArchiveInsightModel):
+    contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
+    insight_kind: str = "session_latency_profile"
+    conversation_id: str
+    provider_name: str
+    title: str | None = None
+    provenance: ArchiveInsightProvenance
+    latency: SessionLatencyProfilePayload
+
+    @classmethod
+    def from_record(cls, record: object) -> SessionLatencyProfileInsight:
+        from polylogue.storage.runtime import SessionLatencyProfileRecord
+        from polylogue.storage.sqlite.queries.mappers import _json_int_dict, _json_object, _parse_json
+
+        if not isinstance(record, SessionLatencyProfileRecord):
+            raise TypeError(f"Expected SessionLatencyProfileRecord, got {type(record).__name__}")
+        evidence = _json_object(_parse_json(record.evidence_payload_json)) or {}
+        tool_counts = _json_int_dict(_parse_json(record.tool_call_count_by_category_json))
+        payload = SessionLatencyProfilePayload(
+            median_tool_call_ms=record.median_tool_call_ms,
+            p90_tool_call_ms=record.p90_tool_call_ms,
+            max_tool_call_ms=record.max_tool_call_ms,
+            stuck_tool_count=record.stuck_tool_count,
+            median_agent_response_ms=record.median_agent_response_ms,
+            median_user_response_ms=record.median_user_response_ms,
+            tool_call_count_by_category=tool_counts,
+            construct_boundary=str(
+                evidence.get("construct_boundary") or SessionLatencyProfilePayload().construct_boundary
+            ),
+        )
+        return cls(
+            conversation_id=str(record.conversation_id),
+            provider_name=record.provider_name,
+            title=record.title,
+            provenance=_record_provenance(record),
+            latency=payload,
         )
 
 
@@ -551,6 +596,9 @@ __all__ = [
     "SessionEnrichmentInsightQuery",
     "SessionEvidencePayload",
     "SessionInferencePayload",
+    "SessionLatencyProfileInsight",
+    "SessionLatencyProfileInsightQuery",
+    "SessionLatencyProfilePayload",
     "SessionPhaseEvidencePayload",
     "SessionPhaseInferencePayload",
     "SessionPhaseInsight",
