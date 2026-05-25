@@ -244,8 +244,37 @@ async def test_async_execute_query_errors_for_similar_without_embeddings() -> No
 
     assert exc_info.value.code == 1
     mock_echo.assert_called_once()
-    assert "requires existing embeddings" in mock_echo.call_args.args[0]
+    assert "requires retrieval-ready embeddings" in mock_echo.call_args.args[0]
     assert "polylogue embed backfill" in mock_echo.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_async_execute_query_errors_for_similar_when_vectors_are_stale() -> None:
+    from polylogue.cli.query import async_execute_query
+
+    repo = MagicMock()
+    repo.get_archive_stats = AsyncMock(
+        return_value=SimpleNamespace(
+            embedded_messages=10,
+            stale_embedding_messages=10,
+            retrieval_ready=False,
+            embedding_readiness_status="stale",
+        )
+    )
+    env = _make_env(repo=repo, config=MagicMock())
+
+    with (
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
+        patch("polylogue.storage.search_providers.create_vector_provider", return_value=MagicMock()),
+        patch("click.echo") as mock_echo,
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            await async_execute_query(env, _make_params(similar_text="sqlite locking regression"))
+
+    assert exc_info.value.code == 1
+    mock_echo.assert_called_once()
+    assert "requires retrieval-ready embeddings" in mock_echo.call_args.args[0]
+    assert "current status: stale" in mock_echo.call_args.args[0]
 
 
 @pytest.mark.asyncio

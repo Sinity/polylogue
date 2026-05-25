@@ -440,9 +440,12 @@ class TestBackfillCommand:
 
 
 class TestHybridAutoElevation:
-    def _stub_repo(self, embedded: int) -> Any:
+    def _stub_repo(self, embedded: int, *, stale: int = 0, retrieval_ready: bool | None = None) -> Any:
         stats = MagicMock()
         stats.embedded_messages = embedded
+        stats.stale_embedding_messages = stale
+        if retrieval_ready is not None:
+            stats.retrieval_ready = retrieval_ready
         repo = MagicMock()
         repo.get_archive_stats = AsyncMock(return_value=stats)
         return repo
@@ -455,6 +458,17 @@ class TestHybridAutoElevation:
     def test_no_embeddings_keeps_auto(self) -> None:
         plan = _make_plan(ConversationQuerySpec(query_terms=("foo",), retrieval_lane="auto"))
         out = asyncio.run(_maybe_elevate_to_hybrid(plan, vector_provider=MagicMock(), repo=self._stub_repo(0)))
+        assert out.selection.retrieval_lane == "auto"
+
+    def test_stale_embeddings_keep_auto(self) -> None:
+        plan = _make_plan(ConversationQuerySpec(query_terms=("foo",), retrieval_lane="auto"))
+        out = asyncio.run(
+            _maybe_elevate_to_hybrid(
+                plan,
+                vector_provider=MagicMock(),
+                repo=self._stub_repo(100, stale=100, retrieval_ready=False),
+            )
+        )
         assert out.selection.retrieval_lane == "auto"
 
     def test_no_fts_terms_keeps_auto(self) -> None:
