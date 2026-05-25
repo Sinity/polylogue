@@ -526,6 +526,56 @@
     }
   },
   {
+    "name": "embedding_preflight",
+    "parameters": {
+      "properties": {
+        "max_conversations": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Conversations"
+        },
+        "max_cost_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Cost Usd"
+        },
+        "max_messages": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Messages"
+        },
+        "rebuild": {
+          "default": false,
+          "title": "Rebuild",
+          "type": "boolean"
+        }
+      },
+      "title": "embedding_preflightArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "embedding_status",
     "parameters": {
       "properties": {

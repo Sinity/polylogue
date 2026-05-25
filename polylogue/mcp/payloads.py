@@ -519,6 +519,20 @@ class MCPEmbeddingStatusPayload(SurfacePayloadModel):
         return json.dumps(self.root, indent=2)
 
 
+class MCPEmbeddingPreflightPayload(SurfacePayloadModel):
+    """Canonical embedding catch-up preflight payload exposed over MCP (#1503)."""
+
+    root: dict[str, object]
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, object]) -> MCPEmbeddingPreflightPayload:
+        return cls(root=dict(payload))
+
+    def to_json(self, *, exclude_none: bool = False) -> str:
+        del exclude_none
+        return json.dumps(self.root, indent=2)
+
+
 class MCPUserMarkPayload(SurfacePayloadModel):
     target_type: str = "conversation"
     target_id: str

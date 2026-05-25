@@ -244,6 +244,12 @@ rather than potentially stale `conversation_stats`. `--max-conversations` may
 use materialized conversation stats so small first batches remain fast on large
 archives.
 
+MCP clients should use `embedding_status` for readiness/next-action state and
+`embedding_preflight` for the same no-provider-call cost window. Both tools are
+read-only and return the canonical JSON payloads used by the CLI, so agents do
+not need to scrape terminal output before deciding whether semantic search is
+actually usable.
+
 ### Auto Elevation
 
 When `retrieval_lane=auto` (the default), the planner picks a concrete
