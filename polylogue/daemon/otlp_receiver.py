@@ -242,9 +242,9 @@ def _serialize_response(response: Any, content_type: str) -> bytes:
     if "json" in content_type:
         from google.protobuf.json_format import MessageToJson
 
-        return MessageToJson(response).encode("utf-8")  # type: ignore[no-any-return]
+        return bytes(MessageToJson(response).encode("utf-8"))
     else:
-        return response.SerializeToString()  # type: ignore[no-any-return]
+        return bytes(response.SerializeToString())
 
 
 def _count_entities(request: Any, signal_type: str) -> tuple[int, int]:
