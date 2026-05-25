@@ -279,22 +279,20 @@ Options:
   --help  Show this message and exit.
 
 Commands:
-  analytics       List provider-level analytics insights.
-  audit           Report per-product rigor profile across materialized...
-  cost-rollups    List provider/model cost rollups.
-  costs           List session-level cost estimates.
-  day-summaries   List durable day-level session summary insights.
-  debt            List archive debt and maintenance readiness insights.
-  export          Export versioned archive-insight bundles.
-  phases          List durable session-phase insights.
-  profiles        List durable session-profile insights.
-  status          Report insight materialization coverage and readiness.
-  tags            List durable session-tag rollup insights.
-  threads         List durable work-thread insights.
-  timeline        Render a per-session timeline with hook-vs-sort-key...
-  tool-usage      Per-tool, per-provider rollups over canonical action...
-  week-summaries  List durable week-level session summary insights.
-  work-events     List durable work-event insights.
+  audit         Report per-product rigor profile across materialized...
+  cost-rollups  List provider/model cost rollups.
+  costs         List session-level cost estimates.
+  coverage      List archive coverage buckets by provider, day, or week.
+  debt          List archive debt and maintenance readiness insights.
+  export        Export versioned archive-insight bundles.
+  phases        List durable session-phase insights.
+  profiles      List durable session-profile insights.
+  status        Report insight materialization coverage and readiness.
+  tags          List durable session-tag rollup insights.
+  threads       List durable work-thread insights.
+  timeline      Render a per-session timeline with hook-vs-sort-key...
+  tool-usage    Per-tool, per-provider rollups over canonical action...
+  work-events   List durable work-event insights.
 ```
 
 ## Doctor

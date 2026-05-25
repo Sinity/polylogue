@@ -73,7 +73,61 @@
   {
     "name": "archive_coverage",
     "parameters": {
-      "properties": {},
+      "properties": {
+        "group_by": {
+          "default": "provider",
+          "title": "Group By",
+          "type": "string"
+        },
+        "limit": {
+          "default": 50,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "offset": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Offset",
+          "type": "integer"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since"
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Until"
+        }
+      },
       "title": "archive_coverageArguments",
       "type": "object"
     }
@@ -359,63 +413,6 @@
         }
       },
       "title": "cost_rollupsArguments",
-      "type": "object"
-    }
-  },
-  {
-    "name": "day_session_summaries",
-    "parameters": {
-      "properties": {
-        "limit": {
-          "default": 90,
-          "minimum": 1,
-          "title": "Limit",
-          "type": "integer"
-        },
-        "offset": {
-          "default": 0,
-          "minimum": 0,
-          "title": "Offset",
-          "type": "integer"
-        },
-        "provider": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Provider"
-        },
-        "since": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Since"
-        },
-        "until": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Until"
-        }
-      },
-      "title": "day_session_summariesArguments",
       "type": "object"
     }
   },
@@ -2657,39 +2654,6 @@
     }
   },
   {
-    "name": "provider_analytics",
-    "parameters": {
-      "properties": {
-        "limit": {
-          "default": 50,
-          "minimum": 1,
-          "title": "Limit",
-          "type": "integer"
-        },
-        "offset": {
-          "default": 0,
-          "minimum": 0,
-          "title": "Offset",
-          "type": "integer"
-        },
-        "provider": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Provider"
-        }
-      },
-      "title": "provider_analyticsArguments",
-      "type": "object"
-    }
-  },
-  {
     "name": "raw_artifacts",
     "parameters": {
       "properties": {
@@ -4238,63 +4202,6 @@
         "conversation_ids"
       ],
       "title": "update_indexArguments",
-      "type": "object"
-    }
-  },
-  {
-    "name": "week_session_summaries",
-    "parameters": {
-      "properties": {
-        "limit": {
-          "default": 52,
-          "minimum": 1,
-          "title": "Limit",
-          "type": "integer"
-        },
-        "offset": {
-          "default": 0,
-          "minimum": 0,
-          "title": "Offset",
-          "type": "integer"
-        },
-        "provider": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Provider"
-        },
-        "since": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Since"
-        },
-        "until": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Until"
-        }
-      },
-      "title": "week_session_summariesArguments",
       "type": "object"
     }
   },

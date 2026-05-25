@@ -169,7 +169,6 @@ async def test_repository_insight_thread_and_timeline_reads_build_typed_queries(
 async def test_repository_insight_summary_reads_build_typed_queries() -> None:
     queries = SimpleNamespace(
         _list_session_tag_rollup_rows_query=AsyncMock(return_value=["tag-row"]),
-        _list_day_session_summaries_query=AsyncMock(return_value=["day-row"]),
     )
 
     class _Repo(RepositoryInsightSummaryReadMixin):
@@ -184,18 +183,10 @@ async def test_repository_insight_summary_reads_build_typed_queries() -> None:
         until="2026-01-02",
         query="tag",
     ) == ["tag-row"]
-    assert await repo.list_day_session_summary_records(
-        provider="claude-code",
-        since="2026-01-01",
-        until="2026-01-02",
-    ) == ["day-row"]
 
     tag_query = queries._list_session_tag_rollup_rows_query.await_args.args[0]
-    day_query = queries._list_day_session_summaries_query.await_args.args[0]
     assert tag_query.provider == "claude-code"
     assert tag_query.query == "tag"
-    assert day_query.provider == "claude-code"
-    assert day_query.until == "2026-01-02"
 
 
 class _ConnectionContext:

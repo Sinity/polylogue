@@ -21,8 +21,6 @@ SessionInsightReadyFlag: TypeAlias = Literal[
     "threads_ready",
     "threads_fts_ready",
     "tag_rollups_ready",
-    "day_summaries_ready",
-    "week_summaries_ready",
 ]
 
 
@@ -49,7 +47,6 @@ class SessionInsightCounts:
     phases: int = 0
     threads: int = 0
     tag_rollups: int = 0
-    day_summaries: int = 0
 
     def add(
         self,
@@ -59,14 +56,12 @@ class SessionInsightCounts:
         phases: int = 0,
         threads: int = 0,
         tag_rollups: int = 0,
-        day_summaries: int = 0,
     ) -> None:
         self.profiles += profiles
         self.work_events += work_events
         self.phases += phases
         self.threads += threads
         self.tag_rollups += tag_rollups
-        self.day_summaries += day_summaries
 
     def to_dict(self) -> dict[str, int]:
         return {
@@ -75,7 +70,6 @@ class SessionInsightCounts:
             "phases": self.phases,
             "threads": self.threads,
             "tag_rollups": self.tag_rollups,
-            "day_summaries": self.day_summaries,
         }
 
     def total(self) -> int:
@@ -143,8 +137,6 @@ class SessionInsightStatusSnapshot:
     threads_ready: bool = False
     threads_fts_ready: bool = False
     tag_rollups_ready: bool = False
-    day_summaries_ready: bool = False
-    week_summaries_ready: bool = False
 
     def ready_flag(self, key: SessionInsightReadyFlag) -> bool:
         return bool(getattr(self, key))

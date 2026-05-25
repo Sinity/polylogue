@@ -122,8 +122,6 @@ def _rebuild_schema(conn: sqlite3.Connection) -> None:
         "session_phases",
         "session_threads_fts",
         "session_threads",
-        "day_session_summaries",
-        "week_session_summaries",
         "session_tag_rollups",
     ]
     for table in tables:

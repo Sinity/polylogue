@@ -258,7 +258,6 @@ async def test_run_daemon_live_convergence_campaign_reports_workload_metrics(
             phases=1,
             threads=1,
             tag_rollups=2,
-            day_summaries=1,
         ),
     )
     monkeypatch.setattr("devtools.synthetic_benchmark_runtime._db_row_counts", lambda _db_path: {"messages_count": 8})
@@ -397,8 +396,6 @@ def test_session_insight_materialization_campaign_reports_rebuild_counts(
         "work_threads_count": 2,
         "work_threads_fts_count": 2,
         "session_tag_rollups_count": 4,
-        "day_session_summaries_count": 2,
-        "week_session_summaries_count": 1,
     }
     table_counts = iter((before, after))
     committed: list[str] = []
@@ -428,7 +425,6 @@ def test_session_insight_materialization_campaign_reports_rebuild_counts(
             phases=3,
             threads=2,
             tag_rollups=4,
-            day_summaries=2,
         ),
     )
 
@@ -447,6 +443,4 @@ def test_session_insight_materialization_campaign_reports_rebuild_counts(
         "work_threads_after": 2,
         "work_threads_fts_after": 2,
         "session_tag_rollups_after": 4,
-        "day_session_summaries_after": 2,
-        "week_session_summaries_after": 1,
     }

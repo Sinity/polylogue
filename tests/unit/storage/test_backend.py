@@ -871,7 +871,6 @@ async def test_backend_delete_contracts(tmp_path: Path) -> None:
             ).fetchone()[0]
             > 0
         )
-        assert conn.execute("SELECT COUNT(*) FROM day_session_summaries").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0] >= 1
 
     assert await repo.delete_conversation("conv-delete") is True
@@ -914,7 +913,6 @@ async def test_backend_delete_contracts(tmp_path: Path) -> None:
             ).fetchone()[0]
             == 0
         )
-        assert conn.execute("SELECT COUNT(*) FROM day_session_summaries").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0] == 0
     await backend.close()
 

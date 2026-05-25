@@ -227,15 +227,6 @@ class SessionTagRollupListQuery:
 
 
 @dataclass(frozen=True, slots=True)
-class DaySessionSummaryListQuery:
-    """Canonical day-summary selection for durable insight aggregate reads."""
-
-    provider: str | None = None
-    since: str | None = None
-    until: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class ArtifactObservationListQuery:
     """Canonical durable-artifact observation selection for storage reads."""
 
@@ -251,7 +242,6 @@ __all__ = [
     "ConversationCountQueryKwargs",
     "ConversationListQueryKwargs",
     "ConversationRecordQuery",
-    "DaySessionSummaryListQuery",
     "SessionProfileListQuery",
     "SessionTagRollupListQuery",
     "SessionTimelineListQuery",

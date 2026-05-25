@@ -169,7 +169,6 @@ async def test_execute_materialize_stage_covers_refresh_scoped_and_unscoped_path
         phases=1,
         threads=1,
         tag_rollups=0,
-        day_summaries=0,
     )
     with patch(
         "polylogue.storage.insights.session.rebuild.rebuild_session_insights_async", new=AsyncMock(return_value=counts)

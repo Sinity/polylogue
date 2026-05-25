@@ -119,11 +119,13 @@ async def test_session_insight_refresh_materializes_logical_session_identity(
             ORDER BY conversation_id
             """
         ).fetchall()
-        day_summary = conn.execute(
+        tag_rollup = conn.execute(
             """
             SELECT conversation_count, logical_session_count, logical_conversation_ids_json
-            FROM day_session_summaries
-            WHERE provider_name = 'claude-code' AND day = '2026-05-25'
+            FROM session_tag_rollups
+            WHERE provider_name = 'claude-code'
+              AND bucket_day = '2026-05-25'
+              AND tag = 'provider:claude-code'
             """
         ).fetchone()
 
@@ -132,10 +134,10 @@ async def test_session_insight_refresh_materializes_logical_session_identity(
         ("fork", "root"),
         ("root", "root"),
     }
-    assert day_summary is not None
-    assert int(day_summary["conversation_count"]) == 3
-    assert int(day_summary["logical_session_count"]) == 1
-    assert json.loads(day_summary["logical_conversation_ids_json"]) == ["root"]
+    assert tag_rollup is not None
+    assert int(tag_rollup["conversation_count"]) == 3
+    assert int(tag_rollup["logical_session_count"]) == 1
+    assert json.loads(tag_rollup["logical_conversation_ids_json"]) == ["root"]
 
 
 @pytest.mark.asyncio
@@ -326,8 +328,8 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
         )
         rebuild_session_insights_sync(conn)
         conn.execute(
-            "UPDATE day_session_summaries SET search_text = ? WHERE provider_name = ?",
-            ("sentinel day untouched", "claude-ai"),
+            "UPDATE session_tag_rollups SET search_text = ? WHERE provider_name = ?",
+            ("sentinel tag untouched", "claude-ai"),
         )
         conn.execute(
             "UPDATE work_threads SET search_text = ? WHERE thread_id = ?",
@@ -353,11 +355,12 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
             conn=conn,
         )
         counts = rebuild_session_insights_sync(conn, conversation_ids=["conv-chatgpt-b"])
-        day_rows = conn.execute(
+        tag_rows = conn.execute(
             """
-            SELECT provider_name, day, conversation_count, search_text
-            FROM day_session_summaries
-            ORDER BY provider_name, day
+            SELECT provider_name, bucket_day, conversation_count, search_text
+            FROM session_tag_rollups
+            WHERE tag = 'provider:' || provider_name
+            ORDER BY provider_name, bucket_day
             """
         ).fetchall()
         claude_thread = conn.execute(
@@ -366,11 +369,11 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
         ).fetchone()
 
     assert counts.profiles == 1
-    assert [(row["provider_name"], row["day"], row["conversation_count"]) for row in day_rows] == [
+    assert [(row["provider_name"], row["bucket_day"], row["conversation_count"]) for row in tag_rows] == [
         ("chatgpt", "2026-04-02", 2),
         ("claude-ai", "2026-04-03", 1),
     ]
-    assert [row["search_text"] for row in day_rows if row["provider_name"] == "claude-ai"] == ["sentinel day untouched"]
+    assert [row["search_text"] for row in tag_rows if row["provider_name"] == "claude-ai"] == ["sentinel tag untouched"]
     assert claude_thread is not None
     assert claude_thread["search_text"] == "sentinel thread untouched"
 
@@ -1039,15 +1042,16 @@ async def test_refresh_async_provider_day_aggregates_batches_multiple_groups(
         await conn.commit()
 
     with open_connection(db_path) as conn:
-        day_rows = conn.execute(
+        tag_rows = conn.execute(
             """
-            SELECT provider_name, day, conversation_count
-            FROM day_session_summaries
-            ORDER BY provider_name, day
+            SELECT provider_name, bucket_day, conversation_count
+            FROM session_tag_rollups
+            WHERE tag = 'provider:' || provider_name
+            ORDER BY provider_name, bucket_day
             """
         ).fetchall()
 
-    assert [(row["provider_name"], row["day"], row["conversation_count"]) for row in day_rows] == [
+    assert [(row["provider_name"], row["bucket_day"], row["conversation_count"]) for row in tag_rows] == [
         ("chatgpt", "2026-04-02", 2),
         ("claude-ai", "2026-04-03", 1),
     ]

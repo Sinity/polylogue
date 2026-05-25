@@ -137,8 +137,6 @@ def test_rigor_matrix_covers_all_session_products() -> None:
         "session_work_events",
         "session_phases",
         "work_threads",
-        "day_session_summaries",
-        "week_session_summaries",
         "session_tag_rollups",
     }
     actual = set(rigor_contract_names())
@@ -269,8 +267,6 @@ class _FakeOperations:
             "list_session_phase_insights": phases,
             "list_session_tag_rollup_insights": tags,
             "list_work_thread_insights": [],
-            "list_day_session_summary_insights": [],
-            "list_week_session_summary_insights": [],
         }
 
     def __getattr__(self, name: str):  # type: ignore[no-untyped-def]

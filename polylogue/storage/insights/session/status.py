@@ -182,7 +182,6 @@ WORK_THREAD_COUNT_SQL = "SELECT COUNT(*) FROM work_threads"
 WORK_THREAD_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT thread_id) FROM work_threads_fts"
 WORK_THREAD_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT thread_id) FROM work_threads_fts"
 SESSION_TAG_ROLLUP_COUNT_SQL = "SELECT COUNT(*) FROM session_tag_rollups"
-DAY_SESSION_SUMMARY_COUNT_SQL = "SELECT COUNT(*) FROM day_session_summaries"
 TOTAL_CONVERSATIONS_SQL = "SELECT COUNT(*) FROM conversations"
 HOT_SOURCE_GRACE_SECONDS = 600
 HOT_SOURCE_READY_CUTOFF_SQL = f"(strftime('%s', 'now') - {HOT_SOURCE_GRACE_SECONDS})"
@@ -302,33 +301,6 @@ ORPHAN_WORK_THREAD_COUNT_SQL = """
     LEFT JOIN conversations c ON c.conversation_id = wt.root_id
     WHERE c.conversation_id IS NULL
 """
-EXPECTED_DAY_SESSION_SUMMARY_COUNT_SQL = f"""
-    SELECT COUNT(*) FROM (
-        SELECT sp.provider_name, {_PROFILE_BUCKET_DAY_SQL} AS bucket_day
-        FROM session_profiles sp
-        WHERE {_PROFILE_BUCKET_DAY_SQL} IS NOT NULL
-        GROUP BY sp.provider_name, bucket_day
-    )
-"""
-STALE_DAY_SESSION_SUMMARY_COUNT_SQL = f"""
-    WITH expected AS (
-        SELECT
-            sp.provider_name AS provider_name,
-            {_PROFILE_BUCKET_DAY_SQL} AS bucket_day,
-            MAX(sp.materialized_at) AS max_profile_materialized_at
-        FROM session_profiles sp
-        WHERE {_PROFILE_BUCKET_DAY_SQL} IS NOT NULL
-        GROUP BY sp.provider_name, bucket_day
-    )
-    SELECT COUNT(*)
-    FROM day_session_summaries dss
-    LEFT JOIN expected e
-      ON e.provider_name = dss.provider_name
-     AND e.bucket_day = dss.day
-    WHERE dss.materializer_version != ?
-       OR e.bucket_day IS NULL
-       OR COALESCE(e.max_profile_materialized_at, '') > COALESCE(dss.materialized_at, '')
-"""
 EXPECTED_SESSION_TAG_ROLLUP_COUNT_SQL = f"""
     WITH tag_rows AS (
         SELECT sp.provider_name, {_PROFILE_BUCKET_DAY_SQL} AS bucket_day, tag.value AS tag
@@ -436,12 +408,6 @@ _TABLE_DESCRIPTORS: tuple[SessionInsightTableDescriptor, ...] = (
         table_name="session_tag_rollups",
         count_key="tag_rollup_count",
         count_sql=SESSION_TAG_ROLLUP_COUNT_SQL,
-    ),
-    SessionInsightTableDescriptor(
-        key="day_session_summaries",
-        table_name="day_session_summaries",
-        count_key="day_summary_count",
-        count_sql=DAY_SESSION_SUMMARY_COUNT_SQL,
     ),
 )
 
@@ -570,20 +536,6 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         params=(SESSION_INSIGHT_MATERIALIZER_VERSION,),
         requires_freshness=True,
     ),
-    SessionInsightCountDescriptor(
-        count_key="expected_day_summary_count",
-        table_key="session_profiles",
-        sql=EXPECTED_DAY_SESSION_SUMMARY_COUNT_SQL,
-        requires_freshness=True,
-        fallback_count_key="day_summary_count",
-    ),
-    SessionInsightCountDescriptor(
-        count_key="stale_day_summary_count",
-        table_key="day_session_summaries",
-        sql=STALE_DAY_SESSION_SUMMARY_COUNT_SQL,
-        params=(SESSION_INSIGHT_MATERIALIZER_VERSION,),
-        requires_freshness=True,
-    ),
 )
 
 _READY_DESCRIPTORS: tuple[SessionInsightReadyDescriptor, ...] = (
@@ -625,18 +577,6 @@ _READY_DESCRIPTORS: tuple[SessionInsightReadyDescriptor, ...] = (
         table_key="session_tag_rollups",
         equal_counts=(("tag_rollup_count", "expected_tag_rollup_count"),),
         zero_counts=("stale_tag_rollup_count",),
-    ),
-    SessionInsightReadyDescriptor(
-        ready_key="day_summaries_ready",
-        table_key="day_session_summaries",
-        equal_counts=(("day_summary_count", "expected_day_summary_count"),),
-        zero_counts=("stale_day_summary_count",),
-    ),
-    SessionInsightReadyDescriptor(
-        ready_key="week_summaries_ready",
-        table_key="day_session_summaries",
-        equal_counts=(("day_summary_count", "expected_day_summary_count"),),
-        zero_counts=("stale_day_summary_count",),
     ),
 )
 
@@ -781,8 +721,6 @@ def _status_payload(
         threads_ready=ready_flags["threads_ready"],
         threads_fts_ready=ready_flags["threads_fts_ready"],
         tag_rollups_ready=ready_flags["tag_rollups_ready"],
-        day_summaries_ready=ready_flags["day_summaries_ready"],
-        week_summaries_ready=ready_flags["week_summaries_ready"],
     )
 
 

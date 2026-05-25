@@ -12,13 +12,12 @@ plus the archive-debt orphan counts in
 write-watching SQLite hook used in tests confirms zero writes during a
 preview).
 
-Models inventoried (12 total):
+Models inventoried:
 
 * ``messages_fts``, ``action_events``, ``action_events_fts``,
   ``session_profile_rows``, ``session_work_event_inference``,
   ``session_work_event_inference_fts``, ``session_phase_inference``,
-  ``work_threads``, ``work_threads_fts``, ``session_tag_rollups``,
-  ``day_session_summaries``, ``week_session_summaries`` — derived read
+  ``work_threads``, ``work_threads_fts``, ``session_tag_rollups`` — derived read
   models reported by ``collect_derived_model_statuses_sync``.
 * ``transcript_embeddings``, ``retrieval_evidence``,
   ``retrieval_inference``, ``retrieval_enrichment`` — retrieval-layer
@@ -271,8 +270,6 @@ _DERIVED_MODEL_NAMES: frozenset[str] = frozenset(
         "work_threads",
         "work_threads_fts",
         "session_tag_rollups",
-        "day_session_summaries",
-        "week_session_summaries",
     }
 )
 

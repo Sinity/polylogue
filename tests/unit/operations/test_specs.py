@@ -30,9 +30,7 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "query-session-phases",
         "query-work-threads",
         "query-session-tag-rollups",
-        "query-day-session-summaries",
-        "query-week-session-summaries",
-        "query-provider-analytics",
+        "query-archive-coverage",
         "query-tool-usage",
         "query-session-insight-status",
         "query-archive-debt",
@@ -86,7 +84,7 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
     assert specs["query-session-work-events"].path_targets == ("session-work-event-query-loop",)
     assert specs["query-session-insight-status"].path_targets == ("session-insight-status-query-loop",)
     assert specs["query-archive-debt"].path_targets == ("archive-debt-query-loop",)
-    assert specs["query-provider-analytics"].path_targets == ("provider-analytics-query-loop",)
+    assert specs["query-archive-coverage"].path_targets == ("archive-coverage-query-loop",)
     assert specs["compile-inferred-corpus-specs"].path_targets == ("inferred-corpus-compilation-loop",)
     assert specs["compile-inferred-corpus-scenarios"].path_targets == ("inferred-corpus-compilation-loop",)
     assert specs["query-schema-catalog"].path_targets == ("schema-list-query-loop",)

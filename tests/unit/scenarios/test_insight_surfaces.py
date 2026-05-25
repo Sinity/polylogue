@@ -8,8 +8,7 @@ def test_build_insight_contract_surfaces_compiles_canonical_json_contract_entrie
 
     assert surfaces["json-insights-profiles"].args == ("insights", "profiles", "--format", "json")
     assert surfaces["json-insights-profiles"].tags == ("insights", "session-profiles")
-    assert surfaces["json-insights-week-summaries"].args == ("insights", "week-summaries", "--format", "json")
-    assert surfaces["json-insights-analytics"].args == ("insights", "analytics", "--format", "json")
+    assert surfaces["json-insights-coverage"].args == ("insights", "coverage", "--format", "json")
 
 
 def test_build_live_insight_surface_lanes_compiles_live_variants() -> None:
@@ -26,13 +25,15 @@ def test_build_live_insight_surface_lanes_compiles_live_variants() -> None:
         "--format",
         "json",
     )
-    assert surfaces["live-insights-day-summaries"].args == (
+    assert surfaces["live-insights-coverage-day"].args == (
         "--provider",
         "claude-code",
         "--since",
         "2026-03-01",
         "insights",
-        "day-summaries",
+        "coverage",
+        "--group-by",
+        "day",
         "--limit",
         "14",
         "--format",

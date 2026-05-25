@@ -39,8 +39,6 @@ _DERIVED_MODEL_READINESS_CHECKS: tuple[tuple[str, str], ...] = (
     ("session_work_event_inference_fts", "session_work_event_inference_fts"),
     ("session_tag_rollups", "session_tag_rollups"),
     ("session_phase_inference", "session_phase_inference"),
-    ("day_session_summaries", "day_session_summaries"),
-    ("week_session_summaries", "week_session_summaries"),
 )
 
 

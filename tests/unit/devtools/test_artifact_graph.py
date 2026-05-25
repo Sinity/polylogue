@@ -77,9 +77,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "session-phase-query-loop",
         "work-thread-query-loop",
         "session-tag-rollup-query-loop",
-        "day-summary-query-loop",
-        "week-summary-query-loop",
-        "provider-analytics-query-loop",
+        "archive-coverage-query-loop",
         "session-insight-status-query-loop",
         "archive-debt-query-loop",
     }
@@ -263,7 +261,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert payload["scenario_coverage"]["paths"]["session-phase-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["work-thread-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["session-tag-rollup-query-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["paths"]["day-summary-query-loop"]["complete"] is True
+    assert payload["scenario_coverage"]["paths"]["archive-coverage-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["uncovered_maintenance_targets"] == [
         "empty_conversations",
         "message_embeddings",
@@ -276,8 +274,6 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "superseded_raw_snapshots",
         "wal_checkpoint",
     ]
-    assert payload["scenario_coverage"]["paths"]["week-summary-query-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["paths"]["provider-analytics-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["session-insight-status-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["archive-debt-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["action-event-repair-loop"]["complete"] is True

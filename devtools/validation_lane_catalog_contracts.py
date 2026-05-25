@@ -427,7 +427,7 @@ COMPOSITE_LANES: dict[str, LaneEntry] = {
         family="domain-read-model",
         origin=_COMPOSITE_ORIGIN,
         execution=composite_execution(
-            "live-insights-small", "live-insights-analytics", "live-insights-debt", "live-maintenance-small"
+            "live-insights-small", "live-insights-coverage-provider", "live-insights-debt", "live-maintenance-small"
         ),
     ),
     "domain-read-model-hardening": LaneEntry(
@@ -520,7 +520,7 @@ COMPOSITE_LANES: dict[str, LaneEntry] = {
         execution=composite_execution(
             "live-insights-status",
             "live-insights-tags",
-            "live-insights-day-summaries",
+            "live-insights-coverage-day",
             "live-insights-debt",
             "live-maintenance-small",
         ),

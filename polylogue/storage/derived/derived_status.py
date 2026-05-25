@@ -61,8 +61,6 @@ def _session_insight_metrics(session_status: SessionInsightStatusSnapshot) -> Me
         "total_thread_roots": session_status.root_threads,
         "tag_rollup_rows": session_status.tag_rollup_count,
         "expected_tag_rollup_rows": session_status.expected_tag_rollup_count,
-        "day_summary_rows": session_status.day_summary_count,
-        "expected_day_summary_rows": session_status.expected_day_summary_count,
         "missing_profile_rows": session_status.missing_profile_row_count,
         "stale_profile_rows": session_status.stale_profile_row_count,
         "orphan_profile_rows": session_status.orphan_profile_row_count,
@@ -75,7 +73,6 @@ def _session_insight_metrics(session_status: SessionInsightStatusSnapshot) -> Me
         "stale_thread_rows": session_status.stale_thread_count,
         "orphan_thread_rows": session_status.orphan_thread_count,
         "stale_tag_rollup_rows": session_status.stale_tag_rollup_count,
-        "stale_day_summary_rows": session_status.stale_day_summary_count,
         "profile_rows_ready": session_status.profile_rows_ready,
         "work_event_rows_ready": session_status.work_event_inference_rows_ready,
         "work_event_fts_ready": session_status.work_event_inference_fts_ready,
@@ -83,8 +80,6 @@ def _session_insight_metrics(session_status: SessionInsightStatusSnapshot) -> Me
         "threads_ready": session_status.threads_ready,
         "thread_fts_ready": session_status.threads_fts_ready,
         "tag_rollups_ready": session_status.tag_rollups_ready,
-        "day_summaries_ready": session_status.day_summaries_ready,
-        "week_summaries_ready": session_status.week_summaries_ready,
     }
 
 

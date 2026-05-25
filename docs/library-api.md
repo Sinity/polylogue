@@ -45,9 +45,8 @@ Durable archive insights are public too:
 ```python
 from polylogue import Polylogue
 from polylogue.insights.archive import (
+    ArchiveCoverageInsightQuery,
     ArchiveDebtInsightQuery,
-    DaySessionSummaryInsightQuery,
-    ProviderAnalyticsInsightQuery,
     SessionLatencyProfileInsightQuery,
     SessionPhaseInsightQuery,
     SessionProfileInsightQuery,
@@ -73,11 +72,8 @@ async with Polylogue() as archive:
     tags = await archive.list_session_tag_rollup_insights(
         SessionTagRollupQuery(provider="claude-code", since="2026-01-01")
     )
-    days = await archive.list_day_session_summary_insights(
-        DaySessionSummaryInsightQuery(provider="claude-code", since="2026-01-01")
-    )
-    analytics = await archive.list_provider_analytics_insights(
-        ProviderAnalyticsInsightQuery(provider="claude-code")
+    coverage = await archive.list_archive_coverage_insights(
+        ArchiveCoverageInsightQuery(provider="claude-code", group_by="day", since="2026-01-01")
     )
     debt = await archive.list_archive_debt_insights(
         ArchiveDebtInsightQuery(only_actionable=True)
@@ -134,9 +130,9 @@ is derived from the same per-session materialization row. Request
 `SessionProfileInsightQuery(tier="merged")` when callers need both grounded
 profile evidence and probabilistic enrichment in one payload.
 
-Provider analytics and archive debt are public insights too:
+Archive coverage and archive debt are public insights too:
 
-- `ProviderAnalyticsInsight`: provider-level conversation/message/tool/thinking metrics
+- `ArchiveCoverageInsight`: provider/day/week conversation, message, cost, and activity coverage rollups
 - `ArchiveDebtInsight`: governed cleanup/repair debt with maintenance targets plus preview/apply/validation lineage
 
 ## Filter Chain API
@@ -313,9 +309,7 @@ asyncio.run(main())
 | `list_session_work_event_insights(query)` | List durable work-event insights |
 | `list_work_thread_insights(query)` | List durable work-thread insights |
 | `list_session_tag_rollup_insights(query)` | List durable tag-rollup insights |
-| `list_day_session_summary_insights(query)` | List durable day-summary insights |
-| `list_week_session_summary_insights(query)` | List durable week-summary insights |
-| `list_provider_analytics_insights(query)` | List provider-level analytics insights |
+| `list_archive_coverage_insights(query)` | List provider, day, or week archive coverage insights |
 | `list_tool_usage_insights(query)` | Per-provider tool usage with explicit coverage gaps |
 | `list_archive_debt_insights(query)` | List governed archive-debt insights |
 

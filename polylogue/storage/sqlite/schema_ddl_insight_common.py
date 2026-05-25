@@ -1,7 +1,7 @@
 """Shared SQL column fragments for session-insight DDL composition.
 
 The session-insight tables (`session_profiles`, `session_work_events`,
-`session_phases`, `session_tag_rollups`, `day_session_summaries`, `work_threads`)
+`session_phases`, `session_tag_rollups`, `work_threads`)
 all carry the same materializer-lifecycle bookkeeping columns. Defining them
 once here keeps the renders byte-identical across DDL files and prevents drift
 when the lifecycle contract evolves.

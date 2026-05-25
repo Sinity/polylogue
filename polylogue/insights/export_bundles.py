@@ -13,14 +13,12 @@ from polylogue.config import Config
 from polylogue.core.json import JSONDocument, dumps, require_json_document
 from polylogue.errors import PolylogueError
 from polylogue.insights.archive import (
+    ArchiveCoverageInsight,
     ArchiveInsightUnavailableError,
-    DaySessionSummaryInsight,
-    ProviderAnalyticsInsight,
     SessionPhaseInsight,
     SessionProfileInsight,
     SessionTagRollupInsight,
     SessionWorkEventInsight,
-    WeekSessionSummaryInsight,
     WorkThreadInsight,
 )
 from polylogue.insights.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION, ArchiveInsightModel
@@ -36,9 +34,7 @@ DEFAULT_EXPORT_INSIGHTS: tuple[str, ...] = (
     "session_phases",
     "work_threads",
     "session_tag_rollups",
-    "day_session_summaries",
-    "week_session_summaries",
-    "provider_analytics",
+    "archive_coverage",
 )
 _INSIGHT_MODEL_BY_NAME: dict[str, type[ArchiveInsightModel]] = {
     "session_profiles": SessionProfileInsight,
@@ -46,9 +42,7 @@ _INSIGHT_MODEL_BY_NAME: dict[str, type[ArchiveInsightModel]] = {
     "session_phases": SessionPhaseInsight,
     "work_threads": WorkThreadInsight,
     "session_tag_rollups": SessionTagRollupInsight,
-    "day_session_summaries": DaySessionSummaryInsight,
-    "week_session_summaries": WeekSessionSummaryInsight,
-    "provider_analytics": ProviderAnalyticsInsight,
+    "archive_coverage": ArchiveCoverageInsight,
 }
 _INSIGHT_ALIASES = {
     **{name.replace("_", "-"): name for name in DEFAULT_EXPORT_INSIGHTS},

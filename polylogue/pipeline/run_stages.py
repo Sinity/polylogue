@@ -62,7 +62,6 @@ def _materialize_rebuild_observation(
         "phases": counts.phases,
         "threads": counts.threads,
         "tag_rollups": counts.tag_rollups,
-        "day_summaries": counts.day_summaries,
     }
 
 

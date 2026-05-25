@@ -42,7 +42,6 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "work_thread_rows",
         "work_thread_fts",
         "session_tag_rollup_rows",
-        "day_session_summary_rows",
         "session_insight_rows",
         "session_insight_fts",
         "session_insight_readiness",
@@ -53,9 +52,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "session_phase_results",
         "work_thread_results",
         "session_tag_rollup_results",
-        "day_session_summary_results",
-        "week_session_summary_results",
-        "provider_analytics_results",
+        "archive_coverage_results",
         "session_insight_status_results",
         "archive_debt_results",
         "schema_packages",
@@ -106,8 +103,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert nodes["session_insight_source_conversations"].depends_on == ("archive_conversation_rows",)
     assert nodes["conversation_query_results"].depends_on == ("message_fts",)
     assert nodes["session_profile_results"].depends_on == ("session_profile_rows",)
-    assert nodes["week_session_summary_results"].depends_on == ("day_session_summary_rows",)
-    assert nodes["provider_analytics_results"].depends_on == ("session_insight_rows",)
+    assert nodes["archive_coverage_results"].depends_on == ("archive_conversation_rows", "session_profile_rows")
     assert nodes["inferred_corpus_specs"].depends_on == ("schema_packages", "schema_cluster_manifests")
     assert nodes["inferred_corpus_scenarios"].depends_on == ("inferred_corpus_specs",)
     assert nodes["schema_list_results"].depends_on == (
@@ -152,9 +148,7 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert operations["query-session-phases"].produces == ("session_phase_results",)
     assert operations["query-work-threads"].produces == ("work_thread_results",)
     assert operations["query-session-tag-rollups"].produces == ("session_tag_rollup_results",)
-    assert operations["query-day-session-summaries"].produces == ("day_session_summary_results",)
-    assert operations["query-week-session-summaries"].produces == ("week_session_summary_results",)
-    assert operations["query-provider-analytics"].produces == ("provider_analytics_results",)
+    assert operations["query-archive-coverage"].produces == ("archive_coverage_results",)
     assert operations["query-session-insight-status"].produces == ("session_insight_status_results",)
     assert operations["query-archive-debt"].produces == ("archive_debt_results",)
     assert operations["compile-inferred-corpus-specs"].produces == ("inferred_corpus_specs",)
@@ -177,7 +171,6 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "work_thread_rows",
         "work_thread_fts",
         "session_tag_rollup_rows",
-        "day_session_summary_rows",
         "session_insight_rows",
         "session_insight_fts",
         "session_insight_readiness",
@@ -218,9 +211,7 @@ def test_artifact_graph_paths_reference_only_declared_nodes() -> None:
         "session-phase-query-loop",
         "work-thread-query-loop",
         "session-tag-rollup-query-loop",
-        "day-summary-query-loop",
-        "week-summary-query-loop",
-        "provider-analytics-query-loop",
+        "archive-coverage-query-loop",
         "tool-usage-query-loop",
         "session-insight-status-query-loop",
         "archive-debt-query-loop",

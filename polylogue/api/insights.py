@@ -9,14 +9,12 @@ from polylogue.cost.aggregation import session_costs_to_daily_usd
 from polylogue.cost.outlook import CycleOutlook, ProjectionMethod, build_cycle_outlook
 from polylogue.cost.plans import resolve_plan
 from polylogue.insights.archive import (
+    ArchiveCoverageInsight,
+    ArchiveCoverageInsightQuery,
     ArchiveDebtInsight,
     ArchiveDebtInsightQuery,
     CostRollupInsight,
     CostRollupInsightQuery,
-    DaySessionSummaryInsight,
-    DaySessionSummaryInsightQuery,
-    ProviderAnalyticsInsight,
-    ProviderAnalyticsInsightQuery,
     SessionCostInsight,
     SessionCostInsightQuery,
     SessionLatencyProfileInsight,
@@ -27,8 +25,6 @@ from polylogue.insights.archive import (
     SessionTagRollupQuery,
     SessionWorkEventInsight,
     SessionWorkEventInsightQuery,
-    WeekSessionSummaryInsight,
-    WeekSessionSummaryInsightQuery,
     WorkThreadInsight,
     WorkThreadInsightQuery,
 )
@@ -71,20 +67,10 @@ if TYPE_CHECKING:
             query: WorkThreadInsightQuery | None = None,
         ) -> list[WorkThreadInsight]: ...
 
-        async def list_day_session_summary_insights(
+        async def list_archive_coverage_insights(
             self,
-            query: DaySessionSummaryInsightQuery | None = None,
-        ) -> list[DaySessionSummaryInsight]: ...
-
-        async def list_week_session_summary_insights(
-            self,
-            query: WeekSessionSummaryInsightQuery | None = None,
-        ) -> list[WeekSessionSummaryInsight]: ...
-
-        async def list_provider_analytics_insights(
-            self,
-            query: ProviderAnalyticsInsightQuery | None = None,
-        ) -> list[ProviderAnalyticsInsight]: ...
+            query: ArchiveCoverageInsightQuery | None = None,
+        ) -> list[ArchiveCoverageInsight]: ...
 
         async def list_tool_usage_insights(
             self,
@@ -176,23 +162,11 @@ class PolylogueInsightsMixin:
     ) -> list[WorkThreadInsight]:
         return await self.operations.list_work_thread_insights(query)
 
-    async def list_day_session_summary_insights(
+    async def list_archive_coverage_insights(
         self,
-        query: DaySessionSummaryInsightQuery | None = None,
-    ) -> list[DaySessionSummaryInsight]:
-        return await self.operations.list_day_session_summary_insights(query)
-
-    async def list_week_session_summary_insights(
-        self,
-        query: WeekSessionSummaryInsightQuery | None = None,
-    ) -> list[WeekSessionSummaryInsight]:
-        return await self.operations.list_week_session_summary_insights(query)
-
-    async def list_provider_analytics_insights(
-        self,
-        query: ProviderAnalyticsInsightQuery | None = None,
-    ) -> list[ProviderAnalyticsInsight]:
-        return await self.operations.list_provider_analytics_insights(query)
+        query: ArchiveCoverageInsightQuery | None = None,
+    ) -> list[ArchiveCoverageInsight]:
+        return await self.operations.list_archive_coverage_insights(query)
 
     async def list_tool_usage_insights(
         self,

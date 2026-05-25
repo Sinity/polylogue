@@ -93,7 +93,6 @@ class MaterializeStageObservation(TypedDict, total=False):
     phases: int
     threads: int
     tag_rollups: int
-    day_summaries: int
     conversations: int
     unique_thread_roots: int
     unique_provider_days: int

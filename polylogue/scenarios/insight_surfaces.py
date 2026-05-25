@@ -95,45 +95,25 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
         ),
     ),
     CliSurfaceFamily(
-        slug="day-summaries",
-        command_args=("insights", "day-summaries"),
-        tags=("insights", "day-summaries"),
+        slug="coverage",
+        command_args=("insights", "coverage"),
+        tags=("insights", "coverage"),
         exercise=CliSurfaceVariant(
-            name="json-insights-day-summaries",
-            description="insights day-summaries JSON contract",
+            name="json-insights-coverage",
+            description="insights coverage JSON contract",
         ),
         live_variants=(
             CliSurfaceVariant(
-                name="live-insights-day-summaries",
-                description="Live archive day-summary insight surface over the recent semantic slice",
-                prefix_args=("--provider", "claude-code", "--since", "2026-03-01"),
-                suffix_args=("--limit", "14", "--format", "json"),
+                name="live-insights-coverage-provider",
+                description="Live archive provider coverage insight surface",
+                suffix_args=("--limit", "20", "--format", "json"),
                 env="any",
             ),
-        ),
-    ),
-    CliSurfaceFamily(
-        slug="week-summaries",
-        command_args=("insights", "week-summaries"),
-        tags=("insights", "week-summaries"),
-        exercise=CliSurfaceVariant(
-            name="json-insights-week-summaries",
-            description="insights week-summaries JSON contract",
-        ),
-    ),
-    CliSurfaceFamily(
-        slug="analytics",
-        command_args=("insights", "analytics"),
-        tags=("insights", "analytics"),
-        exercise=CliSurfaceVariant(
-            name="json-insights-analytics",
-            description="insights analytics JSON contract",
-        ),
-        live_variants=(
             CliSurfaceVariant(
-                name="live-insights-analytics",
-                description="Live archive provider-analytics insight surface",
-                suffix_args=("--limit", "20", "--format", "json"),
+                name="live-insights-coverage-day",
+                description="Live archive day coverage insight surface over the recent semantic slice",
+                prefix_args=("--provider", "claude-code", "--since", "2026-03-01"),
+                suffix_args=("--group-by", "day", "--limit", "14", "--format", "json"),
                 env="any",
             ),
         ),

@@ -164,9 +164,7 @@ def test_sync_product_queries_forward_through_sync_bridge() -> None:
         list_session_phase_insights=lambda query=None: ("phases-list", query),
         get_work_thread_insight=lambda thread_id: ("thread", thread_id),
         list_work_thread_insights=lambda query=None: ("threads", query),
-        list_day_session_summary_insights=lambda query=None: ("days", query),
-        list_week_session_summary_insights=lambda query=None: ("weeks", query),
-        list_provider_analytics_insights=lambda query=None: ("analytics", query),
+        list_archive_coverage_insights=lambda query=None: ("coverage", query),
         list_tool_usage_insights=lambda query=None: ("tool-usage", query),
         list_session_cost_insights=lambda query=None: ("session-costs", query),
         list_cost_rollup_insights=lambda query=None: ("cost-rollups", query),
@@ -191,16 +189,14 @@ def test_sync_product_queries_forward_through_sync_bridge() -> None:
         assert archive.list_session_phase_insights("query") == ("phases-list", "query")
         assert archive.get_work_thread_insight("thread-1") == ("thread", "thread-1")
         assert archive.list_work_thread_insights("query") == ("threads", "query")
-        assert archive.list_day_session_summary_insights("query") == ("days", "query")
-        assert archive.list_week_session_summary_insights("query") == ("weeks", "query")
-        assert archive.list_provider_analytics_insights("query") == ("analytics", "query")
+        assert archive.list_archive_coverage_insights("query") == ("coverage", "query")
         assert archive.list_tool_usage_insights("query") == ("tool-usage", "query")
         assert archive.list_session_cost_insights("query") == ("session-costs", "query")
         assert archive.list_cost_rollup_insights("query") == ("cost-rollups", "query")
         assert archive.list_archive_debt_insights("query") == ("debt", "query")
         assert archive.insight_readiness_report("query") == ("readiness", "query")
 
-    assert mock_run.call_count == 18
+    assert mock_run.call_count == 16
 
 
 def test_sync_polylogue_wraps_async_facade_and_context_manager() -> None:
@@ -233,9 +229,7 @@ async def test_polylogue_products_mixin_forwards_all_product_calls() -> None:
         list_session_phase_insights=AsyncMock(return_value=["phases-list"]),
         get_work_thread_insight=AsyncMock(return_value="thread"),
         list_work_thread_insights=AsyncMock(return_value=["threads"]),
-        list_day_session_summary_insights=AsyncMock(return_value=["days"]),
-        list_week_session_summary_insights=AsyncMock(return_value=["weeks"]),
-        list_provider_analytics_insights=AsyncMock(return_value=["analytics"]),
+        list_archive_coverage_insights=AsyncMock(return_value=["coverage"]),
         list_tool_usage_insights=AsyncMock(return_value=["tool-usage"]),
         list_session_cost_insights=AsyncMock(return_value=["session-costs"]),
         list_cost_rollup_insights=AsyncMock(return_value=["cost-rollups"]),
@@ -259,9 +253,7 @@ async def test_polylogue_products_mixin_forwards_all_product_calls() -> None:
     assert await archive.list_session_phase_insights("query") == ["phases-list"]
     assert await archive.get_work_thread_insight("thread-1") == "thread"
     assert await archive.list_work_thread_insights("query") == ["threads"]
-    assert await archive.list_day_session_summary_insights("query") == ["days"]
-    assert await archive.list_week_session_summary_insights("query") == ["weeks"]
-    assert await archive.list_provider_analytics_insights("query") == ["analytics"]
+    assert await archive.list_archive_coverage_insights("query") == ["coverage"]
     assert await archive.list_tool_usage_insights("query") == ["tool-usage"]
     assert await archive.list_session_cost_insights("query") == ["session-costs"]
     assert await archive.list_cost_rollup_insights("query") == ["cost-rollups"]
@@ -274,9 +266,7 @@ async def test_polylogue_products_mixin_forwards_all_product_calls() -> None:
     operations.list_session_phase_insights.assert_awaited_once_with("query")
     operations.get_work_thread_insight.assert_awaited_once_with("thread-1")
     operations.list_work_thread_insights.assert_awaited_once_with("query")
-    operations.list_day_session_summary_insights.assert_awaited_once_with("query")
-    operations.list_week_session_summary_insights.assert_awaited_once_with("query")
-    operations.list_provider_analytics_insights.assert_awaited_once_with("query")
+    operations.list_archive_coverage_insights.assert_awaited_once_with("query")
     operations.list_tool_usage_insights.assert_awaited_once_with("query")
     operations.list_session_cost_insights.assert_awaited_once_with("query")
     operations.list_cost_rollup_insights.assert_awaited_once_with("query")

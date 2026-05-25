@@ -15,8 +15,6 @@ _SESSION_INSIGHT_READY_FLAGS: tuple[SessionInsightReadyFlag, ...] = (
     "threads_ready",
     "threads_fts_ready",
     "tag_rollups_ready",
-    "day_summaries_ready",
-    "week_summaries_ready",
 )
 
 

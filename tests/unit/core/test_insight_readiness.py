@@ -70,9 +70,7 @@ async def test_insight_readiness_report_marks_rebuilt_insights_ready(cli_workspa
         "session_phases",
         "work_threads",
         "session_tag_rollups",
-        "day_session_summaries",
-        "week_session_summaries",
-        "provider_analytics",
+        "archive_coverage",
     }
     profile = _entry_by_name(report, "session_profiles")
     assert profile.verdict == "degraded"

@@ -1,4 +1,4 @@
-"""Aggregate refresh helpers for day summaries and tag rollups."""
+"""Aggregate refresh helpers for tag rollups."""
 
 from __future__ import annotations
 
@@ -10,21 +10,13 @@ import aiosqlite
 
 from polylogue.insights.archive import date_from_iso
 from polylogue.insights.archive_rollups import build_session_tag_rollup_records
-from polylogue.insights.archive_summaries import build_day_session_summary_records
 from polylogue.storage.insights.session.profiles import hydrate_session_profile
-from polylogue.storage.insights.session.storage import (
-    replace_day_session_summaries_sync,
-    replace_session_tag_rollup_rows_sync,
-)
+from polylogue.storage.insights.session.storage import replace_session_tag_rollup_rows_sync
 from polylogue.storage.runtime import (
-    DaySessionSummaryRecord,
     SessionProfileRecord,
     SessionTagRollupRecord,
 )
 from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
-from polylogue.storage.sqlite.queries.session_insight_summary_queries import (
-    replace_day_session_summaries as replace_day_session_summaries_async,
-)
 from polylogue.storage.sqlite.queries.session_insight_summary_queries import (
     replace_session_tag_rollup_rows as replace_session_tag_rollup_rows_async,
 )
@@ -63,7 +55,6 @@ _DISTINCT_PROVIDER_DAY_GROUPS_SQL = f"""
 class ProviderDayAggregateWrite:
     provider_name: str
     bucket_day: str
-    day_rows: list[DaySessionSummaryRecord]
     tag_rows: list[SessionTagRollupRecord]
 
 
@@ -161,14 +152,11 @@ def _provider_day_group_query(
 
 def _aggregate_rows_for_profile_records(
     profile_records: Sequence[SessionProfileRecord],
-) -> tuple[list[DaySessionSummaryRecord], list[SessionTagRollupRecord]]:
+) -> list[SessionTagRollupRecord]:
     if not profile_records:
-        return [], []
+        return []
     profiles = [hydrate_session_profile(record) for record in profile_records]
-    return (
-        build_day_session_summary_records(profiles),
-        build_session_tag_rollup_records(profiles),
-    )
+    return build_session_tag_rollup_records(profiles)
 
 
 def _aggregate_writes_for_groups(
@@ -177,14 +165,11 @@ def _aggregate_writes_for_groups(
 ) -> list[ProviderDayAggregateWrite]:
     writes: list[ProviderDayAggregateWrite] = []
     for provider_name, bucket_day in groups:
-        day_rows, tag_rows = _aggregate_rows_for_profile_records(
-            profile_records_by_group.get((provider_name, bucket_day), []),
-        )
+        tag_rows = _aggregate_rows_for_profile_records(profile_records_by_group.get((provider_name, bucket_day), []))
         writes.append(
             ProviderDayAggregateWrite(
                 provider_name=provider_name,
                 bucket_day=bucket_day,
-                day_rows=day_rows,
                 tag_rows=tag_rows,
             )
         )
@@ -239,12 +224,6 @@ def refresh_sync_provider_day_aggregates(
     for group_chunk in _chunk_provider_day_groups(normalized_groups):
         profile_records_by_group = load_sync_provider_day_profile_records_by_groups(conn, group_chunk)
         for write in _aggregate_writes_for_groups(profile_records_by_group, group_chunk):
-            replace_day_session_summaries_sync(
-                conn,
-                provider_name=write.provider_name,
-                day=write.bucket_day,
-                records=write.day_rows,
-            )
             replace_session_tag_rollup_rows_sync(
                 conn,
                 provider_name=write.provider_name,
@@ -266,13 +245,6 @@ async def refresh_async_provider_day_aggregates(
             group_chunk,
         )
         for write in _aggregate_writes_for_groups(profile_records_by_group, group_chunk):
-            await replace_day_session_summaries_async(
-                conn,
-                provider_name=write.provider_name,
-                day=write.bucket_day,
-                records=write.day_rows,
-                transaction_depth=transaction_depth,
-            )
             await replace_session_tag_rollup_rows_async(
                 conn,
                 provider_name=write.provider_name,

@@ -10,13 +10,11 @@ import aiosqlite
 
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.query_models import (
-    DaySessionSummaryListQuery,
     SessionTagRollupListQuery,
     WorkThreadListQuery,
 )
 from polylogue.storage.runtime import (
     ActionEventRecord,
-    DaySessionSummaryRecord,
     SessionTagRollupRecord,
     WorkThreadRecord,
 )
@@ -137,28 +135,6 @@ class SQLiteQueryStore(
                 since=since,
                 until=until,
                 query=query,
-            )
-        )
-
-    async def _list_day_session_summaries_query(
-        self,
-        query: DaySessionSummaryListQuery,
-    ) -> list[DaySessionSummaryRecord]:
-        async with self._connection_factory() as conn:
-            return await session_insight_summaries_q.list_day_session_summaries(conn, query)
-
-    async def list_day_session_summaries(
-        self,
-        *,
-        provider: str | None = None,
-        since: str | None = None,
-        until: str | None = None,
-    ) -> list[DaySessionSummaryRecord]:
-        return await self._list_day_session_summaries_query(
-            DaySessionSummaryListQuery(
-                provider=provider,
-                since=since,
-                until=until,
             )
         )
 

@@ -617,7 +617,6 @@ def _finalize_rebuild_counts(
     phases: int,
     threads: int,
     tag_rollups: int,
-    day_summaries: int,
 ) -> SessionInsightCounts:
     return SessionInsightCounts(
         profiles=profiles,
@@ -625,7 +624,6 @@ def _finalize_rebuild_counts(
         phases=phases,
         threads=threads,
         tag_rollups=tag_rollups,
-        day_summaries=day_summaries,
     )
 
 
@@ -671,7 +669,6 @@ def rebuild_session_insights_sync(
         conn.execute("DELETE FROM session_latency_profiles")
         conn.execute("DELETE FROM session_profiles")
         conn.execute("DELETE FROM session_tag_rollups")
-        conn.execute("DELETE FROM day_session_summaries")
         conn.execute("DELETE FROM conversation_repo_observations")
         conn.execute("DELETE FROM repo_identities")
         conversation_chunks = iter_conversation_id_pages_sync(conn, page_size=page_size)
@@ -760,7 +757,6 @@ def rebuild_session_insights_sync(
             conn.execute("DELETE FROM work_threads")
             conn.execute("DELETE FROM session_phases")
             conn.execute("DELETE FROM session_tag_rollups")
-            conn.execute("DELETE FROM day_session_summaries")
         conn.commit()
         return _empty_rebuild_counts()
 
@@ -772,7 +768,6 @@ def rebuild_session_insights_sync(
             previous_profile_groups | refreshed_profile_groups,
         )
         tag_rollup_count = conn.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0]
-        day_summary_count = conn.execute("SELECT COUNT(*) FROM day_session_summaries").fetchone()[0]
         conn.commit()
         return _finalize_rebuild_counts(
             profiles=profile_count,
@@ -780,7 +775,6 @@ def rebuild_session_insights_sync(
             phases=phase_count,
             threads=thread_count,
             tag_rollups=int(tag_rollup_count),
-            day_summaries=int(day_summary_count),
         )
 
     conn.execute("DELETE FROM work_threads")
@@ -793,12 +787,10 @@ def rebuild_session_insights_sync(
                 continue
             replace_work_thread_sync(conn, record.thread_id, record)
             thread_count += 1
-    conn.execute("DELETE FROM day_session_summaries")
     conn.execute("DELETE FROM session_tag_rollups")
     provider_day_groups = set(list_sync_provider_day_groups(conn))
     refresh_sync_provider_day_aggregates(conn, provider_day_groups)
     tag_rollup_count = conn.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0]
-    day_summary_count = conn.execute("SELECT COUNT(*) FROM day_session_summaries").fetchone()[0]
     conn.commit()
     return _finalize_rebuild_counts(
         profiles=profile_count,
@@ -806,7 +798,6 @@ def rebuild_session_insights_sync(
         phases=phase_count,
         threads=thread_count,
         tag_rollups=int(tag_rollup_count),
-        day_summaries=int(day_summary_count),
     )
 
 
@@ -835,7 +826,6 @@ async def rebuild_session_insights_async(
         await conn.execute("DELETE FROM session_latency_profiles")
         await conn.execute("DELETE FROM session_profiles")
         await conn.execute("DELETE FROM session_tag_rollups")
-        await conn.execute("DELETE FROM day_session_summaries")
         await conn.execute("DELETE FROM conversation_repo_observations")
         await conn.execute("DELETE FROM repo_identities")
     elif not conversation_ids:
@@ -843,7 +833,6 @@ async def rebuild_session_insights_async(
         await conn.execute("DELETE FROM session_phases")
         await conn.execute("DELETE FROM session_latency_profiles")
         await conn.execute("DELETE FROM session_tag_rollups")
-        await conn.execute("DELETE FROM day_session_summaries")
         return _empty_rebuild_counts()
 
     profile_count = 0
@@ -962,7 +951,6 @@ async def rebuild_session_insights_async(
                 continue
             await replace_work_thread(conn, record.thread_id, record, transaction_depth)
             thread_count += 1
-    await conn.execute("DELETE FROM day_session_summaries")
     await conn.execute("DELETE FROM session_tag_rollups")
     provider_day_groups = set(await list_async_provider_day_groups(conn))
     await refresh_async_provider_day_aggregates(
@@ -971,16 +959,13 @@ async def rebuild_session_insights_async(
         transaction_depth=transaction_depth,
     )
     tag_rollup_row = await (await conn.execute("SELECT COUNT(*) FROM session_tag_rollups")).fetchone()
-    day_summary_row = await (await conn.execute("SELECT COUNT(*) FROM day_session_summaries")).fetchone()
     tag_rollup_count = int(tag_rollup_row[0]) if tag_rollup_row is not None else 0
-    day_summary_count = int(day_summary_row[0]) if day_summary_row is not None else 0
     return _finalize_rebuild_counts(
         profiles=profile_count,
         work_events=work_event_count,
         phases=phase_count,
         threads=thread_count,
         tag_rollups=int(tag_rollup_count),
-        day_summaries=int(day_summary_count),
     )
 
 

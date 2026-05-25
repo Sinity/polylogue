@@ -13,7 +13,7 @@ from click.testing import CliRunner, Result
 
 from polylogue.cli.click_app import cli
 from polylogue.cli.commands.insights import _make_callback
-from polylogue.insights.archive import ProviderAnalyticsInsight
+from polylogue.insights.archive import ArchiveCoverageInsight
 from polylogue.insights.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION
 from polylogue.insights.registry import get_insight_type, insight_items_payload
 from polylogue.storage.action_events.rebuild_runtime import rebuild_action_event_read_model_sync
@@ -39,7 +39,9 @@ def _exception_message(result: Result) -> str:
 
 
 def test_insight_items_payload_can_render_cli_and_mcp_keys() -> None:
-    product = ProviderAnalyticsInsight(
+    product = ArchiveCoverageInsight(
+        group_by="provider",
+        bucket="claude-code",
         provider_name="claude-code",
         conversation_count=1,
         message_count=2,
@@ -55,13 +57,13 @@ def test_insight_items_payload_can_render_cli_and_mcp_keys() -> None:
         tool_use_percentage=100.0,
         thinking_percentage=0.0,
     )
-    insight_type = get_insight_type("provider_analytics")
+    insight_type = get_insight_type("archive_coverage")
 
     cli_payload = insight_items_payload([product], insight_type)
     mcp_payload = insight_items_payload([product], insight_type, item_key="items")
 
     assert cli_payload["total"] == 1
-    assert json_object_list(cli_payload["provider_analytics"])[0]["insight_kind"] == "provider_analytics"
+    assert json_object_list(cli_payload["archive_coverage"])[0]["insight_kind"] == "archive_coverage"
     assert mcp_payload["total"] == 1
     assert json_object_list(mcp_payload["items"])[0]["provider_name"] == "claude-code"
 
@@ -327,9 +329,7 @@ def test_insights_status_json(cli_workspace: CliWorkspace) -> None:
         "session_phases",
         "work_threads",
         "session_tag_rollups",
-        "day_session_summaries",
-        "week_session_summaries",
-        "provider_analytics",
+        "archive_coverage",
     }
     assert insights["session_profiles"]["verdict"] == "ready"
     assert json_int(insights["session_work_events"]["row_count"]) >= 1
@@ -824,8 +824,16 @@ def test_insights_tag_and_summary_rollups_json(cli_workspace: CliWorkspace) -> N
 
     runner = CliRunner()
     tags = runner.invoke(cli, ["insights", "tags", "--format", "json"], catch_exceptions=False)
-    days = runner.invoke(cli, ["insights", "day-summaries", "--format", "json"], catch_exceptions=False)
-    weeks = runner.invoke(cli, ["insights", "week-summaries", "--format", "json"], catch_exceptions=False)
+    days = runner.invoke(
+        cli,
+        ["insights", "coverage", "--group-by", "day", "--format", "json"],
+        catch_exceptions=False,
+    )
+    weeks = runner.invoke(
+        cli,
+        ["insights", "coverage", "--group-by", "week", "--format", "json"],
+        catch_exceptions=False,
+    )
 
     assert tags.exit_code == 0
     assert days.exit_code == 0
@@ -836,9 +844,10 @@ def test_insights_tag_and_summary_rollups_json(cli_workspace: CliWorkspace) -> N
     week_payload = extract_json_result(weeks.output)
     assert any(item["tag"] == "provider:claude-code" for item in json_object_list(tag_payload["session_tag_rollups"]))
     assert json_int(day_payload["total"]) == 1
-    assert json_object_list(day_payload["day_session_summaries"])[0]["insight_kind"] == "day_session_summary"
+    assert json_object_list(day_payload["archive_coverage"])[0]["insight_kind"] == "archive_coverage"
+    assert json_object_list(day_payload["archive_coverage"])[0]["group_by"] == "day"
     assert json_int(week_payload["total"]) == 1
-    assert json_object_list(week_payload["week_session_summaries"])[0]["insight_kind"] == "week_session_summary"
+    assert json_object_list(week_payload["archive_coverage"])[0]["group_by"] == "week"
 
 
 def test_insights_analytics_json(cli_workspace: CliWorkspace) -> None:
@@ -847,15 +856,15 @@ def test_insights_analytics_json(cli_workspace: CliWorkspace) -> None:
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["--provider", "claude-code", "insights", "analytics", "--format", "json"],
+        ["--provider", "claude-code", "insights", "coverage", "--group-by", "provider", "--format", "json"],
         catch_exceptions=False,
     )
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
     assert json_int(payload["total"]) == 1
-    item = json_object_list(payload["provider_analytics"])[0]
-    assert item["insight_kind"] == "provider_analytics"
+    item = json_object_list(payload["archive_coverage"])[0]
+    assert item["insight_kind"] == "archive_coverage"
     assert item["provider_name"] == "claude-code"
     assert json_int(item["conversation_count"]) == 2
     assert json_int(item["tool_use_count"]) == 2
@@ -969,16 +978,6 @@ def test_session_insight_status_marks_older_materializer_versions_stale(cli_work
             ["insights", "tags", "--format", "json"],
             "UPDATE session_tag_rollups SET materializer_version = ?",
             "Session tag rollups are incomplete.",
-        ),
-        (
-            ["insights", "day-summaries", "--format", "json"],
-            "UPDATE day_session_summaries SET materializer_version = ?",
-            "Day session summaries are incomplete.",
-        ),
-        (
-            ["insights", "week-summaries", "--format", "json"],
-            "UPDATE day_session_summaries SET materializer_version = ?",
-            "Week session summaries are incomplete.",
         ),
     ],
 )

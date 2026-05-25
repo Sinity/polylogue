@@ -17,13 +17,12 @@ from polylogue.archive.semantic.pricing import CostEstimatePayload, CostUsagePay
 from polylogue.archive.stats import ArchiveStats
 from polylogue.errors import PolylogueError
 from polylogue.insights.archive import (
+    ArchiveCoverageInsight,
     ArchiveDebtInsight,
     ArchiveEnrichmentProvenance,
     ArchiveInferenceProvenance,
     ArchiveInsightProvenance,
     CostRollupInsight,
-    DaySessionSummaryInsight,
-    ProviderAnalyticsInsight,
     SessionCostInsight,
     SessionEnrichmentPayload,
     SessionEvidencePayload,
@@ -34,14 +33,11 @@ from polylogue.insights.archive import (
     SessionProfileInsight,
     SessionTagRollupInsight,
     SessionWorkEventInsight,
-    WeekSessionSummaryInsight,
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
     WorkThreadInsight,
 )
 from polylogue.insights.archive_models import (
-    DaySessionSummaryPayload,
-    WeekSessionSummaryPayload,
     WorkThreadMemberEvidencePayload,
     WorkThreadPayload,
 )
@@ -729,17 +725,9 @@ class TestInsightTools:
             repo_breakdown={"polylogue": 1},
             provenance=_provenance(),
         )
-        day_summary = DaySessionSummaryInsight(
-            date="2026-03-24",
-            provenance=_provenance(),
-            summary=DaySessionSummaryPayload(date="2026-03-24", session_count=1, total_messages=2),
-        )
-        week_summary = WeekSessionSummaryInsight(
-            iso_week="2026-W13",
-            provenance=_provenance(),
-            summary=WeekSessionSummaryPayload(iso_week="2026-W13", session_count=1, total_messages=2),
-        )
-        analytics = ProviderAnalyticsInsight(
+        coverage = ArchiveCoverageInsight(
+            group_by="provider",
+            bucket="claude-code",
             provider_name="claude-code",
             conversation_count=1,
             message_count=2,
@@ -800,9 +788,7 @@ class TestInsightTools:
             mock_poly.list_session_phase_insights = AsyncMock(return_value=[phase])
             mock_poly.list_session_tag_rollup_insights = AsyncMock(return_value=[tag_rollup])
             mock_poly.list_work_thread_insights = AsyncMock(return_value=[thread])
-            mock_poly.list_day_session_summary_insights = AsyncMock(return_value=[day_summary])
-            mock_poly.list_week_session_summary_insights = AsyncMock(return_value=[week_summary])
-            mock_poly.list_provider_analytics_insights = AsyncMock(return_value=[analytics])
+            mock_poly.list_archive_coverage_insights = AsyncMock(return_value=[coverage])
             mock_poly.list_session_cost_insights = AsyncMock(return_value=[session_cost])
             mock_poly.list_cost_rollup_insights = AsyncMock(return_value=[cost_rollup])
             mock_poly.list_archive_debt_insights = AsyncMock(return_value=[debt])
@@ -837,18 +823,9 @@ class TestInsightTools:
                 provider="claude-code",
                 limit=5,
             )
-            day_raw = await invoke_surface_async(
-                mcp_server._tool_manager._tools["day_session_summaries"].fn,
-                provider="claude-code",
-                limit=5,
-            )
-            week_raw = await invoke_surface_async(
-                mcp_server._tool_manager._tools["week_session_summaries"].fn,
-                provider="claude-code",
-                limit=5,
-            )
-            analytics_raw = await invoke_surface_async(
-                mcp_server._tool_manager._tools["provider_analytics"].fn,
+            coverage_raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["archive_coverage"].fn,
+                group_by="provider",
                 provider="claude-code",
                 limit=5,
             )
@@ -876,9 +853,7 @@ class TestInsightTools:
         phases_payload = json.loads(phases_raw)
         threads_payload = json.loads(threads_raw)
         tags_payload = json.loads(tags_raw)
-        day_payload = json.loads(day_raw)
-        week_payload = json.loads(week_raw)
-        analytics_payload = json.loads(analytics_raw)
+        coverage_payload = json.loads(coverage_raw)
         costs_payload = json.loads(costs_raw)
         cost_rollups_payload = json.loads(cost_rollups_raw)
         debt_payload = json.loads(debt_raw)
@@ -892,9 +867,8 @@ class TestInsightTools:
         assert threads_payload["items"][0]["insight_kind"] == "work_thread"
         assert threads_payload["items"][0]["thread"]["support_level"] == "strong"
         assert threads_payload["items"][0]["thread"]["member_evidence"][0]["role"] == "root"
-        assert day_payload["items"][0]["insight_kind"] == "day_session_summary"
-        assert week_payload["items"][0]["insight_kind"] == "week_session_summary"
-        assert analytics_payload["items"][0]["insight_kind"] == "provider_analytics"
+        assert coverage_payload["items"][0]["insight_kind"] == "archive_coverage"
+        assert coverage_payload["items"][0]["group_by"] == "provider"
         assert costs_payload["items"][0]["insight_kind"] == "session_cost"
         assert costs_payload["items"][0]["estimate"]["status"] == "exact"
         assert cost_rollups_payload["items"][0]["insight_kind"] == "cost_rollup"

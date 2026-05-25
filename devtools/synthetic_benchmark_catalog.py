@@ -88,7 +88,6 @@ SYNTHETIC_BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
             "work_thread_rows",
             "work_thread_fts",
             "session_tag_rollup_rows",
-            "day_session_summary_rows",
             "session_insight_rows",
             "session_insight_fts",
         ),

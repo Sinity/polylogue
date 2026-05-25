@@ -82,28 +82,5 @@ SESSION_INSIGHT_AGGREGATE_DDL = (
         CREATE INDEX IF NOT EXISTS idx_session_tag_rollups_provider
         ON session_tag_rollups(provider_name, tag);
 
-        CREATE TABLE IF NOT EXISTS day_session_summaries (
-            day TEXT NOT NULL,
-            provider_name TEXT NOT NULL,"""
-    + MATERIALIZATION_COLUMNS_SQL
-    + """
-            conversation_count INTEGER NOT NULL DEFAULT 0,
-            logical_session_count INTEGER NOT NULL DEFAULT 0,
-            logical_conversation_ids_json TEXT NOT NULL DEFAULT '[]',
-            total_cost_usd REAL NOT NULL DEFAULT 0,
-            total_duration_ms INTEGER NOT NULL DEFAULT 0,
-            total_tool_active_duration_ms INTEGER NOT NULL DEFAULT 0,
-            total_wall_duration_ms INTEGER NOT NULL DEFAULT 0,
-            total_messages INTEGER NOT NULL DEFAULT 0,
-            total_words INTEGER NOT NULL DEFAULT 0,
-            work_event_breakdown_json TEXT NOT NULL DEFAULT '{}',
-            repos_active_json TEXT,
-            payload_json TEXT NOT NULL,
-            search_text TEXT NOT NULL,
-            PRIMARY KEY (day, provider_name)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_day_session_summaries_day
-        ON day_session_summaries(day DESC, provider_name);
 """
 )

@@ -6,14 +6,12 @@ from typing import TYPE_CHECKING
 
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.insights.archive import (
+    ArchiveCoverageInsight,
+    ArchiveCoverageInsightQuery,
     ArchiveDebtInsight,
     ArchiveDebtInsightQuery,
     CostRollupInsight,
     CostRollupInsightQuery,
-    DaySessionSummaryInsight,
-    DaySessionSummaryInsightQuery,
-    ProviderAnalyticsInsight,
-    ProviderAnalyticsInsightQuery,
     SessionCostInsight,
     SessionCostInsightQuery,
     SessionPhaseInsight,
@@ -24,8 +22,6 @@ from polylogue.insights.archive import (
     SessionTagRollupQuery,
     SessionWorkEventInsight,
     SessionWorkEventInsightQuery,
-    WeekSessionSummaryInsight,
-    WeekSessionSummaryInsightQuery,
     WorkThreadInsight,
     WorkThreadInsightQuery,
 )
@@ -92,23 +88,11 @@ class SyncInsightQueriesMixin:
     ) -> list[WorkThreadInsight]:
         return run_coroutine_sync(self._facade.list_work_thread_insights(query))
 
-    def list_day_session_summary_insights(
+    def list_archive_coverage_insights(
         self,
-        query: DaySessionSummaryInsightQuery | None = None,
-    ) -> list[DaySessionSummaryInsight]:
-        return run_coroutine_sync(self._facade.list_day_session_summary_insights(query))
-
-    def list_week_session_summary_insights(
-        self,
-        query: WeekSessionSummaryInsightQuery | None = None,
-    ) -> list[WeekSessionSummaryInsight]:
-        return run_coroutine_sync(self._facade.list_week_session_summary_insights(query))
-
-    def list_provider_analytics_insights(
-        self,
-        query: ProviderAnalyticsInsightQuery | None = None,
-    ) -> list[ProviderAnalyticsInsight]:
-        return run_coroutine_sync(self._facade.list_provider_analytics_insights(query))
+        query: ArchiveCoverageInsightQuery | None = None,
+    ) -> list[ArchiveCoverageInsight]:
+        return run_coroutine_sync(self._facade.list_archive_coverage_insights(query))
 
     def list_tool_usage_insights(
         self,

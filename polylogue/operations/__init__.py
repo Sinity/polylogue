@@ -6,7 +6,7 @@ from .archive import (
     ArchiveStats,
     CompletionAggregate,
     get_provider_counts,
-    list_provider_analytics_insights,
+    list_archive_coverage_insights,
     list_tool_usage_insights,
 )
 from .import_contracts import (
@@ -52,6 +52,6 @@ __all__ = [
     "build_declared_operation_catalog",
     "build_runtime_operation_catalog",
     "get_provider_counts",
-    "list_provider_analytics_insights",
+    "list_archive_coverage_insights",
     "list_tool_usage_insights",
 ]

@@ -144,21 +144,6 @@ class TestStalenessDetection:
 
 
 class TestAggregateProvenance:
-    def test_day_summary_input_row_count_matches_session_count(self, provenance_db: Path) -> None:
-        from polylogue.storage.sqlite.connection import open_connection
-
-        with open_connection(provenance_db) as conn:
-            has_day = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='day_session_summaries'"
-            ).fetchone()
-            if has_day is None:
-                pytest.skip("day_session_summaries table not present")
-            rows = conn.execute("SELECT input_row_count, conversation_count FROM day_session_summaries").fetchall()
-        if not rows:
-            pytest.skip("no day summaries materialized")
-        for row in rows:
-            assert int(row["input_row_count"]) == int(row["conversation_count"])
-
     def test_tag_rollup_input_row_count_matches_conversation_count(self, provenance_db: Path) -> None:
         from polylogue.storage.sqlite.connection import open_connection
 

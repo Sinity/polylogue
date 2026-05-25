@@ -24,7 +24,7 @@ from polylogue.cli.shared.types import AppEnv
 
 if TYPE_CHECKING:
     from polylogue.config import Config
-    from polylogue.insights.archive import ProviderAnalyticsInsight
+    from polylogue.insights.archive import ArchiveCoverageInsight
     from polylogue.readiness import ReadinessReport
     from polylogue.services import RuntimeServices
 
@@ -51,14 +51,14 @@ async def get_provider_counts(
     return await _get_provider_counts(services=services, db_path=db_path)
 
 
-async def list_provider_analytics_insights(
+async def list_archive_coverage_insights(
     *,
     services: RuntimeServices | None = None,
     db_path: Path | None = None,
-) -> list[ProviderAnalyticsInsight]:
-    from polylogue.operations import list_provider_analytics_insights as _list_provider_analytics_insights
+) -> list[ArchiveCoverageInsight]:
+    from polylogue.operations import list_archive_coverage_insights as _list_archive_coverage_insights
 
-    return await _list_provider_analytics_insights(services=services, db_path=db_path)
+    return await _list_archive_coverage_insights(services=services, db_path=db_path)
 
 
 def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
@@ -71,7 +71,7 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
         quick_readiness_summary_fn=quick_readiness_summary,
         get_readiness_fn=get_readiness,
         get_provider_counts_fn=get_provider_counts,
-        list_provider_analytics_insights_fn=list_provider_analytics_insights,
+        list_archive_coverage_insights_fn=list_archive_coverage_insights,
     )
 
 
@@ -84,7 +84,7 @@ __all__ = [
     "get_readiness",
     "load_effective_config",
     "load_last_source",
-    "list_provider_analytics_insights",
+    "list_archive_coverage_insights",
     "maybe_prompt_sources",
     "print_summary",
     "quick_readiness_summary",
