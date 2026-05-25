@@ -273,6 +273,22 @@ def _stats_dimension(plan: QueryExecutionPlan) -> str:
     return plan.stats_dimension or "all"
 
 
+def _archive_embedding_retrieval_ready(archive_stats: object) -> bool:
+    retrieval_ready = getattr(archive_stats, "retrieval_ready", None)
+    if isinstance(retrieval_ready, bool):
+        return retrieval_ready
+    embedded_messages = int(getattr(archive_stats, "embedded_messages", 0) or 0)
+    stale_messages = int(getattr(archive_stats, "stale_embedding_messages", 0) or 0)
+    return max(embedded_messages - stale_messages, 0) > 0
+
+
+def _archive_embedding_readiness_status(archive_stats: object) -> str:
+    status = getattr(archive_stats, "embedding_readiness_status", None)
+    if isinstance(status, str) and status:
+        return status
+    return "ready" if _archive_embedding_retrieval_ready(archive_stats) else "none"
+
+
 async def _diagnose_query_miss(
     repo: QueryExecutionStore,
     selection: ConversationQuerySpec,
@@ -411,7 +427,7 @@ async def _maybe_elevate_to_hybrid(
     if vector_provider is None:
         return plan
     archive_stats = await repo.get_archive_stats()
-    if archive_stats.embedded_messages <= 0:
+    if not _archive_embedding_retrieval_ready(archive_stats):
         return plan
     return replace(plan, selection=replace(selection, retrieval_lane="hybrid"))
 
@@ -427,9 +443,12 @@ async def _execute_query_plan(
     vector_provider: VectorProvider | None = None
     if plan.selection.similar_text:
         archive_stats = await repo.get_archive_stats()
-        if archive_stats.embedded_messages <= 0:
+        if not _archive_embedding_retrieval_ready(archive_stats):
+            status = _archive_embedding_readiness_status(archive_stats)
             click.echo(
-                "Error: --similar/--semantic requires existing embeddings. Run `polylogue embed status`, then `polylogue embed backfill` or let polylogued converge after enabling embeddings.",
+                "Error: --similar/--semantic requires retrieval-ready embeddings "
+                f"(current status: {status}). Run `polylogue embed status`, then "
+                "`polylogue embed backfill` or let polylogued converge after enabling embeddings.",
                 err=True,
             )
             raise SystemExit(1)

@@ -245,7 +245,7 @@ lane based on archive state and the query shape:
 |-----------|---------------|
 | `--lexical` flag set | `dialogue` (forced FTS-only, even with embeddings enabled) |
 | `--semantic` flag set, or `--similar <text>` given | `semantic` (vector-only) |
-| Embeddings enabled + ≥1 message embedded + FTS query present | `hybrid` |
+| Embeddings retrieval-ready + FTS query present | `hybrid` |
 | Otherwise | `dialogue` |
 
 The elevation rule lives in
