@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from polylogue.archive.message.roles import Role
-from polylogue.pipeline.materialization_runtime import _timestamp_sort_key
+from polylogue.pipeline.materialization_runtime import _timestamp_sort_key, materialize_conversation
 from polylogue.pipeline.prepare_transform_content import canonicalize_message_content
-from polylogue.sources.parsers.base import ParsedMessage
+from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
+from polylogue.types import Provider
 
 
 def test_timestamp_sort_key_accepts_iso_datetime() -> None:
@@ -16,6 +19,30 @@ def test_timestamp_sort_key_accepts_iso_datetime() -> None:
 
 def test_timestamp_sort_key_normalizes_millisecond_epoch() -> None:
     assert _timestamp_sort_key("1705314600000") == 1705314600.0
+
+
+def test_materialize_conversation_canonicalizes_epoch_conversation_timestamps(tmp_path: Path) -> None:
+    conversation = ParsedConversation(
+        provider_name=Provider.CODEX,
+        provider_conversation_id="codex-epoch",
+        title="Epoch timestamps",
+        created_at="1705312200.123",
+        updated_at="1705314600",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="hello",
+                timestamp="1705312200.123",
+            )
+        ],
+    )
+
+    materialized = materialize_conversation(conversation, source_name="codex", archive_root=tmp_path)
+
+    assert materialized.created_at == "2024-01-15T09:50:00.123000+00:00"
+    assert materialized.updated_at == "2024-01-15T10:30:00+00:00"
+    assert materialized.sort_key == 1705314600.0
 
 
 def test_canonicalize_message_skips_harmonizer_without_provider_meta(

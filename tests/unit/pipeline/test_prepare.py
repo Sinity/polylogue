@@ -160,7 +160,7 @@ async def test_ingest_updates_metadata(
             "conv-update",
             provider_name="codex",
             title="New",
-            updated_at="2",
+            updated_at="2026-04-02T00:00:02+00:00",
             content_hash="hash-new",
             provider_meta={"source": "inbox", "updated": True},
         ),
@@ -179,7 +179,7 @@ async def test_ingest_updates_metadata(
             ("msg-update",),
         ).fetchone()
     assert convo["title"] == "New"
-    assert convo["updated_at"] == "2"
+    assert convo["updated_at"] == "2026-04-02T00:00:02+00:00"
     assert convo["content_hash"] == "hash-new"
     assert msg["role"] == "assistant"
     assert msg["content_hash"] == "msg-new"
@@ -201,7 +201,7 @@ async def test_ingest_updates_fields_without_hash_changes(
         "conv-hash-stable",
         provider_name="codex",
         title="Original",
-        updated_at="1",
+        updated_at="2026-04-02T00:00:01+00:00",
         content_hash="hash-v1",
         provider_meta={"source": "inbox"},
     )
@@ -216,7 +216,7 @@ async def test_ingest_updates_fields_without_hash_changes(
             "conv-hash-stable",
             provider_name="codex",
             title="Updated title",
-            updated_at="2",
+            updated_at="2026-04-02T00:00:02+00:00",
             content_hash="hash-v2",
             provider_meta={"source": "inbox", "updated": True},
         ),
@@ -237,7 +237,7 @@ async def test_ingest_updates_fields_without_hash_changes(
             ("msg-stable",),
         ).fetchone()
     assert convo["title"] == "Updated title"
-    assert convo["updated_at"] == "2"
+    assert convo["updated_at"] == "2026-04-02T00:00:02+00:00"
     convo_meta = json.loads(convo["provider_meta"])
     assert convo_meta["updated"] is True
     assert msg["role"] == "assistant"

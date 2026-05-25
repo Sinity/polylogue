@@ -880,8 +880,8 @@ class TestFTS5Provider:
             "fts-conv-1",
             provider_name="claude-ai",
             title="FTS Test",
-            created_at="1000",
-            updated_at="1000",
+            created_at="1970-01-02T00:00:00+00:00",
+            updated_at="1970-01-02T00:00:00+00:00",
             provider_meta={"source": "inbox"},
         )
         msgs = [
@@ -920,7 +920,11 @@ class TestFTS5Provider:
 
         # Index with actual message to ensure table creation
         conv = make_conversation(
-            "ensure-conv", title="Ensure Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"}
+            "ensure-conv",
+            title="Ensure Test",
+            created_at="1970-01-02T00:00:00+00:00",
+            updated_at="1970-01-02T00:00:00+00:00",
+            provider_meta={"source": "inbox"},
         )
         # First save the conversation so provider_name lookup works
         backend = SQLiteBackend(db_path=db_path)
@@ -947,8 +951,8 @@ class TestFTS5Provider:
         conv = make_conversation(
             "idem-conv",
             title="Idempotent Test",
-            created_at="1000",
-            updated_at="1000",
+            created_at="1970-01-02T00:00:00+00:00",
+            updated_at="1970-01-02T00:00:00+00:00",
             provider_meta={"source": "inbox"},
         )
         msgs = [make_message("idem-msg", "idem-conv", text="Idempotent message", timestamp="1000")]
@@ -973,8 +977,8 @@ class TestFTS5Provider:
         conv = make_conversation(
             "incr-conv",
             title="Incremental Test",
-            created_at="1000",
-            updated_at="1000",
+            created_at="1970-01-02T00:00:00+00:00",
+            updated_at="1970-01-02T00:00:00+00:00",
             provider_meta={"source": "inbox"},
         )
         msgs_v1 = [make_message("incr-msg-1", "incr-conv", text="Original content about apples", timestamp="1000")]
@@ -989,8 +993,8 @@ class TestFTS5Provider:
         conv_v2 = make_conversation(
             "incr-conv",
             title="Incremental Test",
-            created_at="1000",
-            updated_at="1001",
+            created_at="1970-01-02T00:00:00+00:00",
+            updated_at="1970-01-02T00:00:01+00:00",
             provider_meta={"source": "inbox"},
             content_hash="updated-content-hash",
         )
@@ -1014,7 +1018,11 @@ class TestFTS5Provider:
     ) -> None:
         """Messages with empty text are not indexed."""
         conv = make_conversation(
-            "skip-conv", title="Skip Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"}
+            "skip-conv",
+            title="Skip Test",
+            created_at="1970-01-02T00:00:00+00:00",
+            updated_at="1970-01-02T00:00:00+00:00",
+            provider_meta={"source": "inbox"},
         )
         msgs = [
             make_message("skip-msg-1", "skip-conv", text="", timestamp="1000"),  # Empty text

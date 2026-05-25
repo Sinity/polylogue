@@ -19,7 +19,7 @@ from hypothesis import example, given
 from hypothesis import strategies as st
 
 from polylogue.core.dates import parse_date
-from polylogue.core.timestamps import format_timestamp, parse_timestamp
+from polylogue.core.timestamps import canonical_timestamp_text, format_timestamp, parse_timestamp
 from polylogue.schemas.operator.schema_inference import _is_safe_enum_value
 from tests.infra.tables import FORMAT_TIMESTAMP_TABLE, PARSE_TIMESTAMP_FORMAT_TABLE
 
@@ -235,6 +235,17 @@ class TestFormatTimestamp:
         dt = datetime(2024, 6, 15, 12, 0, 0)
         formatted = format_timestamp(dt)
         assert "+00:00" in formatted
+
+
+class TestCanonicalTimestampText:
+    def test_epoch_string_canonicalizes_to_iso_utc(self) -> None:
+        assert canonical_timestamp_text("1705312200.123") == "2024-01-15T09:50:00.123000+00:00"
+
+    def test_offset_timestamp_canonicalizes_to_utc(self) -> None:
+        assert canonical_timestamp_text("2024-01-15T14:50:00+05:00") == "2024-01-15T09:50:00+00:00"
+
+    def test_unparseable_timestamp_returns_none(self) -> None:
+        assert canonical_timestamp_text("not-a-timestamp") is None
 
 
 # =============================================================================
