@@ -220,6 +220,7 @@ def profile_evidence_payload(profile: SessionProfile) -> SessionEvidencePayload:
         tags=profile.tags,
         is_continuation=profile.is_continuation,
         parent_id=profile.parent_id,
+        logical_conversation_id=profile.logical_conversation_id,
         thinking_duration_ms=profile.thinking_duration_ms,
         output_duration_ms=profile.output_duration_ms,
         tool_duration_ms=profile.tool_duration_ms,
@@ -278,10 +279,15 @@ def build_session_profile_record(
     profile: SessionProfile,
     *,
     analysis: SessionAnalysis | None = None,
+    logical_conversation_id: str | None = None,
     materialized_at: str | None = None,
 ) -> SessionProfileRecord:
     built_at = materialized_at or now_iso()
     evidence = profile_evidence_payload(profile)
+    resolved_logical_conversation_id = (
+        logical_conversation_id or profile.logical_conversation_id or profile.conversation_id
+    )
+    evidence = evidence.model_copy(update={"logical_conversation_id": resolved_logical_conversation_id})
     inference = profile_inference_payload(profile)
     enrichment = session_enrichment_payload(profile, analysis)
     evidence_search_text = profile_evidence_search_text(profile)
@@ -289,6 +295,7 @@ def build_session_profile_record(
     source_updated_at = profile.updated_at.isoformat() if profile.updated_at else None
     return SessionProfileRecord(
         conversation_id=ConversationId(profile.conversation_id),
+        logical_conversation_id=ConversationId(resolved_logical_conversation_id),
         materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
         materialized_at=built_at,
         source_updated_at=source_updated_at,
@@ -356,6 +363,7 @@ def build_session_profile_record(
 def hydrate_session_profile(record: SessionProfileRecord) -> SessionProfile:
     merged_payload: SessionProfileDocument = {
         "conversation_id": str(record.conversation_id),
+        "logical_conversation_id": str(record.logical_conversation_id),
         "provider": record.provider_name,
         "title": record.title,
         "inferred_topic": record.inference_payload.inferred_topic,

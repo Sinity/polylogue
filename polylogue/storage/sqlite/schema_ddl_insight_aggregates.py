@@ -67,6 +67,8 @@ SESSION_INSIGHT_AGGREGATE_DDL = (
     + MATERIALIZATION_COLUMNS_SQL
     + """
             conversation_count INTEGER NOT NULL DEFAULT 0,
+            logical_session_count INTEGER NOT NULL DEFAULT 0,
+            logical_conversation_ids_json TEXT NOT NULL DEFAULT '[]',
             explicit_count INTEGER NOT NULL DEFAULT 0,
             auto_count INTEGER NOT NULL DEFAULT 0,
             repo_breakdown_json TEXT NOT NULL DEFAULT '{}',
@@ -86,6 +88,8 @@ SESSION_INSIGHT_AGGREGATE_DDL = (
     + MATERIALIZATION_COLUMNS_SQL
     + """
             conversation_count INTEGER NOT NULL DEFAULT 0,
+            logical_session_count INTEGER NOT NULL DEFAULT 0,
+            logical_conversation_ids_json TEXT NOT NULL DEFAULT '[]',
             total_cost_usd REAL NOT NULL DEFAULT 0,
             total_duration_ms INTEGER NOT NULL DEFAULT 0,
             total_tool_active_duration_ms INTEGER NOT NULL DEFAULT 0,

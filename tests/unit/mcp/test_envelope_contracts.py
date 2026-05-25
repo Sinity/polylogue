@@ -54,6 +54,10 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
         "envelope",
         frozenset({"target_id", "root_id", "nodes", "edges", "ancestors", "descendants", "siblings", "thread"}),
     ),
+    "get_logical_session": (
+        "envelope",
+        frozenset({"conversation_id", "root_id", "thread", "siblings", "descendants", "cycle_detected"}),
+    ),
     "get_messages": ("envelope", frozenset({"messages", "total"})),
     "raw_artifacts": ("envelope", frozenset({"raw_artifacts", "total"})),
     "find_abandoned_sessions": ("envelope", frozenset({"items", "total"})),

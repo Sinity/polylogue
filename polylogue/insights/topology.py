@@ -276,8 +276,22 @@ class SessionTopology(BaseModel):
         return thread
 
 
+class LogicalSession(BaseModel):
+    """Compact read-pull view of one logical session lineage."""
+
+    model_config = ConfigDict(frozen=True)
+
+    conversation_id: ConversationId
+    root_id: ConversationId
+    thread: tuple[ConversationRef, ...] = Field(default_factory=tuple)
+    siblings: tuple[ConversationRef, ...] = Field(default_factory=tuple)
+    descendants: tuple[ConversationRef, ...] = Field(default_factory=tuple)
+    cycle_detected: bool = False
+
+
 __all__ = [
     "ConversationRef",
+    "LogicalSession",
     "SessionTopology",
     "TopologyEdge",
     "TopologyEdgeKind",

@@ -136,6 +136,20 @@ record that always carries the original provider-native parent id.
   of `conversations.content_hash` — mirrors the same boundary as
   `user_corrections` (#1131) and the blob lease tables.
 
+## Logical Session Identity (#866)
+
+`session_profiles.logical_conversation_id` materializes the resolved root of a
+conversation's parent chain. For a root conversation it equals
+`conversation_id`; for continuations, forks, sidechains, and subagents it points
+at the root conversation that represents the logical work session.
+
+Day summaries and tag rollups retain `conversation_count` as the physical
+conversation count and add `logical_session_count` plus
+`logical_conversation_ids_json` so weekly and cross-provider reducers can count
+logical sessions without re-walking parent pointers. The Python API exposes
+`get_logical_session(conversation_id)` as the compact read-pull envelope for
+agents and MCP callers; `get_session_topology` remains the full graph view.
+
 ## Learning Corrections (Feedback Loop)
 
 User corrections are stored in `user_corrections` and live outside the

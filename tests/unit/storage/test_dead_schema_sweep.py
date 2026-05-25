@@ -54,7 +54,7 @@ def test_schema_version_is_9() -> None:
     # cross-source repo identity surface for slice C of #864), then
     # 8 → 9 by #1486 (provider-event payload split and content-block
     # canonical message body storage).
-    assert SCHEMA_VERSION == 12
+    assert SCHEMA_VERSION == 13
 
 
 def test_content_blocks_table_has_no_media_type_column(fresh_schema_db: Mapping[str, sqlite3.Connection]) -> None:

@@ -16,6 +16,7 @@ from polylogue.mcp.payloads import (
     MCPStatsByPayload,
     conversation_query_result_payload,
     conversation_search_result_payload,
+    logical_session_payload,
     neighbor_candidates_payload,
     session_topology_payload,
     session_tree_payload,
@@ -270,6 +271,22 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             return hooks.json_payload(session_topology_payload(topology, conversation_id=str(topology.target_id)))
 
         return await hooks.async_safe_call("get_session_topology", run)
+
+    @mcp.tool()
+    async def get_logical_session(conversation_id: str) -> str:
+        """Return compact logical-session lineage for read-pull consumers."""
+
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            logical_session = await poly.get_logical_session(conversation_id)
+            if logical_session is None:
+                return hooks.error_json(
+                    f"Conversation not found: {conversation_id}",
+                    code="not_found",
+                )
+            return hooks.json_payload(logical_session_payload(logical_session))
+
+        return await hooks.async_safe_call("get_logical_session", run)
 
     @mcp.tool()
     async def get_stats_by(group_by: Literal["provider", "month", "year"] = "provider") -> str:

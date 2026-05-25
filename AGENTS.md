@@ -773,6 +773,7 @@ back to the existing brain-artifact metadata walk. Both paths emit normalized
 | `Provider` enum | `types.py` | Legacy source identifier — 9 known providers + UNKNOWN. Public surfaces still flow through this enum during the dual-vocabulary period. |
 | `Source` dataclass | `core/sources.py` | Source-centered identity (`family`, `runtime_root`, `originating_lab`). Parallel to `Provider`; see "Dual Vocabulary Period" above. |
 | `TopologyEdgeRecord` | `archive/topology/edge.py` | Typed cross-conversation parent reference. Persisted in `topology_edges` even when the parent has not yet been ingested (#1258) so out-of-order ingest and sidechain/subagent edges are durable. Closed `TopologyEdgeType` / `TopologyEdgeStatus` enums centralize the vocabulary. |
+| Logical Session ID | `session_profiles.logical_conversation_id` | Materialized root conversation for continuation/fork/subagent lineages. Rollups expose `logical_session_count` alongside physical `conversation_count`, and `get_logical_session()` returns the compact read-pull lineage envelope. |
 
 ## Artifact Taxonomy
 
@@ -1056,6 +1057,20 @@ record that always carries the original provider-native parent id.
 - **Hash boundary:** topology edges are derived per ingest and are NOT part
   of `conversations.content_hash` — mirrors the same boundary as
   `user_corrections` (#1131) and the blob lease tables.
+
+## Logical Session Identity (#866)
+
+`session_profiles.logical_conversation_id` materializes the resolved root of a
+conversation's parent chain. For a root conversation it equals
+`conversation_id`; for continuations, forks, sidechains, and subagents it points
+at the root conversation that represents the logical work session.
+
+Day summaries and tag rollups retain `conversation_count` as the physical
+conversation count and add `logical_session_count` plus
+`logical_conversation_ids_json` so weekly and cross-provider reducers can count
+logical sessions without re-walking parent pointers. The Python API exposes
+`get_logical_session(conversation_id)` as the compact read-pull envelope for
+agents and MCP callers; `get_session_topology` remains the full graph view.
 
 ## Learning Corrections (Feedback Loop)
 

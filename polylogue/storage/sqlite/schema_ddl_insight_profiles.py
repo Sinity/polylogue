@@ -9,7 +9,8 @@ from polylogue.storage.sqlite.schema_ddl_insight_common import (
 SESSION_INSIGHT_PROFILE_DDL = (
     """
         CREATE TABLE IF NOT EXISTS session_profiles (
-            conversation_id TEXT PRIMARY KEY REFERENCES conversations(conversation_id) ON DELETE CASCADE,"""
+            conversation_id TEXT PRIMARY KEY REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            logical_conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,"""
     + MATERIALIZATION_COLUMNS_SQL
     + """
             provider_name TEXT NOT NULL,
@@ -69,6 +70,9 @@ SESSION_INSIGHT_PROFILE_DDL = (
 
         CREATE INDEX IF NOT EXISTS idx_session_profiles_provider
         ON session_profiles(provider_name);
+
+        CREATE INDEX IF NOT EXISTS idx_session_profiles_logical_conversation
+        ON session_profiles(logical_conversation_id);
 
         CREATE INDEX IF NOT EXISTS idx_session_profiles_sort
         ON session_profiles(source_sort_key DESC);

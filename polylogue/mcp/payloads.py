@@ -229,6 +229,17 @@ class MCPSessionTopologyPayload(SurfacePayloadModel):
     thread: tuple[MCPConversationRefPayload, ...]
 
 
+class MCPLogicalSessionPayload(SurfacePayloadModel):
+    """Compact envelope for ``get_logical_session`` (#866)."""
+
+    conversation_id: str
+    root_id: str
+    thread: tuple[MCPConversationRefPayload, ...]
+    siblings: tuple[MCPConversationRefPayload, ...]
+    descendants: tuple[MCPConversationRefPayload, ...]
+    cycle_detected: bool = False
+
+
 class MCPNeighborCandidatesPayload(SurfacePayloadModel):
     """Bounded envelope for ``neighbor_candidates``.
 
@@ -337,6 +348,21 @@ def session_topology_payload(topology: object, *, conversation_id: str) -> MCPSe
         descendants=tuple(_ref_payload(ref) for ref in topology.descendant_refs(conversation_id)),
         siblings=tuple(_ref_payload(ref) for ref in topology.sibling_refs(conversation_id)),
         thread=tuple(_ref_payload(ref) for ref in topology.thread_refs(conversation_id)),
+    )
+
+
+def logical_session_payload(logical_session: object) -> MCPLogicalSessionPayload:
+    """Build the typed MCP payload for ``get_logical_session`` (#866)."""
+    from polylogue.insights.topology import LogicalSession
+
+    assert isinstance(logical_session, LogicalSession)
+    return MCPLogicalSessionPayload(
+        conversation_id=str(logical_session.conversation_id),
+        root_id=str(logical_session.root_id),
+        thread=tuple(_ref_payload(ref) for ref in logical_session.thread),
+        siblings=tuple(_ref_payload(ref) for ref in logical_session.siblings),
+        descendants=tuple(_ref_payload(ref) for ref in logical_session.descendants),
+        cycle_detected=logical_session.cycle_detected,
     )
 
 
@@ -688,6 +714,7 @@ __all__ = [
     "MCPMessagePayload",
     "MCPMessagesListPayload",
     "MCPMetadataPayload",
+    "MCPLogicalSessionPayload",
     "MCPMutationStatusPayload",
     "MCPReaderActionAvailabilityPayload",
     "MutationResultPayload",
@@ -720,6 +747,8 @@ __all__ = [
     "conversation_summary_list_payload",
     "model_json_document",
     "neighbor_candidates_payload",
+    "logical_session_payload",
     "normalize_role",
     "session_tree_payload",
+    "session_topology_payload",
 ]

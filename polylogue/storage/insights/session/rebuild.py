@@ -49,6 +49,7 @@ from polylogue.storage.insights.session.threads import (
     build_thread_records_for_roots_sync,
     iter_root_id_pages_async,
     iter_root_id_pages_sync,
+    thread_root_ids_async,
     thread_root_ids_sync,
 )
 from polylogue.storage.insights.session.timeline_rows import (
@@ -527,6 +528,7 @@ def build_session_insight_records(
     conversation: Conversation,
     *,
     compaction_count: int | None = None,
+    logical_conversation_id: str | None = None,
 ) -> SessionInsightRecordBundle:
     from polylogue.storage.insights.session.repo_identity import attribution_to_observations
 
@@ -551,6 +553,7 @@ def build_session_insight_records(
         profile_record=build_session_profile_record(
             profile,
             analysis=analysis,
+            logical_conversation_id=logical_conversation_id,
             materialized_at=materialized_at,
         ),
         latency_profile_record=build_session_latency_profile_record(
@@ -569,12 +572,15 @@ def build_session_insight_record_bundles(
     conversations: Iterable[Conversation],
     *,
     compaction_counts_by_conversation: dict[str, int] | None = None,
+    logical_conversation_ids_by_conversation: dict[str, str] | None = None,
 ) -> list[SessionInsightRecordBundle]:
     compaction_counts = compaction_counts_by_conversation or {}
+    logical_ids = logical_conversation_ids_by_conversation or {}
     return [
         build_session_insight_records(
             conversation,
             compaction_count=compaction_counts.get(str(conversation.id)),
+            logical_conversation_id=logical_ids.get(str(conversation.id)),
         )
         for conversation in conversations
     ]
@@ -698,9 +704,11 @@ def rebuild_session_insights_sync(
     for chunk in conversation_chunks:
         saw_conversation_ids = True
         batch = load_sync_batch(conn, chunk)
+        root_ids_by_conversation = thread_root_ids_sync(conn, chunk)
         record_bundles = build_session_insight_record_bundles(
             hydrate_conversations(batch),
             compaction_counts_by_conversation=batch.compaction_counts_by_conversation,
+            logical_conversation_ids_by_conversation=root_ids_by_conversation,
         )
         chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
         replace_session_profiles_bulk_sync(conn, [bundle.profile_record for bundle in record_bundles])
@@ -844,9 +852,11 @@ async def rebuild_session_insights_async(
     if conversation_ids is None:
         async for chunk in iter_conversation_id_pages_async(conn, page_size=page_size):
             batch = await load_async_batch(conn, chunk)
+            root_ids_by_conversation = await thread_root_ids_async(conn, chunk)
             record_bundles = build_session_insight_record_bundles(
                 hydrate_conversations(batch),
                 compaction_counts_by_conversation=batch.compaction_counts_by_conversation,
+                logical_conversation_ids_by_conversation=root_ids_by_conversation,
             )
             chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
             for bundle in record_bundles:
@@ -893,9 +903,11 @@ async def rebuild_session_insights_async(
     else:
         for chunk_ids in chunked(list(conversation_ids), size=page_size):
             batch = await load_async_batch(conn, chunk_ids)
+            root_ids_by_conversation = await thread_root_ids_async(conn, chunk_ids)
             record_bundles = build_session_insight_record_bundles(
                 hydrate_conversations(batch),
                 compaction_counts_by_conversation=batch.compaction_counts_by_conversation,
+                logical_conversation_ids_by_conversation=root_ids_by_conversation,
             )
             chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
             for bundle in record_bundles:

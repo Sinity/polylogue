@@ -68,6 +68,7 @@ def _profile(
     )
     return SessionProfileInsight(
         conversation_id=conversation_id,
+        logical_conversation_id=conversation_id,
         provider_name=provider,
         title=None,
         provenance=_DEFAULT_PROVENANCE,
