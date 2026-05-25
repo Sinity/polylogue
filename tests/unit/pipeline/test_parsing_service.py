@@ -524,10 +524,10 @@ class TestPlanningService:
         source_dir = tmp_path / "inbox-a"
         source_dir.mkdir()
 
-        for raw_id, source_name, source_name, source_path in (
-            ("raw-scoped", "chatgpt", "inbox-a", "/tmp/a.json"),
-            ("raw-legacy-provider", "inbox-a", None, "/tmp/legacy.json"),
-            ("raw-other", "chatgpt", "inbox-b", "/tmp/b.json"),
+        for raw_id, source_name, source_path in (
+            ("raw-scoped", "inbox-a", "/tmp/a.json"),
+            ("raw-legacy-provider", None, "/tmp/legacy.json"),
+            ("raw-other", "inbox-b", "/tmp/b.json"),
         ):
             await backend.save_raw_conversation(
                 RawConversationRecord(
