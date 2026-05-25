@@ -1088,16 +1088,14 @@ content-hash boundary by construction (#1131):
   each kind per session, so deterministic rebuilds always produce the
   same merged insight output.
 - Recognized kinds (closed `CorrectionKind` enum):
-  `classification_override`, `tag_reject`, `tag_accept`,
-  `summary_override`. New kinds are an explicit code change.
+  `tag_reject`, `tag_accept`, `summary_override`. New kinds are an
+  explicit code change.
 - Recording or removing a correction never touches
   `conversations.content_hash`. The hash invariant is asserted by
   `tests/unit/insights/test_feedback.py`.
-- Insight materialization paths consult corrections after computing the
-  heuristic suggestion. `classify_session()` is the first wired consumer
-  (`apply_correction_to_classification`); auto-tag and summary merge
-  helpers live in `polylogue/insights/feedback.py` for follow-on
-  materialization paths.
+- Insight materialization paths consult corrections after computing
+  heuristic suggestions. Auto-tag and summary merge helpers live in
+  `polylogue/insights/feedback.py`.
 - Surfaces:
   - CLI: `polylogue feedback {record,list,clear}`.
   - MCP: `record_correction`, `list_corrections`, `clear_corrections`.

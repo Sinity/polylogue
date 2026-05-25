@@ -82,8 +82,7 @@ def record_correction_cmd(
 
     \b
     Examples:
-        polylogue feedback record conv:abc classification_override --value category=feature
-        polylogue feedback record conv:abc tag_reject --value tag=auto:category:debugging --note "wrong"
+        polylogue feedback record conv:abc tag_reject --value tag=costly --note "wrong"
         polylogue feedback record conv:abc summary_override --value summary="Hand-written summary"
     """
 

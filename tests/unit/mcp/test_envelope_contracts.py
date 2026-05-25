@@ -76,7 +76,6 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "get_metadata": "single_object",
     "session_profile": "single_object",
     "session_latency_profile": "single_object",
-    "session_classification": "single_object",
     "get_resume_brief": "single_object",
     "archive_coverage": "single_object",
     "cost_outlook": "single_object",

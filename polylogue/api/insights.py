@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol
 
-from polylogue.archive.session.session_profile import SessionProfile
 from polylogue.cost.aggregation import session_costs_to_daily_usd
 from polylogue.cost.outlook import CycleOutlook, ProjectionMethod, build_cycle_outlook
 from polylogue.cost.plans import resolve_plan
@@ -33,8 +32,6 @@ from polylogue.insights.archive import (
     WorkThreadInsight,
     WorkThreadInsightQuery,
 )
-from polylogue.insights.classification import SessionClassification, classify_session
-from polylogue.insights.feedback import LearningCorrection
 from polylogue.insights.productivity import (
     ProductivityRollupInsight,
     ProductivityRollupInsightQuery,
@@ -133,17 +130,8 @@ if TYPE_CHECKING:
             query: ArchiveDebtInsightQuery | None = None,
         ) -> list[ArchiveDebtInsight]: ...
 
-        async def list_corrections(
-            self,
-            *,
-            conversation_id: str | None = None,
-            kind: str | None = None,
-        ) -> list[LearningCorrection]: ...
-
 
 class _RepositorySurface(Protocol):
-    async def get_session_profile(self, conversation_id: str) -> SessionProfile | None: ...
-
     async def get_session_topology(self, conversation_id: str) -> SessionTopology | None: ...
 
     async def resolve_id(self, conversation_id: str, *, strict: bool = False) -> object: ...
@@ -293,29 +281,6 @@ class PolylogueInsightsMixin:
         session_costs = await self.list_session_cost_insights()
         daily = session_costs_to_daily_usd(session_costs)
         return build_cycle_outlook(plan, daily, now=when, method=method)
-
-    async def classify_session(self, conversation_id: str) -> SessionClassification | None:
-        """Classify a session into the typed :class:`SessionCategory` taxonomy.
-
-        Computed on-the-fly from the hydrated :class:`SessionProfile`. The
-        heuristic classifier is pure and deterministic; user corrections
-        recorded via :meth:`record_correction` are applied on top so a
-        rebuild always produces the same merged verdict (AC #1131).
-        Returns ``None`` when no profile exists for ``conversation_id``.
-        """
-
-        from polylogue.insights.feedback import apply_correction_to_classification
-
-        profile = await self.repository.get_session_profile(conversation_id)
-        if profile is None:
-            return None
-        base = classify_session(profile)
-        # Consult user corrections after the heuristic — corrections win
-        # without altering the conversation's content hash.
-        corrections = await self.operations.list_corrections(conversation_id=conversation_id)
-        if not corrections:
-            return base
-        return apply_correction_to_classification(base, corrections)
 
     # ------------------------------------------------------------------
     # Topology read API (#1261 / #866 slice D)

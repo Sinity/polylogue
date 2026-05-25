@@ -58,7 +58,6 @@ EXPECTED_TOOL_NAMES = {
     "find_stuck_sessions",
     "workflow_shape_distribution",
     "find_abandoned_sessions",
-    "session_classification",
     "get_resume_brief",
     "find_resume_candidates",
     "cost_outlook",

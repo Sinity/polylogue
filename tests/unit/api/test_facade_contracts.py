@@ -64,7 +64,6 @@ READ_BY_ID_NONE_METHODS: frozenset[str] = frozenset(
         "get_session_profile_insight",
         "get_session_latency_profile_insight",
         "get_session_enrichment_insight",
-        "classify_session",
         "resume_brief",
     }
 )
@@ -629,7 +628,6 @@ async def test_get_conversation_returns_none_for_unknown_id(tmp_path: Path) -> N
         assert await archive.get_conversation_summary("nonexistent") is None
         assert await archive.get_session_profile_insight("nonexistent") is None
         assert await archive.get_session_enrichment_insight("nonexistent") is None
-        assert await archive.classify_session("nonexistent") is None
     finally:
         await archive.close()
 

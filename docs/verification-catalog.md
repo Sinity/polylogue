@@ -87,8 +87,8 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue export` | `polylogue/cli/click_app.py` `polylogue export` |
 | `polylogue facets` | `polylogue/cli/click_app.py` `polylogue facets` |
 | `polylogue feedback` | `polylogue/cli/click_app.py` `polylogue feedback` |
-| `polylogue feedback clear` | `polylogue/cli/commands/feedback.py:143` `polylogue.cli.commands.feedback.clear_corrections_cmd` |
-| `polylogue feedback list` | `polylogue/cli/commands/feedback.py:110` `polylogue.cli.commands.feedback.list_corrections_cmd` |
+| `polylogue feedback clear` | `polylogue/cli/commands/feedback.py:142` `polylogue.cli.commands.feedback.clear_corrections_cmd` |
+| `polylogue feedback list` | `polylogue/cli/commands/feedback.py:109` `polylogue.cli.commands.feedback.list_corrections_cmd` |
 | `polylogue feedback record` | `polylogue/cli/commands/feedback.py:61` `polylogue.cli.commands.feedback.record_correction_cmd` |
 | `polylogue ingest` | `polylogue/cli/click_app.py` `polylogue ingest` |
 | `polylogue init` | `polylogue/cli/click_app.py` `polylogue init` |

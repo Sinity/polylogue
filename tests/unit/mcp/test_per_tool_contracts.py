@@ -201,8 +201,8 @@ TOOL_MATRIX: dict[str, dict[str, Any]] = {
         "required": {"conversation_id", "kind", "payload"},
         "happy": {
             "conversation_id": _CONV_ID,
-            "kind": "classification_override",
-            "payload": {"label": "research"},
+            "kind": "summary_override",
+            "payload": {"summary": "Operator-authored summary."},
         },
         "invalid_value": {
             "conversation_id": _CONV_ID,
@@ -673,8 +673,8 @@ def _arrange_poly_for(poly: Any, tool_name: str) -> None:
         poly.record_correction = AsyncMock(
             return_value=LearningCorrection(
                 conversation_id=_CONV_ID,
-                kind=CorrectionKind.CLASSIFICATION_OVERRIDE,
-                payload={"label": "research"},
+                kind=CorrectionKind.SUMMARY_OVERRIDE,
+                payload={"summary": "Operator-authored summary."},
                 note=None,
                 created_at=fixed_now(),
             )
