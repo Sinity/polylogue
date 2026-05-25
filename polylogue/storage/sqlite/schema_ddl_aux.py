@@ -16,9 +16,8 @@ ARTIFACT_OBSERVATION_DDL = """
         CREATE TABLE IF NOT EXISTS artifact_observations (
             observation_id TEXT PRIMARY KEY,
             raw_id TEXT NOT NULL REFERENCES raw_conversations(raw_id) ON DELETE CASCADE,
-            source_name TEXT NOT NULL,
             payload_provider TEXT,
-            source_name TEXT,
+            source_name TEXT NOT NULL,
             source_path TEXT NOT NULL,
             source_index INTEGER,
             file_mtime TEXT,
