@@ -11,6 +11,7 @@ import pytest
 from polylogue.archive.conversation.models import ConversationSummary
 from polylogue.archive.models import Conversation
 from polylogue.archive.query.plan import ConversationQueryPlan
+from polylogue.archive.query.plan_execution import list_for_plan
 from polylogue.archive.query.retrieval_search import (
     conversation_action_search_score,
     fetch_batched_filtered_conversations,
@@ -238,6 +239,58 @@ async def test_fetch_batched_filtered_conversations_deduplicates_and_respects_li
     )
 
     assert [str(conversation.id) for conversation in results] == ["conv-a", "conv-b", "conv-c"]
+
+
+@pytest.mark.asyncio
+async def test_list_for_plan_preserves_rank_order_for_search_without_explicit_sort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    older_but_better_ranked = _conversation("conv-rank-1", updated_hour=9)
+    newer_but_worse_ranked = _conversation("conv-rank-2", updated_hour=12)
+
+    async def _fetch_candidates(
+        _plan: ConversationQueryPlan,
+        _repository: object,
+        *,
+        summaries: bool,
+    ) -> tuple[list[Conversation], bool]:
+        assert summaries is False
+        return [older_but_better_ranked, newer_but_worse_ranked], True
+
+    monkeypatch.setattr("polylogue.archive.query.plan_execution.fetch_candidates", _fetch_candidates)
+
+    results = await list_for_plan(
+        ConversationQueryPlan(query_terms=("needle",), sort=None),
+        SimpleNamespace(),
+    )
+
+    assert [str(conversation.id) for conversation in results] == ["conv-rank-1", "conv-rank-2"]
+
+
+@pytest.mark.asyncio
+async def test_list_for_plan_explicit_date_sort_overrides_rank_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    older_but_better_ranked = _conversation("conv-rank-1", updated_hour=9)
+    newer_but_worse_ranked = _conversation("conv-rank-2", updated_hour=12)
+
+    async def _fetch_candidates(
+        _plan: ConversationQueryPlan,
+        _repository: object,
+        *,
+        summaries: bool,
+    ) -> tuple[list[Conversation], bool]:
+        assert summaries is False
+        return [older_but_better_ranked, newer_but_worse_ranked], True
+
+    monkeypatch.setattr("polylogue.archive.query.plan_execution.fetch_candidates", _fetch_candidates)
+
+    results = await list_for_plan(
+        ConversationQueryPlan(query_terms=("needle",), sort="date"),
+        SimpleNamespace(),
+    )
+
+    assert [str(conversation.id) for conversation in results] == ["conv-rank-2", "conv-rank-1"]
 
 
 @pytest.mark.asyncio
