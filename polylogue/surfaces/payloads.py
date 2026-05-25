@@ -782,7 +782,7 @@ def apply_search_cursor(
     :class:`InvalidSearchCursorError` so a paginated session cannot
     silently switch ranking policy mid-walk.
     """
-    if retrieval_lane is not None and cursor.lane and retrieval_lane != cursor.lane:
+    if retrieval_lane is not None and not search_cursor_lane_matches_request(cursor.lane, retrieval_lane):
         raise InvalidSearchCursorError(
             f"cursor was minted for retrieval_lane={cursor.lane!r} but this request is {retrieval_lane!r}"
         )
@@ -791,6 +791,22 @@ def apply_search_cursor(
         if _cursor_strictly_before(cursor, hit):
             result.append(hit)
     return tuple(result)
+
+
+def search_cursor_lane_matches_request(cursor_lane: str, requested_lane: str | None) -> bool:
+    """Return whether a cursor lane can be reused for the requested lane.
+
+    ``auto`` is a planner request, not a concrete ranking lane. A first page
+    requested with ``auto`` may resolve to ``dialogue`` and mint a dialogue
+    cursor; the next page should be allowed to pass the same default ``auto``
+    request without being rejected as a lane switch. Concrete lane-to-lane
+    changes still fail.
+    """
+    if not cursor_lane:
+        return True
+    if requested_lane in {None, "", "auto"}:
+        return True
+    return requested_lane == cursor_lane
 
 
 def _cursor_strictly_before(cursor: SearchCursor, hit: ConversationSearchHitPayload) -> bool:
@@ -1131,6 +1147,7 @@ __all__ = [
     "reader_anchor",
     "reader_conversation_actions",
     "reader_message_actions",
+    "search_cursor_lane_matches_request",
     "serialize_surface_payload",
     "validate_metadata_key",
 ]
