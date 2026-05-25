@@ -73,3 +73,33 @@ def test_resume_missing_session_exits_with_clear_message(cli_workspace: dict[str
 
     assert result.exit_code == 1
     assert "Conversation not found: missing-session" in str(result.exception)
+
+
+def test_resume_candidates_json_repeats_recent_files(cli_workspace: dict[str, Path]) -> None:
+    _seed_resume_session(cli_workspace["db_path"])
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--format",
+            "json",
+            "resume-candidates",
+            "--repo",
+            "/workspace/polylogue",
+            "--cwd",
+            "/workspace/polylogue",
+            "--recent",
+            "/workspace/polylogue/polylogue/cli/click_app.py",
+            "--recent",
+            "/workspace/polylogue/polylogue/cli/commands/resume.py",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["status"] == "ok"
+    result_payload = payload["result"]
+    assert result_payload["total"] >= 1
+    assert result_payload["candidates"][0]["logical_conversation_id"] == "cli-resume-root"
+    assert "score_breakdown" in result_payload["candidates"][0]

@@ -62,6 +62,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "raw_artifacts": ("envelope", frozenset({"raw_artifacts", "total"})),
     "find_abandoned_sessions": ("envelope", frozenset({"items", "total"})),
     "find_stuck_sessions": ("envelope", frozenset({"items", "total"})),
+    "find_resume_candidates": ("envelope", frozenset({"candidates", "total"})),
     # ------- mutation list -------
     "list_tags": "stats_map",  # RootModel[dict[tag, count]]; small, by design
     "list_marks": ("envelope", frozenset({"items", "total"})),

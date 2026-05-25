@@ -60,6 +60,7 @@ EXPECTED_TOOL_NAMES = {
     "find_abandoned_sessions",
     "session_classification",
     "get_resume_brief",
+    "find_resume_candidates",
     "cost_outlook",
     "archive_debt",
     "session_profiles",
@@ -224,6 +225,7 @@ def make_polylogue_mock() -> MagicMock:
     poly.get_conversation = AsyncMock(return_value=None)
     poly.get_session_profile_insight = AsyncMock(return_value=None)
     poly.resume_brief = AsyncMock(return_value=None)
+    poly.find_resume_candidates = AsyncMock(return_value=())
     poly.neighbor_candidates = AsyncMock(return_value=[])
     poly.rebuild_insights = AsyncMock(
         return_value=MagicMock(to_dict=MagicMock(return_value={}), total=MagicMock(return_value=0))

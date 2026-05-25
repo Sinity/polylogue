@@ -104,6 +104,7 @@ _SHORT_HELP: dict[str, str] = {
     "neighbors": "Show semantic neighbors for a conversation.",
     "reset": "Reset local archive state.",
     "resume": "Resume from recent conversation context.",
+    "resume_candidates": "Rank resume candidates for the current context.",
     "schema": "Inspect and audit provider schemas.",
     "status": "Show daemon and archive status.",
     "tags": "Manage conversation tags.",
@@ -125,11 +126,15 @@ _GROUP_ATTRS: dict[str, str] = {
     "schema": "schema_command",
 }
 
+_COMMAND_ATTRS: dict[str, str] = {
+    "resume_candidates": "resume_candidates_command",
+}
+
 
 def _L(name: str) -> _LazyCommand:  # noqa: N802
     """Shorthand for constructing lazy commands in the ROOT_COMMANDS tuple."""
     module = f"polylogue.cli.commands.{name}"
-    attr = _GROUP_ATTRS.get(name, f"{name}_command")
+    attr = _GROUP_ATTRS.get(name, _COMMAND_ATTRS.get(name, f"{name}_command"))
     command_name = _COMMAND_NAMES.get(name, name.replace("_", "-"))
     cls = _LazyGroup if name in _GROUP_ATTRS else _LazyCommand
     return cls(command_name, module, attr, short_help=_SHORT_HELP.get(name))
@@ -153,6 +158,7 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("neighbors"),
     _L("export"),
     _L("resume"),
+    _L("resume_candidates"),
     _L("insights"),
     _L("tags"),
     _L("feedback"),

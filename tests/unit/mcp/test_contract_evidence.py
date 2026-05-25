@@ -300,6 +300,43 @@ class TestToolErrorEnvelopes:
         assert payload["provenance"]["materializer_version"] == RESUME_BRIEF_MATERIALIZER_VERSION
         assert "conv-123" in payload["provenance"]["cited_session_ids"]
 
+    def test_find_resume_candidates_returns_ranked_envelope(
+        self,
+        mcp_server: MCPServerUnderTest,
+    ) -> None:
+        from polylogue.insights.resume import ResumeCandidate
+
+        candidate = ResumeCandidate(
+            logical_conversation_id="root",
+            canonical_session_date="2026-05-25",
+            last_message_at="2026-05-25T10:00:00+00:00",
+            title="Continue daemon work",
+            terminal_state="question_left",
+            workflow_shape="agentic_loop",
+            file_overlap=("polylogue/daemon/convergence.py",),
+            score=0.91,
+            score_breakdown={"recency": 1.0, "file_overlap": 0.4},
+            brief_url="polylogue://resume/root",
+        )
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.find_resume_candidates = AsyncMock(return_value=(candidate,))
+            mock_get_polylogue.return_value = mock_poly
+
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["find_resume_candidates"].fn,
+                repo_path="/realm/project/polylogue",
+                cwd="/realm/project/polylogue/polylogue/daemon",
+                recent_files=("polylogue/daemon/convergence.py",),
+                limit=5,
+            )
+
+        payload = json.loads(result)
+        assert payload["total"] == 1
+        assert payload["candidates"][0]["logical_conversation_id"] == "root"
+        assert payload["candidates"][0]["score_breakdown"]["recency"] == 1.0
+        mock_poly.find_resume_candidates.assert_awaited_once()
+
     def test_bulk_tag_validation_returns_structured_error(
         self,
         mcp_server: MCPServerUnderTest,

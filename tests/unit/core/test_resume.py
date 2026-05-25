@@ -152,3 +152,104 @@ async def test_resume_brief_degrades_when_insights_are_unavailable(cli_workspace
         "work_thread",
     }
     assert all("session_insights" in uncertainty.detail for uncertainty in brief.uncertainties)
+
+
+@pytest.mark.asyncio
+async def test_resume_candidates_rank_and_dedupe_logical_sessions(cli_workspace: dict[str, Path]) -> None:
+    db_path = cli_workspace["db_path"]
+    _seed_resume_sessions(db_path)
+    (
+        ConversationBuilder(db_path, "clean-chat")
+        .provider("claude-code")
+        .title("Clean Chat")
+        .created_at("2026-04-20T11:00:00+00:00")
+        .updated_at("2026-04-20T11:05:00+00:00")
+        .add_message("clean-u1", role="user", text="Thanks", timestamp="2026-04-20T11:00:00+00:00")
+        .add_message("clean-a1", role="assistant", text="Done.", timestamp="2026-04-20T11:05:00+00:00")
+        .save()
+    )
+    with open_connection(db_path) as conn:
+        rebuild_session_insights_sync(conn)
+        conn.execute(
+            """
+            UPDATE session_profiles
+            SET terminal_state = 'question_left',
+                workflow_shape = 'agentic_loop',
+                evidence_payload_json = json_set(
+                    evidence_payload_json,
+                    '$.terminal_state',
+                    'question_left',
+                    '$.workflow_shape',
+                    'agentic_loop'
+                ),
+                inference_payload_json = json_set(
+                    inference_payload_json,
+                    '$.terminal_state',
+                    'question_left',
+                    '$.workflow_shape',
+                    'agentic_loop'
+                )
+            WHERE conversation_id = 'resume-child'
+            """
+        )
+        conn.commit()
+
+    archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
+    candidates = await archive.find_resume_candidates(
+        repo_path="/workspace/polylogue",
+        cwd="/workspace/polylogue/polylogue/cli",
+        recent_files=("/workspace/polylogue/polylogue/cli/click_app.py",),
+        limit=10,
+    )
+
+    assert candidates
+    assert candidates[0].logical_conversation_id == "resume-root"
+    assert [candidate.logical_conversation_id for candidate in candidates].count("resume-root") == 1
+    assert candidates[0].terminal_state == "question_left"
+    assert candidates[0].workflow_shape == "agentic_loop"
+    assert candidates[0].file_overlap == ("/workspace/polylogue/polylogue/cli/click_app.py",)
+    assert set(candidates[0].score_breakdown) == {
+        "recency",
+        "file_overlap",
+        "cwd_match",
+        "terminal_state",
+        "workflow_shape",
+    }
+
+
+@pytest.mark.asyncio
+async def test_resume_candidates_empty_context_prefers_unfinished_sessions(
+    cli_workspace: dict[str, Path],
+) -> None:
+    db_path = cli_workspace["db_path"]
+    _seed_resume_sessions(db_path)
+    with open_connection(db_path) as conn:
+        rebuild_session_insights_sync(conn)
+        conn.execute(
+            """
+            UPDATE session_profiles
+            SET terminal_state = 'clean_finish',
+                evidence_payload_json = json_set(evidence_payload_json, '$.terminal_state', 'clean_finish'),
+                inference_payload_json = json_set(inference_payload_json, '$.terminal_state', 'clean_finish')
+            WHERE conversation_id = 'resume-root'
+            """
+        )
+        conn.execute(
+            """
+            UPDATE session_profiles
+            SET terminal_state = 'question_left',
+                evidence_payload_json = json_set(evidence_payload_json, '$.terminal_state', 'question_left'),
+                inference_payload_json = json_set(inference_payload_json, '$.terminal_state', 'question_left')
+            WHERE conversation_id = 'resume-child'
+            """
+        )
+        conn.commit()
+
+    archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
+    candidates = await archive.find_resume_candidates(
+        repo_path="/workspace/polylogue",
+        limit=5,
+    )
+
+    assert candidates
+    assert all(candidate.terminal_state != "clean_finish" for candidate in candidates)
