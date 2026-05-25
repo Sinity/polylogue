@@ -60,33 +60,9 @@ jobs:
             echo "comparison=first-run" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
           echo "Comparing against committed baseline..."
-          uv run python3 -c "
-          import json, sys
-          with open('nightly-results.json') as f: current = json.load(f)
-          with open('$BASELINE') as f: baseline = json.load(f)
-
-          # Build lookup from baseline by fullname
-          baseline_map = {b['fullname']: b['stats']['mean'] for b in baseline.get('benchmarks', [])}
-          regressions = []
-          for b in current.get('benchmarks', []):
-              name = b['fullname']
-              prev = baseline_map.get(name)
-              if prev and prev > 0:
-                  delta_pct = (b['stats']['mean'] - prev) / prev * 100
-                  if delta_pct > 20:
-                      regressions.append((name, delta_pct, prev, b['stats']['mean']))
-
-          if regressions:
-              regressions.sort(key=lambda r: r[1], reverse=True)
-              print(f'FAIL: {len(regressions)} benchmark(s) degraded >20%:')
-              for name, pct, prev_mean, cur_mean in regressions[:5]:
-                  print(f'  {name}: +{pct:.1f}% ({prev_mean:.4f}s → {cur_mean:.4f}s)')
-              sys.exit(1)
-          else:
-              print('OK: no benchmark regressions exceeding 20% threshold.')
-          " || echo "comparison=failed" >> "$GITHUB_OUTPUT"
+          uv run python3 devtools/benchmark_compare_nightly.py "$BASELINE" nightly-results.json --fail-pct 20
+          echo "comparison=completed" >> "$GITHUB_OUTPUT"
 
       - name: Report regression
         if: failure() && steps.compare.outcome == 'failure'
