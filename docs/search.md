@@ -221,7 +221,8 @@ Semantic search stays unavailable until embeddings are both enabled and
 materialized. The activation path is deliberately bounded:
 
 1. `polylogue embed status` shows config state, key presence, coverage,
-   backlog, latest catch-up progress, and the next safe command.
+   configured model/dimension, monthly cost cap, backlog, latest catch-up
+   progress, and `next_action` (`code`, `reason`, `command`) for automation.
 2. `polylogue embed preflight --max-conversations 10` estimates the next
    bounded window without contacting Voyage.
 3. `polylogue embed enable --yes` enables the daemon stage when a Voyage key is
