@@ -187,40 +187,6 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         ),
     ),
     RigorContract(
-        insight_name="day_session_summaries",
-        display_name="Day Session Summaries",
-        evidence_payload=("summary",),
-        inference_payload=(),
-        fallback_markers=(),
-        confidence_field=(),
-        readiness_semantics=(
-            "Summary payload is a deterministic per-day rollup of session "
-            "evidence. No inference layer; rigor follows the underlying "
-            "session profile rigor."
-        ),
-        consumer_fields=("date", "summary", "provenance"),
-        version_fields=(
-            RigorVersionField(name="materializer_version", current_version=SESSION_INSIGHT_MATERIALIZER_VERSION),
-        ),
-    ),
-    RigorContract(
-        insight_name="week_session_summaries",
-        display_name="Week Session Summaries",
-        evidence_payload=("summary",),
-        inference_payload=(),
-        fallback_markers=(),
-        confidence_field=(),
-        readiness_semantics=(
-            "Summary payload is a deterministic per-ISO-week rollup of "
-            "session evidence. No inference layer; rigor follows the "
-            "underlying session profile rigor."
-        ),
-        consumer_fields=("iso_week", "summary", "provenance"),
-        version_fields=(
-            RigorVersionField(name="materializer_version", current_version=SESSION_INSIGHT_MATERIALIZER_VERSION),
-        ),
-    ),
-    RigorContract(
         insight_name="session_tag_rollups",
         display_name="Session Tag Rollups",
         evidence_payload=(),

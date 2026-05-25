@@ -221,16 +221,7 @@ All fields are derived insight columns. No `provider_meta` dependency.
 
 The `payload_json TEXT NOT NULL` field holds a `WorkThreadPayload` — this is a typed Pydantic model serialized to JSON, consistent with the `*_payload_json` pattern used by profiles. However, unlike profiles which split into `evidence_payload_json`/`inference_payload_json`/`enrichment_payload_json`, work_threads uses a single undifferentiated `payload_json`. This is a **legacy pattern**, not a bug. Classified as intentional for now; could be split in a follow-up if thread evidence/inference/enrichment needs separate search indexes.
 
-### 8.4 `day_session_summaries`
-
-#### A4 (same legacy payload pattern)
-
-`payload_json TEXT NOT NULL` — same single-payload pattern as work_threads. Intentional for now.
-
-`total_tool_active_duration_ms` is first-class because day-level consumers
-need to aggregate the paired-tool measure without JSON extraction.
-
-### 8.5 `session_tag_rollups`
+### 8.4 `session_tag_rollups`
 
 Clean. No `provider_meta` or legacy payload issues.
 
@@ -354,7 +345,6 @@ Tracked in [#864](https://github.com/Sinity/polylogue/issues/864) (shrink after 
 | `is_archived` (ChatGPT UI state) | Provider-specific | Intentional |
 | `provider_events.source_message_id` / `raw_id` | Optional provenance | Intentional |
 | `work_threads.payload_json` (legacy single payload) | Legacy, intentional | None (revisit if thread search needs split) |
-| `day_session_summaries.payload_json` (legacy single payload) | Legacy, intentional | None (revisit if day search needs split) |
 | Mapper/tuple/DDL repetition (table descriptor) | Decision deferred | This issue (#840) |
 
 ## Provider-Meta Allowlist (#864)

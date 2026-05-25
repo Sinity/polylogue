@@ -66,8 +66,6 @@ def test_collect_derived_statuses_skips_retrieval_band_recomputation(
                 threads_ready=True,
                 threads_fts_ready=True,
                 tag_rollups_ready=True,
-                day_summaries_ready=True,
-                week_summaries_ready=True,
             )
 
         monkeypatch.setattr(

@@ -11,14 +11,13 @@ from polylogue.api import ArchiveStats
 from polylogue.archive.message.roles import Role
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.insights.archive import (
+    ArchiveCoverageInsightQuery,
     ArchiveDebtInsightQuery,
     CostRollupInsightQuery,
-    DaySessionSummaryInsightQuery,
     SessionCostInsightQuery,
     SessionPhaseInsightQuery,
     SessionProfileInsightQuery,
     SessionTagRollupQuery,
-    WeekSessionSummaryInsightQuery,
     WorkThreadInsightQuery,
 )
 from tests.infra.builders import make_conv, make_msg
@@ -575,11 +574,11 @@ class TestPolylogueArchiveInsights:
         assert threads[0].thread.member_evidence[1].parent_id == "conv-root"
 
         tag_rollups = await archive.list_session_tag_rollup_insights(SessionTagRollupQuery(provider="claude-code"))
-        day_summaries = await archive.list_day_session_summary_insights(
-            DaySessionSummaryInsightQuery(provider="claude-code", limit=10)
+        day_coverage = await archive.list_archive_coverage_insights(
+            ArchiveCoverageInsightQuery(provider="claude-code", group_by="day", limit=10)
         )
-        week_summaries = await archive.list_week_session_summary_insights(
-            WeekSessionSummaryInsightQuery(provider="claude-code", limit=10)
+        week_coverage = await archive.list_archive_coverage_insights(
+            ArchiveCoverageInsightQuery(provider="claude-code", group_by="week", limit=10)
         )
         archive_debt = await archive.list_archive_debt_insights(ArchiveDebtInsightQuery(limit=10))
         session_costs = await archive.list_session_cost_insights(
@@ -588,10 +587,10 @@ class TestPolylogueArchiveInsights:
         cost_rollups = await archive.list_cost_rollup_insights(CostRollupInsightQuery(provider="claude-code"))
 
         assert any(item.tag == "provider:claude-code" for item in tag_rollups)
-        assert len(day_summaries) == 1
-        assert day_summaries[0].summary.session_count == 2
-        assert len(week_summaries) == 1
-        assert week_summaries[0].summary.session_count == 2
+        assert len(day_coverage) == 1
+        assert day_coverage[0].conversation_count == 2
+        assert len(week_coverage) == 1
+        assert week_coverage[0].conversation_count == 2
         assert any(item.insight_kind == "archive_debt" for item in archive_debt)
         assert any(item.conversation_id == "conv-root" and item.estimate.status == "exact" for item in session_costs)
         assert cost_rollups[0].total_usd == pytest.approx(1.25)

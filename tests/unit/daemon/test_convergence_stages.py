@@ -128,7 +128,6 @@ def test_insights_stage_rebuilds_sync_against_configured_db(
             phases=3,
             threads=4,
             tag_rollups=5,
-            day_summaries=6,
         )
 
     def fail_if_used(coro: object) -> object:
@@ -546,7 +545,7 @@ def test_insights_stage_batches_sync_rebuild_chunks(
     ) -> SessionInsightCounts:
         del conn
         rebuild_calls.append((conversation_ids, page_size))
-        return SessionInsightCounts(profiles=2, work_events=0, phases=0, threads=0, tag_rollups=0, day_summaries=0)
+        return SessionInsightCounts(profiles=2, work_events=0, phases=0, threads=0, tag_rollups=0)
 
     monkeypatch.setattr("polylogue.storage.sqlite.connection.open_connection", fake_open_connection)
     monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
@@ -644,7 +643,7 @@ def test_insights_conversation_rebuild_returns_false_when_still_stale(
         page_size: int,
     ) -> SessionInsightCounts:
         del conn, conversation_ids, page_size
-        return SessionInsightCounts(profiles=0, work_events=0, phases=0, threads=0, tag_rollups=0, day_summaries=0)
+        return SessionInsightCounts(profiles=0, work_events=0, phases=0, threads=0, tag_rollups=0)
 
     monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", no_op_rebuild)
 
@@ -676,7 +675,7 @@ def test_insights_stage_rebuilds_large_conversation_after_quiet_window(
     ) -> SessionInsightCounts:
         del conn
         rebuild_calls.append((conversation_ids, page_size))
-        return SessionInsightCounts(profiles=1, work_events=0, phases=0, threads=0, tag_rollups=0, day_summaries=0)
+        return SessionInsightCounts(profiles=1, work_events=0, phases=0, threads=0, tag_rollups=0)
 
     monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
     monkeypatch.setattr(stages, "_stale_session_profile_ids", lambda _conn, _ids: [])
@@ -707,7 +706,7 @@ def test_insights_stage_rebuilds_small_active_conversation(
     ) -> SessionInsightCounts:
         del conn
         rebuild_calls.append((conversation_ids, page_size))
-        return SessionInsightCounts(profiles=1, work_events=0, phases=0, threads=0, tag_rollups=0, day_summaries=0)
+        return SessionInsightCounts(profiles=1, work_events=0, phases=0, threads=0, tag_rollups=0)
 
     monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
     monkeypatch.setattr(stages, "_stale_session_profile_ids", lambda _conn, _ids: [])

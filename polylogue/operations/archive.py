@@ -20,6 +20,8 @@ from polylogue.config import ConfigError
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.errors import DatabaseError
 from polylogue.insights.archive import (
+    ArchiveCoverageInsight,
+    ArchiveCoverageInsightQuery,
     ArchiveDebtInsight,
     ArchiveDebtInsightQuery,
     ArchiveInsightProvenance,
@@ -27,9 +29,6 @@ from polylogue.insights.archive import (
     CostRollupInsight,
     CostRollupInsightQuery,
     DaySessionSummaryInsight,
-    DaySessionSummaryInsightQuery,
-    ProviderAnalyticsInsight,
-    ProviderAnalyticsInsightQuery,
     SessionCostInsight,
     SessionCostInsightQuery,
     SessionLatencyProfileInsight,
@@ -43,7 +42,6 @@ from polylogue.insights.archive import (
     SessionWorkEventInsight,
     SessionWorkEventInsightQuery,
     WeekSessionSummaryInsight,
-    WeekSessionSummaryInsightQuery,
     WorkThreadInsight,
     WorkThreadInsightQuery,
 )
@@ -51,6 +49,7 @@ from polylogue.insights.archive_rollups import aggregate_cost_rollup_insights, a
 from polylogue.insights.archive_summaries import (
     aggregate_day_session_summary_insights,
     aggregate_week_session_summary_insights,
+    build_day_session_summary_records,
 )
 from polylogue.insights.audit import (
     InsightRigorAuditQuery,
@@ -85,6 +84,7 @@ from polylogue.operations.completion_aggregates import ArchiveCompletionMixin, C
 from polylogue.operations.mutations import ArchiveMutationsMixin
 from polylogue.services import RuntimeServices, build_runtime_services
 from polylogue.storage.hydrators import message_from_record
+from polylogue.storage.insights.session.profiles import hydrate_session_profile
 from polylogue.storage.insights.session.runtime import (
     SessionInsightReadyFlag,
     SessionInsightStatusSnapshot,
@@ -219,7 +219,7 @@ def _slice_insights(
     return insights
 
 
-def provider_analytics_insight(row: ProviderMetricsRow) -> ProviderAnalyticsInsight:
+def _provider_coverage_insight(row: ProviderMetricsRow) -> ArchiveCoverageInsight:
     conversation_count = row["conversation_count"]
     user_message_count = row["user_message_count"]
     assistant_message_count = row["assistant_message_count"]
@@ -232,8 +232,11 @@ def provider_analytics_insight(row: ProviderMetricsRow) -> ProviderAnalyticsInsi
     conversations_with_thinking = row["conversations_with_thinking"]
     tool_use_percentage = (conversations_with_tools / conversation_count) * 100 if conversation_count > 0 else 0.0
     thinking_percentage = (conversations_with_thinking / conversation_count) * 100 if conversation_count > 0 else 0.0
-    return ProviderAnalyticsInsight(
-        provider_name=row["provider_name"] or "unknown",
+    provider_name = row["provider_name"] or "unknown"
+    return ArchiveCoverageInsight(
+        group_by="provider",
+        bucket=provider_name,
+        provider_name=provider_name,
         conversation_count=conversation_count,
         message_count=message_count,
         user_message_count=user_message_count,
@@ -247,6 +250,59 @@ def provider_analytics_insight(row: ProviderMetricsRow) -> ProviderAnalyticsInsi
         total_conversations_with_thinking=conversations_with_thinking,
         tool_use_percentage=tool_use_percentage,
         thinking_percentage=thinking_percentage,
+    )
+
+
+def _day_coverage_insight(insight: DaySessionSummaryInsight) -> ArchiveCoverageInsight:
+    summary = insight.summary
+    return ArchiveCoverageInsight(
+        group_by="day",
+        bucket=insight.date,
+        conversation_count=summary.session_count,
+        logical_session_count=summary.logical_session_count,
+        message_count=summary.total_messages,
+        total_cost_usd=summary.total_cost_usd,
+        total_duration_ms=summary.total_duration_ms,
+        total_tool_active_duration_ms=summary.total_tool_active_duration_ms,
+        total_wall_duration_ms=summary.total_wall_duration_ms,
+        total_words=summary.total_words,
+        work_event_breakdown=summary.work_event_breakdown,
+        repos_active=summary.repos_active,
+        provider_breakdown=summary.providers,
+        provenance=insight.provenance,
+    )
+
+
+def _week_coverage_insight(insight: WeekSessionSummaryInsight) -> ArchiveCoverageInsight:
+    summary = insight.summary
+    provider_breakdown: dict[str, int] = {}
+    repos_active: set[str] = set()
+    total_words = 0
+    total_wall_duration_ms = 0
+    work_event_breakdown: dict[str, int] = {}
+    for day in summary.day_summaries:
+        total_words += day.total_words
+        total_wall_duration_ms += day.total_wall_duration_ms
+        repos_active.update(day.repos_active)
+        for provider_name, count in day.providers.items():
+            provider_breakdown[provider_name] = provider_breakdown.get(provider_name, 0) + count
+        for label, count in day.work_event_breakdown.items():
+            work_event_breakdown[label] = work_event_breakdown.get(label, 0) + count
+    return ArchiveCoverageInsight(
+        group_by="week",
+        bucket=insight.iso_week,
+        conversation_count=summary.session_count,
+        logical_session_count=summary.logical_session_count,
+        message_count=summary.total_messages,
+        total_cost_usd=summary.total_cost_usd,
+        total_duration_ms=summary.total_duration_ms,
+        total_tool_active_duration_ms=summary.total_tool_active_duration_ms,
+        total_wall_duration_ms=total_wall_duration_ms,
+        total_words=total_words,
+        work_event_breakdown=work_event_breakdown,
+        repos_active=tuple(sorted(repos_active)),
+        provider_breakdown=provider_breakdown,
+        provenance=insight.provenance,
     )
 
 
@@ -846,46 +902,43 @@ class ArchiveInsightAggregateMixin:
         insights = aggregate_session_tag_rollup_insights(rows)
         return _slice_insights(insights, offset=request.offset, limit=request.limit)
 
-    async def list_day_session_summary_insights(
+    async def list_archive_coverage_insights(
         self,
-        query: DaySessionSummaryInsightQuery | None = None,
-    ) -> list[DaySessionSummaryInsight]:
-        request = _default_query(query, DaySessionSummaryInsightQuery)
+        query: ArchiveCoverageInsightQuery | None = None,
+    ) -> list[ArchiveCoverageInsight]:
+        request = _default_query(query, ArchiveCoverageInsightQuery)
+        if request.group_by == "provider":
+            provider_rows = await self.backend.get_provider_metrics_rows()
+            insights = [_provider_coverage_insight(row) for row in provider_rows]
+            if request.provider:
+                insights = [insight for insight in insights if insight.provider_name == request.provider]
+            return _slice_insights(insights, offset=request.offset, limit=request.limit)
+
+        if request.group_by not in {"day", "week"}:
+            raise ValueError("archive coverage group_by must be one of: provider, day, week")
+
         status = await _read_session_insight_status(self.backend)
-        _require_ready_flag(status, "day_summaries_ready", "Day session summaries are incomplete.")
-        rows = await self.repository.list_day_session_summary_records(
+        _require_ready_flag(status, "profile_rows_ready", "Session-profile rows are incomplete.")
+        records = await self.repository.list_session_profile_records(
             provider=request.provider,
             since=request.since,
             until=request.until,
+            limit=None,
         )
-        insights = aggregate_day_session_summary_insights(rows)
-        return _slice_insights(insights, offset=request.offset, limit=request.limit)
-
-    async def list_week_session_summary_insights(
-        self,
-        query: WeekSessionSummaryInsightQuery | None = None,
-    ) -> list[WeekSessionSummaryInsight]:
-        request = _default_query(query, WeekSessionSummaryInsightQuery)
-        status = await _read_session_insight_status(self.backend)
-        _require_ready_flag(status, "week_summaries_ready", "Week session summaries are incomplete.")
-        rows = await self.repository.list_day_session_summary_records(
-            provider=request.provider,
-            since=request.since,
-            until=request.until,
+        day_rows = build_day_session_summary_records([hydrate_session_profile(record) for record in records])
+        if request.group_by == "day":
+            day_insights = aggregate_day_session_summary_insights(day_rows)
+            return _slice_insights(
+                [_day_coverage_insight(insight) for insight in day_insights],
+                offset=request.offset,
+                limit=request.limit,
+            )
+        week_insights = aggregate_week_session_summary_insights(day_rows)
+        return _slice_insights(
+            [_week_coverage_insight(insight) for insight in week_insights],
+            offset=request.offset,
+            limit=request.limit,
         )
-        insights = aggregate_week_session_summary_insights(rows)
-        return _slice_insights(insights, offset=request.offset, limit=request.limit)
-
-    async def list_provider_analytics_insights(
-        self,
-        query: ProviderAnalyticsInsightQuery | None = None,
-    ) -> list[ProviderAnalyticsInsight]:
-        rows = await self.backend.get_provider_metrics_rows()
-        insights = [provider_analytics_insight(row) for row in rows]
-        request = _default_query(query, ProviderAnalyticsInsightQuery)
-        if request.provider:
-            insights = [insight for insight in insights if insight.provider_name == request.provider]
-        return _slice_insights(insights, offset=request.offset, limit=request.limit)
 
     async def list_tool_usage_insights(
         self,
@@ -1171,15 +1224,15 @@ async def get_provider_counts(
     return await _with_operations(_action, services=services, db_path=db_path)
 
 
-async def list_provider_analytics_insights(
+async def list_archive_coverage_insights(
     *,
     services: RuntimeServices | None = None,
     db_path: Path | None = None,
-) -> list[ProviderAnalyticsInsight]:
-    """Return provider-level analytics insights for archive summaries."""
+) -> list[ArchiveCoverageInsight]:
+    """Return provider-level archive coverage buckets for summaries."""
 
-    async def _action(operations: ArchiveOperations) -> list[ProviderAnalyticsInsight]:
-        return await operations.list_provider_analytics_insights()
+    async def _action(operations: ArchiveOperations) -> list[ArchiveCoverageInsight]:
+        return await operations.list_archive_coverage_insights()
 
     return await _with_operations(_action, services=services, db_path=db_path)
 
@@ -1205,6 +1258,6 @@ __all__ = [
     "CompletionAggregate",
     "build_tool_usage_insight",
     "get_provider_counts",
-    "list_provider_analytics_insights",
+    "list_archive_coverage_insights",
     "list_tool_usage_insights",
 ]

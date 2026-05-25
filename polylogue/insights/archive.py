@@ -6,6 +6,8 @@ from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Protocol
 
+from pydantic import Field
+
 from polylogue.archive.semantic.pricing import (
     CostBasisPayload,
     CostEstimatePayload,
@@ -128,16 +130,8 @@ class SessionTagRollupQuery(ProviderSearchInsightQuery):
     limit: int | None = 100
 
 
-class DaySessionSummaryInsightQuery(ProviderTimeWindowInsightQuery):
-    limit: int | None = 90
-
-
-class WeekSessionSummaryInsightQuery(ProviderTimeWindowInsightQuery):
-    limit: int | None = 52
-
-
-class ProviderAnalyticsInsightQuery(PaginatedInsightQuery):
-    provider: str | None = None
+class ArchiveCoverageInsightQuery(ProviderTimeWindowInsightQuery):
+    group_by: str = "provider"
     limit: int | None = None
 
 
@@ -393,23 +387,35 @@ class WeekSessionSummaryInsight(ArchiveInsightModel):
     summary: WeekSessionSummaryPayload
 
 
-class ProviderAnalyticsInsight(ArchiveInsightModel):
+class ArchiveCoverageInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
-    insight_kind: str = "provider_analytics"
-    provider_name: str
+    insight_kind: str = "archive_coverage"
+    group_by: str = "provider"
+    bucket: str = ""
+    provider_name: str | None = None
     conversation_count: int
-    message_count: int
-    user_message_count: int
-    assistant_message_count: int
-    avg_messages_per_conversation: float
-    avg_user_words: float
-    avg_assistant_words: float
-    tool_use_count: int
-    thinking_count: int
-    total_conversations_with_tools: int
-    total_conversations_with_thinking: int
-    tool_use_percentage: float
-    thinking_percentage: float
+    logical_session_count: int = 0
+    message_count: int = 0
+    user_message_count: int = 0
+    assistant_message_count: int = 0
+    total_cost_usd: float = 0.0
+    total_duration_ms: int = 0
+    total_tool_active_duration_ms: int = 0
+    total_wall_duration_ms: int = 0
+    total_words: int = 0
+    avg_messages_per_conversation: float = 0.0
+    avg_user_words: float = 0.0
+    avg_assistant_words: float = 0.0
+    tool_use_count: int = 0
+    thinking_count: int = 0
+    total_conversations_with_tools: int = 0
+    total_conversations_with_thinking: int = 0
+    tool_use_percentage: float = 0.0
+    thinking_percentage: float = 0.0
+    work_event_breakdown: dict[str, int] = Field(default_factory=dict)
+    repos_active: tuple[str, ...] = ()
+    provider_breakdown: dict[str, int] = Field(default_factory=dict)
+    provenance: ArchiveInsightProvenance | None = None
 
 
 class SessionCostInsight(ArchiveInsightModel):
@@ -554,6 +560,8 @@ def date_from_iso(value: str) -> date:
 
 __all__ = [
     "ARCHIVE_INSIGHT_CONTRACT_VERSION",
+    "ArchiveCoverageInsight",
+    "ArchiveCoverageInsightQuery",
     "ArchiveDebtInsight",
     "ArchiveDebtInsightQuery",
     "ArchiveEnrichmentProvenance",
@@ -566,9 +574,6 @@ __all__ = [
     "CostRollupInsightQuery",
     "ArchiveInsightUnavailableError",
     "DaySessionSummaryInsight",
-    "DaySessionSummaryInsightQuery",
-    "ProviderAnalyticsInsight",
-    "ProviderAnalyticsInsightQuery",
     "SessionCostInsight",
     "SessionCostInsightQuery",
     "SessionEnrichmentPayload",
@@ -588,7 +593,6 @@ __all__ = [
     "SessionWorkEventInsight",
     "SessionWorkEventInsightQuery",
     "WeekSessionSummaryInsight",
-    "WeekSessionSummaryInsightQuery",
     "WorkEventEvidencePayload",
     "WorkEventInferencePayload",
     "WorkThreadInsight",

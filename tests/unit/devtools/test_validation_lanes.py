@@ -444,11 +444,13 @@ class TestCommandConstruction:
         assert "--format" in cmd
         assert "json" in cmd
 
-    def test_live_insights_day_summaries_lane_uses_insights_entrypoint(self) -> None:
-        cmd = build_lane_command(LANES["live-insights-day-summaries"])
+    def test_live_insights_coverage_day_lane_uses_insights_entrypoint(self) -> None:
+        cmd = build_lane_command(LANES["live-insights-coverage-day"])
         assert cmd[:1] == ["polylogue"]
         assert "insights" in cmd
-        assert "day-summaries" in cmd
+        assert "coverage" in cmd
+        assert "--group-by" in cmd
+        assert "day" in cmd
         assert "--format" in cmd
         assert "json" in cmd
 
@@ -482,11 +484,11 @@ class TestLaneAssertions:
         assert exit_code == 1
         assert "failed assertion" in captured.out
 
-    def test_live_insights_analytics_lane_uses_insights_entrypoint(self) -> None:
-        cmd = build_lane_command(LANES["live-insights-analytics"])
+    def test_live_insights_coverage_provider_lane_uses_insights_entrypoint(self) -> None:
+        cmd = build_lane_command(LANES["live-insights-coverage-provider"])
         assert cmd[:1] == ["polylogue"]
         assert "insights" in cmd
-        assert "analytics" in cmd
+        assert "coverage" in cmd
         assert "--format" in cmd
         assert "json" in cmd
 
@@ -598,7 +600,7 @@ class TestLaneAssertions:
 
         assert exit_code == 0
         assert "live-insights-small" in captured.out
-        assert "live-insights-analytics" in captured.out
+        assert "live-insights-coverage-provider" in captured.out
         assert "live-insights-debt" in captured.out
         assert "live-maintenance-small" in captured.out
 
@@ -658,7 +660,7 @@ class TestLaneAssertions:
 
         assert exit_code == 0
         assert "live-insights-tags" in captured.out
-        assert "live-insights-day-summaries" in captured.out
+        assert "live-insights-coverage-day" in captured.out
         assert "live-insights-debt" in captured.out
         assert "live-maintenance-small" in captured.out
 

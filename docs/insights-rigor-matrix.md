@@ -102,30 +102,6 @@ API.
 - Consumer-facing fields: `thread_id`, `root_id`, `dominant_repo`,
   `thread`.
 
-### `day_session_summaries` — Day Session Summaries
-
-- Evidence payload: `summary`
-- Inference payload: _(none)_
-- Fallback markers: _(none)_
-- Confidence field: _(none)_
-- Versions: `materializer_version`
-- Readiness: Summary payload is a deterministic per-day rollup of
-  session evidence. No inference layer; rigor follows the underlying
-  session profile rigor.
-- Consumer-facing fields: `date`, `summary`, `provenance`.
-
-### `week_session_summaries` — Week Session Summaries
-
-- Evidence payload: `summary`
-- Inference payload: _(none)_
-- Fallback markers: _(none)_
-- Confidence field: _(none)_
-- Versions: `materializer_version`
-- Readiness: Summary payload is a deterministic per-ISO-week rollup
-  of session evidence. No inference layer; rigor follows the
-  underlying session profile rigor.
-- Consumer-facing fields: `iso_week`, `summary`, `provenance`.
-
 ### `session_tag_rollups` — Session Tag Rollups
 
 - Evidence payload: _(none — aggregate)_

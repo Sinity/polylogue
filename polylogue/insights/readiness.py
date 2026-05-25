@@ -176,30 +176,8 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
         time_column="bucket_day",
     ),
     InsightReadinessSpec(
-        insight_name="day_session_summaries",
-        display_name="Day Session Summaries",
-        table_name="day_session_summaries",
-        row_count_attr="day_summary_count",
-        expected_count_attr="expected_day_summary_count",
-        stale_count_attr="stale_day_summary_count",
-        ready_flags=("day_summaries_ready",),
-        artifacts=("day_session_summaries",),
-        time_column="day",
-    ),
-    InsightReadinessSpec(
-        insight_name="week_session_summaries",
-        display_name="Week Session Summaries",
-        table_name="day_session_summaries",
-        row_count_attr="day_summary_count",
-        expected_count_attr="expected_day_summary_count",
-        stale_count_attr="stale_day_summary_count",
-        ready_flags=("week_summaries_ready",),
-        artifacts=("day_session_summaries",),
-        time_column="day",
-    ),
-    InsightReadinessSpec(
-        insight_name="provider_analytics",
-        display_name="Provider Analytics",
+        insight_name="archive_coverage",
+        display_name="Archive Coverage",
         table_name="conversations",
         row_count_attr="total_conversations",
         ready_flags=(),
@@ -218,9 +196,7 @@ _ALIASES = {
     "phases": "session_phases",
     "threads": "work_threads",
     "tags": "session_tag_rollups",
-    "day-summaries": "day_session_summaries",
-    "week-summaries": "week_session_summaries",
-    "analytics": "provider_analytics",
+    "coverage": "archive_coverage",
 }
 
 
@@ -253,7 +229,6 @@ def _artifact_ready(status: SessionInsightStatusSnapshot, artifact_name: str) ->
         "work_threads": "threads_ready",
         "work_threads_fts": "threads_fts_ready",
         "session_tag_rollups": "tag_rollups_ready",
-        "day_session_summaries": "day_summaries_ready",
     }
     attr = mapping.get(artifact_name)
     return bool(getattr(status, attr)) if attr is not None else None

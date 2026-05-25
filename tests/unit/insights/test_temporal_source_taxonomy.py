@@ -154,9 +154,6 @@ class TestMaterializationPathsCarryTaxonomy:
     def test_work_threads_tagged(self, temporal_source_db: Path) -> None:
         self._assert_all_rows_tagged(temporal_source_db, "work_threads")
 
-    def test_day_session_summaries_tagged(self, temporal_source_db: Path) -> None:
-        self._assert_all_rows_tagged(temporal_source_db, "day_session_summaries")
-
     def test_session_tag_rollups_tagged(self, temporal_source_db: Path) -> None:
         self._assert_all_rows_tagged(temporal_source_db, "session_tag_rollups")
 

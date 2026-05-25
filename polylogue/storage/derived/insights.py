@@ -307,27 +307,6 @@ def _aggregate_rows_status(
     )
 
 
-def _week_summary_status(metrics: Metrics) -> DerivedModelStatus:
-    return DerivedModelStatus(
-        name="week_session_summaries",
-        ready=_metric_bool(metrics, "week_summaries_ready"),
-        detail=(
-            "Week session summaries ready (derived from day-session summaries)"
-            if _metric_bool(metrics, "week_summaries_ready")
-            else "Week session summaries pending (day-session summaries not ready)"
-        ),
-        source_rows=_metric_int(metrics, "expected_day_summary_rows"),
-        materialized_rows=_metric_int(metrics, "day_summary_rows"),
-        pending_rows=pending_rows(
-            _metric_int(metrics, "expected_day_summary_rows"),
-            _metric_int(metrics, "day_summary_rows"),
-        ),
-        stale_rows=_metric_int(metrics, "stale_day_summary_rows"),
-        materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
-        matches_version=_matches_version(metrics, "stale_day_summary_rows"),
-    )
-
-
 def build_aggregate_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
     return {
         "session_tag_rollups": _aggregate_rows_status(
@@ -339,16 +318,6 @@ def build_aggregate_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
             expected_rows_key="expected_tag_rollup_rows",
             stale_key="stale_tag_rollup_rows",
         ),
-        "day_session_summaries": _aggregate_rows_status(
-            metrics,
-            name="day_session_summaries",
-            label="Day session summaries",
-            ready_key="day_summaries_ready",
-            rows_key="day_summary_rows",
-            expected_rows_key="expected_day_summary_rows",
-            stale_key="stale_day_summary_rows",
-        ),
-        "week_session_summaries": _week_summary_status(metrics),
     }
 
 

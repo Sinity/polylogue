@@ -8,10 +8,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `604`
+- subjects: `594`
 - claims: `37`
 - runner bindings: `37`
-- proof obligations: `474`
+- proof obligations: `471`
 
 ## Quality Checks
 
@@ -36,19 +36,19 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `architecture.topology` | 1 |
 | `architecture.witness` | 1 |
 | `archive.query_law` | 1 |
-| `artifact.path` | 25 |
+| `artifact.path` | 23 |
 | `assurance.coverage_gap` | 20 |
 | `assurance.coverage_item` | 107 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 75 |
+| `cli.command` | 73 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
 | `generated.scenario_family` | 9 |
-| `insight.surface` | 12 |
+| `insight.surface` | 10 |
 | `maintenance.target` | 13 |
-| `operation.spec` | 49 |
-| `operation.spec.effect` | 134 |
+| `operation.spec` | 47 |
+| `operation.spec.effect` | 132 |
 | `provider.capability` | 3 |
 | `schema.annotation` | 130 |
 | `schema.roundtrip` | 1 |
@@ -93,11 +93,10 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue ingest` | `polylogue/cli/click_app.py` `polylogue ingest` |
 | `polylogue init` | `polylogue/cli/click_app.py` `polylogue init` |
 | `polylogue insights` | `polylogue/cli/click_app.py` `polylogue insights` |
-| `polylogue insights analytics` | `polylogue/cli/commands/insights.py:110` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue insights audit` | `polylogue/cli/commands/insights.py:339` `polylogue.cli.commands.insights.insights_audit_command` |
 | `polylogue insights cost-rollups` | `polylogue/cli/commands/insights.py:110` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue insights costs` | `polylogue/cli/commands/insights.py:110` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights day-summaries` | `polylogue/cli/commands/insights.py:110` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
+| `polylogue insights coverage` | `polylogue/cli/commands/insights.py:110` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue insights debt` | `polylogue/cli/commands/insights.py:110` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue insights export` | `polylogue/cli/commands/insights.py:244` `polylogue.cli.commands.insights.insights_export_command` |
 | `polylogue insights phases` | `polylogue/cli/commands/insights.py:110` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
@@ -107,7 +106,6 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue insights threads` | `polylogue/cli/commands/insights.py:110` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue insights timeline` | `polylogue/cli/commands/insights.py:388` `polylogue.cli.commands.insights.insights_timeline_command` |
 | `polylogue insights tool-usage` | `polylogue/cli/commands/insights.py:110` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
-| `polylogue insights week-summaries` | `polylogue/cli/commands/insights.py:110` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue insights work-events` | `polylogue/cli/commands/insights.py:110` `polylogue.cli.commands.insights._make_callback.<locals>.callback` |
 | `polylogue list` | `polylogue/cli/click_app.py` `polylogue list` |
 | `polylogue maintenance` | `polylogue/cli/click_app.py` `polylogue maintenance` |
@@ -298,7 +296,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `architecture.topology.projection_enforced` | 1 |
 | `architecture.witness.lifecycle_enforced` | 1 |
 | `archive.query.provider_filter_consistency` | 1 |
-| `artifact.path.dependency_closure` | 9 |
+| `artifact.path.dependency_closure` | 10 |
 | `assurance.coverage.gap_has_closure_path` | 20 |
 | `assurance.coverage.item_declared` | 107 |
 | `assurance.coverage.manifest_structured` | 9 |
@@ -307,7 +305,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `generated.scenario.family_registered` | 9 |
 | `generated.scenario.local_deterministic` | 4 |
 | `generated.scenario.semantic_claim_mapping` | 9 |
-| `insight.surface.registered` | 12 |
+| `insight.surface.registered` | 10 |
 | `maintenance.repair.crash_consistency` | 13 |
 | `operation.effect.atomic` | 18 |
 | `operation.effect.confirmed_before_execute` | 1 |
@@ -320,7 +318,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `operation.effect.retry_bounded` | 1 |
 | `operation.effect.rollback_safe` | 18 |
 | `operation.effect.sampling_bounded` | 1 |
-| `operation.effect.snapshot_consistent` | 40 |
+| `operation.effect.snapshot_consistent` | 38 |
 | `operation.effect.timeout_bounded` | 1 |
 | `parser.quarantine.context_redaction` | 1 |
 | `provider.capability.identity_bridge` | 3 |

@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from polylogue.insights import registry as insight_registry
-from polylogue.insights.archive import ProviderAnalyticsInsight
+from polylogue.insights.archive import ArchiveCoverageInsight
 from polylogue.insights.registry import (
     CliOption,
     InsightField,
@@ -24,8 +24,10 @@ from polylogue.insights.registry import (
 )
 
 
-def _provider_analytics_insight() -> ProviderAnalyticsInsight:
-    return ProviderAnalyticsInsight(
+def _archive_coverage_insight() -> ArchiveCoverageInsight:
+    return ArchiveCoverageInsight(
+        group_by="provider",
+        bucket="claude-code",
         provider_name="claude-code",
         conversation_count=1,
         message_count=2,
@@ -101,8 +103,8 @@ def test_get_insight_type_and_build_query_raise_useful_errors() -> None:
 
 
 def test_insight_items_payload_and_rendering_cover_json_plain_and_empty_paths() -> None:
-    insight = _provider_analytics_insight()
-    insight_type = get_insight_type("provider_analytics")
+    insight = _archive_coverage_insight()
+    insight_type = get_insight_type("archive_coverage")
 
     payload = insight_items_payload([insight], insight_type, item_key="items")
     assert payload["total"] == 1
@@ -135,10 +137,10 @@ def test_insight_items_payload_and_rendering_cover_json_plain_and_empty_paths() 
 
 
 def test_fetch_insights_sync_uses_registry_dispatch() -> None:
-    insight_type = get_insight_type("provider_analytics")
+    insight_type = get_insight_type("archive_coverage")
 
     class _Operations:
-        def list_provider_analytics_insights(self, query: object) -> str:
+        def list_archive_coverage_insights(self, query: object) -> str:
             return f"sync:{query.provider}"
 
     with patch("polylogue.api.sync.bridge.run_coroutine_sync", side_effect=lambda value: [value]):
@@ -147,10 +149,10 @@ def test_fetch_insights_sync_uses_registry_dispatch() -> None:
 
 @pytest.mark.asyncio
 async def test_fetch_insights_async_uses_registry_dispatch() -> None:
-    insight_type = get_insight_type("provider_analytics")
+    insight_type = get_insight_type("archive_coverage")
 
     class _AsyncOperations:
-        async def list_provider_analytics_insights(self, query: object) -> list[str]:
+        async def list_archive_coverage_insights(self, query: object) -> list[str]:
             return [f"async:{query.provider}"]
 
     assert await fetch_insights_async(insight_type, _AsyncOperations(), provider="claude-code") == ["async:claude-code"]

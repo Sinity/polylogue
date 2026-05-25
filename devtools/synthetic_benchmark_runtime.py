@@ -92,8 +92,6 @@ def _session_insight_table_counts(db_path: Path) -> dict[str, int]:
             "work_threads",
             "work_threads_fts",
             "session_tag_rollups",
-            "day_session_summaries",
-            "week_session_summaries",
         ):
             try:
                 row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
@@ -330,7 +328,6 @@ def run_session_insight_materialization_campaign(db_path: Path) -> CampaignResul
             "phases_rebuilt": rebuilt.phases,
             "threads_rebuilt": rebuilt.threads,
             "tag_rollups_rebuilt": rebuilt.tag_rollups,
-            "day_summaries_rebuilt": rebuilt.day_summaries,
         },
         db_stats={
             "session_profiles_before": stats_before.get("session_profiles_count", 0),
@@ -341,8 +338,6 @@ def run_session_insight_materialization_campaign(db_path: Path) -> CampaignResul
             "work_threads_after": stats_after.get("work_threads_count", 0),
             "work_threads_fts_after": stats_after.get("work_threads_fts_count", 0),
             "session_tag_rollups_after": stats_after.get("session_tag_rollups_count", 0),
-            "day_session_summaries_after": stats_after.get("day_session_summaries_count", 0),
-            "week_session_summaries_after": stats_after.get("week_session_summaries_count", 0),
         },
     )
 
@@ -365,7 +360,6 @@ async def run_daemon_live_convergence_campaign(db_path: Path) -> CampaignResult:
             "phases_rebuilt": float(rebuilt.phases),
             "threads_rebuilt": float(rebuilt.threads),
             "tag_rollups_rebuilt": float(rebuilt.tag_rollups),
-            "day_summaries_rebuilt": float(rebuilt.day_summaries),
         }
     )
     stats.update(_db_row_counts(db_path))

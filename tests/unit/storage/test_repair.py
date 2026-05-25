@@ -190,8 +190,6 @@ def _ready_session_insight_status() -> SessionInsightStatusSnapshot:
         threads_ready=True,
         threads_fts_ready=True,
         tag_rollups_ready=True,
-        day_summaries_ready=True,
-        week_summaries_ready=True,
     )
 
 
@@ -240,8 +238,6 @@ def test_repair_session_insights_uses_stale_profile_candidates(monkeypatch: pyte
         threads_ready=True,
         threads_fts_ready=True,
         tag_rollups_ready=True,
-        day_summaries_ready=True,
-        week_summaries_ready=True,
         stale_profile_row_count=2,
         stale_work_event_inference_count=2,
         work_event_inference_fts_count=4,

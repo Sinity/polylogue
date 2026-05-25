@@ -8,7 +8,6 @@ from collections.abc import Mapping, Sequence
 from pydantic import BaseModel
 
 from polylogue.storage.runtime import (
-    DaySessionSummaryRecord,
     SessionLatencyProfileRecord,
     SessionPhaseRecord,
     SessionProfileRecord,
@@ -531,33 +530,6 @@ def session_tag_rollup_insert_values(record: SessionTagRollupRecord) -> SqlBindi
     )
 
 
-def day_session_summary_insert_values(record: DaySessionSummaryRecord) -> SqlBindings:
-    return (
-        record.day,
-        record.provider_name,
-        record.materializer_version,
-        record.materialized_at,
-        record.source_updated_at,
-        record.source_sort_key,
-        record.input_high_water_mark,
-        record.input_high_water_mark_source,
-        record.input_row_count,
-        record.conversation_count,
-        record.logical_session_count,
-        _json_array_or_none(record.logical_conversation_ids),
-        record.total_cost_usd,
-        record.total_duration_ms,
-        record.total_tool_active_duration_ms,
-        record.total_wall_duration_ms,
-        record.total_messages,
-        record.total_words,
-        _json_or_none(record.work_event_breakdown),
-        _json_array_or_none(record.repos_active),
-        _json_or_none(record.payload),
-        record.search_text,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Profile writes
 # ---------------------------------------------------------------------------
@@ -794,54 +766,8 @@ def replace_session_tag_rollup_rows_sync(
         )
 
 
-def replace_day_session_summaries_sync(
-    conn: sqlite3.Connection,
-    *,
-    provider_name: str,
-    day: str,
-    records: Sequence[DaySessionSummaryRecord],
-) -> None:
-    conn.execute(
-        "DELETE FROM day_session_summaries WHERE provider_name = ? AND day = ?",
-        (provider_name, day),
-    )
-    if records:
-        conn.executemany(
-            build_insert_sql(
-                "day_session_summaries",
-                (
-                    "day",
-                    "provider_name",
-                    "materializer_version",
-                    "materialized_at",
-                    "source_updated_at",
-                    "source_sort_key",
-                    "input_high_water_mark",
-                    "input_high_water_mark_source",
-                    "input_row_count",
-                    "conversation_count",
-                    "logical_session_count",
-                    "logical_conversation_ids_json",
-                    "total_cost_usd",
-                    "total_duration_ms",
-                    "total_tool_active_duration_ms",
-                    "total_wall_duration_ms",
-                    "total_messages",
-                    "total_words",
-                    "work_event_breakdown_json",
-                    "repos_active_json",
-                    "payload_json",
-                    "search_text",
-                ),
-            ),
-            [day_session_summary_insert_values(record) for record in records],
-        )
-
-
 __all__ = [
     "build_insert_sql",
-    "day_session_summary_insert_values",
-    "replace_day_session_summaries_sync",
     "replace_session_phases_bulk_sync",
     "replace_session_phases_sync",
     "replace_session_latency_profiles_bulk_sync",

@@ -176,8 +176,6 @@ def session_insight_repair_count(derived_statuses: dict[str, DerivedModelStatus]
         "work_threads",
         "work_threads_fts",
         "session_tag_rollups",
-        "day_session_summaries",
-        "week_session_summaries",
     ]
     maybe_statuses = [derived_statuses.get(k) for k in keys]
     if not all(status is not None for status in maybe_statuses):

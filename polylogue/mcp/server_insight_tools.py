@@ -1,8 +1,8 @@
 """Registry-driven MCP archive-insight tool registration.
 
 Iterates INSIGHT_REGISTRY and registers a ``list_<name>`` MCP tool for
-each insight type. Special one-off tools (archive_coverage, single-item
-lookups) are registered directly.
+each insight type. Special one-off tools for single-item lookups and
+derived distributions are registered directly.
 """
 
 from __future__ import annotations
@@ -444,46 +444,6 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             return hooks.json_payload(report, exclude_none=True)
 
         return await hooks.async_safe_call("insight_rigor_audit", run)
-
-    @mcp.tool()
-    async def archive_coverage() -> str:
-        """Show archive coverage statistics."""
-
-        async def run() -> str:
-            from polylogue.archive.coverage import analyze_coverage
-
-            summaries = await hooks.get_query_store().list_summaries()
-            coverage = analyze_coverage(summaries)
-            return hooks.json_payload(
-                MCPRootPayload(
-                    root={
-                        "total_conversations": coverage.total_conversations,
-                        "total_messages": coverage.total_messages,
-                        "provider_counts": coverage.provider_counts,
-                        "provider_ranges": [
-                            {
-                                "provider": r.provider,
-                                "first_date": r.first_date.isoformat(),
-                                "last_date": r.last_date.isoformat(),
-                                "count": r.count,
-                            }
-                            for r in coverage.provider_ranges
-                        ],
-                        "gaps": [
-                            {
-                                "start_date": g.start_date.isoformat(),
-                                "end_date": g.end_date.isoformat(),
-                                "days": g.days,
-                            }
-                            for g in coverage.gaps
-                        ],
-                        "truncated_sessions": coverage.truncated_sessions,
-                        "date_range": [d.isoformat() if d else None for d in coverage.date_range],
-                    }
-                )
-            )
-
-        return await hooks.async_safe_call("archive_coverage", run)
 
 
 __all__ = ["register_insight_tools"]

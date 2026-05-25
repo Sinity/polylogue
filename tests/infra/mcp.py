@@ -69,8 +69,7 @@ EXPECTED_TOOL_NAMES = {
     "session_phases",
     "session_tag_rollups",
     "work_threads",
-    "day_session_summaries",
-    "week_session_summaries",
+    "archive_coverage",
 }
 
 EXPECTED_RESOURCE_URIS = {
@@ -235,9 +234,7 @@ def make_polylogue_mock() -> MagicMock:
     poly.list_session_phase_insights = AsyncMock(return_value=[])
     poly.list_session_tag_rollup_insights = AsyncMock(return_value=[])
     poly.list_work_thread_insights = AsyncMock(return_value=[])
-    poly.list_day_session_summary_insights = AsyncMock(return_value=[])
-    poly.list_week_session_summary_insights = AsyncMock(return_value=[])
-    poly.list_provider_analytics_insights = AsyncMock(return_value=[])
+    poly.list_archive_coverage_insights = AsyncMock(return_value=[])
     poly.list_session_cost_insights = AsyncMock(return_value=[])
     poly.list_cost_rollup_insights = AsyncMock(return_value=[])
     poly.list_archive_debt_insights = AsyncMock(return_value=[])

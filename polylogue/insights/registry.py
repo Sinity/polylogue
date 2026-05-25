@@ -24,17 +24,15 @@ import click
 
 from polylogue.errors import PolylogueError
 from polylogue.insights.archive import (
+    ArchiveCoverageInsightQuery,
     ArchiveDebtInsightQuery,
     ArchiveInsightModel,
     CostRollupInsightQuery,
-    DaySessionSummaryInsightQuery,
-    ProviderAnalyticsInsightQuery,
     SessionCostInsightQuery,
     SessionPhaseInsightQuery,
     SessionProfileInsightQuery,
     SessionTagRollupQuery,
     SessionWorkEventInsightQuery,
-    WeekSessionSummaryInsightQuery,
     WorkThreadInsightQuery,
 )
 from polylogue.insights.tool_usage import ToolUsageInsightQuery
@@ -469,59 +467,36 @@ register(
 
 register(
     InsightType(
-        name="day_session_summaries",
-        display_name="Day Session Summaries",
-        json_key="day_session_summaries",
-        empty_message="No day summaries matched.",
-        query_model=DaySessionSummaryInsightQuery,
-        operations_method_name="list_day_session_summary_insights",
-        cli_command_name="day-summaries",
-        cli_help="List durable day-level session summary insights.",
-        mcp_default_limit=90,
-        fields=(
-            InsightField("", _attr("date"), group=0),
-            InsightField("sessions", _nested("summary", "session_count", "0"), group=0),
-            InsightField("messages", _nested("summary", "total_messages", "0"), group=0),
+        name="archive_coverage",
+        display_name="Archive Coverage",
+        json_key="archive_coverage",
+        empty_message="No archive coverage buckets matched.",
+        query_model=ArchiveCoverageInsightQuery,
+        operations_method_name="list_archive_coverage_insights",
+        cli_command_name="coverage",
+        cli_help="List archive coverage buckets by provider, day, or week.",
+        readiness_exempt=True,
+        cli_options=(
+            CliOption(
+                "group_by",
+                ("--group-by",),
+                type=click.Choice(["provider", "day", "week"]),
+                default="provider",
+                show_default=True,
+                help="Bucket coverage by provider, day, or ISO week",
+            ),
+            CliOption("provider", ("--provider",), help="Only this provider"),
+            CliOption("since", ("--since",), help="Only buckets at/after this timestamp or date"),
+            CliOption("until", ("--until",), help="Only buckets at/before this timestamp or date"),
         ),
-    )
-)
-
-register(
-    InsightType(
-        name="week_session_summaries",
-        display_name="Week Session Summaries",
-        json_key="week_session_summaries",
-        empty_message="No week summaries matched.",
-        query_model=WeekSessionSummaryInsightQuery,
-        operations_method_name="list_week_session_summary_insights",
-        cli_command_name="week-summaries",
-        cli_help="List durable week-level session summary insights.",
-        mcp_default_limit=52,
         fields=(
-            InsightField("", _attr("iso_week"), group=0),
-            InsightField("sessions", _nested("summary", "session_count", "0"), group=0),
-            InsightField("messages", _nested("summary", "total_messages", "0"), group=0),
-        ),
-    )
-)
-
-register(
-    InsightType(
-        name="provider_analytics",
-        display_name="Provider Analytics",
-        json_key="provider_analytics",
-        empty_message="No provider analytics matched.",
-        query_model=ProviderAnalyticsInsightQuery,
-        operations_method_name="list_provider_analytics_insights",
-        cli_command_name="analytics",
-        cli_help="List provider-level analytics insights.",
-        fields=(
-            InsightField("", _attr("provider_name"), group=0),
-            InsightField("conversations", _attr("conversation_count", "0"), group=0),
-            InsightField("messages", _attr("message_count", "0"), group=0),
-            InsightField("avg_messages", _formatted_float("avg_messages_per_conversation"), group=0),
-            InsightField("tools", _count_with_percentage("tool_use_count", "tool_use_percentage"), group=1),
-            InsightField("thinking", _count_with_percentage("thinking_count", "thinking_percentage"), group=1),
+            InsightField("", _attr("bucket"), group=0),
+            InsightField("group", _attr("group_by"), group=0),
+            InsightField("provider", _attr("provider_name"), group=0),
+            InsightField("conversations", _attr("conversation_count", "0"), group=1),
+            InsightField("messages", _attr("message_count", "0"), group=1),
+            InsightField("words", _attr("total_words", "0"), group=1),
+            InsightField("tool_active_ms", _attr("total_tool_active_duration_ms", "0"), group=1),
         ),
     )
 )

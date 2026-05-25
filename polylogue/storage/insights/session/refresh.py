@@ -179,10 +179,6 @@ async def delete_session_insights_for_conversation_async(
     if old_group is not None:
         provider_name, bucket_day = old_group
         await conn.execute(
-            "DELETE FROM day_session_summaries WHERE provider_name = ? AND day = ?",
-            (provider_name, bucket_day),
-        )
-        await conn.execute(
             "DELETE FROM session_tag_rollups WHERE provider_name = ? AND bucket_day = ?",
             (provider_name, bucket_day),
         )
@@ -195,7 +191,6 @@ async def delete_session_insights_for_conversation_async(
     counts.add(
         profiles=1 if row is not None else 0,
         tag_rollups=1 if old_group is not None else 0,
-        day_summaries=1 if old_group is not None else 0,
     )
     return counts
 
@@ -224,7 +219,6 @@ async def refresh_session_insights_for_conversation_async(
     update.counts.add(
         threads=thread_count,
         tag_rollups=len(update.affected_groups),
-        day_summaries=len(update.affected_groups),
     )
     return update.counts
 

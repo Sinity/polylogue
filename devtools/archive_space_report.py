@@ -39,7 +39,7 @@ def _category(name: str, object_type: str) -> str:
         return "raw"
     if "fts" in name or name.endswith("_docsize") or name.endswith("_config"):
         return "fts"
-    if name.startswith(("session_", "work_", "day_", "week_", "provider_analytics", "cost_")):
+    if name.startswith(("session_", "work_", "cost_")):
         return "insights"
     if name.startswith(("message_embeddings", "embedding_")):
         return "embeddings"

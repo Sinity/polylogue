@@ -10,7 +10,7 @@ from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.shared.helper_support import load_effective_config
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config, Source
-from polylogue.insights.archive import ProviderAnalyticsInsight
+from polylogue.insights.archive import ArchiveCoverageInsight
 from polylogue.logging import get_logger
 from polylogue.readiness import ReadinessReport
 from polylogue.services import RuntimeServices
@@ -28,13 +28,13 @@ class GetProviderCountsFn(Protocol):
     ) -> Awaitable[list[tuple[str, int]]]: ...
 
 
-class ListProviderAnalyticsInsightsFn(Protocol):
+class ListArchiveCoverageInsightsFn(Protocol):
     def __call__(
         self,
         *,
         services: RuntimeServices | None = None,
         db_path: Path | None = None,
-    ) -> Awaitable[list[ProviderAnalyticsInsight]]: ...
+    ) -> Awaitable[list[ArchiveCoverageInsight]]: ...
 
 
 def print_summary_impl(
@@ -45,7 +45,7 @@ def print_summary_impl(
     quick_readiness_summary_fn: Callable[[Path], str],
     get_readiness_fn: Callable[[Config], ReadinessReport],
     get_provider_counts_fn: GetProviderCountsFn,
-    list_provider_analytics_insights_fn: ListProviderAnalyticsInsightsFn,
+    list_archive_coverage_insights_fn: ListArchiveCoverageInsightsFn,
 ) -> None:
     ui = env.ui
     config = load_effective_config(env)
@@ -112,8 +112,10 @@ def print_summary_impl(
 
     try:
         if verbose:
-            metrics = run_coroutine_sync(list_provider_analytics_insights_fn(services=env.services))
-            counts: list[tuple[str, int]] = [(metric.provider_name, metric.conversation_count) for metric in metrics]
+            metrics = run_coroutine_sync(list_archive_coverage_insights_fn(services=env.services))
+            counts: list[tuple[str, int]] = [
+                (metric.provider_name or metric.bucket, metric.conversation_count) for metric in metrics
+            ]
         else:
             counts = run_coroutine_sync(get_provider_counts_fn(services=env.services))
             metrics = []
