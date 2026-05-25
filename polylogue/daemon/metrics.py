@@ -698,10 +698,237 @@ def format_metrics(
         )
 
         _emit_embedding_metrics(lines, _embedding_state(conn))
+
+        # ── Rich instrumentation (#1321 ambitious scope) ──────────
+        _emit_archive_metrics(lines, conn)
+        _emit_throughput_metrics(lines, conn)
+        _emit_db_space_metrics(lines, db)
+        _emit_raw_record_metrics(lines, conn)
+
     finally:
         conn.close()
 
     return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Rich instrumentation (added for #1321 ambitious scope)
+# ---------------------------------------------------------------------------
+
+
+def _emit_archive_metrics(lines: list[str], conn: sqlite3.Connection) -> None:
+    """Archive-level conversation and message counts, per provider."""
+    if not _table_exists(conn, "conversations"):
+        for name in ("polylogue_archive_conversations_total", "polylogue_archive_messages_total"):
+            _emit_metric(lines, name=name, help_text=name, metric_type="gauge", samples=[])
+        return
+
+    # Per-provider conversation counts (resilient to missing column)
+    conv_cols = _columns(conn, "conversations")
+    if "source_name" in conv_cols:
+        provider_rows = conn.execute(
+            "SELECT source_name, COUNT(*) FROM conversations GROUP BY source_name ORDER BY source_name"
+        ).fetchall()
+    else:
+        provider_rows = []
+    if provider_rows:
+        _emit_metric(
+            lines,
+            name="polylogue_archive_conversations_total",
+            help_text="Total conversations in the archive by source family.",
+            metric_type="gauge",
+            samples=[({"source": str(row[0])}, int(row[1])) for row in provider_rows],
+        )
+    else:
+        _emit_metric(
+            lines,
+            name="polylogue_archive_conversations_total",
+            help_text="Total conversations.",
+            metric_type="gauge",
+            samples=[(None, 0)],
+        )
+
+    # Per-provider message counts (resilient to missing column)
+    if _table_exists(conn, "messages") and "source_name" in _columns(conn, "messages"):
+        msg_rows = conn.execute(
+            "SELECT source_name, COUNT(*) FROM messages GROUP BY source_name ORDER BY source_name"
+        ).fetchall()
+    else:
+        msg_rows = []
+        if msg_rows:
+            _emit_metric(
+                lines,
+                name="polylogue_archive_messages_total",
+                help_text="Total messages in the archive by source family.",
+                metric_type="gauge",
+                samples=[({"source": str(row[0])}, int(row[1])) for row in msg_rows],
+            )
+        else:
+            _emit_metric(
+                lines,
+                name="polylogue_archive_messages_total",
+                help_text="Total messages.",
+                metric_type="gauge",
+                samples=[(None, 0)],
+            )
+
+
+def _emit_throughput_metrics(lines: list[str], conn: sqlite3.Connection) -> None:
+    """Recent ingest throughput derived from live_ingest_attempt rows."""
+    if not _table_exists(conn, "live_ingest_attempt"):
+        for name in (
+            "polylogue_ingest_throughput_conversations_per_second",
+            "polylogue_ingest_throughput_messages_per_second",
+        ):
+            _emit_metric(lines, name=name, help_text=name, metric_type="gauge", samples=[])
+        return
+
+    cols = _columns(conn, "live_ingest_attempt")
+    if "conversation_count" not in cols or "convergence_time_s" not in cols:
+        return
+
+    row = conn.execute(
+        """
+        SELECT conversation_count, message_count, convergence_time_s
+        FROM live_ingest_attempt
+        WHERE status = 'completed' AND convergence_time_s > 0
+          AND conversation_count > 0
+        ORDER BY started_at DESC
+        LIMIT 1
+        """
+    ).fetchone()
+
+    if row is not None:
+        conv_count = int(row[0] or 0)
+        msg_count = int(row[1] or 0)
+        duration = max(float(row[2] or 0), 0.001)
+        _emit_metric(
+            lines,
+            name="polylogue_ingest_throughput_conversations_per_second",
+            help_text="Conversation throughput rate from the most recent completed ingest attempt.",
+            metric_type="gauge",
+            samples=[(None, conv_count / duration)],
+        )
+        _emit_metric(
+            lines,
+            name="polylogue_ingest_throughput_messages_per_second",
+            help_text="Message throughput rate from the most recent completed ingest attempt.",
+            metric_type="gauge",
+            samples=[(None, msg_count / duration)],
+        )
+
+
+def _emit_db_space_metrics(lines: list[str], db: Path) -> None:
+    """Database file and page-level space metrics."""
+    if not db.exists():
+        for name in (
+            "polylogue_db_file_size_bytes",
+            "polylogue_db_allocated_bytes",
+            "polylogue_db_freelist_bytes",
+            "polylogue_db_page_size",
+            "polylogue_db_page_count",
+        ):
+            _emit_metric(lines, name=name, help_text=name, metric_type="gauge", samples=[])
+        return
+
+    try:
+        file_size = db.stat().st_size
+        _emit_metric(
+            lines,
+            name="polylogue_db_file_size_bytes",
+            help_text="On-disk size of the archive SQLite database.",
+            metric_type="gauge",
+            samples=[(None, file_size)],
+        )
+
+        import sqlite3 as _sqlite3
+
+        space_conn = _sqlite3.connect(str(db))
+        try:
+            page_size = int(space_conn.execute("PRAGMA page_size").fetchone()[0])
+            page_count = int(space_conn.execute("PRAGMA page_count").fetchone()[0])
+            freelist = int(space_conn.execute("PRAGMA freelist_count").fetchone()[0])
+            allocated = page_size * page_count
+            freelist_bytes = page_size * freelist
+
+            _emit_metric(
+                lines,
+                name="polylogue_db_page_size",
+                help_text="SQLite page size in bytes.",
+                metric_type="gauge",
+                samples=[(None, page_size)],
+            )
+            _emit_metric(
+                lines,
+                name="polylogue_db_page_count",
+                help_text="Total SQLite pages in the database file.",
+                metric_type="gauge",
+                samples=[(None, page_count)],
+            )
+            _emit_metric(
+                lines,
+                name="polylogue_db_allocated_bytes",
+                help_text="Allocated database space (page_size * page_count).",
+                metric_type="gauge",
+                samples=[(None, allocated)],
+            )
+            _emit_metric(
+                lines,
+                name="polylogue_db_freelist_bytes",
+                help_text="Freelist (reusable) space in bytes.",
+                metric_type="gauge",
+                samples=[(None, freelist_bytes)],
+            )
+        finally:
+            space_conn.close()
+    except Exception:
+        pass
+
+
+def _emit_raw_record_metrics(lines: list[str], conn: sqlite3.Connection) -> None:
+    """Raw conversation record counts and parse health."""
+    if not _table_exists(conn, "raw_conversations"):
+        _emit_metric(
+            lines, name="polylogue_raw_records_total", help_text="Total raw records.", metric_type="gauge", samples=[]
+        )
+        return
+
+    total = _scalar_int(conn, "SELECT COUNT(*) FROM raw_conversations")
+    parsed = _scalar_int(conn, "SELECT COUNT(*) FROM raw_conversations WHERE parsed_at IS NOT NULL")
+    validated = _scalar_int(conn, "SELECT COUNT(*) FROM raw_conversations WHERE validated_at IS NOT NULL")
+    with_errors = _scalar_int(
+        conn, "SELECT COUNT(*) FROM raw_conversations WHERE parse_error IS NOT NULL OR validation_status = 'failed'"
+    )
+
+    _emit_metric(
+        lines,
+        name="polylogue_raw_records_total",
+        help_text="Total raw conversation records in the archive.",
+        metric_type="gauge",
+        samples=[
+            ({"state": "total"}, total),
+            ({"state": "parsed"}, parsed),
+            ({"state": "validated"}, validated),
+            ({"state": "errors"}, with_errors),
+        ],
+    )
+
+    # Per-provider raw record counts (resilient to missing column)
+    raw_cols = _columns(conn, "raw_conversations")
+    if "source_name" in raw_cols:
+        provider_rows = conn.execute(
+            "SELECT source_name, COUNT(*) FROM raw_conversations GROUP BY source_name ORDER BY source_name"
+        ).fetchall()
+    else:
+        provider_rows = []
+    if provider_rows:
+        _emit_metric(
+            lines,
+            name="polylogue_raw_records_by_source",
+            help_text="Raw conversation records by source family.",
+            metric_type="gauge",
+            samples=[({"source": str(row[0])}, int(row[1])) for row in provider_rows],
+        )
 
 
 # ---------------------------------------------------------------------------
