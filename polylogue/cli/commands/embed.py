@@ -51,6 +51,28 @@ class PreflightReport:
     windowed: bool = False
     max_conversations: int | None = None
     max_messages: int | None = None
+    max_cost_usd: float | None = None
+
+
+def _message_window_for_cost(max_cost_usd: float | None) -> int | None:
+    if max_cost_usd is None:
+        return None
+    from polylogue.storage.search_providers.sqlite_vec_support import (
+        ESTIMATED_TOKENS_PER_MESSAGE,
+        VOYAGE_4_COST_PER_1M_TOKENS,
+    )
+
+    cost_per_message = ESTIMATED_TOKENS_PER_MESSAGE * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
+    return max(1, int(max_cost_usd / cost_per_message))
+
+
+def _effective_message_window(max_messages: int | None, max_cost_usd: float | None) -> int | None:
+    cost_messages = _message_window_for_cost(max_cost_usd)
+    if max_messages is None:
+        return cost_messages
+    if cost_messages is None:
+        return max_messages
+    return min(max_messages, cost_messages)
 
 
 def _read_pending_message_count(
@@ -125,6 +147,7 @@ def _build_preflight_report(
     rebuild: bool = False,
     max_conversations: int | None = None,
     max_messages: int | None = None,
+    max_cost_usd: float | None = None,
 ) -> PreflightReport:
     """Build a :class:`PreflightReport` without contacting Voyage."""
     from polylogue.config import load_polylogue_config
@@ -134,11 +157,12 @@ def _build_preflight_report(
     )
 
     cfg = load_polylogue_config()
+    effective_max_messages = _effective_message_window(max_messages, max_cost_usd)
     total, pending, pending_messages = _read_pending_message_count(
         env.config.db_path,
         rebuild=rebuild,
         max_conversations=max_conversations,
-        max_messages=max_messages,
+        max_messages=effective_max_messages,
     )
     estimated_tokens = pending_messages * ESTIMATED_TOKENS_PER_MESSAGE
     estimated_cost = estimated_tokens * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
@@ -151,9 +175,10 @@ def _build_preflight_report(
         model=cfg.embedding_model,
         dimension=cfg.embedding_dimension,
         cost_cap_usd=cfg.embedding_max_cost_usd,
-        windowed=max_conversations is not None or max_messages is not None,
+        windowed=max_conversations is not None or max_messages is not None or max_cost_usd is not None,
         max_conversations=max_conversations,
-        max_messages=max_messages,
+        max_messages=effective_max_messages,
+        max_cost_usd=max_cost_usd,
     )
 
 
@@ -168,6 +193,8 @@ def _render_preflight(env: AppEnv, report: PreflightReport) -> None:
             limits.append(f"{report.max_conversations:,} conversations")
         if report.max_messages is not None:
             limits.append(f"{report.max_messages:,} messages")
+        if report.max_cost_usd is not None:
+            limits.append(f"${report.max_cost_usd:.4f}")
         console.print(f"  Window limit:          {', '.join(limits)}")
         console.print(f"  Window conversations:  {report.pending_conversations:,}")
         console.print(f"  Window messages:       {report.pending_messages:,}")
@@ -388,12 +415,24 @@ def disable_subcommand(env: AppEnv) -> None:
     help="Estimate only the next bounded message window.",
 )
 @click.option(
+    "--max-cost-usd",
+    type=click.FloatRange(min=0.0, min_open=True),
+    default=None,
+    help="Estimate only the next approximate cost window.",
+)
+@click.option(
     "--rebuild",
     is_flag=True,
     help="Estimate re-embedding every conversation, not just pending ones.",
 )
 @click.pass_obj
-def preflight_subcommand(env: AppEnv, max_conversations: int | None, max_messages: int | None, rebuild: bool) -> None:
+def preflight_subcommand(
+    env: AppEnv,
+    max_conversations: int | None,
+    max_messages: int | None,
+    max_cost_usd: float | None,
+    rebuild: bool,
+) -> None:
     """Estimate token count and Voyage cost for the pending backlog.
 
     Read-only — does not touch the embedding provider. Use this before
@@ -404,6 +443,7 @@ def preflight_subcommand(env: AppEnv, max_conversations: int | None, max_message
         rebuild=rebuild,
         max_conversations=max_conversations,
         max_messages=max_messages,
+        max_cost_usd=max_cost_usd,
     )
     _render_preflight(env, report)
 
@@ -420,6 +460,12 @@ def preflight_subcommand(env: AppEnv, max_conversations: int | None, max_message
     type=click.IntRange(min=1),
     default=None,
     help="Maximum messages to include in this catch-up window.",
+)
+@click.option(
+    "--max-cost-usd",
+    type=click.FloatRange(min=0.0, min_open=True),
+    default=None,
+    help="Approximate maximum Voyage cost to include in this catch-up window.",
 )
 @click.option(
     "--stop-after-seconds",
@@ -449,6 +495,7 @@ def backfill_subcommand(
     env: AppEnv,
     max_conversations: int | None,
     max_messages: int | None,
+    max_cost_usd: float | None,
     stop_after_seconds: int | None,
     max_errors: int | None,
     rebuild: bool,
@@ -491,6 +538,7 @@ def backfill_subcommand(
         rebuild=rebuild,
         max_conversations=max_conversations,
         max_messages=max_messages,
+        max_cost_usd=max_cost_usd,
     )
     _render_preflight(env, report)
     if not yes and not click.confirm("\nProceed with backfill?", default=False):
@@ -513,7 +561,7 @@ def backfill_subcommand(
         env.repository.backend,
         rebuild=rebuild,
         max_conversations=max_conversations,
-        max_messages=max_messages,
+        max_messages=report.max_messages,
     )
     if not pending:
         click.echo("All conversations are already embedded.")
@@ -531,7 +579,7 @@ def backfill_subcommand(
         CatchupRunStart(
             rebuild=rebuild,
             max_conversations=max_conversations,
-            max_messages=max_messages,
+            max_messages=report.max_messages,
             stop_after_seconds=stop_after_seconds,
             max_errors=max_errors,
             planned_conversations=len(pending),
