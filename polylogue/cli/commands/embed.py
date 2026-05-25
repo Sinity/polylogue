@@ -66,9 +66,13 @@ def _read_pending_message_count(
     Reading happens against a sync read connection so the command works even
     when the daemon is not running.
     """
-    from polylogue.storage.sqlite.connection import open_read_connection
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-    with open_read_connection(db_path) as conn:
+    if not db_path.exists():
+        return 0, 0, 0
+
+    conn = open_readonly_connection(db_path)
+    try:
         total = int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0])
         if max_conversations is not None or max_messages is not None:
             from polylogue.api import select_pending_embedding_conversation_window
@@ -110,6 +114,8 @@ def _read_pending_message_count(
             # embedding_status table may not exist on a fresh / never-embedded DB.
             pending_convs = total
             pending_messages = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+    finally:
+        conn.close()
     return total, pending_convs, pending_messages
 
 

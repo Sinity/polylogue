@@ -15,6 +15,7 @@ Covers the new ``polylogue embed`` group:
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from click.testing import CliRunner
 from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.cli.commands.embed import (
     PreflightReport,
+    _read_pending_message_count,
     _splice_embedding_section,
     embed_command,
 )
@@ -180,6 +182,17 @@ class TestEnableCommand:
 
 
 class TestPreflightCommand:
+    def test_preflight_count_bypasses_schema_version_gate_for_readiness(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "archive.db"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY)")
+            conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, conversation_id TEXT)")
+            conn.execute("INSERT INTO conversations (conversation_id) VALUES ('conv-1')")
+            conn.execute("INSERT INTO messages (message_id, conversation_id) VALUES ('msg-1', 'conv-1')")
+            conn.execute("PRAGMA user_version = 9")
+
+        assert _read_pending_message_count(db_path) == (1, 1, 1)
+
     def test_preflight_does_not_touch_provider(self, cli_runner: CliRunner, stub_env: Any) -> None:
         report = _make_report(pending_conversations=4, estimated_cost_usd=0.42)
         with _patch_preflight(report):
