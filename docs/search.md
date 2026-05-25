@@ -215,6 +215,27 @@ Implementation: `polylogue/storage/search_providers/fts5.py`,
   retrieval-band accounting; the default status path stays cheap and reports
   the latest persisted catch-up run.
 
+### Embedding Activation And Catch-Up
+
+Semantic search stays unavailable until embeddings are both enabled and
+materialized. The activation path is deliberately bounded:
+
+1. `polylogue embed status` shows config state, key presence, coverage,
+   backlog, latest catch-up progress, and the next safe command.
+2. `polylogue embed preflight --max-conversations 10` estimates the next
+   bounded window without contacting Voyage.
+3. `polylogue embed enable --yes` enables the daemon stage when a Voyage key is
+   already configured, or `polylogue embed enable --voyage-api-key ...` records
+   the key and enables the stage.
+4. `polylogue embed backfill --max-conversations 10` runs an explicit bounded
+   catch-up batch; after enablement, `polylogued` also processes bounded daemon
+   batches for new or stale conversations.
+
+`--max-messages` is a hard message-count window and uses live message counts
+rather than potentially stale `conversation_stats`. `--max-conversations` may
+use materialized conversation stats so small first batches remain fast on large
+archives.
+
 ### Auto Elevation
 
 When `retrieval_lane=auto` (the default), the planner picks a concrete
