@@ -399,6 +399,13 @@ def backfill_subcommand(
         iter_pending_conversations,
         mark_all_conversations_needs_reindex,
     )
+    from polylogue.storage.embeddings.progress import (
+        CatchupRunDelta,
+        CatchupRunStart,
+        finish_embedding_catchup_run,
+        record_embedding_catchup_progress,
+        start_embedding_catchup_run,
+    )
     from polylogue.storage.search_providers import create_vector_provider
     from polylogue.storage.search_providers.sqlite_vec_support import (
         ESTIMATED_TOKENS_PER_MESSAGE,
@@ -433,6 +440,7 @@ def backfill_subcommand(
 
     pending = iter_pending_conversations(
         env.repository.backend,
+        rebuild=rebuild,
         max_conversations=max_conversations,
         max_messages=max_messages,
     )
@@ -447,38 +455,86 @@ def backfill_subcommand(
     console = env.ui.console
     started_at = time.monotonic()
     stopped_reason: str | None = None
+    run_id = start_embedding_catchup_run(
+        env.config.db_path,
+        CatchupRunStart(
+            rebuild=rebuild,
+            max_conversations=max_conversations,
+            max_messages=max_messages,
+            stop_after_seconds=stop_after_seconds,
+            max_errors=max_errors,
+            planned_conversations=len(pending),
+            planned_messages=sum(item.message_count for item in pending),
+        ),
+    )
 
-    for index, item in enumerate(pending, start=1):
-        if stop_after_seconds is not None and time.monotonic() - started_at >= stop_after_seconds:
-            stopped_reason = f"time limit reached ({stop_after_seconds}s)"
-            break
-        outcome = embed_conversation_sync(env.repository, vec_provider, item.conversation_id)
-        if outcome.status == "embedded":
-            embedded += 1
-            batch_cost = (
-                outcome.embedded_message_count * ESTIMATED_TOKENS_PER_MESSAGE * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
-            )
-            cumulative_cost += batch_cost
-            console.print(
-                f"  [{index}/{len(pending)}] {item.title or item.conversation_id[:12]}: "
-                f"{outcome.embedded_message_count} msgs (~${batch_cost:.4f}, cumulative ~${cumulative_cost:.4f})"
-            )
-            if cap > 0 and cumulative_cost > cap:
-                console.print(
-                    f"[yellow]Cost cap reached (~${cumulative_cost:.4f} > ${cap:.2f}). "
-                    f"Stopping after {embedded} conversations.[/yellow]"
+    try:
+        for index, item in enumerate(pending, start=1):
+            if stop_after_seconds is not None and time.monotonic() - started_at >= stop_after_seconds:
+                stopped_reason = f"time limit reached ({stop_after_seconds}s)"
+                break
+            outcome = embed_conversation_sync(env.repository, vec_provider, item.conversation_id)
+            if outcome.status == "embedded":
+                embedded += 1
+                batch_cost = (
+                    outcome.embedded_message_count
+                    * ESTIMATED_TOKENS_PER_MESSAGE
+                    * VOYAGE_4_COST_PER_1M_TOKENS
+                    / 1_000_000
                 )
-                break
-        elif outcome.status in {"no_messages", "no_embeddable_messages"}:
-            console.print(
-                f"  [{index}/{len(pending)}] {item.title or item.conversation_id[:12]}: no embeddable messages"
-            )
-        elif outcome.status == "error":
-            errors += 1
-            console.print(f"  [{index}/{len(pending)}] {item.conversation_id}: error {outcome.error}")
-            if max_errors is not None and errors >= max_errors:
-                stopped_reason = f"max errors reached ({max_errors})"
-                break
+                cumulative_cost += batch_cost
+                record_embedding_catchup_progress(
+                    env.config.db_path,
+                    run_id,
+                    CatchupRunDelta(
+                        conversation_id=item.conversation_id,
+                        embedded=True,
+                        embedded_messages=outcome.embedded_message_count,
+                        estimated_cost_usd=batch_cost,
+                    ),
+                )
+                console.print(
+                    f"  [{index}/{len(pending)}] {item.title or item.conversation_id[:12]}: "
+                    f"{outcome.embedded_message_count} msgs (~${batch_cost:.4f}, cumulative ~${cumulative_cost:.4f})"
+                )
+                if cap > 0 and cumulative_cost > cap:
+                    stopped_reason = f"cost cap reached (~${cumulative_cost:.4f} > ${cap:.2f})"
+                    console.print(
+                        f"[yellow]Cost cap reached (~${cumulative_cost:.4f} > ${cap:.2f}). "
+                        f"Stopping after {embedded} conversations.[/yellow]"
+                    )
+                    break
+            elif outcome.status in {"no_messages", "no_embeddable_messages"}:
+                record_embedding_catchup_progress(
+                    env.config.db_path,
+                    run_id,
+                    CatchupRunDelta(conversation_id=item.conversation_id, skipped=True),
+                )
+                console.print(
+                    f"  [{index}/{len(pending)}] {item.title or item.conversation_id[:12]}: no embeddable messages"
+                )
+            elif outcome.status == "error":
+                errors += 1
+                record_embedding_catchup_progress(
+                    env.config.db_path,
+                    run_id,
+                    CatchupRunDelta(conversation_id=item.conversation_id, errored=True),
+                )
+                console.print(f"  [{index}/{len(pending)}] {item.conversation_id}: error {outcome.error}")
+                if max_errors is not None and errors >= max_errors:
+                    stopped_reason = f"max errors reached ({max_errors})"
+                    break
+    except KeyboardInterrupt:
+        finish_embedding_catchup_run(env.config.db_path, run_id, status="interrupted", stop_reason="keyboard interrupt")
+        raise
+    except Exception as exc:
+        finish_embedding_catchup_run(env.config.db_path, run_id, status="failed", stop_reason=str(exc))
+        raise
+
+    if stopped_reason:
+        finish_embedding_catchup_run(env.config.db_path, run_id, status="stopped", stop_reason=stopped_reason)
+    else:
+        finish_embedding_catchup_run(env.config.db_path, run_id, status="completed", stop_reason=None)
 
     click.echo(f"\nBackfill complete. Embedded {embedded}, errors {errors}, est. cost ~${cumulative_cost:.4f}.")
     if stopped_reason:

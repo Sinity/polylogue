@@ -54,6 +54,20 @@ def _render_retrieval_bands(payload: EmbeddingStatusPayload) -> None:
         )
 
 
+def _render_latest_catchup_run(payload: EmbeddingStatusPayload) -> None:
+    latest = payload["latest_catchup_run"]
+    if latest is None:
+        return
+    click.echo("  Latest catch-up:")
+    click.echo(
+        f"    {latest['status']}; processed={latest['processed_conversations']:,}/{latest['planned_conversations']:,} convs; "
+        f"embedded={latest['embedded_messages']:,} msgs; errors={latest['error_count']:,}; "
+        f"est. cost ~${latest['estimated_cost_usd']:.4f}"
+    )
+    if latest["stop_reason"]:
+        click.echo(f"    reason: {latest['stop_reason']}")
+
+
 def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool = False) -> None:
     """Render an embedding statistics payload."""
     if json_output:
@@ -69,7 +83,12 @@ def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool
     click.echo(f"  Embedded conversations:{payload['embedded_conversations']:>4}")
     click.echo(f"  Embedded messages:     {payload['embedded_messages']}")
     click.echo(f"  Coverage:              {payload['embedding_coverage_percent']:.1f}%")
-    click.echo(f"  Pending:               {payload['pending_conversations']} convs, {payload['pending_messages']} msgs")
+    pending_messages = (
+        f"{payload['pending_messages']} msgs"
+        if payload["pending_messages_exact"]
+        else "msgs not calculated (use --detail)"
+    )
+    click.echo(f"  Pending:               {payload['pending_conversations']} convs, {pending_messages}")
     click.echo(f"  Retrieval ready:       {'yes' if payload['retrieval_ready'] else 'no'}")
     click.echo(f"  Freshness:             {payload['freshness_status']}")
     click.echo(f"  Stale messages:        {payload['stale_messages']}")
@@ -83,6 +102,7 @@ def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool
     _render_embedding_window(payload)
     _render_named_counts("Models", payload["embedding_models"])
     _render_named_counts("Dimensions", payload["embedding_dimensions"])
+    _render_latest_catchup_run(payload)
     _render_retrieval_bands(payload)
 
 

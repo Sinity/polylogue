@@ -12,6 +12,11 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.commands.embed import embed_command
+from polylogue.storage.embeddings.progress import (
+    CatchupRunStart,
+    finish_embedding_catchup_run,
+    start_embedding_catchup_run,
+)
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 
 
@@ -74,7 +79,8 @@ def test_status_json_fast_path_handles_absent_embedding_tables(tmp_path: Path) -
     assert payload["total_conversations"] == 2
     assert payload["embedded_conversations"] == 0
     assert payload["pending_conversations"] == 2
-    assert payload["pending_messages"] == 0
+    assert payload["pending_messages"] is None
+    assert payload["pending_messages_exact"] is False
     assert payload["retrieval_bands"] == {}
 
 
@@ -138,9 +144,38 @@ def test_status_json_detail_mode_runs_exact_retrieval_accounting(
 
     assert payload["pending_conversations"] == 2
     assert payload["pending_messages"] == 2
+    assert payload["pending_messages_exact"] is True
     assert set(payload["retrieval_bands"]) == {
         "transcript_embeddings",
         "evidence_retrieval",
         "inference_retrieval",
         "enrichment_retrieval",
     }
+
+
+def test_status_json_includes_latest_catchup_run(tmp_path: Path) -> None:
+    db_path = tmp_path / "archive.db"
+    _seed_archive_without_embedding_ledgers(db_path)
+
+    run_id = start_embedding_catchup_run(
+        db_path,
+        CatchupRunStart(
+            rebuild=True,
+            max_conversations=2,
+            max_messages=10,
+            stop_after_seconds=None,
+            max_errors=None,
+            planned_conversations=2,
+            planned_messages=2,
+        ),
+    )
+    finish_embedding_catchup_run(db_path, run_id, status="interrupted", stop_reason="keyboard interrupt")
+
+    payload = _run_status(db_path)
+
+    latest = payload["latest_catchup_run"]
+    assert latest["run_id"] == run_id
+    assert latest["status"] == "interrupted"
+    assert latest["stop_reason"] == "keyboard interrupt"
+    assert latest["rebuild"] is True
+    assert latest["planned_conversations"] == 2

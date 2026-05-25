@@ -27,6 +27,14 @@ from polylogue.storage.embeddings.materialization import (
     select_pending_conversation_window,
 )
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
+from polylogue.storage.embeddings.progress import (
+    CatchupRunDelta,
+    CatchupRunStart,
+    finish_embedding_catchup_run,
+    latest_embedding_catchup_run,
+    record_embedding_catchup_progress,
+    start_embedding_catchup_run,
+)
 from polylogue.storage.sqlite.schema_ddl import SCHEMA_VERSION
 
 # ---------------------------------------------------------------------------
@@ -104,6 +112,64 @@ def _insert_conversation(conn: sqlite3.Connection, conversation_id: str, *, mess
             "INSERT INTO messages (message_id, conversation_id, text) VALUES (?, ?, ?)",
             (f"{conversation_id}-msg-{index}", conversation_id, "long enough message text for embedding"),
         )
+
+
+def test_embedding_catchup_run_ledger_persists_progress(tmp_path: Path) -> None:
+    """Backfill progress survives process exit as a run-level ledger."""
+    db_path = tmp_path / "archive.db"
+    _setup_minimal_embedding_file(db_path)
+
+    run_id = start_embedding_catchup_run(
+        db_path,
+        CatchupRunStart(
+            rebuild=False,
+            max_conversations=3,
+            max_messages=20,
+            stop_after_seconds=30,
+            max_errors=1,
+            planned_conversations=3,
+            planned_messages=12,
+        ),
+    )
+    record_embedding_catchup_progress(
+        db_path,
+        run_id,
+        CatchupRunDelta(
+            conversation_id="conv-1",
+            embedded=True,
+            embedded_messages=5,
+            estimated_cost_usd=0.001,
+        ),
+    )
+    record_embedding_catchup_progress(
+        db_path,
+        run_id,
+        CatchupRunDelta(conversation_id="conv-empty", skipped=True),
+    )
+    record_embedding_catchup_progress(
+        db_path,
+        run_id,
+        CatchupRunDelta(conversation_id="conv-error", errored=True),
+    )
+    finish_embedding_catchup_run(db_path, run_id, status="stopped", stop_reason="max errors reached (1)")
+
+    with sqlite3.connect(db_path) as conn:
+        payload = latest_embedding_catchup_run(conn)
+
+    assert payload is not None
+    assert payload["run_id"] == run_id
+    assert payload["status"] == "stopped"
+    assert payload["stop_reason"] == "max errors reached (1)"
+    assert payload["rebuild"] is False
+    assert payload["max_conversations"] == 3
+    assert payload["planned_conversations"] == 3
+    assert payload["planned_messages"] == 12
+    assert payload["processed_conversations"] == 3
+    assert payload["embedded_conversations"] == 1
+    assert payload["skipped_conversations"] == 1
+    assert payload["error_count"] == 1
+    assert payload["embedded_messages"] == 5
+    assert payload["last_conversation_id"] == "conv-error"
 
 
 # ---------------------------------------------------------------------------

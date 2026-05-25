@@ -83,7 +83,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue embed disable` | `polylogue/cli/commands/embed.py:313` `polylogue.cli.commands.embed.disable_subcommand` |
 | `polylogue embed enable` | `polylogue/cli/commands/embed.py:245` `polylogue.cli.commands.embed.enable_subcommand` |
 | `polylogue embed preflight` | `polylogue/cli/commands/embed.py:328` `polylogue.cli.commands.embed.preflight_subcommand` |
-| `polylogue embed status` | `polylogue/cli/commands/embed.py:488` `polylogue.cli.commands.embed.status_subcommand` |
+| `polylogue embed status` | `polylogue/cli/commands/embed.py:544` `polylogue.cli.commands.embed.status_subcommand` |
 | `polylogue export` | `polylogue/cli/click_app.py` `polylogue export` |
 | `polylogue facets` | `polylogue/cli/click_app.py` `polylogue facets` |
 | `polylogue feedback` | `polylogue/cli/click_app.py` `polylogue feedback` |

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Protocol
 from typing_extensions import TypedDict
 
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
+from polylogue.storage.embeddings.progress import EmbeddingCatchupRunPayload
 
 if TYPE_CHECKING:
     from polylogue.config import Config
@@ -41,7 +42,8 @@ class EmbeddingStatusPayload(TypedDict):
     embedded_conversations: int
     embedded_messages: int
     pending_conversations: int
-    pending_messages: int
+    pending_messages: int | None
+    pending_messages_exact: bool
     embedding_coverage_percent: float
     retrieval_ready: bool
     freshness_status: str
@@ -54,6 +56,7 @@ class EmbeddingStatusPayload(TypedDict):
     retrieval_bands: dict[str, dict[str, object]]
     failure_count: int
     total_estimated_cost_usd: float
+    latest_catchup_run: EmbeddingCatchupRunPayload | None
 
 
 def _payload_int(value: object) -> int:
@@ -114,6 +117,8 @@ def _payload_from_stats(
     has_voyage_api_key: bool,
     total_conversations: int,
     stats: EmbeddingStatsSnapshot,
+    latest_catchup_run: EmbeddingCatchupRunPayload | None,
+    pending_messages_exact: bool,
 ) -> EmbeddingStatusPayload:
     embedded_conversations = stats.embedded_conversations
     pending_conversations = stats.pending_conversations or max(total_conversations - embedded_conversations, 0)
@@ -131,7 +136,8 @@ def _payload_from_stats(
         "embedded_conversations": embedded_conversations,
         "embedded_messages": stats.embedded_messages,
         "pending_conversations": pending_conversations,
-        "pending_messages": stats.pending_messages,
+        "pending_messages": stats.pending_messages if pending_messages_exact else None,
+        "pending_messages_exact": pending_messages_exact,
         "embedding_coverage_percent": round(
             _coverage_percent(
                 embedded_conversations=embedded_conversations,
@@ -150,6 +156,7 @@ def _payload_from_stats(
         "retrieval_bands": stats.retrieval_bands,
         "failure_count": stats.failure_count,
         "total_estimated_cost_usd": stats.total_estimated_cost_usd,
+        "latest_catchup_run": latest_catchup_run,
     }
 
 
@@ -162,6 +169,8 @@ def embedding_status_payload(
     """Read canonical embedding-status statistics for operator surfaces."""
     from polylogue.config import load_polylogue_config
     from polylogue.storage.embeddings.embedding_stats import read_embedding_stats_sync
+    from polylogue.storage.embeddings.progress import latest_embedding_catchup_run
+    from polylogue.storage.embeddings.support import table_exists_sync
     from polylogue.storage.sqlite.connection import open_read_connection
 
     cfg = load_polylogue_config()
@@ -172,10 +181,13 @@ def embedding_status_payload(
             include_retrieval_bands=include_retrieval_bands,
             detail=include_detail,
         )
+        latest_run = latest_embedding_catchup_run(conn) if table_exists_sync(conn, "embedding_catchup_runs") else None
 
     return _payload_from_stats(
         config_enabled=bool(cfg.embedding_enabled),
         has_voyage_api_key=bool(cfg.voyage_api_key),
         total_conversations=total_conversations,
         stats=embedding_stats,
+        latest_catchup_run=latest_run,
+        pending_messages_exact=include_detail,
     )
