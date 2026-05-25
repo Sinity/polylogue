@@ -89,7 +89,6 @@ class SessionWindowInsightQuery(ProviderSearchInsightQuery):
 
 class ConversationTimelineWindowInsightQuery(ProviderTimeWindowInsightQuery):
     conversation_id: str | None = None
-    kind: str | None = None
     session_date_since: str | None = None
     session_date_until: str | None = None
 
@@ -118,11 +117,11 @@ class SessionEnrichmentInsightQuery(SessionWindowInsightQuery):
 
 
 class SessionWorkEventInsightQuery(SearchableConversationTimelineInsightQuery):
-    pass
+    heuristic_label: str | None = None
 
 
 class SessionPhaseInsightQuery(ConversationTimelineWindowInsightQuery):
-    pass
+    kind: str | None = None
 
 
 class WorkThreadInsightQuery(SearchableTimeWindowInsightQuery):

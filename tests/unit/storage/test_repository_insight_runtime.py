@@ -134,7 +134,7 @@ async def test_repository_insight_thread_and_timeline_reads_build_typed_queries(
             until="2026-01-02",
             session_date_since="2026-01-01",
             session_date_until="2026-01-02",
-            kind="implementation",
+            heuristic_label="implementation",
             limit=4,
             offset=2,
             query="editor",
@@ -159,7 +159,7 @@ async def test_repository_insight_thread_and_timeline_reads_build_typed_queries(
     timeline_query = queries._list_session_work_events_query.await_args_list[0].args[0]
     assert timeline_query.conversation_id == "conv-1"
     assert timeline_query.provider == "claude-code"
-    assert timeline_query.kind == "implementation"
+    assert timeline_query.heuristic_label == "implementation"
     assert timeline_query.session_date_since == "2026-01-01"
     assert timeline_query.session_date_until == "2026-01-02"
     assert timeline_query.query == "editor"

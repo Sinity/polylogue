@@ -86,8 +86,8 @@ def _canonical_event_date(start_time: datetime | None, end_time: datetime | None
     return reference_time.date() if reference_time is not None else None
 
 
-class WorkEventKind(str, Enum):
-    """Classification of work performed in a message range."""
+class WorkEventHeuristicLabel(str, Enum):
+    """Weak heuristic label for a message-range work event."""
 
     PLANNING = "planning"
     IMPLEMENTATION = "implementation"
@@ -118,13 +118,13 @@ class MessageRange:
 class WorkEventSignalBundle:
     action_category_counts: dict[str, int]
     normalized_user_text: str
-    text_signal: WorkEventKind | None
+    text_signal: WorkEventHeuristicLabel | None
     text_signal_name: str | None
 
 
 @dataclass(frozen=True)
 class WorkEventClassifiedRange:
-    kind: WorkEventKind
+    heuristic_label: WorkEventHeuristicLabel
     confidence: float
     evidence: tuple[str, ...]
 
@@ -145,9 +145,9 @@ class WorkEventTiming:
 
 @dataclass(frozen=True)
 class WorkEvent:
-    """A classified segment of work within a conversation."""
+    """A weakly labelled segment of work within a conversation."""
 
-    kind: WorkEventKind
+    heuristic_label: WorkEventHeuristicLabel
     start_index: int
     end_index: int
     confidence: float
@@ -165,7 +165,7 @@ class WorkEvent:
         end_time = self.end_time.isoformat() if self.end_time else None
         canonical_session_date = self.canonical_session_date.isoformat() if self.canonical_session_date else None
         return {
-            "kind": self.kind.value,
+            "heuristic_label": self.heuristic_label.value,
             "start_index": self.start_index,
             "end_index": self.end_index,
             "start_time": start_time,
@@ -184,7 +184,7 @@ class WorkEvent:
     @classmethod
     def from_dict(cls, payload: WorkEventPayload | Mapping[str, object]) -> WorkEvent:
         return cls(
-            kind=WorkEventKind(str(payload["kind"])),
+            heuristic_label=WorkEventHeuristicLabel(str(payload["heuristic_label"])),
             start_index=coerce_int(payload.get("start_index"), 0),
             end_index=coerce_int(payload.get("end_index"), 0),
             start_time=optional_datetime(payload.get("start_time")),
@@ -235,18 +235,18 @@ _DATA_ANALYSIS_PATTERNS = ("data", "analysis", "query", "sql", "duckdb", "pandas
 # Text signals as weighted inputs (not short-circuit overrides).
 # Order matters — first match wins. These are checked only after action
 # evidence, or as a fallback when no action evidence is available.
-TextSignalTable: TypeAlias = list[tuple[tuple[str, ...], WorkEventKind, str]]
+TextSignalTable: TypeAlias = list[tuple[tuple[str, ...], WorkEventHeuristicLabel, str]]
 
 
 _TEXT_SIGNAL_TABLE: TextSignalTable = [
-    (_DEBUGGING_PATTERNS, WorkEventKind.DEBUGGING, "user_text_debugging"),
-    (_PLANNING_PATTERNS, WorkEventKind.PLANNING, "user_text_planning"),
-    (_TESTING_PATTERNS, WorkEventKind.TESTING, "user_text_testing"),
-    (_REVIEW_PATTERNS, WorkEventKind.REVIEW, "user_text_review"),
-    (_REFACTORING_PATTERNS, WorkEventKind.REFACTORING, "user_text_refactoring"),
-    (_DOCUMENTATION_PATTERNS, WorkEventKind.DOCUMENTATION, "user_text_documentation"),
-    (_CONFIGURATION_PATTERNS, WorkEventKind.CONFIGURATION, "user_text_configuration"),
-    (_DATA_ANALYSIS_PATTERNS, WorkEventKind.DATA_ANALYSIS, "user_text_data_analysis"),
+    (_DEBUGGING_PATTERNS, WorkEventHeuristicLabel.DEBUGGING, "user_text_debugging"),
+    (_PLANNING_PATTERNS, WorkEventHeuristicLabel.PLANNING, "user_text_planning"),
+    (_TESTING_PATTERNS, WorkEventHeuristicLabel.TESTING, "user_text_testing"),
+    (_REVIEW_PATTERNS, WorkEventHeuristicLabel.REVIEW, "user_text_review"),
+    (_REFACTORING_PATTERNS, WorkEventHeuristicLabel.REFACTORING, "user_text_refactoring"),
+    (_DOCUMENTATION_PATTERNS, WorkEventHeuristicLabel.DOCUMENTATION, "user_text_documentation"),
+    (_CONFIGURATION_PATTERNS, WorkEventHeuristicLabel.CONFIGURATION, "user_text_configuration"),
+    (_DATA_ANALYSIS_PATTERNS, WorkEventHeuristicLabel.DATA_ANALYSIS, "user_text_data_analysis"),
 ]
 
 
@@ -254,7 +254,7 @@ def _text_signal_from_lowered_text(
     lowered_text: str,
     *,
     before_index: int | None = None,
-) -> tuple[int, WorkEventKind, str] | None:
+) -> tuple[int, WorkEventHeuristicLabel, str] | None:
     signal_table = _TEXT_SIGNAL_TABLE if before_index is None else _TEXT_SIGNAL_TABLE[:before_index]
     for index, (patterns, kind, name) in enumerate(signal_table):
         if any(pattern in lowered_text for pattern in patterns):
@@ -270,7 +270,7 @@ def _collect_range_signals(
     normalized_user_text_parts: list[str] = []
     normalized_user_text_len = 0
     best_text_signal_index: int | None = None
-    text_signal: WorkEventKind | None = None
+    text_signal: WorkEventHeuristicLabel | None = None
     text_signal_name: str | None = None
 
     for message in message_range.iter_messages(messages):
@@ -318,45 +318,45 @@ def _classify_range(signals: WorkEventSignalBundle) -> WorkEventClassifiedRange:
 
     if edit_count >= 2:
         evidence.append("file_edits")
-        if shell_count and signals.text_signal == WorkEventKind.TESTING:
+        if shell_count and signals.text_signal == WorkEventHeuristicLabel.TESTING:
             return WorkEventClassifiedRange(
-                WorkEventKind.TESTING,
+                WorkEventHeuristicLabel.TESTING,
                 0.7,
                 tuple(evidence + ["shell_test", signals.text_signal_name or ""]),
             )
-        if signals.text_signal == WorkEventKind.REFACTORING:
+        if signals.text_signal == WorkEventHeuristicLabel.REFACTORING:
             return WorkEventClassifiedRange(
-                WorkEventKind.REFACTORING,
+                WorkEventHeuristicLabel.REFACTORING,
                 0.7,
                 tuple(evidence + [signals.text_signal_name or ""]),
             )
-        return WorkEventClassifiedRange(WorkEventKind.IMPLEMENTATION, 0.75, tuple(evidence))
+        return WorkEventClassifiedRange(WorkEventHeuristicLabel.IMPLEMENTATION, 0.75, tuple(evidence))
     if agent_count >= 2 and edit_count == 0:
-        return WorkEventClassifiedRange(WorkEventKind.PLANNING, 0.7, ("agent_orchestration",))
+        return WorkEventClassifiedRange(WorkEventHeuristicLabel.PLANNING, 0.7, ("agent_orchestration",))
     if search_count >= 2 or (read_count >= 3 and edit_count == 0):
-        return WorkEventClassifiedRange(WorkEventKind.RESEARCH, 0.7, ("search_or_read_dominant",))
+        return WorkEventClassifiedRange(WorkEventHeuristicLabel.RESEARCH, 0.7, ("search_or_read_dominant",))
     if git_count >= 1:
-        return WorkEventClassifiedRange(WorkEventKind.REVIEW, 0.6, ("git_operations",))
+        return WorkEventClassifiedRange(WorkEventHeuristicLabel.REVIEW, 0.6, ("git_operations",))
     if shell_count >= 2:
-        if signals.text_signal == WorkEventKind.TESTING:
+        if signals.text_signal == WorkEventHeuristicLabel.TESTING:
             return WorkEventClassifiedRange(
-                WorkEventKind.TESTING,
+                WorkEventHeuristicLabel.TESTING,
                 0.65,
                 ("shell_testing", signals.text_signal_name or ""),
             )
-        if signals.text_signal == WorkEventKind.DEBUGGING:
+        if signals.text_signal == WorkEventHeuristicLabel.DEBUGGING:
             return WorkEventClassifiedRange(
-                WorkEventKind.DEBUGGING,
+                WorkEventHeuristicLabel.DEBUGGING,
                 0.65,
                 ("shell_debugging", signals.text_signal_name or ""),
             )
-        return WorkEventClassifiedRange(WorkEventKind.IMPLEMENTATION, 0.5, ("shell_default",))
+        return WorkEventClassifiedRange(WorkEventHeuristicLabel.IMPLEMENTATION, 0.5, ("shell_default",))
 
     if signals.text_signal is not None and signals.text_signal_name:
         return WorkEventClassifiedRange(signals.text_signal, 0.5, (signals.text_signal_name,))
     if not signals.action_category_counts:
-        return WorkEventClassifiedRange(WorkEventKind.CONVERSATION, 0.6, ("no_tools",))
-    return WorkEventClassifiedRange(WorkEventKind.IMPLEMENTATION, 0.4, ("weak_signal",))
+        return WorkEventClassifiedRange(WorkEventHeuristicLabel.CONVERSATION, 0.6, ("no_tools",))
+    return WorkEventClassifiedRange(WorkEventHeuristicLabel.IMPLEMENTATION, 0.4, ("weak_signal",))
 
 
 def _compute_phase_ranges(
@@ -418,7 +418,7 @@ def _build_range_summary(
     messages: Sequence[MessageSemanticFacts],
     message_range: MessageRange,
     *,
-    fallback: WorkEventKind,
+    fallback: WorkEventHeuristicLabel,
 ) -> str:
     summary_parts: list[str] = []
     summary_length = 0
@@ -478,11 +478,11 @@ def _merge_adjacent(events: list[WorkEvent]) -> list[WorkEvent]:
     merged: list[WorkEvent] = [events[0]]
     for event in events[1:]:
         prev = merged[-1]
-        if prev.kind != event.kind:
+        if prev.heuristic_label != event.heuristic_label:
             merged.append(event)
             continue
         merged[-1] = WorkEvent(
-            kind=prev.kind,
+            heuristic_label=prev.heuristic_label,
             start_index=prev.start_index,
             end_index=event.end_index,
             start_time=prev.start_time or event.start_time,
@@ -521,11 +521,11 @@ def extract_work_events(
         classified = _classify_range(signals)
         artifacts = _collect_range_artifacts(messages, message_range)
         timing = _range_timing(messages, message_range)
-        summary = _build_range_summary(messages, message_range, fallback=classified.kind)
+        summary = _build_range_summary(messages, message_range, fallback=classified.heuristic_label)
 
         events.append(
             WorkEvent(
-                kind=classified.kind,
+                heuristic_label=classified.heuristic_label,
                 start_index=message_range.start,
                 end_index=message_range.end,
                 start_time=timing.start_time,
@@ -548,7 +548,7 @@ __all__ = [
     "WorkEvent",
     "WorkEventArtifacts",
     "WorkEventClassifiedRange",
-    "WorkEventKind",
+    "WorkEventHeuristicLabel",
     "WorkEventPayload",
     "WorkEventSignalBundle",
     "WorkEventTiming",

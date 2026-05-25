@@ -125,7 +125,7 @@ def _work_event_entry(insight: SessionWorkEventInsight) -> TimelineEntry:
         source="work_event",
         entry_id=insight.event_id,
         conversation_id=insight.conversation_id,
-        kind=inference.kind,
+        kind=inference.heuristic_label,
         summary=inference.summary,
         start_time=evidence.start_time,
         end_time=evidence.end_time,

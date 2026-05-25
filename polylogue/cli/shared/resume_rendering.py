@@ -53,7 +53,7 @@ def render_resume_brief(brief: ResumeBrief) -> None:
     _line("Repo names", inferences.repo_names)
     _line("Auto tags", inferences.auto_tags)
     for event in inferences.work_events:
-        click.echo(f"  Work event: {event.kind} - {event.summary}")
+        click.echo(f"  Work event: {event.heuristic_label} - {event.summary}")
     for phase in inferences.phases:
         click.echo(
             f"  Phase {phase.phase_index}: messages {phase.message_range[0]}-{phase.message_range[1]} "

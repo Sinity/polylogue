@@ -79,7 +79,11 @@ def _work_event(
             tools_used=tools_used,
             file_paths=file_paths,
         ),
-        inference=WorkEventInferencePayload(kind=kind, summary=summary, confidence=confidence),
+        inference=WorkEventInferencePayload(
+            heuristic_label=kind,
+            summary=summary,
+            confidence=confidence,
+        ),
     )
 
 

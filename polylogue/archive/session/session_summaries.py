@@ -104,7 +104,8 @@ def summarize_day(
         total_words += profile.word_count
         providers[profile.provider] += 1
         work_events.update(
-            event.kind.value if hasattr(event.kind, "value") else str(event.kind) for event in profile.work_events
+            event.heuristic_label.value if hasattr(event.heuristic_label, "value") else str(event.heuristic_label)
+            for event in profile.work_events
         )
         repos.update(profile.repo_names or normalize_repo_names(repo_paths=profile.repo_paths))
     return DaySessionSummary(

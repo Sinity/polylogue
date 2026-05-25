@@ -199,6 +199,7 @@ class SessionTimelineListQuery:
     session_date_since: str | None = None
     session_date_until: str | None = None
     kind: str | None = None
+    heuristic_label: str | None = None
     limit: int | None = 50
     offset: int = 0
     query: str | None = None

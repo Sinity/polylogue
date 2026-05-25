@@ -78,7 +78,7 @@ def _bootstrap_fts_db(path: Path) -> sqlite3.Connection:
             event_id TEXT PRIMARY KEY,
             conversation_id TEXT NOT NULL,
             provider_name TEXT NOT NULL,
-            kind TEXT NOT NULL,
+            heuristic_label TEXT NOT NULL,
             search_text TEXT NOT NULL
         )"""
     )
@@ -87,7 +87,7 @@ def _bootstrap_fts_db(path: Path) -> sqlite3.Connection:
             event_id UNINDEXED,
             conversation_id UNINDEXED,
             provider_name UNINDEXED,
-            kind UNINDEXED,
+            heuristic_label UNINDEXED,
             text,
             tokenize='unicode61'
         )"""
@@ -174,7 +174,7 @@ def test_rebuild_restores_insight_fts_surfaces(tmp_path: Path) -> None:
         conn.execute(
             """
             INSERT INTO session_work_events (
-                event_id, conversation_id, provider_name, kind, search_text
+                event_id, conversation_id, provider_name, heuristic_label, search_text
             ) VALUES (?, ?, ?, ?, ?)
             """,
             ("event-1", "conversation-1", "codex", "implementation", "fixed daemon locks"),
@@ -209,7 +209,7 @@ def test_targeted_rebuild_restores_only_insight_fts_surfaces(tmp_path: Path) -> 
         conn.execute(
             """
             INSERT INTO session_work_events (
-                event_id, conversation_id, provider_name, kind, search_text
+                event_id, conversation_id, provider_name, heuristic_label, search_text
             ) VALUES (?, ?, ?, ?, ?)
             """,
             ("event-1", "conversation-1", "codex", "implementation", "fixed daemon locks"),
@@ -220,7 +220,7 @@ def test_targeted_rebuild_restores_only_insight_fts_surfaces(tmp_path: Path) -> 
         )
         conn.execute(
             """
-            INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, kind, text)
+            INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, heuristic_label, text)
             VALUES (?, ?, ?, ?, ?)
             """,
             ("event-1", "conversation-1", "codex", "implementation", "duplicate event row"),

@@ -158,7 +158,7 @@ class WorkEventEvidencePayload(ArchiveInsightModel):
 
 
 class WorkEventInferencePayload(ArchiveInsightModel):
-    kind: str
+    heuristic_label: str
     summary: str
     confidence: float
     evidence: tuple[str, ...] = ()

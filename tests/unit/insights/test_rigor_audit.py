@@ -92,7 +92,7 @@ def _work_event(*, fallback: bool, confidence: float) -> SessionWorkEventInsight
         inference_provenance=_inference_provenance(),
         evidence=WorkEventEvidencePayload(start_index=0, end_index=5, duration_ms=1000),
         inference=WorkEventInferencePayload(
-            kind="edit",
+            heuristic_label="edit",
             summary="edited two files",
             confidence=confidence,
             fallback_inference=fallback,

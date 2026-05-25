@@ -408,12 +408,16 @@ register(
                 ("--session-date-until",),
                 help="Only events whose canonical session date is on/before this date",
             ),
-            CliOption("kind", ("--kind",), help="Only this work-event kind"),
+            CliOption(
+                "heuristic_label",
+                ("--heuristic-label",),
+                help="Only this weak heuristic work-event label",
+            ),
             _QUERY_OPTION,
         ),
         fields=(
             InsightField("", _id_with_provider("event_id"), group=0),
-            InsightField("kind", _nested("inference", "kind"), group=0),
+            InsightField("label", _nested("inference", "heuristic_label"), group=0),
             InsightField("conv", _attr("conversation_id"), group=0),
             InsightField("start", _nested("evidence", "start_time"), group=1),
             InsightField("end", _nested("evidence", "end_time"), group=1),

@@ -49,7 +49,7 @@ async def _make_work_events_db() -> aiosqlite.Connection:
             source_sort_key REAL,
             provider_name TEXT NOT NULL,
             event_index INTEGER NOT NULL,
-            kind TEXT NOT NULL,
+            heuristic_label TEXT NOT NULL,
             confidence REAL NOT NULL DEFAULT 0,
             start_index INTEGER NOT NULL DEFAULT 0,
             end_index INTEGER NOT NULL DEFAULT 0,
@@ -70,18 +70,18 @@ async def _make_work_events_db() -> aiosqlite.Connection:
             event_id UNINDEXED,
             conversation_id UNINDEXED,
             provider_name UNINDEXED,
-            kind UNINDEXED,
+            heuristic_label UNINDEXED,
             text,
             tokenize='unicode61'
         );
         CREATE TRIGGER session_work_events_fts_ai AFTER INSERT ON session_work_events BEGIN SELECT 1; END;
         CREATE TRIGGER session_work_events_fts_ad AFTER DELETE ON session_work_events BEGIN SELECT 1; END;
         CREATE TRIGGER session_work_events_fts_au AFTER UPDATE ON session_work_events BEGIN SELECT 1; END;
-        INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, kind, text)
+        INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, heuristic_label, text)
         VALUES ('e1', 'c1', 'claude-code', 'edit', 'hello world');
         INSERT INTO session_work_events (
             event_id, conversation_id, materialized_at, provider_name, event_index,
-            kind, summary, search_text
+            heuristic_label, summary, search_text
         ) VALUES ('e1', 'c1', '2026-01-01T00:00:00Z', 'claude-code', 0, 'edit', 'hello', 'hello world');
         """
     )

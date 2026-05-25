@@ -65,7 +65,7 @@ def _row_to_session_work_event_record(row: sqlite3.Row) -> SessionWorkEventRecor
         input_row_count=int(_row_int(row, "input_row_count", 0) or 0),
         provider_name=row["provider_name"],
         event_index=int(_row_int(row, "event_index", 0) or 0),
-        kind=row["kind"],
+        heuristic_label=row["heuristic_label"],
         confidence=float(_row_float(row, "confidence", 0.0) or 0.0),
         start_index=int(_row_int(row, "start_index", 0) or 0),
         end_index=int(_row_int(row, "end_index", 0) or 0),

@@ -588,7 +588,12 @@ def test_insights_reconstructs_tiered_payloads_from_blank_migrated_rows(cli_work
         "date_only",
         "none",
     }
-    assert json_object(work_event["inference"])["kind"] in {"implementation", "testing", "planning", "debugging"}
+    assert json_object(work_event["inference"])["heuristic_label"] in {
+        "implementation",
+        "testing",
+        "planning",
+        "debugging",
+    }
     assert json_int(json_array(json_object(phase["evidence"])["message_range"])[0]) >= 0
     assert json_number(json_object(phase["inference"])["confidence"]) >= 0.0
 

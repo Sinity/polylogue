@@ -176,7 +176,7 @@ def session_work_event_inference_from_legacy(
 ) -> WorkEventInferencePayload:
     return WorkEventInferencePayload.model_validate(
         {
-            "kind": _row_text(row, "kind") or "",
+            "heuristic_label": _row_text(row, "heuristic_label") or "",
             "summary": _row_text(row, "summary") or "",
             "confidence": _row_float(row, "confidence", legacy_payload, legacy_key="confidence"),
             "evidence": _legacy_text_tuple(legacy_payload.get("evidence")),
@@ -392,7 +392,7 @@ def _legacy_work_event_documents(
         canonical_session_date = _legacy_text(item.get("canonical_session_date"))
         documents.append(
             {
-                "kind": _legacy_text(item.get("kind")) or "conversation",
+                "heuristic_label": _legacy_text(item.get("heuristic_label")) or "conversation",
                 "start_index": _legacy_int(item.get("start_index")),
                 "end_index": _legacy_int(item.get("end_index")),
                 "start_time": start_time,

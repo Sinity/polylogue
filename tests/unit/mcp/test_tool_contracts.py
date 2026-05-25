@@ -668,7 +668,9 @@ class TestInsightTools:
             evidence=WorkEventEvidencePayload(
                 start_index=0, end_index=1, file_paths=("/workspace/polylogue/README.md",)
             ),
-            inference=WorkEventInferencePayload(kind="implementation", summary="editing files", confidence=0.8),
+            inference=WorkEventInferencePayload(
+                heuristic_label="implementation", summary="editing files", confidence=0.8
+            ),
         )
         phase = SessionPhaseInsight(
             phase_id="phase-1",
@@ -803,7 +805,7 @@ class TestInsightTools:
             )
             events_raw = await invoke_surface_async(
                 mcp_server._tool_manager._tools["session_work_events"].fn,
-                kind="implementation",
+                heuristic_label="implementation",
                 limit=5,
             )
             enrichments_raw = await invoke_surface_async(
@@ -1049,9 +1051,6 @@ class TestMutationTools:
         self,
         mcp_server: MCPServerUnderTest,
     ) -> None:
-        # Routed through the centralized ArchiveMutationsMixin contract (#862):
-        # the MCP tool calls Polylogue.bulk_tag_conversations rather than
-        # reaching into the tag store directly.
         from polylogue.surfaces.payloads import BulkTagMutationResult
 
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
