@@ -65,6 +65,13 @@ _SESSION_PROFILE_BASE_COLUMNS = (
     "latency_percentiles_ms_json",
     "tool_calls_per_minute",
     "timing_provenance",
+    "total_input_tokens",
+    "total_output_tokens",
+    "total_cache_read_tokens",
+    "total_cache_write_tokens",
+    "total_credit_cost",
+    "cost_provenance",
+    "per_model_cost_json",
 )
 _SESSION_PROFILE_PAYLOAD_COLUMNS = (
     "evidence_payload_json",
@@ -256,6 +263,13 @@ def session_profile_insert_values(
         record.latency_percentiles_ms_json,
         record.tool_calls_per_minute,
         record.timing_provenance,
+        record.total_input_tokens,
+        record.total_output_tokens,
+        record.total_cache_read_tokens,
+        record.total_cache_write_tokens,
+        record.total_credit_cost,
+        record.cost_provenance,
+        record.per_model_cost_json,
     ]
     payload_values: tuple[SqlValue, ...] = (
         _json_or_none(record.evidence_payload),
