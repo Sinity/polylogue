@@ -1083,6 +1083,18 @@
           "default": null,
           "title": "Provider"
         },
+        "query": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Query"
+        },
         "referenced_path": {
           "anyOf": [
             {

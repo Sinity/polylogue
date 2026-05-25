@@ -158,13 +158,15 @@ class MCPContentProjectionRequest:
 def conversation_query_request_signature(
     *,
     include_query: bool,
+    query_required: bool = False,
 ) -> inspect.Signature:
     """Build an ``inspect.Signature`` mirroring ``MCPConversationQueryRequest``.
 
     ``include_query`` controls whether the ``query`` parameter is surfaced —
-    ``search`` exposes it as required, ``list_conversations`` omits it. The
-    resulting signature drives MCP ``inputSchema`` derivation so the JSON
-    schema and the typed request model cannot drift.
+    ``search`` exposes it as required, ``facets`` exposes it as optional, and
+    ``list_conversations`` omits it. The resulting signature drives MCP
+    ``inputSchema`` derivation so the JSON schema and the typed request model
+    cannot drift.
     """
     type_hints = typing.get_type_hints(
         MCPConversationQueryRequest,
@@ -179,7 +181,7 @@ def conversation_query_request_signature(
         # ``search`` exposes ``query`` as a required parameter to preserve the
         # historical MCP tool surface — even though the dataclass default is
         # ``None`` so other call sites can build empty requests.
-        if field.name == "query" and include_query:
+        if field.name == "query" and include_query and query_required:
             parameters.append(
                 inspect.Parameter(
                     field.name,
