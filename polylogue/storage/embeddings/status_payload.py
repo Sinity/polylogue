@@ -8,12 +8,14 @@ and render in their own dialect.
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from typing_extensions import TypedDict
 
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 from polylogue.storage.embeddings.progress import EmbeddingCatchupRunPayload
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 if TYPE_CHECKING:
     from polylogue.config import Config
@@ -171,10 +173,21 @@ def embedding_status_payload(
     from polylogue.storage.embeddings.embedding_stats import read_embedding_stats_sync
     from polylogue.storage.embeddings.progress import latest_embedding_catchup_run
     from polylogue.storage.embeddings.support import table_exists_sync
-    from polylogue.storage.sqlite.connection import open_read_connection
 
     cfg = load_polylogue_config()
-    with open_read_connection(env.config.db_path) as conn:
+    db_path = Path(env.config.db_path)
+    if not db_path.exists():
+        return _payload_from_stats(
+            config_enabled=bool(cfg.embedding_enabled),
+            has_voyage_api_key=bool(cfg.voyage_api_key),
+            total_conversations=0,
+            stats=EmbeddingStatsSnapshot(),
+            latest_catchup_run=None,
+            pending_messages_exact=include_detail,
+        )
+
+    conn = open_readonly_connection(db_path)
+    try:
         total_conversations = _total_conversations(conn)
         embedding_stats = read_embedding_stats_sync(
             conn,
@@ -182,6 +195,8 @@ def embedding_status_payload(
             detail=include_detail,
         )
         latest_run = latest_embedding_catchup_run(conn) if table_exists_sync(conn, "embedding_catchup_runs") else None
+    finally:
+        conn.close()
 
     return _payload_from_stats(
         config_enabled=bool(cfg.embedding_enabled),

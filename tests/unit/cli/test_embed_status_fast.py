@@ -95,6 +95,20 @@ def test_status_json_fast_path_handles_absent_embedding_tables(tmp_path: Path) -
     assert payload["retrieval_bands"] == {}
 
 
+def test_status_json_bypasses_schema_version_gate_for_operator_readiness(tmp_path: Path) -> None:
+    db_path = tmp_path / "archive.db"
+    _seed_archive_without_embedding_ledgers(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA user_version = 9")
+
+    payload = _run_status(db_path, cfg=_Cfg(embedding_enabled=False, voyage_api_key="vk-live"))
+
+    assert payload["status"] == "none"
+    assert payload["config_enabled"] is False
+    assert payload["has_voyage_api_key"] is True
+    assert payload["pending_conversations"] == 2
+
+
 def test_status_json_counts_empty_vec0_rowids_as_zero_embeddings(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.db"
     _seed_archive_without_embedding_ledgers(db_path, vec_table=True)
