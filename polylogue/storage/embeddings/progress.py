@@ -192,7 +192,7 @@ def latest_embedding_catchup_run(conn: sqlite3.Connection) -> EmbeddingCatchupRu
                embedded_conversations, skipped_conversations, error_count,
                embedded_messages, estimated_cost_usd, last_conversation_id
         FROM embedding_catchup_runs
-        ORDER BY started_at DESC, run_id DESC
+        ORDER BY started_at DESC, rowid DESC
         LIMIT 1
         """
     ).fetchone()

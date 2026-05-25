@@ -172,6 +172,53 @@ def test_embedding_catchup_run_ledger_persists_progress(tmp_path: Path) -> None:
     assert payload["last_conversation_id"] == "conv-error"
 
 
+def test_embedding_catchup_latest_run_uses_insert_order_for_timestamp_ties(tmp_path: Path) -> None:
+    """Rapid backfill starts in the same second still report the latest row."""
+    db_path = tmp_path / "archive.db"
+    _setup_minimal_embedding_file(db_path)
+
+    first = start_embedding_catchup_run(
+        db_path,
+        CatchupRunStart(
+            rebuild=False,
+            max_conversations=None,
+            max_messages=None,
+            stop_after_seconds=None,
+            max_errors=None,
+            planned_conversations=1,
+            planned_messages=1,
+        ),
+    )
+    second = start_embedding_catchup_run(
+        db_path,
+        CatchupRunStart(
+            rebuild=True,
+            max_conversations=None,
+            max_messages=None,
+            stop_after_seconds=None,
+            max_errors=None,
+            planned_conversations=2,
+            planned_messages=2,
+        ),
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE embedding_catchup_runs
+            SET started_at = '2026-05-25 00:00:00',
+                updated_at = '2026-05-25 00:00:00'
+            WHERE run_id IN (?, ?)
+            """,
+            (first, second),
+        )
+        conn.commit()
+        payload = latest_embedding_catchup_run(conn)
+
+    assert payload is not None
+    assert payload["run_id"] == second
+    assert payload["rebuild"] is True
+
+
 # ---------------------------------------------------------------------------
 # Lifecycle state catalog
 # ---------------------------------------------------------------------------
