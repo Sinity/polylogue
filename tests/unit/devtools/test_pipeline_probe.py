@@ -682,4 +682,3 @@ async def test_run_probe_rejects_empty_archive_subset(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="found no raw conversations"):
         await run_probe(request)
-

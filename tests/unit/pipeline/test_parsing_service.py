@@ -904,4 +904,3 @@ class TestPlanningService:
 
         assert plan.summary.counts == {count_key: 7}
         backend.count_conversation_ids.assert_awaited_once_with(source_names=None)
-

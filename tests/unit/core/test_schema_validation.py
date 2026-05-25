@@ -709,7 +709,7 @@ def test_verify_raw_corpus_reports_valid_synthetic_chatgpt(
     _insert_raw_record(
         db_path=db_path,
         raw_id="raw-chatgpt-1",
-                source_name="chatgpt",
+        source_name="chatgpt",
         source_path="/tmp/chatgpt.json",
         raw_content=raw,
     )
@@ -731,7 +731,7 @@ def test_verify_raw_corpus_counts_missing_schema_as_skipped(db_path: Path) -> No
     _insert_raw_record(
         db_path=db_path,
         raw_id="raw-inbox-1",
-                source_name="inbox",
+        source_name="inbox",
         source_path="/tmp/inbox.json",
         raw_content=b'{"hello":"world"}',
     )
@@ -791,7 +791,7 @@ def test_verify_raw_corpus_counts_malformed_jsonl_as_decode_error(db_path: Path)
     raw_id = _insert_raw_record(
         db_path=db_path,
         raw_id="raw-codex-1",
-                source_name="codex",
+        source_name="codex",
         source_path="/tmp/session.jsonl",
         raw_content=(
             b'{"type":"session_meta"}\nnot json at all\n{"type":"response_item","payload":{"type":"message"}}'
@@ -828,7 +828,7 @@ def test_verify_raw_corpus_quarantine_malformed_updates_validation_state(db_path
     raw_id = _insert_raw_record(
         db_path=db_path,
         raw_id="raw-codex-q1",
-                source_name="codex",
+        source_name="codex",
         source_path="/tmp/session-q1.jsonl",
         raw_content=(
             b'{"type":"session_meta"}\nnot json at all\n{"type":"response_item","payload":{"type":"message"}}'
@@ -874,7 +874,7 @@ def test_verify_raw_corpus_quarantine_empty_payload_updates_validation_state(db_
     raw_id = _insert_raw_record(
         db_path=db_path,
         raw_id="raw-codex-empty",
-                source_name="codex",
+        source_name="codex",
         source_path="/tmp/empty-session.jsonl",
         raw_content=b"",
     )
@@ -935,14 +935,14 @@ def test_verify_raw_corpus_honors_record_limit_and_offset(
     _insert_raw_record(
         db_path=db_path,
         raw_id="raw-chatgpt-1",
-                source_name="chatgpt",
+        source_name="chatgpt",
         source_path="/tmp/chatgpt-1.json",
         raw_content=b'{"id":"one","mapping":{}}',
     )
     _insert_raw_record(
         db_path=db_path,
         raw_id="raw-chatgpt-2",
-                source_name="chatgpt",
+        source_name="chatgpt",
         source_path="/tmp/chatgpt-2.json",
         raw_content=b'{"id":"two","mapping":{}}',
     )

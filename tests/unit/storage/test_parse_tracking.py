@@ -304,7 +304,7 @@ class TestResetParseStatus:
             ("chatgpt", "inbox-b"),
             ("claude-ai", "inbox-a"),
         ]
-        for i, (provider, source_name) in enumerate(rows):
+        for i, (_provider, source_name) in enumerate(rows):
             await backend.save_raw_conversation(
                 RawConversationRecord(
                     raw_id=f"raw-{i}",
@@ -387,7 +387,7 @@ class TestResetValidationStatus:
             ("chatgpt", "inbox-b"),
             ("claude-ai", "inbox-a"),
         ]
-        for i, (provider, source_name) in enumerate(rows):
+        for i, (_provider, source_name) in enumerate(rows):
             await backend.save_raw_conversation(
                 RawConversationRecord(
                     raw_id=f"raw-{i}",

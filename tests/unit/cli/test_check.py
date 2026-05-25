@@ -910,7 +910,7 @@ class TestCheckCommandSupplementary:
         """`doctor --schemas` reports and persists legitimate raw quarantine failures."""
         raw_id = _insert_raw_blob(
             db_path=cli_workspace["db_path"],
-                        source_name="codex",
+            source_name="codex",
             source_path="/tmp/session.jsonl",
             raw_content=(
                 b'{"type":"session_meta"}\nnot json at all\n{"type":"response_item","payload":{"type":"message"}}'

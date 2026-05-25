@@ -307,4 +307,3 @@ __all__ = [
     "artifact_observation_id",
     "inspect_raw_artifact",
 ]
-

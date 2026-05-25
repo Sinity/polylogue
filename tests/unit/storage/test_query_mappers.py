@@ -253,7 +253,6 @@ class TestRowToRawConversation:
         row = make_row(
             {
                 "raw_id": "sha256hash",
-                "source_name": "chatgpt",
                 "payload_provider": None,
                 "source_name": "inbox",
                 "source_path": "/tmp/data.json",
