@@ -157,6 +157,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools witness-discover` | Save a failure-triggering input as a local witness in .local/witnesses/new/. |
 | `devtools witness-minimize` | Apply minimization heuristics to a local witness — shrink, redact, set privacy classification. |
 | `devtools witness-promote` | Promote a minimized local witness to tests/witnesses/ for durable commit. |
+| `devtools worktree-gc` | Safe worktree garbage collection — list and remove merged or abandoned git worktrees. |
 | `devtools xtask` | Record and query agent task execution history (.agent/xtask/tasks.jsonl). |
 
 <!-- END GENERATED: devtools-command-catalog -->
