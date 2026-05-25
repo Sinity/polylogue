@@ -131,14 +131,6 @@ def test_support_level_helper_returns_typed_band() -> None:
     assert band is ConfidenceBand.WEAK
 
 
-def test_classification_support_helper_returns_typed_band() -> None:
-    from polylogue.insights.classification import _support_for
-
-    assert _support_for(0.8, 4) is ConfidenceBand.STRONG
-    assert _support_for(0.6, 2) is ConfidenceBand.MODERATE
-    assert _support_for(0.1, 1) is ConfidenceBand.WEAK
-
-
 def test_repo_inference_strength_returns_typed_band() -> None:
     """The repo-strength helper uses the same vocabulary plus NONE."""
 

@@ -321,30 +321,6 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("session_profile", run)
 
     @mcp.tool()
-    async def session_classification(conversation_id: str) -> str:
-        """Classify a session into the typed SessionCategory taxonomy.
-
-        Returns the typed classification, confidence in [0, 1], coarse
-        support_level ("strong"/"moderate"/"weak"), and evidence citations
-        naming the SessionProfile fields that drove the decision.
-        Heuristic / suggestion-grade; user-authored tags remain
-        authoritative.
-        """
-
-        async def run() -> str:
-            poly = hooks.get_polylogue()
-            classification = await poly.classify_session(conversation_id)
-            if classification is None:
-                return hooks.error_json(
-                    "Conversation not found",
-                    code="not_found",
-                    conversation_id=conversation_id,
-                )
-            return hooks.json_payload(classification, exclude_none=True)
-
-        return await hooks.async_safe_call("session_classification", run)
-
-    @mcp.tool()
     async def get_resume_brief(conversation_id: str, related_limit: int = 6) -> str:
         """Get a typed resume brief for one archived session.
 

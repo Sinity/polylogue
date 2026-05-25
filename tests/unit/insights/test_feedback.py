@@ -5,10 +5,10 @@ Acceptance criteria covered here:
 - Content-hash invariant: recording, mutating, and clearing corrections
   never alters ``conversations.content_hash``. This is the durable
   separation between the archive substrate and the user-metadata zone.
-- Determinism: applying a correction set to a heuristic verdict produces
-  identical output across runs and across independent merge calls.
-- Precedence: an applied correction wins over the heuristic suggestion;
-  the heuristic remains visible as base evidence.
+- Determinism: applying a correction set to a heuristic output produces
+  identical results across independent merge calls.
+- Precedence: applied tag and summary corrections win over heuristic
+  suggestions.
 - Unknown-kind rejection: surfaces refuse to persist unknown kinds.
 """
 
@@ -19,17 +19,10 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.insights.classification import (
-    EvidenceCite,
-    SessionCategory,
-    SessionClassification,
-)
-from polylogue.insights.confidence import ConfidenceBand
 from polylogue.insights.feedback import (
     CorrectionKind,
     LearningCorrection,
     UnknownCorrectionKindError,
-    apply_correction_to_classification,
     apply_correction_to_summary,
     apply_corrections_to_auto_tags,
     parse_correction_kind,
@@ -41,17 +34,6 @@ from tests.infra.storage_records import make_conversation, make_message
 # ---------------------------------------------------------------------------
 # Pure-function semantics — no DB
 # ---------------------------------------------------------------------------
-
-
-def _heuristic_classification() -> SessionClassification:
-    """A representative heuristic verdict that downstream merge tests use."""
-
-    return SessionClassification(
-        category=SessionCategory.DEBUGGING,
-        confidence=0.6,
-        support_level=ConfidenceBand.MODERATE,
-        evidence=(EvidenceCite(field="work_events", value="debugging:weight=1.2", weight=0.4),),
-    )
 
 
 def _correction(kind: CorrectionKind, payload: dict[str, str]) -> LearningCorrection:
@@ -76,80 +58,26 @@ class TestParseCorrectionKind:
             assert kind.value in str(exc.value)
 
 
-class TestApplyCorrectionToClassification:
-    def test_no_corrections_returns_input(self) -> None:
-        base = _heuristic_classification()
-        assert apply_correction_to_classification(base, []) is base
-
-    def test_override_wins_and_carries_full_confidence(self) -> None:
-        base = _heuristic_classification()
-        override = _correction(
-            CorrectionKind.CLASSIFICATION_OVERRIDE,
-            {"category": SessionCategory.FEATURE.value},
-        )
-
-        merged = apply_correction_to_classification(base, [override])
-
-        # Precedence: user choice replaces heuristic verdict.
-        assert merged.category == SessionCategory.FEATURE
-        # User-authored corrections are authoritative.
-        assert merged.confidence == 1.0
-        assert merged.support_level == "strong"
-        # Evidence is extended (not replaced): heuristic citation stays
-        # so audits can see the path from heuristic -> override.
-        kinds = [cite.field for cite in merged.evidence]
-        assert kinds[0] == "user_correction"
-        assert "work_events" in kinds
-
-    def test_unknown_category_in_payload_is_ignored(self) -> None:
-        base = _heuristic_classification()
-        override = _correction(
-            CorrectionKind.CLASSIFICATION_OVERRIDE,
-            {"category": "no-such-category"},
-        )
-
-        merged = apply_correction_to_classification(base, [override])
-
-        # Defense: don't corrupt the verdict if a row pre-dates a
-        # since-removed taxonomy value.
-        assert merged is base
-
-    def test_merge_is_deterministic(self) -> None:
-        """AC #1131: rebuilds with the same correction set are identical."""
-
-        base = _heuristic_classification()
-        override = _correction(
-            CorrectionKind.CLASSIFICATION_OVERRIDE,
-            {"category": SessionCategory.REFACTORING.value},
-        )
-
-        first = apply_correction_to_classification(base, [override])
-        second = apply_correction_to_classification(base, [override])
-
-        # Same model means the merge is a pure function over typed inputs.
-        assert first.model_dump() == second.model_dump()
-
-
 class TestApplyCorrectionsToAutoTags:
     def test_no_corrections_preserves_order(self) -> None:
-        tags = ("auto:category:feature", "auto:repo:polylogue")
+        tags = ("repo:polylogue", "costly")
         assert apply_corrections_to_auto_tags(tags, []) == tags
 
     def test_tag_reject_removes_only_named_tag(self) -> None:
         tags = (
-            "auto:category:debugging",
-            "auto:category:feature",
-            "auto:repo:polylogue",
+            "repo:polylogue",
+            "costly",
+            "continuation",
         )
-        reject = _correction(CorrectionKind.TAG_REJECT, {"tag": "auto:category:debugging"})
+        reject = _correction(CorrectionKind.TAG_REJECT, {"tag": "costly"})
 
         merged = apply_corrections_to_auto_tags(tags, [reject])
 
-        assert merged == ("auto:category:feature", "auto:repo:polylogue")
+        assert merged == ("repo:polylogue", "continuation")
 
     def test_tag_accept_does_not_drop_anything(self) -> None:
-        tags = ("auto:category:feature",)
-        accept = _correction(CorrectionKind.TAG_ACCEPT, {"tag": "auto:category:feature"})
+        tags = ("repo:polylogue",)
+        accept = _correction(CorrectionKind.TAG_ACCEPT, {"tag": "repo:polylogue"})
         assert apply_corrections_to_auto_tags(tags, [accept]) == tags
 
 
@@ -218,16 +146,16 @@ class TestFeedbackStorage:
             recorded = await upsert_correction(
                 conn,
                 conversation_id="conv-A",
-                kind=CorrectionKind.CLASSIFICATION_OVERRIDE,
-                payload={"category": SessionCategory.FEATURE.value},
-                note="user said so",
+                kind=CorrectionKind.SUMMARY_OVERRIDE,
+                payload={"summary": "User-authored summary."},
+                note="operator replacement",
             )
             assert recorded.conversation_id == "conv-A"
-            assert recorded.kind == CorrectionKind.CLASSIFICATION_OVERRIDE
+            assert recorded.kind == CorrectionKind.SUMMARY_OVERRIDE
 
             listed = await list_corrections(conn, conversation_id="conv-A")
-            assert [c.kind for c in listed] == [CorrectionKind.CLASSIFICATION_OVERRIDE]
-            assert listed[0].payload == {"category": SessionCategory.FEATURE.value}
+            assert [c.kind for c in listed] == [CorrectionKind.SUMMARY_OVERRIDE]
+            assert listed[0].payload == {"summary": "User-authored summary."}
 
             removed = await clear_corrections(conn, conversation_id="conv-A")
             assert removed == 1
@@ -250,21 +178,21 @@ class TestFeedbackStorage:
             await upsert_correction(
                 conn,
                 conversation_id="conv-B",
-                kind=CorrectionKind.CLASSIFICATION_OVERRIDE,
-                payload={"category": SessionCategory.FEATURE.value},
+                kind=CorrectionKind.SUMMARY_OVERRIDE,
+                payload={"summary": "First summary."},
             )
             await upsert_correction(
                 conn,
                 conversation_id="conv-B",
-                kind=CorrectionKind.CLASSIFICATION_OVERRIDE,
-                payload={"category": SessionCategory.REFACTORING.value},
+                kind=CorrectionKind.SUMMARY_OVERRIDE,
+                payload={"summary": "Second summary."},
             )
 
             corrections = await list_corrections(conn, conversation_id="conv-B")
 
         # (conversation_id, kind) is UNIQUE: only the latest payload survives.
         assert len(corrections) == 1
-        assert corrections[0].payload == {"category": SessionCategory.REFACTORING.value}
+        assert corrections[0].payload == {"summary": "Second summary."}
 
     async def test_content_hash_invariant(
         self,
@@ -288,8 +216,8 @@ class TestFeedbackStorage:
                 conn,
                 conversation_id="conv-C",
                 kind=CorrectionKind.TAG_REJECT,
-                payload={"tag": "auto:category:debugging"},
-                note="not really a debugging session",
+                payload={"tag": "costly"},
+                note="not actually expensive work",
             )
         after_record = await _read_content_hash(storage_repository, "conv-C")
         assert after_record == original_hash
@@ -316,8 +244,8 @@ class TestFeedbackStorage:
             await upsert_correction(
                 conn,
                 conversation_id="conv-D",
-                kind=CorrectionKind.CLASSIFICATION_OVERRIDE,
-                payload={"category": SessionCategory.FEATURE.value},
+                kind=CorrectionKind.TAG_REJECT,
+                payload={"tag": "repo:polylogue"},
             )
             await upsert_correction(
                 conn,

@@ -11,14 +11,12 @@ heuristic insights. A correction is a user override that:
 - is consulted by the insight materialization path **after** the heuristic
   has produced its base suggestion. The correction wins.
 
-Three correction kinds are wired in this first slice:
+Three correction kinds are wired:
 
-- ``CLASSIFICATION_OVERRIDE`` — user picks a different
-  :class:`~polylogue.insights.classification.SessionCategory` for a session
-  than the heuristic suggested. The override carries 100 % confidence by
-  contract.
 - ``TAG_REJECT`` — user rejects an auto-suggested tag for a session, so
   rebuilds must suppress it from the auto-tag output.
+- ``TAG_ACCEPT`` — user confirms an auto-suggested tag so a surface can
+  preserve that choice as user-authored state.
 - ``SUMMARY_OVERRIDE`` — user provides a replacement summary for a session.
 
 The set of recognized kinds is intentionally closed: surfaces that record
@@ -26,10 +24,10 @@ unknown kinds raise :class:`UnknownCorrectionKindError` immediately. New
 kinds require an explicit code change so the merge semantics for that
 kind are part of the same review as the new value.
 
-The merge helpers (:func:`apply_correction_to_classification`,
-:func:`apply_corrections_to_auto_tags`, :func:`apply_correction_to_summary`)
-are pure functions over already-computed insight values. They never touch
-the database. Storage and surface wiring lives in
+The merge helpers (:func:`apply_corrections_to_auto_tags`,
+:func:`apply_correction_to_summary`) are pure functions over
+already-computed insight values. They never touch the database. Storage
+and surface wiring lives in
 :mod:`polylogue.storage.insights.feedback` and
 :mod:`polylogue.api.archive` respectively.
 """
@@ -39,15 +37,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from enum import Enum
-from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-from polylogue.insights.confidence import ConfidenceBand
-
-if TYPE_CHECKING:
-    from polylogue.insights.classification import SessionClassification
-
 
 FEEDBACK_VERSION: int = 1
 """Bump on every behavior change to the correction merge semantics so
@@ -70,9 +61,6 @@ class CorrectionKind(str, Enum):
       helper or a follow-up materialization path;
     - tests that pin the new merge behavior.
     """
-
-    CLASSIFICATION_OVERRIDE = "classification_override"
-    """Replace the heuristic session category with a user-chosen one."""
 
     TAG_REJECT = "tag_reject"
     """Suppress a specific auto-suggested tag from the rebuilt tag set."""
@@ -113,7 +101,6 @@ class LearningCorrection(BaseModel):
 
     The ``payload`` shape depends on ``kind``:
 
-    - ``CLASSIFICATION_OVERRIDE``: ``{"category": "<SessionCategory>"}``.
     - ``TAG_REJECT`` / ``TAG_ACCEPT``: ``{"tag": "<tag-string>"}``.
     - ``SUMMARY_OVERRIDE``: ``{"summary": "<text>"}``.
 
@@ -179,71 +166,13 @@ def select_correction(
     return None
 
 
-def apply_correction_to_classification(
-    base: SessionClassification,
-    corrections: Sequence[LearningCorrection],
-) -> SessionClassification:
-    """Merge a classification-override correction onto a heuristic verdict.
-
-    Returns the input unchanged when no override applies. When an override
-    applies, the returned :class:`SessionClassification` has:
-
-    - ``category`` replaced with the user choice;
-    - ``confidence`` set to ``1.0`` and ``support_level`` to ``"strong"``,
-      because a user-authored correction is authoritative;
-    - the evidence tuple extended with a sentinel
-      :class:`EvidenceCite` naming the correction so downstream audits can
-      see where the value came from.
-
-    The function is pure: same inputs always produce the same output, no
-    I/O. Determinism is the closure mechanism for AC #1131 (rebuilds
-    yield identical merged output across runs).
-    """
-
-    from polylogue.insights.classification import (
-        EvidenceCite,
-        SessionCategory,
-        SessionClassification,
-    )
-
-    correction = select_correction(corrections, CorrectionKind.CLASSIFICATION_OVERRIDE)
-    if correction is None:
-        return base
-
-    raw_category = correction.payload.get("category", "")
-    try:
-        chosen = SessionCategory(raw_category)
-    except ValueError:
-        # Unknown category in the correction payload: leave the heuristic
-        # in place rather than silently corrupting the verdict. The DB
-        # write path validates payloads, so this branch only triggers if
-        # the row pre-dates the deletion of a once-supported value.
-        return base
-
-    sentinel = EvidenceCite(
-        field="user_correction",
-        value=f"classification_override:{chosen.value}",
-        weight=1.0,
-    )
-    return SessionClassification(
-        category=chosen,
-        confidence=1.0,
-        support_level=ConfidenceBand.STRONG,
-        evidence=(sentinel, *base.evidence),
-        classifier_version=base.classifier_version,
-        classifier_family=base.classifier_family,
-    )
-
-
 def apply_corrections_to_auto_tags(
     base: Sequence[str],
     corrections: Sequence[LearningCorrection],
 ) -> tuple[str, ...]:
     """Apply ``TAG_REJECT`` corrections to a heuristic auto-tag list.
 
-    Heuristic auto-tags are produced by the classifier and the auto-tag
-    pipeline (see e.g. ``SessionClassification.auto_tag``). A
-    ``TAG_REJECT`` correction removes its specific tag from the rebuilt
+    A ``TAG_REJECT`` correction removes its specific tag from the rebuilt
     list; tag-accept corrections are returned unchanged here because tag
     acceptance only matters once the surface stops separating "auto" and
     "user-authoritative" tags.
@@ -279,7 +208,6 @@ __all__ = [
     "FEEDBACK_VERSION",
     "LearningCorrection",
     "UnknownCorrectionKindError",
-    "apply_correction_to_classification",
     "apply_corrections_to_auto_tags",
     "apply_correction_to_summary",
     "now_utc",
