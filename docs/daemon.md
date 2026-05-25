@@ -413,8 +413,17 @@ and recreates the vec0 virtual table.
 
 ```bash
 polylogue stats                      # embedding coverage in archive stats
+polylogue embed status               # cheap readiness + latest catch-up run
+polylogue embed status --detail      # exact pending-message/retrieval accounting
 polylogued status                    # daemon status includes embedding readiness
 ```
+
+`polylogue embed backfill` records each bounded catch-up window in the local
+archive as `embedding_catchup_runs`. The latest run is shown by
+`polylogue embed status`, including terminal state, stop reason, processed
+conversations, embedded messages, errors, and estimated cost. This is the
+operator recovery point after interruption, OOM, restart, or a cost/error
+window stop; per-conversation retry state still lives in `embedding_status`.
 
 ## Service Recovery
 

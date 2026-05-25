@@ -209,6 +209,11 @@ Implementation: `polylogue/storage/search_providers/fts5.py`,
   different query embeddings.
 - Requires embeddings to be enabled and populated; see
   [docs/architecture.md § Embedding Pipeline](architecture.md#embedding-pipeline).
+- Use `polylogue embed status` to check whether vector retrieval is disabled,
+  missing an API key, pending backlog catch-up, partially usable, or complete.
+  `polylogue embed status --detail` performs exact pending-message and
+  retrieval-band accounting; the default status path stays cheap and reports
+  the latest persisted catch-up run.
 
 ### Auto Elevation
 

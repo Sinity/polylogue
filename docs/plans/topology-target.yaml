@@ -2879,6 +2879,10 @@ files:
     loc: 25
     target: polylogue/storage/embeddings/models.py
     owner: stable
+  - path: polylogue/storage/embeddings/progress.py
+    loc: 235
+    target: polylogue/storage/embeddings/progress.py
+    owner: stable
   - path: polylogue/storage/embeddings/sql.py
     loc: 63
     target: polylogue/storage/embeddings/sql.py

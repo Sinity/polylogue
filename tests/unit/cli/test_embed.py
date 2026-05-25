@@ -107,6 +107,7 @@ class TestShowEmbeddingStats:
                     pending_conversations=int(query_results[3][0]),
                 ),
             ),
+            patch("polylogue.storage.embeddings.support.table_exists_sync", return_value=False),
         ):
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
@@ -128,6 +129,7 @@ class TestShowEmbeddingStats:
                 "polylogue.storage.embeddings.embedding_stats.read_embedding_stats_sync",
                 return_value=EmbeddingStatsSnapshot(),
             ),
+            patch("polylogue.storage.embeddings.support.table_exists_sync", return_value=False),
         ):
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
@@ -156,6 +158,7 @@ class TestShowEmbeddingStats:
                     },
                 ),
             ),
+            patch("polylogue.storage.embeddings.support.table_exists_sync", return_value=False),
         ):
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
