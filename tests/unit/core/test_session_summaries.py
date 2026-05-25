@@ -19,6 +19,7 @@ def _profile(
     work_events: tuple[WorkEvent, ...] = (),
     total_cost_usd: float = 0.0,
     total_duration_ms: int = 0,
+    tool_active_duration_ms: int = 0,
     wall_duration_ms: int = 0,
     message_count: int = 0,
     word_count: int = 0,
@@ -37,6 +38,7 @@ def _profile(
         word_count=word_count,
         total_cost_usd=total_cost_usd,
         total_duration_ms=total_duration_ms,
+        tool_active_duration_ms=tool_active_duration_ms,
         tool_categories={},
         repo_paths=repo_paths,
         cwd_paths=(),
@@ -78,6 +80,7 @@ def test_summarize_day_aggregates_cost_duration_words_and_repos() -> None:
         work_events=(_work_event(WorkEventKind.TESTING, 0), _work_event(WorkEventKind.RESEARCH, 1)),
         total_cost_usd=0.125,
         total_duration_ms=900,
+        tool_active_duration_ms=600,
         wall_duration_ms=1200,
         message_count=6,
         word_count=42,
@@ -86,6 +89,7 @@ def test_summarize_day_aggregates_cost_duration_words_and_repos() -> None:
     summary = summarize_day([profile], date(2026, 4, 23))
 
     assert summary.to_dict()["total_cost_usd"] == 0.125
+    assert summary.total_tool_active_duration_ms == 600
     assert summary.work_event_breakdown == {"testing": 1, "research": 1}
     assert summary.repos_active == ("polylogue",)
     assert summary.providers == {"claude-code": 1}

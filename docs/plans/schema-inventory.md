@@ -197,11 +197,11 @@ The `provider_meta` column on attachments correctly holds provider-specific meta
 
 #### A1 — Already canonical
 
-First-class columns: `conversation_id`, `provider_name`, `title`, `first_message_at`, `last_message_at`, `canonical_session_date`, `repo_paths_json`, `repo_names_json`, `tags_json`, `auto_tags_json`, `message_count`, `substantive_count`, `attachment_count`, `work_event_count`, `phase_count`, `word_count`, `tool_use_count`, `thinking_count`, `total_cost_usd`, `total_duration_ms`, `engaged_duration_ms`, `wall_duration_ms`, `cost_is_estimated`.
+First-class columns: `conversation_id`, `provider_name`, `title`, `first_message_at`, `last_message_at`, `canonical_session_date`, `repo_paths_json`, `repo_names_json`, `tags_json`, `auto_tags_json`, `message_count`, `substantive_count`, `attachment_count`, `work_event_count`, `phase_count`, `word_count`, `tool_use_count`, `thinking_count`, `total_cost_usd`, `total_duration_ms`, `engaged_duration_ms`, `tool_active_duration_ms`, `wall_duration_ms`, `cost_is_estimated`.
 
 Typed payload fields: `evidence_payload_json`, `inference_payload_json`, `enrichment_payload_json` with corresponding `*_search_text` and version/family fields.
 
-The table **properly** has `total_cost_usd`, `total_duration_ms`, `wall_duration_ms` as first-class columns on the insight read model — these are derived during profile materialization, not read from provider_meta at query time.
+The table **properly** has `total_cost_usd`, `total_duration_ms`, `tool_active_duration_ms`, `wall_duration_ms` as first-class columns on the insight read model — these are derived during profile materialization, not read from provider_meta at query time.
 
 #### A2 — Trapped universal (derivation path)
 
@@ -226,6 +226,9 @@ The `payload_json TEXT NOT NULL` field holds a `WorkThreadPayload` — this is a
 #### A4 (same legacy payload pattern)
 
 `payload_json TEXT NOT NULL` — same single-payload pattern as work_threads. Intentional for now.
+
+`total_tool_active_duration_ms` is first-class because day-level consumers
+need to aggregate the paired-tool measure without JSON extraction.
 
 ### 8.5 `session_tag_rollups`
 

@@ -88,6 +88,7 @@ SESSION_INSIGHT_AGGREGATE_DDL = (
             conversation_count INTEGER NOT NULL DEFAULT 0,
             total_cost_usd REAL NOT NULL DEFAULT 0,
             total_duration_ms INTEGER NOT NULL DEFAULT 0,
+            total_tool_active_duration_ms INTEGER NOT NULL DEFAULT 0,
             total_wall_duration_ms INTEGER NOT NULL DEFAULT 0,
             total_messages INTEGER NOT NULL DEFAULT 0,
             total_words INTEGER NOT NULL DEFAULT 0,

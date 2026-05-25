@@ -94,6 +94,7 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
         total_cost_usd=float(_row_float(row, "total_cost_usd", 0.0) or 0.0),
         total_duration_ms=int(_row_int(row, "total_duration_ms", 0) or 0),
         engaged_duration_ms=int(_row_int(row, "engaged_duration_ms", 0) or 0),
+        tool_active_duration_ms=int(_row_int(row, "tool_active_duration_ms", 0) or 0),
         wall_duration_ms=int(_row_int(row, "wall_duration_ms", 0) or 0),
         cost_is_estimated=bool(int(_row_int(row, "cost_is_estimated", 0) or 0)),
         thinking_duration_ms=int(_row_int(row, "thinking_duration_ms", 0) or 0),

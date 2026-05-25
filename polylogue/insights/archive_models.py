@@ -62,6 +62,7 @@ class SessionEvidencePayload(ArchiveInsightModel):
     total_cost_usd: float = 0.0
     total_duration_ms: int = 0
     wall_duration_ms: int = 0
+    tool_active_duration_ms: int = 0
     cost_is_estimated: bool = False
     compaction_count: int = 0
     has_compaction: bool = False
@@ -96,6 +97,8 @@ class SessionInferencePayload(ArchiveInsightModel):
     phase_count: int = 0
     engaged_duration_ms: int = 0
     engaged_minutes: float = 0.0
+    tool_active_duration_ms: int = 0
+    tool_active_minutes: float = 0.0
     support_level: ConfidenceBand = ConfidenceBand.WEAK
     support_signals: tuple[str, ...] = ()
     engaged_duration_source: str = "session_total_fallback"
@@ -246,6 +249,7 @@ class DaySessionSummaryPayload(ArchiveInsightModel):
     session_count: int = 0
     total_cost_usd: float = 0.0
     total_duration_ms: int = 0
+    total_tool_active_duration_ms: int = 0
     total_wall_duration_ms: int = 0
     total_messages: int = 0
     total_words: int = 0
@@ -260,6 +264,7 @@ class WeekSessionSummaryPayload(ArchiveInsightModel):
     session_count: int = 0
     total_cost_usd: float = 0.0
     total_duration_ms: int = 0
+    total_tool_active_duration_ms: int = 0
     total_messages: int = 0
 
 

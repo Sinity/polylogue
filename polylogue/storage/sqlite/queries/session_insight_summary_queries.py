@@ -154,6 +154,7 @@ async def replace_day_session_summaries(
                 conversation_count,
                 total_cost_usd,
                 total_duration_ms,
+                total_tool_active_duration_ms,
                 total_wall_duration_ms,
                 total_messages,
                 total_words,
@@ -161,7 +162,7 @@ async def replace_day_session_summaries(
                 repos_active_json,
                 payload_json,
                 search_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [day_session_summary_insert_values(record) for record in records],
         )

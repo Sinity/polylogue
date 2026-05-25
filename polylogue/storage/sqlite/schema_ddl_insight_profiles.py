@@ -32,6 +32,7 @@ SESSION_INSIGHT_PROFILE_DDL = (
             total_cost_usd REAL NOT NULL DEFAULT 0,
             total_duration_ms INTEGER NOT NULL DEFAULT 0,
             engaged_duration_ms INTEGER NOT NULL DEFAULT 0,
+            tool_active_duration_ms INTEGER NOT NULL DEFAULT 0,
             wall_duration_ms INTEGER NOT NULL DEFAULT 0,
             cost_is_estimated INTEGER NOT NULL DEFAULT 0,
             thinking_duration_ms INTEGER NOT NULL DEFAULT 0,

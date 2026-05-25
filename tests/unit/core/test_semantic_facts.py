@@ -14,6 +14,7 @@ from polylogue.archive.models import Conversation as ConversationModel
 from polylogue.archive.models import ConversationSummary
 from polylogue.archive.phase.extraction import SessionPhase
 from polylogue.archive.phase.extraction import extract_phases as phase_extract_phases
+from polylogue.archive.provider.events import ProviderEvent
 from polylogue.archive.semantic.facts import (
     ConversationSemanticFacts,
     build_conversation_semantic_facts,
@@ -24,7 +25,7 @@ from polylogue.archive.semantic.pricing import harmonize_session_cost
 from polylogue.archive.session import runtime as session_profile_runtime
 from polylogue.archive.session.session_profile import build_session_profile
 from polylogue.storage.archive_views import ConversationRenderProjection
-from polylogue.types import ConversationId, Provider
+from polylogue.types import ConversationId, Provider, ProviderEventId
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.storage_records import make_attachment, make_conversation, make_message
 
@@ -248,6 +249,70 @@ def test_build_session_profile_reuses_shared_semantic_facts() -> None:
     assert profile.canonical_session_date.isoformat() == "2026-03-23"
     assert profile.engaged_duration_ms > 0
     assert profile.wall_duration_ms == 240000
+
+
+def test_build_session_profile_sums_paired_provider_tool_windows() -> None:
+    start = datetime(2026, 5, 24, 10, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 24, 10, 12, tzinfo=timezone.utc)
+    conversation = make_conv(
+        id="conv-tool-active",
+        provider=Provider.CODEX,
+        title="Tool active",
+        messages=[
+            make_msg(id="u1", role="user", provider=Provider.CODEX, text="Run the long command", timestamp=start),
+            make_msg(id="a1", role="assistant", provider=Provider.CODEX, text="Done", timestamp=end),
+        ],
+        provider_events=(
+            ProviderEvent(
+                id=ProviderEventId("conv-tool-active:event-0"),
+                conversation_id=ConversationId("conv-tool-active"),
+                provider=Provider.CODEX,
+                event_index=0,
+                event_type="function_call",
+                timestamp=start,
+                payload={"call_id": "call-1", "name": "exec_command"},
+            ),
+            ProviderEvent(
+                id=ProviderEventId("conv-tool-active:event-1"),
+                conversation_id=ConversationId("conv-tool-active"),
+                provider=Provider.CODEX,
+                event_index=1,
+                event_type="function_call_output",
+                timestamp=end,
+                payload={"call_id": "call-1", "output_chars": 10},
+            ),
+        ),
+    )
+
+    profile = build_session_profile(conversation)
+
+    assert profile.engaged_duration_ms == 0
+    assert profile.tool_active_duration_ms == 720_000
+
+
+def test_build_session_profile_ignores_unpaired_tool_windows() -> None:
+    started_at = datetime(2026, 5, 24, 10, 0, tzinfo=timezone.utc)
+    conversation = make_conv(
+        id="conv-unpaired-tool",
+        provider=Provider.CODEX,
+        title="Unpaired tool",
+        messages=[make_msg(id="u1", role="user", provider=Provider.CODEX, text="Run", timestamp=started_at)],
+        provider_events=(
+            ProviderEvent(
+                id=ProviderEventId("conv-unpaired-tool:event-0"),
+                conversation_id=ConversationId("conv-unpaired-tool"),
+                provider=Provider.CODEX,
+                event_index=0,
+                event_type="function_call",
+                timestamp=started_at,
+                payload={"call_id": "call-1", "name": "exec_command"},
+            ),
+        ),
+    )
+
+    profile = build_session_profile(conversation)
+
+    assert profile.tool_active_duration_ms == 0
 
 
 def test_build_conversation_semantic_facts_marks_partial_timestamp_coverage() -> None:

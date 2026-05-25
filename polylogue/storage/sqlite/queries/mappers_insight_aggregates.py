@@ -59,6 +59,7 @@ def _row_to_day_session_summary_record(row: sqlite3.Row) -> DaySessionSummaryRec
         conversation_count=int(_row_int(row, "conversation_count", 0) or 0),
         total_cost_usd=float(_row_float(row, "total_cost_usd", 0.0) or 0.0),
         total_duration_ms=int(_row_int(row, "total_duration_ms", 0) or 0),
+        total_tool_active_duration_ms=int(_row_int(row, "total_tool_active_duration_ms", 0) or 0),
         total_wall_duration_ms=int(_row_int(row, "total_wall_duration_ms", 0) or 0),
         total_messages=int(_row_int(row, "total_messages", 0) or 0),
         total_words=int(_row_int(row, "total_words", 0) or 0),

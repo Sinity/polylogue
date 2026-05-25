@@ -50,6 +50,7 @@ class SessionProfileRecord(BaseModel):
     total_cost_usd: float = 0.0
     total_duration_ms: int = 0
     engaged_duration_ms: int = 0
+    tool_active_duration_ms: int = 0
     wall_duration_ms: int = 0
     cost_is_estimated: bool = False
     thinking_duration_ms: int = 0

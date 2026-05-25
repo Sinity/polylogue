@@ -118,6 +118,7 @@ class SessionProfile:
     timestamp_coverage: str = "none"
     canonical_session_date: date | None = None
     engaged_duration_ms: int = 0
+    tool_active_duration_ms: int = 0
     wall_duration_ms: int = 0
     cost_is_estimated: bool = False
     thread_id: str | None = None
@@ -186,6 +187,8 @@ class SessionProfile:
             "canonical_session_date": self.canonical_session_date.isoformat() if self.canonical_session_date else None,
             "engaged_duration_ms": self.engaged_duration_ms,
             "engaged_minutes": round(self.engaged_duration_ms / 60_000.0, 4),
+            "tool_active_duration_ms": self.tool_active_duration_ms,
+            "tool_active_minutes": round(self.tool_active_duration_ms / 60_000.0, 4),
             "wall_duration_ms": self.wall_duration_ms,
             "cost_is_estimated": self.cost_is_estimated,
             "compaction_count": self.compaction_count,
@@ -250,6 +253,7 @@ class SessionProfile:
             timestamp_coverage=optional_string(payload.get("timestamp_coverage")) or "none",
             canonical_session_date=optional_date(payload.get("canonical_session_date")),
             engaged_duration_ms=coerce_int(payload.get("engaged_duration_ms"), 0),
+            tool_active_duration_ms=coerce_int(payload.get("tool_active_duration_ms"), 0),
             wall_duration_ms=coerce_int(payload.get("wall_duration_ms"), 0),
             cost_is_estimated=bool(payload.get("cost_is_estimated", False)),
             compaction_count=coerce_int(payload.get("compaction_count"), 0),

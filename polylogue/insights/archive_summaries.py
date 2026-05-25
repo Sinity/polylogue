@@ -26,6 +26,7 @@ class _DayAggregateBucket:
     session_count: int = 0
     total_cost_usd: float = 0.0
     total_duration_ms: int = 0
+    total_tool_active_duration_ms: int = 0
     total_wall_duration_ms: int = 0
     total_messages: int = 0
     total_words: int = 0
@@ -85,6 +86,7 @@ def build_day_session_summary_records(
                 conversation_count=summary.session_count,
                 total_cost_usd=summary.total_cost_usd,
                 total_duration_ms=summary.total_duration_ms,
+                total_tool_active_duration_ms=summary.total_tool_active_duration_ms,
                 total_wall_duration_ms=summary.total_wall_duration_ms,
                 total_messages=summary.total_messages,
                 total_words=summary.total_words,
@@ -106,6 +108,7 @@ def _aggregate_day_buckets(
         bucket.session_count += row.conversation_count
         bucket.total_cost_usd += row.total_cost_usd
         bucket.total_duration_ms += row.total_duration_ms
+        bucket.total_tool_active_duration_ms += row.total_tool_active_duration_ms
         bucket.total_wall_duration_ms += row.total_wall_duration_ms
         bucket.total_messages += row.total_messages
         bucket.total_words += row.total_words
@@ -128,6 +131,7 @@ def _aggregate_day_summaries(
             session_count=bucket.session_count,
             total_cost_usd=bucket.total_cost_usd,
             total_duration_ms=bucket.total_duration_ms,
+            total_tool_active_duration_ms=bucket.total_tool_active_duration_ms,
             total_wall_duration_ms=bucket.total_wall_duration_ms,
             total_messages=bucket.total_messages,
             total_words=bucket.total_words,
