@@ -116,3 +116,81 @@ def test_originating_lab_attribution() -> None:
     }
     for provider, lab in expected_labs.items():
         assert provider_to_source(provider).originating_lab == lab
+
+
+# ── source family separability (#1022) ──────────────────────────────
+
+
+def test_gemini_and_gemini_cli_are_distinct_families() -> None:
+    """Gemini (AI Studio exports) and Gemini CLI are separate source families.
+
+    They share the same originating lab (Google) but have different
+    runtime roots and acquisition paths.
+    """
+    gemini = provider_to_source(Provider.GEMINI)
+    gemini_cli = provider_to_source(Provider.GEMINI_CLI)
+
+    assert gemini.family != gemini_cli.family
+    assert gemini.originating_lab == gemini_cli.originating_lab == "google"
+    assert gemini.runtime_root is None  # AI Studio exports come via Drive/Takeout
+    assert gemini_cli.runtime_root == "~/.gemini/tmp"
+
+
+def test_aistudio_alias_resolves_to_gemini_not_gemini_cli() -> None:
+    """The 'aistudio' token canonicalizes to gemini (AI Studio), not gemini-cli."""
+    from polylogue.core.provider_identity import canonical_runtime_provider
+
+    assert canonical_runtime_provider("aistudio") == "gemini"
+    assert canonical_runtime_provider("aistudio") != "gemini-cli"
+
+
+def test_hermes_is_distinct_source_family() -> None:
+    """Hermes is a separate source family with its own lab attribution."""
+    hermes = provider_to_source(Provider.HERMES)
+
+    assert hermes.family == "hermes-session"
+    assert hermes.originating_lab == "nous"
+    assert source_for_family("hermes-session") is hermes
+    # Not colliding with any other family
+    for provider in Provider:
+        if provider is not Provider.HERMES:
+            assert provider_to_source(provider).family != "hermes-session"
+
+
+def test_antigravity_is_distinct_source_family() -> None:
+    """Antigravity is a separate source family despite Google lab attribution."""
+    antigravity = provider_to_source(Provider.ANTIGRAVITY)
+
+    assert antigravity.family == "antigravity-session"
+    assert antigravity.originating_lab == "google"
+    assert source_for_family("antigravity-session") is antigravity
+    # Not colliding with any other family
+    for provider in Provider:
+        if provider is not Provider.ANTIGRAVITY:
+            assert provider_to_source(provider).family != "antigravity-session"
+
+
+def test_all_source_families_are_unique() -> None:
+    """No two Providers share the same source family token."""
+    families = [provider_to_source(p).family for p in Provider]
+    assert len(families) == len(set(families))
+
+
+def test_source_family_separability_in_filters() -> None:
+    """Each source family can be independently selected via source_for_family.
+
+    This is the programmatic equivalent of CLI --provider / MCP provider
+    filter separability: each family token resolves to exactly one Source,
+    and no two families produce the same Source.
+    """
+    seen: set[str] = set()
+    for provider in Provider:
+        source = provider_to_source(provider)
+        family = source.family
+        # Each family must produce a unique Source
+        assert family not in seen, f"Duplicate family token: {family}"
+        seen.add(family)
+        # source_for_family must round-trip
+        assert source_for_family(family) is source
+        # The reverse lookup must match
+        assert source_to_provider(source) is provider
