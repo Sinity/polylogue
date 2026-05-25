@@ -48,9 +48,18 @@ class PreflightReport:
     model: str
     dimension: int
     cost_cap_usd: float
+    windowed: bool = False
+    max_conversations: int | None = None
+    max_messages: int | None = None
 
 
-def _read_pending_message_count(db_path: Path, *, rebuild: bool = False) -> tuple[int, int, int]:
+def _read_pending_message_count(
+    db_path: Path,
+    *,
+    rebuild: bool = False,
+    max_conversations: int | None = None,
+    max_messages: int | None = None,
+) -> tuple[int, int, int]:
     """Return ``(total_convs, pending_convs, pending_messages)``.
 
     Pending = no ``embedding_status`` row, or ``needs_reindex = 1``.
@@ -61,6 +70,16 @@ def _read_pending_message_count(db_path: Path, *, rebuild: bool = False) -> tupl
 
     with open_read_connection(db_path) as conn:
         total = int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0])
+        if max_conversations is not None or max_messages is not None:
+            from polylogue.storage.embeddings.materialization import select_pending_conversation_window
+
+            pending = select_pending_conversation_window(
+                conn,
+                rebuild=rebuild,
+                max_conversations=max_conversations,
+                max_messages=max_messages,
+            )
+            return total, len(pending), sum(item.message_count for item in pending)
         try:
             if rebuild:
                 pending_convs = total
@@ -94,7 +113,13 @@ def _read_pending_message_count(db_path: Path, *, rebuild: bool = False) -> tupl
     return total, pending_convs, pending_messages
 
 
-def _build_preflight_report(env: AppEnv, *, rebuild: bool = False) -> PreflightReport:
+def _build_preflight_report(
+    env: AppEnv,
+    *,
+    rebuild: bool = False,
+    max_conversations: int | None = None,
+    max_messages: int | None = None,
+) -> PreflightReport:
     """Build a :class:`PreflightReport` without contacting Voyage."""
     from polylogue.config import load_polylogue_config
     from polylogue.storage.search_providers.sqlite_vec_support import (
@@ -103,7 +128,12 @@ def _build_preflight_report(env: AppEnv, *, rebuild: bool = False) -> PreflightR
     )
 
     cfg = load_polylogue_config()
-    total, pending, pending_messages = _read_pending_message_count(env.config.db_path, rebuild=rebuild)
+    total, pending, pending_messages = _read_pending_message_count(
+        env.config.db_path,
+        rebuild=rebuild,
+        max_conversations=max_conversations,
+        max_messages=max_messages,
+    )
     estimated_tokens = pending_messages * ESTIMATED_TOKENS_PER_MESSAGE
     estimated_cost = estimated_tokens * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
     return PreflightReport(
@@ -115,6 +145,9 @@ def _build_preflight_report(env: AppEnv, *, rebuild: bool = False) -> PreflightR
         model=cfg.embedding_model,
         dimension=cfg.embedding_dimension,
         cost_cap_usd=cfg.embedding_max_cost_usd,
+        windowed=max_conversations is not None or max_messages is not None,
+        max_conversations=max_conversations,
+        max_messages=max_messages,
     )
 
 
@@ -123,8 +156,18 @@ def _render_preflight(env: AppEnv, report: PreflightReport) -> None:
     console.print("\n[bold]Embedding preflight[/bold]")
     console.print(f"  Model:                 {report.model} ({report.dimension}d)")
     console.print(f"  Total conversations:   {report.total_conversations:,}")
-    console.print(f"  Pending conversations: {report.pending_conversations:,}")
-    console.print(f"  Pending messages:      {report.pending_messages:,}")
+    if report.windowed:
+        limits: list[str] = []
+        if report.max_conversations is not None:
+            limits.append(f"{report.max_conversations:,} conversations")
+        if report.max_messages is not None:
+            limits.append(f"{report.max_messages:,} messages")
+        console.print(f"  Window limit:          {', '.join(limits)}")
+        console.print(f"  Window conversations:  {report.pending_conversations:,}")
+        console.print(f"  Window messages:       {report.pending_messages:,}")
+    else:
+        console.print(f"  Pending conversations: {report.pending_conversations:,}")
+        console.print(f"  Pending messages:      {report.pending_messages:,}")
     console.print(f"  Estimated tokens:      ~{report.estimated_tokens:,}")
     console.print(f"  Estimated cost (USD):  ~${report.estimated_cost_usd:.4f}")
     if report.cost_cap_usd > 0:
@@ -327,18 +370,35 @@ def disable_subcommand(env: AppEnv) -> None:
 
 @embed_command.command("preflight")
 @click.option(
+    "--max-conversations",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Estimate only the next bounded conversation window.",
+)
+@click.option(
+    "--max-messages",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Estimate only the next bounded message window.",
+)
+@click.option(
     "--rebuild",
     is_flag=True,
     help="Estimate re-embedding every conversation, not just pending ones.",
 )
 @click.pass_obj
-def preflight_subcommand(env: AppEnv, rebuild: bool) -> None:
+def preflight_subcommand(env: AppEnv, max_conversations: int | None, max_messages: int | None, rebuild: bool) -> None:
     """Estimate token count and Voyage cost for the pending backlog.
 
     Read-only — does not touch the embedding provider. Use this before
     ``embed enable`` or ``embed backfill`` to budget the first run.
     """
-    report = _build_preflight_report(env, rebuild=rebuild)
+    report = _build_preflight_report(
+        env,
+        rebuild=rebuild,
+        max_conversations=max_conversations,
+        max_messages=max_messages,
+    )
     _render_preflight(env, report)
 
 
@@ -420,7 +480,12 @@ def backfill_subcommand(
         )
         raise click.Abort()
 
-    report = _build_preflight_report(env, rebuild=rebuild)
+    report = _build_preflight_report(
+        env,
+        rebuild=rebuild,
+        max_conversations=max_conversations,
+        max_messages=max_messages,
+    )
     _render_preflight(env, report)
     if not yes and not click.confirm("\nProceed with backfill?", default=False):
         click.echo("Cancelled.")

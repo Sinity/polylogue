@@ -186,6 +186,20 @@ class TestPreflightCommand:
             result = cli_runner.invoke(embed_command, ["preflight"], obj=stub_env)
         assert result.exit_code == 0, result.output
 
+    def test_preflight_passes_bounded_window_options(self, cli_runner: CliRunner, stub_env: Any) -> None:
+        report = _make_report(pending_conversations=2, pending_messages=7)
+        fake_preflight = MagicMock(return_value=report)
+        with patch("polylogue.cli.commands.embed._build_preflight_report", fake_preflight):
+            result = cli_runner.invoke(
+                embed_command,
+                ["preflight", "--max-conversations", "2", "--max-messages", "7"],
+                obj=stub_env,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert fake_preflight.call_args.kwargs["max_conversations"] == 2
+        assert fake_preflight.call_args.kwargs["max_messages"] == 7
+
 
 class TestDisableCommand:
     def test_disable_writes_disabled_flag(
@@ -261,8 +275,9 @@ class TestBackfillCommand:
         monkeypatch.setenv("VOYAGE_API_KEY", "pa-test")
         report = _make_report()
         fake_iter = MagicMock(return_value=[])
+        fake_preflight = MagicMock(return_value=report)
         with (
-            _patch_preflight(report),
+            patch("polylogue.cli.commands.embed._build_preflight_report", fake_preflight),
             patch("polylogue.storage.search_providers.create_vector_provider", return_value=MagicMock()),
             patch("polylogue.storage.embeddings.materialization.iter_pending_conversations", fake_iter),
         ):
@@ -273,6 +288,8 @@ class TestBackfillCommand:
             )
 
         assert result.exit_code == 0, result.output
+        assert fake_preflight.call_args.kwargs["max_conversations"] == 3
+        assert fake_preflight.call_args.kwargs["max_messages"] == 7
         assert fake_iter.call_args.kwargs["max_conversations"] == 3
         assert fake_iter.call_args.kwargs["max_messages"] == 7
 
