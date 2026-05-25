@@ -54,6 +54,7 @@ class ConversationRecord(BaseModel):
     parent_conversation_id: ConversationId | None = None
     branch_type: BranchType | None = None
     raw_id: str | None = None
+    source_name: str = ""
     working_directories_json: str | None = None
     git_branch: str | None = None
     git_repository_url: str | None = None
@@ -133,6 +134,7 @@ class MessageRecord(BaseModel):
     parent_message_id: MessageId | None = None
     branch_index: int = 0
     content_blocks: list[ContentBlockRecord] = Field(default_factory=list)
+    source_name: str = ""
     word_count: int = 0
     has_tool_use: int = 0
     has_thinking: int = 0
@@ -215,6 +217,7 @@ class AttachmentRecord(BaseModel):
 class ProviderEventRecord(BaseModel):
     event_id: ProviderEventId
     conversation_id: ConversationId
+    source_name: str
     event_index: int
     event_type: str
     timestamp: str | None = None

@@ -203,6 +203,7 @@ class ConversationData:
 
     conversation_id: str
     content_hash: str
+    source_name: str
 
     # Tuple matching INSERT INTO conversations column order
     conversation_tuple: ConversationTuple
@@ -219,6 +220,7 @@ class ConversationData:
     # list[tuple] matching INSERT INTO provider_events column order
     provider_event_tuples: list[ProviderEventTuple] = field(default_factory=list)
 
+    # (conversation_id, source_name, msg_count, word_count, tool_use_count, thinking_count)
     stats_tuple: StatsTuple | tuple[()] = ()
 
     # Attachments are rare; keep as list of simple tuples
@@ -789,6 +791,7 @@ def ingest_record(
         envelope = build_raw_payload_envelope(
             context.raw_source,
             source_path=raw_record.source_path,
+            fallback_provider=raw_record.source_name,
             payload_provider=stored_payload_provider,
         )
     except Exception as exc:
@@ -816,6 +819,7 @@ def _conversation_tuple(conversation: MaterializedConversation, *, raw_id: str |
         source_name = raw if isinstance(raw, str) else ""
     return (
         conversation.conversation_id,
+        conversation.source_name,
         conversation.provider_conversation_id,
         conversation.title,
         conversation.created_at,
@@ -1032,6 +1036,7 @@ def _transform_to_tuples(
     return ConversationData(
         conversation_id=materialized.conversation_id,
         content_hash=materialized.content_hash,
+        source_name=materialized.source_name,
         conversation_tuple=_conversation_tuple(materialized, raw_id=raw_id),
         message_tuples=message_tuples,
         block_tuples=block_tuples,

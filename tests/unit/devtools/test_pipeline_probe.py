@@ -240,7 +240,6 @@ async def _seed_archive_source(tmp_path: Path) -> tuple[Path, Path]:
             await repository.save_raw_conversation(
                 RawConversationRecord(
                     raw_id=raw_id,
-                    source_name=source_name,
                     payload_provider=Provider.from_string(source_name),
                     source_name=source_name,
                     source_path=f"/tmp/{source_name}-{index}",
@@ -683,3 +682,4 @@ async def test_run_probe_rejects_empty_archive_subset(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="found no raw conversations"):
         await run_probe(request)
+

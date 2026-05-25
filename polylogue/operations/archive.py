@@ -164,6 +164,7 @@ def _conversation_search_hit(
     snippet = _build_search_snippet(matching_message.text or "", query) if matching_message else ""
     return SearchHit(
         conversation_id=str(conversation.id),
+        source_name=conversation.provider,
         source_name=None,
         message_id=message_id,
         title=conversation.display_title,
