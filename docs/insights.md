@@ -40,9 +40,9 @@ polylogue insights profiles --tier merged --sort first-message
 polylogue --provider claude-code insights profiles --min-wallclock-seconds 300
 ```
 
-Fields: conversation ID, provider, title, session date, first/last session
-timestamp, timestamp source, wall clock duration, message count, engaged
-minutes.
+Fields: conversation ID, provider, raw title, inferred topic, session date,
+first/last session timestamp, timestamp source, wall clock duration, message
+count, engaged minutes.
 
 `first_message_at` and `last_message_at` prefer provider-supplied message
 timestamps. For sources that only preserve conversation-level timestamps,
@@ -54,6 +54,13 @@ complete without pretending the archive recovered per-message timing.
 Optional filters: `--first-message-since`, `--first-message-until`,
 `--min-wallclock-seconds`, `--max-wallclock-seconds`, `--sort`, `--tier`
 (`merged`, `evidence`, `inference`), `--query`.
+
+`inference.inferred_topic` is a deterministic label for search and scan
+ergonomics. It is not the provider title and it is not a semantic summary:
+materialization prefers the first substantive user turn, strips known context
+dump prefixes, and for Codex sessions with repository evidence prefixes the
+topic with the first inferred repo name. The raw `title` remains unchanged for
+provenance and provider fidelity.
 
 ## Work Events
 

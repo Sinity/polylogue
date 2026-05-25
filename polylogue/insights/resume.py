@@ -91,6 +91,7 @@ class ResumeWorkThread(ArchiveInsightModel):
 
 
 class ResumeInferences(ArchiveInsightModel):
+    inferred_topic: str | None = None
     intent_summary: str | None = None
     outcome_summary: str | None = None
     blockers: tuple[str, ...] = ()
@@ -297,6 +298,7 @@ def _inferences(
     profile_inference = profile.inference if profile is not None else None
     enrichment_payload = enrichment.enrichment if enrichment is not None else None
     return ResumeInferences(
+        inferred_topic=profile_inference.inferred_topic if profile_inference is not None else None,
         intent_summary=enrichment_payload.intent_summary if enrichment_payload is not None else None,
         outcome_summary=enrichment_payload.outcome_summary if enrichment_payload is not None else None,
         blockers=enrichment_payload.blockers if enrichment_payload is not None else (),

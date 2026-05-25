@@ -108,6 +108,8 @@ class SessionProfile:
     repo_names: tuple[str, ...]
     work_events: tuple[WorkEvent, ...]
     phases: tuple[SessionPhase, ...]
+    inferred_topic: str | None = None
+    inferred_topic_source: str = "absent"
     first_message_at: datetime | None = None
     last_message_at: datetime | None = None
     timestamp_source: str = "provider_supplied"
@@ -154,6 +156,8 @@ class SessionProfile:
             "conversation_id": self.conversation_id,
             "provider": self.provider,
             "title": self.title,
+            "inferred_topic": self.inferred_topic,
+            "inferred_topic_source": self.inferred_topic_source,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "message_count": self.message_count,
@@ -217,6 +221,8 @@ class SessionProfile:
             conversation_id=str(payload["conversation_id"]),
             provider=str(payload["provider"]),
             title=optional_string(payload.get("title")),
+            inferred_topic=optional_string(payload.get("inferred_topic")),
+            inferred_topic_source=optional_string(payload.get("inferred_topic_source")) or "absent",
             created_at=optional_datetime(payload.get("created_at")),
             updated_at=optional_datetime(payload.get("updated_at")),
             message_count=coerce_int(payload.get("message_count"), 0),

@@ -45,6 +45,7 @@ def render_resume_brief(brief: ResumeBrief) -> None:
     _line("Tool categories", facts.tool_categories)
 
     click.echo("\nInferred State")
+    _line("Topic", inferences.inferred_topic)
     _line("Intent", inferences.intent_summary)
     _line("Outcome", inferences.outcome_summary)
     _line("Blockers", inferences.blockers)

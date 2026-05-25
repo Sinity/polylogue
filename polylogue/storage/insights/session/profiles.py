@@ -56,6 +56,7 @@ def profile_evidence_search_text(profile: SessionProfile) -> str:
     parts = [
         profile.provider,
         profile.title or "",
+        profile.inferred_topic or "",
         *profile.repo_paths,
         *profile.cwd_paths,
         *profile.file_paths_touched,
@@ -71,6 +72,7 @@ def profile_inference_search_text(profile: SessionProfile) -> str:
     parts = [
         profile.provider,
         profile.title or "",
+        profile.inferred_topic or "",
         *profile.repo_names,
         *profile.auto_tags,
         *(event.summary for event in profile.work_events),
@@ -103,6 +105,7 @@ def profile_enrichment_search_text(
     parts = [
         profile.provider,
         profile.title or "",
+        profile.inferred_topic or "",
         enrichment_payload.intent_summary or "",
         enrichment_payload.outcome_summary or "",
         *profile.repo_names,
@@ -218,6 +221,8 @@ def profile_evidence_payload(profile: SessionProfile) -> SessionEvidencePayload:
 def profile_inference_payload(profile: SessionProfile) -> SessionInferencePayload:
     signals = profile_support_signals(profile)
     return SessionInferencePayload(
+        inferred_topic=profile.inferred_topic,
+        inferred_topic_source=profile.inferred_topic_source,
         repo_names=profile.repo_names,
         work_event_count=len(profile.work_events),
         phase_count=len(profile.phases),
@@ -329,6 +334,8 @@ def hydrate_session_profile(record: SessionProfileRecord) -> SessionProfile:
         "conversation_id": str(record.conversation_id),
         "provider": record.provider_name,
         "title": record.title,
+        "inferred_topic": record.inference_payload.inferred_topic,
+        "inferred_topic_source": record.inference_payload.inferred_topic_source,
         "created_at": record.evidence_payload.created_at,
         "updated_at": record.evidence_payload.updated_at,
         "tool_categories": dict(record.evidence_payload.tool_categories),
