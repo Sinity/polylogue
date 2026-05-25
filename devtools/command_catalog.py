@@ -237,6 +237,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "archive-space-report",
+        "maintenance",
+        "Report SQLite archive file/page/object space by table and index.",
+        "devtools.archive_space_report",
+        use_when=(
+            "Capture read-only dbstat evidence before/after schema rebuilds, VACUUM, "
+            "blob cleanup, or storage-layout changes."
+        ),
+        examples=(
+            "devtools archive-space-report",
+            "devtools archive-space-report --json",
+            "devtools archive-space-report --objects --db /path/to/polylogue.db --limit 50",
+        ),
+    ),
+    CommandSpec(
         "scenario-projections",
         "verification",
         "Render the authored scenario-bearing verification projections.",
