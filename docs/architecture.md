@@ -245,10 +245,11 @@ Vector embeddings for semantic search, powered by Voyage AI (`voyage-4`,
 - **Storage**: `message_embeddings` (vec0), `embeddings_meta`, `embedding_status`
 - **Search**: `--similar` flag triggers pure vector search; hybrid mode combines
   FTS5 + vector via Reciprocal Rank Fusion
-- **Integration**: Daemon-side post-ingest embedding is opt-in via
-  `embedding_enabled = true` in `polylogue.toml` with a valid `voyage_api_key`;
-  default live convergence does not call the embedding provider during catch-up
-  ([#828](https://github.com/Sinity/polylogue/issues/828)).
+- **Integration**: Daemon-side post-ingest and ambient catch-up embedding is
+  opt-in via `embedding_enabled = true` in `polylogue.toml` with a valid
+  `voyage_api_key`. When enabled, the daemon drains pending conversations in
+  bounded windows and records catch-up progress; when disabled, no embedding
+  provider calls are made ([#1503](https://github.com/Sinity/polylogue/issues/1503)).
 
 ### Activation flow (#1217)
 

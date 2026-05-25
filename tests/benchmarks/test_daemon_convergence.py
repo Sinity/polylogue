@@ -123,6 +123,7 @@ def _run_convergence_probe(
     # Use a fresh DB for clean measurement.
     db_path = tmp_path / "polylogue.db"
     os.environ["POLYLOGUE_ARCHIVE_ROOT"] = str(tmp_path)
+    os.environ["POLYLOGUE_CONFIG"] = str(tmp_path / "polylogue.toml")
 
     # Collect all JSONL files.
     files = list(corpus_root.rglob("*.jsonl"))

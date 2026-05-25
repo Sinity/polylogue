@@ -492,7 +492,7 @@ def test_embed_stage_processes_bounded_window_and_leaves_debt(
     assert embedded_calls == [["conv-a", "conv-b"]]
 
 
-def test_default_convergence_stages_do_not_embed_without_opt_in(
+def test_default_convergence_stages_always_register_embed_stage(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -501,19 +501,22 @@ def test_default_convergence_stages_do_not_embed_without_opt_in(
 
     stage_names = [stage.name for stage in make_default_convergence_stages(tmp_path / "archive.sqlite")]
 
-    assert stage_names == ["fts", "insights"]
+    assert stage_names == ["fts", "embed", "insights"]
 
 
-def test_default_convergence_stages_include_embed_when_enabled(
+def test_embed_stage_is_noop_when_disabled(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("VOYAGE_API_KEY", "key")
-    monkeypatch.setenv("POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS", "true")
+    monkeypatch.delenv("POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS", raising=False)
+    db_path = tmp_path / "archive.sqlite"
+    db_path.touch()
 
-    stage_names = [stage.name for stage in make_default_convergence_stages(tmp_path / "archive.sqlite")]
+    stage = make_embed_stage(db_path)
 
-    assert stage_names == ["fts", "embed", "insights"]
+    assert stage.check(tmp_path / "source.jsonl") is False
+    assert stage.execute(tmp_path / "source.jsonl") is True
 
 
 def test_insights_stage_batches_sync_rebuild_chunks(

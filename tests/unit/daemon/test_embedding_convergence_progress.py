@@ -6,13 +6,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from polylogue.daemon import convergence_stages
+from polylogue.daemon import convergence_stages, embedding_backlog
 from polylogue.daemon.status import format_daemon_status_lines
 from polylogue.storage.embeddings.materialization import EmbedConversationOutcome
 from polylogue.storage.embeddings.progress import latest_embedding_catchup_run
 
 
 class _EmbeddingConfig:
+    embedding_enabled = True
+    voyage_api_key = "pa-test"
     embedding_model = "voyage-4"
     embedding_dimension = 1024
 
@@ -116,6 +118,111 @@ def test_daemon_embedding_batch_marks_error_stop_reason(tmp_path: Path, monkeypa
     assert payload["stop_reason"] == "max errors reached (1)"
     assert payload["processed_conversations"] == 1
     assert payload["error_count"] == 1
+
+
+def test_daemon_embedding_backlog_drain_processes_bounded_pending_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "polylogue.db"
+    _seed_embedding_db(db_path)
+    embedded_calls: list[tuple[str, ...]] = []
+    cost_caps: list[float | None] = []
+
+    def fake_embed(
+        _db_path: Path,
+        conversation_ids: tuple[str, ...],
+        *,
+        max_cost_usd: float | None = None,
+        **_kwargs: object,
+    ) -> bool:
+        embedded_calls.append(tuple(conversation_ids))
+        cost_caps.append(max_cost_usd)
+        return True
+
+    monkeypatch.setattr(convergence_stages, "load_polylogue_config", lambda: _EmbeddingConfig())
+    monkeypatch.setattr(embedding_backlog, "load_polylogue_config", lambda: _EmbeddingConfig())
+    monkeypatch.setattr(convergence_stages, "_embed_conversations_sync", fake_embed)
+
+    processed = embedding_backlog.drain_embedding_backlog_once(db_path)
+
+    assert processed == 2
+    assert embedded_calls == [("conv-a", "conv-b")]
+    assert cost_caps == [5.0]
+
+
+def test_daemon_embedding_backlog_drain_is_noop_when_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "polylogue.db"
+    _seed_embedding_db(db_path)
+
+    class DisabledConfig(_EmbeddingConfig):
+        embedding_enabled = False
+
+    monkeypatch.setattr(convergence_stages, "load_polylogue_config", lambda: DisabledConfig())
+    monkeypatch.setattr(embedding_backlog, "load_polylogue_config", lambda: DisabledConfig())
+    monkeypatch.setattr(
+        convergence_stages,
+        "_embed_conversations_sync",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("embedding must not run")),
+    )
+
+    assert embedding_backlog.drain_embedding_backlog_once(db_path) == 0
+
+
+def test_daemon_embedding_backlog_drain_pauses_when_monthly_cap_spent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "polylogue.db"
+    _seed_embedding_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE embedding_catchup_runs (
+                run_id TEXT PRIMARY KEY,
+                started_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                status TEXT NOT NULL,
+                stop_reason TEXT,
+                rebuild INTEGER NOT NULL DEFAULT 0,
+                max_conversations INTEGER,
+                max_messages INTEGER,
+                stop_after_seconds INTEGER,
+                max_errors INTEGER,
+                planned_conversations INTEGER NOT NULL DEFAULT 0,
+                planned_messages INTEGER NOT NULL DEFAULT 0,
+                processed_conversations INTEGER NOT NULL DEFAULT 0,
+                embedded_conversations INTEGER NOT NULL DEFAULT 0,
+                skipped_conversations INTEGER NOT NULL DEFAULT 0,
+                error_count INTEGER NOT NULL DEFAULT 0,
+                embedded_messages INTEGER NOT NULL DEFAULT 0,
+                estimated_cost_usd REAL NOT NULL DEFAULT 0.0,
+                last_conversation_id TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO embedding_catchup_runs (
+                run_id, started_at, updated_at, status, estimated_cost_usd
+            ) VALUES ('spent', datetime('now'), datetime('now'), 'completed', 5.0)
+            """
+        )
+        conn.commit()
+
+    monkeypatch.setattr(convergence_stages, "load_polylogue_config", lambda: _EmbeddingConfig())
+    monkeypatch.setattr(embedding_backlog, "load_polylogue_config", lambda: _EmbeddingConfig())
+    monkeypatch.setattr(
+        convergence_stages,
+        "_embed_conversations_sync",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("embedding must not run")),
+    )
+
+    assert embedding_backlog.drain_embedding_backlog_once(db_path) == 0
 
 
 def test_daemon_status_lines_include_latest_embedding_catchup() -> None:
