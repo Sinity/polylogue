@@ -77,8 +77,12 @@ class EmbeddingReadiness(BaseModel):
     embedding_has_voyage_key: bool = False
     embedding_model: str = ""
     embedding_dimension: int = 0
+    embedding_status: str = "empty"
+    embedding_freshness_status: str = "empty"
+    embedding_retrieval_ready: bool = False
     embedding_pending_count: int = 0
     embedding_pending_message_count: int = 0
+    embedding_pending_message_count_exact: bool = False
     embedding_stale_count: int = 0
     embedding_coverage_percent: float = 0.0
     embedding_failure_count: int = 0
@@ -959,8 +963,14 @@ def build_daemon_status(
             embedding_has_voyage_key=bool(embedding_info.get("embedding_has_voyage_key", False)),
             embedding_model=str(embedding_info.get("embedding_model", "")),
             embedding_dimension=_safe_int(embedding_info.get("embedding_dimension", 0)),
+            embedding_status=str(embedding_info.get("embedding_status", "empty")),
+            embedding_freshness_status=str(embedding_info.get("embedding_freshness_status", "empty")),
+            embedding_retrieval_ready=bool(embedding_info.get("embedding_retrieval_ready", False)),
             embedding_pending_count=_safe_int(embedding_info.get("embedding_pending_count", 0)),
             embedding_pending_message_count=_safe_int(embedding_info.get("embedding_pending_message_count", 0)),
+            embedding_pending_message_count_exact=bool(
+                embedding_info.get("embedding_pending_message_count_exact", False)
+            ),
             embedding_stale_count=_safe_int(embedding_info.get("embedding_stale_count", 0)),
             embedding_coverage_percent=_safe_float(embedding_info.get("embedding_coverage_percent")),
             embedding_failure_count=_safe_int(embedding_info.get("embedding_failure_count", 0)),
@@ -1251,14 +1261,23 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     # Embedding readiness
     embedding = payload.get("embedding_readiness")
     if isinstance(embedding, dict):
+        status = str(embedding.get("embedding_status", "unknown"))
+        freshness = str(embedding.get("embedding_freshness_status", status))
+        retrieval_ready = "ready" if embedding.get("embedding_retrieval_ready") else "not ready"
+        pending_message_count = _safe_int(embedding.get("embedding_pending_message_count"))
+        pending_message_text = (
+            f"{pending_message_count:,} pending msgs"
+            if embedding.get("embedding_pending_message_count_exact")
+            else "pending msgs not calculated"
+        )
         if embedding.get("embedding_enabled"):
             coverage = _safe_float(embedding.get("embedding_coverage_percent"))
             pending = _safe_int(embedding.get("embedding_pending_count"))
-            pending_messages = _safe_int(embedding.get("embedding_pending_message_count"))
             stale = _safe_int(embedding.get("embedding_stale_count"))
             lines.append(
-                f"Embeddings: {coverage:.1f}% coverage, {pending} pending convs, "
-                f"{pending_messages:,} pending msgs, {stale} stale"
+                f"Embeddings: {status}/{freshness}, {retrieval_ready}; "
+                f"{coverage:.1f}% coverage, {pending} pending convs, "
+                f"{pending_message_text}, {stale} stale"
             )
             if _safe_int(embedding.get("embedding_failure_count")) > 0:
                 lines.append(f"  failures: {_safe_int(embedding.get('embedding_failure_count'))}")
@@ -1278,10 +1297,10 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                 )
         else:
             pending = _safe_int(embedding.get("embedding_pending_count"))
-            pending_messages = _safe_int(embedding.get("embedding_pending_message_count"))
             key_state = "key present" if embedding.get("embedding_has_voyage_key") else "key missing"
             lines.append(
-                f"Embeddings: disabled ({key_state}; {pending} pending convs, {pending_messages:,} pending msgs)"
+                f"Embeddings: disabled ({key_state}; {status}/{freshness}, {retrieval_ready}; "
+                f"{pending} pending convs, {pending_message_text})"
             )
             latest = embedding.get("embedding_latest_catchup_run")
             if isinstance(latest, dict):
