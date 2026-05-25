@@ -145,7 +145,7 @@ def select_pending_conversation_window(
         params.extend(unique_ids)
 
     status_exists = _table_exists(conn, "embedding_status")
-    stats_exists = _table_exists(conn, "conversation_stats")
+    stats_exists = max_messages is None and _table_exists(conn, "conversation_stats")
     where_clause = "1 = 1" if rebuild or not status_exists else "(e.conversation_id IS NULL OR e.needs_reindex = 1)"
 
     join_clause = "LEFT JOIN embedding_status e ON c.conversation_id = e.conversation_id" if status_exists else ""

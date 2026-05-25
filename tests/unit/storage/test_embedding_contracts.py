@@ -501,6 +501,31 @@ def test_pending_window_uses_conversation_stats_when_available() -> None:
         conn.close()
 
 
+def test_pending_window_uses_live_counts_for_message_bound() -> None:
+    conn = sqlite3.connect(":memory:")
+    try:
+        _setup_minimal_embedding_db(conn)
+        conn.executescript(_CONVERSATION_STATS_DDL)
+        _insert_conversation(conn, "conv-a", message_count=3)
+        _insert_conversation(conn, "conv-b", message_count=3)
+        conn.execute(
+            "INSERT INTO conversation_stats (conversation_id, message_count) VALUES (?, ?)",
+            ("conv-a", 1),
+        )
+        conn.execute(
+            "INSERT INTO conversation_stats (conversation_id, message_count) VALUES (?, ?)",
+            ("conv-b", 1),
+        )
+        conn.commit()
+
+        pending = select_pending_conversation_window(conn, max_messages=4)
+
+        assert [item.conversation_id for item in pending] == ["conv-a"]
+        assert pending[0].message_count == 3
+    finally:
+        conn.close()
+
+
 def test_no_message_conversation_records_clean_status(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.sqlite"
     _setup_minimal_embedding_file(db_path)
