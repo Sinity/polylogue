@@ -89,7 +89,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("search", run)
 
-    cast(Any, _search).__signature__ = conversation_query_request_signature(include_query=True)
+    cast(Any, _search).__signature__ = conversation_query_request_signature(include_query=True, query_required=True)
     _search.__name__ = "search"
     _search.__doc__ = (
         "Search the archive for conversations matching ``query``. "
@@ -212,7 +212,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("facets", run)
 
-    cast(Any, _facets).__signature__ = conversation_query_request_signature(include_query=False)
+    cast(Any, _facets).__signature__ = conversation_query_request_signature(include_query=True)
     _facets.__name__ = "facets"
     _facets.__doc__ = (
         "Compute scoped and global facet aggregates over the archive. "

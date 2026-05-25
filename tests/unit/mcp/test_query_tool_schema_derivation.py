@@ -1,6 +1,6 @@
-"""Contract: ``search``/``list_conversations`` inputSchema is derived from the request dataclass.
+"""Contract: query tool inputSchema is derived from the request dataclass.
 
-Audit #1282 (R3) refactored the two query tools so their parameters are
+Audit #1282 (R3) refactored the query tools so their parameters are
 auto-generated from :class:`MCPConversationQueryRequest`. This test guards
 against silent drift between the dataclass and the published MCP tool schema:
 if a field is added to or removed from the dataclass and a tool definition is
@@ -30,7 +30,7 @@ def _registered_schemas() -> SchemaMap:
     server = FastMCP("schema-derivation-test")
     register_query_tools(server, hooks)
     tools = asyncio.run(server.list_tools())
-    return {tool.name: tool.inputSchema for tool in tools if tool.name in {"search", "list_conversations"}}
+    return {tool.name: tool.inputSchema for tool in tools if tool.name in {"search", "list_conversations", "facets"}}
 
 
 def _dataclass_field_names() -> set[str]:
@@ -64,6 +64,16 @@ def test_list_conversations_schema_matches_dataclass_fields_excluding_query(
     )
 
 
+def test_facets_schema_matches_dataclass_fields(schemas: SchemaMap) -> None:
+    schema = schemas["facets"]
+    properties = set(schema.get("properties", {}).keys())
+    assert properties == _dataclass_field_names(), (
+        "facets inputSchema drifted from MCPConversationQueryRequest. "
+        f"missing={sorted(_dataclass_field_names() - properties)}, "
+        f"extra={sorted(properties - _dataclass_field_names())}"
+    )
+
+
 def test_search_marks_query_required(schemas: SchemaMap) -> None:
     required = schemas["search"].get("required") or []
     assert "query" in required, "search must keep ``query`` required for backwards compatibility"
@@ -76,9 +86,15 @@ def test_list_conversations_has_no_required_parameters(
     assert required == [], "list_conversations historically accepts zero required parameters"
 
 
+def test_facets_query_is_optional(schemas: SchemaMap) -> None:
+    required = schemas["facets"].get("required") or []
+    assert "query" in schemas["facets"].get("properties", {})
+    assert required == [], "facets supports query-scoped counts but must remain callable with no filters"
+
+
 def test_limit_and_offset_preserve_pydantic_constraints(schemas: SchemaMap) -> None:
     """The derived schema must preserve the ``ge=1``/``ge=0`` annotations from the TypeAliases."""
-    for name in ("search", "list_conversations"):
+    for name in ("search", "list_conversations", "facets"):
         properties = schemas[name].get("properties", {})
         limit = properties["limit"]
         offset = properties["offset"]
