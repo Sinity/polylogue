@@ -30,7 +30,7 @@ def _db_raw_fanout(db_path: Path) -> list[RawFanoutEntry]:
             """
             SELECT
                 r.raw_id,
-                COALESCE(r.payload_provider, r.provider_name) AS payload_provider,
+                COALESCE(r.payload_provider, r.source_name) AS payload_provider,
                 r.source_name,
                 r.blob_size,
                 r.parse_error,
@@ -41,7 +41,7 @@ def _db_raw_fanout(db_path: Path) -> list[RawFanoutEntry]:
             LEFT JOIN messages m ON m.conversation_id = c.conversation_id
             GROUP BY
                 r.raw_id,
-                COALESCE(r.payload_provider, r.provider_name),
+                COALESCE(r.payload_provider, r.source_name),
                 r.source_name,
                 r.blob_size,
                 r.parse_error

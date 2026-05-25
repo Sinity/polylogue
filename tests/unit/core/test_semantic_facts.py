@@ -144,7 +144,7 @@ def test_build_projection_semantic_facts_counts_renderable_and_empty_messages() 
     projection = ConversationRenderProjection(
         conversation=make_conversation(
             conversation_id="conv-projection",
-            provider_name="chatgpt",
+            source_name="chatgpt",
             provider_conversation_id="provider-conv-projection",
             title="Projection Facts",
             content_hash="hash-projection",

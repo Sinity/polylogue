@@ -62,7 +62,7 @@ async def save_conversation_record(
         _CONVERSATION_UPSERT_SQL,
         (
             record.conversation_id,
-            record.provider_name,
+            record.source_name,
             record.provider_conversation_id,
             record.title,
             record.created_at,

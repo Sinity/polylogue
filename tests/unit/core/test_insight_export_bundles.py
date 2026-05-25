@@ -100,7 +100,7 @@ async def test_insight_export_bundle_writes_bounded_insights(cli_workspace: dict
     assert (target / "schemas" / "session_work_events.schema.json").exists()
     profiles = _jsonl_file(target / "insights" / "session_profiles.jsonl")
     events = _jsonl_file(target / "insights" / "session_work_events.jsonl")
-    assert {profile["provider_name"] for profile in profiles} == {"codex"}
+    assert {profile["source_name"] for profile in profiles} == {"codex"}
     assert profiles
     assert events
     summaries = manifest["insights"]

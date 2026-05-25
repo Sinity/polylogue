@@ -163,7 +163,7 @@ class TestExtractSchemaUnitsFromPayload:
 
         units = extract_schema_units_from_payload(
             payload,
-            provider_name=Provider.CLAUDE_CODE,
+            source_name=Provider.CLAUDE_CODE,
             source_path="/tmp/session.jsonl",
             raw_id="raw-1",
             observed_at="2026-01-01T00:00:00Z",
@@ -196,7 +196,7 @@ class TestExtractSchemaUnitsFromPayload:
 
         units = extract_schema_units_from_payload(
             payload,
-            provider_name=Provider.CHATGPT,
+            source_name=Provider.CHATGPT,
             source_path="/tmp/conversations.json",
             raw_id="raw-docs",
             config=config,

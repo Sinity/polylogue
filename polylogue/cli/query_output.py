@@ -876,7 +876,7 @@ async def stream_conversation(
         render_stream_header(
             conversation_id=conversation_id,
             title=conv_record.title,
-            provider=getattr(conv_record, "provider_name", None),
+            provider=getattr(conv_record, "source_name", None),
             display_date=(getattr(conv_record, "updated_at", None) or getattr(conv_record, "created_at", None)),
             output_format=output_format,
             dialogue_only=dialogue_only,

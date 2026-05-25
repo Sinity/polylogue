@@ -29,10 +29,10 @@ from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 from polylogue.types import ContentHash, ConversationId, Provider
 
 
-def _conversation_record(conversation_id: str, *, title: str, provider_name: str = "chatgpt") -> ConversationRecord:
+def _conversation_record(conversation_id: str, *, title: str, source_name: str = "chatgpt") -> ConversationRecord:
     return ConversationRecord(
         conversation_id=ConversationId(conversation_id),
-        provider_name=provider_name,
+        source_name=source_name,
         provider_conversation_id=f"provider-{conversation_id}",
         title=title,
         content_hash=ContentHash(f"hash-{conversation_id}"),
@@ -119,7 +119,7 @@ class _FakeRepo(RepositoryArchiveSearchMixin):
         return [
             Conversation(
                 id=ConversationId(str(record.conversation_id)),
-                provider=Provider.from_string(record.provider_name),
+                provider=Provider.from_string(record.source_name),
                 messages=MessageCollection.empty(),
                 title=record.title,
             )
@@ -130,7 +130,7 @@ class _FakeRepo(RepositoryArchiveSearchMixin):
 def _memory_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    conn.execute("CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY, provider_name TEXT NOT NULL)")
+    conn.execute("CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY, source_name TEXT NOT NULL)")
     conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL)")
     return conn
 
@@ -138,7 +138,7 @@ def _memory_conn() -> sqlite3.Connection:
 def test_resolve_ranked_conversation_hits_preserves_order_and_provider_scope() -> None:
     conn = _memory_conn()
     conn.executemany(
-        "INSERT INTO conversations(conversation_id, provider_name) VALUES (?, ?)",
+        "INSERT INTO conversations(conversation_id, source_name) VALUES (?, ?)",
         [
             ("conv-a", "chatgpt"),
             ("conv-b", "claude"),

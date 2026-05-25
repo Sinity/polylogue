@@ -68,12 +68,12 @@ def _build_conversation_filters(
         where_clauses.append("c.source_name = ?" if needs_stats_join else "source_name = ?")
         params.append(source)
     if provider is not None:
-        where_clauses.append("c.provider_name = ?" if needs_stats_join else "provider_name = ?")
+        where_clauses.append("c.source_name = ?" if needs_stats_join else "source_name = ?")
         params.append(provider)
     if providers:
         source_scope_sql, source_scope_params = _build_provider_scope_filter(
             providers,
-            provider_column="c.provider_name" if needs_stats_join else "provider_name",
+            provider_column="c.source_name" if needs_stats_join else "source_name",
         )
         where_clauses.append(source_scope_sql)
         params.extend(source_scope_params)

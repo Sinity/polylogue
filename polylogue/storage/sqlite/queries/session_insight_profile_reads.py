@@ -74,7 +74,7 @@ async def list_session_profiles(
         order_by = _session_profile_order_by(query.sort)
 
     if query.provider:
-        where.append("sp.provider_name = ?")
+        where.append("sp.source_name = ?")
         params.append(query.provider)
     if query.since:
         where.append("COALESCE(sp.last_message_at, sp.source_updated_at, sp.first_message_at) >= ?")

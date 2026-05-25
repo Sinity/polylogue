@@ -56,7 +56,7 @@ class TestFilterMonotonicity:
 
         with open_connection(filterable_db) as conn:
             all_ids = _query_ids(conn)
-            chatgpt_ids = _query_ids(conn, "provider_name = ?", ("chatgpt",))
+            chatgpt_ids = _query_ids(conn, "source_name = ?", ("chatgpt",))
 
             assert chatgpt_ids.issubset(all_ids)
             assert len(chatgpt_ids) < len(all_ids)
@@ -66,7 +66,7 @@ class TestFilterMonotonicity:
 
         with open_connection(filterable_db) as conn:
             all_ids = _query_ids(conn)
-            chatgpt_ids = _query_ids(conn, "provider_name = ?", ("chatgpt",))
+            chatgpt_ids = _query_ids(conn, "source_name = ?", ("chatgpt",))
 
             chatgpt_with_stats = set()
             for cid in chatgpt_ids:
@@ -83,7 +83,7 @@ class TestFilterMonotonicity:
         from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(filterable_db) as conn:
-            nonexistent = _query_ids(conn, "provider_name = ?", ("nonexistent-provider",))
+            nonexistent = _query_ids(conn, "source_name = ?", ("nonexistent-provider",))
             assert nonexistent == set()
 
 
@@ -94,7 +94,7 @@ class TestFilterCommutativity:
         from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(filterable_db) as conn:
-            chatgpt_ids = _query_ids(conn, "provider_name = ?", ("chatgpt",))
+            chatgpt_ids = _query_ids(conn, "source_name = ?", ("chatgpt",))
             chatgpt_with_msgs = set()
             for cid in chatgpt_ids:
                 cnt = conn.execute("SELECT COUNT(*) FROM messages WHERE conversation_id = ?", (cid,)).fetchone()[0]
@@ -119,8 +119,8 @@ class TestFilterIdempotence:
         from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(filterable_db) as conn:
-            once = _query_ids(conn, "provider_name = ?", ("chatgpt",))
-            twice = _query_ids(conn, "provider_name = ? AND provider_name = ?", ("chatgpt", "chatgpt"))
+            once = _query_ids(conn, "source_name = ?", ("chatgpt",))
+            twice = _query_ids(conn, "source_name = ? AND source_name = ?", ("chatgpt", "chatgpt"))
             assert once == twice
 
 
@@ -132,11 +132,11 @@ class TestFilterPartition:
 
         with open_connection(filterable_db) as conn:
             all_ids = _query_ids(conn)
-            providers = {r[0] for r in conn.execute("SELECT DISTINCT provider_name FROM conversations").fetchall()}
+            providers = {r[0] for r in conn.execute("SELECT DISTINCT source_name FROM conversations").fetchall()}
 
             union = set()
             for p in providers:
-                union |= _query_ids(conn, "provider_name = ?", (p,))
+                union |= _query_ids(conn, "source_name = ?", (p,))
 
             assert union == all_ids
 
@@ -144,10 +144,10 @@ class TestFilterPartition:
         from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(filterable_db) as conn:
-            providers = [r[0] for r in conn.execute("SELECT DISTINCT provider_name FROM conversations").fetchall()]
+            providers = [r[0] for r in conn.execute("SELECT DISTINCT source_name FROM conversations").fetchall()]
 
             for i, p1 in enumerate(providers):
                 for p2 in providers[i + 1 :]:
-                    ids1 = _query_ids(conn, "provider_name = ?", (p1,))
-                    ids2 = _query_ids(conn, "provider_name = ?", (p2,))
+                    ids1 = _query_ids(conn, "source_name = ?", (p1,))
+                    ids2 = _query_ids(conn, "source_name = ?", (p2,))
                     assert ids1.isdisjoint(ids2), f"{p1} and {p2} overlap"

@@ -30,7 +30,7 @@ class SessionProfileRecord(BaseModel):
     input_high_water_mark: str | None = None
     input_high_water_mark_source: str | None = None
     input_row_count: int = 0
-    provider_name: str
+    source_name: str
     title: str | None = None
     first_message_at: str | None = None
     last_message_at: str | None = None
@@ -88,7 +88,7 @@ class SessionProfileRecord(BaseModel):
     @field_validator(
         "conversation_id",
         "logical_conversation_id",
-        "provider_name",
+        "source_name",
         "materialized_at",
         "search_text",
         "evidence_search_text",
@@ -113,7 +113,7 @@ class SessionLatencyProfileRecord(BaseModel):
     input_high_water_mark: str | None = None
     input_high_water_mark_source: str | None = None
     input_row_count: int = 0
-    provider_name: str
+    source_name: str
     title: str | None = None
     first_message_at: str | None = None
     last_message_at: str | None = None
@@ -128,7 +128,7 @@ class SessionLatencyProfileRecord(BaseModel):
     evidence_payload_json: str = "{}"
     search_text: str = ""
 
-    @field_validator("conversation_id", "provider_name", "materialized_at")
+    @field_validator("conversation_id", "source_name", "materialized_at")
     @classmethod
     def latency_non_empty_string(cls, value: str) -> str:
         if not value or not value.strip():

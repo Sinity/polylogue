@@ -134,7 +134,7 @@ def test_build_report_lines_renders_all_sections_and_breakdowns() -> None:
         SimpleNamespace(
             support_status="contract_backed",
             payload_provider="claude-code",
-            provider_name="fallback-provider",
+            source_name="fallback-provider",
             artifact_kind="tool_use",
             source_path="payload.json",
             resolved_package_version="v1",
@@ -144,7 +144,7 @@ def test_build_report_lines_renders_all_sections_and_breakdowns() -> None:
         SimpleNamespace(
             support_status="unknown",
             payload_provider=None,
-            provider_name="codex",
+            source_name="codex",
             artifact_kind="response",
             source_path="other.json",
             resolved_package_version=None,
@@ -154,7 +154,7 @@ def test_build_report_lines_renders_all_sections_and_breakdowns() -> None:
     ]
     cohort_rows = [
         SimpleNamespace(
-            provider_name="claude-code",
+            source_name="claude-code",
             artifact_kind="tool_use",
             support_status="contract_backed",
             observation_count=7,

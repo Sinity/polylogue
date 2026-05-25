@@ -352,7 +352,7 @@ def _make_recording_env() -> tuple[AppEnv, io.StringIO]:
 def _conversation_record(
     conversation_id: str,
     *,
-    provider_name: str,
+    source_name: str,
     provider_conversation_id: str,
     title: str,
     created_at: str,
@@ -362,7 +362,7 @@ def _conversation_record(
 ) -> ConversationRecord:
     return ConversationRecord(
         conversation_id=ConversationId(conversation_id),
-        provider_name=provider_name,
+        source_name=source_name,
         provider_conversation_id=provider_conversation_id,
         title=title,
         created_at=created_at,
@@ -758,7 +758,7 @@ async def test_output_stats_by_semantic_summaries_json_contract() -> None:
             [
                 ConversationRecord(
                     conversation_id=ConversationId("conv-law-1"),
-                    provider_name="claude-code",
+                    source_name="claude-code",
                     provider_conversation_id="ext-conv-law-1",
                     title="Read contract",
                     created_at="2025-01-01T00:00:00Z",
@@ -770,7 +770,7 @@ async def test_output_stats_by_semantic_summaries_json_contract() -> None:
             [
                 ConversationRecord(
                     conversation_id=ConversationId("conv-b"),
-                    provider_name="claude-code",
+                    source_name="claude-code",
                     provider_conversation_id="ext-conv-b",
                     title="Shell contract",
                     created_at="2025-01-01T00:00:00Z",

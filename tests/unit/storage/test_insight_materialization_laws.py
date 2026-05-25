@@ -78,7 +78,7 @@ class TestProfileConversationAgreement:
             assert phantom_count == 0, f"Found {phantom_count} phantom profiles"
 
     def test_profile_provider_matches_conversation(self, materialized_db: Path) -> None:
-        """Profile provider_name must match source conversation provider_name."""
+        """Profile source_name must match source conversation source_name."""
         from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(materialized_db) as conn:
@@ -89,10 +89,10 @@ class TestProfileConversationAgreement:
                 pytest.skip("session_profiles table not present")
 
             mismatches = conn.execute(
-                "SELECT sp.conversation_id, sp.provider_name AS sp_provider, c.provider_name AS c_provider "
+                "SELECT sp.conversation_id, sp.source_name AS sp_provider, c.source_name AS c_provider "
                 "FROM session_profiles sp "
                 "JOIN conversations c ON c.conversation_id = sp.conversation_id "
-                "WHERE sp.provider_name != c.provider_name"
+                "WHERE sp.source_name != c.source_name"
             ).fetchall()
             assert len(mismatches) == 0, f"Provider mismatches: {[dict(r) for r in mismatches]}"
 

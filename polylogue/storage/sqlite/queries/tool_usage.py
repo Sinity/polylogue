@@ -26,7 +26,7 @@ __all__ = [
 class ToolUsageRow(TypedDict):
     """One row per (provider, normalized_tool_name)."""
 
-    provider_name: str
+    source_name: str
     normalized_tool_name: str
     action_kind: str
     call_count: int
@@ -40,7 +40,7 @@ class ToolUsageRow(TypedDict):
 class ToolUsageProviderCoverageRow(TypedDict):
     """Per-provider coverage signal — does the substrate carry tool data?"""
 
-    provider_name: str
+    source_name: str
     conversation_count: int
     action_event_count: int
     distinct_tool_count: int
@@ -55,7 +55,7 @@ async def get_tool_usage_rows(
 ) -> list[ToolUsageRow]:
     """Aggregate tool usage from canonical ``action_events`` rows.
 
-    The grouping key is ``(provider_name, normalized_tool_name, action_kind)``
+    The grouping key is ``(source_name, normalized_tool_name, action_kind)``
     because the same normalized tool name can fire under multiple action
     kinds (for example ``tool_use`` vs ``tool_result`` reflections).
     """
@@ -63,7 +63,7 @@ async def get_tool_usage_rows(
     cursor = await conn.execute(
         """
         SELECT
-            COALESCE(NULLIF(provider_name, ''), 'unknown')              AS provider_name,
+            COALESCE(NULLIF(source_name, ''), 'unknown')              AS source_name,
             normalized_tool_name                                        AS normalized_tool_name,
             action_kind                                                 AS action_kind,
             COUNT(*)                                                    AS call_count,
@@ -76,16 +76,16 @@ async def get_tool_usage_rows(
                                                                         AS output_text_calls
         FROM action_events
         GROUP BY
-            COALESCE(NULLIF(provider_name, ''), 'unknown'),
+            COALESCE(NULLIF(source_name, ''), 'unknown'),
             normalized_tool_name,
             action_kind
-        ORDER BY call_count DESC, provider_name ASC, normalized_tool_name ASC
+        ORDER BY call_count DESC, source_name ASC, normalized_tool_name ASC
         """
     )
     rows = await cursor.fetchall()
     return [
         {
-            "provider_name": str(row["provider_name"] or "unknown"),
+            "source_name": str(row["source_name"] or "unknown"),
             "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
             "action_kind": str(row["action_kind"] or "unknown"),
             "call_count": int(row["call_count"] or 0),
@@ -113,7 +113,7 @@ async def get_tool_usage_provider_coverage_rows(
     cursor = await conn.execute(
         """
         SELECT
-            c.provider_name                                                AS provider_name,
+            c.source_name                                                AS source_name,
             COUNT(DISTINCT c.conversation_id)                              AS conversation_count,
             COALESCE(COUNT(ae.event_id), 0)                                AS action_event_count,
             COUNT(DISTINCT ae.normalized_tool_name)                        AS distinct_tool_count,
@@ -127,14 +127,14 @@ async def get_tool_usage_provider_coverage_rows(
                                                                             AS has_output_text_signal
         FROM conversations c
         LEFT JOIN action_events ae ON ae.conversation_id = c.conversation_id
-        GROUP BY c.provider_name
-        ORDER BY action_event_count DESC, conversation_count DESC, c.provider_name ASC
+        GROUP BY c.source_name
+        ORDER BY action_event_count DESC, conversation_count DESC, c.source_name ASC
         """
     )
     rows = await cursor.fetchall()
     return [
         {
-            "provider_name": str(row["provider_name"] or "unknown"),
+            "source_name": str(row["source_name"] or "unknown"),
             "conversation_count": int(row["conversation_count"] or 0),
             "action_event_count": int(row["action_event_count"] or 0),
             "distinct_tool_count": int(row["distinct_tool_count"] or 0),

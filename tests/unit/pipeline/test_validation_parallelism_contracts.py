@@ -76,7 +76,7 @@ def _claude_payload(title: str = "hello") -> bytes:
 def _make_record(raw_id: str, *, payload: bytes) -> RawConversationRecord:
     return RawConversationRecord(
         raw_id=raw_id,
-        provider_name=Provider.CLAUDE_AI.value,
+        source_name=Provider.CLAUDE_AI.value,
         source_path=f"/synthetic/{raw_id}.json",
         blob_size=len(payload),
         acquired_at="2026-01-01T00:00:00Z",

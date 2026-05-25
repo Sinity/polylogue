@@ -26,16 +26,16 @@ class TestProviderConfig:
         )
         assert config.name is Provider.UNKNOWN
         assert config.description == "Test provider"
-        assert config.db_provider_name is None
+        assert config.db_source_name is None
         assert config.session_dir is None
 
     def test_init_with_db_provider(self) -> None:
         config = ProviderConfig(
             name=Provider.UNKNOWN,
             description="Test",
-            db_provider_name=Provider.CHATGPT,
+            db_source_name=Provider.CHATGPT,
         )
-        assert config.db_provider_name is Provider.CHATGPT
+        assert config.db_source_name is Provider.CHATGPT
 
     def test_init_with_session_dir(self) -> None:
         path = Path.home() / ".test"
@@ -74,22 +74,22 @@ class TestProvidersConfig:
             assert len(config.description) > 0
 
     def test_chatgpt_has_db_provider(self) -> None:
-        assert PROVIDERS[Provider.CHATGPT].db_provider_name is Provider.CHATGPT
+        assert PROVIDERS[Provider.CHATGPT].db_source_name is Provider.CHATGPT
 
     def test_claude_ai_db_name_is_canonical(self) -> None:
         # Claude AI rows are stored under the canonical provider token.
-        assert PROVIDERS[Provider.CLAUDE_AI].db_provider_name is Provider.CLAUDE_AI
+        assert PROVIDERS[Provider.CLAUDE_AI].db_source_name is Provider.CLAUDE_AI
 
     def test_claude_code_has_db_provider(self) -> None:
-        assert PROVIDERS[Provider.CLAUDE_CODE].db_provider_name is Provider.CLAUDE_CODE
+        assert PROVIDERS[Provider.CLAUDE_CODE].db_source_name is Provider.CLAUDE_CODE
 
     def test_gemini_has_db_provider(self) -> None:
-        assert PROVIDERS[Provider.GEMINI].db_provider_name is Provider.GEMINI
+        assert PROVIDERS[Provider.GEMINI].db_source_name is Provider.GEMINI
 
     def test_local_agent_sources_have_db_providers(self) -> None:
-        assert PROVIDERS[Provider.GEMINI_CLI].db_provider_name is Provider.GEMINI_CLI
-        assert PROVIDERS[Provider.HERMES].db_provider_name is Provider.HERMES
-        assert PROVIDERS[Provider.ANTIGRAVITY].db_provider_name is Provider.ANTIGRAVITY
+        assert PROVIDERS[Provider.GEMINI_CLI].db_source_name is Provider.GEMINI_CLI
+        assert PROVIDERS[Provider.HERMES].db_source_name is Provider.HERMES
+        assert PROVIDERS[Provider.ANTIGRAVITY].db_source_name is Provider.ANTIGRAVITY
 
     def test_codex_has_session_dir(self) -> None:
         assert PROVIDERS[Provider.CODEX].session_dir is not None
@@ -161,7 +161,7 @@ class TestLoadSamplesFromDb:
             conn.execute(
                 """
                 INSERT INTO raw_conversations (
-                    raw_id, provider_name, payload_provider, source_name, source_path,
+                    raw_id, source_name, payload_provider, source_name, source_path,
                     source_index, blob_size, acquired_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
@@ -208,7 +208,7 @@ class TestLoadSamplesFromDb:
             conn.execute(
                 """
                 INSERT INTO raw_conversations (
-                    raw_id, provider_name, payload_provider, source_name, source_path,
+                    raw_id, source_name, payload_provider, source_name, source_path,
                     source_index, blob_size, acquired_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,

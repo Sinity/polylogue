@@ -25,7 +25,7 @@ def _insert_raw(
     conn.execute(
         """
         INSERT INTO raw_conversations (
-            raw_id, provider_name, source_name, source_path, source_index,
+            raw_id, source_name, source_path, source_index,
             blob_size, acquired_at, file_mtime
         ) VALUES (?, 'codex', 'codex-session', ?, ?, ?, ?, ?)
         """,
@@ -116,7 +116,7 @@ def test_superseded_raw_snapshot_cleanup_preserves_live_references(tmp_path: Pat
     conn.execute(
         """
         INSERT INTO conversations (
-            conversation_id, provider_name, provider_conversation_id,
+            conversation_id, source_name, provider_conversation_id,
             content_hash, source_name, version, raw_id
         ) VALUES ('conv-1', 'codex', 'conv-1', 'hash', 'codex-session', 1, ?)
         """,
@@ -125,7 +125,7 @@ def test_superseded_raw_snapshot_cleanup_preserves_live_references(tmp_path: Pat
     conn.execute(
         """
         INSERT INTO provider_events (
-            event_id, conversation_id, provider_name, event_index,
+            event_id, conversation_id, source_name, event_index,
             event_type, raw_id
         ) VALUES ('event-1', 'conv-1', 'codex', 1, 'message', ?)
         """,
@@ -207,7 +207,7 @@ def test_destructive_cleanup_adds_provider_event_raw_index_when_missing(tmp_path
     conn.execute(
         """
         INSERT INTO conversations (
-            conversation_id, provider_name, provider_conversation_id,
+            conversation_id, source_name, provider_conversation_id,
             content_hash, source_name, version, raw_id
         ) VALUES ('conv-1', 'codex', 'conv-1', 'hash', 'codex-session', 1, ?)
         """,
@@ -216,7 +216,7 @@ def test_destructive_cleanup_adds_provider_event_raw_index_when_missing(tmp_path
     conn.execute(
         """
         INSERT INTO provider_events (
-            event_id, conversation_id, provider_name, event_index,
+            event_id, conversation_id, source_name, event_index,
             event_type, raw_id
         ) VALUES ('event-1', 'conv-1', 'codex', 1, 'message', ?)
         """,

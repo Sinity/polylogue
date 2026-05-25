@@ -63,7 +63,7 @@ def extract_mcp_server(tool_name: str) -> str | None:
 class ToolUsageEntry(ArchiveInsightModel):
     """One per-(provider, tool, action_kind) rollup row."""
 
-    provider_name: str
+    source_name: str
     normalized_tool_name: str
     action_kind: str
     call_count: int
@@ -78,7 +78,7 @@ class ToolUsageEntry(ArchiveInsightModel):
 class ToolUsageCoverageEntry(ArchiveInsightModel):
     """Per-provider tool-data coverage signal."""
 
-    provider_name: str
+    source_name: str
     conversation_count: int
     action_event_count: int
     distinct_tool_count: int
@@ -131,7 +131,7 @@ class ToolUsageInsightQuery(PaginatedInsightQuery):
 def _tool_usage_entry(row: ToolUsageRow) -> ToolUsageEntry:
     tool_name = row["normalized_tool_name"]
     return ToolUsageEntry(
-        provider_name=row["provider_name"],
+        source_name=row["source_name"],
         normalized_tool_name=tool_name,
         action_kind=row["action_kind"],
         call_count=row["call_count"],
@@ -147,7 +147,7 @@ def _tool_usage_entry(row: ToolUsageRow) -> ToolUsageEntry:
 def _tool_usage_coverage(row: ToolUsageProviderCoverageRow) -> ToolUsageCoverageEntry:
     action_event_count = row["action_event_count"]
     return ToolUsageCoverageEntry(
-        provider_name=row["provider_name"],
+        source_name=row["source_name"],
         conversation_count=row["conversation_count"],
         action_event_count=action_event_count,
         distinct_tool_count=row["distinct_tool_count"],
@@ -177,14 +177,14 @@ def build_tool_usage_insight(
 
     entries = [_tool_usage_entry(row) for row in rows]
     if query.provider:
-        entries = [entry for entry in entries if entry.provider_name == query.provider]
+        entries = [entry for entry in entries if entry.source_name == query.provider]
     if query.tool:
         entries = [entry for entry in entries if entry.normalized_tool_name == query.tool]
     if query.mcp_server:
         entries = [entry for entry in entries if entry.mcp_server == query.mcp_server]
     if query.action_kind:
         entries = [entry for entry in entries if entry.action_kind == query.action_kind]
-    entries.sort(key=lambda entry: (-entry.call_count, entry.provider_name, entry.normalized_tool_name))
+    entries.sort(key=lambda entry: (-entry.call_count, entry.source_name, entry.normalized_tool_name))
     if query.offset:
         entries = entries[query.offset :]
     if query.limit is not None:
@@ -194,7 +194,7 @@ def build_tool_usage_insight(
     providers_with_data = sum(1 for entry in coverage if entry.data_available)
     providers_without_data = sum(1 for entry in coverage if not entry.data_available and entry.conversation_count > 0)
     total_calls = sum(entry.call_count for entry in entries)
-    distinct_tools = len({(entry.provider_name, entry.normalized_tool_name) for entry in entries})
+    distinct_tools = len({(entry.source_name, entry.normalized_tool_name) for entry in entries})
     return ToolUsageInsight(
         entries=tuple(entries),
         provider_coverage=coverage,

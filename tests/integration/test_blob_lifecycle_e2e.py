@@ -36,7 +36,7 @@ def _seed_raw_row(db_path: Path, raw_id: str, source_path: Path, blob_size: int)
         conn.execute(
             """
             INSERT INTO raw_conversations (
-                raw_id, provider_name, source_path, blob_size, acquired_at
+                raw_id, source_name, source_path, blob_size, acquired_at
             ) VALUES (?, ?, ?, ?, ?)
             """,
             (raw_id, "test", str(source_path), blob_size, "2026-05-10T00:00:00Z"),

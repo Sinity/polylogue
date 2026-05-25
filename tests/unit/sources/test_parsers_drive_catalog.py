@@ -363,5 +363,5 @@ def test_gemini_catalog_parser_only_smoke() -> None:
     for label, factory, _expectations in _GEMINI_METADATA_CATALOG:
         payload = factory()
         parsed = parse_chunked_prompt("gemini", copy.deepcopy(payload), f"fb-{label}")
-        assert parsed.provider_name == "gemini", f"[{label}] wrong provider: {parsed.provider_name}"
+        assert parsed.source_name == "gemini", f"[{label}] wrong provider: {parsed.source_name}"
         assert parsed.messages, f"[{label}] parser produced no messages"

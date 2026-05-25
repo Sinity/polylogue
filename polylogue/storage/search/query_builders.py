@@ -48,7 +48,7 @@ def build_ranked_conversation_search_query(
     candidate_columns = [
         "messages.message_id",
         "messages.conversation_id",
-        "conversations.provider_name",
+        "conversations.source_name",
         "conversations.source_name",
         "conversations.title",
         "messages.sort_key",
@@ -95,7 +95,7 @@ def build_ranked_action_search_query(
         "action_events_fts.conversation_id",
         "action_events_fts.action_kind",
         "action_events_fts.normalized_tool_name AS tool_name",
-        "conversations.provider_name",
+        "conversations.source_name",
         "conversations.source_name",
         "conversations.title",
         "messages.sort_key",
@@ -116,7 +116,7 @@ def build_ranked_action_search_query(
         SELECT
             conversation_id,
             message_id,
-            provider_name,
+            source_name,
             source_name,
             title,
             sort_key,
@@ -170,7 +170,7 @@ def _build_ranked_search_query(
     if scope_names:
         scope_sql, scope_params = _build_provider_scope_filter(
             scope_names,
-            provider_column="conversations.provider_name",
+            provider_column="conversations.source_name",
         )
         sql += f" AND {scope_sql}"
         params.extend(scope_params)

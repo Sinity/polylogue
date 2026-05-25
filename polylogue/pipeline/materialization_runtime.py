@@ -98,7 +98,7 @@ class MaterializedAttachment:
 class MaterializedProviderEvent:
     event_id: ProviderEventId
     conversation_id: ConversationId
-    provider_name: Provider
+    source_name: Provider
     event_index: int
     event_type: str
     timestamp: str | None
@@ -119,7 +119,7 @@ class MaterializedConversationStats:
 @dataclass(frozen=True, slots=True)
 class MaterializedConversation:
     conversation_id: ConversationId
-    provider_name: Provider
+    source_name: Provider
     provider_conversation_id: str
     title: str | None
     created_at: str | None
@@ -185,7 +185,7 @@ def _materialize_provider_events(
             MaterializedProviderEvent(
                 event_id=provider_event_id(conversation_id, event_index),
                 conversation_id=conversation_id,
-                provider_name=convo.provider_name,
+                source_name=convo.source_name,
                 event_index=event_index,
                 event_type=event.event_type,
                 timestamp=event.timestamp,
@@ -290,11 +290,11 @@ def materialize_conversation(
     normalized_convo = canonicalize_conversation_content(convo)
     content_hash, message_hashes = conversation_content_hashes(normalized_convo)
     conversation_id = make_conversation_id(
-        normalized_convo.provider_name,
+        normalized_convo.source_name,
         normalized_convo.provider_conversation_id,
     )
     parent_conversation_id = (
-        make_conversation_id(normalized_convo.provider_name, normalized_convo.parent_conversation_provider_id)
+        make_conversation_id(normalized_convo.source_name, normalized_convo.parent_conversation_provider_id)
         if normalized_convo.parent_conversation_provider_id
         else None
     )
@@ -373,7 +373,7 @@ def materialize_conversation(
     attachments: list[MaterializedAttachment] = []
     for attachment in normalized_convo.attachments:
         raw_attachment_id, updated_meta, updated_path = attachment_content_id(
-            normalized_convo.provider_name,
+            normalized_convo.source_name,
             attachment,
             archive_root=archive_root,
         )
@@ -421,7 +421,7 @@ def materialize_conversation(
 
     return MaterializedConversation(
         conversation_id=conversation_id,
-        provider_name=normalized_convo.provider_name,
+        source_name=normalized_convo.source_name,
         provider_conversation_id=normalized_convo.provider_conversation_id,
         title=normalized_convo.title,
         created_at=canonical_timestamp_text(normalized_convo.created_at),

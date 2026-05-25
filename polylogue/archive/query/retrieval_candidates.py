@@ -181,18 +181,18 @@ async def fetch_search_results(
         return True, results
 
     query = " ".join(plan.fts_terms)
-    provider_names = list(provider_values(plan.providers)) or None
+    source_names = list(provider_values(plan.providers)) or None
     if summaries:
         summary_results = await repository.search_summaries(
             query,
             limit=search_limit(plan),
-            providers=provider_names,
+            providers=source_names,
         )
         return True, summary_results
     conversation_results = await repository.search(
         query,
         limit=search_limit(plan),
-        providers=provider_names,
+        providers=source_names,
     )
     return True, conversation_results
 

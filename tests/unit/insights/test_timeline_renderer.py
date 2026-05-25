@@ -65,7 +65,7 @@ def _work_event(
     return SessionWorkEventInsight(
         event_id=event_id,
         conversation_id=conversation_id,
-        provider_name="claude-code",
+        source_name="claude-code",
         event_index=event_index,
         provenance=_provenance(),
         inference_provenance=_inference_provenance(),
@@ -101,7 +101,7 @@ def _phase(
     return SessionPhaseInsight(
         phase_id=phase_id,
         conversation_id=conversation_id,
-        provider_name="claude-code",
+        source_name="claude-code",
         phase_index=phase_index,
         provenance=_provenance(),
         inference_provenance=_inference_provenance(),

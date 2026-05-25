@@ -148,7 +148,7 @@ class TestRawFailureInfoProducesTypedSamples:
                 """
                 CREATE TABLE raw_conversations (
                     raw_id TEXT PRIMARY KEY,
-                    provider_name TEXT NOT NULL,
+                    source_name TEXT NOT NULL,
                     payload_provider TEXT,
                     source_name TEXT,
                     source_path TEXT NOT NULL,
@@ -167,7 +167,7 @@ class TestRawFailureInfoProducesTypedSamples:
                     detection_warnings TEXT
                 );
                 INSERT INTO raw_conversations (
-                    raw_id, provider_name, source_path, blob_size, acquired_at,
+                    raw_id, source_name, source_path, blob_size, acquired_at,
                     parse_error, validation_status
                 ) VALUES (
                     'raw-1', 'claude-code', '/data/session.jsonl', 1024,
@@ -198,7 +198,7 @@ class TestRawFailureInfoProducesTypedSamples:
                 """
                 CREATE TABLE raw_conversations (
                     raw_id TEXT PRIMARY KEY,
-                    provider_name TEXT NOT NULL,
+                    source_name TEXT NOT NULL,
                     payload_provider TEXT,
                     source_name TEXT,
                     source_path TEXT NOT NULL,
@@ -217,7 +217,7 @@ class TestRawFailureInfoProducesTypedSamples:
                     detection_warnings TEXT
                 );
                 INSERT INTO raw_conversations (
-                    raw_id, provider_name, source_path, blob_size, acquired_at,
+                    raw_id, source_name, source_path, blob_size, acquired_at,
                     parse_error, validation_status, validation_error
                 ) VALUES (
                     'raw-2', 'chatgpt', '/data/conv.json', 512,
@@ -244,7 +244,7 @@ class TestRawFailureInfoProducesTypedSamples:
                 """
                 CREATE TABLE raw_conversations (
                     raw_id TEXT PRIMARY KEY,
-                    provider_name TEXT NOT NULL,
+                    source_name TEXT NOT NULL,
                     payload_provider TEXT,
                     source_name TEXT,
                     source_path TEXT NOT NULL,
@@ -263,7 +263,7 @@ class TestRawFailureInfoProducesTypedSamples:
                     detection_warnings TEXT
                 );
                 INSERT INTO raw_conversations (
-                    raw_id, provider_name, source_path, blob_size, acquired_at,
+                    raw_id, source_name, source_path, blob_size, acquired_at,
                     parse_error, validation_status
                 ) VALUES (
                     'raw-3', 'unknown', '/data/bad.json', 256,
@@ -290,7 +290,7 @@ class TestRawFailureInfoProducesTypedSamples:
                 """
                 CREATE TABLE raw_conversations (
                     raw_id TEXT PRIMARY KEY,
-                    provider_name TEXT NOT NULL,
+                    source_name TEXT NOT NULL,
                     payload_provider TEXT,
                     source_name TEXT,
                     source_path TEXT NOT NULL,

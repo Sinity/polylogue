@@ -40,7 +40,7 @@ def synthetic_payload(
     draw: st.DrawFn,
     providers: tuple[str, ...] = PROVIDERS_WITH_SYNTHETIC,
 ) -> SyntheticPayload:
-    """Generate a (provider_name, raw_bytes, unique_id) tuple from synthetic corpus."""
+    """Generate a (source_name, raw_bytes, unique_id) tuple from synthetic corpus."""
     provider = draw(st.sampled_from(providers))
     seed = draw(st.integers(min_value=0, max_value=2**16))
     corpus = _get_corpus(provider)
@@ -62,8 +62,8 @@ class TestMessageCountPreservation:
         deadline=None,
     )
     def test_message_count_preserved(self: object, data: SyntheticPayload, workspace_env: dict[str, Path]) -> None:
-        provider_name, raw_bytes, unique_id = data
-        roundtrip = parse_and_transform_payload(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
+        source_name, raw_bytes, unique_id = data
+        roundtrip = parse_and_transform_payload(source_name, raw_bytes, workspace_env["archive_root"], unique_id)
 
         assert len(roundtrip.transform.bundle.messages) == len(roundtrip.parsed.messages), (
             f"Transform changed message count: {len(roundtrip.parsed.messages)} → "
@@ -79,13 +79,13 @@ class TestMessageCountPreservation:
     def test_message_count_survives_save_hydrate(
         self: object, data: SyntheticPayload, workspace_env: dict[str, Path]
     ) -> None:
-        provider_name, raw_bytes, unique_id = data
+        source_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
         from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(db_path) as conn:
-            roundtrip = parse_and_transform_payload(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
+            roundtrip = parse_and_transform_payload(source_name, raw_bytes, workspace_env["archive_root"], unique_id)
             hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
 
             assert len(list(hydrated.messages)) == len(roundtrip.parsed.messages), (
@@ -106,13 +106,13 @@ class TestRolePreservation:
         deadline=None,
     )
     def test_role_multiset_preserved(self: object, data: SyntheticPayload, workspace_env: dict[str, Path]) -> None:
-        provider_name, raw_bytes, unique_id = data
+        source_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
         from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(db_path) as conn:
-            roundtrip = parse_and_transform_payload(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
+            roundtrip = parse_and_transform_payload(source_name, raw_bytes, workspace_env["archive_root"], unique_id)
             hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
 
             parsed_roles = Counter(str(m.role) for m in roundtrip.parsed.messages)
@@ -133,13 +133,13 @@ class TestTitleStability:
         deadline=None,
     )
     def test_title_preserved(self: object, data: SyntheticPayload, workspace_env: dict[str, Path]) -> None:
-        provider_name, raw_bytes, unique_id = data
+        source_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
         from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(db_path) as conn:
-            roundtrip = parse_and_transform_payload(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
+            roundtrip = parse_and_transform_payload(source_name, raw_bytes, workspace_env["archive_root"], unique_id)
             hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
 
             assert hydrated.title == roundtrip.parsed.title, (
@@ -160,9 +160,9 @@ class TestContentHashDeterminism:
         deadline=None,
     )
     def test_same_payload_same_hash(self: object, data: SyntheticPayload, tmp_path: Path) -> None:
-        provider_name, raw_bytes, unique_id = data
-        result1 = parse_and_transform_payload(provider_name, raw_bytes, tmp_path, unique_id).transform
-        result2 = parse_and_transform_payload(provider_name, raw_bytes, tmp_path, unique_id).transform
+        source_name, raw_bytes, unique_id = data
+        result1 = parse_and_transform_payload(source_name, raw_bytes, tmp_path, unique_id).transform
+        result2 = parse_and_transform_payload(source_name, raw_bytes, tmp_path, unique_id).transform
 
         assert result1.content_hash == result2.content_hash, "Same payload produced different content hashes"
 
@@ -180,7 +180,7 @@ class TestIdempotentReimport:
         deadline=None,
     )
     def test_second_import_is_noop(self: object, data: SyntheticPayload, workspace_env: dict[str, Path]) -> None:
-        provider_name, raw_bytes, unique_id = data
+        source_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
         from polylogue.storage.sqlite.connection import open_connection
@@ -188,7 +188,7 @@ class TestIdempotentReimport:
 
         with open_connection(db_path) as conn:
             result = parse_and_transform_payload(
-                provider_name, raw_bytes, workspace_env["archive_root"], unique_id
+                source_name, raw_bytes, workspace_env["archive_root"], unique_id
             ).transform
             bundle = result.bundle
 
@@ -223,17 +223,17 @@ class TestProviderIdentity:
         deadline=None,
     )
     def test_provider_preserved(self: object, data: SyntheticPayload, workspace_env: dict[str, Path]) -> None:
-        provider_name, raw_bytes, unique_id = data
+        source_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
         from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(db_path) as conn:
-            roundtrip = parse_and_transform_payload(provider_name, raw_bytes, workspace_env["archive_root"], unique_id)
+            roundtrip = parse_and_transform_payload(source_name, raw_bytes, workspace_env["archive_root"], unique_id)
             hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
 
-            assert str(hydrated.provider) == str(roundtrip.parsed.provider_name), (
-                f"Provider changed: {roundtrip.parsed.provider_name!r} → {hydrated.provider!r}"
+            assert str(hydrated.provider) == str(roundtrip.parsed.source_name), (
+                f"Provider changed: {roundtrip.parsed.source_name!r} → {hydrated.provider!r}"
             )
 
 
@@ -250,9 +250,9 @@ class TestConversationIdDeterminism:
         deadline=None,
     )
     def test_same_payload_same_cid(self: object, data: SyntheticPayload, tmp_path: Path) -> None:
-        provider_name, raw_bytes, unique_id = data
-        result1 = parse_and_transform_payload(provider_name, raw_bytes, tmp_path, unique_id).transform
-        result2 = parse_and_transform_payload(provider_name, raw_bytes, tmp_path, unique_id).transform
+        source_name, raw_bytes, unique_id = data
+        result1 = parse_and_transform_payload(source_name, raw_bytes, tmp_path, unique_id).transform
+        result2 = parse_and_transform_payload(source_name, raw_bytes, tmp_path, unique_id).transform
 
         assert result1.candidate_cid == result2.candidate_cid, "Same payload produced different conversation IDs"
 
@@ -262,10 +262,10 @@ class TestConversationIdDeterminism:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("provider_name", PROVIDERS_WITH_SYNTHETIC)
-def test_provider_completes_full_roundtrip(provider_name: str, workspace_env: dict[str, Path]) -> None:
+@pytest.mark.parametrize("source_name", PROVIDERS_WITH_SYNTHETIC)
+def test_provider_completes_full_roundtrip(source_name: str, workspace_env: dict[str, Path]) -> None:
     """Each provider can complete generate → parse → transform → save → hydrate."""
-    corpus = _get_corpus(provider_name)
+    corpus = _get_corpus(source_name)
     raw_items = corpus.generate(count=1, seed=42)
     raw_bytes = raw_items[0]
 
@@ -275,7 +275,7 @@ def test_provider_completes_full_roundtrip(provider_name: str, workspace_env: di
 
     with open_connection(db_path) as conn:
         roundtrip = parse_and_transform_payload(
-            provider_name, raw_bytes, workspace_env["archive_root"], f"{provider_name}-42"
+            source_name, raw_bytes, workspace_env["archive_root"], f"{source_name}-42"
         )
         hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
 

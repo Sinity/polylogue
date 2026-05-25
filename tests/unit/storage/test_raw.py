@@ -36,7 +36,7 @@ class TestRawConversationStorage:
         """Saving a new raw conversation returns True."""
         record = make_raw_conversation(
             raw_id="abc123",
-            provider_name="test-provider",
+            source_name="test-provider",
             source_path="/tmp/test.json",
             source_index=0,
             blob_size=len(b'{"test": "data"}'),
@@ -52,7 +52,7 @@ class TestRawConversationStorage:
         """Saving a duplicate raw_id returns False (INSERT OR IGNORE)."""
         record = make_raw_conversation(
             raw_id="abc123",
-            provider_name="test-provider",
+            source_name="test-provider",
             source_path="/tmp/test.json",
             source_index=0,
             blob_size=len(b'{"test": "data"}'),
@@ -69,7 +69,7 @@ class TestRawConversationStorage:
         """Retrieve a saved raw conversation by ID."""
         original = make_raw_conversation(
             raw_id="xyz789",
-            provider_name="chatgpt",
+            source_name="chatgpt",
             source_path="/path/to/export.json",
             source_index=5,
             blob_size=len(b'{"id": "conv-123", "messages": []}'),
@@ -82,7 +82,7 @@ class TestRawConversationStorage:
 
         assert retrieved is not None
         assert retrieved.raw_id == original.raw_id
-        assert retrieved.provider_name == original.provider_name
+        assert retrieved.source_name == original.source_name
         assert retrieved.source_path == original.source_path
         assert retrieved.source_index == original.source_index
         assert retrieved.blob_size == original.blob_size
@@ -100,7 +100,7 @@ class TestRawConversationStorage:
         records = [
             make_raw_conversation(
                 raw_id=f"raw-{i}",
-                provider_name="test" if i < 2 else "other",
+                source_name="test" if i < 2 else "other",
                 source_path=f"/path/{i}.json",
                 blob_size=len(b"{}"),
                 acquired_at="2026-02-02T12:00:00+00:00",
@@ -119,7 +119,7 @@ class TestRawConversationStorage:
         records = [
             make_raw_conversation(
                 raw_id=f"raw-{i}",
-                provider_name="chatgpt" if i % 2 == 0 else "claude-ai",
+                source_name="chatgpt" if i % 2 == 0 else "claude-ai",
                 source_path=f"/path/{i}.json",
                 blob_size=len(b"{}"),
                 acquired_at="2026-02-02T12:00:00+00:00",
@@ -136,12 +136,12 @@ class TestRawConversationStorage:
         claude_records = [r async for r in backend.iter_raw_conversations(provider="claude-ai")]
         assert len(claude_records) == 3
 
-    async def test_iter_raw_ids_by_provider_name(self, backend: SQLiteBackend) -> None:
+    async def test_iter_raw_ids_by_source_name(self, backend: SQLiteBackend) -> None:
         """ID iteration can filter by exact provider name without hydrating raw blobs."""
         records = [
             make_raw_conversation(
                 raw_id=f"raw-id-{i}",
-                provider_name="chatgpt" if i % 2 == 0 else "claude-ai",
+                source_name="chatgpt" if i % 2 == 0 else "claude-ai",
                 source_path=f"/path/{i}.json",
                 blob_size=len(b"{}"),
                 acquired_at="2026-02-02T12:00:00+00:00",
@@ -152,19 +152,19 @@ class TestRawConversationStorage:
         for record in records:
             await backend.save_raw_conversation(record)
 
-        chatgpt_ids = [raw_id async for raw_id in backend.iter_raw_ids(provider_name="chatgpt")]
-        claude_ids = [raw_id async for raw_id in backend.iter_raw_ids(provider_name="claude-ai")]
+        chatgpt_ids = [raw_id async for raw_id in backend.iter_raw_ids(source_name="chatgpt")]
+        claude_ids = [raw_id async for raw_id in backend.iter_raw_ids(source_name="claude-ai")]
 
         assert len(chatgpt_ids) == 3
         assert len(claude_ids) == 3
         assert all(raw_id.startswith("raw-id-") for raw_id in chatgpt_ids + claude_ids)
 
-    async def test_iter_raw_headers_by_provider_name(self, backend: SQLiteBackend) -> None:
+    async def test_iter_raw_headers_by_source_name(self, backend: SQLiteBackend) -> None:
         """Header iteration exposes blob sizes without hydrating full raw records."""
         records = [
             make_raw_conversation(
                 raw_id=f"raw-header-{i}",
-                provider_name="chatgpt" if i % 2 == 0 else "claude-ai",
+                source_name="chatgpt" if i % 2 == 0 else "claude-ai",
                 source_path=f"/path/{i}.json",
                 blob_size=(i + 1) * 10,
                 acquired_at=f"2026-02-02T12:00:0{i}+00:00",
@@ -175,7 +175,7 @@ class TestRawConversationStorage:
         for record in records:
             await backend.save_raw_conversation(record)
 
-        chatgpt_headers = [header async for header in backend.iter_raw_headers(provider_name="chatgpt")]
+        chatgpt_headers = [header async for header in backend.iter_raw_headers(source_name="chatgpt")]
 
         assert chatgpt_headers == [("raw-header-2", 30), ("raw-header-0", 10)]
 
@@ -185,7 +185,7 @@ class TestRawConversationStorage:
             await backend.save_raw_conversation(
                 make_raw_conversation(
                     raw_id=raw_id,
-                    provider_name="chatgpt",
+                    source_name="chatgpt",
                     source_path=f"/path/{raw_id}.json",
                     blob_size=blob_size,
                     acquired_at="2026-02-02T12:00:00+00:00",
@@ -201,7 +201,6 @@ class TestRawConversationStorage:
         await backend.save_raw_conversation(
             make_raw_conversation(
                 raw_id="raw-generic",
-                provider_name="unknown",
                 payload_provider="chatgpt",
                 source_name="inbox",
                 source_path="/path/raw.json",
@@ -211,7 +210,7 @@ class TestRawConversationStorage:
         )
 
         matched_records = [record async for record in backend.iter_raw_conversations(provider="chatgpt")]
-        matched_ids = [raw_id async for raw_id in backend.iter_raw_ids(provider_name="chatgpt")]
+        matched_ids = [raw_id async for raw_id in backend.iter_raw_ids(source_name="chatgpt")]
         matched_count = await backend.get_raw_conversation_count(provider="chatgpt")
 
         assert [record.raw_id for record in matched_records] == ["raw-generic"]
@@ -224,7 +223,7 @@ class TestRawConversationStorage:
             await backend.save_raw_conversation(
                 make_raw_conversation(
                     raw_id=f"raw-{i}",
-                    provider_name="test",
+                    source_name="test",
                     source_path=f"/path/{i}.json",
                     blob_size=len(b"{}"),
                     acquired_at="2026-02-02T12:00:00+00:00",
@@ -243,7 +242,7 @@ class TestRawConversationStorage:
         # First store the raw conversation
         raw_record = make_raw_conversation(
             raw_id="raw-abc123",
-            provider_name="test",
+            source_name="test",
             source_path="/test.json",
             blob_size=len(b'{"id": "test-conv"}'),
             acquired_at="2026-02-02T12:00:00+00:00",
@@ -253,7 +252,7 @@ class TestRawConversationStorage:
         # Then store parsed conversation with link to raw
         conv = make_conversation(
             conversation_id="conv-link-test",
-            provider_name="test",
+            source_name="test",
             provider_conversation_id="test-123",
             content_hash="hash123",
             raw_id="raw-abc123",  # Link to raw source
@@ -275,7 +274,7 @@ class TestRawConversationStorage:
         """Conversations can be saved without raw_id (e.g., direct file ingest)."""
         conv = make_conversation(
             conversation_id="conv-no-raw",
-            provider_name="test",
+            source_name="test",
             provider_conversation_id="test-456",
             content_hash="hash456",
             # raw_id is None (default)
@@ -303,7 +302,7 @@ class TestRawConversationStorage:
             await backend.save_raw_conversation(
                 make_raw_conversation(
                     raw_id=f"count-{i}",
-                    provider_name="chatgpt" if i < 3 else "claude-ai",
+                    source_name="chatgpt" if i < 3 else "claude-ai",
                     source_path=f"/path/{i}.json",
                     blob_size=len(b"{}"),
                     acquired_at="2026-02-02T12:00:00+00:00",
@@ -324,7 +323,7 @@ class TestRawConversationStorage:
         for i in range(7):
             record = make_raw_conversation(
                 raw_id=f"raw-all-{i}",
-                provider_name="test",
+                source_name="test",
                 source_path=f"/tmp/test-{i}.json",
                 source_index=i,
                 blob_size=len(f'{{"idx": {i}}}'.encode()),
@@ -349,32 +348,32 @@ class TestRawConversationRecordValidation:
         """Valid record passes validation."""
         record = make_raw_conversation(
             raw_id="valid-id",
-            provider_name="chatgpt",
+            source_name="chatgpt",
             source_path="/path/to/file.json",
             blob_size=len(b'{"test": true}'),
             acquired_at="2026-02-02T12:00:00Z",
         )
 
         assert record.raw_id == "valid-id"
-        assert record.provider_name == "chatgpt"
+        assert record.source_name == "chatgpt"
 
     def test_empty_raw_id_fails(self) -> None:
         """Empty raw_id fails validation."""
         with pytest.raises(ValueError, match="cannot be empty"):
             make_raw_conversation(
                 raw_id="",
-                provider_name="test",
+                source_name="test",
                 source_path="/test.json",
                 blob_size=len(b"{}"),
                 acquired_at="2026-02-02T12:00:00Z",
             )
 
-    def test_empty_provider_name_fails(self) -> None:
-        """Empty provider_name fails validation."""
+    def test_empty_source_name_fails(self) -> None:
+        """Empty source_name fails validation."""
         with pytest.raises(ValueError, match="cannot be empty"):
             make_raw_conversation(
                 raw_id="test-id",
-                provider_name="",
+                source_name="",
                 source_path="/test.json",
                 blob_size=len(b"{}"),
                 acquired_at="2026-02-02T12:00:00Z",
@@ -385,7 +384,7 @@ class TestRawConversationRecordValidation:
         # blob_size is just an int, no bounds checking
         record = make_raw_conversation(
             raw_id="test-id",
-            provider_name="test",
+            source_name="test",
             source_path="/test.json",
             blob_size=1024,
             acquired_at="2026-02-02T12:00:00Z",

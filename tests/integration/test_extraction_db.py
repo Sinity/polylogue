@@ -54,7 +54,7 @@ def get_provider_message_count(conn: sqlite3.Connection, provider: str) -> int:
         SELECT COUNT(*)
         FROM messages m
         JOIN conversations c ON m.conversation_id = c.conversation_id
-        WHERE c.provider_name = ?
+        WHERE c.source_name = ?
         """,
         (provider,),
     )
@@ -258,11 +258,11 @@ class TestDataIntegrity:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT provider_name,
+            SELECT source_name,
                    COUNT(*) as total,
                    SUM(CASE WHEN blob_size IS NULL OR blob_size = 0 THEN 1 ELSE 0 END) as missing_size
             FROM raw_conversations
-            GROUP BY provider_name
+            GROUP BY source_name
             """
         )
 
@@ -282,12 +282,12 @@ class TestDataIntegrity:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT c.provider_name,
+            SELECT c.source_name,
                    COUNT(DISTINCT c.conversation_id) as convs,
                    COUNT(m.message_id) as msgs
             FROM conversations c
             LEFT JOIN messages m ON c.conversation_id = m.conversation_id
-            GROUP BY c.provider_name
+            GROUP BY c.source_name
             ORDER BY msgs DESC
             """
         )
@@ -362,7 +362,7 @@ def iter_raw_conversations(
     query = """
         SELECT raw_id, source_path
         FROM raw_conversations
-        WHERE provider_name = ?
+        WHERE source_name = ?
     """
     if limit:
         query += f" LIMIT {limit}"
@@ -379,7 +379,7 @@ def iter_raw_conversations(
 def get_raw_conversation_count(conn: sqlite3.Connection, provider: str) -> int:
     """Get total raw conversation count for a provider."""
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM raw_conversations WHERE provider_name = ?", (provider,))
+    cur.execute("SELECT COUNT(*) FROM raw_conversations WHERE source_name = ?", (provider,))
     row = cur.fetchone()
     assert row is not None
     return int(row[0])
@@ -464,7 +464,7 @@ class TestRawConversationParsing:
                     continue
 
                 # Validate basic structure
-                assert result.provider_name in [provider, "chatgpt", "claude-ai", "codex", "claude-code"]
+                assert result.source_name in [provider, "chatgpt", "claude-ai", "codex", "claude-code"]
                 assert result.provider_conversation_id is not None
                 assert isinstance(result.messages, list)
 
@@ -553,9 +553,9 @@ class TestRawConversationCoverage:
         conn = sqlite3.connect(seeded_db)
         cur = conn.cursor()
         cur.execute("""
-            SELECT provider_name, COUNT(*) as count
+            SELECT source_name, COUNT(*) as count
             FROM raw_conversations
-            GROUP BY provider_name
+            GROUP BY source_name
             ORDER BY count DESC
         """)
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 RAW_ARCHIVE_DDL = """
         CREATE TABLE IF NOT EXISTS raw_conversations (
             raw_id TEXT PRIMARY KEY,
-            provider_name TEXT NOT NULL,
             payload_provider TEXT,
             source_name TEXT,
             source_path TEXT NOT NULL,
@@ -24,8 +23,8 @@ RAW_ARCHIVE_DDL = """
             detection_warnings TEXT
         );
 
-        CREATE INDEX IF NOT EXISTS idx_raw_conv_provider
-        ON raw_conversations(provider_name);
+        CREATE INDEX IF NOT EXISTS idx_raw_conv_source
+        ON raw_conversations(source_name);
 
         CREATE INDEX IF NOT EXISTS idx_raw_conv_payload_provider
         ON raw_conversations(payload_provider)
@@ -48,7 +47,6 @@ RAW_ARCHIVE_DDL = """
 ARCHIVE_STORAGE_DDL = """
         CREATE TABLE IF NOT EXISTS conversations (
             conversation_id TEXT PRIMARY KEY,
-            provider_name TEXT NOT NULL,
             provider_conversation_id TEXT NOT NULL,
             title TEXT,
             created_at TEXT,
@@ -67,11 +65,11 @@ ARCHIVE_STORAGE_DDL = """
             raw_id TEXT REFERENCES raw_conversations(raw_id) ON DELETE SET NULL
         );
 
-        CREATE INDEX IF NOT EXISTS idx_conversations_provider
-        ON conversations(provider_name, provider_conversation_id);
-
         CREATE INDEX IF NOT EXISTS idx_conversations_source_name
         ON conversations(source_name);
+
+        CREATE INDEX IF NOT EXISTS idx_conversations_source_provider_id
+        ON conversations(source_name, provider_conversation_id);
 
         CREATE INDEX IF NOT EXISTS idx_conversations_parent
         ON conversations(parent_conversation_id) WHERE parent_conversation_id IS NOT NULL;
@@ -97,7 +95,7 @@ ARCHIVE_STORAGE_DDL = """
             version INTEGER NOT NULL,
             parent_message_id TEXT REFERENCES messages(message_id) ON DELETE NO ACTION,
             branch_index INTEGER NOT NULL DEFAULT 0,
-            provider_name TEXT NOT NULL DEFAULT '',
+            source_name TEXT NOT NULL DEFAULT '',
             word_count INTEGER NOT NULL DEFAULT 0,
             has_tool_use INTEGER NOT NULL DEFAULT 0,
             has_thinking INTEGER NOT NULL DEFAULT 0,
@@ -124,11 +122,11 @@ ARCHIVE_STORAGE_DDL = """
         CREATE INDEX IF NOT EXISTS idx_messages_conversation_message_type
         ON messages(conversation_id, message_type);
 
-        CREATE INDEX IF NOT EXISTS idx_messages_provider_role
-        ON messages(provider_name, role);
+        CREATE INDEX IF NOT EXISTS idx_messages_source_role
+        ON messages(source_name, role);
 
-        CREATE INDEX IF NOT EXISTS idx_messages_provider_stats
-        ON messages(provider_name, role, has_tool_use, has_thinking, word_count, conversation_id);
+        CREATE INDEX IF NOT EXISTS idx_messages_source_stats
+        ON messages(source_name, role, has_tool_use, has_thinking, word_count, conversation_id);
 
         CREATE TABLE IF NOT EXISTS content_blocks (
             block_id TEXT PRIMARY KEY,
@@ -164,7 +162,7 @@ ARCHIVE_STORAGE_DDL = """
         CREATE TABLE IF NOT EXISTS conversation_stats (
             conversation_id TEXT PRIMARY KEY
                 REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-            provider_name   TEXT NOT NULL DEFAULT '',
+            source_name     TEXT NOT NULL DEFAULT '',
             message_count   INTEGER NOT NULL DEFAULT 0,
             word_count      INTEGER NOT NULL DEFAULT 0,
             tool_use_count  INTEGER NOT NULL DEFAULT 0,
@@ -172,8 +170,8 @@ ARCHIVE_STORAGE_DDL = """
             paste_count     INTEGER NOT NULL DEFAULT 0
         );
 
-        CREATE INDEX IF NOT EXISTS idx_conv_stats_provider
-        ON conversation_stats(provider_name);
+        CREATE INDEX IF NOT EXISTS idx_conv_stats_source
+        ON conversation_stats(source_name);
 
         CREATE INDEX IF NOT EXISTS idx_conv_stats_messages
         ON conversation_stats(message_count);

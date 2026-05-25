@@ -21,7 +21,7 @@ def _row_to_session_latency_profile_record(row: sqlite3.Row) -> SessionLatencyPr
         input_high_water_mark=_row_text(row, "input_high_water_mark"),
         input_high_water_mark_source=_row_text(row, "input_high_water_mark_source"),
         input_row_count=int(_row_int(row, "input_row_count", 0) or 0),
-        provider_name=row["provider_name"],
+        source_name=row["source_name"],
         title=_row_text(row, "title"),
         first_message_at=_row_text(row, "first_message_at"),
         last_message_at=_row_text(row, "last_message_at"),
@@ -86,7 +86,7 @@ async def list_session_latency_profiles(
     where: list[str] = []
     params: list[object] = []
     if provider:
-        where.append("provider_name = ?")
+        where.append("source_name = ?")
         params.append(provider)
     if since:
         where.append("COALESCE(last_message_at, source_updated_at, first_message_at) >= ?")

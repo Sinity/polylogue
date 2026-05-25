@@ -36,7 +36,7 @@ SchemaSample: TypeAlias = JSONDocument
 @dataclass(frozen=True)
 class _RawConversationRow:
     source_path: str | None
-    provider_name: str | None
+    source_name: str | None
     payload_provider: str | None
     raw_id: str
     file_mtime: str | None
@@ -47,13 +47,13 @@ class _RawConversationRow:
         return self.file_mtime or self.acquired_at
 
 
-def _sample_provider_where_clause(provider_name: str | Provider) -> tuple[str, tuple[str, ...]]:
-    provider_token = str(Provider.from_string(provider_name))
+def _sample_provider_where_clause(source_name: str | Provider) -> tuple[str, tuple[str, ...]]:
+    provider_token = str(Provider.from_string(source_name))
     runtime_placeholders = ",".join("?" for _ in CORE_RUNTIME_PROVIDERS)
     clause = (
         "payload_provider = ? "
-        "OR (payload_provider IS NULL AND provider_name = ?) "
-        f"OR (payload_provider IS NULL AND provider_name NOT IN ({runtime_placeholders}))"
+        "OR (payload_provider IS NULL AND source_name = ?) "
+        f"OR (payload_provider IS NULL AND source_name NOT IN ({runtime_placeholders}))"
     )
     params: tuple[str, ...] = (
         provider_token,
@@ -66,7 +66,7 @@ def _sample_provider_where_clause(provider_name: str | Provider) -> tuple[str, t
 def _coerce_schema_row(row: sqlite3.Row) -> _RawConversationRow:
     return _RawConversationRow(
         source_path=row[0],
-        provider_name=row[1],
+        source_name=row[1],
         payload_provider=row[2],
         raw_id=row[3],
         file_mtime=row[4],
@@ -90,14 +90,14 @@ def _record_sample_limit(
 def _iter_record_stream_units(
     *,
     row: _RawConversationRow,
-    provider_name: Provider,
+    source_name: Provider,
     raw_content: Path,
     config: ProviderConfig,
     max_samples: int | None,
     full_corpus: bool,
 ) -> Iterator[SchemaUnit]:
-    runtime_provider = canonical_runtime_provider(row.payload_provider or row.provider_name)
-    if canonical_schema_provider(runtime_provider) != str(provider_name):
+    runtime_provider = canonical_runtime_provider(row.payload_provider or row.source_name)
+    if canonical_schema_provider(runtime_provider) != str(source_name):
         return
 
     try:
@@ -119,7 +119,7 @@ def _iter_record_stream_units(
 
     yield from extract_schema_units_from_payload(
         samples,
-        provider_name=provider_name,
+        source_name=source_name,
         source_path=row.source_path,
         raw_id=row.raw_id,
         observed_at=row.observed_at,
@@ -131,7 +131,7 @@ def _iter_record_stream_units(
 def _build_raw_payload_envelope_for_row(
     row: _RawConversationRow,
     *,
-    provider_name: Provider,
+    source_name: Provider,
     raw_content: Path,
     config: ProviderConfig,
 ) -> RawPayloadEnvelope | None:
@@ -141,7 +141,7 @@ def _build_raw_payload_envelope_for_row(
         return sampling_root.build_raw_payload_envelope(
             raw_content,
             source_path=row.source_path,
-            fallback_provider=row.provider_name or str(provider_name),
+            fallback_provider=row.source_name or str(source_name),
             payload_provider=row.payload_provider,
             jsonl_dict_only=config.sample_granularity == "record",
         )
@@ -151,7 +151,7 @@ def _build_raw_payload_envelope_for_row(
 
 
 def _iter_schema_units_from_db(
-    provider_name: Provider,
+    source_name: Provider,
     *,
     db_path: Path,
     config: ProviderConfig,
@@ -159,15 +159,15 @@ def _iter_schema_units_from_db(
     full_corpus: bool = False,
 ) -> Iterator[SchemaUnit]:
     """Yield clusterable schema units from raw_conversations."""
-    provider_name = Provider.from_string(provider_name)
+    source_name = Provider.from_string(source_name)
     blob_store = get_blob_store()
     conn = open_connection(db_path)
     try:
-        query_provider = config.db_provider_name or provider_name
+        query_provider = config.db_source_name or source_name
         where_clause, where_params = _sample_provider_where_clause(query_provider)
         cursor = conn.execute(
             f"""
-            SELECT source_path, provider_name, payload_provider, raw_id, file_mtime, acquired_at
+            SELECT source_path, source_name, payload_provider, raw_id, file_mtime, acquired_at
             FROM raw_conversations
             WHERE {where_clause}
             """,
@@ -185,7 +185,7 @@ def _iter_schema_units_from_db(
                     yielded_record_units = False
                     for unit in _iter_record_stream_units(
                         row=row,
-                        provider_name=provider_name,
+                        source_name=source_name,
                         raw_content=raw_content,
                         config=config,
                         max_samples=max_samples,
@@ -198,17 +198,17 @@ def _iter_schema_units_from_db(
 
                 envelope = _build_raw_payload_envelope_for_row(
                     row,
-                    provider_name=provider_name,
+                    source_name=source_name,
                     raw_content=raw_content,
                     config=config,
                 )
                 if envelope is None:
                     continue
-                if canonical_schema_provider(envelope.provider) != str(provider_name):
+                if canonical_schema_provider(envelope.provider) != str(source_name):
                     continue
                 yield from extract_schema_units_from_payload(
                     envelope.payload,
-                    provider_name=provider_name,
+                    source_name=source_name,
                     source_path=row.source_path,
                     raw_id=row.raw_id,
                     observed_at=row.observed_at,
@@ -221,7 +221,7 @@ def _iter_schema_units_from_db(
 
 @overload
 def _iter_samples_from_db(
-    provider_name: Provider,
+    source_name: Provider,
     *,
     db_path: Path,
     config: ProviderConfig,
@@ -231,7 +231,7 @@ def _iter_samples_from_db(
 
 @overload
 def _iter_samples_from_db(
-    provider_name: Provider,
+    source_name: Provider,
     *,
     db_path: Path,
     config: ProviderConfig,
@@ -240,15 +240,15 @@ def _iter_samples_from_db(
 
 
 def _iter_samples_from_db(
-    provider_name: Provider,
+    source_name: Provider,
     *,
     db_path: Path,
     config: ProviderConfig,
     with_conv_ids: bool = False,
 ) -> Iterator[SchemaSample | tuple[SchemaSample, str | None]]:
     """Yield individual sample dicts from the database."""
-    provider_name = Provider.from_string(provider_name)
-    for unit in _iter_schema_units_from_db(provider_name, db_path=db_path, config=config):
+    source_name = Provider.from_string(source_name)
+    for unit in _iter_schema_units_from_db(source_name, db_path=db_path, config=config):
         for sample in unit.schema_samples:
             if with_conv_ids:
                 yield sample, unit.conversation_id
@@ -257,20 +257,20 @@ def _iter_samples_from_db(
 
 
 def get_sample_count_from_db(
-    provider_name: str | Provider,
+    source_name: str | Provider,
     db_path: Path | None = None,
 ) -> int:
     """Get total message count for a provider in the database."""
-    provider_name = Provider.from_string(provider_name)
+    source_name = Provider.from_string(source_name)
     if db_path is None:
         db_path = archive_db_path()
     if not db_path.exists():
         return 0
 
-    config = resolve_provider_config(provider_name)
-    provider_tokens = [str(provider_name)]
-    if config.db_provider_name and str(config.db_provider_name) not in provider_tokens:
-        provider_tokens.append(str(config.db_provider_name))
+    config = resolve_provider_config(source_name)
+    provider_tokens = [str(source_name)]
+    if config.db_source_name and str(config.db_source_name) not in provider_tokens:
+        provider_tokens.append(str(config.db_source_name))
 
     conn = open_connection(db_path)
     try:
@@ -280,7 +280,7 @@ def get_sample_count_from_db(
             SELECT COUNT(*)
             FROM messages m
             JOIN conversations c ON m.conversation_id = c.conversation_id
-            WHERE c.provider_name IN ({placeholders})
+            WHERE c.source_name IN ({placeholders})
             """,
             provider_tokens,
         ).fetchone()

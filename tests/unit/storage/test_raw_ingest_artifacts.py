@@ -84,7 +84,6 @@ async def test_collect_backlogs_match_shared_raw_ingest_state(tmp_path: Path) ->
             await backend.save_raw_conversation(
                 RawConversationRecord(
                     raw_id=raw_id,
-                    provider_name="chatgpt",
                     source_name=source_name,
                     source_path=f"/tmp/{raw_id}.json",
                     blob_size=len(b'{"id":"x"}'),

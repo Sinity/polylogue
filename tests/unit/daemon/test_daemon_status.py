@@ -407,11 +407,11 @@ def test_fts_readiness_exact_detects_missing_docsize_row(tmp_path: Path) -> None
     db_path = tmp_path / "polylogue.db"
     with open_connection(db_path) as conn:
         conn.execute(
-            "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) VALUES(?,?,?,1)",
+            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) VALUES(?,?,?,1)",
             ("conv-stale-fts", "codex", "provider-conv"),
         )
         conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
+            "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
             ("msg-stale-fts", "conv-stale-fts", "user", "needle stale index", "codex"),
         )
         conn.commit()

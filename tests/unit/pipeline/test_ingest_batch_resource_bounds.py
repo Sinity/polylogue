@@ -17,7 +17,7 @@ from polylogue.storage.runtime import RawConversationRecord
 def _large_raw_record() -> RawConversationRecord:
     return RawConversationRecord(
         raw_id="raw-large",
-        provider_name="codex",
+        source_name="codex",
         source_path="/tmp/raw-large.jsonl",
         blob_size=150 * 1024 * 1024,
         acquired_at="2026-04-02T00:00:00Z",

@@ -69,7 +69,6 @@ def _seed_db(
                 raw_id = hashlib.sha256(raw_bytes).hexdigest()
                 record = RawConversationRecord(
                     raw_id=raw_id,
-                    provider_name=provider,
                     source_name=provider,
                     source_path=str(file_path),
                     blob_size=len(raw_bytes),

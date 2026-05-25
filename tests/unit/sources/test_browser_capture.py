@@ -62,7 +62,7 @@ def test_browser_capture_parses_session_metadata_and_deduplicates_turns() -> Non
 
     assert len(parsed) == 1
     conversation = parsed[0]
-    assert conversation.provider_name is Provider.CHATGPT
+    assert conversation.source_name is Provider.CHATGPT
     assert conversation.provider_conversation_id == "conv-123"
     assert conversation.title == "Work plan"
     assert [message.provider_message_id for message in conversation.messages] == ["u1", "a1"]
@@ -83,7 +83,7 @@ def test_browser_capture_supports_claude_ai_provider() -> None:
 
     assert detect_provider(payload) is Provider.CLAUDE_AI
     parsed = parse_payload(Provider.CLAUDE_AI, payload, "fallback")
-    assert parsed[0].provider_name is Provider.CLAUDE_AI
+    assert parsed[0].source_name is Provider.CLAUDE_AI
     assert parsed[0].provider_conversation_id == "claude-session"
 
 
@@ -101,11 +101,9 @@ async def test_browser_capture_receiver_artifact_lands_in_archive(
         await polylogue.parse_sources(config.sources)
 
     with open_connection(None) as conn:
-        row = conn.execute(
-            "SELECT provider_name, provider_conversation_id, provider_meta FROM conversations"
-        ).fetchone()
+        row = conn.execute("SELECT source_name, provider_conversation_id, provider_meta FROM conversations").fetchone()
 
     assert row is not None
-    assert row["provider_name"] == "chatgpt"
+    assert row["source_name"] == "chatgpt"
     assert row["provider_conversation_id"] == "conv-123"
     assert "browser_capture" in row["provider_meta"]

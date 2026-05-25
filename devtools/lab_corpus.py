@@ -183,12 +183,12 @@ def _representative_generate(
 
     registry = SchemaRegistry()
 
-    for provider_name in selected:
-        rep_dir = representatives_dir(provider_name) if output_dir is None else output_dir / provider_name
+    for source_name in selected:
+        rep_dir = representatives_dir(source_name) if output_dir is None else output_dir / source_name
         rep_dir.mkdir(parents=True, exist_ok=True)
 
         # Get schema version from registry
-        pkg = registry.get_package(provider_name)
+        pkg = registry.get_package(source_name)
         schema_version = pkg.version if pkg else "unknown"
 
         # Generate schema-conformant fixtures using the existing pipeline.
@@ -199,7 +199,7 @@ def _representative_generate(
         with __import__("tempfile").TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             specs = build_synthetic_corpus_specs(
-                providers=(provider_name,),
+                providers=(source_name,),
                 count=count,
                 seed=seed,
                 style="default",
@@ -209,7 +209,7 @@ def _representative_generate(
             generate_synthetic_fixtures_from_specs(tmp_path, corpus_specs=specs, prefix="sample")
 
             # Move sample files from provider subdirectory to rep_dir
-            provider_subdir = tmp_path / provider_name
+            provider_subdir = tmp_path / source_name
             if provider_subdir.is_dir():
                 for f in sorted(provider_subdir.iterdir()):
                     shutil.move(str(f), str(rep_dir / f.name))
@@ -220,9 +220,9 @@ def _representative_generate(
         sample_count = len([f for f in rep_dir.glob("sample-*.json") if f.name != "corpus-manifest.json"])
 
         manifest = CorpusManifest(
-            provider=provider_name,
+            provider=source_name,
             schema_version=schema_version,
-            generator_command=f"devtools lab-corpus representative-generate -p {provider_name} -n {count} --seed {seed}",
+            generator_command=f"devtools lab-corpus representative-generate -p {source_name} -n {count} --seed {seed}",
             generator_version=POLYLOGUE_VERSION,
             seed=seed,
             source_mode="schema-only",
@@ -230,7 +230,7 @@ def _representative_generate(
             privacy_status="auto-generated-safe",
         )
         manifest.write(rep_dir / "corpus-manifest.json")
-        print(f"  {provider_name}: {manifest.sample_count} samples -> {rep_dir}")
+        print(f"  {source_name}: {manifest.sample_count} samples -> {rep_dir}")
 
     return 0
 
@@ -247,32 +247,32 @@ def _representative_verify(*, providers: tuple[str, ...]) -> int:
 
     errors: list[str] = []
     verified = 0
-    for provider_name in candidates:
-        rep_dir = representatives_dir(provider_name)
+    for source_name in candidates:
+        rep_dir = representatives_dir(source_name)
         manifest_path = rep_dir / "corpus-manifest.json"
         if not manifest_path.exists():
-            print(f"  {provider_name}: SKIP (no manifest)")
+            print(f"  {source_name}: SKIP (no manifest)")
             continue
 
         manifest = CorpusManifest.from_path(manifest_path)
         samples = sorted(rep_dir.glob("sample-*.json"))
         samples = [s for s in samples if s.name != "corpus-manifest.json"]
         if not samples:
-            errors.append(f"{provider_name}: no sample files found")
+            errors.append(f"{source_name}: no sample files found")
             continue
 
         expected_count = manifest.sample_count
         if len(samples) != expected_count:
-            errors.append(f"{provider_name}: {len(samples)} samples != {expected_count} declared")
+            errors.append(f"{source_name}: {len(samples)} samples != {expected_count} declared")
 
         for sample_path in samples:
             try:
                 _json.loads(sample_path.read_text(encoding="utf-8"))
             except _json.JSONDecodeError as exc:
-                errors.append(f"{provider_name}/{sample_path.name}: invalid JSON: {exc}")
+                errors.append(f"{source_name}/{sample_path.name}: invalid JSON: {exc}")
                 continue
             verified += 1
-        print(f"  {provider_name}: {len(samples)} samples ({expected_count} declared), {manifest.privacy_status}")
+        print(f"  {source_name}: {len(samples)} samples ({expected_count} declared), {manifest.privacy_status}")
 
     if errors:
         print(f"\n{len(errors)} verification error(s):", file=sys.stderr)
@@ -284,7 +284,7 @@ def _representative_verify(*, providers: tuple[str, ...]) -> int:
     return 0
 
 
-def _provider_names_match(declared: str, detected: object) -> bool:
+def _source_names_match(declared: str, detected: object) -> bool:
     detected_name = str(detected).lower() if detected else ""
     declared_name = str(declared).lower()
     if detected_name == declared_name:

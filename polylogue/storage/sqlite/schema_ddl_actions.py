@@ -12,7 +12,7 @@ ACTION_EVENT_DDL = """
             timestamp TEXT,
             sort_key REAL,
             sequence_index INTEGER NOT NULL,
-            provider_name TEXT,
+            source_name TEXT,
             action_kind TEXT NOT NULL,
             tool_name TEXT,
             normalized_tool_name TEXT NOT NULL,

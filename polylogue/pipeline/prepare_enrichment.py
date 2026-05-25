@@ -64,7 +64,7 @@ def enrich_bundle_from_db(
     parent_conversation_id: ConversationId | None = None
     topology_edges: list[TopologyEdgeRecord] = []
     if convo.parent_conversation_provider_id:
-        candidate_parent = make_conversation_id(convo.provider_name, convo.parent_conversation_provider_id)
+        candidate_parent = make_conversation_id(convo.source_name, convo.parent_conversation_provider_id)
         parent_known = candidate_parent in cache.known_ids
         if parent_known:
             parent_conversation_id = candidate_parent
@@ -73,7 +73,7 @@ def enrich_bundle_from_db(
             TopologyEdgeRecord(
                 src_conversation_id=cid,
                 dst_provider_native_id=convo.parent_conversation_provider_id,
-                dst_provider_name=convo.provider_name,
+                dst_provider_name=convo.source_name,
                 edge_type=edge_type,
                 resolved_dst_conversation_id=candidate_parent if parent_known else None,
                 status=(TopologyEdgeStatus.RESOLVED if parent_known else TopologyEdgeStatus.UNRESOLVED),
@@ -115,7 +115,6 @@ def enrich_bundle_from_db(
 
     conversation_record = ConversationRecord(
         conversation_id=cid,
-        provider_name=convo.provider_name,
         provider_conversation_id=convo.provider_conversation_id,
         title=convo.title,
         created_at=transform.bundle.conversation.created_at,
@@ -150,7 +149,7 @@ def enrich_bundle_from_db(
                 content_hash=msg_rec.content_hash,
                 parent_message_id=parent_message_id,
                 branch_index=msg_rec.branch_index,
-                provider_name=msg_rec.provider_name,
+                source_name=msg_rec.source_name,
                 word_count=msg_rec.word_count,
                 has_tool_use=msg_rec.has_tool_use,
                 has_thinking=msg_rec.has_thinking,
@@ -212,7 +211,7 @@ def enrich_bundle_from_db(
         ProviderEventRecord(
             event_id=provider_event_id(cid, event.event_index),
             conversation_id=cid,
-            provider_name=event.provider_name,
+            source_name=event.source_name,
             event_index=event.event_index,
             event_type=event.event_type,
             timestamp=event.timestamp,
@@ -264,7 +263,7 @@ async def _build_single_cache(
         cache.known_ids.add(cid)
 
     if convo.parent_conversation_provider_id:
-        candidate_parent = make_conversation_id(convo.provider_name, convo.parent_conversation_provider_id)
+        candidate_parent = make_conversation_id(convo.source_name, convo.parent_conversation_provider_id)
         async with backend.connection() as conn:
             cursor = await conn.execute(
                 "SELECT 1 FROM conversations WHERE conversation_id = ?",
@@ -293,3 +292,4 @@ __all__ = [
     "_build_single_cache",
     "enrich_bundle_from_db",
 ]
+

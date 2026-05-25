@@ -309,7 +309,7 @@ def test_iter_language_server_exports_yields_parsed_conversations(
         "cascade-1",
         "cascade-2",
     ]
-    assert all(c.provider_name is Provider.ANTIGRAVITY for c in conversations)
+    assert all(c.source_name is Provider.ANTIGRAVITY for c in conversations)
     assert conversations[0].messages[0].text == "hello"
     assert conversations[0].messages[1].text == "hi"
     # Externally supplied client must not be started or closed by the driver.

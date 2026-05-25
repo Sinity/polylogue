@@ -150,7 +150,7 @@ def _seed_conversation(conversation_id: str = "c-test") -> None:
         conn.executescript(RECALL_PACKS_DDL)
         conn.executescript(READER_WORKSPACES_DDL)
         conn.execute(
-            "INSERT OR IGNORE INTO conversations(conversation_id, provider_name, "
+            "INSERT OR IGNORE INTO conversations(conversation_id, source_name, "
             "provider_conversation_id, title, content_hash, version) "
             "VALUES(?,?,?,?,?,?)",
             (
@@ -286,28 +286,28 @@ def _make_topology(*, with_cycle: bool = False) -> SessionTopology:
     nodes = (
         TopologyNode(
             conversation_id=_cid("root"),
-            provider_name="claude-code",
+            source_name="claude-code",
             title="Root",
             depth=0,
             is_root=True,
         ),
         TopologyNode(
             conversation_id=_cid("target"),
-            provider_name="claude-code",
+            source_name="claude-code",
             title="Target",
             depth=1,
             is_root=False,
         ),
         TopologyNode(
             conversation_id=_cid("sibling"),
-            provider_name="claude-code",
+            source_name="claude-code",
             title="Sibling",
             depth=1,
             is_root=False,
         ),
         TopologyNode(
             conversation_id=_cid("child"),
-            provider_name="claude-code",
+            source_name="claude-code",
             title="Child",
             depth=2,
             is_root=False,

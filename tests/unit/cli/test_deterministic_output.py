@@ -585,17 +585,17 @@ def test_format_index_status_contract(stage: str, indexed: bool, error: str | No
 
 
 @pytest.mark.parametrize(
-    ("source_name", "provider_name", "expected"),
+    ("source_name", "expected"),
     [
-        ("inbox", "claude-ai", "inbox/claude-ai"),
-        ("chatgpt", "chatgpt", "chatgpt"),
-        (None, "codex", "codex"),
+        ("inbox", "inbox"),
+        ("chatgpt", "chatgpt"),
+        (None, "unknown"),
     ],
 )
-def test_format_source_label_contract(source_name: str | None, provider_name: str, expected: str) -> None:
+def test_format_source_label_contract(source_name: str | None, expected: str) -> None:
     from polylogue.cli.shared.formatting import format_source_label
 
-    assert format_source_label(source_name, provider_name) == expected
+    assert format_source_label(source_name) == expected
 
 
 def test_format_sources_summary_contract() -> None:

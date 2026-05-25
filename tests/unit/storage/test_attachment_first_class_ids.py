@@ -261,7 +261,7 @@ async def test_attachment_identity_lookup_uses_stored_columns(tmp_path: Path) ->
     try:
         bootstrap.executescript(SCHEMA_DDL)
         bootstrap.execute(
-            "INSERT INTO conversations (conversation_id, provider_name, provider_conversation_id, "
+            "INSERT INTO conversations (conversation_id, source_name, provider_conversation_id, "
             "content_hash, version) VALUES (?, ?, ?, ?, ?)",
             ("conv-1", "gemini", "gemini-1", "deadbeef", 1),
         )

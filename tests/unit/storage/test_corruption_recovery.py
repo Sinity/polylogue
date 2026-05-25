@@ -80,7 +80,7 @@ class TestCorruptionRecovery:
                 conn.execute("SELECT count(*) FROM conversations")
                 # Write should fail cleanly
                 with pytest.raises((sqlite3.OperationalError, Exception)):
-                    conn.execute("INSERT INTO conversations (conversation_id, provider_name) VALUES ('test', 'test')")
+                    conn.execute("INSERT INTO conversations (conversation_id, source_name) VALUES ('test', 'test')")
                     conn.commit()
         finally:
             # Restore permissions for cleanup

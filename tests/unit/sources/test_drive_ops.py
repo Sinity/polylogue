@@ -37,7 +37,7 @@ def _attachment(
 
 def _conversation(*attachments: ParsedAttachment) -> ParsedConversation:
     return ParsedConversation(
-        provider_name=Provider.GEMINI,
+        source_name=Provider.GEMINI,
         provider_conversation_id="conv-1",
         messages=[],
         attachments=list(attachments),

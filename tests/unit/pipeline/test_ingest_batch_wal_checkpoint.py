@@ -25,7 +25,6 @@ def test_process_ingest_batch_sync_records_wal_checkpoint_observation(
     source_path.write_text("{}", encoding="utf-8")
     raw_record = RawConversationRecord(
         raw_id="raw-wal",
-        provider_name="codex",
         source_name="codex",
         source_path=str(source_path),
         blob_size=source_path.stat().st_size,
@@ -36,12 +35,12 @@ def test_process_ingest_batch_sync_records_wal_checkpoint_observation(
         conn.execute(
             """
             INSERT INTO raw_conversations
-                (raw_id, provider_name, source_name, source_path, blob_size, acquired_at)
+                (raw_id, source_name, source_path, blob_size, acquired_at)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 raw_record.raw_id,
-                raw_record.provider_name,
+                raw_record.source_name,
                 raw_record.source_name,
                 raw_record.source_path,
                 raw_record.blob_size,

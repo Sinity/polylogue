@@ -15,7 +15,7 @@ def _make_db(path: Path) -> sqlite3.Connection:
         """
         CREATE TABLE raw_conversations (
             raw_id TEXT PRIMARY KEY,
-            provider_name TEXT NOT NULL DEFAULT '',
+            source_name TEXT NOT NULL DEFAULT '',
             source_path TEXT NOT NULL DEFAULT '',
             blob_size INTEGER NOT NULL DEFAULT 0,
             acquired_at TEXT NOT NULL DEFAULT ''

@@ -396,7 +396,7 @@ class TestRuntimeHealthLegacySchema:
             """
             CREATE TABLE raw_conversations (
                 raw_id TEXT PRIMARY KEY,
-                provider_name TEXT NOT NULL,
+                source_name TEXT NOT NULL,
                 source_path TEXT NOT NULL,
                 blob_size INTEGER NOT NULL,
                 acquired_at TEXT NOT NULL

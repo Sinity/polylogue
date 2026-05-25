@@ -51,7 +51,7 @@ def _iter_jsonl_records(path: Path, handle: Iterator[str]) -> Iterator[tuple[Pat
 
 
 def _iter_schema_units_from_sessions(
-    provider_name: Provider,
+    source_name: Provider,
     session_dir: Path,
     *,
     max_sessions: int | None,
@@ -59,14 +59,14 @@ def _iter_schema_units_from_sessions(
     max_samples: int | None = None,
 ) -> Iterator[SchemaUnit]:
     """Yield clusterable schema units from filesystem session files."""
-    provider_name = Provider.from_string(provider_name)
+    source_name = Provider.from_string(source_name)
     current_path: Path | None = None
     current_records: list[JSONDocument] = []
     for path, record in _iter_session_json_documents(session_dir, max_sessions=max_sessions):
         if current_path is not None and path != current_path:
             yield from extract_schema_units_from_payload(
                 current_records,
-                provider_name=provider_name,
+                source_name=source_name,
                 source_path=current_path,
                 raw_id=current_path.stem,
                 observed_at=datetime.fromtimestamp(current_path.stat().st_mtime, tz=timezone.utc).isoformat(),
@@ -80,7 +80,7 @@ def _iter_schema_units_from_sessions(
     if current_path is not None and current_records:
         yield from extract_schema_units_from_payload(
             current_records,
-            provider_name=provider_name,
+            source_name=source_name,
             source_path=current_path,
             raw_id=current_path.stem,
             observed_at=datetime.fromtimestamp(current_path.stat().st_mtime, tz=timezone.utc).isoformat(),

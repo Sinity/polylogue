@@ -10,7 +10,7 @@ from polylogue.storage.raw.models import UNSET, RawConversationStateUpdate, _Raw
 from polylogue.storage.sqlite.connection import _build_source_scope_filter
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
-EFFECTIVE_RAW_PROVIDER_SQL = "COALESCE(payload_provider, provider_name)"
+EFFECTIVE_RAW_PROVIDER_SQL = "COALESCE(payload_provider, source_name)"
 
 
 def coerce_provider(value: object) -> str | None:

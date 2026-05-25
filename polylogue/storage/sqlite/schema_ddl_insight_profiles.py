@@ -13,7 +13,7 @@ SESSION_INSIGHT_PROFILE_DDL = (
             logical_conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,"""
     + MATERIALIZATION_COLUMNS_SQL
     + """
-            provider_name TEXT NOT NULL,
+            source_name TEXT NOT NULL,
             title TEXT,
             first_message_at TEXT,
             last_message_at TEXT,
@@ -69,7 +69,7 @@ SESSION_INSIGHT_PROFILE_DDL = (
         );
 
         CREATE INDEX IF NOT EXISTS idx_session_profiles_provider
-        ON session_profiles(provider_name);
+        ON session_profiles(source_name);
 
         CREATE INDEX IF NOT EXISTS idx_session_profiles_logical_conversation
         ON session_profiles(logical_conversation_id);

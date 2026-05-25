@@ -101,7 +101,7 @@ def test_idempotent_raw_upsert_under_concurrent_ingest(tmp_path: Path) -> None:
     conn.execute(
         """CREATE TABLE raw_conversations (
             raw_id TEXT PRIMARY KEY,
-            provider_name TEXT NOT NULL,
+            source_name TEXT NOT NULL,
             source_path TEXT NOT NULL,
             blob_size INTEGER NOT NULL DEFAULT 0,
             acquired_at TEXT NOT NULL DEFAULT ''
@@ -120,7 +120,7 @@ def test_idempotent_raw_upsert_under_concurrent_ingest(tmp_path: Path) -> None:
                 for _ in range(30):
                     local.execute(
                         "INSERT OR IGNORE INTO raw_conversations "
-                        "(raw_id, provider_name, source_path, blob_size, acquired_at) "
+                        "(raw_id, source_name, source_path, blob_size, acquired_at) "
                         "VALUES (?, 'claude', ?, 1, '2024-01-01')",
                         (raw_id, f"x-{label}"),
                     )

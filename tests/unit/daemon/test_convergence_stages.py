@@ -31,7 +31,7 @@ def _seed_raw_source_conversation(conn: sqlite3.Connection, *, conversation_id: 
         """
         INSERT INTO raw_conversations (
             raw_id,
-            provider_name,
+            source_name,
             source_path,
             blob_size,
             acquired_at
@@ -48,7 +48,7 @@ def _seed_raw_source_conversation(conn: sqlite3.Connection, *, conversation_id: 
     store_records(
         conversation=make_conversation(
             conversation_id,
-            provider_name="codex",
+            source_name="codex",
             title=conversation_id,
             created_at="2026-05-24T01:00:00+00:00",
             updated_at="2026-05-24T01:00:00+00:00",
@@ -274,7 +274,7 @@ def test_fts_repair_needs_ignores_empty_text_messages(tmp_path: Path) -> None:
     with open_connection(db_path) as conn:
         restore_fts_triggers_sync(conn)
         store_records(
-            conversation=make_conversation("conv-empty-text", provider_name="codex"),
+            conversation=make_conversation("conv-empty-text", source_name="codex"),
             messages=[make_message("msg-empty-text", "conv-empty-text", text="")],
             attachments=[],
             conn=conn,
@@ -290,11 +290,11 @@ def test_targeted_fts_ready_marker_preserves_ledger_counts(tmp_path: Path) -> No
     db_path = tmp_path / "archive.sqlite"
     with open_connection(db_path) as conn:
         conn.execute(
-            "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) VALUES(?,?,?,1)",
+            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) VALUES(?,?,?,1)",
             ("conv-ledger", "codex", "provider-conv"),
         )
         conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
+            "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
             ("msg-ledger", "conv-ledger", "user", "indexed text", "codex"),
         )
         record_fts_surface_state_sync(
@@ -330,11 +330,11 @@ def test_targeted_fts_ready_marker_handles_legacy_freshness_table(tmp_path: Path
     db_path = tmp_path / "archive.sqlite"
     with open_connection(db_path) as conn:
         conn.execute(
-            "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) VALUES(?,?,?,1)",
+            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) VALUES(?,?,?,1)",
             ("conv-legacy-ledger", "codex", "provider-conv"),
         )
         conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
+            "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
             ("msg-legacy-ledger", "conv-legacy-ledger", "user", "indexed text", "codex"),
         )
         conn.execute("DROP TABLE IF EXISTS fts_freshness_state")
@@ -730,7 +730,7 @@ def test_insights_stage_scopes_conversation_debt_to_stale_profiles(tmp_path: Pat
             store_records(
                 conversation=make_conversation(
                     conversation_id,
-                    provider_name="codex",
+                    source_name="codex",
                     title=conversation_id,
                     created_at=updated_at,
                     updated_at=updated_at,

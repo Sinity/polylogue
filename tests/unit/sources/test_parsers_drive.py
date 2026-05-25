@@ -142,7 +142,7 @@ def test_parse_chunked_prompt_preserves_core_conversation_metadata() -> None:
 
     result = parse_chunked_prompt("gemini", payload, "fallback-id")
 
-    assert result.provider_name == "gemini"
+    assert result.source_name == "gemini"
     assert result.provider_conversation_id == "gemini-conv"
     assert result.title == "Gemini Session"
     assert result.provider_meta == {"title_source": "imported:displayName"}
@@ -307,7 +307,7 @@ def test_parse_chunked_prompt_skips_chunks_without_text_or_role() -> None:
 def test_parse_chunked_prompt_accepts_synthetic_exports(synthetic_gemini_payload: JSONDocument) -> None:
     result = parse_chunked_prompt("gemini", synthetic_gemini_payload, "synthetic-fallback")
 
-    assert result.provider_name == "gemini"
+    assert result.source_name == "gemini"
     assert result.messages
     assert all(message.text for message in result.messages)
     assert all(message.provider_meta is not None for message in result.messages)

@@ -463,7 +463,7 @@ class SQLiteBackend(
     async def upsert_conversation_stats(
         self,
         conversation_id: str,
-        provider_name: str,
+        source_name: str,
         messages: list[MessageRecord],
     ) -> None:
         """Upsert precomputed per-conversation aggregate stats."""
@@ -471,7 +471,7 @@ class SQLiteBackend(
             await stats_q.upsert_conversation_stats(
                 conn,
                 conversation_id,
-                provider_name,
+                source_name,
                 messages,
                 self._transaction_depth,
             )

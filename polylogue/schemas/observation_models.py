@@ -19,7 +19,7 @@ class ProviderConfig:
 
     name: Provider
     description: str
-    db_provider_name: Provider | None = None
+    db_source_name: Provider | None = None
     session_dir: Path | None = None
     max_sessions: int | None = None
     sample_granularity: SchemaSampleGranularity = "document"
@@ -47,13 +47,13 @@ PROVIDERS: dict[Provider, ProviderConfig] = {
     Provider.CHATGPT: ProviderConfig(
         name=Provider.CHATGPT,
         description="ChatGPT message format",
-        db_provider_name=Provider.CHATGPT,
+        db_source_name=Provider.CHATGPT,
         sample_granularity="document",
     ),
     Provider.CLAUDE_CODE: ProviderConfig(
         name=Provider.CLAUDE_CODE,
         description="Claude Code message format",
-        db_provider_name=Provider.CLAUDE_CODE,
+        db_source_name=Provider.CLAUDE_CODE,
         sample_granularity="record",
         record_type_key="type",
         schema_sample_cap=128,
@@ -61,40 +61,40 @@ PROVIDERS: dict[Provider, ProviderConfig] = {
     Provider.CLAUDE_AI: ProviderConfig(
         name=Provider.CLAUDE_AI,
         description="Claude AI web message format",
-        db_provider_name=Provider.CLAUDE_AI,
+        db_source_name=Provider.CLAUDE_AI,
         sample_granularity="document",
     ),
     Provider.GEMINI: ProviderConfig(
         name=Provider.GEMINI,
         description="Gemini AI Studio message format",
-        db_provider_name=Provider.GEMINI,
+        db_source_name=Provider.GEMINI,
         sample_granularity="document",
     ),
     Provider.GEMINI_CLI: ProviderConfig(
         name=Provider.GEMINI_CLI,
         description="Gemini CLI local session format",
-        db_provider_name=Provider.GEMINI_CLI,
+        db_source_name=Provider.GEMINI_CLI,
         session_dir=Path.home() / ".gemini/tmp",
         sample_granularity="document",
     ),
     Provider.HERMES: ProviderConfig(
         name=Provider.HERMES,
         description="Hermes agent session format",
-        db_provider_name=Provider.HERMES,
+        db_source_name=Provider.HERMES,
         session_dir=Path.home() / ".hermes/sessions",
         sample_granularity="document",
     ),
     Provider.ANTIGRAVITY: ProviderConfig(
         name=Provider.ANTIGRAVITY,
         description="Antigravity local brain artifact metadata format",
-        db_provider_name=Provider.ANTIGRAVITY,
+        db_source_name=Provider.ANTIGRAVITY,
         session_dir=Path.home() / ".gemini/antigravity",
         sample_granularity="document",
     ),
     Provider.CODEX: ProviderConfig(
         name=Provider.CODEX,
         description="OpenAI Codex CLI session format",
-        db_provider_name=Provider.CODEX,
+        db_source_name=Provider.CODEX,
         session_dir=Path.home() / ".codex/sessions",
         max_sessions=100,
         sample_granularity="record",

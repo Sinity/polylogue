@@ -77,7 +77,7 @@ def _bootstrap_fts_db(path: Path) -> sqlite3.Connection:
         """CREATE TABLE session_work_events (
             event_id TEXT PRIMARY KEY,
             conversation_id TEXT NOT NULL,
-            provider_name TEXT NOT NULL,
+            source_name TEXT NOT NULL,
             heuristic_label TEXT NOT NULL,
             search_text TEXT NOT NULL
         )"""
@@ -86,7 +86,7 @@ def _bootstrap_fts_db(path: Path) -> sqlite3.Connection:
         """CREATE VIRTUAL TABLE session_work_events_fts USING fts5(
             event_id UNINDEXED,
             conversation_id UNINDEXED,
-            provider_name UNINDEXED,
+            source_name UNINDEXED,
             heuristic_label UNINDEXED,
             text,
             tokenize='unicode61'
@@ -174,7 +174,7 @@ def test_rebuild_restores_insight_fts_surfaces(tmp_path: Path) -> None:
         conn.execute(
             """
             INSERT INTO session_work_events (
-                event_id, conversation_id, provider_name, heuristic_label, search_text
+                event_id, conversation_id, source_name, heuristic_label, search_text
             ) VALUES (?, ?, ?, ?, ?)
             """,
             ("event-1", "conversation-1", "codex", "implementation", "fixed daemon locks"),
@@ -209,7 +209,7 @@ def test_targeted_rebuild_restores_only_insight_fts_surfaces(tmp_path: Path) -> 
         conn.execute(
             """
             INSERT INTO session_work_events (
-                event_id, conversation_id, provider_name, heuristic_label, search_text
+                event_id, conversation_id, source_name, heuristic_label, search_text
             ) VALUES (?, ?, ?, ?, ?)
             """,
             ("event-1", "conversation-1", "codex", "implementation", "fixed daemon locks"),
@@ -220,7 +220,7 @@ def test_targeted_rebuild_restores_only_insight_fts_surfaces(tmp_path: Path) -> 
         )
         conn.execute(
             """
-            INSERT INTO session_work_events_fts (event_id, conversation_id, provider_name, heuristic_label, text)
+            INSERT INTO session_work_events_fts (event_id, conversation_id, source_name, heuristic_label, text)
             VALUES (?, ?, ?, ?, ?)
             """,
             ("event-1", "conversation-1", "codex", "implementation", "duplicate event row"),

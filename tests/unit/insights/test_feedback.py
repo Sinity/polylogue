@@ -105,7 +105,7 @@ class TestApplyCorrectionToSummary:
 
 
 async def _seed_conversation(repository: ConversationRepository, conv_id: str) -> None:
-    conv = make_conversation(conv_id, provider_name="claude-code", title="Original title")
+    conv = make_conversation(conv_id, source_name="claude-code", title="Original title")
     msgs = [make_message(f"{conv_id}-msg", conv_id, text="Hello world.")]
     await repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 

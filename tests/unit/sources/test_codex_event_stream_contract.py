@@ -82,7 +82,7 @@ def test_catalog_streams_are_detected_as_codex(fixture: str) -> None:
 def test_catalog_streams_parse_without_raising(fixture: str) -> None:
     records = _load_catalog(fixture)
     conversation = _parse(records, fixture)
-    assert conversation.provider_name == "codex"
+    assert conversation.source_name == "codex"
     # Each fixture must contribute at least one message — otherwise the
     # streaming envelope contract is silently dropping content.
     assert conversation.messages, f"{fixture} produced zero messages"

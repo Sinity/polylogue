@@ -51,7 +51,7 @@ def test_repo_combines_with_other_filters() -> None:
         provider="claude-code",
         title_contains="bug",
     )
-    assert "provider_name = ?" in where
+    assert "source_name = ?" in where
     assert "title LIKE" in where
     assert "session_profiles" in where
     assert "claude-code" in params

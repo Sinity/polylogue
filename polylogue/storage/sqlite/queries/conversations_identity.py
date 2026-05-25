@@ -135,7 +135,7 @@ async def list_tags(conn: aiosqlite.Connection, *, provider: str | None = None) 
     join = "JOIN conversations c ON ct.conversation_id = c.conversation_id"
     where = ""
     if provider:
-        where = " AND c.provider_name = ?"
+        where = " AND c.source_name = ?"
         params = (provider,)
     cursor = await conn.execute(
         f"""

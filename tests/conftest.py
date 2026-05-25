@@ -659,7 +659,6 @@ def seeded_db(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
                         raw_id, blob_size = blob_store.write_from_bytes(raw_bytes)
                         record = RawConversationRecord(
                             raw_id=raw_id,
-                            provider_name=spec.provider,
                             source_name=spec.provider,
                             source_path=str(file_path),
                             blob_size=blob_size,
@@ -780,7 +779,6 @@ def raw_synthetic_samples() -> list[RawConversationRecord]:
             samples.append(
                 RawConversationRecord(
                     raw_id=raw_id,
-                    provider_name=spec.provider,
                     source_name=spec.provider,
                     source_path=f"<synthetic:{spec.provider}:{idx}>",
                     blob_size=len(raw_bytes),

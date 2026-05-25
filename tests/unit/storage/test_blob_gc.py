@@ -33,7 +33,7 @@ def _make_db(path: str | Path | None = None) -> sqlite3.Connection:
     conn.execute(
         """CREATE TABLE raw_conversations (
             raw_id TEXT PRIMARY KEY,
-            provider_name TEXT NOT NULL DEFAULT '',
+            source_name TEXT NOT NULL DEFAULT '',
             source_path TEXT NOT NULL DEFAULT '',
             blob_size INTEGER NOT NULL DEFAULT 0,
             acquired_at TEXT NOT NULL DEFAULT ''
@@ -67,7 +67,7 @@ def test_still_referenced_recognizes_raw_id() -> None:
     """A blob whose hash matches a raw_conversations.raw_id is still referenced."""
     conn = _make_db()
     conn.execute(
-        "INSERT INTO raw_conversations (raw_id, provider_name, source_path, blob_size, acquired_at) "
+        "INSERT INTO raw_conversations (raw_id, source_name, source_path, blob_size, acquired_at) "
         "VALUES ('abc123def456', 'claude', 'test.json', 42, '2024-01-01')"
     )
     conn.commit()
@@ -79,7 +79,7 @@ def test_still_referenced_rejects_unknown_hash() -> None:
     """A blob not in raw_conversations is not referenced."""
     conn = _make_db()
     conn.execute(
-        "INSERT INTO raw_conversations (raw_id, provider_name, source_path, blob_size, acquired_at) "
+        "INSERT INTO raw_conversations (raw_id, source_name, source_path, blob_size, acquired_at) "
         "VALUES ('known-hash-1', 'chatgpt', 'test.json', 10, '2024-01-01')"
     )
     conn.commit()
@@ -244,7 +244,7 @@ def test_run_blob_gc_preserves_referenced_blobs(tmp_path: Path) -> None:
 
     conn = _make_db(db_path)
     conn.execute(
-        "INSERT INTO raw_conversations (raw_id, provider_name, source_path, blob_size, acquired_at) "
+        "INSERT INTO raw_conversations (raw_id, source_name, source_path, blob_size, acquired_at) "
         "VALUES (?, 'claude', 'test.json', ?, '2024-01-01')",
         (h, len(b"referenced content")),
     )
@@ -433,7 +433,7 @@ def test_run_blob_gc_records_structured_evidence(tmp_path: Path) -> None:
 
     conn = _make_db(db_path)
     conn.execute(
-        "INSERT INTO raw_conversations (raw_id, provider_name, source_path, blob_size, acquired_at) "
+        "INSERT INTO raw_conversations (raw_id, source_name, source_path, blob_size, acquired_at) "
         "VALUES (?, 'claude', 'x.json', 1, '2025-01-01')",
         (referenced_hash,),
     )

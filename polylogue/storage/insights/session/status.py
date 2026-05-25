@@ -303,24 +303,24 @@ ORPHAN_WORK_THREAD_COUNT_SQL = """
 """
 EXPECTED_SESSION_TAG_ROLLUP_COUNT_SQL = f"""
     WITH tag_rows AS (
-        SELECT sp.provider_name, {_PROFILE_BUCKET_DAY_SQL} AS bucket_day, tag.value AS tag
+        SELECT sp.source_name, {_PROFILE_BUCKET_DAY_SQL} AS bucket_day, tag.value AS tag
         FROM session_profiles sp, json_each(COALESCE(sp.tags_json, '[]')) tag
         WHERE {_PROFILE_BUCKET_DAY_SQL} IS NOT NULL AND tag.value IS NOT NULL AND tag.value != ''
         UNION
-        SELECT sp.provider_name, {_PROFILE_BUCKET_DAY_SQL} AS bucket_day, tag.value AS tag
+        SELECT sp.source_name, {_PROFILE_BUCKET_DAY_SQL} AS bucket_day, tag.value AS tag
         FROM session_profiles sp, json_each(COALESCE(sp.auto_tags_json, '[]')) tag
         WHERE {_PROFILE_BUCKET_DAY_SQL} IS NOT NULL AND tag.value IS NOT NULL AND tag.value != ''
     )
     SELECT COUNT(*) FROM (
-        SELECT provider_name, bucket_day, tag
+        SELECT source_name, bucket_day, tag
         FROM tag_rows
-        GROUP BY provider_name, bucket_day, tag
+        GROUP BY source_name, bucket_day, tag
     )
 """
 STALE_SESSION_TAG_ROLLUP_COUNT_SQL = f"""
     WITH tag_rows AS (
         SELECT
-            sp.provider_name AS provider_name,
+            sp.source_name AS source_name,
             {_PROFILE_BUCKET_DAY_SQL} AS bucket_day,
             tag.value AS tag,
             sp.materialized_at AS profile_materialized_at
@@ -328,7 +328,7 @@ STALE_SESSION_TAG_ROLLUP_COUNT_SQL = f"""
         WHERE {_PROFILE_BUCKET_DAY_SQL} IS NOT NULL AND tag.value IS NOT NULL AND tag.value != ''
         UNION ALL
         SELECT
-            sp.provider_name AS provider_name,
+            sp.source_name AS source_name,
             {_PROFILE_BUCKET_DAY_SQL} AS bucket_day,
             tag.value AS tag,
             sp.materialized_at AS profile_materialized_at
@@ -336,14 +336,14 @@ STALE_SESSION_TAG_ROLLUP_COUNT_SQL = f"""
         WHERE {_PROFILE_BUCKET_DAY_SQL} IS NOT NULL AND tag.value IS NOT NULL AND tag.value != ''
     ),
     expected AS (
-        SELECT provider_name, bucket_day, tag, MAX(profile_materialized_at) AS max_profile_materialized_at
+        SELECT source_name, bucket_day, tag, MAX(profile_materialized_at) AS max_profile_materialized_at
         FROM tag_rows
-        GROUP BY provider_name, bucket_day, tag
+        GROUP BY source_name, bucket_day, tag
     )
     SELECT COUNT(*)
     FROM session_tag_rollups str
     LEFT JOIN expected e
-      ON e.provider_name = str.provider_name
+      ON e.source_name = str.source_name
      AND e.bucket_day = str.bucket_day
      AND e.tag = str.tag
     WHERE str.materializer_version != ?

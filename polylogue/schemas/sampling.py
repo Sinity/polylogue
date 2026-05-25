@@ -24,23 +24,23 @@ from polylogue.types import Provider
 
 
 def iter_schema_units(
-    provider_name: str | Provider,
+    source_name: str | Provider,
     *,
     db_path: Path | None = None,
     max_samples: int | None = None,
     full_corpus: bool = False,
 ) -> Iterator[SchemaUnit]:
     """Yield schema units for a provider from DB, with session fallback."""
-    provider_name = Provider.from_string(provider_name)
+    source_name = Provider.from_string(source_name)
     if db_path is None:
         db_path = archive_db_path()
 
-    config = resolve_provider_config(provider_name)
+    config = resolve_provider_config(source_name)
     yielded_any = False
 
-    if config.db_provider_name and db_path.exists():
+    if config.db_source_name and db_path.exists():
         for unit in _iter_schema_units_from_db(
-            provider_name,
+            source_name,
             db_path=db_path,
             config=config,
             max_samples=max_samples,
@@ -53,7 +53,7 @@ def iter_schema_units(
         return
 
     yield from _iter_schema_units_from_sessions(
-        provider_name,
+        source_name,
         config.session_dir,
         max_sessions=config.max_sessions,
         config=config,
@@ -62,22 +62,22 @@ def iter_schema_units(
 
 
 def load_samples_from_db(
-    provider_name: str | Provider,
+    source_name: str | Provider,
     db_path: Path | None = None,
     max_samples: int | None = None,
 ) -> list[JSONDocument]:
     """Load raw samples from the polylogue database."""
-    provider_name = Provider.from_string(provider_name)
+    source_name = Provider.from_string(source_name)
     if db_path is None:
         db_path = archive_db_path()
     if not db_path.exists():
         return []
 
-    config = resolve_provider_config(provider_name)
+    config = resolve_provider_config(source_name)
     if max_samples is None:
-        return list(_iter_samples_from_db(provider_name, db_path=db_path, config=config))
+        return list(_iter_samples_from_db(source_name, db_path=db_path, config=config))
     return collect_limited_samples(
-        lambda: _iter_samples_from_db(provider_name, db_path=db_path, config=config),
+        lambda: _iter_samples_from_db(source_name, db_path=db_path, config=config),
         limit=max_samples,
         stratify=config.sample_granularity == "record",
         record_type_key=config.record_type_key,

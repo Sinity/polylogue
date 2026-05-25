@@ -116,7 +116,7 @@ def _seed_conversation(
     parse_error: str | None = None,
     validation_status: str | None = "passed",
     content_hash: str = "abc123" * 10,
-    provider_name: str = "claude-code",
+    source_name: str = "claude-code",
 ) -> None:
     conn = sqlite3.connect(str(dbp))
     try:
@@ -124,14 +124,14 @@ def _seed_conversation(
             conn.execute(
                 """
                 INSERT INTO raw_conversations(
-                    raw_id, provider_name, source_path, source_name,
+                    raw_id, source_name, source_path, source_name,
                     blob_size, acquired_at, parsed_at, parse_error,
                     validated_at, validation_status
                 ) VALUES (?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     raw_id,
-                    provider_name,
+                    source_name,
                     source_path,
                     Path(source_path).name,
                     blob_size,
@@ -145,13 +145,13 @@ def _seed_conversation(
         conn.execute(
             """
             INSERT INTO conversations(
-                conversation_id, provider_name, provider_conversation_id,
+                conversation_id, source_name, provider_conversation_id,
                 title, content_hash, version, raw_id
             ) VALUES (?,?,?,?,?,?,?)
             """,
             (
                 conversation_id,
-                provider_name,
+                source_name,
                 f"p-{conversation_id}",
                 f"Title for {conversation_id}",
                 content_hash,

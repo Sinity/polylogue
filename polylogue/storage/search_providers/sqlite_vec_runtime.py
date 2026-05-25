@@ -71,7 +71,7 @@ class SqliteVecRuntimeMixin:
                 CREATE VIRTUAL TABLE IF NOT EXISTS message_embeddings USING vec0(
                     message_id TEXT PRIMARY KEY,
                     embedding float[{self.dimension}],
-                    +provider_name TEXT,
+                    +source_name TEXT,
                     +conversation_id TEXT
                 )
                 """

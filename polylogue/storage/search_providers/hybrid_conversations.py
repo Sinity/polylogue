@@ -28,7 +28,7 @@ def _resolve_ranked_conversation_hits(
     if scope_names:
         scope_sql, scope_params = _build_provider_scope_filter(
             scope_names,
-            provider_column="conversations.provider_name",
+            provider_column="conversations.source_name",
         )
         scope_clause = f"WHERE {scope_sql}"
         params.extend(scope_params)

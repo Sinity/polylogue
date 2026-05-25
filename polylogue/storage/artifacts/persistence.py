@@ -22,7 +22,7 @@ def _upsert_artifact_observation(
         INSERT INTO artifact_observations (
             observation_id,
             raw_id,
-            provider_name,
+            source_name,
             payload_provider,
             source_name,
             source_path,
@@ -48,7 +48,7 @@ def _upsert_artifact_observation(
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(observation_id) DO UPDATE SET
             raw_id = excluded.raw_id,
-            provider_name = excluded.provider_name,
+            source_name = excluded.source_name,
             payload_provider = excluded.payload_provider,
             source_name = excluded.source_name,
             source_path = excluded.source_path,
@@ -75,7 +75,7 @@ def _upsert_artifact_observation(
         (
             record.observation_id,
             record.raw_id,
-            record.provider_name,
+            record.source_name,
             str(record.payload_provider) if record.payload_provider is not None else None,
             record.source_name,
             record.source_path,
@@ -128,7 +128,7 @@ def ensure_artifact_observations(
         params: list[object] = [last_rowid]
         if providers:
             placeholders = ",".join("?" for _ in providers)
-            where_clauses.append(f"COALESCE(r.payload_provider, r.provider_name) IN ({placeholders})")
+            where_clauses.append(f"COALESCE(r.payload_provider, r.source_name) IN ({placeholders})")
             params.extend(providers)
         rows = conn.execute(
             f"""

@@ -221,10 +221,8 @@ def format_index_status(stage: str, indexed: bool, index_error: str | None) -> s
     return "Index: up-to-date"
 
 
-def format_source_label(source_name: str | None, provider_name: str) -> str:
-    if source_name and source_name != provider_name:
-        return f"{source_name}/{provider_name}"
-    return source_name or provider_name
+def format_source_label(source_name: str | None) -> str:
+    return source_name or "unknown"
 
 
 def format_sources_summary(sources: list[Source]) -> str:

@@ -207,7 +207,7 @@ FORMAT_TIMESTAMP_TABLE: list[FormatTimestampCase] = [
 # =============================================================================
 # Unified role normalization: all providers in one table
 #
-# (provider_name, raw_role_input, expected_role_normalized, description)
+# (source_name, raw_role_input, expected_role_normalized, description)
 # =============================================================================
 
 UNIFIED_ROLE_NORMALIZATION: list[tuple[str, str, str, str]] = [

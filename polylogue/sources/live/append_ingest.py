@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
 from polylogue.pipeline.services.ingest_batch._core import (
@@ -42,7 +41,6 @@ def ingest_append_plans(owner: _AppendIngestOwner, plans: list[_AppendPlan]) -> 
         raw_records.append(
             RawConversationRecord(
                 raw_id=raw_id,
-                provider_name=canonical_acquisition_provider(plan.source_name, source_name=plan.source_name),
                 source_name=plan.source_name,
                 source_path=str(plan.path),
                 source_index=-1,

@@ -25,7 +25,7 @@ async def _insert_conversation(
 ) -> None:
     conversation = make_conversation(
         conversation_id=conversation_id,
-        provider_name=provider,
+        source_name=provider,
         provider_conversation_id=provider_conversation_id,
         title=f"{provider} conversation",
     )
@@ -34,7 +34,7 @@ async def _insert_conversation(
         conversation_id=conversation_id,
         role="user",
         text=text,
-        provider_name=provider,
+        source_name=provider,
     )
     await repo.save_conversation(conversation, [message], [])
 

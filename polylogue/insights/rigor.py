@@ -101,7 +101,7 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         ),
         consumer_fields=(
             "conversation_id",
-            "provider_name",
+            "source_name",
             "title",
             "semantic_tier",
             "evidence",
@@ -133,7 +133,7 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         consumer_fields=(
             "event_id",
             "conversation_id",
-            "provider_name",
+            "source_name",
             "event_index",
             "evidence",
             "inference",
@@ -159,7 +159,7 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         consumer_fields=(
             "phase_id",
             "conversation_id",
-            "provider_name",
+            "source_name",
             "phase_index",
             "evidence",
             "inference",

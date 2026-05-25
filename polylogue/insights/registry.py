@@ -195,7 +195,7 @@ def _id_with_provider(identifier_attr: str) -> InsightAccessor:
 
     def accessor(item: ArchiveInsightModel) -> str:
         identifier = _stringify(getattr(item, identifier_attr, None))
-        provider = _stringify(getattr(item, "provider_name", None))
+        provider = _stringify(getattr(item, "source_name", None))
         return f"{identifier} [{provider}]"
 
     return accessor
@@ -492,7 +492,7 @@ register(
         fields=(
             InsightField("", _attr("bucket"), group=0),
             InsightField("group", _attr("group_by"), group=0),
-            InsightField("provider", _attr("provider_name"), group=0),
+            InsightField("provider", _attr("source_name"), group=0),
             InsightField("conversations", _attr("conversation_count", "0"), group=1),
             InsightField("messages", _attr("message_count", "0"), group=1),
             InsightField("words", _attr("total_words", "0"), group=1),
@@ -571,7 +571,7 @@ register(
         readiness_exempt=True,
         cli_options=(CliOption("model", ("--model",), help="Only this model or normalized model"),),
         fields=(
-            InsightField("", _attr("provider_name"), group=0),
+            InsightField("", _attr("source_name"), group=0),
             InsightField("model", _attr("normalized_model"), group=0),
             InsightField("sessions", _attr("session_count", "0"), group=0),
             InsightField("priced", _attr("priced_session_count", "0"), group=1),

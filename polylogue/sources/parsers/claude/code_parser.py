@@ -271,7 +271,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
                 break
 
     return ParsedConversation(
-        provider_name=Provider.CLAUDE_CODE,
+        source_name=Provider.CLAUDE_CODE,
         provider_conversation_id=str(conversation_id),
         title=title,
         created_at=created_at,

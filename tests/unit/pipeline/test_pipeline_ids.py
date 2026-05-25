@@ -39,7 +39,7 @@ def _parsed_conversation(
     updated_at: str | None,
 ) -> ParsedConversation:
     return ParsedConversation(
-        provider_name=Provider.CHATGPT,
+        source_name=Provider.CHATGPT,
         provider_conversation_id=provider_conversation_id,
         title=title,
         created_at=created_at,

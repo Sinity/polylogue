@@ -9,7 +9,6 @@ from dataclasses import dataclass
 @dataclass
 class SearchHit:
     conversation_id: str
-    provider_name: str
     source_name: str | None
     message_id: str
     title: str | None

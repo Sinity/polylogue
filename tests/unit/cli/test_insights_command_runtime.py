@@ -102,7 +102,7 @@ def _status_report() -> InsightReadinessReport:
                 orphan_count=3,
                 legacy_incompatible_count=4,
                 ready_flags={"fts": True},
-                provider_coverage=(InsightProviderCoverage(provider_name="codex", row_count=7),),
+                provider_coverage=(InsightProviderCoverage(source_name="codex", row_count=7),),
                 version_coverage=(
                     InsightVersionCoverage(field="materializer_version", current_version=4, versions={"4": 7}),
                 ),

@@ -22,7 +22,7 @@ from polylogue.types import Provider
 
 def _conversation(*, messages: list[ParsedMessage] | None = None) -> ParsedConversation:
     return ParsedConversation(
-        provider_name=Provider.UNKNOWN,
+        source_name=Provider.UNKNOWN,
         provider_conversation_id="conv-1",
         title="Conversation",
         created_at="2026-04-23T00:00:00Z",

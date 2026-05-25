@@ -167,7 +167,7 @@ def test_provider_metrics_reads_conversation_stats(tier_small_db: Path) -> None:
         # Result envelope must keep the contract intact.
         first = rows[0]
         for key in (
-            "provider_name",
+            "source_name",
             "conversation_count",
             "message_count",
             "user_message_count",

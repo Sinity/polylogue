@@ -85,7 +85,7 @@ class ConversationFacts:
         has_attachments = any(bool(message.get("attachments")) for message in messages)
         return cls(
             conversation_id=_string_value(payload.get("id")) or _string_value(payload.get("conversation_id")),
-            provider=_string_value(payload.get("provider")) or _string_value(payload.get("provider_name")),
+            provider=_string_value(payload.get("provider")) or _string_value(payload.get("source_name")),
             title=_optional_string(payload.get("title")),
             message_count=len(messages),
             role_multiset=dict(roles),
@@ -114,7 +114,7 @@ class ConversationFacts:
         has_thinking = any(m.has_thinking for m in msg_records)
         return cls(
             conversation_id=str(conv_record.conversation_id),
-            provider=str(conv_record.provider_name),
+            provider=str(conv_record.source_name),
             title=conv_record.title,
             message_count=len(msg_records),
             role_multiset=dict(roles),
@@ -168,9 +168,9 @@ class ArchiveFacts:
     def from_db_connection(cls, conn: sqlite3.Connection) -> ArchiveFacts:
         total_convs = int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0])
         provider_rows = conn.execute(
-            "SELECT provider_name, COUNT(*) as cnt FROM conversations GROUP BY provider_name"
+            "SELECT source_name, COUNT(*) as cnt FROM conversations GROUP BY source_name"
         ).fetchall()
-        provider_counts = {str(row["provider_name"]): int(row["cnt"]) for row in provider_rows}
+        provider_counts = {str(row["source_name"]): int(row["cnt"]) for row in provider_rows}
         total_msgs = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
         conversation_ids = tuple(
             str(row["conversation_id"])

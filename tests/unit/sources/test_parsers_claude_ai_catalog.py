@@ -354,7 +354,7 @@ _CLAUDE_AI_METADATA_CATALOG: list[CatalogCase] = [
 
 
 def _assert_roundtrip(
-    provider_name: str,
+    source_name: str,
     payload: dict[str, Any],
     expectations: Expectations,
     workspace_env: dict[str, Path],
@@ -375,9 +375,7 @@ def _assert_roundtrip(
     raw_bytes = json.dumps(payload).encode("utf-8")
     db_path = db_setup(workspace_env)
     with open_connection(db_path) as conn:
-        roundtrip = parse_and_transform_payload(
-            provider_name, raw_bytes, workspace_env["archive_root"], unique_id=label
-        )
+        roundtrip = parse_and_transform_payload(source_name, raw_bytes, workspace_env["archive_root"], unique_id=label)
         hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
 
     # Title survives.
@@ -478,5 +476,5 @@ def test_claude_ai_catalog_parser_only_smoke() -> None:
         payload = factory()
         # Deep-copy guards against accidental mutation by the parser.
         parsed = parse_ai(copy.deepcopy(payload), fallback_id=f"fb-{label}")
-        assert parsed.provider_name == "claude-ai", f"[{label}] wrong provider: {parsed.provider_name}"
+        assert parsed.source_name == "claude-ai", f"[{label}] wrong provider: {parsed.source_name}"
         assert parsed.messages, f"[{label}] parser produced no messages"

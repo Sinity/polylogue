@@ -51,7 +51,7 @@ SUBSCRIPTION_TIERS: dict[str, SubscriptionTier] = {
 
 @dataclass(frozen=True, slots=True)
 class ModelCreditRate:
-    provider_name: str
+    source_name: str
     normalized_model: str
     input_credits: int
     output_credits: int

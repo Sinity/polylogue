@@ -173,7 +173,7 @@ def _render_status_plain(report: InsightReadinessReport) -> None:
             click.echo(f"  flags: {flags}")
         if insight.provider_coverage:
             providers = ", ".join(
-                f"{coverage.provider_name}={coverage.row_count}" for coverage in insight.provider_coverage
+                f"{coverage.source_name}={coverage.row_count}" for coverage in insight.provider_coverage
             )
             click.echo(f"  providers: {providers}")
         if insight.version_coverage:

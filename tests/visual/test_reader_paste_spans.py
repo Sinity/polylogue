@@ -44,7 +44,7 @@ def _seed_diff_paste_message(workspace: ReaderWorkspace) -> None:
     conn.execute(
         """
         INSERT INTO messages(
-            message_id, conversation_id, role, text, sort_key, provider_name,
+            message_id, conversation_id, role, text, sort_key, source_name,
             content_hash, version, word_count, has_tool_use, has_thinking,
             has_paste, message_type
         )

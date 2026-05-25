@@ -237,7 +237,7 @@ def test_provider_parser_contract(case: ParserCase, data: st.DataObject) -> None
     result = case.parse(payload)
 
     assert isinstance(result, ParsedConversation)
-    assert result.provider_name == case.expected_provider
+    assert result.source_name == case.expected_provider
     assert len(result.messages) <= case.message_cap(payload)
     assert all(message.role in {"user", "assistant", "system", "tool", "message"} for message in result.messages)
 

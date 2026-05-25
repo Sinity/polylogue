@@ -38,7 +38,7 @@ class TestMarkRawParsed:
     async def _save_raw(self, backend: SQLiteBackend, raw_id: str = "test-raw") -> None:
         record = RawConversationRecord(
             raw_id=raw_id,
-            provider_name="test",
+            source_name="test",
             source_path="/test.json",
             blob_size=len(b'{"test": true}'),
             acquired_at="2026-01-01T00:00:00Z",
@@ -101,7 +101,7 @@ class TestUpdateRawState:
         await backend.save_raw_conversation(
             RawConversationRecord(
                 raw_id=raw_id,
-                provider_name="test",
+                source_name="test",
                 source_path="/test.json",
                 blob_size=len(b'{"test": true}'),
                 acquired_at="2026-01-01T00:00:00Z",
@@ -178,7 +178,7 @@ class TestMarkRawValidated:
     async def _save_raw(self, backend: SQLiteBackend, raw_id: str = "test-raw") -> None:
         record = RawConversationRecord(
             raw_id=raw_id,
-            provider_name="test",
+            source_name="test",
             source_path="/test.json",
             blob_size=len(b'{"test": true}'),
             acquired_at="2026-01-01T00:00:00Z",
@@ -243,7 +243,7 @@ class TestGetKnownSourceMtimes:
             await backend.save_raw_conversation(
                 RawConversationRecord(
                     raw_id=f"raw-{i}",
-                    provider_name="test",
+                    source_name="test",
                     source_path=f"/path/file{i}.json",
                     blob_size=len(f'{{"i": {i}}}'.encode()),
                     acquired_at="2026-01-01T00:00:00Z",
@@ -261,7 +261,7 @@ class TestGetKnownSourceMtimes:
         await backend.save_raw_conversation(
             RawConversationRecord(
                 raw_id="with-mtime",
-                provider_name="test",
+                source_name="test",
                 source_path="/path/a.json",
                 blob_size=len(b"{}"),
                 acquired_at="2026-01-01T00:00:00Z",
@@ -271,7 +271,7 @@ class TestGetKnownSourceMtimes:
         await backend.save_raw_conversation(
             RawConversationRecord(
                 raw_id="no-mtime",
-                provider_name="test",
+                source_name="test",
                 source_path="/path/b.json",
                 blob_size=len(b'{"b": 1}'),
                 acquired_at="2026-01-01T00:00:00Z",
@@ -308,7 +308,6 @@ class TestResetParseStatus:
             await backend.save_raw_conversation(
                 RawConversationRecord(
                     raw_id=f"raw-{i}",
-                    provider_name=provider,
                     source_name=source_name,
                     source_path=f"/path/{i}.json",
                     blob_size=len(f'{{"i": {i}}}'.encode()),
@@ -365,7 +364,7 @@ class TestResetParseStatus:
         await backend.save_raw_conversation(
             RawConversationRecord(
                 raw_id="unparsed",
-                provider_name="test",
+                source_name="test",
                 source_path="/test.json",
                 blob_size=len(b"{}"),
                 acquired_at="2026-01-01T00:00:00Z",
@@ -392,7 +391,6 @@ class TestResetValidationStatus:
             await backend.save_raw_conversation(
                 RawConversationRecord(
                     raw_id=f"raw-{i}",
-                    provider_name=provider,
                     source_name=source_name,
                     source_path=f"/path/{i}.json",
                     blob_size=len(f'{{"i": {i}}}'.encode()),

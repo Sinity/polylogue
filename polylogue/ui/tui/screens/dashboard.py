@@ -45,7 +45,7 @@ class ProviderBar(Static):
         bar_width = 20
         filled = int(pct / 100 * bar_width)
         bar = chr(0x2588) * filled + chr(0x2591) * (bar_width - filled)
-        # Format: "provider_name    [bar]  123"
+        # Format: "source_name    [bar]  123"
         return f"{self.provider[:16]:<16} {bar} {self.count:>6}"
 
 

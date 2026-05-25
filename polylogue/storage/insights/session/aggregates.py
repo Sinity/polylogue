@@ -26,34 +26,34 @@ _PROFILE_BUCKET_DAY_SQL = (
     "date(COALESCE(sp.first_message_at, json_extract(sp.evidence_payload_json, '$.created_at'), sp.source_updated_at, sp.last_message_at)))"
 )
 _PROVIDER_DAY_PROFILE_RECORDS_SQL_TEMPLATE = f"""
-    WITH target_groups(provider_name, bucket_day) AS (
+    WITH target_groups(source_name, bucket_day) AS (
         VALUES {{values}}
     )
     SELECT
-        tg.provider_name AS group_provider_name,
+        tg.source_name AS group_source_name,
         tg.bucket_day AS group_bucket_day,
         sp.*
     FROM target_groups tg
     JOIN session_profiles sp
-      ON sp.provider_name = tg.provider_name
+      ON sp.source_name = tg.source_name
      AND {_PROFILE_BUCKET_DAY_SQL} = tg.bucket_day
-    ORDER BY tg.provider_name, tg.bucket_day, COALESCE(sp.source_sort_key, 0) DESC, sp.conversation_id
+    ORDER BY tg.source_name, tg.bucket_day, COALESCE(sp.source_sort_key, 0) DESC, sp.conversation_id
 """
 _GROUP_BATCH_SIZE = 100
 _DISTINCT_PROVIDER_DAY_GROUPS_SQL = f"""
     SELECT DISTINCT
-        sp.provider_name AS provider_name,
+        sp.source_name AS source_name,
         {_PROFILE_BUCKET_DAY_SQL} AS bucket_day
     FROM session_profiles sp
-    WHERE sp.provider_name IS NOT NULL
+    WHERE sp.source_name IS NOT NULL
       AND {_PROFILE_BUCKET_DAY_SQL} IS NOT NULL
-    ORDER BY provider_name, bucket_day
+    ORDER BY source_name, bucket_day
 """
 
 
 @dataclass(slots=True, frozen=True)
 class ProviderDayAggregateWrite:
-    provider_name: str
+    source_name: str
     bucket_day: str
     tag_rows: list[SessionTagRollupRecord]
 
@@ -61,20 +61,20 @@ class ProviderDayAggregateWrite:
 def load_sync_provider_day_profile_records(
     conn: sqlite3.Connection,
     *,
-    provider_name: str,
+    source_name: str,
     bucket_day: str,
 ) -> list[SessionProfileRecord]:
     return load_sync_provider_day_profile_records_by_groups(
         conn,
-        [(provider_name, bucket_day)],
-    ).get((provider_name, bucket_day), [])
+        [(source_name, bucket_day)],
+    ).get((source_name, bucket_day), [])
 
 
 def list_sync_provider_day_groups(
     conn: sqlite3.Connection,
 ) -> list[tuple[str, str]]:
     return [
-        (str(row["provider_name"]), str(row["bucket_day"]))
+        (str(row["source_name"]), str(row["bucket_day"]))
         for row in conn.execute(_DISTINCT_PROVIDER_DAY_GROUPS_SQL).fetchall()
     ]
 
@@ -82,22 +82,22 @@ def list_sync_provider_day_groups(
 async def load_async_provider_day_profile_records(
     conn: aiosqlite.Connection,
     *,
-    provider_name: str,
+    source_name: str,
     bucket_day: str,
 ) -> list[SessionProfileRecord]:
     return (
         await load_async_provider_day_profile_records_by_groups(
             conn,
-            [(provider_name, bucket_day)],
+            [(source_name, bucket_day)],
         )
-    ).get((provider_name, bucket_day), [])
+    ).get((source_name, bucket_day), [])
 
 
 async def list_async_provider_day_groups(
     conn: aiosqlite.Connection,
 ) -> list[tuple[str, str]]:
     return [
-        (str(row["provider_name"]), str(row["bucket_day"]))
+        (str(row["source_name"]), str(row["bucket_day"]))
         for row in await (await conn.execute(_DISTINCT_PROVIDER_DAY_GROUPS_SQL)).fetchall()
     ]
 
@@ -107,9 +107,9 @@ def _normalize_provider_day_groups(
 ) -> tuple[tuple[str, str], ...]:
     return tuple(
         dict.fromkeys(
-            (str(provider_name), str(bucket_day))
-            for provider_name, bucket_day in groups
-            if str(provider_name) and str(bucket_day)
+            (str(source_name), str(bucket_day))
+            for source_name, bucket_day in groups
+            if str(source_name) and str(bucket_day)
         )
     )
 
@@ -137,7 +137,7 @@ def _group_profile_records_by_provider_day(
 ) -> dict[tuple[str, str], list[SessionProfileRecord]]:
     grouped: dict[tuple[str, str], list[SessionProfileRecord]] = _empty_provider_day_profile_groups(groups)
     for row in rows:
-        group = (str(row["group_provider_name"]), str(row["group_bucket_day"]))
+        group = (str(row["group_source_name"]), str(row["group_bucket_day"]))
         grouped[group].append(_row_to_session_profile_record(row))
     return grouped
 
@@ -164,11 +164,11 @@ def _aggregate_writes_for_groups(
     groups: Sequence[tuple[str, str]],
 ) -> list[ProviderDayAggregateWrite]:
     writes: list[ProviderDayAggregateWrite] = []
-    for provider_name, bucket_day in groups:
-        tag_rows = _aggregate_rows_for_profile_records(profile_records_by_group.get((provider_name, bucket_day), []))
+    for source_name, bucket_day in groups:
+        tag_rows = _aggregate_rows_for_profile_records(profile_records_by_group.get((source_name, bucket_day), []))
         writes.append(
             ProviderDayAggregateWrite(
-                provider_name=provider_name,
+                source_name=source_name,
                 bucket_day=bucket_day,
                 tag_rows=tag_rows,
             )
@@ -226,7 +226,7 @@ def refresh_sync_provider_day_aggregates(
         for write in _aggregate_writes_for_groups(profile_records_by_group, group_chunk):
             replace_session_tag_rollup_rows_sync(
                 conn,
-                provider_name=write.provider_name,
+                source_name=write.source_name,
                 bucket_day=write.bucket_day,
                 records=write.tag_rows,
             )
@@ -247,7 +247,7 @@ async def refresh_async_provider_day_aggregates(
         for write in _aggregate_writes_for_groups(profile_records_by_group, group_chunk):
             await replace_session_tag_rollup_rows_async(
                 conn,
-                provider_name=write.provider_name,
+                source_name=write.source_name,
                 bucket_day=write.bucket_day,
                 records=write.tag_rows,
                 transaction_depth=transaction_depth,
@@ -258,7 +258,7 @@ def profile_provider_day(record: SessionProfileRecord | None) -> tuple[str, str]
     if record is None:
         return None
     if record.canonical_session_date:
-        return (record.provider_name, record.canonical_session_date)
+        return (record.source_name, record.canonical_session_date)
     evidence_created_at = record.evidence_payload.created_at
     day_candidates = [
         record.first_message_at,
@@ -277,7 +277,7 @@ def profile_provider_day(record: SessionProfileRecord | None) -> tuple[str, str]
             continue
     if bucket_day is None:
         return None
-    return (record.provider_name, bucket_day)
+    return (record.source_name, bucket_day)
 
 
 __all__ = [

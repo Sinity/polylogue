@@ -59,7 +59,7 @@ def _table_names(conn: sqlite3.Connection) -> set[str]:
 def _build_record(conversation_id: str = "conv-1") -> ConversationRecord:
     return make_conversation(
         conversation_id=conversation_id,
-        provider_name="claude-ai",
+        source_name="claude-ai",
         provider_conversation_id=conversation_id,
         title="Test",
         created_at="2025-01-01T00:00:00Z",
@@ -100,7 +100,7 @@ def test_ensure_schema_rejects_version_mismatch_without_mutating(tmp_path: Path)
         """
         CREATE TABLE raw_conversations (
             raw_id TEXT PRIMARY KEY,
-            provider_name TEXT NOT NULL,
+            source_name TEXT NOT NULL,
             source_path TEXT NOT NULL,
             blob_size INTEGER NOT NULL,
             acquired_at TEXT NOT NULL
@@ -141,7 +141,7 @@ def test_convergence_source_path_lookup_uses_source_index(tmp_path: Path) -> Non
         conn.execute(
             """
             INSERT INTO raw_conversations (
-                raw_id, provider_name, source_path, blob_size, acquired_at
+                raw_id, source_name, source_path, blob_size, acquired_at
             ) VALUES (?, 'claude-code', ?, 0, '2026-01-01T00:00:00Z')
             """,
             (raw_id, source_path),
@@ -149,7 +149,7 @@ def test_convergence_source_path_lookup_uses_source_index(tmp_path: Path) -> Non
         conn.execute(
             """
             INSERT INTO conversations (
-                conversation_id, provider_name, provider_conversation_id,
+                conversation_id, source_name, provider_conversation_id,
                 source_name, content_hash, version, raw_id
             ) VALUES (?, 'claude-code', ?, 'claude-code', ?, 1, ?)
             """,
@@ -186,7 +186,7 @@ def test_ensure_schema_rejects_old_raw_table_version_without_mutating(tmp_path: 
         """
         CREATE TABLE raw_conversations (
             raw_id TEXT PRIMARY KEY,
-            provider_name TEXT NOT NULL,
+            source_name TEXT NOT NULL,
             source_path TEXT NOT NULL,
             blob_size INTEGER NOT NULL,
             acquired_at TEXT NOT NULL
@@ -272,7 +272,7 @@ def test_open_read_connection_rejects_old_schema_without_mutating(tmp_path: Path
         """
         CREATE TABLE raw_conversations (
             raw_id TEXT PRIMARY KEY,
-            provider_name TEXT NOT NULL,
+            source_name TEXT NOT NULL,
             source_path TEXT NOT NULL,
             blob_size INTEGER NOT NULL,
             acquired_at TEXT NOT NULL
@@ -412,7 +412,7 @@ async def test_async_backend_rejects_old_raw_table_version(tmp_path: Path) -> No
         """
         CREATE TABLE raw_conversations (
             raw_id TEXT PRIMARY KEY,
-            provider_name TEXT NOT NULL,
+            source_name TEXT NOT NULL,
             source_path TEXT NOT NULL,
             blob_size INTEGER NOT NULL,
             acquired_at TEXT NOT NULL
@@ -428,7 +428,7 @@ async def test_async_backend_rejects_old_raw_table_version(tmp_path: Path) -> No
         await backend.save_raw_conversation(
             make_raw_conversation(
                 raw_id="raw-legacy",
-                provider_name="chatgpt",
+                source_name="chatgpt",
                 source_path="/tmp/legacy.json",
                 blob_size=123,
                 acquired_at=datetime.now(timezone.utc).isoformat(),
@@ -633,7 +633,6 @@ async def test_paged_id_iteration_contract(tmp_path: Path) -> None:
         await backend.save_raw_conversation(
             make_raw_conversation(
                 raw_id=f"raw-{idx}",
-                provider_name="chatgpt",
                 source_name="inbox-a",
                 source_path=f"/tmp/raw-{idx}.json",
                 blob_size=len(b'{"id":"x"}'),
@@ -643,7 +642,7 @@ async def test_paged_id_iteration_contract(tmp_path: Path) -> None:
         await backend.save_conversation_record(
             make_conversation(
                 f"conv-{idx}",
-                provider_name="chatgpt",
+                source_name="chatgpt",
                 title=f"Conversation {idx}",
                 sort_key=float(idx),
             )
@@ -698,7 +697,7 @@ async def test_save_conversation_replaces_runtime_rows_on_content_change(tmp_pat
 
     conv_v1 = make_conversation(
         "conv-replace",
-        provider_name="codex",
+        source_name="codex",
         title="Replace",
         content_hash="hash-v1",
     )
@@ -738,7 +737,7 @@ async def test_save_conversation_replaces_runtime_rows_on_content_change(tmp_pat
 
     conv_v2 = make_conversation(
         "conv-replace",
-        provider_name="codex",
+        source_name="codex",
         title="Replace",
         content_hash="hash-v2",
     )
@@ -1080,11 +1079,11 @@ def test_fts_triggers_restored_before_commit(tmp_path: Path) -> None:
     conn.executescript(ACTION_EVENT_DDL)
     conn.executescript(MESSAGE_FTS_DDL)
     conn.execute(
-        "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) VALUES(?,?,?,1)",
+        "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) VALUES(?,?,?,1)",
         ("c1", "test", "pc1"),
     )
     conn.execute(
-        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
+        "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
         ("m1", "c1", "user", "hello world", "test"),
     )
     conn.commit()
@@ -1098,7 +1097,7 @@ def test_fts_triggers_restored_before_commit(tmp_path: Path) -> None:
 
     suspend_fts_triggers_sync(conn)
     conn.execute(
-        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
+        "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
         ("m2", "c1", "assistant", "hi there", "test"),
     )
     # Restore BEFORE commit (the fix for #817)
@@ -1128,11 +1127,11 @@ def test_fts_triggers_restored_after_exception_during_ingest(tmp_path: Path) -> 
     conn = sqlite3.connect(str(db))
     conn.executescript(SCHEMA_DDL)
     conn.execute(
-        "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) VALUES(?,?,?,1)",
+        "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) VALUES(?,?,?,1)",
         ("c1", "test", "pc1"),
     )
     conn.execute(
-        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
+        "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
         ("m1", "c1", "user", "hello world", "test"),
     )
     conn.commit()
@@ -1151,7 +1150,7 @@ def test_fts_triggers_restored_after_exception_during_ingest(tmp_path: Path) -> 
 
     # After exception + restore, triggers should be active
     conn.execute(
-        "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, version) VALUES(?,?,?,?,?,1)",
+        "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
         ("m2", "c1", "assistant", "after exception", "test"),
     )
     conn.commit()
@@ -1180,7 +1179,7 @@ def test_attachment_ref_fk_violation_surfaced(tmp_path: Path) -> None:
 
     # Create a conversation so the FK to conversations is satisfied
     conn.execute(
-        "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, version) VALUES(?,?,?,1)",
+        "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) VALUES(?,?,?,1)",
         ("c1", "test", "pc1"),
     )
     conn.commit()

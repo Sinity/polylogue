@@ -59,7 +59,7 @@ async def save_messages(
             r.version,
             r.parent_message_id,
             r.branch_index,
-            r.provider_name,
+            r.source_name,
             r.word_count,
             r.has_tool_use,
             r.has_thinking,

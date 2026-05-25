@@ -42,7 +42,7 @@ def test_insight_items_payload_can_render_cli_and_mcp_keys() -> None:
     product = ArchiveCoverageInsight(
         group_by="provider",
         bucket="claude-code",
-        provider_name="claude-code",
+        source_name="claude-code",
         conversation_count=1,
         message_count=2,
         user_message_count=1,
@@ -65,7 +65,7 @@ def test_insight_items_payload_can_render_cli_and_mcp_keys() -> None:
     assert cli_payload["total"] == 1
     assert json_object_list(cli_payload["archive_coverage"])[0]["insight_kind"] == "archive_coverage"
     assert mcp_payload["total"] == 1
-    assert json_object_list(mcp_payload["items"])[0]["provider_name"] == "claude-code"
+    assert json_object_list(mcp_payload["items"])[0]["source_name"] == "claude-code"
 
 
 def _seed_products(cli_workspace: CliWorkspace) -> None:
@@ -236,9 +236,9 @@ def test_insights_cost_rollups_json(cli_workspace: CliWorkspace) -> None:
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
     rollups = json_object_list(payload["cost_rollups"])
-    claude = next(item for item in rollups if item["provider_name"] == "claude-code")
+    claude = next(item for item in rollups if item["source_name"] == "claude-code")
     gpt = next(item for item in rollups if item["normalized_model"] == "gpt-4o")
-    unknown = next(item for item in rollups if item["provider_name"] == "chatgpt" and item["normalized_model"] is None)
+    unknown = next(item for item in rollups if item["source_name"] == "chatgpt" and item["normalized_model"] is None)
     assert claude["insight_kind"] == "cost_rollup"
     assert json_number(claude["total_usd"]) == pytest.approx(1.25)
     assert json_int(claude["priced_session_count"]) == 1
@@ -361,7 +361,7 @@ def test_insights_status_inherits_root_format_and_filters(cli_workspace: CliWork
     assert len(insights) == 1
     assert insights[0]["insight_name"] == "session_work_events"
     coverage = json_object_list(insights[0]["provider_coverage"])
-    assert coverage[0]["provider_name"] == "claude-code"
+    assert coverage[0]["source_name"] == "claude-code"
 
 
 def test_insights_status_plain(cli_workspace: CliWorkspace) -> None:
@@ -760,7 +760,7 @@ def test_session_insight_rebuild_preserves_profile_semantics_without_loading_ful
             INSERT INTO provider_events (
                 event_id,
                 conversation_id,
-                provider_name,
+                source_name,
                 event_index,
                 event_type,
                 timestamp,
@@ -865,7 +865,7 @@ def test_insights_analytics_json(cli_workspace: CliWorkspace) -> None:
     assert json_int(payload["total"]) == 1
     item = json_object_list(payload["archive_coverage"])[0]
     assert item["insight_kind"] == "archive_coverage"
-    assert item["provider_name"] == "claude-code"
+    assert item["source_name"] == "claude-code"
     assert json_int(item["conversation_count"]) == 2
     assert json_int(item["tool_use_count"]) == 2
 

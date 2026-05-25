@@ -22,7 +22,7 @@ async def list_session_tag_rollup_rows(
     params: list[object] = []
     where: list[str] = []
     if query.provider:
-        where.append("provider_name = ?")
+        where.append("source_name = ?")
         params.append(query.provider)
     if query.since:
         where.append("bucket_day >= date(?)")
@@ -40,7 +40,7 @@ async def list_session_tag_rollup_rows(
     """
     if where:
         sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY bucket_day DESC, provider_name, tag"
+    sql += " ORDER BY bucket_day DESC, source_name, tag"
 
     cursor = await conn.execute(sql, tuple(params))
     rows = await cursor.fetchall()
@@ -50,14 +50,14 @@ async def list_session_tag_rollup_rows(
 async def replace_session_tag_rollup_rows(
     conn: aiosqlite.Connection,
     *,
-    provider_name: str,
+    source_name: str,
     bucket_day: str,
     records: list[SessionTagRollupRecord],
     transaction_depth: int,
 ) -> None:
     await conn.execute(
-        "DELETE FROM session_tag_rollups WHERE provider_name = ? AND bucket_day = ?",
-        (provider_name, bucket_day),
+        "DELETE FROM session_tag_rollups WHERE source_name = ? AND bucket_day = ?",
+        (source_name, bucket_day),
     )
     if records:
         await conn.executemany(
@@ -65,7 +65,7 @@ async def replace_session_tag_rollup_rows(
             INSERT INTO session_tag_rollups (
                 tag,
                 bucket_day,
-                provider_name,
+                source_name,
                 materializer_version,
                 materialized_at,
                 source_updated_at,

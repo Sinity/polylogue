@@ -20,7 +20,7 @@ def _record_values(record: ActionEventRecord) -> tuple[object, ...]:
         record.timestamp,
         record.sort_key,
         record.sequence_index,
-        record.provider_name,
+        record.source_name,
         record.action_kind,
         record.tool_name,
         record.normalized_tool_name,

@@ -177,10 +177,10 @@ async def delete_session_insights_for_conversation_async(
     await replace_session_work_events(conn, conversation_id, [], transaction_depth)
     await replace_session_phases(conn, conversation_id, [], transaction_depth)
     if old_group is not None:
-        provider_name, bucket_day = old_group
+        source_name, bucket_day = old_group
         await conn.execute(
-            "DELETE FROM session_tag_rollups WHERE provider_name = ? AND bucket_day = ?",
-            (provider_name, bucket_day),
+            "DELETE FROM session_tag_rollups WHERE source_name = ? AND bucket_day = ?",
+            (source_name, bucket_day),
         )
         await refresh_async_provider_day_aggregates(
             conn,

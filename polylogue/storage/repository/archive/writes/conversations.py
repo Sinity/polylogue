@@ -158,7 +158,6 @@ def conversation_to_record(conversation: Conversation) -> ConversationRecord:
 
     return ConversationRecord(
         conversation_id=ConversationId(str(conversation.id)),
-        provider_name=conversation.provider,
         provider_conversation_id=provider_conversation_id(
             conversation_id=str(conversation.id),
             provider=conversation.provider,
@@ -177,7 +176,7 @@ def provider_event_to_record(event: ProviderEvent) -> ProviderEventRecord:
     return ProviderEventRecord(
         event_id=event.id,
         conversation_id=event.conversation_id,
-        provider_name=str(event.provider),
+        source_name=str(event.provider),
         event_index=event.event_index,
         event_type=event.event_type,
         timestamp=event.timestamp.isoformat() if event.timestamp else None,
@@ -415,7 +414,7 @@ async def save_via_backend(
                 await stats_q.upsert_conversation_stats(
                     conn,
                     conversation.conversation_id,
-                    conversation.provider_name,
+                    conversation.source_name,
                     messages,
                     backend.transaction_depth,
                 )
@@ -479,7 +478,7 @@ async def save_via_backend(
         await topology_edges_q.resolve_topology_edges_for_conversation(
             conn,
             conversation_id=str(conversation.conversation_id),
-            provider_name=conversation.provider_name,
+            source_name=conversation.source_name,
             provider_conversation_id=conversation.provider_conversation_id,
             resolved_at=now_iso,
         )
@@ -569,3 +568,4 @@ async def delete_conversation_via_backend(
     if deleted:
         invalidate_search_cache()
     return deleted
+

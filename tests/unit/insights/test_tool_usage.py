@@ -70,7 +70,7 @@ def _row(
     outputs: int = 0,
 ) -> ToolUsageRow:
     return {
-        "provider_name": provider,
+        "source_name": provider,
         "normalized_tool_name": tool,
         "action_kind": action_kind,
         "call_count": calls,
@@ -94,7 +94,7 @@ def _coverage(
     outputs: int = 0,
 ) -> ToolUsageProviderCoverageRow:
     return {
-        "provider_name": provider,
+        "source_name": provider,
         "conversation_count": conversations,
         "action_event_count": events,
         "distinct_tool_count": tools,
@@ -151,9 +151,9 @@ class TestBuildToolUsageInsight:
             query=ToolUsageInsightQuery(provider="claude-code"),
             materialized_at="2026-05-17T00:00:00+00:00",
         )
-        assert [entry.provider_name for entry in insight.entries] == ["claude-code"]
+        assert [entry.source_name for entry in insight.entries] == ["claude-code"]
         # Coverage is exhaustive even though entries are narrowed.
-        assert {entry.provider_name for entry in insight.provider_coverage} == {
+        assert {entry.source_name for entry in insight.provider_coverage} == {
             "claude-code",
             "codex",
             "chatgpt",
@@ -161,7 +161,7 @@ class TestBuildToolUsageInsight:
         assert insight.providers_with_data == 2
         assert insight.providers_without_data == 1
         assert insight.has_coverage_gaps is True
-        chatgpt = next(entry for entry in insight.provider_coverage if entry.provider_name == "chatgpt")
+        chatgpt = next(entry for entry in insight.provider_coverage if entry.source_name == "chatgpt")
         assert chatgpt.data_available is False
         assert chatgpt.action_event_count == 0
 
@@ -254,7 +254,7 @@ def _make_action_event(
         timestamp="2026-05-17T00:00:00+00:00",
         sort_key=0.0,
         sequence_index=0,
-        provider_name=provider,
+        source_name=provider,
         action_kind=action_kind,
         tool_name=tool,
         normalized_tool_name=tool,
@@ -281,7 +281,7 @@ class TestListToolUsageInsightsEndToEnd:
         conv_id: str,
         provider: str,
     ) -> None:
-        conv = make_conversation(conv_id, provider_name=provider, provider_meta={"source": "inbox"})
+        conv = make_conversation(conv_id, source_name=provider, provider_meta={"source": "inbox"})
         msgs = [make_message(f"{conv_id}-msg", conv_id, text="Hi")]
         await repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
@@ -352,7 +352,7 @@ class TestListToolUsageInsightsEndToEnd:
         read = next(
             entry
             for entry in insight.entries
-            if entry.provider_name == "claude-code" and entry.normalized_tool_name == "Read"
+            if entry.source_name == "claude-code" and entry.normalized_tool_name == "Read"
         )
         assert read.call_count == 2
         assert read.conversation_count == 1
@@ -361,12 +361,12 @@ class TestListToolUsageInsightsEndToEnd:
         bash = next(
             entry
             for entry in insight.entries
-            if entry.provider_name == "claude-code" and entry.normalized_tool_name == "Bash"
+            if entry.source_name == "claude-code" and entry.normalized_tool_name == "Bash"
         )
         assert bash.output_text_calls == 1
         assert bash.affected_path_calls == 0
         # Coverage covers both providers
-        providers = {entry.provider_name for entry in insight.provider_coverage}
+        providers = {entry.source_name for entry in insight.provider_coverage}
         assert providers == {"claude-code", "codex"}
 
     async def test_coverage_reports_provider_without_action_events(
@@ -397,11 +397,11 @@ class TestListToolUsageInsightsEndToEnd:
 
         result = await list_tool_usage_insights(db_path=db_path)
         insight = result[0]
-        chatgpt = next(entry for entry in insight.provider_coverage if entry.provider_name == "chatgpt")
+        chatgpt = next(entry for entry in insight.provider_coverage if entry.source_name == "chatgpt")
         assert chatgpt.conversation_count == 1
         assert chatgpt.action_event_count == 0
         assert chatgpt.data_available is False
-        cc = next(entry for entry in insight.provider_coverage if entry.provider_name == "claude-code")
+        cc = next(entry for entry in insight.provider_coverage if entry.source_name == "claude-code")
         assert cc.data_available is True
         assert insight.has_coverage_gaps is True
         assert insight.providers_without_data == 1
@@ -439,7 +439,7 @@ def test_envelope_serializes_to_jsonable_dict() -> None:
     assert payload["insight_kind"] == "tool_usage"
     assert payload["materializer_version"] == TOOL_USAGE_INSIGHT_VERSION
     assert payload["has_coverage_gaps"] is True
-    assert {entry["provider_name"] for entry in payload["provider_coverage"]} == {
+    assert {entry["source_name"] for entry in payload["provider_coverage"]} == {
         "claude-code",
         "chatgpt",
     }

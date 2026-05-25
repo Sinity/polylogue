@@ -45,7 +45,7 @@ def _make_db(path: Path) -> sqlite3.Connection:
     conn.execute(
         """CREATE TABLE raw_conversations (
             raw_id TEXT PRIMARY KEY,
-            provider_name TEXT NOT NULL DEFAULT '',
+            source_name TEXT NOT NULL DEFAULT '',
             source_path TEXT NOT NULL DEFAULT '',
             blob_size INTEGER NOT NULL DEFAULT 0,
             acquired_at TEXT NOT NULL DEFAULT ''
@@ -146,7 +146,7 @@ def test_db_reference_alone_protects_blob(tmp_path: Path) -> None:
     _age_blob(blob_store, blob_hash, seconds=MIN_AGE_S + 5)
 
     conn.execute(
-        "INSERT INTO raw_conversations (raw_id, provider_name, source_path, blob_size, acquired_at) "
+        "INSERT INTO raw_conversations (raw_id, source_name, source_path, blob_size, acquired_at) "
         "VALUES (?, 'claude', 'x.json', 0, '2024-01-01')",
         (blob_hash,),
     )
@@ -201,7 +201,7 @@ def test_concurrent_acquire_and_gc_never_deletes_referenced(tmp_path: Path) -> N
                 try:
                     conn.execute(
                         "INSERT OR REPLACE INTO raw_conversations "
-                        "(raw_id, provider_name, source_path, blob_size, acquired_at) "
+                        "(raw_id, source_name, source_path, blob_size, acquired_at) "
                         "VALUES (?, 'claude', 'x.json', 0, '2024-01-01')",
                         (blob_hash,),
                     )
@@ -302,7 +302,7 @@ def test_hypothesis_lease_invariant_under_random_interleavings(
         try:
             conn.execute(
                 "INSERT OR REPLACE INTO raw_conversations "
-                "(raw_id, provider_name, source_path, blob_size, acquired_at) "
+                "(raw_id, source_name, source_path, blob_size, acquired_at) "
                 "VALUES (?, 'claude', 'x.json', 0, '2024-01-01')",
                 (hashes[idx],),
             )

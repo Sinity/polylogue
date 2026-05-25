@@ -526,10 +526,10 @@ def resolve_corpus_specs(
     registry: SchemaRegistryLike | None = None,
 ) -> tuple[CorpusSpec, ...]:
     source_kind = CorpusSourceKind(source)
-    provider_names = tuple(providers) if providers is not None else None
+    source_names = tuple(providers) if providers is not None else None
     if source_kind is CorpusSourceKind.DEFAULT:
         return build_default_corpus_specs(
-            providers=provider_names or (),
+            providers=source_names or (),
             count=count,
             messages_min=messages_min,
             messages_max=messages_max,
@@ -543,8 +543,8 @@ def resolve_corpus_specs(
     from polylogue.schemas.operator.inference import list_inferred_corpus_specs
 
     inferred_specs = list_inferred_corpus_specs(registry=registry)
-    if provider_names is not None:
-        allowed = set(provider_names)
+    if source_names is not None:
+        allowed = set(source_names)
         inferred_specs = tuple(spec for spec in inferred_specs if spec.provider in allowed)
     return tuple(
         spec.with_generation_overrides(

@@ -138,7 +138,7 @@ def _seed_initial_ingest(proc: LiveBatchProcessor, path: Path, *, session_id: st
         conn.execute(
             """
             INSERT OR REPLACE INTO conversations
-                (conversation_id, provider_name, provider_conversation_id, title,
+                (conversation_id, source_name, provider_conversation_id, title,
                  content_hash, version, raw_id, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,

@@ -478,7 +478,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedConvers
             git_repo_url_typed = repo_val.strip()
 
     return ParsedConversation(
-        provider_name=Provider.CODEX,
+        source_name=Provider.CODEX,
         provider_conversation_id=session_id,
         title=session_id,
         created_at=session_timestamp,

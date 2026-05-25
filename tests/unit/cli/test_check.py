@@ -61,7 +61,6 @@ def _find_named_check(payload: JSONDocument, name: str) -> JSONDocument:
 def _insert_raw_blob(
     *,
     db_path: Path,
-    provider_name: str,
     source_name: str,
     source_path: str,
     raw_content: bytes,
@@ -73,13 +72,12 @@ def _insert_raw_blob(
         conn.execute(
             """
             INSERT INTO raw_conversations (
-                raw_id, provider_name, source_name, source_path, source_index,
+                raw_id, source_name, source_path, source_index,
                 blob_size, acquired_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 raw_id,
-                provider_name,
                 source_name,
                 source_path,
                 0,
@@ -540,7 +538,7 @@ class TestCheckCommand:
             conn.execute(
                 """
                 INSERT INTO conversations (
-                    conversation_id, provider_name, provider_conversation_id,
+                    conversation_id, source_name, provider_conversation_id,
                     title, created_at, updated_at, content_hash, version
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -912,8 +910,7 @@ class TestCheckCommandSupplementary:
         """`doctor --schemas` reports and persists legitimate raw quarantine failures."""
         raw_id = _insert_raw_blob(
             db_path=cli_workspace["db_path"],
-            provider_name="codex",
-            source_name="codex",
+                        source_name="codex",
             source_path="/tmp/session.jsonl",
             raw_content=(
                 b'{"type":"session_meta"}\nnot json at all\n{"type":"response_item","payload":{"type":"message"}}'
@@ -1080,7 +1077,6 @@ class TestCheckCommandSupplementary:
             ArtifactObservationRecord(
                 observation_id="obs-1",
                 raw_id="raw-1",
-                provider_name="chatgpt",
                 payload_provider=Provider.CHATGPT,
                 source_name="chatgpt",
                 source_path="/tmp/chatgpt.json",
@@ -1149,7 +1145,7 @@ class TestCheckCommandSupplementary:
 
         fake_rows = [
             ArtifactCohortSummary(
-                provider_name="claude-code",
+                source_name="claude-code",
                 payload_provider=Provider.CLAUDE_CODE,
                 artifact_kind="agent_sidecar_meta",
                 support_status=ArtifactSupportStatus.RECOGNIZED_UNPARSED,

@@ -68,7 +68,7 @@ def _edge_kind(record: ConversationRecord) -> TopologyEdgeKind:
 def _node_from_record(record: ConversationRecord, *, depth: int, is_root: bool) -> TopologyNode:
     return TopologyNode(
         conversation_id=ConversationId(str(record.conversation_id)),
-        provider_name=record.provider_name,
+        source_name=record.source_name,
         title=record.title,
         depth=depth,
         is_root=is_root,

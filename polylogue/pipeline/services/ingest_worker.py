@@ -203,7 +203,6 @@ class ConversationData:
 
     conversation_id: str
     content_hash: str
-    provider_name: str
 
     # Tuple matching INSERT INTO conversations column order
     conversation_tuple: ConversationTuple
@@ -220,7 +219,7 @@ class ConversationData:
     # list[tuple] matching INSERT INTO provider_events column order
     provider_event_tuples: list[ProviderEventTuple] = field(default_factory=list)
 
-    # (conversation_id, provider_name, msg_count, word_count, tool_use_count, thinking_count)
+    # (conversation_id, source_name, msg_count, word_count, tool_use_count, thinking_count)
     stats_tuple: StatsTuple | tuple[()] = ()
 
     # Attachments are rare; keep as list of simple tuples
@@ -473,7 +472,7 @@ def _build_stream_parse_plan(
         )
         return None
 
-    runtime_provider = Provider.from_string(payload_provider or context.raw_record.provider_name)
+    runtime_provider = Provider.from_string(payload_provider or context.raw_record.source_name)
     if runtime_provider not in STREAM_RECORD_PROVIDERS:
         detected_provider = detect_provider(sample_payloads)
         if detected_provider not in STREAM_RECORD_PROVIDERS:
@@ -504,7 +503,7 @@ def _build_fast_stream_parse_plan(
     *,
     payload_provider: str | None,
 ) -> _ParsePlan | None:
-    runtime_provider = Provider.from_string(payload_provider or context.raw_record.provider_name)
+    runtime_provider = Provider.from_string(payload_provider or context.raw_record.source_name)
     if runtime_provider not in STREAM_RECORD_PROVIDERS:
         return None
 
@@ -775,7 +774,7 @@ def ingest_record(
             error=error,
         )
 
-    if _is_stream_record_provider(raw_record.source_path, stored_payload_provider or raw_record.provider_name):
+    if _is_stream_record_provider(raw_record.source_path, stored_payload_provider or raw_record.source_name):
         if validation_mode is ValidationMode.OFF and (
             stream_plan := _build_fast_stream_parse_plan(context, payload_provider=stored_payload_provider)
         ):
@@ -791,7 +790,7 @@ def ingest_record(
         envelope = build_raw_payload_envelope(
             context.raw_source,
             source_path=raw_record.source_path,
-            fallback_provider=raw_record.provider_name,
+            fallback_provider=raw_record.source_name or "",
             payload_provider=stored_payload_provider,
         )
     except Exception as exc:
@@ -819,7 +818,7 @@ def _conversation_tuple(conversation: MaterializedConversation, *, raw_id: str |
         source_name = raw if isinstance(raw, str) else ""
     return (
         conversation.conversation_id,
-        conversation.provider_name,
+        conversation.source_name,
         conversation.provider_conversation_id,
         conversation.title,
         conversation.created_at,
@@ -851,7 +850,7 @@ def _message_tuple(conversation: MaterializedConversation, message: Materialized
         1,
         message.parent_message_id,
         message.branch_index,
-        conversation.provider_name,
+        conversation.source_name,
         message.word_count,
         message.has_tool_use,
         message.has_thinking,
@@ -925,7 +924,7 @@ def _dedupe_by_key_preserve_last(items: list[_TupleT], key: Callable[[_TupleT], 
 def _stats_tuple(conversation: MaterializedConversation, message_tuples: list[MessageTuple]) -> StatsTuple:
     return (
         conversation.conversation_id,
-        conversation.provider_name,
+        conversation.source_name,
         len(message_tuples),
         sum(message[11] for message in message_tuples),
         sum(message[12] for message in message_tuples),
@@ -946,7 +945,7 @@ def _provider_event_tuples(
             (
                 event.event_id,
                 event.conversation_id,
-                event.provider_name,
+                event.source_name,
                 event.event_index,
                 event.event_type,
                 projection.normalized_kind,
@@ -1036,7 +1035,6 @@ def _transform_to_tuples(
     return ConversationData(
         conversation_id=materialized.conversation_id,
         content_hash=materialized.content_hash,
-        provider_name=materialized.provider_name,
         conversation_tuple=_conversation_tuple(materialized, raw_id=raw_id),
         message_tuples=message_tuples,
         block_tuples=block_tuples,
@@ -1083,7 +1081,7 @@ def _action_event_tuple(
         _timestamp_iso_for_action_event(event),
         message.sort_key,
         event.sequence_index,
-        conversation.provider_name,
+        conversation.source_name,
         event.kind.value,
         event.tool_name,
         event.normalized_tool_name,
@@ -1140,7 +1138,7 @@ def _build_action_event_tuples(
     """
     from polylogue.archive.action_event.action_events import build_action_events, build_tool_calls_from_content_blocks
 
-    provider = Provider.from_string(conversation.provider_name)
+    provider = Provider.from_string(conversation.source_name)
     action_tuples: list[ActionEventTuple] = []
 
     for message in conversation.messages:
@@ -1170,3 +1168,4 @@ def _build_action_event_tuples(
 
 
 __all__ = ["ConversationData", "IngestRecordResult", "ingest_record"]
+

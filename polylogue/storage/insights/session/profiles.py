@@ -303,7 +303,7 @@ def build_session_profile_record(
         input_high_water_mark=source_updated_at,
         input_high_water_mark_source=classify_profile_hwm_source(profile.updated_at),
         input_row_count=profile.message_count,
-        provider_name=profile.provider,
+        source_name=profile.provider,
         title=profile.title,
         first_message_at=profile.first_message_at.isoformat() if profile.first_message_at else None,
         last_message_at=profile.last_message_at.isoformat() if profile.last_message_at else None,
@@ -364,7 +364,7 @@ def hydrate_session_profile(record: SessionProfileRecord) -> SessionProfile:
     merged_payload: SessionProfileDocument = {
         "conversation_id": str(record.conversation_id),
         "logical_conversation_id": str(record.logical_conversation_id),
-        "provider": record.provider_name,
+        "provider": record.source_name,
         "title": record.title,
         "inferred_topic": record.inference_payload.inferred_topic,
         "inferred_topic_source": record.inference_payload.inferred_topic_source,

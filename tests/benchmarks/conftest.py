@@ -228,7 +228,7 @@ async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42
         conv_records.append(
             make_conversation(
                 conversation_id=conv_id,
-                provider_name=provider,
+                source_name=provider,
                 provider_conversation_id=f"prov-{conv_index:05d}",
                 title=f"Session {conv_index}: {_generate_realistic_text(rng, 'user', 0)[:60]}",
                 created_at=f"2025-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d}T{rng.randint(0, 23):02d}:00:00Z",
@@ -264,7 +264,7 @@ async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42
                     text=text,
                     timestamp=f"2025-01-01T{(j * 3) % 24:02d}:{(j * 7) % 60:02d}:00Z",
                     content_hash=_make_content_hash(f"msg-{conv_index}-{j}"),
-                    provider_name=provider,
+                    source_name=provider,
                     word_count=len(text.split()),
                     has_tool_use=has_tool,
                     has_thinking=has_think,
@@ -279,7 +279,7 @@ async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42
     for msg in all_msgs:
         msgs_by_conv[msg.conversation_id].append(msg)
 
-    provider_by_cid = {str(r.conversation_id): r.provider_name for r in conv_records}
+    provider_by_cid = {str(r.conversation_id): r.source_name for r in conv_records}
 
     async with backend.bulk_connection():
         for i, record in enumerate(conv_records, start=1):

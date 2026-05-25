@@ -9,7 +9,6 @@ from polylogue.types import ArtifactSupportStatus, Provider, ValidationMode, Val
 
 class RawConversationRecord(BaseModel):
     raw_id: str
-    provider_name: str
     payload_provider: Provider | None = None
     source_name: str | None = None
     source_path: str
@@ -27,7 +26,7 @@ class RawConversationRecord(BaseModel):
     validation_mode: ValidationMode | None = None
     detection_warnings: str | None = None
 
-    @field_validator("raw_id", "provider_name", "source_path")
+    @field_validator("raw_id", "source_name", "source_path")
     @classmethod
     def non_empty_string(cls, v: str) -> str:
         if not v or not v.strip():
@@ -70,7 +69,6 @@ class RawConversationRecord(BaseModel):
 class ArtifactObservationRecord(BaseModel):
     observation_id: str
     raw_id: str
-    provider_name: str
     payload_provider: Provider | None = None
     source_name: str | None = None
     source_path: str
@@ -97,7 +95,7 @@ class ArtifactObservationRecord(BaseModel):
     @field_validator(
         "observation_id",
         "raw_id",
-        "provider_name",
+        "source_name",
         "source_path",
         "artifact_kind",
         "classification_reason",

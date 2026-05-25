@@ -148,7 +148,7 @@ async def evaluate_raw_artifacts(
                     raw_record.raw_id,
                     status=ValidationStatus.SKIPPED,
                     mode=mode,
-                    provider=Provider.from_string(raw_record.provider_name),
+                    provider=Provider.from_string(raw_record.source_name),
                     payload_provider=raw_record.payload_provider,
                 )
             result.records.append(
@@ -158,7 +158,7 @@ async def evaluate_raw_artifacts(
                     validation_status=ValidationStatus.SKIPPED,
                     validation_error=None,
                     parse_error=None,
-                    canonical_provider=Provider.from_string(raw_record.provider_name),
+                    canonical_provider=Provider.from_string(raw_record.source_name),
                     payload_provider=raw_record.payload_provider,
                 )
             )

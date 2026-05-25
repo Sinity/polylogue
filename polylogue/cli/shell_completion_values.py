@@ -182,7 +182,7 @@ def complete_conversation_ids(
         for conv in conversations:
             cid = str(conv.id)
             title = conv.title or ""
-            provider_name = str(conv.provider)
+            source_name = str(conv.provider)
             display = title or cid
             if current and not (
                 cid.startswith(current) or (":" in cid and current in cid) or (title and current_lower in title.lower())
@@ -191,7 +191,7 @@ def complete_conversation_ids(
             items.append(
                 CompletionItem(
                     cid,
-                    help=f"{provider_name} \u00b7 {_trim_help(display)}",
+                    help=f"{source_name} \u00b7 {_trim_help(display)}",
                 )
             )
         items.sort(key=lambda item: item.value)

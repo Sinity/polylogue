@@ -56,7 +56,7 @@ def _make_gc_db(path: Path) -> sqlite3.Connection:
         """
         CREATE TABLE raw_conversations (
             raw_id TEXT PRIMARY KEY,
-            provider_name TEXT NOT NULL DEFAULT '',
+            source_name TEXT NOT NULL DEFAULT '',
             source_path TEXT NOT NULL DEFAULT '',
             blob_size INTEGER NOT NULL DEFAULT 0,
             acquired_at TEXT NOT NULL DEFAULT ''
@@ -303,7 +303,7 @@ def test_gc_skips_blobs_with_db_reference(tmp_path: Path) -> None:
 
     h, _ = store.write_from_bytes(b"still-referenced")
     conn.execute(
-        "INSERT INTO raw_conversations (raw_id, provider_name, source_path, blob_size, acquired_at) "
+        "INSERT INTO raw_conversations (raw_id, source_name, source_path, blob_size, acquired_at) "
         "VALUES (?, 'claude', 'src.json', 1, '2025-01-01')",
         (h,),
     )
@@ -411,7 +411,7 @@ def test_lease_predicate_and_reference_predicate_are_independent(tmp_path: Path)
 
     # 2. Reference only.
     conn.execute(
-        "INSERT INTO raw_conversations (raw_id, provider_name, source_path, blob_size, acquired_at) "
+        "INSERT INTO raw_conversations (raw_id, source_name, source_path, blob_size, acquired_at) "
         "VALUES (?, 'p', 's', 0, 't')",
         (blob,),
     )

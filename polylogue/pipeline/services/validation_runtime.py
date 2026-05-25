@@ -47,7 +47,7 @@ def _build_validation_envelope(
     return build_raw_payload_envelope(
         raw_source,
         source_path=raw_record.source_path,
-        fallback_provider=raw_record.provider_name,
+        fallback_provider=raw_record.source_name or "",
         payload_provider=payload_provider,
     )
 
@@ -95,7 +95,7 @@ def _validate_record_sync(
     drift_counts_delta: dict[str, int] = {}
 
     stored_payload_provider = _normalize_payload_provider(raw_record)
-    canonical_provider = Provider.from_string(stored_payload_provider or raw_record.provider_name)
+    canonical_provider = Provider.from_string(stored_payload_provider or raw_record.source_name)
     payload_provider: Provider | None = (
         Provider.from_string(stored_payload_provider) if stored_payload_provider else None
     )
@@ -163,7 +163,7 @@ def _validate_record_sync(
         logger.warning(
             "Malformed JSONL lines ignored in advisory mode",
             raw_id=raw_record.raw_id,
-            provider=raw_record.provider_name,
+            provider=raw_record.source_name,
             malformed_lines=malformed_lines,
         )
 
@@ -229,7 +229,7 @@ def _validate_record_sync(
             raw_id=raw_record.raw_id[:16],
             elapsed_s=round(total_elapsed, 2),
             blob_mb=round(raw_record.blob_size / (1024 * 1024), 1),
-            provider=raw_record.provider_name,
+            provider=raw_record.source_name,
             status=str(validation_status),
         )
 

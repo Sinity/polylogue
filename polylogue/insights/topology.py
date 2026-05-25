@@ -76,7 +76,7 @@ class ConversationRef(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     conversation_id: ConversationId
-    provider_name: str = ""
+    source_name: str = ""
     title: str | None = None
     depth: int = 0
     """Distance from the topology root (root has depth 0)."""
@@ -88,7 +88,7 @@ class TopologyNode(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     conversation_id: ConversationId
-    provider_name: str = ""
+    source_name: str = ""
     title: str | None = None
     depth: int = 0
     """Distance from the topology root (root has depth 0)."""
@@ -100,7 +100,7 @@ class TopologyNode(BaseModel):
 
         return ConversationRef(
             conversation_id=self.conversation_id,
-            provider_name=self.provider_name,
+            source_name=self.source_name,
             title=self.title,
             depth=self.depth,
         )

@@ -276,7 +276,7 @@ class TestToolErrorEnvelopes:
 
         brief = ResumeBrief(
             session_id="conv-123",
-            facts=ResumeFacts(conversation_id="conv-123", provider_name="claude-code", message_count=2),
+            facts=ResumeFacts(conversation_id="conv-123", source_name="claude-code", message_count=2),
             inferences=ResumeInferences(),
             provenance=ResumeProvenance(
                 materializer_version=RESUME_BRIEF_MATERIALIZER_VERSION,

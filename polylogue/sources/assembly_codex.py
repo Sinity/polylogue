@@ -85,7 +85,7 @@ class CodexAssemblySpec:
             provider_meta["thread_name"] = name
             provider_meta["title_source"] = "session-index:thread-name"
             return ParsedConversation(
-                provider_name=conv.provider_name,
+                source_name=conv.source_name,
                 provider_conversation_id=conv.provider_conversation_id,
                 title=name,
                 created_at=conv.created_at,
@@ -107,7 +107,7 @@ class CodexAssemblySpec:
                     provider_meta = dict(conv.provider_meta) if conv.provider_meta else {}
                     provider_meta["title_source"] = "first-user-message"
                     return ParsedConversation(
-                        provider_name=conv.provider_name,
+                        source_name=conv.source_name,
                         provider_conversation_id=conv.provider_conversation_id,
                         title=preview,
                         created_at=conv.created_at,

@@ -63,7 +63,7 @@ def sample_conversation_id() -> str:
     """Create a sample conversation for testing."""
     conversation = make_conversation(
         "test-conv-1",
-        provider_name="test-provider",
+        source_name="test-provider",
         title="Test Conversation",
         created_at="2024-01-01T10:00:00Z",
         updated_at="2024-01-01T10:00:10Z",
@@ -93,7 +93,7 @@ def sample_conversation_with_json() -> str:
     """Create a conversation with JSON content (tool use)."""
     conversation = make_conversation(
         "test-conv-json",
-        provider_name="test-provider",
+        source_name="test-provider",
         title="JSON Test",
         created_at="2024-01-01T10:00:00Z",
         updated_at="2024-01-01T10:00:05Z",

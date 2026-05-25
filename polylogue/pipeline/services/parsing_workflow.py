@@ -348,7 +348,7 @@ async def parse_from_raw(
             progress_callback(0, desc="Ingesting")
         total_raw = 0
         async for batch_ids in _iter_raw_id_batches_async(
-            service.repository.iter_raw_headers(provider_name=provider),
+            service.repository.iter_raw_headers(source_name=provider),
             max_records=service.raw_batch_size,
             max_blob_bytes=service.raw_batch_blob_limit_bytes,
         ):

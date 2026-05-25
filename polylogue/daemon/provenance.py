@@ -48,7 +48,6 @@ class ProvenanceRow:
     """Joined conversation + raw row used to assemble a response."""
 
     conversation_id: str
-    provider_name: str
     content_hash: str
     raw_id: str | None
     source_path: str | None
@@ -99,7 +98,7 @@ def fetch_provenance_row(conversation_id: str) -> ProvenanceRow | None:
             """
             SELECT
                 c.conversation_id   AS conversation_id,
-                c.provider_name     AS provider_name,
+                c.source_name     AS source_name,
                 c.content_hash      AS content_hash,
                 c.raw_id            AS raw_id,
                 r.source_path       AS source_path,
@@ -125,11 +124,10 @@ def fetch_provenance_row(conversation_id: str) -> ProvenanceRow | None:
         return None
     return ProvenanceRow(
         conversation_id=str(row["conversation_id"]),
-        provider_name=str(row["provider_name"] or ""),
+        source_name=(str(row["source_name"]) if row["source_name"] is not None else None),
         content_hash=str(row["content_hash"] or ""),
         raw_id=(str(row["raw_id"]) if row["raw_id"] is not None else None),
         source_path=(str(row["source_path"]) if row["source_path"] is not None else None),
-        source_name=(str(row["source_name"]) if row["source_name"] is not None else None),
         blob_size=(int(row["blob_size"]) if row["blob_size"] is not None else None),
         acquired_at=(str(row["acquired_at"]) if row["acquired_at"] is not None else None),
         file_mtime=(str(row["file_mtime"]) if row["file_mtime"] is not None else None),
@@ -251,7 +249,7 @@ def build_provenance_payload(
 
     payload: dict[str, object] = {
         "conversation_id": row.conversation_id,
-        "provider": row.provider_name or None,
+        "provider": row.source_name or None,
         "content_hash": row.content_hash or None,
         "raw_id": row.raw_id,
         "source_path_display": sanitized_path,

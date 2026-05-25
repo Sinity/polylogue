@@ -424,7 +424,7 @@ class TestPolylogueSearch:
         assert results is not None
         assert len(results.hits) <= 5
         if results.hits:
-            assert all(hit.provider_name for hit in results.hits)
+            assert all(hit.source_name for hit in results.hits)
 
 
 class TestPolylogueEdgeCases:

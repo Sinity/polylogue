@@ -23,7 +23,7 @@ def test_timestamp_sort_key_normalizes_millisecond_epoch() -> None:
 
 def test_materialize_conversation_canonicalizes_epoch_conversation_timestamps(tmp_path: Path) -> None:
     conversation = ParsedConversation(
-        provider_name=Provider.CODEX,
+        source_name=Provider.CODEX,
         provider_conversation_id="codex-epoch",
         title="Epoch timestamps",
         created_at="1705312200.123",

@@ -255,7 +255,7 @@ def test_session_insight_status_requires_latency_rows_for_ready_profiles() -> No
             );
             CREATE TABLE session_profiles (
                 conversation_id TEXT PRIMARY KEY,
-                provider_name TEXT NOT NULL,
+                source_name TEXT NOT NULL,
                 canonical_session_date TEXT,
                 first_message_at TEXT,
                 last_message_at TEXT,
@@ -282,7 +282,7 @@ def test_session_insight_status_requires_latency_rows_for_ready_profiles() -> No
             VALUES ('stale-latency', NULL, 3.0, '2026-05-01T12:00:00Z');
 
             INSERT INTO session_profiles (
-                conversation_id, provider_name, canonical_session_date, tags_json, auto_tags_json,
+                conversation_id, source_name, canonical_session_date, tags_json, auto_tags_json,
                 first_message_at, last_message_at, source_updated_at, evidence_payload_json,
                 materializer_version, source_sort_key, work_event_count, phase_count
             ) VALUES

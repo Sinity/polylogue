@@ -516,7 +516,7 @@ def _generic_messages_conversation(
     title = optional_string(payload.get("title")) or optional_string(payload.get("name")) or fallback_id
     conversation_id = optional_string(payload.get("id")) or fallback_id
     return ParsedConversation(
-        provider_name=provider,
+        source_name=provider,
         provider_conversation_id=conversation_id,
         title=title,
         created_at=None,

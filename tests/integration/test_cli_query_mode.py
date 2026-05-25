@@ -357,7 +357,7 @@ def test_cli_completion_tag_and_tool_values_are_archive_backed(tmp_path: Path) -
                 timestamp,
                 sort_key,
                 sequence_index,
-                provider_name,
+                source_name,
                 action_kind,
                 tool_name,
                 normalized_tool_name,
@@ -405,7 +405,7 @@ def test_cli_completion_repo_cwd_and_read_ids_are_archive_backed(tmp_path: Path)
             INSERT OR REPLACE INTO session_profiles (
                 conversation_id,
                 materialized_at,
-                provider_name,
+                source_name,
                 title,
                 repo_names_json,
                 evidence_payload_json,

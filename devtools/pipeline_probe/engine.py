@@ -144,17 +144,17 @@ def _workspace_for_request(request: PipelineProbeRequest) -> VerificationWorkspa
     return create_verification_workspace(workdir, prefix="polylogue-pipeline-probe-")
 
 
-def _effective_provider_name(record: RawConversationRecord) -> str:
+def _effective_source_name(record: RawConversationRecord) -> str:
     payload_provider = record.payload_provider
     if isinstance(payload_provider, Provider):
         return payload_provider.value
     if payload_provider is not None:
         return str(payload_provider)
-    return record.provider_name
+    return record.source_name or ""
 
 
 def _source_bucket_name(record: RawConversationRecord) -> str:
-    return record.source_name or "<unknown>"
+    return record.source_name or "" or "<unknown>"
 
 
 def _normalize_record_for_replay(record: RawConversationRecord) -> RawConversationRecord:
@@ -283,7 +283,7 @@ def _sample_provider_records(
 def _provider_counts(records: list[RawConversationRecord]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for record in records:
-        provider = _effective_provider_name(record)
+        provider = _effective_source_name(record)
         counts[provider] = counts.get(provider, 0) + 1
     return dict(sorted(counts.items()))
 
@@ -398,21 +398,21 @@ def _build_archive_manifest(
 
     by_provider: dict[str, list[RawConversationRecord]] = {}
     for record in candidates_with_blobs:
-        by_provider.setdefault(_effective_provider_name(record), []).append(record)
+        by_provider.setdefault(_effective_source_name(record), []).append(record)
 
     rng = random.Random(seed)
     sampled_records: list[RawConversationRecord] = []
     sampled_by_provider: dict[str, int] = {}
     available_by_provider: dict[str, int] = {}
-    for provider_name in sorted(by_provider):
-        provider_records = by_provider[provider_name]
-        available_by_provider[provider_name] = len(provider_records)
+    for source_name in sorted(by_provider):
+        provider_records = by_provider[source_name]
+        available_by_provider[source_name] = len(provider_records)
         sampled = _sample_provider_records(
             records=provider_records,
             sample_size=sample_per_provider,
             rng=rng,
         )
-        sampled_by_provider[provider_name] = len(sampled)
+        sampled_by_provider[source_name] = len(sampled)
         sampled_records.extend(sampled)
 
     if not sampled_records:
@@ -429,7 +429,7 @@ def _build_archive_manifest(
 
     sampled_records.sort(
         key=lambda record: (
-            _effective_provider_name(record),
+            _effective_source_name(record),
             _source_bucket_name(record),
             record.acquired_at,
             record.raw_id,
@@ -648,8 +648,8 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
             raise ValueError("--count must be positive")
         if corpus_request.messages_min <= 0 or corpus_request.messages_max < corpus_request.messages_min:
             raise ValueError("--messages-min/--messages-max must define a positive inclusive range")
-        provider_name = _resolve_synthetic_provider(request)
-        source_root = workdir / "sources" / provider_name
+        source_name = _resolve_synthetic_provider(request)
+        source_root = workdir / "sources" / source_name
 
         stage_sequence = _probe_stage_sequence(probe_mode, request.stage)
 
@@ -659,7 +659,7 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
                 source_root=source_root,
             )
             config = Config(
-                sources=[Source(name=provider_name, path=source_root)],
+                sources=[Source(name=source_name, path=source_root)],
                 archive_root=archive_root,
                 render_root=render_root,
             )
@@ -668,13 +668,13 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
                 config=config,
                 request=request,
                 stage_sequence=stage_sequence,
-                source_names=[provider_name],
+                source_names=[source_name],
             )
 
         summary = {
             "probe": {
                 "input_mode": "synthetic",
-                "provider": provider_name,
+                "provider": source_name,
                 "corpus_source": corpus_request.source_kind.value,
                 "stage": request.stage,
                 "stage_sequence": _json_string_sequence(stage_sequence),

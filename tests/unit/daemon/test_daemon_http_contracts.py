@@ -548,11 +548,11 @@ class TestPrivacyContract:
                 ("c3", "Third conversation SECRET-C3", "Gamma content SECRET-C3"),
             ]:
                 conn.execute(
-                    "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id, title, content_hash, version) VALUES(?,?,?,?,?,?)",
+                    "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, title, content_hash, version) VALUES(?,?,?,?,?,?)",
                     (cid, "claude-code", f"p-{cid}", title, f"hash-{cid}", 1),
                 )
                 conn.execute(
-                    "INSERT INTO messages(message_id, conversation_id, role, text, provider_name, content_hash, version) VALUES(?,?,?,?,?,?,?)",
+                    "INSERT INTO messages(message_id, conversation_id, role, text, source_name, content_hash, version) VALUES(?,?,?,?,?,?,?)",
                     (f"m-{cid}", cid, "user", msg_text, "claude-code", f"mhash-{cid}", 1),
                 )
             conn.commit()

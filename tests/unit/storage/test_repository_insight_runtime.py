@@ -358,7 +358,7 @@ async def test_repository_raw_streams_iterators() -> None:
             header
             async for header in repo.iter_raw_headers(
                 source_names=["inbox"],
-                provider_name="chatgpt",
+                source_name="chatgpt",
                 require_unparsed=True,
                 require_unvalidated=True,
                 validation_statuses=["error"],
@@ -372,7 +372,7 @@ async def test_repository_raw_streams_iterators() -> None:
     mock_iter_headers.assert_called_once_with(
         conn,
         source_names=["inbox"],
-        provider_name="chatgpt",
+        source_name="chatgpt",
         require_unparsed=True,
         require_unvalidated=True,
         validation_statuses=["error"],

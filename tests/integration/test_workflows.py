@@ -132,8 +132,8 @@ async def test_full_workflow_per_provider(
     from polylogue.storage.search import search_messages
 
     convs = await conv_repo.list()
-    provider_names = {"claude-ai": "claude-ai"}  # provider name mapping in parser
-    expected_provider = provider_names.get(provider, provider)
+    source_names = {"claude-ai": "claude-ai"}  # provider name mapping in parser
+    expected_provider = source_names.get(provider, provider)
     convs = [c for c in convs if c.provider == expected_provider]
     assert len(convs) > 0, f"No conversations found for {provider}"
 

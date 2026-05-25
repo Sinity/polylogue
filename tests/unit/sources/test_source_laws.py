@@ -137,7 +137,7 @@ def _parsed_message(
 
 def _parsed_conversation(
     *,
-    provider_name: str | Provider,
+    source_name: str | Provider,
     provider_conversation_id: str,
     title: str | None,
     created_at: str | None,
@@ -146,7 +146,7 @@ def _parsed_conversation(
     provider_meta: dict[str, object] | None = None,
 ) -> ParsedConversation:
     return ParsedConversation(
-        provider_name=Provider.from_string(provider_name),
+        source_name=Provider.from_string(source_name),
         provider_conversation_id=provider_conversation_id,
         title=title,
         created_at=created_at,
@@ -254,12 +254,12 @@ def test_entry_payload_detection_overrides_misleading_grouped_fallback_law(
 
 @given(provider_payload_case_strategy(_CANONICAL_PROVIDERS))
 @settings(max_examples=35, suppress_health_check=[HealthCheck.too_slow])
-def test_parse_payload_generated_exports_produce_provider_named_conversations(case: tuple[str, object]) -> None:
+def test_parse_payload_generated_exports_produce_source_named_conversations(case: tuple[str, object]) -> None:
     """Runtime dispatch parses generated provider payloads into provider-owned conversations."""
     provider, payload = case
     conversations = parse_payload(provider, payload, "fallback-id")
     assert conversations
-    assert all(str(conversation.provider_name) == provider for conversation in conversations)
+    assert all(str(conversation.source_name) == provider for conversation in conversations)
     assert all(conversation.provider_conversation_id for conversation in conversations)
 
 
@@ -281,7 +281,7 @@ def test_parse_payload_accepts_provider_enum() -> None:
     conversations = parse_payload(Provider.CHATGPT, payload, "fallback-id")
 
     assert len(conversations) == 1
-    assert conversations[0].provider_name is Provider.CHATGPT
+    assert conversations[0].source_name is Provider.CHATGPT
 
 
 @pytest.mark.parametrize(
@@ -450,7 +450,7 @@ def test_iter_source_conversations_round_trips_generated_exports(case: object, u
         conversations = list(iter_source_conversations(source))
 
     assert conversations
-    assert all(str(conversation.provider_name) == generated["provider"] for conversation in conversations)
+    assert all(str(conversation.source_name) == generated["provider"] for conversation in conversations)
 
 
 @given(
@@ -484,7 +484,7 @@ def test_iter_source_conversations_with_raw_capture_contract(
         items = list(iter_source_conversations_with_raw(source, capture_raw=capture_raw))
 
     assert items
-    assert all(str(conversation.provider_name) == generated["provider"] for _, conversation in items)
+    assert all(str(conversation.source_name) == generated["provider"] for _, conversation in items)
     if capture_raw:
         assert all(raw_data is not None for raw_data, _ in items)
         assert all(raw_data.raw_bytes or raw_data.blob_hash for raw_data, _ in items if raw_data is not None)
@@ -512,7 +512,7 @@ def test_iter_source_conversations_accepts_grouped_json_extensions(case: tuple[s
         conversations = list(iter_source_conversations(Source(name=provider, path=path)))
 
     assert conversations
-    assert all(str(conversation.provider_name) == provider for conversation in conversations)
+    assert all(str(conversation.source_name) == provider for conversation in conversations)
 
 
 def test_parse_payload_depth_guard_contract() -> None:
@@ -693,7 +693,7 @@ def test_iter_source_conversations_with_raw_preserves_grouped_bytes_contract(
     if not raw_bytes and raw_data.blob_hash is not None:
         raw_bytes = get_blob_store().read_all(raw_data.blob_hash)
     assert needle in raw_bytes
-    assert conversation.provider_name == Provider.CLAUDE_CODE
+    assert conversation.source_name == Provider.CLAUDE_CODE
 
 
 def test_iter_source_conversations_with_raw_streams_plain_grouped_capture_to_blob_store(
@@ -725,7 +725,7 @@ def test_iter_source_conversations_with_raw_streams_plain_grouped_capture_to_blo
     assert raw_data.blob_hash is not None
     assert raw_data.raw_bytes == b""
     assert get_blob_store().read_all(raw_data.blob_hash) == content.encode("utf-8")
-    assert conversation.provider_name == Provider.CLAUDE_CODE
+    assert conversation.source_name == Provider.CLAUDE_CODE
 
 
 def test_iter_source_conversations_with_raw_streams_grouped_zip_capture_to_blob_store(
@@ -761,7 +761,7 @@ def test_iter_source_conversations_with_raw_streams_grouped_zip_capture_to_blob_
     assert raw_data.blob_hash is not None
     assert raw_data.raw_bytes == b""
     assert get_blob_store().read_all(raw_data.blob_hash) == content.encode("utf-8")
-    assert conversation.provider_name == Provider.CLAUDE_CODE
+    assert conversation.source_name == Provider.CLAUDE_CODE
 
 
 def test_iter_source_conversations_with_raw_assigns_source_indexes_for_multi_conversation_zip_contract(
@@ -857,7 +857,7 @@ def test_parse_drive_payload_contract(
 ) -> None:
     conversations = parse_drive_payload(provider, payload, "fallback")
     assert len(conversations) >= expected_count
-    assert all(conversation.provider_name == expected_provider for conversation in conversations)
+    assert all(conversation.source_name == expected_provider for conversation in conversations)
 
 
 def test_parse_payload_generic_messages_contract(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -872,7 +872,7 @@ def test_parse_payload_generic_messages_contract(monkeypatch: pytest.MonkeyPatch
     )
 
     assert len(conversations) == 1
-    assert conversations[0].provider_name == Provider.DRIVE
+    assert conversations[0].source_name == Provider.DRIVE
     assert conversations[0].provider_conversation_id == "conv-1"
     assert conversations[0].title == "Named"
     assert conversations[0].messages == sentinel_messages
@@ -884,7 +884,7 @@ def test_parse_payload_dispatches_chatgpt_bundle_items_exactly(monkeypatch: pyte
     def fake_parse(payload: object, fallback_id: str) -> ParsedConversation:
         calls.append((payload, fallback_id))
         return _parsed_conversation(
-            provider_name=Provider.CHATGPT,
+            source_name=Provider.CHATGPT,
             provider_conversation_id=fallback_id,
             title=fallback_id,
             created_at=None,
@@ -907,7 +907,7 @@ def test_parse_payload_dispatches_claude_code_messages_and_single_records(monkey
     def fake_parse_code(payload: object, fallback_id: str) -> ParsedConversation:
         calls.append((payload, fallback_id))
         return _parsed_conversation(
-            provider_name=Provider.CLAUDE_CODE,
+            source_name=Provider.CLAUDE_CODE,
             provider_conversation_id=fallback_id,
             title=fallback_id,
             created_at=None,
@@ -943,7 +943,7 @@ def test_parse_drive_payload_recurses_lists_and_detected_payloads(monkeypatch: p
     def fake_chunked(provider: str, payload: object, fallback_id: str) -> ParsedConversation:
         drive_calls.append((provider, payload, fallback_id))
         return _parsed_conversation(
-            provider_name=provider,
+            source_name=provider,
             provider_conversation_id=fallback_id,
             title=fallback_id,
             created_at=None,
@@ -960,7 +960,7 @@ def test_parse_drive_payload_recurses_lists_and_detected_payloads(monkeypatch: p
         parse_calls.append((provider, payload, fallback_id))
         return [
             _parsed_conversation(
-                provider_name=provider,
+                source_name=provider,
                 provider_conversation_id=fallback_id,
                 title=fallback_id,
                 created_at=None,
@@ -1124,7 +1124,7 @@ def test_find_sessions_index_and_enrichment_contract(tmp_path: Path) -> None:
     assert find_sessions_index(session_file) == index_file
 
     conversation = _parsed_conversation(
-        provider_name=Provider.CLAUDE_CODE,
+        source_name=Provider.CLAUDE_CODE,
         provider_conversation_id="session-1",
         title="session-1",
         created_at="2025-01-01T00:00:00Z",
@@ -1259,7 +1259,7 @@ def _parse_context(
         "pre_read_bytes",
         "expected_ids",
         "expected_provider_hint",
-        "expected_provider_name",
+        "expected_source_name",
         "expected_indexes",
         "expected_message_count",
     ),
@@ -1357,7 +1357,7 @@ def test_conversation_emitter_contract_matrix(
     pre_read_bytes: str | None,
     expected_ids: list[str] | None,
     expected_provider_hint: str,
-    expected_provider_name: str,
+    expected_source_name: str,
     expected_indexes: list[int | None],
     expected_message_count: int | None,
 ) -> None:
@@ -1373,7 +1373,7 @@ def test_conversation_emitter_contract_matrix(
     assert [raw_data.source_index for raw_data, _ in emitted if raw_data is not None] == expected_indexes
     assert all(raw_data is not None for raw_data, _ in emitted)
     assert all(raw_data.provider_hint == expected_provider_hint for raw_data, _ in emitted if raw_data is not None)
-    assert all(conversation.provider_name == expected_provider_name for _, conversation in emitted)
+    assert all(conversation.source_name == expected_source_name for _, conversation in emitted)
     if expected_ids is not None:
         assert [conversation.provider_conversation_id for _, conversation in emitted] == expected_ids
     if expected_message_count is not None:
@@ -1396,7 +1396,7 @@ def test_conversation_emitter_resolves_schema_for_payloads(monkeypatch: pytest.M
     fake_parse = MagicMock()
     fake_message = _parsed_message("m1", role="user", text="hello")
     fake_conversation = _parsed_conversation(
-        provider_name=Provider.CLAUDE_CODE,
+        source_name=Provider.CLAUDE_CODE,
         provider_conversation_id="session",
         title="session",
         created_at=None,
@@ -1470,7 +1470,7 @@ def test_conversation_emitter_reuses_jsonl_sniff_payloads_for_grouped_detection(
     assert emitted
     assert parse_calls == 1
     assert emitted[0][0] is not None and emitted[0][0].raw_bytes == raw
-    assert emitted[0][1].provider_name == Provider.CODEX
+    assert emitted[0][1].source_name == Provider.CODEX
     assert len(emitted[0][1].messages) == 2
 
 
@@ -1516,7 +1516,7 @@ def test_conversation_emitter_reuses_jsonl_sniff_payloads_for_individual_detecti
     assert parse_calls == 1
     assert [raw_data.source_index for raw_data, _ in emitted if raw_data is not None] == [0, 1]
     assert all(raw_data is not None for raw_data, _ in emitted)
-    assert all(conversation.provider_name == Provider.CHATGPT for _, conversation in emitted)
+    assert all(conversation.source_name == Provider.CHATGPT for _, conversation in emitted)
 
 
 def test_conversation_emitter_detects_individual_jsonl_provider_from_payloads(
@@ -1555,7 +1555,7 @@ def test_conversation_emitter_detects_individual_jsonl_provider_from_payloads(
     assert emitted
     assert [raw_data.source_index for raw_data, _ in emitted if raw_data is not None] == [0, 1]
     assert all(raw_data is not None for raw_data, _ in emitted)
-    assert all(conversation.provider_name == Provider.CHATGPT for _, conversation in emitted)
+    assert all(conversation.source_name == Provider.CHATGPT for _, conversation in emitted)
 
 
 def test_conversation_emitter_only_enriches_matching_claude_code_sessions_contract() -> None:
@@ -1582,7 +1582,7 @@ def test_conversation_emitter_only_enriches_matching_claude_code_sessions_contra
     )
     emitter = _ConversationEmitter(ctx)
     matching = _parsed_conversation(
-        provider_name=Provider.CLAUDE_CODE,
+        source_name=Provider.CLAUDE_CODE,
         provider_conversation_id="session-1",
         title="session-1",
         created_at=None,
@@ -1590,7 +1590,7 @@ def test_conversation_emitter_only_enriches_matching_claude_code_sessions_contra
         messages=[_parsed_message("m1", role="user", text="hello")],
     )
     other = _parsed_conversation(
-        provider_name=Provider.CHATGPT,
+        source_name=Provider.CHATGPT,
         provider_conversation_id="session-2",
         title="untouched",
         created_at=None,
@@ -1617,7 +1617,7 @@ def test_conversation_emitter_enriches_gemini_display_labels_contract() -> None:
     )
     emitter = _ConversationEmitter(ctx)
     conversation = _parsed_conversation(
-        provider_name=Provider.GEMINI,
+        source_name=Provider.GEMINI,
         provider_conversation_id="gemini-20250422-1234",
         title="gemini-20250422-1234",
         created_at=None,

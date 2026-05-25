@@ -797,7 +797,7 @@ class LiveBatchProcessor:
             jsonl_like = path.suffix.lower() == ".jsonl"
             if jsonl_like:
                 provider, parse_as_conversation = _jsonl_provider_and_conversation_artifact(path, fallback_provider)
-                provider_name = provider.value
+                source_name = provider.value
                 if not parse_as_conversation:
                     self._mark_excluded_cursor(path, stat, source_name=source_name)
                     continue
@@ -843,7 +843,7 @@ class LiveBatchProcessor:
                         )
             elif stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
                 provider = _detect_provider_from_path_sample(path, fallback_provider)
-                provider_name = provider.value
+                source_name = provider.value
                 if not _parse_path_as_conversation_artifact(path, provider=provider):
                     self._mark_excluded_cursor(path, stat, source_name=source_name)
                     continue
@@ -879,7 +879,7 @@ class LiveBatchProcessor:
                     failed.append(path)
                     continue
                 provider = _detect_provider_from_raw_bytes(payload, path.name, fallback_provider)
-                provider_name = provider.value
+                source_name = provider.value
                 if not _parse_payload_as_conversation_artifact(path, provider=provider, payload=payload):
                     self._mark_excluded_cursor(path, stat, source_name=source_name)
                     continue
@@ -896,7 +896,6 @@ class LiveBatchProcessor:
             raw_records.append(
                 RawConversationRecord(
                     raw_id=raw_id,
-                    provider_name=provider_name,
                     payload_provider=provider,
                     source_name=source_name,
                     source_path=str(path),
@@ -1105,7 +1104,7 @@ class LiveBatchProcessor:
                 """
                 INSERT OR IGNORE INTO raw_conversations (
                     raw_id,
-                    provider_name,
+                    source_name,
                     payload_provider,
                     source_name,
                     source_path,
@@ -1118,7 +1117,7 @@ class LiveBatchProcessor:
                 [
                     (
                         record.raw_id,
-                        record.provider_name,
+                        record.source_name,
                         record.payload_provider,
                         record.source_name,
                         record.source_path,

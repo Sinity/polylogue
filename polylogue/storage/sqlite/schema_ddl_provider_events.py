@@ -7,7 +7,7 @@ PROVIDER_EVENT_DDL = """
             event_id TEXT PRIMARY KEY,
             conversation_id TEXT NOT NULL
                 REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-            provider_name TEXT NOT NULL DEFAULT 'unknown',
+            source_name TEXT NOT NULL DEFAULT 'unknown',
             event_index INTEGER NOT NULL,
             event_type TEXT NOT NULL,
             normalized_kind TEXT NOT NULL DEFAULT 'provider_native',

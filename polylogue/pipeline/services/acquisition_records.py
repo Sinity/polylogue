@@ -50,14 +50,13 @@ def make_raw_record(
         raise ValueError("RawConversationData has neither blob_hash nor raw_bytes")
 
     acquired_at = datetime.now(timezone.utc).isoformat()
-    provider_name = canonical_acquisition_provider(
+    source_name = canonical_acquisition_provider(
         str(raw_data.provider_hint) if raw_data.provider_hint is not None else None,
         source_name=source_name,
     )
 
     return RawConversationRecord(
         raw_id=raw_id,
-        provider_name=provider_name,
         source_name=source_name,
         source_path=raw_data.source_path,
         source_index=raw_data.source_index,

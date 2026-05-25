@@ -63,20 +63,20 @@ def _insert_conversation(
     conn: sqlite3.Connection,
     *,
     conversation_id: str,
-    provider_name: str,
+    source_name: str,
     provider_conversation_id: str,
     parent_conversation_id: str | None = None,
 ) -> None:
     conn.execute(
         """
         INSERT INTO conversations (
-            conversation_id, provider_name, provider_conversation_id, title,
+            conversation_id, source_name, provider_conversation_id, title,
             parent_conversation_id, content_hash, created_at, updated_at, version
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             conversation_id,
-            provider_name,
+            source_name,
             provider_conversation_id,
             f"conv {conversation_id}",
             parent_conversation_id,
@@ -164,7 +164,7 @@ def _run_resolve_for_parent(
     conn: sqlite3.Connection,
     *,
     conversation_id: str,
-    provider_name: str,
+    source_name: str,
     provider_conversation_id: str,
 ) -> int:
     import asyncio
@@ -173,7 +173,7 @@ def _run_resolve_for_parent(
         resolve_topology_edges_for_conversation(
             _AsyncSqliteAdapter(conn),  # type: ignore[arg-type]
             conversation_id=conversation_id,
-            provider_name=provider_name,
+            source_name=source_name,
             provider_conversation_id=provider_conversation_id,
             resolved_at=_now(),
         )
@@ -219,14 +219,14 @@ class TestTwoNodeCycle:
         _insert_conversation(
             cycle_db,
             conversation_id="conv-A",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-A",
             parent_conversation_id=None,
         )
         _insert_conversation(
             cycle_db,
             conversation_id="conv-B",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-B",
             parent_conversation_id="conv-A",  # B → A already.
         )
@@ -261,14 +261,14 @@ class TestTwoNodeCycle:
         _insert_conversation(
             cycle_db,
             conversation_id="conv-A",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-A",
             parent_conversation_id=None,
         )
         _insert_conversation(
             cycle_db,
             conversation_id="conv-B",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-B",
             parent_conversation_id="conv-A",
         )
@@ -285,7 +285,7 @@ class TestTwoNodeCycle:
         flipped = _run_resolve_for_parent(
             cycle_db,
             conversation_id="conv-B",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-B",
         )
         assert flipped == 0  # nothing was successfully resolved
@@ -303,21 +303,21 @@ class TestThreeNodeCycle:
         _insert_conversation(
             cycle_db,
             conversation_id="conv-A",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-A",
             parent_conversation_id=None,
         )
         _insert_conversation(
             cycle_db,
             conversation_id="conv-B",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-B",
             parent_conversation_id="conv-A",
         )
         _insert_conversation(
             cycle_db,
             conversation_id="conv-C",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-C",
             parent_conversation_id="conv-B",
         )
@@ -349,7 +349,7 @@ class TestSelfCycle:
         _insert_conversation(
             cycle_db,
             conversation_id="conv-A",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-A",
             parent_conversation_id=None,
         )
@@ -363,7 +363,7 @@ class TestSelfCycle:
         flipped = _run_resolve_for_parent(
             cycle_db,
             conversation_id="conv-A",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-A",
         )
         assert flipped == 0
@@ -384,21 +384,21 @@ class TestDiamondDagNoFalsePositive:
         _insert_conversation(
             cycle_db,
             conversation_id="conv-D",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-D",
             parent_conversation_id=None,
         )
         _insert_conversation(
             cycle_db,
             conversation_id="conv-B",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-B",
             parent_conversation_id=None,
         )
         _insert_conversation(
             cycle_db,
             conversation_id="conv-C",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-C",
             parent_conversation_id=None,
         )
@@ -416,7 +416,7 @@ class TestDiamondDagNoFalsePositive:
         flipped = _run_resolve_for_parent(
             cycle_db,
             conversation_id="conv-D",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-D",
         )
         assert flipped == 2  # both edges resolved
@@ -439,21 +439,21 @@ class TestSiblingNotQuarantined:
         _insert_conversation(
             cycle_db,
             conversation_id="conv-cycle",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-cycle",
             parent_conversation_id=None,
         )
         _insert_conversation(
             cycle_db,
             conversation_id="conv-X",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-X",
             parent_conversation_id="conv-cycle",  # X already descends from cycle-child
         )
         _insert_conversation(
             cycle_db,
             conversation_id="conv-clean",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-clean",
             parent_conversation_id=None,
         )
@@ -471,7 +471,7 @@ class TestSiblingNotQuarantined:
         flipped = _run_resolve_for_parent(
             cycle_db,
             conversation_id="conv-X",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-X",
         )
         # Only the clean child resolved; the cyclic one was quarantined.
@@ -494,14 +494,14 @@ class TestIdempotency:
         _insert_conversation(
             cycle_db,
             conversation_id="conv-A",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-A",
             parent_conversation_id=None,
         )
         _insert_conversation(
             cycle_db,
             conversation_id="conv-B",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-B",
             parent_conversation_id="conv-A",
         )
@@ -515,7 +515,7 @@ class TestIdempotency:
         _run_resolve_for_parent(
             cycle_db,
             conversation_id="conv-B",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-B",
         )
         status1, evidence1 = _fetch_edge_status(cycle_db, "conv-A")
@@ -527,7 +527,7 @@ class TestIdempotency:
         _run_resolve_for_parent(
             cycle_db,
             conversation_id="conv-B",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-B",
         )
         status2, evidence2 = _fetch_edge_status(cycle_db, "conv-A")
@@ -539,14 +539,14 @@ class TestIdempotency:
         _insert_conversation(
             cycle_db,
             conversation_id="conv-A",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-A",
             parent_conversation_id=None,
         )
         _insert_conversation(
             cycle_db,
             conversation_id="conv-B",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-B",
             parent_conversation_id="conv-A",
         )
@@ -579,14 +579,14 @@ class TestQuarantineCount:
         _insert_conversation(
             cycle_db,
             conversation_id="conv-A",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-A",
             parent_conversation_id=None,
         )
         _insert_conversation(
             cycle_db,
             conversation_id="conv-B",
-            provider_name="codex",
+            source_name="codex",
             provider_conversation_id="native-B",
             parent_conversation_id="conv-A",
         )

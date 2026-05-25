@@ -109,12 +109,12 @@ def _seed_minimum_archive(workspace_env: dict[str, Path]) -> None:
         conn.executescript(SAVED_VIEWS_DDL)
         conn.executescript(RECALL_PACKS_DDL)
         conn.execute(
-            "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id,"
+            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id,"
             " title, content_hash, version) VALUES(?,?,?,?,?,?)",
             ("cost-1", "claude-code", "p-cost-1", "A conv", "hash-cost-1", 1),
         )
         conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name,"
+            "INSERT INTO messages(message_id, conversation_id, role, text, source_name,"
             " content_hash, version) VALUES(?,?,?,?,?,?,?)",
             ("m-cost-1", "cost-1", "user", "hello world", "claude-code", "mhash-cost-1", 1),
         )
@@ -161,7 +161,7 @@ class TestCostPayloadShape:
         confidence: float = 0.95,
     ) -> SessionCostInsight:
         estimate = CostEstimatePayload(
-            provider_name="claude-code",
+            source_name="claude-code",
             conversation_id="c1",
             model_name="claude-sonnet-4-6",
             normalized_model="claude-sonnet-4-6",
@@ -173,7 +173,7 @@ class TestCostPayloadShape:
         )
         return SessionCostInsight(
             conversation_id="c1",
-            provider_name="claude-code",
+            source_name="claude-code",
             estimate=estimate,
             provenance=ArchiveInsightProvenance(
                 materializer_version=1,

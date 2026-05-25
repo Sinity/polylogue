@@ -167,7 +167,7 @@ class TestPolylogueGetConversation:
 
         conv_record = make_conversation(
             "conv-1",
-            provider_name="claude-ai",
+            source_name="claude-ai",
             title="Test Conversation",
             provider_conversation_id="provider-1",
             created_at="2025-01-01T00:00:00Z",
@@ -207,7 +207,7 @@ class TestPolylogueGetConversation:
         await repository.save_conversation(
             make_conversation(
                 "conv-projection",
-                provider_name="claude-ai",
+                source_name="claude-ai",
                 title="Projected Conversation",
                 provider_conversation_id="provider-projection",
                 created_at="2025-01-01T00:00:00Z",
@@ -253,7 +253,7 @@ class TestPolylogueGetConversations:
             await repository.save_conversation(
                 make_conversation(
                     f"conv-{i}",
-                    provider_name="claude-ai",
+                    source_name="claude-ai",
                     provider_conversation_id=f"provider-{i}",
                     title=f"Conversation {i}",
                     created_at="2025-01-01T00:00:00Z",
@@ -279,7 +279,7 @@ class TestPolylogueReadSurfaces:
         await repository.save_conversation(
             make_conversation(
                 "conv-read-api",
-                provider_name="claude-ai",
+                source_name="claude-ai",
                 title="Read API",
                 provider_conversation_id="provider-read-api",
                 created_at="2025-01-01T00:00:00Z",
@@ -332,7 +332,7 @@ class TestPolylogueReadSurfaces:
         await repository.save_conversation(
             make_conversation(
                 "conv-bulk-a",
-                provider_name="claude-ai",
+                source_name="claude-ai",
                 title="Bulk A",
                 provider_conversation_id="provider-conv-bulk-a",
                 created_at="2025-01-01T00:00:00Z",
@@ -370,7 +370,7 @@ class TestPolylogueReadSurfaces:
         await repository.save_conversation(
             make_conversation(
                 "conv-bulk-b",
-                provider_name="claude-ai",
+                source_name="claude-ai",
                 title="Bulk B",
                 provider_conversation_id="provider-conv-bulk-b",
                 created_at="2025-01-01T00:00:00Z",
@@ -418,7 +418,7 @@ class TestPolylogueReadSurfaces:
         await repository.save_raw_conversation(
             make_raw_conversation(
                 raw_id="raw-read-api",
-                provider_name="codex",
+                source_name="codex",
                 source_path="/tmp/raw.jsonl",
                 blob_size=99,
             )
@@ -426,7 +426,7 @@ class TestPolylogueReadSurfaces:
         await repository.save_conversation(
             make_conversation(
                 "conv-raw-api",
-                provider_name="codex",
+                source_name="codex",
                 title="Raw API",
                 provider_conversation_id="provider-raw-api",
                 created_at="2025-01-01T00:00:00Z",
@@ -443,7 +443,7 @@ class TestPolylogueReadSurfaces:
 
         assert total == 1
         assert artifacts[0]["raw_id"] == "raw-read-api"
-        assert artifacts[0]["provider_name"] == "codex"
+        assert artifacts[0]["source_name"] == "codex"
         assert artifacts[0]["blob_size"] == 99
         assert missing_artifacts == []
         assert missing_total == 0
@@ -456,7 +456,7 @@ class TestPolylogueReadSurfaces:
         await repository.save_conversation(
             make_conversation(
                 "conv-1",
-                provider_name="claude-ai",
+                source_name="claude-ai",
                 provider_conversation_id="provider-1",
                 title="Conversation 1",
                 created_at="2025-01-01T00:00:00Z",
@@ -643,7 +643,7 @@ class TestPolylogueListConversations:
             await repository.save_conversation(
                 make_conversation(
                     f"conv-{i}",
-                    provider_name=provider,
+                    source_name=provider,
                     provider_conversation_id=f"provider-{i}",
                     title=f"Conv {i}",
                     created_at="2025-01-01T00:00:00Z",
@@ -722,7 +722,7 @@ class TestPolylogueStats:
             await repository.save_conversation(
                 make_conversation(
                     f"claude-{i}",
-                    provider_name="claude-ai",
+                    source_name="claude-ai",
                     provider_conversation_id=f"p-{i}",
                     title=f"Claude Conv {i}",
                     created_at="2025-01-01T00:00:00Z",
@@ -753,7 +753,7 @@ class TestPolylogueStats:
         await repository.save_conversation(
             make_conversation(
                 "chatgpt-0",
-                provider_name="chatgpt",
+                source_name="chatgpt",
                 provider_conversation_id="p-chatgpt-0",
                 title="ChatGPT Conv",
                 created_at="2025-01-01T00:00:00Z",
@@ -785,7 +785,7 @@ class TestPolylogueStats:
         await archive.repository.save_conversation(
             make_conversation(
                 "conv-1",
-                provider_name="claude-ai",
+                source_name="claude-ai",
                 provider_conversation_id="p-1",
                 title="Test Conv",
                 created_at="2025-01-01T00:00:00Z",

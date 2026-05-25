@@ -42,7 +42,7 @@ async def test_prepare_records_new_conversation(
     tmp_path: Path,
 ) -> None:
     conversation = ParsedConversation(
-        provider_name=Provider.UNKNOWN,
+        source_name=Provider.UNKNOWN,
         provider_conversation_id="new-conv-1",
         title="New Conversation",
         created_at="2024-01-01T00:00:00Z",
@@ -81,7 +81,7 @@ async def test_prepare_records_persists_provider_events(
     tmp_path: Path,
 ) -> None:
     conversation = ParsedConversation(
-        provider_name=Provider.CODEX,
+        source_name=Provider.CODEX,
         provider_conversation_id="conv-events",
         title="Provider events",
         created_at="2024-01-01T00:00:00Z",
@@ -145,7 +145,7 @@ async def test_prepare_records_projects_provider_events_without_raw_payload_json
     tmp_path: Path,
 ) -> None:
     conversation = ParsedConversation(
-        provider_name=Provider.CODEX,
+        source_name=Provider.CODEX,
         provider_conversation_id="conv-event-raw",
         title="Provider event raw",
         created_at="2024-01-01T00:00:00Z",
@@ -217,7 +217,7 @@ async def test_prepare_records_unchanged_conversation_skips(
     tmp_path: Path,
 ) -> None:
     conversation = ParsedConversation(
-        provider_name=Provider.UNKNOWN,
+        source_name=Provider.UNKNOWN,
         provider_conversation_id="conv-1",
         title="Test Conversation",
         created_at="2024-01-01T00:00:00Z",
@@ -270,7 +270,7 @@ async def test_prepare_records_detects_changed_content(
     tmp_path: Path,
 ) -> None:
     original = ParsedConversation(
-        provider_name=Provider.UNKNOWN,
+        source_name=Provider.UNKNOWN,
         provider_conversation_id="conv-1",
         title="Test Conversation",
         created_at="2024-01-01T00:00:00Z",
@@ -286,7 +286,7 @@ async def test_prepare_records_detects_changed_content(
         attachments=[],
     )
     modified = ParsedConversation(
-        provider_name=Provider.UNKNOWN,
+        source_name=Provider.UNKNOWN,
         provider_conversation_id="conv-1",
         title="Test Conversation",
         created_at="2024-01-01T00:00:00Z",
@@ -334,7 +334,7 @@ async def test_prepare_records_creates_message_records(
     tmp_path: Path,
 ) -> None:
     conversation = ParsedConversation(
-        provider_name=Provider.UNKNOWN,
+        source_name=Provider.UNKNOWN,
         provider_conversation_id="conv-1",
         title="Test",
         created_at="2024-01-01T00:00:00Z",
@@ -380,7 +380,7 @@ async def test_prepare_records_handles_empty_provider_message_ids(
     tmp_path: Path,
 ) -> None:
     conversation = ParsedConversation(
-        provider_name=Provider.UNKNOWN,
+        source_name=Provider.UNKNOWN,
         provider_conversation_id="conv-1",
         title="Test",
         created_at="2024-01-01T00:00:00Z",
@@ -427,7 +427,7 @@ async def test_prepare_records_stores_source_metadata(
 ) -> None:
 
     conversation = ParsedConversation(
-        provider_name=Provider.CHATGPT,
+        source_name=Provider.CHATGPT,
         provider_conversation_id="ext-1",
         title="Test",
         created_at="2024-01-01T00:00:00Z",
@@ -467,7 +467,7 @@ async def test_prepare_records_backfills_structured_blocks_from_provider_meta(
     tmp_path: Path,
 ) -> None:
     conversation = ParsedConversation(
-        provider_name=Provider.GEMINI,
+        source_name=Provider.GEMINI,
         provider_conversation_id="gemini-structured-1",
         title="Structured Gemini",
         created_at="2024-01-01T00:00:00Z",
@@ -552,7 +552,7 @@ async def test_prepare_records_multiple_messages_get_unique_hashes(
     tmp_path: Path,
 ) -> None:
     conversation = ParsedConversation(
-        provider_name=Provider.UNKNOWN,
+        source_name=Provider.UNKNOWN,
         provider_conversation_id="conv-1",
         title="Test",
         created_at="2024-01-01T00:00:00Z",
@@ -598,7 +598,7 @@ async def test_prepare_records_with_attachments(
     tmp_path: Path,
 ) -> None:
     conversation = ParsedConversation(
-        provider_name=Provider.UNKNOWN,
+        source_name=Provider.UNKNOWN,
         provider_conversation_id="conv-1",
         title="Test",
         created_at="2024-01-01T00:00:00Z",
@@ -659,7 +659,7 @@ async def test_prepare_records_rolls_back_attachment_move_on_save_failure(
     source_file.write_bytes(b"pdf bytes")
 
     conversation = ParsedConversation(
-        provider_name=Provider.UNKNOWN,
+        source_name=Provider.UNKNOWN,
         provider_conversation_id="conv-rollback",
         title="Rollback",
         created_at="2024-01-01T00:00:00Z",
@@ -704,7 +704,7 @@ async def test_prepare_records_returns_typed_result(
     tmp_path: Path,
 ) -> None:
     conversation = ParsedConversation(
-        provider_name=Provider.UNKNOWN,
+        source_name=Provider.UNKNOWN,
         provider_conversation_id="conv-1",
         title="Test",
         created_at="2024-01-01T00:00:00Z",
@@ -764,7 +764,7 @@ class TestValidationService:
         raw_record = MagicMock(
             raw_id=raw_id,
             raw_content=raw_content,  # Keep for backwards compatibility in mocks
-            provider_name="codex",
+            source_name="codex",
             source_path="/tmp/session.jsonl",
             blob_size=blob_size,
         )
@@ -810,7 +810,7 @@ class TestValidationService:
         raw_record = MagicMock(
             raw_id=raw_id,
             raw_content=raw_content,  # Keep for backwards compatibility in mocks
-            provider_name="codex",
+            source_name="codex",
             source_path="/tmp/session.jsonl",
             blob_size=blob_size,
         )
@@ -856,14 +856,14 @@ class TestValidationService:
             MagicMock(
                 raw_id=raw_id_1,
                 raw_content=b'{"id":"1","mapping":{}}',
-                provider_name=Provider.CHATGPT,
+                source_name=Provider.CHATGPT,
                 source_path="/tmp/a.json",
                 blob_size=blob_size_1,
             ),
             MagicMock(
                 raw_id=raw_id_2,
                 raw_content=b'{"id":"2","mapping":{}}',
-                provider_name=Provider.CHATGPT,
+                source_name=Provider.CHATGPT,
                 source_path="/tmp/b.json",
                 blob_size=blob_size_2,
             ),
@@ -905,7 +905,7 @@ class TestValidationService:
         raw_record = MagicMock(
             raw_id=raw_id,
             raw_content=raw_content,  # Keep for backwards compatibility in mocks
-            provider_name="inbox-source",
+            source_name="inbox-source",
             source_path="/tmp/conversations.json",
             payload_provider=None,
             blob_size=blob_size,

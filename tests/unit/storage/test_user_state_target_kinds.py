@@ -64,7 +64,7 @@ def _seed_insight_rows(db_path: Path, conversation_id: str) -> tuple[str, str]:
             """
             INSERT INTO session_profiles (
                 conversation_id, logical_conversation_id, materializer_version, materialized_at,
-                provider_name, search_text
+                source_name, search_text
             )
             VALUES (?, ?, 5, '2026-05-17T00:00:00Z', 'claude-code', '')
             """,

@@ -48,14 +48,14 @@ def _build_payload_envelope(
     return build_raw_payload_envelope(
         raw_content,
         source_path=record.source_path,
-        fallback_provider=record.provider_name,
+        fallback_provider=record.source_name or "",
         payload_provider=record.payload_provider,
         jsonl_dict_only=False,
     )
 
 
 def _normalize_payload_provider_hint(record: RawConversationRecord) -> str | None:
-    hint = record.payload_provider or record.provider_name
+    hint = record.payload_provider or record.source_name
     if not isinstance(hint, str):
         return None
     candidate = hint.strip()
@@ -189,7 +189,7 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
     file size (a 1.5 GB JSONL file is classified from its first line).
     """
     provider_hint = _normalize_payload_provider_hint(record)
-    provider_token = provider_hint or record.provider_name
+    provider_token = provider_hint or record.source_name or ""
     bundle_scope = derive_bundle_scope(provider_token, record.source_path)
     observation_id = artifact_observation_id(
         source_name=record.source_name,
@@ -232,7 +232,6 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
         return ArtifactObservationRecord(
             observation_id=observation_id,
             raw_id=record.raw_id,
-            provider_name=record.provider_name,
             payload_provider=payload_provider,
             source_name=record.source_name,
             source_path=record.source_path,
@@ -261,7 +260,7 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
             last_observed_at=observed_at,
         )
     except Exception as exc:
-        path_classification = classify_artifact_path(record.source_path, provider=provider_token)
+        path_classification = classify_artifact_path(record.source_path, provider=provider_token or "")
         artifact_kind = (
             path_classification.kind.value if path_classification is not None else ArtifactKind.UNKNOWN.value
         )
@@ -271,7 +270,6 @@ def inspect_raw_artifact(record: RawConversationRecord) -> ArtifactObservationRe
         return ArtifactObservationRecord(
             observation_id=observation_id,
             raw_id=record.raw_id,
-            provider_name=record.provider_name,
             payload_provider=Provider.from_string(provider_token),
             source_name=record.source_name,
             source_path=record.source_path,
@@ -309,3 +307,4 @@ __all__ = [
     "artifact_observation_id",
     "inspect_raw_artifact",
 ]
+

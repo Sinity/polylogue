@@ -34,7 +34,7 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedConversat
         title = payload.get("title") or payload.get("name") or fallback_id
         conv_id = payload.get("id") or payload.get("uuid") or payload.get("conversation_id")
         return ParsedConversation(
-            provider_name=Provider.CLAUDE_AI,
+            source_name=Provider.CLAUDE_AI,
             provider_conversation_id=str(conv_id or fallback_id),
             title=str(title),
             created_at=str(payload.get("created_at")) if payload.get("created_at") else None,
@@ -67,7 +67,7 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedConversat
                 attachments.append(attachment)
 
     return ParsedConversation(
-        provider_name=Provider.CLAUDE_AI,
+        source_name=Provider.CLAUDE_AI,
         provider_conversation_id=conv.uuid,
         title=conv.title,
         created_at=conv.created_at,

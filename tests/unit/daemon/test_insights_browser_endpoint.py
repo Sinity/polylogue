@@ -106,12 +106,12 @@ def _seed_minimum_archive(workspace_env: dict[str, Path]) -> None:
         conn.executescript(SAVED_VIEWS_DDL)
         conn.executescript(RECALL_PACKS_DDL)
         conn.execute(
-            "INSERT INTO conversations(conversation_id, provider_name, provider_conversation_id,"
+            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id,"
             " title, content_hash, version) VALUES(?,?,?,?,?,?)",
             ("ins-1", "claude-code", "p-ins-1", "An ins conv", "hash-ins-1", 1),
         )
         conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, provider_name,"
+            "INSERT INTO messages(message_id, conversation_id, role, text, source_name,"
             " content_hash, version) VALUES(?,?,?,?,?,?,?)",
             ("m-ins-1", "ins-1", "user", "hello", "claude-code", "mhash-ins-1", 1),
         )

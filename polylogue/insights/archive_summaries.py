@@ -51,7 +51,7 @@ def build_day_session_summary_records(
         by_provider_day[(profile.provider, bucket_day)].append(profile)
 
     rows: list[DaySessionSummaryRecord] = []
-    for (provider_name, bucket_day), day_profiles in sorted(
+    for (source_name, bucket_day), day_profiles in sorted(
         by_provider_day.items(),
         key=lambda item: (item[0][1], item[0][0]),
         reverse=True,
@@ -66,7 +66,7 @@ def build_day_session_summary_records(
         search_text = " \n".join(
             part
             for part in (
-                provider_name,
+                source_name,
                 bucket_day.isoformat(),
                 *summary.repos_active,
                 *summary.work_event_breakdown.keys(),
@@ -77,7 +77,7 @@ def build_day_session_summary_records(
         rows.append(
             DaySessionSummaryRecord(
                 day=bucket_day.isoformat(),
-                provider_name=provider_name,
+                source_name=source_name,
                 materialized_at=built_at,
                 source_updated_at=hwm,
                 source_sort_key=max(source_sorts) if source_sorts else None,
@@ -118,7 +118,7 @@ def _aggregate_day_buckets(
         bucket.total_words += row.total_words
         bucket.work_event_breakdown.update(row.work_event_breakdown)
         bucket.repos_active.update(str(name) for name in row.repos_active if str(name).strip())
-        bucket.providers[row.provider_name] += row.conversation_count
+        bucket.providers[row.source_name] += row.conversation_count
         bucket.rows.append(row)
     return grouped
 

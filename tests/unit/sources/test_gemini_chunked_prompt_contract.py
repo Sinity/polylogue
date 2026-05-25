@@ -90,7 +90,7 @@ def test_catalog_payloads_are_detected_as_gemini(fixture: str) -> None:
 def test_catalog_payloads_parse_without_raising(fixture: str) -> None:
     payload = _load_catalog(fixture)
     conversation = _parse(payload, fixture)
-    assert conversation.provider_name == Provider.GEMINI
+    assert conversation.source_name == Provider.GEMINI
     assert conversation.messages, f"{fixture} produced zero messages"
 
 

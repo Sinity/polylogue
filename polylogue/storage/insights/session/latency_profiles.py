@@ -69,7 +69,7 @@ def build_session_latency_profile_record(
         input_high_water_mark=input_high_water_mark,
         input_high_water_mark_source=input_high_water_mark_source,
         input_row_count=input_row_count,
-        provider_name=str(conversation.provider),
+        source_name=str(conversation.provider),
         title=conversation.title,
         first_message_at=_iso_datetime(profile.first_message_at),
         last_message_at=_iso_datetime(profile.last_message_at),

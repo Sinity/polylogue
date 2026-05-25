@@ -23,7 +23,7 @@ def _row_to_session_tag_rollup_record(row: sqlite3.Row) -> SessionTagRollupRecor
     return SessionTagRollupRecord(
         tag=row["tag"],
         bucket_day=row["bucket_day"],
-        provider_name=row["provider_name"],
+        source_name=row["source_name"],
         materializer_version=int(_row_int(row, "materializer_version", 1) or 1),
         materialized_at=row["materialized_at"],
         source_updated_at=_row_text(row, "source_updated_at"),
@@ -40,7 +40,7 @@ def _row_to_session_tag_rollup_record(row: sqlite3.Row) -> SessionTagRollupRecor
             _parse_json(
                 row["repo_breakdown_json"],
                 field="repo_breakdown_json",
-                record_id=f"{row['provider_name']}:{row['bucket_day']}:{row['tag']}",
+                record_id=f"{row['source_name']}:{row['bucket_day']}:{row['tag']}",
             )
         ),
         search_text=row["search_text"],
@@ -50,7 +50,7 @@ def _row_to_session_tag_rollup_record(row: sqlite3.Row) -> SessionTagRollupRecor
 def _row_to_day_session_summary_record(row: sqlite3.Row) -> DaySessionSummaryRecord:
     return DaySessionSummaryRecord(
         day=row["day"],
-        provider_name=row["provider_name"],
+        source_name=row["source_name"],
         materializer_version=int(_row_int(row, "materializer_version", 1) or 1),
         materialized_at=row["materialized_at"],
         source_updated_at=_row_text(row, "source_updated_at"),
@@ -71,7 +71,7 @@ def _row_to_day_session_summary_record(row: sqlite3.Row) -> DaySessionSummaryRec
             _parse_json(
                 row["work_event_breakdown_json"],
                 field="work_event_breakdown_json",
-                record_id=f"{row['provider_name']}:{row['day']}",
+                record_id=f"{row['source_name']}:{row['day']}",
             )
         ),
         repos_active=_json_text_tuple(_parse_json(_row_text(row, "repos_active_json"))),
@@ -79,7 +79,7 @@ def _row_to_day_session_summary_record(row: sqlite3.Row) -> DaySessionSummaryRec
             _parse_json(
                 row["payload_json"],
                 field="payload_json",
-                record_id=f"{row['provider_name']}:{row['day']}",
+                record_id=f"{row['source_name']}:{row['day']}",
             )
             or {}
         ),

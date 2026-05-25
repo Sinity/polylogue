@@ -175,7 +175,7 @@ class TestConnectionManagement:
         async with backend.connection() as conn:
             for i in range(20):
                 await conn.execute(
-                    "INSERT INTO conversations (conversation_id, provider_name, "
+                    "INSERT INTO conversations (conversation_id, source_name, "
                     "provider_conversation_id, content_hash, version) "
                     "VALUES (?, 'test', ?, ?, 1)",
                     (f"conv-{i}", f"pconv-{i}", f"hash-{i}"),
@@ -196,7 +196,7 @@ class TestConnectionManagement:
         async with backend.connection() as conn:
             for i in range(5):
                 await conn.execute(
-                    "INSERT INTO conversations (conversation_id, provider_name, "
+                    "INSERT INTO conversations (conversation_id, source_name, "
                     "provider_conversation_id, content_hash, version) "
                     "VALUES (?, 'test', ?, ?, 1)",
                     (f"conv-{i}", f"pconv-{i}", f"hash-{i}"),
@@ -232,7 +232,7 @@ class TestConnectionManagement:
 
         async with backend.connection() as conn:
             await conn.execute(
-                "INSERT INTO conversations (conversation_id, provider_name, "
+                "INSERT INTO conversations (conversation_id, source_name, "
                 "provider_conversation_id, content_hash, version) "
                 "VALUES ('exists', 'test', 'pconv', 'hash', 1)",
             )
@@ -260,7 +260,7 @@ class TestConcurrentSaveGuards:
         async def _save_one(idx: int) -> None:
             conv = make_conversation(
                 conversation_id=f"test:conv-{idx}",
-                provider_name="test",
+                source_name="test",
                 provider_conversation_id=f"conv-{idx}",
                 title=f"Conversation {idx}",
                 content_hash=f"hash-{idx}",
@@ -295,7 +295,7 @@ class TestConcurrentSaveGuards:
         async def _upsert(version: int) -> None:
             conv = make_conversation(
                 conversation_id="test:same-conv",
-                provider_name="test",
+                source_name="test",
                 provider_conversation_id="same",
                 title=f"Version {version}",
                 content_hash=f"hash-v{version}",
@@ -330,7 +330,7 @@ class TestConcurrentSaveGuards:
         async def _write(idx: int) -> None:
             conv = make_conversation(
                 conversation_id=f"test:conv-{idx}",
-                provider_name="test",
+                source_name="test",
                 provider_conversation_id=f"conv-{idx}",
                 title=f"Conversation {idx}",
                 content_hash=f"hash-{idx}",

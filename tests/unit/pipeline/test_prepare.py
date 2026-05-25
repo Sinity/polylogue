@@ -16,7 +16,7 @@ from tests.infra.storage_records import make_attachment, make_conversation, make
 
 
 def _conversation_record() -> ConversationRecord:
-    return make_conversation("conv:hash", provider_name="codex", title="Demo")
+    return make_conversation("conv:hash", source_name="codex", title="Demo")
 
 
 async def test_ingest_idempotent(
@@ -68,7 +68,7 @@ async def test_render_escapes_html(
 ) -> None:
     archive_root = workspace_env["archive_root"]
     bundle = RecordBundle(
-        conversation=make_conversation("conv-html", provider_name="codex", title="<script>alert(1)</script>"),
+        conversation=make_conversation("conv-html", source_name="codex", title="<script>alert(1)</script>"),
         messages=[make_message("msg:hash", "conv-html", text="<script>alert(2)</script>")],
         attachments=[],
     )
@@ -145,7 +145,7 @@ async def test_ingest_updates_metadata(
     bundle = RecordBundle(
         conversation=make_conversation(
             "conv-update",
-            provider_name="codex",
+            source_name="codex",
             title="Old",
             content_hash="hash-old",
             provider_meta={"source": "inbox"},
@@ -158,7 +158,7 @@ async def test_ingest_updates_metadata(
     updated = RecordBundle(
         conversation=make_conversation(
             "conv-update",
-            provider_name="codex",
+            source_name="codex",
             title="New",
             updated_at="2026-04-02T00:00:02+00:00",
             content_hash="hash-new",
@@ -199,7 +199,7 @@ async def test_ingest_updates_fields_without_hash_changes(
     """
     base_conversation = make_conversation(
         "conv-hash-stable",
-        provider_name="codex",
+        source_name="codex",
         title="Original",
         updated_at="2026-04-02T00:00:01+00:00",
         content_hash="hash-v1",
@@ -214,7 +214,7 @@ async def test_ingest_updates_fields_without_hash_changes(
     updated = RecordBundle(
         conversation=make_conversation(
             "conv-hash-stable",
-            provider_name="codex",
+            source_name="codex",
             title="Updated title",
             updated_at="2026-04-02T00:00:02+00:00",
             content_hash="hash-v2",

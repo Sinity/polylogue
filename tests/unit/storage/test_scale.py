@@ -61,7 +61,7 @@ async def _seed_conversations(backend: SQLiteBackend, count: int, msgs_per_conv:
     conv_records = [
         make_conversation(
             conversation_id=ids[i],
-            provider_name="chatgpt" if i % 2 == 0 else "claude-ai",
+            source_name="chatgpt" if i % 2 == 0 else "claude-ai",
             provider_conversation_id=f"prov-{ids[i]}",
             title=f"Scale Test Conversation {i}",
             created_at=f"2025-01-{(i % 28) + 1:02d}T00:00:00Z",
@@ -149,7 +149,7 @@ class TestGetManyScale:
         conv_records = [
             make_conversation(
                 conversation_id=cid,
-                provider_name="test",
+                source_name="test",
                 provider_conversation_id=f"prov-{cid}",
                 title=f"Var {cid.split('-')[1]} {cid.split('-')[2]}",
                 created_at="2025-01-01T00:00:00Z",
@@ -403,7 +403,7 @@ class TestLargeInputRoundTrip:
         conv_id = "large-conv-1"
         conv = make_conversation(
             conversation_id=conv_id,
-            provider_name="test",
+            source_name="test",
             provider_conversation_id="prov-large",
             title="Large Message Test",
             created_at="2025-01-01T00:00:00Z",
@@ -455,7 +455,7 @@ async def _seed_budget_conversations(backend: SQLiteBackend, count: int, msgs_pe
         for i in range(count):
             conv = make_conversation(
                 conversation_id=ids[i],
-                provider_name=providers[i % len(providers)],
+                source_name=providers[i % len(providers)],
                 provider_conversation_id=f"prov-{ids[i]}",
                 title=f"Budget Test Conversation {i} with searchable content",
                 created_at=f"2025-{(i % 12) + 1:02d}-{(i % 28) + 1:02d}T{i % 24:02d}:00:00Z",
@@ -471,7 +471,7 @@ async def _seed_budget_conversations(backend: SQLiteBackend, count: int, msgs_pe
                     role="user" if j % 2 == 0 else "assistant",
                     text=f"Message {j} in conversation {i} about topic alpha beta gamma",
                     content_hash=f"hash-{ids[i]}-m{j}",
-                    provider_name=providers[i % len(providers)],
+                    source_name=providers[i % len(providers)],
                     word_count=10,
                 )
                 for j in range(msgs_per_conv)

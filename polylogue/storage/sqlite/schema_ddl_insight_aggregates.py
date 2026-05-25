@@ -63,7 +63,7 @@ SESSION_INSIGHT_AGGREGATE_DDL = (
         CREATE TABLE IF NOT EXISTS session_tag_rollups (
             tag TEXT NOT NULL,
             bucket_day TEXT NOT NULL,
-            provider_name TEXT NOT NULL,"""
+            source_name TEXT NOT NULL,"""
     + MATERIALIZATION_COLUMNS_SQL
     + """
             conversation_count INTEGER NOT NULL DEFAULT 0,
@@ -73,14 +73,14 @@ SESSION_INSIGHT_AGGREGATE_DDL = (
             auto_count INTEGER NOT NULL DEFAULT 0,
             repo_breakdown_json TEXT NOT NULL DEFAULT '{}',
             search_text TEXT NOT NULL,
-            PRIMARY KEY (tag, bucket_day, provider_name)
+            PRIMARY KEY (tag, bucket_day, source_name)
         );
 
         CREATE INDEX IF NOT EXISTS idx_session_tag_rollups_day
-        ON session_tag_rollups(bucket_day DESC, provider_name, tag);
+        ON session_tag_rollups(bucket_day DESC, source_name, tag);
 
         CREATE INDEX IF NOT EXISTS idx_session_tag_rollups_provider
-        ON session_tag_rollups(provider_name, tag);
+        ON session_tag_rollups(source_name, tag);
 
 """
 )

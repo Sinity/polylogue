@@ -118,7 +118,7 @@ def _seed_conversation(conversation_id: str = "c-test") -> None:
         conn.executescript(RECALL_PACKS_DDL)
         conn.executescript(READER_WORKSPACES_DDL)
         conn.execute(
-            "INSERT OR IGNORE INTO conversations(conversation_id, provider_name, "
+            "INSERT OR IGNORE INTO conversations(conversation_id, source_name, "
             "provider_conversation_id, title, content_hash, version) "
             "VALUES(?,?,?,?,?,?)",
             (conversation_id, "claude-code", f"p-{conversation_id}", "Test", f"h-{conversation_id}", 1),

@@ -51,7 +51,7 @@ class ResumeLastMessage(ArchiveInsightModel):
 
 class ResumeFacts(ArchiveInsightModel):
     conversation_id: str
-    provider_name: str
+    source_name: str
     title: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -108,7 +108,7 @@ class ResumeInferences(ArchiveInsightModel):
 class ResumeRelatedSession(ArchiveInsightModel):
     conversation_id: str
     relation: str
-    provider_name: str
+    source_name: str
     title: str | None = None
     updated_at: str | None = None
     message_count: int = 0
@@ -374,7 +374,7 @@ def _facts_from_conversation(
     evidence = profile.evidence if profile is not None else None
     return ResumeFacts(
         conversation_id=str(conversation.id),
-        provider_name=str(conversation.provider),
+        source_name=str(conversation.provider),
         title=conversation.title,
         created_at=_iso(conversation.created_at),
         updated_at=_iso(conversation.updated_at),
@@ -472,7 +472,7 @@ def _related_session(
     return ResumeRelatedSession(
         conversation_id=str(candidate.id),
         relation=_relation(target, candidate, work_thread_ids),
-        provider_name=str(candidate.provider),
+        source_name=str(candidate.provider),
         title=candidate.title,
         updated_at=_iso(candidate.updated_at or candidate.created_at),
         message_count=len(candidate.messages),

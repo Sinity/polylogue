@@ -44,7 +44,7 @@ async def test_message_id_sql_injection(temp_repo: ConversationRepository) -> No
     assert isinstance(await temp_repo.list(), list)
 
 
-async def test_provider_name_sql_injection(temp_repo: ConversationRepository) -> None:
+async def test_source_name_sql_injection(temp_repo: ConversationRepository) -> None:
     assert await temp_repo.list(provider="doesnotexist") == []
 
 

@@ -233,13 +233,13 @@ def _duplicate_conversations_check(conn: sqlite3.Connection) -> ReadinessCheck:
 def _provider_distribution_check(conn: sqlite3.Connection) -> ReadinessCheck:
     provider_rows = conn.execute(
         """
-        SELECT provider_name, COUNT(*) AS count
+        SELECT source_name, COUNT(*) AS count
         FROM conversations
-        GROUP BY provider_name
-        ORDER BY count DESC, provider_name ASC
+        GROUP BY source_name
+        ORDER BY count DESC, source_name ASC
         """
     ).fetchall()
-    provider_breakdown = {str(row["provider_name"]): int(row["count"]) for row in provider_rows}
+    provider_breakdown = {str(row["source_name"]): int(row["count"]) for row in provider_rows}
     return ReadinessCheck(
         "provider_distribution",
         VerifyStatus.OK,

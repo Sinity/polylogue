@@ -266,14 +266,14 @@ async def test_repository_resaves_hydrated_domain_provider_events(
         conn.execute(
             """
             INSERT INTO provider_events (
-                event_id, conversation_id, provider_name, event_index, event_type,
+                event_id, conversation_id, source_name, event_index, event_type,
                 timestamp, sort_key, materializer_version
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 f"{conv_record.conversation_id}:provider-event:000000",
                 conv_record.conversation_id,
-                conv_record.provider_name,
+                conv_record.source_name,
                 0,
                 "compaction",
                 conv_record.updated_at,
@@ -320,14 +320,14 @@ async def test_repository_record_resave_preserves_provider_events_when_omitted(
         conn.execute(
             """
             INSERT INTO provider_events (
-                event_id, conversation_id, provider_name, event_index, event_type,
+                event_id, conversation_id, source_name, event_index, event_type,
                 timestamp, sort_key, materializer_version
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 f"{conv_record.conversation_id}:provider-event:000000",
                 conv_record.conversation_id,
-                conv_record.provider_name,
+                conv_record.source_name,
                 0,
                 "compaction",
                 conv_record.updated_at,
@@ -370,14 +370,14 @@ async def test_repository_record_resave_replaces_explicit_provider_events_on_has
         conn.execute(
             """
             INSERT INTO provider_events (
-                event_id, conversation_id, provider_name, event_index, event_type,
+                event_id, conversation_id, source_name, event_index, event_type,
                 timestamp, sort_key, materializer_version
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 f"{conv_record.conversation_id}:provider-event:000000",
                 conv_record.conversation_id,
-                conv_record.provider_name,
+                conv_record.source_name,
                 0,
                 "compaction",
                 conv_record.updated_at,
@@ -394,7 +394,7 @@ async def test_repository_record_resave_replaces_explicit_provider_events_on_has
     replacement = ProviderEventRecord(
         event_id=ProviderEventId(f"{conv_record.conversation_id}:provider-event:000000"),
         conversation_id=conv_record.conversation_id,
-        provider_name=conv_record.provider_name,
+        source_name=conv_record.source_name,
         event_index=0,
         event_type="compaction",
         timestamp=conv_record.updated_at,

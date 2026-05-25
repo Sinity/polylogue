@@ -21,7 +21,7 @@ from polylogue.core.json import json_document
 
 _CONVERSATION_UPSERT_SQL = """
 INSERT INTO conversations (
-    conversation_id, provider_name, provider_conversation_id, title,
+    conversation_id, source_name, provider_conversation_id, title,
     created_at, updated_at, sort_key, content_hash,
     provider_meta, metadata, version,
     parent_conversation_id, branch_type, raw_id, source_name,
@@ -58,7 +58,7 @@ _MESSAGE_UPSERT_SQL = """
 INSERT INTO messages (
     message_id, conversation_id, provider_message_id, role, text,
     sort_key, content_hash, version, parent_message_id, branch_index,
-    provider_name, word_count, has_tool_use, has_thinking, has_paste,
+    source_name, word_count, has_tool_use, has_thinking, has_paste,
     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
     model_name, message_type
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -69,7 +69,7 @@ ON CONFLICT(message_id) DO UPDATE SET
     content_hash = excluded.content_hash,
     parent_message_id = excluded.parent_message_id,
     branch_index = excluded.branch_index,
-    provider_name = excluded.provider_name,
+    source_name = excluded.source_name,
     word_count = excluded.word_count,
     has_tool_use = excluded.has_tool_use,
     has_thinking = excluded.has_thinking,
@@ -117,10 +117,10 @@ ON CONFLICT(message_id, block_index) DO UPDATE SET
 
 _STATS_UPSERT_SQL = """
 INSERT INTO conversation_stats
-    (conversation_id, provider_name, message_count, word_count, tool_use_count, thinking_count, paste_count)
+    (conversation_id, source_name, message_count, word_count, tool_use_count, thinking_count, paste_count)
 VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(conversation_id) DO UPDATE SET
-    provider_name  = excluded.provider_name,
+    source_name  = excluded.source_name,
     message_count  = excluded.message_count,
     word_count     = excluded.word_count,
     tool_use_count = excluded.tool_use_count,
@@ -132,7 +132,7 @@ _ACTION_EVENT_INSERT_SQL = """
 INSERT INTO action_events (
     event_id, conversation_id, message_id, materializer_version,
     source_block_id, timestamp, sort_key, sequence_index,
-    provider_name, action_kind, tool_name, normalized_tool_name, tool_id,
+    source_name, action_kind, tool_name, normalized_tool_name, tool_id,
     affected_paths_json, cwd_path, branch_names_json,
     command, query_text, url, output_text, search_text
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -140,7 +140,7 @@ INSERT INTO action_events (
 
 _PROVIDER_EVENT_INSERT_SQL = """
 INSERT INTO provider_events (
-    event_id, conversation_id, provider_name, event_index, event_type,
+    event_id, conversation_id, source_name, event_index, event_type,
     normalized_kind, timestamp, sort_key, source_message_id, raw_id,
     materializer_version
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
