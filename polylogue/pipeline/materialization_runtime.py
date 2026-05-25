@@ -325,7 +325,13 @@ def materialize_conversation(
         message_type = msg.message_type
         # Aggregate session stats are rebuilt later, but these per-message
         # flags are part of the archive row itself and drive query filters.
-        word_count = 0
+        # word_count is the dialogue word count — counts words in msg.text
+        # (the joined human-readable text). Tool-only messages get 0
+        # naturally because msg.text is empty/None for those. Was previously
+        # hard-coded to 0, leaving every messages row with word_count=0
+        # across 2.4M rows; downstream analytics (cost, substantive ratio,
+        # productivity rollups) saw a dead signal.
+        word_count = len((msg.text or "").split())
         has_tool_use = int(
             has_tool_block
             or has_tool_result_block
