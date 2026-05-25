@@ -41,6 +41,32 @@
           "default": null,
           "title": "Anchor"
         },
+        "lane_contribution": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Primary lane contribution to the public score, when known.",
+          "title": "Lane Contribution"
+        },
+        "lane_rank": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Rank within the primary contributing lane, when known.",
+          "title": "Lane Rank"
+        },
         "match_surface": {
           "title": "Match Surface",
           "type": "string"
@@ -68,6 +94,19 @@
         "rank": {
           "title": "Rank",
           "type": "integer"
+        },
+        "raw_score": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Backend-native score before public interpretation.",
+          "title": "Raw Score"
         },
         "retrieval_lane": {
           "title": "Retrieval Lane",

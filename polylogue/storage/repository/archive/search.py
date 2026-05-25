@@ -115,6 +115,9 @@ class RepositoryArchiveSearchMixin:
                 matched_terms=hit.matched_terms,
                 score_components=hit.score_components,
                 score_kind=hit.score_kind,
+                lane_rank=hit.lane_rank,
+                lane_contribution=hit.lane_contribution,
+                raw_score=hit.raw_score,
             )
             for hit in evidence_hits
             if hit.conversation_id in summaries_by_id

@@ -14,7 +14,13 @@ from polylogue.sources.parsers.drive import parse_chunked_prompt
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.repository.archive.search import RepositoryArchiveSearchMixin
 from polylogue.storage.runtime import ConversationRecord
-from polylogue.storage.search.models import ConversationSearchEvidenceHit, ConversationSearchResult
+from polylogue.storage.search.models import (
+    ConversationSearchEvidenceHit,
+    ConversationSearchResult,
+)
+from polylogue.storage.search.models import (
+    ConversationSearchHit as StorageConversationSearchHit,
+)
 from polylogue.storage.search_providers.hybrid_conversations import (
     _resolve_ranked_conversation_hits,
 )
@@ -73,6 +79,10 @@ class _FakeQueries(SQLiteQueryStore):
                 score=hit.score,
                 message_id=f"msg-{hit.conversation_id}",
                 snippet=f"snippet for {hit.conversation_id}",
+                score_components={"bm25_raw": hit.score} if hit.score is not None else {},
+                score_kind="bm25" if hit.score is not None else None,
+                lane_rank=hit.rank,
+                raw_score=hit.score,
             )
             for hit in self.hits.hits
         ]
@@ -164,7 +174,12 @@ def test_resolve_ranked_conversation_hits_preserves_order_and_provider_scope() -
 
 @pytest.mark.asyncio
 async def test_repository_search_summaries_follow_conversation_hit_order() -> None:
-    hits = ConversationSearchResult.from_ids(["conv-b", "conv-a"])
+    hits = ConversationSearchResult(
+        hits=[
+            StorageConversationSearchHit(conversation_id="conv-b", rank=1, score=1.0),
+            StorageConversationSearchHit(conversation_id="conv-a", rank=2, score=2.0),
+        ]
+    )
     queries = _FakeQueries(
         hits=hits,
         records_by_id={
@@ -183,7 +198,12 @@ async def test_repository_search_summaries_follow_conversation_hit_order() -> No
 
 @pytest.mark.asyncio
 async def test_repository_search_summary_hits_keep_evidence_and_conversation_order() -> None:
-    hits = ConversationSearchResult.from_ids(["conv-b", "conv-a"])
+    hits = ConversationSearchResult(
+        hits=[
+            StorageConversationSearchHit(conversation_id="conv-b", rank=1, score=1.0),
+            StorageConversationSearchHit(conversation_id="conv-a", rank=2, score=2.0),
+        ]
+    )
     queries = _FakeQueries(
         hits=hits,
         records_by_id={
@@ -200,6 +220,9 @@ async def test_repository_search_summary_hits_keep_evidence_and_conversation_ord
     assert [hit.rank for hit in summary_hits] == [1, 2]
     assert [hit.message_id for hit in summary_hits] == ["msg-conv-b", "msg-conv-a"]
     assert [hit.snippet for hit in summary_hits] == ["snippet for conv-b", "snippet for conv-a"]
+    assert [hit.lane_rank for hit in summary_hits] == [1, 2]
+    assert [hit.raw_score for hit in summary_hits] == [1.0, 2.0]
+    assert [hit.score_components for hit in summary_hits] == [{"bm25_raw": 1.0}, {"bm25_raw": 2.0}]
 
 
 @pytest.mark.asyncio
