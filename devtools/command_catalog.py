@@ -237,6 +237,23 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "worktree-gc",
+        "maintenance",
+        "Safe worktree garbage collection — list and remove merged or abandoned git worktrees.",
+        "devtools.worktree_gc",
+        use_when=(
+            "Clean up agent and feature worktrees that have been merged or whose branches "
+            "have been deleted. Dry-run by default; pass --apply to remove safe candidates. "
+            "Never removes dirty worktrees or the main worktree."
+        ),
+        examples=(
+            "devtools worktree-gc",
+            "devtools worktree-gc --json",
+            "devtools worktree-gc --apply",
+            "devtools worktree-gc --apply --force",
+        ),
+    ),
+    CommandSpec(
         "archive-space-report",
         "maintenance",
         "Report SQLite archive file/page/object space by table and index.",
