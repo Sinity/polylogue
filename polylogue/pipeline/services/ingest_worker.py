@@ -790,7 +790,7 @@ def ingest_record(
         envelope = build_raw_payload_envelope(
             context.raw_source,
             source_path=raw_record.source_path,
-            fallback_provider=raw_record.source_name,
+            fallback_provider=raw_record.source_name or "",
             payload_provider=stored_payload_provider,
         )
     except Exception as exc:

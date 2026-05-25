@@ -100,6 +100,7 @@ class ImportRequest(OperationRequest):
     operation_kind: ClassVar[OperationKind] = OperationKind.IMPORT
 
     source_path: str
+    source_name: str
     staged_path: str | None = None
 
 

@@ -150,11 +150,11 @@ def _effective_source_name(record: RawConversationRecord) -> str:
         return payload_provider.value
     if payload_provider is not None:
         return str(payload_provider)
-    return record.source_name
+    return record.source_name or ""
 
 
 def _source_bucket_name(record: RawConversationRecord) -> str:
-    return record.source_name or "<unknown>"
+    return record.source_name or "" or "<unknown>"
 
 
 def _normalize_record_for_replay(record: RawConversationRecord) -> RawConversationRecord:

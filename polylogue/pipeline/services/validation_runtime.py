@@ -47,7 +47,7 @@ def _build_validation_envelope(
     return build_raw_payload_envelope(
         raw_source,
         source_path=raw_record.source_path,
-        fallback_provider=raw_record.source_name,
+        fallback_provider=raw_record.source_name or "",
         payload_provider=payload_provider,
     )
 
