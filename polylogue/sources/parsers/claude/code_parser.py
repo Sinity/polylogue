@@ -141,7 +141,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
         if compaction:
             raw_timestamp = compaction.get("timestamp")
             compaction_timestamp = normalize_timestamp(
-                raw_timestamp if isinstance(raw_timestamp, (str, int, float)) else None
+                raw_timestamp if isinstance(raw_timestamp, str | int | float) else None
             )
             context_compaction = dict(compaction)
             provider_events.append(
@@ -187,7 +187,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
             session_id = _string_field(item, "sessionId")
 
         raw_timestamp = item.get("timestamp")
-        timestamp = normalize_timestamp(raw_timestamp if isinstance(raw_timestamp, (str, int, float)) else None)
+        timestamp = normalize_timestamp(raw_timestamp if isinstance(raw_timestamp, str | int | float) else None)
         if timestamp:
             created_at = timestamp if created_at is None or timestamp < created_at else created_at
             updated_at = timestamp if updated_at is None or timestamp > updated_at else updated_at
@@ -198,6 +198,13 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
         envelope_role = _record_role(item, message)
         content_blocks = _content_blocks_from_record(message, text)
         message_type = _message_type_from_code_record(item, text)
+        # Claude Code records carry per-message token usage at
+        # ``record.message.usage``; propagate so MaterializedMessage and the
+        # downstream cost estimator see real numbers instead of zeros.
+        msg_usage = message.get("usage") if isinstance(message, dict) else None
+        if not isinstance(msg_usage, dict):
+            msg_usage = {}
+        msg_model = message.get("model") if isinstance(message, dict) else None
         messages.append(
             ParsedMessage(
                 provider_message_id=str(record_uuid or f"msg-{index}"),
@@ -207,6 +214,11 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
                 content_blocks=content_blocks,
                 message_type=message_type,
                 parent_message_provider_id=_string_field(item, "parentUuid"),
+                input_tokens=_safe_int(msg_usage.get("input_tokens")),
+                output_tokens=_safe_int(msg_usage.get("output_tokens")),
+                cache_read_tokens=_safe_int(msg_usage.get("cache_read_input_tokens")),
+                cache_write_tokens=_safe_int(msg_usage.get("cache_creation_input_tokens")),
+                model_name=msg_model if isinstance(msg_model, str) else None,
             )
         )
 

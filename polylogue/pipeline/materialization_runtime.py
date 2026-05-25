@@ -373,6 +373,14 @@ def materialize_conversation(
                 has_paste=has_paste,
                 message_type=message_type,
                 blocks=blocks,
+                # Token counts flow through from parsers that populated them
+                # (e.g., claude code's record.message.usage). Other parsers
+                # leave the defaults of 0 until they're extended similarly.
+                input_tokens=getattr(msg, "input_tokens", 0) or 0,
+                output_tokens=getattr(msg, "output_tokens", 0) or 0,
+                cache_read_tokens=getattr(msg, "cache_read_tokens", 0) or 0,
+                cache_write_tokens=getattr(msg, "cache_write_tokens", 0) or 0,
+                model_name=getattr(msg, "model_name", None),
             )
         )
 

@@ -52,6 +52,17 @@ class ParsedMessage(BaseModel):
     provider_meta: dict[str, object] | None = None
     parent_message_provider_id: str | None = None
     branch_index: int = 0
+    # Token usage flows through from provider raw records to MaterializedMessage.
+    # Parsers populate when the raw record carries usage info; otherwise None.
+    # Materialization writes these into the messages table, where they drive
+    # cost estimation downstream. Were previously dropped on the parser floor,
+    # leaving 2.5M rows with input_tokens=output_tokens=0 and dead cost
+    # rollups across the entire archive.
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    model_name: str | None = None
 
     @field_validator("role", mode="before")
     @classmethod
