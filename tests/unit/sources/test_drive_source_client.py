@@ -176,7 +176,7 @@ def test_parse_downloaded_json_payload_preserves_newline_delimited_documents(
 
 
 @given(st.one_of(json_document_strategy(), st.lists(json_document_strategy(), min_size=0, max_size=6)))
-@settings(max_examples=35)
+@settings(max_examples=35, suppress_health_check=[HealthCheck.too_slow])
 def test_parse_downloaded_json_payload_round_trips_standard_json(payload: object) -> None:
     raw = json.dumps(payload).encode("utf-8")
     assert _parse_downloaded_json_payload(raw, name="payload.json") == payload

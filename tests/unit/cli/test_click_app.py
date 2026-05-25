@@ -537,6 +537,7 @@ class TestCliMetadata:
             "neighbors",
             "export",
             "resume",
+            "resume-candidates",
             "insights",
             "schema",
             "tags",

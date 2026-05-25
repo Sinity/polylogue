@@ -521,6 +521,7 @@ Published JSON Schemas live under [`docs/schemas/cli-output/`](./schemas/cli-out
 | `open` | no | yes | yes | no | — | Side-effect command (opens browser/URL); --print-url emits a single URL string. |
 | `raw` | no | yes | yes | no | — | Dumps provider-specific raw payload as-is; no normalized shape. |
 | `resume` | no | yes | yes | no | — |  |
+| `resume-candidates` | yes | yes | yes | no | — | Ranks read-pull resume candidates; --format json emits a typed success envelope. |
 | `select` | no | yes | yes | no | — | Selects one match and prints chosen field; single-line output. |
 | `show` | no | yes | yes | no | — | Renders full conversation in markdown/plaintext/html; not a stable JSON surface. |
 | `tags` | no | yes | yes | no | — | Tag-management subgroup; mutation-side commands. |

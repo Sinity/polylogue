@@ -63,12 +63,12 @@ def _seed_insight_rows(db_path: Path, conversation_id: str) -> tuple[str, str]:
         conn.execute(
             """
             INSERT INTO session_profiles (
-                conversation_id, materializer_version, materialized_at,
+                conversation_id, logical_conversation_id, materializer_version, materialized_at,
                 provider_name, search_text
             )
-            VALUES (?, 5, '2026-05-17T00:00:00Z', 'claude-code', '')
+            VALUES (?, ?, 5, '2026-05-17T00:00:00Z', 'claude-code', '')
             """,
-            (conversation_id,),
+            (conversation_id, conversation_id),
         )
         # session_work_events columns vary by version; insert only the
         # PK/FK/required event_id pair to keep this fixture decoupled
