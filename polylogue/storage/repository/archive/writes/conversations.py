@@ -568,4 +568,3 @@ async def delete_conversation_via_backend(
     if deleted:
         invalidate_search_cache()
     return deleted
-

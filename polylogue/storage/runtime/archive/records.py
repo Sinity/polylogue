@@ -237,4 +237,3 @@ class ProviderEventRecord(BaseModel):
     @classmethod
     def coerce_payload(cls, value: object) -> JSONObject:
         return _coerce_json_object(value) or {}
-

@@ -154,7 +154,7 @@ def _effective_source_name(record: RawConversationRecord) -> str:
 
 
 def _source_bucket_name(record: RawConversationRecord) -> str:
-    return record.source_name or "" or "<unknown>"
+    return record.source_name or "<unknown>"
 
 
 def _normalize_record_for_replay(record: RawConversationRecord) -> RawConversationRecord:

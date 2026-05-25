@@ -106,7 +106,11 @@ def tags_command(
         return
 
     if not tags:
-        click.echo("No tags found.")
+        if provider:
+            click.echo(f"No tags found for provider '{provider}'.")
+        else:
+            click.echo("No tags found.")
+        click.echo("Hint: use --add-tag <name> <conversation_id> to add a tag.")
         return
 
     max_width = max(len(t) for t in tags) if tags else 0

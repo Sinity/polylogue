@@ -394,14 +394,14 @@ class TestProveRawArtifactCoverage:
         _insert_raw_record(
             db_path=db_path,
             raw_id="raw-chatgpt-1",
-                        source_name="chatgpt",
+            source_name="chatgpt",
             source_path="/tmp/chatgpt.json",
             raw_content=b'{"id":"one","mapping":{}}',
         )
         _insert_raw_record(
             db_path=db_path,
             raw_id="raw-sidecar-1",
-                        source_name="claude-code",
+            source_name="claude-code",
             source_path="/tmp/subagents/agent-a123.meta.json",
             raw_content=b'{"agentType":"general-purpose"}',
         )
@@ -416,14 +416,14 @@ class TestProveRawArtifactCoverage:
         _insert_raw_record(
             db_path=db_path,
             raw_id="raw-unknown-1",
-                        source_name="inbox",
+            source_name="inbox",
             source_path="/tmp/unknown.json",
             raw_content=b"42",
         )
         _insert_raw_record(
             db_path=db_path,
             raw_id="raw-codex-1",
-                        source_name="codex",
+            source_name="codex",
             source_path="/tmp/session.jsonl",
             raw_content=(
                 b'{"type":"session_meta"}\nnot json at all\n{"type":"response_item","payload":{"type":"message"}}\n'
@@ -520,7 +520,7 @@ class TestProveRawArtifactCoverage:
         source_path = "/tmp/chatgpt-stale.json"
         actual_raw_id = _insert_raw_record(
             db_path=db_path,
-                        source_name=source_name,
+            source_name=source_name,
             source_path=source_path,
             raw_content=b'{"id":"one","mapping":{}}',
         )
@@ -675,21 +675,21 @@ class TestProveRawArtifactCoverage:
         _insert_raw_record(
             db_path=db_path,
             raw_id="raw-chatgpt-1",
-                        source_name="chatgpt",
+            source_name="chatgpt",
             source_path="/tmp/chatgpt.json",
             raw_content=b'{"id":"one","mapping":{}}',
         )
         _insert_raw_record(
             db_path=db_path,
             raw_id="raw-sidecar-1",
-                        source_name="claude-code",
+            source_name="claude-code",
             source_path="/tmp/subagents/agent-a123.meta.json",
             raw_content=b'{"agentType":"general-purpose"}',
         )
         _insert_raw_record(
             db_path=db_path,
             raw_id="raw-subagent-1",
-                        source_name="claude-code",
+            source_name="claude-code",
             source_path="/tmp/subagents/agent-a123.jsonl",
             raw_content=(b'{"type":"session_meta"}\n{"type":"response_item","payload":{"type":"message"}}\n'),
         )
@@ -796,7 +796,7 @@ class TestProveRawArtifactCoverage:
 
         _insert_raw_record(
             db_path=db_path,
-                        source_name="claude-ai",
+            source_name="claude-ai",
             source_path="/tmp/claude-large.json",
             raw_content=raw_content,
         )
