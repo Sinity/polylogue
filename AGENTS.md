@@ -1474,6 +1474,7 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
+| `devtools archive-space-report` | Report SQLite archive file/page/object space by table and index. |
 | `devtools build-package` | Build the default Nix package with the out-link under .local/result. |
 | `devtools failure-context` | Join testmon, git history, fixtures, and witnesses for a pytest failure ID into a JSON envelope. |
 | `devtools witness-discover` | Save a failure-triggering input as a local witness in .local/witnesses/new/. |
