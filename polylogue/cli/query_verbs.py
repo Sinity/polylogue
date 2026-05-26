@@ -7,7 +7,6 @@ a specific action on the matched conversations.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import replace
 from typing import TYPE_CHECKING, cast
 
 import click
@@ -221,35 +220,10 @@ def _execute_query_verb(
 
 
 def _resolve_target_conversation_id(request: RootModeRequest) -> str | None:
-    """Resolve the active filter chain to one conversation id (#1626).
+    """Verb-tree adapter for the shared latest-resolver helper (#1626, #1642)."""
+    from polylogue.cli.shared.latest_resolver import resolve_conversation_id_from_root_params
 
-    Used by verbs that operate on a single conversation (``messages``,
-    ``raw``) so root-level filters like ``--latest`` and ``-p codex``
-    pick a conversation without forcing the operator to also pass an
-    ``--id``. Returns ``None`` if the chain matches zero conversations.
-    """
-    from polylogue.api.sync.bridge import run_coroutine_sync
-
-    params = dict(request.params)
-    explicit = cast("str | None", params.get("conv_id"))
-    if explicit:
-        return explicit
-
-    spec = request.query_spec()
-    if not spec.latest and not spec.has_filters():
-        return None
-
-    one_match_spec = replace(spec, limit=1)
-
-    async def _resolve() -> str | None:
-        from polylogue.api import Polylogue
-        from polylogue.config import Config
-
-        async with Polylogue.open(config=cast("Config | None", params.get("_config"))) as api:
-            summaries = await one_match_spec.list_summaries(api.repository)
-        return str(summaries[0].id) if summaries else None
-
-    return run_coroutine_sync(_resolve())
+    return resolve_conversation_id_from_root_params(dict(request.params))
 
 
 @click.command("messages")

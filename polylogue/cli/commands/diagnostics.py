@@ -90,12 +90,23 @@ async def _pace(env: AppEnv, conversation_id: str | None, limit: int, threshold:
 
 
 @diagnostics_group.command("turns")
-@click.argument("conversation_id")
+@click.argument("conversation_id", required=False)
 @click.option("--limit", "-l", "-n", type=int, default=20, help="Max turns to show")
 @click.pass_context
-def turns_command(ctx: click.Context, conversation_id: str, limit: int) -> None:
-    """Show per-turn cost and duration for one conversation."""
+def turns_command(ctx: click.Context, conversation_id: str | None, limit: int) -> None:
+    """Show per-turn cost and duration for one conversation.
+
+    The conversation id may be omitted when a root filter like ``--latest`` or
+    ``--provider`` narrows the archive to a single match (#1642).
+    """
+    from polylogue.cli.shared.insight_command_contracts import find_root_params
+    from polylogue.cli.shared.latest_resolver import resolve_conversation_id_from_root_params
+
     env: AppEnv = ctx.obj
+    if conversation_id is None:
+        conversation_id = resolve_conversation_id_from_root_params(dict(find_root_params(ctx)))
+        if not conversation_id:
+            fail("turns", "turns requires a conversation ID (positional or --latest/--provider)")
     run_coroutine_sync(_turns(env, conversation_id, limit))
 
 

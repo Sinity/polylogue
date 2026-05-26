@@ -65,11 +65,24 @@ def neighbors_command(
     window_hours: int,
     output_format: str | None,
 ) -> None:
-    """Show explainable neighboring or near-duplicate candidates."""
+    """Show explainable neighboring or near-duplicate candidates.
+
+    When neither --id nor --query is given, falls back to resolving a
+    conversation via root filters (``--latest``, ``--provider``, etc.) — #1642.
+    """
+    import click as _click
+
     from polylogue.api.sync.bridge import run_coroutine_sync
+    from polylogue.cli.shared.insight_command_contracts import find_root_params
+    from polylogue.cli.shared.latest_resolver import resolve_conversation_id_from_root_params
 
     if not conversation_id and not (query and query.strip()):
-        fail("neighbors", "provide --id or --query")
+        ctx_obj = _click.get_current_context()
+        resolved = resolve_conversation_id_from_root_params(dict(find_root_params(ctx_obj)))
+        if resolved:
+            conversation_id = resolved
+        else:
+            fail("neighbors", "provide --id, --query, or a root filter like --latest")
 
     try:
         candidates = run_coroutine_sync(
