@@ -20,9 +20,7 @@ from polylogue.schemas.validation.requests import SchemaVerificationRequest
 
 def _measure(db_path: Path, record_limit: int | None) -> float:
     """Run ``verify_raw_corpus`` with *record_limit* and return wall-clock ms."""
-    request = SchemaVerificationRequest(
-        providers=["chatgpt"], max_samples=1, record_limit=record_limit
-    )
+    request = SchemaVerificationRequest(providers=["chatgpt"], max_samples=1, record_limit=record_limit)
     start = time.perf_counter()
     verify_raw_corpus(db_path=db_path, request=request)
     return (time.perf_counter() - start) * 1000

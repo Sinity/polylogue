@@ -98,8 +98,15 @@ def _check_paths(
     ]:
         for match in pattern.finditer(run):
             raw = match.group(1).strip()
-            # Skip flags and variable expansions
-            parts = shlex.split(raw) if raw else []
+            # Skip flags and variable expansions. Multiline shell scripts can
+            # leave trailing backslash continuations inside the captured
+            # fragment; shlex rejects them with ``No escaped character``.
+            # Treat any tokenization failure as "fragment isn't a clean path
+            # list" and skip it — best-effort, not strict shell parsing.
+            try:
+                parts = shlex.split(raw) if raw else []
+            except ValueError:
+                continue
             for part in parts:
                 # Skip flags, shell expansions, and non-path tokens
                 if part.startswith("-") or "$" in part or "{" in part:
