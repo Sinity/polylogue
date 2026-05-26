@@ -213,7 +213,7 @@ class LiveWatcher:
                             stat=stat,
                         )
                     )
-        return tuple(sorted(candidates, key=lambda candidate: candidate.path))
+        return tuple(_interleave_by_source(candidates))
 
     def _plan_catch_up(self, candidates: tuple[CandidateSourceFile, ...]) -> CatchUpPlan:
         if not candidates:
@@ -478,6 +478,33 @@ class LiveWatcher:
             except OSError:
                 continue
         return path.suffix == ".jsonl"
+
+
+def _interleave_by_source(candidates: list[CandidateSourceFile]) -> list[CandidateSourceFile]:
+    """Round-robin candidates across source families (#1616).
+
+    Plain alphabetical sort by path puts all of one source's files
+    before any of another's, so a long-source-first catch-up hides
+    small-source ingestion progress for hours. Bucket by source_name,
+    sort each bucket by path for determinism, then round-robin across
+    buckets so the first chunk contains some of every present family.
+    """
+    buckets: dict[str, list[CandidateSourceFile]] = {}
+    for candidate in candidates:
+        buckets.setdefault(candidate.source_name, []).append(candidate)
+    for source_name in buckets:
+        buckets[source_name].sort(key=lambda candidate: candidate.path)
+    ordered: list[CandidateSourceFile] = []
+    iterators = [iter(buckets[name]) for name in sorted(buckets)]
+    while iterators:
+        next_round = []
+        for it in iterators:
+            picked = next(it, None)
+            if picked is not None:
+                ordered.append(picked)
+                next_round.append(it)
+        iterators = next_round
+    return ordered
 
 
 def default_sources() -> tuple[WatchSource, ...]:
