@@ -105,7 +105,33 @@ def extract_phases(
 
     if phase_start_time is not None:
         phases.append(_build_phase(messages, phase_start_idx, len(messages), phase_start_time, prev_time))
+        return phases
 
+    # Fallback for sources where messages carry no timestamps but
+    # provider_events do (codex pre-Dec-2025, hermes per-request dumps).
+    # See #1624 — without this, session_phases is empty for 30% of the
+    # archive, blinding `find_resume_candidates`, the phases lens, and
+    # workflow_shape_distribution to anything codex/hermes.
+    return _phases_from_provider_events(conversation, messages)
+
+
+def _phases_from_provider_events(
+    conversation: Conversation,
+    messages: Sequence[MessageSemanticFacts],
+) -> list[SessionPhase]:
+    event_timestamps = sorted(event.timestamp for event in conversation.provider_events if event.timestamp is not None)
+    if not event_timestamps:
+        return []
+
+    phases: list[SessionPhase] = []
+    phase_start_time = event_timestamps[0]
+    prev_time = event_timestamps[0]
+    for timestamp in event_timestamps[1:]:
+        if (timestamp - prev_time) > _PHASE_GAP:
+            phases.append(_build_phase(messages, 0, len(messages), phase_start_time, prev_time))
+            phase_start_time = timestamp
+        prev_time = timestamp
+    phases.append(_build_phase(messages, 0, len(messages), phase_start_time, prev_time))
     return phases
 
 
