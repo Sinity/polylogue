@@ -623,8 +623,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.seed_testmon:
             _write_testmon_seed_stamp(history_entry)
 
-    # Notify on long-running verify.
-    if total_duration > 30:
+    # Notify only on failure. Passing runs stay silent — the terminal
+    # already shows the green summary and a desktop popup per run is
+    # spammy when verify is invoked on every push.
+    if exit_code != 0:
         _notify(
             _format_completion_notification(
                 exit_code=exit_code,

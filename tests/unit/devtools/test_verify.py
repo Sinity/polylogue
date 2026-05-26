@@ -421,3 +421,41 @@ def test_completion_notification_omits_unknown_pytest_count() -> None:
     )
 
     assert summary == "PASS (118s)"
+
+
+def test_verify_does_not_notify_on_pass() -> None:
+    """Passing verify runs stay silent — only failures send a desktop popup."""
+
+    def fake_run(label: str, command: list[str]) -> tuple[int, float, dict[str, object]]:
+        return 0, 0.01, {}
+
+    with (
+        patch("devtools.verify._run", side_effect=fake_run),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify") as notify,
+    ):
+        rc = main(["--quick", "--json"])
+
+    assert rc == 0
+    notify.assert_not_called()
+
+
+def test_verify_notifies_on_failure() -> None:
+    """Failing verify runs still send a desktop popup so the operator notices."""
+
+    def fake_run(label: str, command: list[str]) -> tuple[int, float, dict[str, object]]:
+        return 1, 0.01, {}
+
+    with (
+        patch("devtools.verify._run", side_effect=fake_run),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify") as notify,
+    ):
+        rc = main(["--quick", "--json"])
+
+    assert rc == 1
+    notify.assert_called_once()
