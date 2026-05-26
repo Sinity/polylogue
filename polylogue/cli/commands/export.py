@@ -27,7 +27,7 @@ def _root_message_roles(ctx: click.Context) -> tuple[object, ...]:
 
 
 @click.command("export")
-@click.argument("conversation_id")
+@click.argument("conversation_id", required=False)
 @click.option(
     "--format",
     "-f",
@@ -39,11 +39,22 @@ def _root_message_roles(ctx: click.Context) -> tuple[object, ...]:
 )
 @click.option("--fields", help="Fields for JSON/YAML outputs")
 @click.pass_context
-def export_command(ctx: click.Context, conversation_id: str, output_format: str, fields: str | None) -> None:
-    """Export one known conversation by ID. IDs can use the provider:id-prefix form (e.g. claude-ai:abc123)."""
+def export_command(ctx: click.Context, conversation_id: str | None, output_format: str, fields: str | None) -> None:
+    """Export one known conversation by ID. IDs can use the provider:id-prefix form (e.g. claude-ai:abc123).
+
+    The conversation id may be omitted when a root filter like ``--latest`` or
+    ``--provider`` narrows the archive to a single match (#1642).
+    """
     from polylogue.api.sync.bridge import run_coroutine_sync
+    from polylogue.cli.shared.insight_command_contracts import find_root_params
+    from polylogue.cli.shared.latest_resolver import resolve_conversation_id_from_root_params
 
     env: AppEnv = ctx.obj
+    if conversation_id is None:
+        root_params = dict(find_root_params(ctx))
+        conversation_id = resolve_conversation_id_from_root_params(root_params)
+        if not conversation_id:
+            fail("export", "export requires a conversation ID (positional, --id, or --latest)")
     conversation = run_coroutine_sync(env.polylogue.get_conversation(conversation_id))
     if conversation is None:
         fail("export", f"Conversation not found: {conversation_id}")

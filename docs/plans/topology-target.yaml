@@ -920,6 +920,10 @@ files:
     loc: 122
     target: polylogue/cli/shared/insight_command_contracts.py
     owner: stable
+  - path: polylogue/cli/shared/latest_resolver.py
+    loc: 65
+    target: polylogue/cli/shared/latest_resolver.py
+    owner: stable
   - path: polylogue/cli/shared/machine_errors.py
     loc: 367
     target: polylogue/cli/shared/machine_errors.py

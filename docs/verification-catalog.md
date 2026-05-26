@@ -74,7 +74,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue delete` | `polylogue/cli/click_app.py` `polylogue delete` |
 | `polylogue diagnostics` | `polylogue/cli/click_app.py` `polylogue diagnostics` |
 | `polylogue diagnostics pace` | `polylogue/cli/commands/diagnostics.py:20` `polylogue.cli.commands.diagnostics.pace_command` |
-| `polylogue diagnostics tools` | `polylogue/cli/commands/diagnostics.py:139` `polylogue.cli.commands.diagnostics.tools_command` |
+| `polylogue diagnostics tools` | `polylogue/cli/commands/diagnostics.py:150` `polylogue.cli.commands.diagnostics.tools_command` |
 | `polylogue diagnostics turns` | `polylogue/cli/commands/diagnostics.py:92` `polylogue.cli.commands.diagnostics.turns_command` |
 | `polylogue doctor` | `polylogue/cli/click_app.py` `polylogue doctor` |
 | `polylogue embed` | `polylogue/cli/click_app.py` `polylogue embed` |
