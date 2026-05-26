@@ -180,7 +180,16 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
                 continue
             seen_record_uuids.add(record_uuid)
 
-        if record_type in {"init", "file-history-snapshot", "queue-operation"}:
+        # ``progress`` records are claude-code hook lifecycle events
+        # (`hookEvent`, `hookName`, `command`) carried alongside the
+        # tool they fired on — they are NOT message content. Persisting
+        # them as messages produces empty rows under the ``tool_result``
+        # message_type that dominate the ``role=unknown, text='', blocks=[]``
+        # consumer surface and inflate every messages-table count by
+        # ~23%. See #1617 for the full forensic. We drop them here at the
+        # parser; the hook payload, if useful for analytics, belongs in
+        # a future ``provider_event`` capture, not in the messages table.
+        if record_type in {"init", "file-history-snapshot", "queue-operation", "progress"}:
             continue
 
         if not session_id:
