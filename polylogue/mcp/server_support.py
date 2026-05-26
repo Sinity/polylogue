@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, overload
 
 from pydantic import BaseModel
 
-from polylogue.errors import PolylogueError
+from polylogue.errors import PolylogueError, SchemaIncompatibleError
 from polylogue.logging import get_logger
 from polylogue.mcp.payloads import MCPErrorPayload, MCPFencedCodeBlock
 from polylogue.operations import ArchiveOperations
@@ -62,24 +62,6 @@ def role_allows(role: MCPRole, required: MCPRole) -> bool:
     return order[role] >= order[required]
 
 
-def _exception_error_payload(fn_name: str, exc: Exception) -> MCPErrorPayload:
-    """Return a sanitized error payload for unexpected MCP failures."""
-    from polylogue.errors import PolylogueError
-
-    if isinstance(exc, PolylogueError):
-        code = exc.http_status_code
-        detail = type(exc).__name__
-    else:
-        code = -32603  # JSON-RPC internal error
-        detail = type(exc).__name__
-    return MCPErrorPayload(
-        error="internal MCP tool error",
-        code=code,
-        detail=detail,
-        tool=fn_name,
-    )
-
-
 def _extract_fenced_code(text: str, language: str = "") -> list[MCPFencedCodeBlock]:
     """Extract fenced code blocks from markdown text."""
     if "```" not in text:
@@ -123,6 +105,54 @@ def _clamp_limit(limit: int | object) -> int:
         return 10
 
 
+def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
+    """Translate an exception raised by an MCP tool body into a typed error JSON.
+
+    The returned string is a serialized :class:`MCPErrorPayload`. Callers must
+    return this from the tool body so FastMCP delivers it as a normal tool
+    response (with ``is_error=True``) instead of letting the exception escape
+    into the stdio loop — an escaping exception kills the entire MCP server
+    process and takes every other registered tool offline (#1621).
+
+    Categorization:
+
+    * :class:`SchemaIncompatibleError` → ``code="schema_incompatible"`` with
+      ``current_version``/``expected_version`` populated so MCP clients can
+      render the same actionable operator message ``readiness_check`` does
+      (#1611).
+    * Any :class:`PolylogueError` subclass → ``code="polylogue_error"`` with
+      ``detail`` set to the exception class name.
+    * Any other :class:`Exception` → ``code="internal_error"`` with ``detail``
+      set to the exception class name only. The raw exception message is
+      deliberately not included so the surface cannot leak credentials, file
+      paths, or other internal state.
+    """
+    if isinstance(exc, SchemaIncompatibleError):
+        payload = MCPErrorPayload(
+            error=str(exc),
+            code="schema_incompatible",
+            detail=type(exc).__name__,
+            tool=fn_name,
+            current_version=exc.current_version,
+            expected_version=exc.expected_version,
+        )
+    elif isinstance(exc, PolylogueError):
+        payload = MCPErrorPayload(
+            error=f"{fn_name}: {type(exc).__name__}",
+            code="polylogue_error",
+            detail=type(exc).__name__,
+            tool=fn_name,
+        )
+    else:
+        payload = MCPErrorPayload(
+            error=f"{fn_name}: internal error ({type(exc).__name__})",
+            code="internal_error",
+            detail=type(exc).__name__,
+            tool=fn_name,
+        )
+    return _json_payload(payload, exclude_none=True)
+
+
 @overload
 def _safe_call(fn_name: str, fn: Callable[[], str]) -> str: ...
 
@@ -136,19 +166,20 @@ def _safe_call(fn_name: str, fn: Callable[[], TResult]) -> TResult | str: ...
 
 
 def _safe_call(fn_name: str, fn: Callable[[], TResult]) -> TResult | str:
-    """Call fn() and return its result. Raises on error so FastMCP sets isError=True.
+    """Call ``fn()`` and return its result, or a typed error JSON on failure.
 
-    Unexpected exceptions are logged server-side but sanitised before
-    reaching the MCP client — the raised error exposes only the exception
-    type, not the raw message or traceback.
+    Errors are logged server-side and translated through
+    :func:`_exception_to_error_json` before being returned. Returning rather
+    than raising guarantees that one bad tool call cannot crash the MCP stdio
+    loop and disable every other registered tool (#1621). The translated
+    payload exposes only the exception class name — never the raw message,
+    arguments, or traceback — so error surfaces remain free of secrets.
     """
     try:
         return fn()
-    except PolylogueError:
-        raise
     except Exception as exc:
         logger.exception("MCP tool %s failed", fn_name)
-        raise PolylogueError(f"{fn_name}: internal error ({type(exc).__name__})") from exc
+        return _exception_to_error_json(fn_name, exc)
 
 
 @overload
@@ -164,18 +195,12 @@ async def _async_safe_call(fn_name: str, fn: Callable[[], Awaitable[TResult]]) -
 
 
 async def _async_safe_call(fn_name: str, fn: Callable[[], Awaitable[TResult]]) -> TResult | str:
-    """Async version of _safe_call. Raises on error so FastMCP sets isError=True.
-
-    Unexpected exceptions are logged server-side but sanitised before
-    reaching the MCP client.
-    """
+    """Async counterpart of :func:`_safe_call`. Same isolation contract."""
     try:
         return await fn()
-    except PolylogueError:
-        raise
     except Exception as exc:
         logger.exception("MCP tool %s failed", fn_name)
-        raise PolylogueError(f"{fn_name}: internal error ({type(exc).__name__})") from exc
+        return _exception_to_error_json(fn_name, exc)
 
 
 def _error_json(message: str, **extra: object) -> str:
