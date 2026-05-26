@@ -841,11 +841,22 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path, params = self._parse_path()
 
-        # OTLP receiver endpoints — unauthenticated, same posture as
-        # /metrics and /healthz/*.  OTLP exporters don't carry credentials
-        # and the daemon binds to loopback by default.  gated behind
-        # observability_enabled config flag (#1321).
+        # OTLP receiver endpoints (#1321) gated on the explicit
+        # ``observability_enabled`` config flag (closes #1604). When
+        # the flag is off the routes return 404 so the receiver does
+        # not advertise itself to opportunistic scanners. When on AND
+        # the daemon is bound non-loopback we still require the
+        # configured auth token — OTLP exporters that DO carry
+        # credentials are the only safe non-loopback case.
         if path == ["v1", "traces"] or path == ["v1", "metrics"] or path == ["v1", "logs"]:
+            from polylogue.config import load_polylogue_config
+            from polylogue.core.loopback import is_loopback_host
+
+            if not load_polylogue_config().observability_enabled:
+                self._send_error(HTTPStatus.NOT_FOUND, "not_found")
+                return
+            if not is_loopback_host(self._api_host) and not self._check_auth():
+                return
             self._handle_otlp_post(path)
             return
 
@@ -1876,11 +1887,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         Routes to ``handle_traces``, ``handle_metrics``, or ``handle_logs``
         in ``polylogue/daemon/otlp_receiver.py`` based on *path*.
         """
+        from polylogue.config import load_polylogue_config
         from polylogue.daemon.otlp_receiver import handle_logs, handle_metrics, handle_traces
 
         signal = path[1]  # 'traces', 'metrics', or 'logs'
         content_type = self.headers.get("Content-Type", "application/x-protobuf")
         content_length = int(self.headers.get("Content-Length", 0))
+        max_body = load_polylogue_config().otlp_max_body_bytes
+        if content_length > max_body:
+            self._send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "payload_too_large")
+            return
         body = self.rfile.read(content_length) if content_length > 0 else b""
 
         if signal == "traces":
