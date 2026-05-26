@@ -583,6 +583,66 @@ def test_insights_stage_defers_hot_large_conversation_debt(
     assert stage.execute_conversations(["conv-hot"]) is False
 
 
+def test_conversation_ids_missing_profiles_includes_stale(tmp_path: Path) -> None:
+    """#1620: the path-fallback debt loop must surface stale profiles, not just missing ones.
+
+    Before the fix, conversations whose JSONL had gone quiet but whose
+    ``conversations.sort_key`` drifted from the materialized
+    ``source_sort_key`` were never picked up by the daemon's debt loop —
+    ``remaining=0`` was reported indefinitely.
+    """
+    db_path = tmp_path / "missing_profiles.sqlite"
+    cutoff_safe_sort_key = 1.0  # well below now - HOT_SOURCE_GRACE_SECONDS
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            """
+            CREATE TABLE conversations (
+                conversation_id TEXT PRIMARY KEY,
+                sort_key REAL,
+                updated_at TEXT
+            );
+            CREATE TABLE session_profiles (
+                conversation_id TEXT PRIMARY KEY,
+                materializer_version INTEGER,
+                source_sort_key REAL,
+                source_updated_at TEXT
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO conversations (conversation_id, sort_key) VALUES ('conv-missing', ?)",
+            (cutoff_safe_sort_key,),
+        )
+        conn.execute(
+            "INSERT INTO conversations (conversation_id, sort_key) VALUES ('conv-stale', ?)",
+            (cutoff_safe_sort_key,),
+        )
+        conn.execute(
+            "INSERT INTO conversations (conversation_id, sort_key) VALUES ('conv-fresh', ?)",
+            (cutoff_safe_sort_key,),
+        )
+        conn.execute(
+            """
+            INSERT INTO session_profiles (conversation_id, materializer_version, source_sort_key)
+            VALUES ('conv-stale', ?, ?)
+            """,
+            (SESSION_INSIGHT_MATERIALIZER_VERSION, cutoff_safe_sort_key + 1000.0),
+        )
+        conn.execute(
+            """
+            INSERT INTO session_profiles (conversation_id, materializer_version, source_sort_key)
+            VALUES ('conv-fresh', ?, ?)
+            """,
+            (SESSION_INSIGHT_MATERIALIZER_VERSION, cutoff_safe_sort_key),
+        )
+        conn.commit()
+
+        ids = stages._conversation_ids_missing_profiles(conn)
+
+    assert set(ids) == {"conv-missing", "conv-stale"}
+
+
 def test_insights_staleness_uses_sort_key_not_timestamp_text(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.sqlite"
     with sqlite3.connect(db_path) as conn:
