@@ -21,7 +21,7 @@ The user installs polylogue, runs it with no arguments, and sees:
 $ polylogue
 
 Polylogue — your AI memory
-Archive: /home/user/.local/share/polylogue/archive.db
+Archive: /home/user/.local/share/polylogue/polylogue.db
 Sources configured: 1  (1 active, 0 stale)
 Last ingestion: 2 minutes ago
 
