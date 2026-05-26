@@ -812,3 +812,99 @@ class TestNoTokenLogging:
                         offenders.append(f"{py_file.relative_to(repo_root)}:{lineno}: {line.strip()}")
 
         assert not offenders, "potential token-logging code paths:\n" + "\n".join(offenders)
+
+
+# ---------------------------------------------------------------------------
+# OTLP gating (#1604): observability_enabled flag, body cap, loopback-vs-remote
+# ---------------------------------------------------------------------------
+
+
+class TestOtlpGating:
+    """The OTLP receiver routes must obey ``observability_enabled`` and a
+    body-size cap before any payload is read or persisted. The earlier
+    implementation routed to the receiver unconditionally despite a
+    comment claiming otherwise — see #1604."""
+
+    OTLP_PATHS = ["/v1/traces", "/v1/metrics", "/v1/logs"]
+
+    @pytest.mark.parametrize("path", OTLP_PATHS)
+    def test_disabled_observability_returns_404(self, path: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            "polylogue.config.load_polylogue_config",
+            lambda: SimpleNamespace(observability_enabled=False, otlp_max_body_bytes=8 * 1024 * 1024),
+        )
+        handler = _make_handler("POST", path, origin="")
+        send_error, _ = _capture_responses(handler)
+        handler.do_POST()
+        send_error.assert_called_once_with(HTTPStatus.NOT_FOUND, "not_found")
+
+    @pytest.mark.parametrize("path", OTLP_PATHS)
+    def test_enabled_loopback_skips_auth(self, path: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When ``observability_enabled`` is on and the daemon is on loopback,
+        the route proceeds without requiring the auth token (matches
+        ``/metrics`` and ``/healthz/*``)."""
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            "polylogue.config.load_polylogue_config",
+            lambda: SimpleNamespace(observability_enabled=True, otlp_max_body_bytes=8 * 1024 * 1024),
+        )
+
+        handler = _make_handler("POST", path)
+        # Stub the receiver so we don't actually need opentelemetry-proto here.
+        otlp_handler_called = []
+
+        def fake_handle_otlp_post(p: list[str]) -> None:
+            otlp_handler_called.append(p)
+            handler.send_response(200)
+
+        handler._handle_otlp_post = fake_handle_otlp_post  # type: ignore[method-assign]
+        handler.send_response = MagicMock()  # type: ignore[method-assign]
+
+        handler.do_POST()
+
+        assert otlp_handler_called, f"OTLP handler must be invoked when enabled+loopback for {path}"
+
+    @pytest.mark.parametrize("path", OTLP_PATHS)
+    def test_enabled_non_loopback_without_token_returns_401(self, path: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Bound non-loopback ⇒ require the auth token even with the
+        observability flag on."""
+        from types import SimpleNamespace
+
+        class RemoteMockServer:
+            auth_token = "secret"
+            api_host = "0.0.0.0"  # not loopback
+
+        monkeypatch.setattr(
+            "polylogue.config.load_polylogue_config",
+            lambda: SimpleNamespace(observability_enabled=True, otlp_max_body_bytes=8 * 1024 * 1024),
+        )
+
+        handler = _make_handler("POST", path)
+        handler.server = cast("DaemonAPIHTTPServer", RemoteMockServer())
+        send_error, _ = _capture_responses(handler)
+
+        handler.do_POST()
+
+        send_error.assert_called_once_with(HTTPStatus.UNAUTHORIZED, "unauthorized")
+
+    @pytest.mark.parametrize("path", OTLP_PATHS)
+    def test_body_over_cap_returns_413(self, path: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Oversize ``Content-Length`` ⇒ 413 before the body is read or
+        persisted, preventing storage-amplification."""
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            "polylogue.config.load_polylogue_config",
+            lambda: SimpleNamespace(observability_enabled=True, otlp_max_body_bytes=1024),  # 1 KiB cap
+        )
+
+        big_body = b"x" * 4096  # 4 KiB > 1 KiB cap
+        handler = _make_handler("POST", path, body=big_body)
+        send_error, _ = _capture_responses(handler)
+
+        handler.do_POST()
+
+        send_error.assert_called_with(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "payload_too_large")

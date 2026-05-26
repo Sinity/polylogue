@@ -7,9 +7,22 @@ Tempo, Grafana Agent, and any OpenTelemetry SDK that exports via
 
 Design notes:
 
-- **Unauthenticated** — same posture as ``/metrics`` and ``/healthz/*``.
-  The daemon binds to loopback by default; OTLP exporters don't carry
-  credentials.
+- **Opt-in only** — the routes are gated on the
+  ``observability_enabled`` config flag (default off, env override
+  ``POLYLOGUE_OBSERVABILITY_ENABLED``). When the flag is off the
+  daemon returns ``404 Not Found`` so the receiver doesn't advertise
+  itself. Closes #1604, which documented that an earlier version of
+  this docstring claimed gating that was not actually implemented.
+- **Loopback unauthenticated; remote requires the daemon auth token**
+  — when ``observability_enabled`` is on AND the daemon is bound
+  non-loopback, the route runs through ``_check_auth`` so exporters
+  that DO carry credentials are the only safe non-loopback case.
+  Loopback callers still bypass auth, matching ``/metrics`` and
+  ``/healthz/*``.
+- **Body cap** — ``Content-Length`` is capped at
+  ``otlp_max_body_bytes`` (default 8 MiB; override
+  ``POLYLOGUE_OTLP_MAX_BODY_BYTES``); over-limit POSTs receive
+  ``413 Payload Too Large``.
 - **Graceful fallback** — when ``opentelemetry-proto`` is not installed
   the endpoints return ``501 Not Implemented`` rather than crashing.
 - **Content-type negotiation** — ``application/x-protobuf`` and

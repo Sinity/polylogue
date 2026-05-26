@@ -217,6 +217,28 @@ class PolylogueConfig:
         return bool(self._data.get("embedding_enabled"))
 
     @property
+    def observability_enabled(self) -> bool:
+        """Return whether the OTLP HTTP receiver routes are accepted.
+
+        The receiver is OFF by default (closes #1604 — the routes were
+        previously unconditionally enabled in front of the auth gate
+        despite a code comment claiming otherwise). Operators opt in
+        via TOML ``observability_enabled = true`` or the env var
+        ``POLYLOGUE_OBSERVABILITY_ENABLED=1``.
+        """
+        return bool(self._data.get("observability_enabled"))
+
+    @property
+    def otlp_max_body_bytes(self) -> int:
+        """Maximum accepted Content-Length for OTLP POST bodies.
+
+        Default 8 MiB matches typical OTLP exporter batch sizes; clients
+        sending more receive 413. Configurable via TOML
+        ``otlp_max_body_bytes`` or env ``POLYLOGUE_OTLP_MAX_BODY_BYTES``.
+        """
+        return int(str(self._data.get("otlp_max_body_bytes", 8 * 1024 * 1024)))
+
+    @property
     def embedding_model(self) -> str:
         return str(self._data.get("embedding_model", "voyage-4"))
 
@@ -517,6 +539,13 @@ def _default_config_values() -> dict[str, object]:
         # supplying VOYAGE_API_KEY (e.g., for one-off CLI use) does not
         # incur ongoing daemon-driven spend.
         "embedding_enabled": False,
+        # OTLP HTTP receiver and other observability routes (see
+        # ``polylogue/daemon/otlp_receiver.py``). Default off; the
+        # receiver was previously documented-but-not-actually gated,
+        # which made it an unauthenticated write surface under
+        # ``--insecure-allow-remote`` (closes #1604).
+        "observability_enabled": False,
+        "otlp_max_body_bytes": 8 * 1024 * 1024,
         "embedding_model": "voyage-4",
         "embedding_dimension": 1024,
         # Soft monthly cap on embedding spend. 0 = unlimited; the default
@@ -773,6 +802,8 @@ def _apply_env_overrides(cfg: dict[str, object]) -> None:
     env_map = {
         "POLYLOGUE_ARCHIVE_ROOT": "archive_root",
         "POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS": "embedding_enabled",
+        "POLYLOGUE_OBSERVABILITY_ENABLED": "observability_enabled",
+        "POLYLOGUE_OTLP_MAX_BODY_BYTES": "otlp_max_body_bytes",
         "VOYAGE_API_KEY": "voyage_api_key",
         "POLYLOGUE_FORCE_PLAIN": "force_plain",
         "POLYLOGUE_THEME": "theme",
