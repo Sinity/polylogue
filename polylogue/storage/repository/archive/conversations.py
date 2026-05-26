@@ -197,8 +197,15 @@ class RepositoryArchiveConversationMixin:
         conv_records = await self.queries.list_conversation_summaries(query)
         ids = [str(record.conversation_id) for record in conv_records]
         tags_by_id = await self._fetch_tags_by_conversation(ids)
+        # #1623: hydrate message_count from conversation_stats so callers
+        # like compute_facets see a real total instead of summing zeros.
+        counts_by_id = await self.queries.get_message_counts_batch(ids) if ids else {}
         return [
-            conversation_summary_from_record(record, tags=tags_by_id.get(str(record.conversation_id), ()))
+            conversation_summary_from_record(
+                record,
+                tags=tags_by_id.get(str(record.conversation_id), ()),
+                message_count=counts_by_id.get(str(record.conversation_id)),
+            )
             for record in conv_records
         ]
 

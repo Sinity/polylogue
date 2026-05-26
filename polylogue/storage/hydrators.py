@@ -145,6 +145,7 @@ def conversation_summary_from_record(
     record: ConversationRecord,
     *,
     tags: tuple[str, ...] = (),
+    message_count: int | None = None,
 ) -> ConversationSummary:
     """Hydrate a ConversationSummary domain model from a ConversationRecord."""
     return ConversationSummary(
@@ -157,6 +158,7 @@ def conversation_summary_from_record(
         metadata=record.metadata or {},
         parent_id=record.parent_conversation_id,
         branch_type=record.branch_type,
+        message_count=message_count,
         tags_m2m=tags,
     )
 
