@@ -69,7 +69,7 @@ class InsightsDB:
         """Create an InsightsDB rooted next to the archive database.
 
         The insights database lives at ``<archive_dir>/insights.db``,
-        alongside the main ``<archive_dir>/archive.db``.
+        alongside the main ``<archive_dir>/polylogue.db``.
         """
         return cls(Path(archive_dir) / "insights.db")
 
