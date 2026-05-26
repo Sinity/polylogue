@@ -982,15 +982,11 @@ def _action_events_exist_for_conversations(conn: sqlite3.Connection, conversatio
 
 
 def _conversation_ids_missing_profiles(conn: sqlite3.Connection) -> list[str]:
-    rows = conn.execute(
-        """
-        SELECT c.conversation_id
-        FROM conversations AS c
-        LEFT JOIN session_profiles AS sp ON sp.conversation_id = c.conversation_id
-        WHERE sp.conversation_id IS NULL
-        ORDER BY COALESCE(c.sort_key, 0) DESC, c.conversation_id
-        """,
-    ).fetchall()
+    """Conversations whose session_profile is missing or stale (#1620)."""
+    from polylogue.storage.insights.session.status import SESSION_PROFILE_REPAIR_CANDIDATES_SQL
+    from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
+
+    rows = conn.execute(SESSION_PROFILE_REPAIR_CANDIDATES_SQL, (SESSION_INSIGHT_MATERIALIZER_VERSION,)).fetchall()
     return [str(row[0]) for row in rows]
 
 
