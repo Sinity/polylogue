@@ -155,6 +155,13 @@ def _ensure_fts_startup_readiness_sync() -> None:
         conn = open_connection(db, timeout=10.0)
         row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
         has_fts_table = row is not None
+        # Fresh-init race guard (#1603): bootstrap may have committed
+        # ``messages_fts`` but not yet ``messages``; bailing keeps the
+        # operator log clean instead of panicking in repair_stale_fts_rows.
+        messages_row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'").fetchone()
+        if messages_row is None:
+            logger.info("daemon: FTS startup check skipped — fresh-init in flight.")
+            return
 
         from polylogue.storage.fts.dangling_repair import (
             configure_bounded_repair_connection,

@@ -65,6 +65,10 @@ exceptions:
     ceiling: 1300
     reason: "shared operation contracts for ingest/maintenance/mutation/insight aggregation routes (#861, #862, #1134); split candidate: per-domain operation modules under operations/"
 
+  - path: polylogue/daemon/cli.py
+    ceiling: 1110
+    reason: "fresh-init FTS readiness race guard (#1603) added 4 lines; split candidate: lift _ensure_fts_startup_readiness_sync into daemon/fts_startup.py"
+
   - path: polylogue/daemon/status.py
     ceiling: 1380
     reason: "typed status payloads for failure samples, embedding readiness, tier/notify (#844, #898, #915), cursor-lag projection + auto-calibration baseline state (#1232/#1349), maintenance failure routing (#1198), slow-vs-stuck attempt classification (#1246); split candidate: payload modules per status section"

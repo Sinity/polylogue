@@ -362,6 +362,8 @@ def test_ensure_fts_startup_readiness_runs_bounded_repair(
             self.queries.append(query)
             if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'":
                 return FakeCursor(("messages_fts",))
+            if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'":
+                return FakeCursor(("messages",))
             if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
                 name = str(_params[0]) if isinstance(_params, tuple) and _params else ""
                 return (
@@ -454,6 +456,8 @@ def test_ensure_fts_startup_readiness_rebuilds_when_bounded_repair_fails(
             self.queries.append(query)
             if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'":
                 return FakeCursor(("messages_fts",))
+            if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'":
+                return FakeCursor(("messages",))
             if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
                 name = str(_params[0]) if isinstance(_params, tuple) and _params else ""
                 return (
@@ -512,6 +516,71 @@ def test_ensure_fts_startup_readiness_rebuilds_when_bounded_repair_fails(
     assert conn.closed is True
 
 
+def test_ensure_fts_startup_readiness_skips_when_messages_table_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fresh-init guard (#1603): if ``messages_fts`` was created but the
+    base ``messages`` table is not yet visible (the bootstrap is still
+    in flight on another connection), the readiness check must skip the
+    repair path instead of raising ``OperationalError: no such table:
+    messages`` into the daemon log.
+    """
+    from polylogue.daemon import cli as daemon_cli
+
+    db = tmp_path / "polylogue.db"
+    db.write_bytes(b"sqlite placeholder")
+
+    class FakeCursor:
+        def __init__(self, row: tuple[object, ...] | None) -> None:
+            self._row = row
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return self._row
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+            self.committed = False
+            self.closed = False
+
+        def execute(self, sql: str, _params: object = ()) -> FakeCursor:
+            query = " ".join(sql.split())
+            self.queries.append(query)
+            if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'":
+                return FakeCursor(("messages_fts",))
+            if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'":
+                return FakeCursor(("messages",))
+            if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'":
+                return FakeCursor(None)
+            raise AssertionError(f"unexpected query: {query}")
+
+        def commit(self) -> None:
+            self.committed = True
+
+        def close(self) -> None:
+            self.closed = True
+
+    conn = FakeConnection()
+    monkeypatch.setattr("polylogue.paths.db_path", lambda: db)
+    monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.dangling_repair.repair_stale_fts_rows",
+        lambda _conn: pytest.fail("repair_stale_fts_rows must not run when messages table is absent"),
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync",
+        lambda _conn: pytest.fail("rebuild_fts_index_sync must not run when messages table is absent"),
+    )
+
+    asyncio.run(daemon_cli._ensure_fts_startup_readiness())
+
+    assert "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'" in conn.queries
+    assert "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'" in conn.queries
+    assert conn.committed is False
+    assert conn.closed is True
+
+
 def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -543,6 +612,8 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
             self.queries.append(query)
             if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'":
                 return FakeCursor(("messages_fts",))
+            if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'":
+                return FakeCursor(("messages",))
             if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
                 name = str(_params[0]) if isinstance(_params, tuple) and _params else ""
                 return (
