@@ -352,6 +352,37 @@ class TestFormatMetricsReadsArchiveState:
         assert 'polylogue_embedding_latest_catchup_messages{state="embedded"} 2' in body
         assert "polylogue_embedding_latest_catchup_estimated_cost_usd 0.003" in body
 
+    def test_archive_messages_total_uses_conversation_stats(self, tmp_path: Path) -> None:
+        """#1629: per-source message counts avoid the 3.7M-row GROUP BY scan.
+
+        Reading from ``conversation_stats`` (one row per conversation) is
+        two orders of magnitude cheaper than ``SELECT source_name, COUNT(*)
+        FROM messages GROUP BY source_name`` on a steady-state archive.
+        """
+        db = tmp_path / "archive.db"
+        with sqlite3.connect(db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE conversations (
+                    conversation_id TEXT PRIMARY KEY,
+                    source_name TEXT NOT NULL
+                );
+                CREATE TABLE conversation_stats (
+                    conversation_id TEXT PRIMARY KEY,
+                    message_count INTEGER NOT NULL
+                );
+                INSERT INTO conversations VALUES ('c1', 'claude-code'), ('c2', 'claude-code'), ('c3', 'codex');
+                INSERT INTO conversation_stats VALUES ('c1', 100), ('c2', 50), ('c3', 30);
+                """
+            )
+
+        body = format_metrics(db)
+
+        assert 'polylogue_archive_conversations_total{source="claude-code"} 2' in body
+        assert 'polylogue_archive_conversations_total{source="codex"} 1' in body
+        assert 'polylogue_archive_messages_total{source="claude-code"} 150' in body
+        assert 'polylogue_archive_messages_total{source="codex"} 30' in body
+
     def test_embedding_metrics_tolerate_partial_tables(self, tmp_path: Path) -> None:
         db = tmp_path / "archive.db"
         with sqlite3.connect(db) as conn:

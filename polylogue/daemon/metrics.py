@@ -748,29 +748,50 @@ def _emit_archive_metrics(lines: list[str], conn: sqlite3.Connection) -> None:
             samples=[(None, 0)],
         )
 
-    # Per-provider message counts (resilient to missing column)
-    if _table_exists(conn, "messages") and "source_name" in _columns(conn, "messages"):
+    # Per-provider message counts. Aggregate through ``conversation_stats``
+    # instead of a full GROUP BY scan over ``messages`` — on a 3.7 M-row
+    # archive that scan took ~3.5 s on every scrape (#1629) even with the
+    # ``idx_messages_source_role`` covering index. ``conversation_stats``
+    # is maintained per-conversation by ``upsert_conversation_stats`` and
+    # is two orders of magnitude smaller; the ~5-row drift versus the
+    # exact count is acceptable for a metric.
+    if (
+        _table_exists(conn, "conversations")
+        and "source_name" in _columns(conn, "conversations")
+        and _table_exists(conn, "conversation_stats")
+        and "message_count" in _columns(conn, "conversation_stats")
+    ):
+        msg_rows = conn.execute(
+            """
+            SELECT c.source_name, COALESCE(SUM(cs.message_count), 0)
+            FROM conversations AS c
+            LEFT JOIN conversation_stats AS cs ON cs.conversation_id = c.conversation_id
+            GROUP BY c.source_name
+            ORDER BY c.source_name
+            """
+        ).fetchall()
+    elif _table_exists(conn, "messages") and "source_name" in _columns(conn, "messages"):
         msg_rows = conn.execute(
             "SELECT source_name, COUNT(*) FROM messages GROUP BY source_name ORDER BY source_name"
         ).fetchall()
     else:
         msg_rows = []
-        if msg_rows:
-            _emit_metric(
-                lines,
-                name="polylogue_archive_messages_total",
-                help_text="Total messages in the archive by source family.",
-                metric_type="gauge",
-                samples=[({"source": str(row[0])}, int(row[1])) for row in msg_rows],
-            )
-        else:
-            _emit_metric(
-                lines,
-                name="polylogue_archive_messages_total",
-                help_text="Total messages.",
-                metric_type="gauge",
-                samples=[(None, 0)],
-            )
+    if msg_rows:
+        _emit_metric(
+            lines,
+            name="polylogue_archive_messages_total",
+            help_text="Total messages in the archive by source family.",
+            metric_type="gauge",
+            samples=[({"source": str(row[0])}, int(row[1])) for row in msg_rows],
+        )
+    else:
+        _emit_metric(
+            lines,
+            name="polylogue_archive_messages_total",
+            help_text="Total messages.",
+            metric_type="gauge",
+            samples=[(None, 0)],
+        )
 
 
 def _emit_throughput_metrics(lines: list[str], conn: sqlite3.Connection) -> None:
