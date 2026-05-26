@@ -23,6 +23,13 @@ concurrency:
 
 jobs:
   push:
+    # Skip silently when the cache hasn't been provisioned. The `polylogue`
+    # cachix cache and the `CACHIX_AUTH_TOKEN` secret live outside this repo;
+    # without them the cachix-action fails and reddens master. Setting the repo
+    # variable `CACHIX_CACHE_ENABLED=true` opts the workflow in once the cache
+    # and token are wired up. Forks and fresh setups stay green by default.
+    # See #1638.
+    if: ${{ vars.CACHIX_CACHE_ENABLED == 'true' }}
     timeout-minutes: 60
     runs-on: ubuntu-latest
     steps:
