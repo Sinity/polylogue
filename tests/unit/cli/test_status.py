@@ -465,3 +465,29 @@ class TestDaemonStatus:
         combined = _combined_calls(env)
         assert "no conversations" not in combined.lower()
         assert "running" in combined.lower()
+
+
+@pytest.mark.integration
+def test_status_command_accepts_json_alias_flag(tmp_path: Path) -> None:
+    """`polylogue status --json` is a documented alias for `--format json`.
+
+    Sibling subcommands (`list`, `tags`, `sources`, `stats`) accept `--json`;
+    `status` previously rejected it with "No such option '--json'". Closes #1612.
+    """
+    from tests.infra.cli_subprocess import run_cli
+
+    env = {
+        **os.environ,
+        "POLYLOGUE_ARCHIVE_ROOT": str(tmp_path / "polylogue"),
+        "XDG_DATA_HOME": str(tmp_path / "data"),
+        "XDG_CONFIG_HOME": str(tmp_path / "config"),
+        "XDG_STATE_HOME": str(tmp_path / "state"),
+        "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        "HOME": str(tmp_path),
+        "POLYLOGUE_DAEMON_URL": "http://127.0.0.1:1",
+    }
+    result = run_cli(["--plain", "status", "--json"], env=env)
+    assert result.exit_code == 0, result.output
+    assert "No such option" not in result.output
+    parsed = json.loads(result.output)
+    assert isinstance(parsed, dict)
