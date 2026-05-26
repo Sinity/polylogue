@@ -423,6 +423,34 @@ def test_completion_notification_omits_unknown_pytest_count() -> None:
     assert summary == "PASS (118s)"
 
 
+def test_default_testmon_step_pairs_marker_filter_with_forceselect() -> None:
+    """#1632: any pytest -m marker filter in the default lane MUST be paired with --testmon-forceselect.
+
+    Without ``--testmon-forceselect``, a marker selector deactivates
+    pytest-testmon's affected-test selection and the run silently
+    expands to the whole suite — PR #1550 fixed exactly this regression
+    after a full week of every default verify running 9.5K tests
+    instead of the affected subset. This invariant is the regression
+    guard so the footgun cannot re-land silently again.
+    """
+    steps = build_verify_steps(quick=False, lab=False, skip_slow=False)
+    label, command = steps[-1]
+    assert label == "pytest testmon"
+    if "-m" in command:
+        assert "--testmon-forceselect" in command, (
+            f"marker filter without --testmon-forceselect re-introduces the #1550 silent-deselection footgun: {command}"
+        )
+
+
+def test_skip_slow_testmon_step_keeps_forceselect_with_compound_marker() -> None:
+    """``--skip-slow`` composes the marker; the pairing invariant must still hold."""
+    steps = build_verify_steps(quick=False, lab=False, skip_slow=True)
+    label, command = steps[-1]
+    assert label == "pytest testmon"
+    assert "-m" in command
+    assert "--testmon-forceselect" in command
+
+
 def test_verify_does_not_notify_on_pass() -> None:
     """Passing verify runs stay silent — only failures send a desktop popup."""
 
