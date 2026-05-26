@@ -189,6 +189,47 @@ def test_bulk_export_verb_invokes_run_bulk_export_with_parent_request() -> None:
     assert kwargs == {"output_format": "jsonl", "fields": None}
 
 
+def test_resolve_target_conversation_id_uses_explicit_conv_id() -> None:
+    request = RootModeRequest.from_params({"conv_id": "claude-code:abc123"})
+    assert query_verbs._resolve_target_conversation_id(request) == "claude-code:abc123"
+
+
+def test_resolve_target_conversation_id_returns_none_without_filters_or_latest() -> None:
+    request = RootModeRequest.from_params({})
+    assert query_verbs._resolve_target_conversation_id(request) is None
+
+
+def test_resolve_target_conversation_id_resolves_latest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#1626: ``--latest`` must resolve to the most recent conv without an explicit id."""
+    request = RootModeRequest.from_params({"latest": True})
+
+    captured_limits: list[int | None] = []
+
+    async def fake_list_summaries(self: object, repo: object) -> list[SimpleNamespace]:
+        captured_limits.append(getattr(self, "limit", None))
+        return [SimpleNamespace(id="claude-code:latest-conv-id")]
+
+    monkeypatch.setattr(
+        "polylogue.archive.query.spec.ConversationQuerySpec.list_summaries",
+        fake_list_summaries,
+    )
+
+    class _API:
+        repository = SimpleNamespace()
+
+        async def __aenter__(self) -> _API:
+            return self
+
+        async def __aexit__(self, *exc: object) -> None: ...
+
+    monkeypatch.setattr("polylogue.api.Polylogue.open", lambda **_: _API())
+
+    result = query_verbs._resolve_target_conversation_id(request)
+
+    assert result == "claude-code:latest-conv-id"
+    assert captured_limits == [1]
+
+
 def test_delete_verb_updates_force_and_dry_run_flags() -> None:
     _, child = _context_pair(query_terms=("alpha",))
     wrapped = getattr(query_verbs.delete_verb.callback, "__wrapped__", None)
