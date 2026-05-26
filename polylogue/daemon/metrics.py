@@ -841,9 +841,9 @@ def _emit_db_space_metrics(lines: list[str], db: Path) -> None:
             samples=[(None, file_size)],
         )
 
-        import sqlite3 as _sqlite3
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-        space_conn = _sqlite3.connect(str(db))
+        space_conn = open_readonly_connection(db)
         try:
             page_size = int(space_conn.execute("PRAGMA page_size").fetchone()[0])
             page_count = int(space_conn.execute("PRAGMA page_count").fetchone()[0])
