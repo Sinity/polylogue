@@ -13,7 +13,6 @@ from polylogue.archive.phase.extraction import extract_phases
 from polylogue.archive.semantic.facts import build_conversation_semantic_facts
 from polylogue.archive.semantic.timing import compute_session_timing, compute_tool_active_duration_ms
 from polylogue.archive.session.models import SessionAnalysis, SessionProfile
-from polylogue.core.timestamps import parse_timestamp
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Conversation
@@ -46,11 +45,9 @@ def _profile_timestamp_bounds(
     # (function_call, response_item, session_meta) do. Use them to derive
     # a real session window rather than collapsing to a single conversation
     # timestamp.
-    event_timestamps: list[datetime] = []
-    for event in conversation.provider_events:
-        parsed = parse_timestamp(event.timestamp) if event.timestamp else None
-        if parsed is not None:
-            event_timestamps.append(parsed)
+    event_timestamps: list[datetime] = [
+        event.timestamp for event in conversation.provider_events if event.timestamp is not None
+    ]
     if event_timestamps:
         return (
             min(event_timestamps),
