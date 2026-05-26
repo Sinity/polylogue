@@ -94,6 +94,12 @@ class MCPErrorPayload(SurfacePayloadModel):
     detail: str | None = None
     tool: str | None = None
     conversation_id: str | None = None
+    # Schema-mismatch surface (#1611): when an MCP tool body raises
+    # ``SchemaIncompatibleError`` the typed payload exposes both versions
+    # so clients can render the actionable operator message without
+    # re-parsing the error string.
+    current_version: int | None = None
+    expected_version: int | None = None
     is_error: Literal[True] = True
 
 

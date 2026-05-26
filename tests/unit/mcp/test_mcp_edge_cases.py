@@ -56,41 +56,46 @@ class TestSafeCall:
         result = _safe_call("test", lambda: '{"ok": true}')
         assert '"ok"' in result
 
-    def test_exception_raises_polylogue_error(self) -> None:
-        def failing() -> None:
+    def test_exception_returns_structured_error(self) -> None:
+        """A tool body that raises returns a typed error JSON instead of crashing.
+
+        Returning rather than raising isolates per-tool failures from the
+        stdio loop — the historical raise propagated through FastMCP and
+        killed the server, taking every other tool offline (#1621).
+        """
+        import json
+
+        def failing() -> str:
             raise RuntimeError("DB connection lost")
 
-        from polylogue.errors import PolylogueError
-
-        with pytest.raises(PolylogueError, match="test_tool.*internal error"):
-            _safe_call("test_tool", failing)
+        result = _safe_call("test_tool", failing)
+        body = json.loads(result)
+        assert body["is_error"] is True
+        assert body["code"] == "internal_error"
+        assert body["tool"] == "test_tool"
+        assert body["detail"] == "RuntimeError"
+        assert "internal error" in body["error"]
+        assert "RuntimeError" in body["error"]
 
     def test_traceback_not_in_output(self) -> None:
-        def failing() -> None:
+        def failing() -> str:
             raise ValueError("secret internal path /home/user/.db")
 
-        from polylogue.errors import PolylogueError
-
-        with pytest.raises(PolylogueError) as exc:
-            _safe_call("test_tool", failing)
-        assert "Traceback" not in str(exc.value)
+        result = _safe_call("test_tool", failing)
+        assert "Traceback" not in result
 
     def test_raw_exception_text_not_leaked(self) -> None:
         """Exception message content is not exposed to MCP clients."""
 
-        def failing() -> None:
+        def failing() -> str:
             raise RuntimeError("secret connection string postgresql://admin:hunter2@db.internal")
 
-        from polylogue.errors import PolylogueError
-
-        with pytest.raises(PolylogueError) as exc:
-            _safe_call("test_tool", failing)
-        error_text = str(exc.value)
-        assert "secret" not in error_text
-        assert "hunter2" not in error_text
-        assert "admin" not in error_text
-        assert "internal error" in error_text
-        assert "RuntimeError" in error_text
+        result = _safe_call("test_tool", failing)
+        assert "secret" not in result
+        assert "hunter2" not in result
+        assert "admin" not in result
+        assert "internal error" in result
+        assert "RuntimeError" in result
 
 
 # =============================================================================

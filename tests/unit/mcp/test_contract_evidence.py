@@ -36,7 +36,6 @@ import pytest
 
 from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
 from polylogue.core.json import JSONValue
-from polylogue.errors import PolylogueError
 from polylogue.mcp.server_support import MCPRole, _safe_call
 from tests.infra.mcp import (
     MCPServerUnderTest,
@@ -349,22 +348,26 @@ class TestToolErrorEnvelopes:
         body = _structured_error(result)
         assert "at least one conversation_id" in body["error"], body
 
-    def test_safe_call_sanitises_exception_into_polylogue_error(
+    def test_safe_call_sanitises_exception_into_typed_payload(
         self,
     ) -> None:
-        """Internal exceptions never reach MCP clients with their raw payload."""
+        """Internal exceptions never reach MCP clients with their raw payload.
+
+        The wrapper now returns a typed error JSON instead of raising, so
+        the failure cannot escape into the FastMCP stdio loop and kill the
+        server (#1621). The privacy invariant (no raw exception text in the
+        response) is preserved.
+        """
 
         def failing() -> str:
             raise RuntimeError("postgresql://admin:hunter2@db.internal/secret")
 
-        with pytest.raises(PolylogueError) as exc_info:
-            _safe_call("probe_tool", failing)
-        message = str(exc_info.value)
-        assert "hunter2" not in message
-        assert "postgresql://" not in message
-        assert "Traceback" not in message
-        assert "probe_tool" in message
-        assert "RuntimeError" in message
+        result = _safe_call("probe_tool", failing)
+        assert "hunter2" not in result
+        assert "postgresql://" not in result
+        assert "Traceback" not in result
+        assert "probe_tool" in result
+        assert "RuntimeError" in result
 
 
 # ---------------------------------------------------------------------------
@@ -498,22 +501,23 @@ class TestErrorPrivacyEnvelopes:
     def test_tool_internal_exception_sanitised_through_safe_call(
         self,
     ) -> None:
-        """Tools wrap their bodies in ``_safe_call`` which raises a sanitised
-        PolylogueError. The MCP framework converts the raise into an isError
-        response; the raised message must not leak the original payload.
+        """Tools wrap their bodies in ``_safe_call``, which returns a typed
+        error JSON for any uncaught exception. The returned payload must
+        not leak the original exception message — only the exception class
+        name is allowed through.
         """
         secret_text = "Bearer sk-live-AAAA1111SECRETTOKEN0000"
 
         def boom() -> str:
             raise RuntimeError(secret_text)
 
-        with pytest.raises(PolylogueError) as exc_info:
-            _safe_call("hidden_tool", boom)
+        rendered = _safe_call("hidden_tool", boom)
 
-        rendered = str(exc_info.value)
         assert secret_text not in rendered
         assert "SECRETTOKEN" not in rendered
         assert "Bearer" not in rendered
+        assert "RuntimeError" in rendered
+        assert "hidden_tool" in rendered
 
 
 # ---------------------------------------------------------------------------

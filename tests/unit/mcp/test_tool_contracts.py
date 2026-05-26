@@ -15,7 +15,6 @@ from polylogue.archive.query.search_hits import ConversationSearchHit
 from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.archive.semantic.pricing import CostEstimatePayload, CostUsagePayload
 from polylogue.archive.stats import ArchiveStats
-from polylogue.errors import PolylogueError
 from polylogue.insights.archive import (
     ArchiveCoverageInsight,
     ArchiveDebtInsight,
@@ -442,13 +441,17 @@ class TestQueryTools:
             mock_ops.search_conversation_hits = AsyncMock(return_value=[])
             mock_get_archive_ops.return_value = mock_ops
 
-            with pytest.raises(PolylogueError, match="search: internal error"):
-                await invoke_surface_async(
-                    mcp_server._tool_manager._tools["search"].fn,
-                    query="hello",
-                    message_type="summmary",
-                )
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["search"].fn,
+                query="hello",
+                message_type="summmary",
+            )
 
+        body = json.loads(result)
+        assert body["is_error"] is True
+        assert body["tool"] == "search"
+        assert body["code"] == "internal_error"
+        assert "internal error" in body["error"]
         mock_ops.search_conversation_hits.assert_not_called()
         mock_ops.query_conversations.assert_not_called()
 
@@ -587,13 +590,16 @@ class TestGetConversationTool:
             mock_poly = make_polylogue_mock()
             mock_get_polylogue.return_value = mock_poly
 
-            with pytest.raises(PolylogueError, match="get_messages: internal error"):
-                invoke_surface(
-                    mcp_server._tool_manager._tools["get_messages"].fn,
-                    conversation_id="test:long",
-                    message_type="summmary",
-                )
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["get_messages"].fn,
+                conversation_id="test:long",
+                message_type="summmary",
+            )
 
+        body = json.loads(result)
+        assert body["is_error"] is True
+        assert body["tool"] == "get_messages"
+        assert body["code"] == "internal_error"
         mock_poly.get_messages_paginated.assert_not_called()
 
     @pytest.mark.asyncio
@@ -965,11 +971,14 @@ class TestMutationTools:
             mock_get_polylogue.return_value = mock_poly
             mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
 
-            with pytest.raises(PolylogueError, match="add_tag: internal error"):
-                invoke_surface(
-                    mcp_server._tool_manager._tools["add_tag"].fn, conversation_id="test:conv-123", tag="invalid"
-                )
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["add_tag"].fn, conversation_id="test:conv-123", tag="invalid"
+            )
 
+        body = json.loads(result)
+        assert body["is_error"] is True
+        assert body["tool"] == "add_tag"
+        assert body["code"] == "internal_error"
         mock_poly.add_tag.assert_awaited_once_with("test:conv-123", "invalid")
 
     def test_remove_tag_success(self, mcp_server: MCPServerUnderTest) -> None:
@@ -1002,13 +1011,16 @@ class TestMutationTools:
             mock_get_polylogue.return_value = mock_poly
             mock_get_query_store.return_value = make_query_store_mock(resolved_id="test:conv-123")
 
-            with pytest.raises(PolylogueError, match="remove_tag: internal error"):
-                invoke_surface(
-                    mcp_server._tool_manager._tools["remove_tag"].fn,
-                    conversation_id="test:conv-123",
-                    tag="important",
-                )
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["remove_tag"].fn,
+                conversation_id="test:conv-123",
+                tag="important",
+            )
 
+        body = json.loads(result)
+        assert body["is_error"] is True
+        assert body["tool"] == "remove_tag"
+        assert body["code"] == "internal_error"
         mock_poly.remove_tag.assert_awaited_once_with("test:conv-123", "important")
 
     def test_bulk_tag_conversations_applies_every_tag_to_every_conversation(
