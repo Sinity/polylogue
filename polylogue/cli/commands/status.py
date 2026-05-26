@@ -90,11 +90,19 @@ def _fast_message_count(conn: Any) -> int:
     default=None,
     help="Output format (json for machine-readable).",
 )
+@click.option(
+    "--json",
+    "json_alias",
+    is_flag=True,
+    default=False,
+    help="Alias for ``--format json``. Matches the sibling commands' ``--json`` flag (#1612).",
+)
 @click.pass_obj
 def status_command(
     env: AppEnv,
     daemon_url: str,
     output_format: str | None,
+    json_alias: bool,
 ) -> None:
     """Show daemon and archive health.
 
@@ -102,6 +110,8 @@ def status_command(
     liveness, ingestion progress, FTS coverage, insight freshness, and
     component health. Read-only — does not modify state.
     """
+    if json_alias and output_format is None:
+        output_format = "json"
     try:
         req = Request(
             f"{daemon_url}/api/status",
