@@ -7,6 +7,7 @@ a specific action on the matched conversations.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING, cast
 
 import click
@@ -219,6 +220,38 @@ def _execute_query_verb(
     execute_query_request(env, request)
 
 
+def _resolve_target_conversation_id(request: RootModeRequest) -> str | None:
+    """Resolve the active filter chain to one conversation id (#1626).
+
+    Used by verbs that operate on a single conversation (``messages``,
+    ``raw``) so root-level filters like ``--latest`` and ``-p codex``
+    pick a conversation without forcing the operator to also pass an
+    ``--id``. Returns ``None`` if the chain matches zero conversations.
+    """
+    from polylogue.api.sync.bridge import run_coroutine_sync
+
+    params = dict(request.params)
+    explicit = cast("str | None", params.get("conv_id"))
+    if explicit:
+        return explicit
+
+    spec = request.query_spec()
+    if not spec.latest and not spec.has_filters():
+        return None
+
+    one_match_spec = replace(spec, limit=1)
+
+    async def _resolve() -> str | None:
+        from polylogue.api import Polylogue
+        from polylogue.config import Config
+
+        async with Polylogue.open(config=cast("Config | None", params.get("_config"))) as api:
+            summaries = await one_match_spec.list_summaries(api.repository)
+        return str(summaries[0].id) if summaries else None
+
+    return run_coroutine_sync(_resolve())
+
+
 @click.command("messages")
 @click.argument("conversation_id", required=False, shell_complete=_complete_conversation_id)
 @click.option("--message-role", "-r", "message_role", multiple=True, help="Filter by message role")
@@ -258,14 +291,11 @@ def messages_verb(
     from polylogue.cli.messages import run_messages
 
     env: AppEnv = ctx.obj
+    request = _parent_request(ctx)
     if conversation_id is None:
-        request = _parent_request(ctx)
-        params = dict(request.params)
-        conversation_id = cast("str | None", params.get("conv_id"))
+        conversation_id = _resolve_target_conversation_id(request)
         if not conversation_id:
             raise click.UsageError("messages requires a conversation ID (use --id or pass as argument)")
-    else:
-        request = _parent_request(ctx)
 
     run_messages(
         env,
@@ -303,14 +333,11 @@ def raw_verb(
     from polylogue.cli.messages import run_raw
 
     env: AppEnv = ctx.obj
+    request = _parent_request(ctx)
     if conversation_id is None:
-        request = _parent_request(ctx)
-        params = dict(request.params)
-        conversation_id = cast("str | None", params.get("conv_id"))
+        conversation_id = _resolve_target_conversation_id(request)
         if not conversation_id:
             raise click.UsageError("raw requires a conversation ID (use --id or pass as argument)")
-    else:
-        request = _parent_request(ctx)
 
     run_raw(
         env,
