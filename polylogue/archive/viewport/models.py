@@ -12,7 +12,6 @@ from polylogue.archive.viewport.enums import ContentType, ToolCategory
 from polylogue.archive.viewport.tools import (
     PATH_PATTERN,
     clean_metadata_path_candidate,
-    clean_path_candidate,
     clean_shell_path_candidate,
 )
 from polylogue.types import Provider
@@ -74,7 +73,12 @@ class ToolCall(BaseModel):
     def affected_paths(self) -> list[str]:
         paths: list[str] = []
         for field in ("file_path", "path", "file", "filename"):
-            value = clean_path_candidate(self.input.get(field))
+            # Input fields named ``file_path``/``path``/``file``/``filename``
+            # *usually* hold a path, but not always — some tool inputs
+            # repurpose the names for model versions, Python attribute
+            # tokens, or other non-paths. Apply the same shape filter the
+            # metadata path uses (#1622).
+            value = clean_metadata_path_candidate(self.input.get(field))
             if value:
                 paths.append(value)
 

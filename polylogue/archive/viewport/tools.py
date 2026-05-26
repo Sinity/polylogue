@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from pathlib import PurePosixPath
 
 from polylogue.archive.viewport.enums import ToolCategory
 from polylogue.core.json import JSONValue
@@ -12,6 +11,23 @@ from polylogue.core.json import JSONValue
 PATH_PATTERN = re.compile(r'(?:^|[\s"\'])(/[^\s"\']+|[./][^\s"\']+)')
 NOISE_PATH_TOKENS = frozenset({"...", "//", "/dev/null", "|", "||", "&&", ";"})
 METADATA_FILE_BASENAME_ALLOWLIST = frozenset({"LICENSE", "COPYING", "NOTICE", "Makefile", "Dockerfile", "Justfile"})
+
+# Match a sed-style substitution token (``s/find/replace/flags``) — these
+# come out of shell-command path extraction with a leading slash and look
+# like real paths to the naive PATH_PATTERN. The trailing flags are
+# optional. The leading address part (``[!]?[0-9]*[a-z]?``) is intentionally
+# tolerant since real sed expressions vary widely.
+_SED_SUBSTITUTION_RE = re.compile(r"(?:^|/)!?(s|y)/[^/]*?/[^/]*?/[a-z0-9]*$")
+
+# Path-extension shape: a trailing ``.`` followed by a leading letter
+# and 0-5 more alphanumeric characters. Catches ``.py``, ``.md``,
+# ``.json``, ``.tsx``, ``.yaml`` etc. without locking the codebase
+# into an enumerated allowlist. Rejects long or punctuation-bearing
+# suffixes that ``PurePosixPath.suffix`` would otherwise treat as
+# paths (``.provider_name``), and digit-only suffixes that come from
+# version strings (``.7`` in ``4.7``). Requiring a leading letter is
+# the cheap discriminator that handles both.
+_PATH_EXTENSION_RE = re.compile(r"\.[A-Za-z][A-Za-z0-9]{0,5}$")
 
 
 def classify_tool(name: str, input_data: Mapping[str, JSONValue]) -> ToolCategory:
@@ -96,7 +112,9 @@ def clean_path_candidate(value: object) -> str | None:
         return None
     if candidate.startswith("-"):
         return None
-    if any(ch in candidate for ch in "*?[]{}"):
+    if any(ch in candidate for ch in "*?[]{}<>"):
+        return None
+    if _SED_SUBSTITUTION_RE.search(candidate):
         return None
     return candidate
 
@@ -105,13 +123,18 @@ def looks_like_path_candidate(value: object) -> bool:
     candidate = clean_path_candidate(value)
     if candidate is None:
         return False
+    # Absolute or explicit-relative paths are accepted as-is — the
+    # leading prefix is itself the path signal.
     if candidate.startswith(("/", "~/", "./", "../")):
         return True
-    if "/" in candidate:
-        return True
-    if candidate.startswith("."):
-        return True
-    if PurePosixPath(candidate).suffix:
+    # Otherwise require a *file-extension-shaped* suffix (``.py``,
+    # ``.md``, ``.tsx`` …). This rejects Python attribute access
+    # (``insight.provider_name``), version numbers (``4.7``), email
+    # TLDs in brackets, and other false-positive ``.suffix`` matches
+    # that ``PurePosixPath`` would otherwise treat as paths. Tokens
+    # like ``kwargs/fields`` and ``dataclass/function`` (slash but no
+    # extension) also stop here — they're code, not paths.
+    if _PATH_EXTENSION_RE.search(candidate):
         return True
     return candidate in METADATA_FILE_BASENAME_ALLOWLIST
 
