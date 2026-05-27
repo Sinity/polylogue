@@ -101,6 +101,10 @@ class _FakeQueries(SQLiteQueryStore):
         self.last_batch_ids = ids
         return [self.records_by_id[conversation_id] for conversation_id in ids]
 
+    async def get_message_counts_batch(self, ids: list[str]) -> dict[str, int]:
+        """Hydrator (#1630): return a count per conversation id keyed in records."""
+        return {conversation_id: 42 + i for i, conversation_id in enumerate(ids)}
+
 
 class _FakeRepo(RepositoryArchiveSearchMixin):
     queries: _FakeQueries
@@ -194,6 +198,38 @@ async def test_repository_search_summaries_follow_conversation_hit_order() -> No
     assert queries.last_batch_ids == ["conv-b", "conv-a"]
     assert [summary.id for summary in summaries] == [ConversationId("conv-b"), ConversationId("conv-a")]
     assert [summary.title for summary in summaries] == ["Second", "First"]
+
+
+@pytest.mark.asyncio
+async def test_repository_search_summaries_hydrates_message_count_from_stats() -> None:
+    """#1630: ``search_summaries`` must populate ``message_count`` from
+    ``conversation_stats`` so the daemon HTTP search path and any other
+    caller see a real total instead of None.
+
+    Before the fix the message_count surfaced as 0 (None coerced) for every
+    conversation in /api/conversations and /api/conversations?q=... results.
+    """
+    hits = ConversationSearchResult(
+        hits=[
+            StorageConversationSearchIdHit(conversation_id="conv-b", rank=1, score=1.0),
+            StorageConversationSearchIdHit(conversation_id="conv-a", rank=2, score=2.0),
+        ]
+    )
+    queries = _FakeQueries(
+        hits=hits,
+        records_by_id={
+            "conv-a": _conversation_record("conv-a", title="First"),
+            "conv-b": _conversation_record("conv-b", title="Second"),
+        },
+    )
+    repo = _FakeRepo(queries)
+
+    summaries = await repo.search_summaries("storage", limit=5)
+
+    counts = {str(summary.id): summary.message_count for summary in summaries}
+    assert counts == {"conv-b": 42, "conv-a": 43}, (
+        f"#1630: search_summaries must hydrate message_count from stats; got {counts}"
+    )
 
 
 @pytest.mark.asyncio

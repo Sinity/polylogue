@@ -62,7 +62,18 @@ class RepositoryArchiveSearchMixin:
         hits, records = await self._search_records(query, limit=limit, providers=providers)
         if not hits.hits:
             return []
-        return [conversation_summary_from_record(record) for record in records]
+        # #1630: hydrate message_count from conversation_stats so the
+        # daemon HTTP /api/conversations search path and any other
+        # ``search_summaries`` caller see a real total instead of None.
+        ids = [str(record.conversation_id) for record in records]
+        counts_by_id = await self.queries.get_message_counts_batch(ids)
+        return [
+            conversation_summary_from_record(
+                record,
+                message_count=counts_by_id.get(str(record.conversation_id)),
+            )
+            for record in records
+        ]
 
     async def search_summary_hits(
         self,
@@ -102,7 +113,16 @@ class RepositoryArchiveSearchMixin:
             return []
 
         records = await self.queries.get_conversations_batch([hit.conversation_id for hit in evidence_hits])
-        summaries_by_id = {str(record.conversation_id): conversation_summary_from_record(record) for record in records}
+        # #1630: hydrate message_count from conversation_stats so search
+        # hit summaries carry a real total instead of None.
+        ids = [str(record.conversation_id) for record in records]
+        counts_by_id = await self.queries.get_message_counts_batch(ids) if ids else {}
+        summaries_by_id = {
+            str(record.conversation_id): conversation_summary_from_record(
+                record, message_count=counts_by_id.get(str(record.conversation_id))
+            )
+            for record in records
+        }
         return [
             conversation_search_hit_from_summary(
                 summaries_by_id[hit.conversation_id],
