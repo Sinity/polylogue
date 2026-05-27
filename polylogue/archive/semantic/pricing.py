@@ -535,9 +535,30 @@ def estimate_message_cost(
 
 
 def _conversation_level_estimate(conversation: Conversation) -> CostEstimatePayload | None:
-    source_name = _provider_text(conversation.provider)
-    provider_meta = _record(conversation.provider_meta)
-    raw = _record(provider_meta.get("raw")) or provider_meta
+    return estimate_cost_from_provider_meta(
+        source_name=_provider_text(conversation.provider),
+        conversation_id=str(conversation.id),
+        provider_meta=conversation.provider_meta,
+    )
+
+
+def estimate_cost_from_provider_meta(
+    *,
+    source_name: str,
+    conversation_id: str,
+    provider_meta: object,
+) -> CostEstimatePayload | None:
+    """Estimate session cost from ``provider_meta`` alone — no messages required.
+
+    Returns ``None`` when ``provider_meta`` carries neither a ``total_cost_usd``
+    value nor enough usage/model evidence to estimate. Callers that have the
+    full message stream may fall through to ``estimate_conversation_cost``
+    for a per-message aggregation; bulk/aggregate callers (#1621) that want
+    bounded cost without loading messages should accept a ``None`` here as
+    "unavailable for this session" and report it as such.
+    """
+    pm = _record(provider_meta)
+    raw = _record(pm.get("raw")) or pm
     exact = (
         _coerce_float(raw.get("total_cost_usd"))
         or _coerce_float(raw.get("costUSD"))
@@ -551,7 +572,7 @@ def _conversation_level_estimate(conversation: Conversation) -> CostEstimatePayl
     if exact is not None and exact > 0.0:
         return _exact_estimate(
             source_name=source_name,
-            conversation_id=str(conversation.id),
+            conversation_id=conversation_id,
             model_name=model_name,
             usage=usage,
             total_usd=exact,
@@ -559,7 +580,7 @@ def _conversation_level_estimate(conversation: Conversation) -> CostEstimatePayl
     if usage.billable_tokens > 0 or model_name:
         return _estimate_from_usage(
             source_name=source_name,
-            conversation_id=str(conversation.id),
+            conversation_id=conversation_id,
             model_name=model_name,
             usage=usage,
             provenance=("conversation_provider_meta",),
@@ -713,6 +734,7 @@ __all__ = [
     "_normalize_model",
     "estimate_conversation_cost",
     "estimate_cost",
+    "estimate_cost_from_provider_meta",
     "estimate_message_cost",
     "generated_at",
     "harmonize_session_cost",

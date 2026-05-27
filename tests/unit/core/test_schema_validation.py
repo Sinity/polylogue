@@ -667,7 +667,6 @@ def _insert_raw_record(
                 actual_raw_id,
                 source_name,
                 payload_provider,
-                source_name,
                 source_path,
                 0,
                 blob_size,
