@@ -25,7 +25,7 @@
     },
     "ReaderActionAvailabilityPayload": {
       "additionalProperties": false,
-      "description": "Per-target reader action availability with explicit disabled reason.",
+      "description": "Per-target reader action availability with explicit disabled reason.\n\nReader actions surface seven distinct states (see :data:`ReaderActionState`)\nso the UI can render \"disabled because X\" / \"loading\" / \"dangerous\"\nwithout conflating them under a single boolean (#1488). ``enabled``\nis kept as a back-compat alias derived from ``state`` so existing\ncall sites that only know about enabled/disabled continue to work.",
       "properties": {
         "disabled_reason": {
           "anyOf": [
@@ -40,13 +40,49 @@
           "title": "Disabled Reason"
         },
         "enabled": {
+          "default": true,
           "title": "Enabled",
           "type": "boolean"
+        },
+        "inspect_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inspect Path"
+        },
+        "repair_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Repair Path"
+        },
+        "state": {
+          "default": "enabled",
+          "enum": [
+            "enabled",
+            "disabled",
+            "partial",
+            "dangerous",
+            "loading",
+            "target",
+            "unavailable"
+          ],
+          "title": "State",
+          "type": "string"
         }
       },
-      "required": [
-        "enabled"
-      ],
       "title": "ReaderActionAvailabilityPayload",
       "type": "object"
     },
