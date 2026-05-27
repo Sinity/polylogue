@@ -804,19 +804,25 @@ ingestion path.
 ## Hook Integration
 
 Polylogue integrates with AI coding agents via hook scripts that fire on session
-lifecycle events:
+lifecycle events. See [docs/hooks.md](hooks.md) for the full event catalog,
+per-event use cases, sidecar layout, and recommended starter set.
 
-- **Claude Code**: 16 hook events available (SessionStart, SessionEnd,
-  PreToolUse, PostToolUse, Notification, Stop, SubagentStart/Stop, PreCompact,
-  PermissionRequest). See [#802](https://github.com/Sinity/polylogue/issues/802).
-- **Codex**: 6 hook events available (SessionStart, SessionEnd, PreToolUse,
-  PostToolUse, Error, Warning).
+- **Claude Code**: 16 hook events available (SessionStart, Setup,
+  UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure,
+  PermissionRequest, PermissionDenied, Notification, Elicitation,
+  ElicitationResult, CwdChanged, FileChanged, WorktreeCreate, SubagentStart,
+  Stop). See [#802](https://github.com/Sinity/polylogue/issues/802) and
+  [#1213](https://github.com/Sinity/polylogue/issues/1213).
+- **Codex**: 6 hook events available (SessionStart, UserPromptSubmit,
+  PreToolUse, PostToolUse, PermissionRequest, Stop).
 
 Hook scripts call `polylogue-hook` which ingests session data at event
 granularity, providing 100% data coverage vs. ~79% from post-hoc JSONL
 discovery. Hooks are the enabling infrastructure for real-time context injection
-(SessionStart), session completion processing (SessionEnd), and accurate paste
-detection (PreToolUse/PostToolUse).
+(SessionStart), accurate paste detection (UserPromptSubmit fires before
+clipboard expansion so `[Pasted text #N]` markers are observable), tool
+execution metadata that never lands in JSONL (PreToolUse/PostToolUse), and a
+full permission audit trail (PermissionRequest/PermissionDenied).
 
 ## Embedding Pipeline
 

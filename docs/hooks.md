@@ -22,35 +22,45 @@ data coverage for events that are not recorded in post-hoc session JSONL.
 
 ### Claude Code (16 events)
 
-| Event | Trigger | Captured Data |
-|-------|---------|---------------|
-| `SessionStart` | New session starts | session_id, cwd, model, permission_mode |
-| `Setup` | One-time setup (first CC run) | setup metadata |
-| `UserPromptSubmit` | User submits a prompt | prompt text with paste references BEFORE expansion |
-| `PreToolUse` | Before tool execution | tool_name, tool_input, tool_call_id |
-| `PostToolUse` | After successful tool execution | tool_name, tool_output, tool_call_id |
-| `PostToolUseFailure` | After failed tool execution | tool_name, error message, is_interrupt flag |
-| `PermissionRequest` | Tool needs permission | tool_name, proposed command |
-| `PermissionDenied` | User denied permission | tool_name |
-| `Notification` | System notification | message, severity |
-| `Elicitation` | Modal dialog shown | prompt, options |
-| `ElicitationResult` | User responds to dialog | selected option |
-| `CwdChanged` | Working directory changed | old_cwd, new_cwd |
-| `FileChanged` | File modified by tool | file path, diff stats |
-| `WorktreeCreate` | Git worktree created | path |
-| `SubagentStart` | Subagent spawned | subagent_type, prompt |
-| `Stop` | Session ending | session_id, reason |
+| Event | Trigger | Captured Data | Use case — why wire it |
+|-------|---------|---------------|------------------------|
+| `SessionStart` | New session starts | session_id, cwd, model, permission_mode | Anchors every session to its initial state — model, working directory, permission posture. Enables real-time context injection if the hook script chooses to echo polylogue summaries back to the agent on session bootstrap. **Recommended.** |
+| `Setup` | One-time setup (first CC run) | setup metadata | One-off install marker. Low value for ongoing capture; wire only if you want first-run diagnostics. |
+| `UserPromptSubmit` | User submits a prompt | prompt text with paste references BEFORE expansion | **Highest-value event.** The only place `[Pasted text #N]` markers are observable before Claude Code expands them; post-hoc `history.jsonl` extraction misses ~70%. Powers accurate paste detection and the AC2 wiring tracked in [#1654](https://github.com/Sinity/polylogue/issues/1654). **Recommended.** |
+| `PreToolUse` | Before tool execution | tool_name, tool_input, tool_call_id | Tool annotations (read_only/destructive), structured input — none of this lands in JSONL. Pairs with `PostToolUse` for end-to-end tool execution audit. **Recommended.** |
+| `PostToolUse` | After successful tool execution | tool_name, tool_output, tool_call_id | Tool output before any MCP modification. Pairs with `PreToolUse`. **Recommended.** |
+| `PostToolUseFailure` | After failed tool execution | tool_name, error message, is_interrupt flag | Structured error subtypes (transient vs permanent, interrupt vs error). Powers retry/diagnostic heuristics. Wire if you need to attribute failures to specific tools. |
+| `PermissionRequest` | Tool needs permission | tool_name, proposed command | Half of the permission audit pair. Records what the agent wanted to do. |
+| `PermissionDenied` | User denied permission | tool_name | Other half — records the decision. Together they reconstruct the full permission decision log, which session JSONL never captures. |
+| `Notification` | System notification | message, severity | Operator messages routed through the agent UI. Wire if you want a record of what the agent surfaced to the user. |
+| `Elicitation` | Modal dialog shown | prompt, options | Modal interaction prompts. Pairs with `ElicitationResult`. |
+| `ElicitationResult` | User responds to dialog | selected option | User's modal answer. With `Elicitation` reconstructs interactive sessions. |
+| `CwdChanged` | Working directory changed | old_cwd, new_cwd | Mid-session cwd shifts (vs only the initial cwd from `SessionStart`). Wire for accurate per-file attribution in long sessions that change directories. |
+| `FileChanged` | File modified by tool | file path, diff stats | Per-tool-call file diff stats. Powers per-session change-magnitude rollups. |
+| `WorktreeCreate` | Git worktree created | path | Tool-driven worktree creation events. Wire when running multi-agent workflows that spawn worktrees. |
+| `SubagentStart` | Subagent spawned | subagent_type, prompt | Subagent dispatch. Pairs with the subagent's own session id to reconstruct the parent->child lineage. |
+| `Stop` | Session ending | session_id, reason | Final session state + termination reason. Pairs with `SessionStart` to bracket every session. **Recommended.** |
 
 ### Codex (6 events)
 
-| Event | Trigger | Captured Data |
-|-------|---------|---------------|
-| `SessionStart` | New session starts | session_id, cwd, source |
-| `UserPromptSubmit` | User submits a prompt | prompt text |
-| `PreToolUse` | Before tool execution | tool_name, tool_input |
-| `PostToolUse` | After tool execution | tool_name, tool_output |
-| `PermissionRequest` | Tool needs permission | proposed action |
-| `Stop` | Session ending | session_id |
+| Event | Trigger | Captured Data | Use case — why wire it |
+|-------|---------|---------------|------------------------|
+| `SessionStart` | New session starts | session_id, cwd, source | Same role as Claude Code's `SessionStart` — anchors session identity to its initial state. **Recommended.** |
+| `UserPromptSubmit` | User submits a prompt | prompt text | Codex prompt capture before any expansion. **Recommended.** |
+| `PreToolUse` | Before tool execution | tool_name, tool_input | Pairs with `PostToolUse` for tool execution audit. **Recommended.** |
+| `PostToolUse` | After tool execution | tool_name, tool_output | Pairs with `PreToolUse`. **Recommended.** |
+| `PermissionRequest` | Tool needs permission | proposed action | Permission audit trail (Codex emits only the request, not a separate denial event — the absence of a follow-up tool execution is the denial signal). |
+| `Stop` | Session ending | session_id | Final session state. **Recommended.** |
+
+### Recommended starter set
+
+The five events marked **Recommended** above cover ~95% of the data
+not visible in post-hoc JSONL: session lifecycle (`SessionStart` +
+`Stop`), paste ground truth (`UserPromptSubmit`), and tool execution
+metadata (`PreToolUse` + `PostToolUse`). Wire these first; add the
+remaining events when their specific use case applies. The Setup
+section below shows configuration for every event — comment out the
+ones you don't need.
 
 ## Enriched Event Record Format
 
