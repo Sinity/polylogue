@@ -545,9 +545,14 @@ def test_output_summary_list_contract(case: SummaryOutputCase, output_format: st
         asyncio.run(_output_summary_list(env, summaries, output, repo))
 
     if output_format == "json":
-        assert json.loads(mock_echo.call_args[0][0]) == _structured_rows(case)
+        # #1618: envelope shape carries items/total/limit/offset.
+        payload = json.loads(mock_echo.call_args[0][0])
+        assert payload["items"] == _structured_rows(case)
+        assert payload["total"] == len(case.summaries)
     elif output_format == "yaml":
-        assert yaml.safe_load(mock_echo.call_args[0][0]) == _structured_rows(case)
+        payload = yaml.safe_load(mock_echo.call_args[0][0])
+        assert payload["items"] == _structured_rows(case)
+        assert payload["total"] == len(case.summaries)
     elif output_format == "csv":
         assert list(csv.DictReader(io.StringIO(mock_echo.call_args[0][0]))) == _csv_rows(case)
     else:
@@ -2063,9 +2068,11 @@ class TestSearchQueryContracts:
         assert result.exit_code == 0, case_id
 
         if expectation == "json_list":
+            # #1618: envelope shape, not bare array.
             data = json.loads(result.output)
-            assert isinstance(data, list), case_id
-            assert data and "id" in data[0], case_id
+            assert isinstance(data, dict), case_id
+            assert isinstance(data.get("items"), list), case_id
+            assert data["items"] and "id" in data["items"][0], case_id
         elif expectation == "json_single":
             data = json.loads(result.output)
             assert isinstance(data, (list, dict)), case_id
@@ -2118,11 +2125,14 @@ class TestSearchEdgeCases:
         assert result_lower.exit_code == result_upper.exit_code
 
         if result_lower.exit_code == 0:
-            # Both should find results (FTS5 is case-insensitive by default)
+            # Both should find results (FTS5 is case-insensitive by default).
+            # #1618: envelope shape carries items list under "items".
             data_lower = json.loads(result_lower.output)
             data_upper = json.loads(result_upper.output)
-            assert len(data_lower) > 0
-            assert len(data_upper) > 0
+            items_lower = data_lower["items"] if isinstance(data_lower, dict) else data_lower
+            items_upper = data_upper["items"] if isinstance(data_upper, dict) else data_upper
+            assert len(items_lower) > 0
+            assert len(items_upper) > 0
 
     def test_search_multiple_terms(self, search_workspace: SearchWorkspace) -> None:
         """Search with multiple query terms."""
@@ -2135,8 +2145,10 @@ class TestSearchEdgeCases:
         result = runner.invoke(cli, ["--plain", "Python", "exception", "list", "-f", "json"])
         assert result.exit_code in (0, 2)
         if result.exit_code == 0:
+            # #1618: envelope shape, not bare array.
             data = json.loads(result.output)
-            assert isinstance(data, list)
+            assert isinstance(data, dict)
+            assert isinstance(data.get("items"), list)
 
 
 class TestSearchIndexRebuild:

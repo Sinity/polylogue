@@ -461,8 +461,12 @@ class TestListFormatting:
             text_lines=("conv-a  claude-ai  A (2 msgs)",),
         )
 
-        assert json.loads(document.with_selected_fields("id,title").render("json")) == [{"id": "conv-a", "title": "A"}]
-        assert yaml.safe_load(document.render("yaml"))[0]["provider"] == "claude-ai"
+        # #1618: JSON/YAML render via envelope, not bare array.
+        json_payload = json.loads(document.with_selected_fields("id,title").render("json"))
+        assert json_payload["items"] == [{"id": "conv-a", "title": "A"}]
+        assert json_payload["total"] == 1
+        yaml_payload = yaml.safe_load(document.render("yaml"))
+        assert yaml_payload["items"][0]["provider"] == "claude-ai"
         assert document.render("csv").splitlines()[0] == "id,provider,title,messages"
         assert document.render("text") == "conv-a  claude-ai  A (2 msgs)"
 
@@ -482,11 +486,13 @@ class TestListFormatting:
             assert token in rendered, (case.name, token)
         if case.name == "json_selected":
             payload = json.loads(rendered)
-            assert payload[0] == {"id": "conv-1234567890abcdef", "title": "Example Conversation"}
+            # #1618: envelope shape, not bare array.
+            assert payload["items"][0] == {"id": "conv-1234567890abcdef", "title": "Example Conversation"}
+            assert payload["total"] == 2
         if case.name == "yaml":
             payload = yaml.safe_load(rendered)
-            assert payload[0]["id"] == "conv-1234567890abcdef"
-            assert payload[0]["provider"] == "claude-ai"
+            assert payload["items"][0]["id"] == "conv-1234567890abcdef"
+            assert payload["items"][0]["provider"] == "claude-ai"
 
     @pytest.mark.parametrize("output_format", ["json", "yaml", "csv", "text"])
     def test_format_summary_list_contract(self, output_format: str) -> None:
@@ -508,13 +514,15 @@ class TestListFormatting:
 
         if output_format == "json":
             payload = json.loads(rendered)
-            assert payload[0]["id"] == "conv-summary-1"
-            assert payload[0]["messages"] == 7
-            assert payload[0]["tags"] == ["alpha", "beta"]
+            # #1618: envelope shape, not bare array.
+            assert payload["items"][0]["id"] == "conv-summary-1"
+            assert payload["items"][0]["messages"] == 7
+            assert payload["items"][0]["tags"] == ["alpha", "beta"]
+            assert payload["total"] == 1
         elif output_format == "yaml":
             payload = yaml.safe_load(rendered)
-            assert payload[0]["provider"] == "claude-ai"
-            assert payload[0]["summary"] == "Summary text"
+            assert payload["items"][0]["provider"] == "claude-ai"
+            assert payload["items"][0]["summary"] == "Summary text"
         elif output_format == "csv":
             assert "id,date,provider,title,messages,tags,summary" in rendered
             assert "conv-summary-1" in rendered
@@ -553,14 +561,15 @@ class TestListFormatting:
 
         if output_format == "json":
             payload = json.loads(rendered)
-            assert payload[0]["conversation"]["id"] == "conv-hit-1"
-            assert payload[0]["conversation"]["message_count"] == 4
-            assert payload[0]["match"]["message_id"] == "msg-hit-1"
-            assert payload[0]["match"]["snippet"] == "[needle] in context"
+            # #1618: envelope shape, not bare array.
+            assert payload["items"][0]["conversation"]["id"] == "conv-hit-1"
+            assert payload["items"][0]["conversation"]["message_count"] == 4
+            assert payload["items"][0]["match"]["message_id"] == "msg-hit-1"
+            assert payload["items"][0]["match"]["snippet"] == "[needle] in context"
         elif output_format == "yaml":
             payload = yaml.safe_load(rendered)
-            assert payload[0]["conversation"]["provider"] == "claude-ai"
-            assert payload[0]["match"]["retrieval_lane"] == "dialogue"
+            assert payload["items"][0]["conversation"]["provider"] == "claude-ai"
+            assert payload["items"][0]["match"]["retrieval_lane"] == "dialogue"
         elif output_format == "csv":
             assert "id,date,provider,title,messages,rank,retrieval_lane,match_surface,message_id,snippet" in rendered
             assert "conv-hit-1" in rendered
@@ -590,10 +599,47 @@ class TestListFormatting:
         rendered = format_search_hit_list([hit], "json", None, message_counts={"conv-attachment-hit": 1})
         payload = json.loads(rendered)
 
-        assert payload[0]["match"]["match_surface"] == "attachment"
-        assert payload[0]["match"]["retrieval_lane"] == "attachment"
-        assert payload[0]["match"]["message_id"] == "msg-doc"
-        assert "attachment.provider_file_id=drive-file-1" in payload[0]["match"]["snippet"]
+        # #1618: envelope shape, not bare array.
+        assert payload["items"][0]["match"]["match_surface"] == "attachment"
+        assert payload["items"][0]["match"]["retrieval_lane"] == "attachment"
+        assert payload["items"][0]["match"]["message_id"] == "msg-doc"
+        assert "attachment.provider_file_id=drive-file-1" in payload["items"][0]["match"]["snippet"]
+
+    def test_cli_list_json_envelope_matches_mcp_list_conversations_shape(self) -> None:
+        """#1618: CLI ``--format json`` list output emits the same
+        ``{"items": [...], "total": N, "limit": N, "offset": N}`` envelope
+        that MCP ``list_conversations`` returns. Bare-array output was the
+        pre-fix shape; both surfaces now align.
+        """
+        document = StructuredRowsDocument(
+            rows=(
+                {"id": "conv-a", "provider": "claude-ai", "title": "A", "messages": 3},
+                {"id": "conv-b", "provider": "claude-ai", "title": "B", "messages": 5},
+            ),
+            csv_headers=("id", "provider", "title", "messages"),
+            csv_rows=(("conv-a", "claude-ai", "A", 3), ("conv-b", "claude-ai", "B", 5)),
+            text_lines=("conv-a  claude-ai  A (3 msgs)", "conv-b  claude-ai  B (5 msgs)"),
+        )
+        json_payload = json.loads(document.render("json"))
+        yaml_payload = yaml.safe_load(document.render("yaml"))
+
+        for payload in (json_payload, yaml_payload):
+            assert set(payload.keys()) == {"items", "total", "limit", "offset"}, (
+                f"#1618: envelope must carry items/total/limit/offset, got {sorted(payload.keys())}"
+            )
+            assert isinstance(payload["items"], list)
+            assert len(payload["items"]) == 2
+            assert payload["total"] == 2
+            assert payload["offset"] == 0
+            # ``limit`` mirrors ``total`` until CLI pagination lands.
+            assert payload["limit"] == 2
+
+        # ndjson stays a streaming form — no envelope. Pinned so a future
+        # refactor doesn't accidentally wrap ndjson too (would break shell
+        # pipelines that read line-by-line).
+        ndjson_lines = [line for line in document.render("ndjson").splitlines() if line]
+        parsed = [json.loads(line) for line in ndjson_lines]
+        assert [row["id"] for row in parsed] == ["conv-a", "conv-b"]
 
     def test_format_summary_and_search_use_provider_display_label(self) -> None:
         summary = ConversationSummary(
@@ -616,8 +662,12 @@ class TestListFormatting:
         summary_payload = json.loads(format_summary_list([summary], "json", None, message_counts={str(summary.id): 1}))
         search_payload = json.loads(format_search_hit_list([hit], "json", None, message_counts={str(summary.id): 1}))
 
-        assert summary_payload[0]["title"] == "Project Plan: Please review the attached project plan."
-        assert search_payload[0]["conversation"]["title"] == "Project Plan: Please review the attached project plan."
+        # #1618: envelope shape, not bare array.
+        assert summary_payload["items"][0]["title"] == "Project Plan: Please review the attached project plan."
+        assert (
+            search_payload["items"][0]["conversation"]["title"]
+            == "Project Plan: Please review the attached project plan."
+        )
 
 
 class TestStreamingOutput:
