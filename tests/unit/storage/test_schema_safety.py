@@ -58,8 +58,12 @@ class TestSchemaDDLParity:
 
     def test_schema_ddl_has_all_required_indexes(self) -> None:
         """SCHEMA_DDL must create required indexes."""
+        # idx_conversations_provider was renamed to idx_conversations_source_name
+        # when ``provider_name`` graduated to ``source_name`` as the canonical
+        # storage column (#635 umbrella, provider/source vocabulary
+        # transition documented in docs/architecture.md).
         required_indexes = [
-            "idx_conversations_provider",
+            "idx_conversations_source_name",
             "idx_messages_conversation",
         ]
         ddl_lower = SCHEMA_DDL.lower()

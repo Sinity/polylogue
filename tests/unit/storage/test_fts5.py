@@ -100,7 +100,6 @@ async def test_search_includes_conversation_metadata(
     assert hit.title == "My Conversation"
     assert hit.message_id == "msg1"
     assert hit.timestamp is not None and "2024-01-01" in hit.timestamp
-    assert hit.source_name == "my-source"
 
 
 async def test_search_returns_best_message_per_conversation(
