@@ -1,56 +1,40 @@
+# Polylogue NixOS module (system unit).
+#
+# Pairs with ``nix/hm-module.nix`` for user-mode deployments. Both
+# share their option tree and TOML rendering via ``nix/lib/settings.nix``
+# so the polylogue.toml schema cannot drift between deployment modes.
 { config, lib, pkgs, ... }:
 
 let
   cfg = config.services.polylogue;
-  inherit (lib) mkEnableOption mkOption types mdDoc;
+  inherit (lib) mkEnableOption mkOption types;
 
-  tomlFormat = pkgs.formats.toml { };
+  settingsLib = import ./lib/settings.nix { inherit lib pkgs; };
 
-  polylogueToml = {
-    archive = lib.optionalAttrs (cfg.settings.archive.root != null) {
-      root = cfg.settings.archive.root;
-    };
-    daemon =
-      let
-        base = lib.optionalAttrs (cfg.settings.daemon != { }) (
-          lib.filterAttrs (_: v: v != null) {
-            host = cfg.settings.daemon.host;
-            port = cfg.settings.daemon.port;
-            watch = cfg.settings.daemon.watch;
-          }
-        );
-        api = lib.optionalAttrs (cfg.settings.daemon-api != { }) {
-          api = lib.filterAttrs (_: v: v != null) {
-            host = cfg.settings.daemon-api.host;
-            port = cfg.settings.daemon-api.port;
-            auth_token = cfg.settings.daemon-api.auth-token;
-          };
-        };
-        browser-capture = lib.optionalAttrs (cfg.settings.browser-capture != { }) {
-          browser-capture = lib.filterAttrs (_: v: v != null) {
-            port = cfg.settings.browser-capture.port;
-            allowed_origins = cfg.settings.browser-capture.allowed-origins;
-          };
-        };
-      in
-      base // api // browser-capture;
-    embedding = lib.optionalAttrs (cfg.settings.embedding != { }) (
-      lib.filterAttrs (_: v: v != null) {
-        enabled = cfg.settings.embedding.enabled;
-        model = cfg.settings.embedding.model;
-        dimension = cfg.settings.embedding.dimension;
-        max_cost_usd = cfg.settings.embedding.max-cost-usd;
-      }
-    );
-    logging = lib.optionalAttrs (cfg.settings.logging != { }) (
-      lib.filterAttrs (_: v: v != null) {
-        level = cfg.settings.logging.level;
-        force_plain = cfg.settings.logging.force-plain;
-      }
-    );
+  watch = settingsLib.effectiveWatch {
+    settings = cfg.settings;
+    discoverSources = cfg.discoverSources;
   };
 
-  configFile = tomlFormat.generate "polylogue.toml" polylogueToml;
+  effectiveSettings = cfg.settings // {
+    daemon = cfg.settings.daemon // { inherit watch; };
+  };
+
+  configFile = settingsLib.renderConfigFile effectiveSettings;
+
+  # polylogued run reads component ports from CLI flags, not the TOML.
+  # Build the flag list so ExecStart honours the configured settings.
+  bcHost = cfg.settings.daemon.host;
+  bcPort = cfg.settings."browser-capture".port;
+  apiHost = cfg.settings."daemon-api".host or cfg.settings.daemon.host;
+  apiPort = cfg.settings."daemon-api".port or cfg.settings.daemon.port;
+
+  daemonFlags = lib.concatStringsSep " " (
+    lib.optional (bcHost != null) "--host ${bcHost}"
+    ++ lib.optional (bcPort != null) "--port ${toString bcPort}"
+    ++ lib.optional (apiHost != null) "--api-host ${apiHost}"
+    ++ lib.optional (apiPort != null) "--api-port ${toString apiPort}"
+  );
 
 in
 {
@@ -65,126 +49,33 @@ in
     configPath = mkOption {
       type = types.path;
       default = configFile;
-      defaultText = "generated TOML from services.polylogue.settings";
-      description = "Path to polylogue.toml. Generated from settings by default.";
+      defaultText = lib.literalMD "generated TOML from `services.polylogue.settings`";
+      description = ''
+        Path to polylogue.toml. Generated from ``settings`` by default
+        and passed to the daemon via ``POLYLOGUE_CONFIG``.
+      '';
     };
 
-    settings = {
-      archive = {
-        root = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          description = "Archive root directory.";
-        };
-      };
+    discoverSources = settingsLib.discoverSourcesOption;
 
-      daemon = {
-        host = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          description = "Daemon listen host (default: 127.0.0.1).";
-        };
-        port = mkOption {
-          type = types.nullOr types.port;
-          default = null;
-          description = "Daemon listen port (default: 8766).";
-        };
-        watch = mkOption {
-          type = types.nullOr (types.listOf types.str);
-          default = null;
-          description = "Additional watch roots for live ingestion.";
-        };
-      };
+    settings = settingsLib.settingsOptions;
 
-      daemon-api = {
-        host = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          description = "API listen host.";
-        };
-        port = mkOption {
-          type = types.nullOr types.port;
-          default = null;
-          description = "API listen port.";
-        };
-        auth-token = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          description = "API Bearer auth token.";
-        };
-      };
+    service = settingsLib.serviceOptions;
 
-      browser-capture = {
-        port = mkOption {
-          type = types.nullOr types.port;
-          default = null;
-          description = "Browser capture receiver port.";
-        };
-        allowed-origins = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          description = "Comma-separated allowed CORS origins.";
-        };
-      };
-
-      embedding = {
-        enabled = mkOption {
-          type = types.nullOr types.bool;
-          default = null;
-          description = "Enable post-ingest embedding generation.";
-        };
-        model = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          description = "Voyage AI model name.";
-        };
-        dimension = mkOption {
-          type = types.nullOr types.ints.unsigned;
-          default = null;
-          description = "Embedding dimension (default: 1024).";
-        };
-        max-cost-usd = mkOption {
-          type = types.nullOr types.number;
-          default = null;
-          description = "Maximum USD cost for embeddings (0 = unlimited).";
-        };
-      };
-
-      logging = {
-        level = mkOption {
-          type = types.nullOr (types.enum [ "DEBUG" "INFO" "WARNING" "ERROR" ]);
-          default = null;
-          description = "Log level.";
-        };
-        force-plain = mkOption {
-          type = types.nullOr types.bool;
-          default = null;
-          description = "Force plain (non-rich) output.";
-        };
-      };
-    };
-
-    service = {
-      nice = mkOption {
-        type = types.ints.between (-20) 19;
-        default = 10;
-        description = "systemd Nice value for the Polylogue daemon.";
-      };
-      ioWeight = mkOption {
-        type = types.ints.between 1 10000;
-        default = 100;
-        description = "systemd IOWeight for the Polylogue daemon.";
-      };
-      memoryHigh = mkOption {
-        type = types.nullOr types.str;
-        default = "1G";
-        description = "systemd MemoryHigh value for the Polylogue daemon.";
-      };
-      memoryMax = mkOption {
-        type = types.nullOr types.str;
-        default = "2G";
-        description = "systemd MemoryMax value for the Polylogue daemon.";
-      };
+    extraServiceConfig = mkOption {
+      type = types.attrsOf types.unspecified;
+      default = { };
+      example = lib.literalExpression ''
+        {
+          CPUWeight = 50;
+          SystemCallFilter = "@system-service";
+        }
+      '';
+      description = ''
+        Extra ``serviceConfig`` keys merged onto the polylogued unit.
+        Use this for site-specific hardening or scheduler knobs
+        without forking the module.
+      '';
     };
   };
 
@@ -195,30 +86,30 @@ in
       description = "Polylogue daemon (live watcher, browser capture, HTTP API)";
       after = [ "network.target" ];
       wantedBy = [ "multi-user.target" ];
-      serviceConfig = {
-        Type = "simple";
-        # `polylogued run` enables watch + browser-capture + HTTP API by default.
-        # Pass --no-watch / --no-browser-capture / --no-api at the unit level if
-        # a deployment needs a narrower component set.
-        ExecStart = "${cfg.package}/bin/polylogued run";
-        Restart = "on-failure";
-        RestartSec = "5s";
-        Environment = "POLYLOGUE_CONFIG=${cfg.configPath}";
-        StateDirectory = "polylogue";
-        CacheDirectory = "polylogue";
-        Nice = cfg.service.nice;
-        IOSchedulingClass = "idle";
-        IOWeight = cfg.service.ioWeight;
-        MemoryHigh = cfg.service.memoryHigh;
-        MemoryMax = cfg.service.memoryMax;
-        # Practical hardening: the daemon needs read access to source directories
-        # (e.g. ~/.claude, ~/.codex) and read/write to the archive root, so full
-        # filesystem lockdowns are deferred to the operator. These settings are
-        # safe for any deployment.
-        PrivateTmp = true;
-        NoNewPrivileges = true;
-        RestrictAddressFamilies = "AF_UNIX AF_INET AF_INET6";
-      };
+      serviceConfig = lib.mkMerge [
+        {
+          Type = "simple";
+          # `polylogued run` enables watch + browser-capture + HTTP API by
+          # default. Pass --no-watch / --no-browser-capture / --no-api at
+          # the unit level if a deployment needs a narrower component set.
+          ExecStart = "${cfg.package}/bin/polylogued run ${daemonFlags}";
+          Restart = "on-failure";
+          RestartSec = "5s";
+          Environment = "POLYLOGUE_CONFIG=${cfg.configPath}";
+          StateDirectory = "polylogue";
+          CacheDirectory = "polylogue";
+          IOSchedulingClass = "idle";
+          # Practical hardening: the daemon needs read access to source
+          # directories (e.g. ~/.claude, ~/.codex) and read/write to the
+          # archive root, so full filesystem lockdowns are deferred to
+          # the operator.
+          PrivateTmp = true;
+          NoNewPrivileges = true;
+          RestrictAddressFamilies = "AF_UNIX AF_INET AF_INET6";
+        }
+        (settingsLib.serviceDirectives cfg.service)
+        cfg.extraServiceConfig
+      ];
     };
   };
 }
