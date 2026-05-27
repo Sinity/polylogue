@@ -73,6 +73,21 @@ def test_detect_paste_marker_word_only_no_match() -> None:
     assert detect_paste("I pasted the answer earlier.") == 0
 
 
+def test_detect_paste_marker_with_line_count_annotation() -> None:
+    """Production Claude Code emits `[Pasted text #1 +6 lines]` not the bare
+    `[Pasted text #1]` form. Pinning the matcher honors the line-count suffix
+    so the heuristic actually fires on real prompts (#1583)."""
+    assert detect_paste("Look at [Pasted text #1 +6 lines] for details") == 1
+    assert detect_paste("[Pasted text #2 +123 lines] suffix prose") == 1
+    assert detect_paste("[Pasted content #4 +2 lines]") == 1
+    assert detect_paste("[Pasted image #1 +1 line]") == 1
+
+
+def test_detect_paste_marker_must_close_in_same_bracket_pair() -> None:
+    """The annotation between ``#N`` and ``]`` must not span another bracket."""
+    assert detect_paste("[Pasted text #1 [nested] still here]") == 0
+
+
 # ---------------------------------------------------------------------------
 # Base64 blob detection.
 # ---------------------------------------------------------------------------

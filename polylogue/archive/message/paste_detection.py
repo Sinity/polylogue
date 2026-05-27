@@ -34,8 +34,16 @@ _FENCE_PATTERN = re.compile(r"^```", re.MULTILINE)
 # Claude Code expands clipboard pastes into ``[Pasted text #N]`` markers in
 # the UserPromptSubmit hook payload before they are rewritten into the actual
 # prompt text. The marker is the most reliable paste signal because it is
-# emitted by the agent runtime, not inferred from message shape.
-_PASTE_MARKER_PATTERN = re.compile(r"\[Pasted\s+(text|content|image)\s*#\d+\]", re.IGNORECASE)
+# emitted by the agent runtime, not inferred from message shape. The runtime
+# also emits richer variants like ``[Pasted text #1 +6 lines]`` and
+# ``[Pasted text #1 +6 lines] more prose``; everything past ``#N`` up to the
+# closing bracket is annotation and must not be required by the matcher
+# (#1583 — the original strict pattern silently missed all line-count
+# variants).
+_PASTE_MARKER_PATTERN = re.compile(
+    r"\[Pasted\s+(text|content|image)\s*#\d+(?:[^\[\]]*)\]",
+    re.IGNORECASE,
+)
 
 # Base64 blobs of meaningful size are almost never typed by hand. We find a
 # contiguous run of >=512 base64-alphabet characters and then require a
