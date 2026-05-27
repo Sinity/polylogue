@@ -202,15 +202,28 @@ def format_list(
     output_format: str,
     fields: str | None,
 ) -> str:
-    """Format a list of conversations for output."""
+    """Format a list of conversations for output.
+
+    #1618: JSON and YAML emit a paginated envelope
+    (``{"items": [...], "total": N, "limit": N, "offset": 0}``) instead
+    of a bare array so the shape matches the MCP
+    ``list_conversations`` tool. ``next_offset`` is omitted because
+    the CLI doesn't paginate today (it returns the full match set);
+    when CLI pagination lands it will populate the same field MCP
+    already does. Bare-array consumers must read ``.items``.
+    """
     from polylogue.rendering.formatting import _conv_to_dict
 
     if output_format == "json":
-        return json.dumps([_conv_to_dict(c, fields) for c in results], indent=2)
+        items = [_conv_to_dict(c, fields) for c in results]
+        envelope = {"items": items, "total": len(items), "limit": len(items), "offset": 0}
+        return json.dumps(envelope, indent=2)
     if output_format == "yaml":
         import yaml
 
-        return str(yaml.dump([_conv_to_dict(c, fields) for c in results], default_flow_style=False, allow_unicode=True))
+        items = [_conv_to_dict(c, fields) for c in results]
+        envelope = {"items": items, "total": len(items), "limit": len(items), "offset": 0}
+        return str(yaml.dump(envelope, default_flow_style=False, allow_unicode=True, sort_keys=False))
     if output_format == "csv":
         return conversations_to_csv(results)
 

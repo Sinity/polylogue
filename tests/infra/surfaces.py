@@ -323,13 +323,15 @@ class CLISurface:
         except json.JSONDecodeError as exc:
             raise AssertionError(f"CLI list output is not JSON ({query_case.name!r}): {output!r}") from exc
         # Three shapes can land here:
-        #   * list mode: ``[{"id": ..., ...}, ...]``
-        #   * search-hit mode: ``[{"conversation": {"id": ...}, ...}, ...]``
+        #   * list mode envelope (#1618): ``{"items": [...], "total": ..., ...}``
+        #   * search-hit mode (legacy bare array): ``[{"conversation": {"id": ...}, ...}, ...]``
         #   * typed ranked-result envelope (PR #1370):
         #     ``{"hits": [{"conversation": {"id": ...}, "match": {...}}, ...], "limit": ..., ...}``
         # All three project to the same id tuple for parity comparison.
         if isinstance(parsed, dict) and isinstance(parsed.get("hits"), list):
             parsed = parsed["hits"]
+        elif isinstance(parsed, dict) and isinstance(parsed.get("items"), list):
+            parsed = parsed["items"]
         if not isinstance(parsed, list):
             raise AssertionError(f"CLI list output is not a JSON array ({query_case.name!r}): {parsed!r}")
         ids: list[str] = []

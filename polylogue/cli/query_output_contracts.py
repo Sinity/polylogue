@@ -49,16 +49,33 @@ class StructuredRowsDocument:
 
     def render(self, output_format: QueryOutputFormat) -> str:
         if output_format == "json":
-            return json.dumps(list(self.rows), indent=2)
+            # #1618: paginated envelope matches the MCP list_conversations
+            # tool. The CLI doesn't paginate today so ``limit`` mirrors
+            # ``total`` and ``offset`` is 0; future CLI pagination will
+            # populate the same fields MCP already does.
+            envelope = {
+                "items": list(self.rows),
+                "total": len(self.rows),
+                "limit": len(self.rows),
+                "offset": 0,
+            }
+            return json.dumps(envelope, indent=2)
         if output_format == "ndjson":
             # JSON Lines streaming form: one JSON document per line, no
             # outer array, no indentation. Stable for shell pipelines and
             # LLM tool-use harnesses that want incremental parsing (#1272).
+            # Pagination context does not apply to a streaming form.
             return "\n".join(json.dumps(row, separators=(",", ":")) for row in self.rows)
         if output_format == "yaml":
             import yaml
 
-            return yaml.dump(list(self.rows), default_flow_style=False, allow_unicode=True)
+            envelope = {
+                "items": list(self.rows),
+                "total": len(self.rows),
+                "limit": len(self.rows),
+                "offset": 0,
+            }
+            return yaml.dump(envelope, default_flow_style=False, allow_unicode=True, sort_keys=False)
         if output_format == "csv":
             return self._render_csv()
         return "\n".join(self.text_lines)
