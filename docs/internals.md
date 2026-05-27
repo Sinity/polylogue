@@ -225,6 +225,18 @@ Full-text search uses SQLite FTS5:
   `INSERT INTO messages_fts(messages_fts) VALUES('rebuild')`.
 - **Risk**: SIGKILL during trigger suspension leaves FTS out of sync.
   Mitigation: daemon/CLI startup checks and restores FTS triggers.
+- **Catch-up health signalling** (#1613): the FAST-tier
+  `fts_trigger_drift` health check downgrades from CRITICAL to INFO
+  when triggers are missing inside a fresh in-flight bulk attempt
+  (`live_ingest_attempt.status='running'`, `phase IN
+  ('full_parse','full_worker_wait')`, heartbeat within
+  `_BULK_ATTEMPT_FRESHNESS_S` seconds). The writer dropped the triggers
+  inside its own transaction; `commit_archive_write_effects` will
+  restore them before the commit lands, so other readers never see
+  the dropped state — the only entity that observes "15/15 missing"
+  is the writer's own connection mid-batch. Stale or orphaned
+  in-flight rows (no heartbeat in the freshness window) still escalate
+  to CRITICAL because that signature is identical to the SIGKILL leak.
 - **Query syntax**: FTS5 boolean operators (AND/OR/NOT), phrase search
   (`"exact phrase"`), prefix search (`prefix*`). Column filters are not
   directly exposed; use CLI/MCP filters instead.

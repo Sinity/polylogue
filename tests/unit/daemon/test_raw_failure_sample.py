@@ -148,7 +148,6 @@ class TestRawFailureInfoProducesTypedSamples:
                 """
                 CREATE TABLE raw_conversations (
                     raw_id TEXT PRIMARY KEY,
-                    source_name TEXT NOT NULL,
                     payload_provider TEXT,
                     source_name TEXT,
                     source_path TEXT NOT NULL,
@@ -198,7 +197,6 @@ class TestRawFailureInfoProducesTypedSamples:
                 """
                 CREATE TABLE raw_conversations (
                     raw_id TEXT PRIMARY KEY,
-                    source_name TEXT NOT NULL,
                     payload_provider TEXT,
                     source_name TEXT,
                     source_path TEXT NOT NULL,
@@ -244,7 +242,6 @@ class TestRawFailureInfoProducesTypedSamples:
                 """
                 CREATE TABLE raw_conversations (
                     raw_id TEXT PRIMARY KEY,
-                    source_name TEXT NOT NULL,
                     payload_provider TEXT,
                     source_name TEXT,
                     source_path TEXT NOT NULL,
@@ -290,7 +287,6 @@ class TestRawFailureInfoProducesTypedSamples:
                 """
                 CREATE TABLE raw_conversations (
                     raw_id TEXT PRIMARY KEY,
-                    source_name TEXT NOT NULL,
                     payload_provider TEXT,
                     source_name TEXT,
                     source_path TEXT NOT NULL,

@@ -38,7 +38,6 @@ def _seed_raw_table(db: Path, parse_error: str | None = None, validation_status:
             """
             CREATE TABLE raw_conversations (
                 raw_id TEXT PRIMARY KEY,
-                source_name TEXT NOT NULL,
                 payload_provider TEXT,
                 source_name TEXT,
                 source_path TEXT NOT NULL,

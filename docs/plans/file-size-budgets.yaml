@@ -74,8 +74,8 @@ exceptions:
     reason: "typed status payloads for failure samples, embedding readiness, tier/notify (#844, #898, #915), cursor-lag projection + auto-calibration baseline state (#1232/#1349), maintenance failure routing (#1198), slow-vs-stuck attempt classification (#1246); split candidate: payload modules per status section"
 
   - path: polylogue/daemon/health.py
-    ceiling: 1400
-    reason: "tiered health checks (fast/medium/expensive) with typed alerts, FTS-trigger drift detection + auto-restore (#1229), maintenance failure escalation (#1198), cursor-lag SLO + auto-calibrating anomaly band (#1232/#1349); split candidate: per-tier modules under daemon/health/"
+    ceiling: 1500
+    reason: "tiered health checks (fast/medium/expensive) with typed alerts, FTS-trigger drift detection + auto-restore (#1229), maintenance failure escalation (#1198), cursor-lag SLO + auto-calibrating anomaly band (#1232/#1349), and INFO-severity bulk-stage gating for the FTS trigger drift probe (#1613); split candidate: per-tier modules under daemon/health/"
 
   - path: tests/unit/sources/test_live_watcher.py
     ceiling: 1600

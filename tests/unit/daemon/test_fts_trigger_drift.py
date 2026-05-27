@@ -447,3 +447,180 @@ def test_restore_fts_triggers_sync_is_idempotent_on_already_healthy_db(
     finally:
         conn.close()
     assert missing == []
+
+
+# ---------------------------------------------------------------------------
+# #1613 — bulk-stage gating: missing triggers during a fresh in-flight
+# bulk catch-up downgrade to INFO so the CRITICAL drift signal stops
+# crying wolf during a healthy v9→vN bootstrap rebuild. Stale/orphaned
+# in-flight rows still escalate to CRITICAL.
+# ---------------------------------------------------------------------------
+
+
+_LIVE_INGEST_ATTEMPT_MINIMAL_DDL = """
+CREATE TABLE IF NOT EXISTS live_ingest_attempt (
+    attempt_id TEXT PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    status TEXT NOT NULL,
+    phase TEXT NOT NULL
+)
+"""
+
+
+def _seed_running_bulk_attempt(
+    path: Path,
+    *,
+    phase: str = "full_worker_wait",
+    updated_at: str | None = None,
+    status: str = "running",
+    attempt_id: str = "test-attempt-1",
+) -> None:
+    """Insert a ``live_ingest_attempt`` row that pretends to be a fresh
+    bulk catch-up in flight."""
+    from datetime import UTC, datetime
+
+    if updated_at is None:
+        updated_at = datetime.now(UTC).isoformat()
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute(_LIVE_INGEST_ATTEMPT_MINIMAL_DDL)
+        conn.execute(
+            """
+            INSERT INTO live_ingest_attempt (attempt_id, started_at, updated_at, status, phase)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(attempt_id) DO UPDATE SET
+                updated_at = excluded.updated_at,
+                status = excluded.status,
+                phase = excluded.phase
+            """,
+            (attempt_id, updated_at, updated_at, status, phase),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_missing_triggers_during_fresh_bulk_attempt_downgrade_to_info(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A fresh ``status=running`` bulk-phase attempt converts CRITICAL to INFO."""
+    dbf = db_path()
+    _seed_archive_with_triggers(dbf)
+    _drop_trigger(dbf, "messages_fts_ai")
+    _seed_running_bulk_attempt(dbf, phase="full_worker_wait")
+
+    alert = _check_fts_trigger_drift_fast()
+
+    assert alert.severity == HealthSeverity.INFO
+    assert alert.tier == HealthTier.FAST
+    assert "FTS triggers suspended for bulk catch-up" in alert.message
+    assert "phase=full_worker_wait" in alert.message
+    assert "attempt=test-attempt-1" in alert.message
+    # INFO is not a failure for the consecutive-failure counter.
+    assert alert.consecutive_failures == 0
+
+
+def test_missing_triggers_during_full_parse_phase_also_downgrade(
+    workspace_env: dict[str, Path],
+) -> None:
+    """``full_parse`` is the other bulk-suspending phase from live/batch.py."""
+    dbf = db_path()
+    _seed_archive_with_triggers(dbf)
+    _drop_trigger(dbf, "messages_fts_ai")
+    _seed_running_bulk_attempt(dbf, phase="full_parse")
+
+    alert = _check_fts_trigger_drift_fast()
+
+    assert alert.severity == HealthSeverity.INFO
+    assert "phase=full_parse" in alert.message
+
+
+def test_missing_triggers_during_stale_bulk_attempt_still_critical(
+    workspace_env: dict[str, Path],
+) -> None:
+    """An old in-flight row (no heartbeat in 10 minutes) means the writer
+    is gone — drift is real and the alert must still escalate to CRITICAL.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    dbf = db_path()
+    _seed_archive_with_triggers(dbf)
+    _drop_trigger(dbf, "messages_fts_ai")
+    stale = (datetime.now(UTC) - timedelta(minutes=10)).isoformat()
+    _seed_running_bulk_attempt(dbf, phase="full_worker_wait", updated_at=stale)
+
+    alert = _check_fts_trigger_drift_fast()
+
+    assert alert.severity == HealthSeverity.CRITICAL
+    assert "polylogue check --repair-fts" in alert.message
+
+
+def test_missing_triggers_outside_bulk_phase_remain_critical(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A ``running`` attempt in a non-bulk phase (e.g., metadata-only)
+    must not silence the drift alert."""
+    dbf = db_path()
+    _seed_archive_with_triggers(dbf)
+    _drop_trigger(dbf, "messages_fts_ai")
+    _seed_running_bulk_attempt(dbf, phase="metadata_only")
+
+    alert = _check_fts_trigger_drift_fast()
+
+    assert alert.severity == HealthSeverity.CRITICAL
+
+
+def test_missing_triggers_when_no_attempt_table_remains_critical(
+    workspace_env: dict[str, Path],
+) -> None:
+    """Pre-#1613 archive (no ``live_ingest_attempt`` table yet) must not
+    crash the probe and must still escalate to CRITICAL."""
+    dbf = db_path()
+    _seed_archive_with_triggers(dbf)
+    _drop_trigger(dbf, "messages_fts_ai")
+    # Intentionally no live_ingest_attempt row.
+
+    alert = _check_fts_trigger_drift_fast()
+
+    assert alert.severity == HealthSeverity.CRITICAL
+
+
+def test_completed_bulk_attempt_does_not_silence_drift(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A ``status=completed`` attempt is not in-flight; the bulk window
+    has closed and any remaining missing trigger is a real leak."""
+    dbf = db_path()
+    _seed_archive_with_triggers(dbf)
+    _drop_trigger(dbf, "messages_fts_ai")
+    _seed_running_bulk_attempt(dbf, phase="full_worker_wait", status="completed")
+
+    alert = _check_fts_trigger_drift_fast()
+
+    assert alert.severity == HealthSeverity.CRITICAL
+
+
+def test_info_severity_does_not_escalate_overall_status() -> None:
+    """``INFO`` is not a failure for ``DaemonHealth.overall_status``.
+
+    The overall health rolls up to the worst severity, with ``INFO`` ranked
+    equivalent to ``OK``. A daemon whose only non-OK alert is an INFO
+    bulk-catch-up notice must report overall_status=OK so dashboards do
+    not flip color during a healthy bootstrap.
+    """
+    from datetime import UTC, datetime
+
+    from polylogue.daemon.health import HealthAlert, _compute_overall_health
+
+    info_alert = HealthAlert(
+        check_name="fts_trigger_drift",
+        tier=HealthTier.FAST,
+        severity=HealthSeverity.INFO,
+        message="bulk in flight",
+        checked_at=datetime.now(UTC).isoformat(),
+        consecutive_failures=0,
+    )
+    overall = _compute_overall_health([info_alert])
+    assert overall == HealthSeverity.OK
