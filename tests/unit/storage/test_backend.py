@@ -255,7 +255,10 @@ def test_open_read_connection_contract(tmp_path: Path) -> None:
         conn.commit()
 
     with open_read_connection(db_path) as conn:
-        assert conn.execute("PRAGMA query_only").fetchone()[0] == 0
+        # #1614: read profile now sets query_only=ON so accidental writes
+        # via a read connection fail fast at SQL parse time. The
+        # ``pytest.raises(OperationalError)`` below proves the enforcement.
+        assert conn.execute("PRAGMA query_only").fetchone()[0] == 1
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 1000
         assert conn.execute("PRAGMA cache_size").fetchone()[0] == -READ_CACHE_SIZE_KIB
         assert conn.execute("SELECT value FROM sentinel").fetchone()[0] == 1
