@@ -38,6 +38,7 @@ class AppriseConfigError(BackendConfigError):
 
 SEVERITY_TO_NOTIFY_TYPE: dict[HealthSeverity, str] = {
     HealthSeverity.OK: "info",
+    HealthSeverity.INFO: "info",
     HealthSeverity.WARNING: "warning",
     HealthSeverity.ERROR: "failure",
     HealthSeverity.CRITICAL: "failure",

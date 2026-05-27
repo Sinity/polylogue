@@ -34,9 +34,17 @@ logger = get_logger(__name__)
 
 
 class HealthSeverity(str, Enum):
-    """Alert severity with implied escalation."""
+    """Alert severity with implied escalation.
+
+    ``INFO`` is reserved for known-transient states (e.g., FTS triggers
+    dropped inside an in-flight bulk catch-up writer; see #1613) where
+    the underlying check would otherwise fire CRITICAL but the
+    operator must be told it is expected, not paged. INFO does not
+    escalate ``overall_status``.
+    """
 
     OK = "ok"
+    INFO = "info"
     WARNING = "warning"
     ERROR = "error"
     CRITICAL = "critical"
@@ -359,6 +367,72 @@ def _auto_restore_fts_triggers(dbf: object) -> tuple[list[str], bool, str]:
         conn.close()
 
 
+# Window inside which a ``live_ingest_attempt`` row with
+# ``status='running'`` is considered "actively bulk-writing right now"
+# rather than a stuck/SIGKILLed row. Sized to comfortably exceed the
+# canonical heartbeat cadence (#1198 ~10s) plus the slow-vs-stuck classifier
+# tolerance (#1246) so a normal long chunk does not flip back to CRITICAL.
+_BULK_ATTEMPT_FRESHNESS_S = 120
+
+
+def _active_bulk_ingest_attempt(
+    conn: sqlite3.Connection,
+    *,
+    now_iso: str,
+) -> tuple[str, str, str] | None:
+    """Return ``(attempt_id, phase, updated_at)`` for an in-flight bulk attempt.
+
+    Returns ``None`` when:
+
+    - the ``live_ingest_attempt`` table doesn't exist yet (fresh archive),
+    - no row has ``status='running'`` in a bulk-suspending phase, or
+    - the most recent qualifying row's ``updated_at`` is stale (no
+      heartbeat for ``_BULK_ATTEMPT_FRESHNESS_S`` seconds — the daemon
+      is gone, the row is orphaned, and the dropped triggers are no
+      longer "in flight" but "leaked").
+
+    The bulk-suspending phases match the live watcher's full-ingest
+    progress phases that wrap the ``suspend_fts_triggers=True`` window
+    in ``pipeline/services/ingest_batch/_core.py`` (``full_parse``,
+    ``full_worker_wait``). When either phase is the latest progress
+    record on a live attempt, FTS triggers may legitimately be dropped
+    inside the writer's open transaction.
+    """
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='live_ingest_attempt' LIMIT 1"
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    try:
+        record = conn.execute(
+            """
+            SELECT attempt_id, phase, updated_at
+            FROM live_ingest_attempt
+            WHERE status = 'running' AND phase IN ('full_parse', 'full_worker_wait')
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if record is None:
+        return None
+    attempt_id, phase, updated_at = str(record[0]), str(record[1]), str(record[2])
+    try:
+        attempt_dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+        now_dt = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
+        if (now_dt - attempt_dt).total_seconds() > _BULK_ATTEMPT_FRESHNESS_S:
+            return None
+    except (TypeError, ValueError):
+        # Unparseable timestamp — refuse to downgrade. Better to over-alert
+        # than to silence a real drift.
+        return None
+    return attempt_id, phase, updated_at
+
+
 def _check_fts_trigger_drift_fast() -> HealthAlert:
     """Detect missing FTS sync triggers; auto-restore when configured.
 
@@ -402,6 +476,7 @@ def _check_fts_trigger_drift_fast() -> HealthAlert:
         try:
             active_trigger_count = len(_active_fts_triggers(conn))
             missing = _find_missing_fts_triggers(conn)
+            bulk_attempt = _active_bulk_ingest_attempt(conn, now_iso=now) if missing else None
         finally:
             conn.close()
 
@@ -411,6 +486,29 @@ def _check_fts_trigger_drift_fast() -> HealthAlert:
                 tier=HealthTier.FAST,
                 severity=HealthSeverity.OK,
                 message=f"all {active_trigger_count} active FTS triggers present",
+                checked_at=now,
+                consecutive_failures=_record_failure("fts_trigger_drift", True),
+            )
+
+        # #1613: missing triggers during an actively running bulk catch-up
+        # are normal — the writer dropped them inside its own transaction
+        # and the commit_archive_write_effects path will restore them
+        # before the commit lands. Downgrade the alert to INFO so the
+        # operator dashboard does not cry-wolf during a healthy bootstrap
+        # rebuild. SIGKILLed leaks remain CRITICAL because the bulk-
+        # attempt freshness window (_BULK_ATTEMPT_FRESHNESS_S) excludes
+        # rows whose heartbeat stopped.
+        if bulk_attempt is not None:
+            attempt_id, phase, updated_at = bulk_attempt
+            return HealthAlert(
+                check_name="fts_trigger_drift",
+                tier=HealthTier.FAST,
+                severity=HealthSeverity.INFO,
+                message=(
+                    f"FTS triggers suspended for bulk catch-up "
+                    f"(attempt={attempt_id} phase={phase}; fresh as of {updated_at}); "
+                    f"{len(missing)}/{active_trigger_count} missing inside the writer's transaction"
+                ),
                 checked_at=now,
                 consecutive_failures=_record_failure("fts_trigger_drift", True),
             )
@@ -1305,24 +1403,14 @@ def check_health(*, tiers: set[HealthTier] | None = None) -> DaemonHealth:
     if HealthTier.EXPENSIVE in tiers:
         alerts.extend(_run_expensive_checks())
 
-    # Compute overall severity (worst among all alerts).
-    _severity_rank = {
-        HealthSeverity.OK: 0,
-        HealthSeverity.WARNING: 1,
-        HealthSeverity.ERROR: 2,
-        HealthSeverity.CRITICAL: 3,
-    }
-    overall = HealthSeverity.OK
-    for alert in alerts:
-        if _severity_rank[alert.severity] > _severity_rank[overall]:
-            overall = alert.severity
+    overall = _compute_overall_health(alerts)
 
     # Build tier summary.
     tier_summary: dict[str, dict[str, int]] = {}
     for alert in alerts:
         tier_key = alert.tier.value
         if tier_key not in tier_summary:
-            tier_summary[tier_key] = {"ok": 0, "warning": 0, "error": 0, "critical": 0}
+            tier_summary[tier_key] = {"ok": 0, "info": 0, "warning": 0, "error": 0, "critical": 0}
         tier_summary[tier_key][alert.severity.value] += 1
 
     return DaemonHealth(
@@ -1352,9 +1440,31 @@ def format_health_lines(health: DaemonHealth) -> list[str]:
     return lines
 
 
+# ``INFO`` ranks alongside ``OK`` so a known-transient bulk-stage signal
+# does not escalate the daemon-level overall status (#1613).
+_OVERALL_SEVERITY_RANK = {
+    HealthSeverity.OK: 0,
+    HealthSeverity.INFO: 0,
+    HealthSeverity.WARNING: 1,
+    HealthSeverity.ERROR: 2,
+    HealthSeverity.CRITICAL: 3,
+}
+
+
+def _compute_overall_health(alerts: list[HealthAlert]) -> HealthSeverity:
+    """Return the worst severity among ``alerts`` (INFO and OK tie at the bottom)."""
+    overall = HealthSeverity.OK
+    for alert in alerts:
+        if _OVERALL_SEVERITY_RANK[alert.severity] > _OVERALL_SEVERITY_RANK[overall]:
+            overall = alert.severity
+    return overall
+
+
 def _severity_icon(severity: HealthSeverity) -> str:
     if severity == HealthSeverity.OK:
         return "[OK]"
+    if severity == HealthSeverity.INFO:
+        return "[INFO]"
     if severity == HealthSeverity.WARNING:
         return "[WARN]"
     if severity == HealthSeverity.ERROR:

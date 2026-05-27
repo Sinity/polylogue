@@ -67,3 +67,5 @@ files:
     reason: "Same as test_blob_gc_concurrency: time.time() backdates file mtime."
   - path: tests/unit/storage/test_raw_ingest_artifacts.py
     reason: "Raw-ingest test uses now() as opaque acquired_at metadata."
+  - path: tests/unit/daemon/test_fts_trigger_drift.py
+    reason: "#1613 bulk-stage gating tests need a now() seed for live_ingest_attempt.updated_at; production probe reads its own datetime.now() which agrees within the freshness window (120s) by margin (stale-case test uses now()-10min, fresh-case is microseconds apart)."

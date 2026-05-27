@@ -216,7 +216,13 @@ class TestProvenancePayload:
         assert result["raw_id"] == raw_id
         assert result["content_hash"]
         assert result["blob_size_bytes"] == len(payload_bytes)
-        assert result["source_name"] == "c1.json"
+        # The provenance envelope echoes ``raw_conversations.source_name``
+        # (the canonical provider/source identity), not the file basename.
+        # The seed sets it to "claude-code"; the assertion historically
+        # encoded a duplicate-column accident in the seed INSERT where the
+        # author expected the filename to override but SQLite takes the
+        # first value of a duplicate column.
+        assert result["source_name"] == "claude-code"
         assert result["raw_preview_included"] is False
         assert "raw_preview" not in result
         assert result["raw_preview_cap_bytes"] == RAW_PREVIEW_MAX_BYTES
