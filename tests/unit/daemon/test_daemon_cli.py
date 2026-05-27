@@ -415,6 +415,11 @@ def test_ensure_fts_startup_readiness_runs_bounded_repair(
         "polylogue.storage.fts.dangling_repair.repair_stale_fts_rows",
         lambda fake_conn: _record_successful_repair(fake_conn, repairs),
     )
+    freshness_calls: list[FakeConnection] = []
+    monkeypatch.setattr(
+        "polylogue.daemon.cli._record_fts_freshness_snapshot_sync",
+        lambda fake_conn: freshness_calls.append(fake_conn),
+    )
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
@@ -423,6 +428,9 @@ def test_ensure_fts_startup_readiness_runs_bounded_repair(
     assert repairs == [conn]
     assert conn.committed is True
     assert conn.closed is True
+    # #1628: healthy path must write freshness snapshot so /healthz/ready
+    # stops returning 503 on a fully populated archive.
+    assert freshness_calls == [conn]
 
 
 def test_ensure_fts_startup_readiness_rebuilds_when_bounded_repair_fails(
@@ -669,6 +677,11 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
         "polylogue.storage.fts.dangling_repair.repair_missing_fts_rows",
         lambda fake_conn: SimpleNamespace(success=True, repaired_count=3, detail="repaired"),
     )
+    freshness_calls: list[FakeConnection] = []
+    monkeypatch.setattr(
+        "polylogue.daemon.cli._record_fts_freshness_snapshot_sync",
+        lambda fake_conn: freshness_calls.append(fake_conn),
+    )
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
@@ -676,6 +689,8 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
     assert rebuilds == []
     assert conn.committed is True
     assert conn.closed is True
+    # #1628: trigger-recovery path must also write freshness snapshot rows.
+    assert freshness_calls == [conn]
 
 
 def test_periodic_db_optimize_does_not_run_on_startup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

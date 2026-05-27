@@ -442,3 +442,149 @@ def test_sigkill_mid_bulk_recovery_via_daemon_startup(tmp_path: Path, monkeypatc
         assert indexed >= 2, f"FTS index not repopulated after recovery: {indexed} rows"
     finally:
         final.close()
+
+
+# ---------------------------------------------------------------------------
+# #1628 — startup must write fts_freshness_state ready rows so /healthz/ready
+# stops returning 503 indefinitely on a fully healthy archive.
+# ---------------------------------------------------------------------------
+
+_FRESHNESS_SURFACES = (
+    "messages_fts",
+    "action_events_fts",
+    "session_work_events_fts",
+    "work_threads_fts",
+)
+
+
+def _freshness_state_rows(conn: sqlite3.Connection) -> dict[str, str]:
+    rows = conn.execute("SELECT surface, state FROM fts_freshness_state").fetchall()
+    return {str(row[0]): str(row[1]) for row in rows}
+
+
+def test_startup_writes_freshness_ready_rows_on_healthy_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1628: a healthy archive must end startup with state=ready rows for every
+    FTS surface so the readiness probe and search gate stop refusing requests.
+
+    Without the fix, ``_ensure_fts_startup_readiness_sync`` takes the bounded-
+    repair path (no missing triggers, no stale rows), commits, and returns
+    without ever writing freshness rows. The probe then reports the surfaces
+    as ``unknown`` indefinitely.
+    """
+    import asyncio
+
+    db_file = tmp_path / "fts_healthy.db"
+    conn = _bootstrap_fts_db(db_file)
+    try:
+        conn.execute(
+            "INSERT INTO messages (rowid, message_id, conversation_id, text) VALUES (?, ?, ?, ?)",
+            (1, "m1", "c1", "alpha bravo"),
+        )
+        conn.execute(
+            "INSERT INTO messages (rowid, message_id, conversation_id, text) VALUES (?, ?, ?, ?)",
+            (2, "m2", "c1", "charlie delta"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    from polylogue.daemon import cli as daemon_cli
+
+    monkeypatch.setattr("polylogue.paths.db_path", lambda: db_file)
+    asyncio.run(daemon_cli._ensure_fts_startup_readiness())
+
+    final = sqlite3.connect(str(db_file))
+    try:
+        rows = _freshness_state_rows(final)
+        for surface in _FRESHNESS_SURFACES:
+            assert rows.get(surface) == "ready", f"startup did not mark {surface} ready; freshness rows={rows}"
+    finally:
+        final.close()
+
+
+def test_startup_writes_freshness_ready_rows_after_sigkill_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1628: the trigger-recovery branch must also write freshness rows.
+
+    Without the fix, the SIGKILL-recovery path commits restored triggers and a
+    bounded missing-row repair but never writes ``fts_freshness_state``, so
+    operators see a healed index that the readiness probe still calls
+    not-ready.
+    """
+    import asyncio
+
+    db_file = tmp_path / "fts_sigkill_freshness.db"
+    conn = _bootstrap_fts_db(db_file)
+    try:
+        conn.execute(
+            "INSERT INTO messages (rowid, message_id, conversation_id, text) VALUES (?, ?, ?, ?)",
+            (1, "m1", "c1", "alpha bravo"),
+        )
+        conn.execute(
+            "INSERT INTO messages (rowid, message_id, conversation_id, text) VALUES (?, ?, ?, ?)",
+            (2, "m2", "c1", "charlie delta"),
+        )
+        conn.commit()
+        suspend_fts_triggers_sync(conn)
+        conn.commit()
+        assert _trigger_names(conn).isdisjoint(_EXPECTED_TRIGGERS)
+    finally:
+        conn.close()
+
+    from polylogue.daemon import cli as daemon_cli
+
+    monkeypatch.setattr("polylogue.paths.db_path", lambda: db_file)
+    asyncio.run(daemon_cli._ensure_fts_startup_readiness())
+
+    final = sqlite3.connect(str(db_file))
+    try:
+        rows = _freshness_state_rows(final)
+        for surface in _FRESHNESS_SURFACES:
+            assert rows.get(surface) == "ready", f"sigkill recovery did not mark {surface} ready; freshness rows={rows}"
+    finally:
+        final.close()
+
+
+def test_startup_freshness_unblocks_search_readiness_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#1628: after startup, ``message_fts_search_readiness_sync`` must report
+    ready=True so the FTS search path stops raising
+    ``Search index is incomplete``.
+
+    This is the user-visible regression the freshness write fixes — the
+    readiness gate is what blocked ``mcp__polylogue__search`` and
+    ``polylogue --query`` against a healthy converged archive.
+    """
+    import asyncio
+
+    db_file = tmp_path / "fts_search_gate.db"
+    conn = _bootstrap_fts_db(db_file)
+    try:
+        conn.execute(
+            "INSERT INTO messages (rowid, message_id, conversation_id, text) VALUES (?, ?, ?, ?)",
+            (1, "m1", "c1", "alpha bravo"),
+        )
+        conn.execute(
+            "INSERT INTO messages (rowid, message_id, conversation_id, text) VALUES (?, ?, ?, ?)",
+            (2, "m2", "c1", "charlie delta"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.fts.fts_lifecycle import message_fts_search_readiness_sync
+
+    monkeypatch.setattr("polylogue.paths.db_path", lambda: db_file)
+    asyncio.run(daemon_cli._ensure_fts_startup_readiness())
+
+    final = sqlite3.connect(str(db_file))
+    try:
+        readiness = message_fts_search_readiness_sync(final)
+        assert bool(readiness["ready"]) is True, (
+            f"search readiness still not ready after startup; readiness={dict(readiness)}"
+        )
+    finally:
+        final.close()
