@@ -188,7 +188,16 @@ class RepositoryArchiveConversationMixin:
         if not conv_record:
             return None
         tags_by_id = await self._fetch_tags_by_conversation([conversation_id])
-        return conversation_summary_from_record(conv_record, tags=tags_by_id.get(conversation_id, ()))
+        # #1630: hydrate message_count from conversation_stats so the daemon
+        # HTTP /api/conversations/{id} endpoint and any other ``get_summary``
+        # caller see a real total instead of None. Same shape as
+        # list_summaries_by_query below.
+        counts_by_id = await self.queries.get_message_counts_batch([conversation_id])
+        return conversation_summary_from_record(
+            conv_record,
+            tags=tags_by_id.get(conversation_id, ()),
+            message_count=counts_by_id.get(conversation_id),
+        )
 
     async def list_summaries_by_query(
         self,
