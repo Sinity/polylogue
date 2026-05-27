@@ -712,9 +712,22 @@ def test_session_insight_rebuild_sync_reports_progress(cli_workspace: CliWorkspa
             progress_total=2,
         )
 
-    assert observed == [
+    # The full-rebuild path now also emits a "rebuild: cleared <table>"
+    # event per DELETE before the chunk-level Materializing events (#1607).
+    materialize_events = [event for event in observed if event[1] and event[1].startswith("Materializing:")]
+    assert materialize_events == [
         (1, "Materializing: 1/2"),
         (1, "Materializing: 2/2"),
+    ]
+    cleared_events = [event for event in observed if event[1] and event[1].startswith("rebuild: cleared ")]
+    assert [desc for _, desc in cleared_events] == [
+        "rebuild: cleared session_work_events",
+        "rebuild: cleared session_phases",
+        "rebuild: cleared session_latency_profiles",
+        "rebuild: cleared session_profiles",
+        "rebuild: cleared session_tag_rollups",
+        "rebuild: cleared conversation_repo_observations",
+        "rebuild: cleared repo_identities",
     ]
 
 
