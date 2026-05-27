@@ -485,7 +485,7 @@ register(
                 show_default=True,
                 help="Bucket coverage by provider, day, or ISO week",
             ),
-            CliOption("provider", ("--provider",), help="Only this provider"),
+            CliOption("provider", ("--provider", "-p"), help="Only this provider"),
             CliOption("since", ("--since",), help="Only buckets at/after this timestamp or date"),
             CliOption("until", ("--until",), help="Only buckets at/before this timestamp or date"),
         ),

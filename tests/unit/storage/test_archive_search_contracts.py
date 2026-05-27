@@ -334,7 +334,7 @@ async def test_gemini_drive_attachment_id_is_searchable_after_parse_and_prepare(
         parsed = parse_chunked_prompt("gemini", payload, "fallback-id")
         await prepare_records(
             parsed,
-            "gemini-export.json",
+            "gemini",
             archive_root=tmp_path / "archive",
             backend=backend,
             repository=repo,

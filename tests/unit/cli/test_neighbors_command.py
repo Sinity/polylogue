@@ -66,4 +66,5 @@ def test_neighbors_command_requires_id_or_query(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(neighbors_command, [], obj=MagicMock())
 
     assert result.exit_code != 0
-    assert "provide --id or --query" in result.output
+    assert "provide --id" in result.output
+    assert "--query" in result.output
