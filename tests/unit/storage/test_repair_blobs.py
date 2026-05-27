@@ -24,13 +24,15 @@ def _config(workspace_env: dict[str, Path], db_path: Path) -> Config:
 
 def _reference_blob(db_path: Path, blob_hash: str, blob_size: int) -> None:
     with open_connection(db_path) as conn:
+        # Column list has six slots; the seven-value form pre-dated a column
+        # removal and tripped ``OperationalError: 7 values for 6 columns``.
         conn.execute(
             """
             INSERT INTO raw_conversations (
                 raw_id, source_name, source_path, source_index,
                 blob_size, acquired_at
             )
-            VALUES (?, 'test', 'test', 'referenced.json', 0, ?, '2026-05-23T00:00:00+00:00')
+            VALUES (?, 'test', 'test', 0, ?, '2026-05-23T00:00:00+00:00')
             """,
             (blob_hash, blob_size),
         )
