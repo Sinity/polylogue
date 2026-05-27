@@ -653,6 +653,28 @@ def _refresh_thread_roots_sync(
     return len(normalized_root_ids)
 
 
+def _delete_tables_with_progress_sync(
+    conn: sqlite3.Connection,
+    *,
+    tables: Sequence[str],
+    progress_callback: ProgressCallback | None,
+) -> None:
+    """Delete every row in ``tables`` while emitting one progress event per table.
+
+    The progress event's ``desc`` names the table so an operator log can tell
+    "stuck on session_work_events" from "stuck on session_profiles". The
+    ``amount`` argument is the number of rows deleted; callers that only care
+    about table-step granularity can ignore it.
+    """
+    for table in tables:
+        deleted = conn.execute(f"DELETE FROM {table}").rowcount
+        if progress_callback is not None:
+            progress_callback(
+                int(max(deleted, 0)),
+                desc=f"rebuild: cleared {table}",
+            )
+
+
 def rebuild_session_insights_sync(
     conn: sqlite3.Connection,
     *,
@@ -664,13 +686,28 @@ def rebuild_session_insights_sync(
     conversation_chunks: Iterable[Sequence[str]]
     previous_profile_groups: set[tuple[str, str]] = set()
     if conversation_ids is None:
-        conn.execute("DELETE FROM session_work_events")
-        conn.execute("DELETE FROM session_phases")
-        conn.execute("DELETE FROM session_latency_profiles")
-        conn.execute("DELETE FROM session_profiles")
-        conn.execute("DELETE FROM session_tag_rollups")
-        conn.execute("DELETE FROM conversation_repo_observations")
-        conn.execute("DELETE FROM repo_identities")
+        # #1607: the seven DELETEs hold the write lock for seconds-to-minutes
+        # at archive scale and were previously silent. Emit a progress
+        # heartbeat per table so the operator sees forward motion instead
+        # of "polylogue qa --rebuild-insights" hanging with no output.
+        # The full rebuild stays inside one transaction (the implicit tx
+        # started by the first DELETE spans every subsequent DML through
+        # the final ``conn.commit()`` at the bottom of this function), so
+        # a SIGKILL mid-rebuild rolls the WAL back to the prior state on
+        # the next open — the prior insights are intact, not emptied.
+        _delete_tables_with_progress_sync(
+            conn,
+            tables=(
+                "session_work_events",
+                "session_phases",
+                "session_latency_profiles",
+                "session_profiles",
+                "session_tag_rollups",
+                "conversation_repo_observations",
+                "repo_identities",
+            ),
+            progress_callback=progress_callback,
+        )
         conversation_chunks = iter_conversation_id_pages_sync(conn, page_size=page_size)
     else:
         conversation_ids = tuple(dict.fromkeys(str(conversation_id) for conversation_id in conversation_ids))
@@ -821,13 +858,23 @@ async def rebuild_session_insights_async(
     )
 
     if conversation_ids is None:
-        await conn.execute("DELETE FROM session_work_events")
-        await conn.execute("DELETE FROM session_phases")
-        await conn.execute("DELETE FROM session_latency_profiles")
-        await conn.execute("DELETE FROM session_profiles")
-        await conn.execute("DELETE FROM session_tag_rollups")
-        await conn.execute("DELETE FROM conversation_repo_observations")
-        await conn.execute("DELETE FROM repo_identities")
+        # See _delete_tables_with_progress_sync for the sync analogue and
+        # the #1607 context. The implicit transaction spans every DML
+        # through the eventual COMMIT, so SIGKILL mid-rebuild rolls back
+        # to prior state on next open.
+        for table in (
+            "session_work_events",
+            "session_phases",
+            "session_latency_profiles",
+            "session_profiles",
+            "session_tag_rollups",
+            "conversation_repo_observations",
+            "repo_identities",
+        ):
+            cursor = await conn.execute(f"DELETE FROM {table}")
+            if progress_callback is not None:
+                rowcount = getattr(cursor, "rowcount", 0) or 0
+                progress_callback(int(rowcount if rowcount > 0 else 0), desc=f"rebuild: cleared {table}")
     elif not conversation_ids:
         await conn.execute("DELETE FROM work_threads")
         await conn.execute("DELETE FROM session_phases")

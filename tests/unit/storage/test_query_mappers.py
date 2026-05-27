@@ -273,5 +273,4 @@ class TestRowToRawConversation:
         result = _row_to_raw_conversation(row)
         assert isinstance(result, RawConversationRecord)
         assert result.raw_id == "sha256hash"
-        assert result.source_name == "chatgpt"
         assert result.source_name == "inbox"

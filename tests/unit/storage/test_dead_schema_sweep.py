@@ -42,7 +42,7 @@ def fresh_schema_db() -> Generator[Mapping[str, sqlite3.Connection], None, None]
 # ---------------------------------------------------------------------------
 
 
-def test_schema_version_is_14() -> None:
+def test_schema_version_is_16() -> None:
     # Bumped from 3 → 4 by #1241 (action_events_fts external-content),
     # then 4 → 5 by #1252 (first-class attachment native identifiers
     # + upload_origin column for the #1199 attachment library), then
@@ -54,8 +54,9 @@ def test_schema_version_is_14() -> None:
     # cross-source repo identity surface for slice C of #864), then
     # 8 → 9 by #1486 (provider-event payload split and content-block
     # canonical message body storage), then 13 → 14 by #1511
-    # (session_work_events.kind renamed to heuristic_label).
-    assert SCHEMA_VERSION == 14
+    # (session_work_events.kind renamed to heuristic_label). Bumped to
+    # 16 by subsequent schema-touching PRs.
+    assert SCHEMA_VERSION == 16
 
 
 def test_content_blocks_table_has_no_media_type_column(fresh_schema_db: Mapping[str, sqlite3.Connection]) -> None:
