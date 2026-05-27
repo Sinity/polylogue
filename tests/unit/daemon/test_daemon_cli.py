@@ -417,7 +417,7 @@ def test_ensure_fts_startup_readiness_runs_bounded_repair(
     )
     freshness_calls: list[FakeConnection] = []
     monkeypatch.setattr(
-        "polylogue.daemon.cli._record_fts_freshness_snapshot_sync",
+        "polylogue.daemon.fts_startup.record_fts_freshness_snapshot_sync",
         lambda fake_conn: freshness_calls.append(fake_conn),
     )
 
@@ -679,7 +679,7 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
     )
     freshness_calls: list[FakeConnection] = []
     monkeypatch.setattr(
-        "polylogue.daemon.cli._record_fts_freshness_snapshot_sync",
+        "polylogue.daemon.fts_startup.record_fts_freshness_snapshot_sync",
         lambda fake_conn: freshness_calls.append(fake_conn),
     )
 
