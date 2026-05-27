@@ -17,14 +17,17 @@ from polylogue.types import Provider
 from .parsers.base import ParsedConversation
 
 if TYPE_CHECKING:
+    from .parsers.claude.history import HistoryEntry
     from .parsers.claude.index import SessionIndexEntry
 
 ClaudeCodeSessionIndex: TypeAlias = dict[str, "SessionIndexEntry"]
+ClaudeCodeHistoryPasteIndex: TypeAlias = dict[str, list["HistoryEntry"]]
 CodexThreadNames: TypeAlias = dict[str, str]
 
 
 class _ClaudeCodeSidecarData(TypedDict, total=False):
     session_index: ClaudeCodeSessionIndex
+    history_paste_index: ClaudeCodeHistoryPasteIndex
 
 
 class _CodexSidecarData(TypedDict, total=False):
@@ -80,6 +83,7 @@ def get_assembly_spec(provider: Provider) -> ProviderAssemblySpec | None:
 
 
 __all__ = [
+    "ClaudeCodeHistoryPasteIndex",
     "ClaudeCodeSessionIndex",
     "CodexThreadNames",
     "ProviderAssemblySpec",

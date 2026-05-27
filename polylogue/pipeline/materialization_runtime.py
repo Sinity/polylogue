@@ -339,7 +339,12 @@ def materialize_conversation(
             or message_type in {MessageType.TOOL_USE, MessageType.TOOL_RESULT}
         )
         has_thinking = int(has_thinking_block or message_type == MessageType.THINKING)
-        has_paste = detect_paste(msg.text)
+        # #1583: history.jsonl sidecar evidence overrides a False heuristic
+        # so that user messages whose assembled text no longer carries the
+        # ``[Pasted text #N]`` marker still resolve to has_paste=1 when the
+        # Claude Code history sidecar recorded a paste.
+        meta_paste_evidence = bool((msg.provider_meta or {}).get("claude_code_history_paste"))
+        has_paste = 1 if (detect_paste(msg.text) or meta_paste_evidence) else 0
         if message_type == MessageType.MESSAGE:
             if has_thinking_block:
                 message_type = MessageType.THINKING
