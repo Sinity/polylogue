@@ -27,7 +27,7 @@ def _insert_raw(
         INSERT INTO raw_conversations (
             raw_id, source_name, source_path, source_index,
             blob_size, acquired_at, file_mtime
-        ) VALUES (?, 'codex', 'codex-session', ?, ?, ?, ?, ?)
+        ) VALUES (?, 'codex', ?, ?, ?, ?, ?)
         """,
         (raw_id, str(source_path), source_index, blob_size, acquired_at, acquired_at),
     )

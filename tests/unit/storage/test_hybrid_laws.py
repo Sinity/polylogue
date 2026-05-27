@@ -46,14 +46,14 @@ def _messages_db(msg_to_conv: dict[str, str]) -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.execute("CREATE TABLE messages (message_id TEXT, conversation_id TEXT)")
-    conn.execute("CREATE TABLE conversations (conversation_id TEXT, source_name TEXT, source_name TEXT)")
+    conn.execute("CREATE TABLE conversations (conversation_id TEXT, source_name TEXT)")
     conn.executemany(
         "INSERT INTO messages VALUES (?, ?)",
         list(msg_to_conv.items()),
     )
     for conv_id in set(msg_to_conv.values()):
         conn.execute(
-            "INSERT INTO conversations VALUES (?, 'chatgpt', 'chatgpt')",
+            "INSERT INTO conversations VALUES (?, 'chatgpt')",
             (conv_id,),
         )
     conn.commit()
@@ -333,7 +333,7 @@ def test_search_conversations_provider_filter() -> None:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.execute("CREATE TABLE messages (message_id TEXT, conversation_id TEXT)")
-    conn.execute("CREATE TABLE conversations (conversation_id TEXT, source_name TEXT, source_name TEXT)")
+    conn.execute("CREATE TABLE conversations (conversation_id TEXT, source_name TEXT)")
     conn.executemany(
         "INSERT INTO messages VALUES (?, ?)",
         [
@@ -342,10 +342,10 @@ def test_search_conversations_provider_filter() -> None:
         ],
     )
     conn.executemany(
-        "INSERT INTO conversations VALUES (?, ?, ?)",
+        "INSERT INTO conversations VALUES (?, ?)",
         [
-            ("conv_chatgpt", "chatgpt", "chatgpt"),
-            ("conv_claude", "claude-ai", "claude-ai"),
+            ("conv_chatgpt", "chatgpt"),
+            ("conv_claude", "claude-ai"),
         ],
     )
     conn.commit()

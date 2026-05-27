@@ -571,7 +571,7 @@ class TestSearchProviderSourceFiltering:
             assert execute_call is not None
             sql = execute_call.args[0]
             assert "conversations.source_name" in sql
-            assert "conversations.source_name" not in sql
+            assert "conversations.provider_name" not in sql
 
 
 class TestListConversationsByParent:

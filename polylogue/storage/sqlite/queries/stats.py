@@ -111,42 +111,54 @@ async def aggregate_message_stats(
         }
 
     if conversation_ids is not None:
-        await conn.execute("CREATE TEMP TABLE IF NOT EXISTS _stat_ids (cid TEXT PRIMARY KEY)")
-        await conn.execute("DELETE FROM _stat_ids")
-        await conn.executemany(
-            "INSERT OR IGNORE INTO _stat_ids (cid) VALUES (?)",
-            [(cid,) for cid in conversation_ids],
-        )
+        # #1659: read profile is query_only=ON which rejects TEMP TABLE writes,
+        # so use inline IN-clause binding instead of a temp-table join.
+        if not conversation_ids:
+            return {
+                "total": 0,
+                "user": 0,
+                "assistant": 0,
+                "system": 0,
+                "words_approx": 0,
+                "attachment_refs": 0,
+                "distinct_attachments": 0,
+                "min_sort_key": None,
+                "max_sort_key": None,
+                "providers": {},
+            }
+        placeholders = ",".join("?" * len(conversation_ids))
+        cid_params = tuple(conversation_ids)
 
-        message_stats = await _message_aggregate("WHERE conversation_id IN (SELECT cid FROM _stat_ids)")
+        message_stats = await _message_aggregate(f"WHERE conversation_id IN ({placeholders})", cid_params)
 
         date_row = await (
-            await conn.execute("""
-            SELECT MIN(sort_key) as min_sk, MAX(sort_key) as max_sk
-            FROM conversations WHERE conversation_id IN (SELECT cid FROM _stat_ids)
-        """)
+            await conn.execute(
+                f"SELECT MIN(sort_key) as min_sk, MAX(sort_key) as max_sk FROM conversations "
+                f"WHERE conversation_id IN ({placeholders})",
+                cid_params,
+            )
         ).fetchone()
 
         prov_rows = await (
-            await conn.execute("""
-            SELECT source_name, COUNT(*) as cnt
-            FROM conversations WHERE conversation_id IN (SELECT cid FROM _stat_ids)
-            GROUP BY source_name ORDER BY cnt DESC
-        """)
+            await conn.execute(
+                f"SELECT source_name, COUNT(*) as cnt FROM conversations "
+                f"WHERE conversation_id IN ({placeholders}) "
+                "GROUP BY source_name ORDER BY cnt DESC",
+                cid_params,
+            )
         ).fetchall()
         providers = {str(r["source_name"]): _row_int(r, "cnt") for r in prov_rows}
 
         att_row = await (
-            await conn.execute("""
-            SELECT
-                COUNT(*) AS attachment_ref_count,
-                COUNT(DISTINCT attachment_id) AS distinct_attachment_count
-            FROM attachment_refs
-            WHERE conversation_id IN (SELECT cid FROM _stat_ids)
-        """)
+            await conn.execute(
+                f"SELECT COUNT(*) AS attachment_ref_count, COUNT(DISTINCT attachment_id) "
+                f"AS distinct_attachment_count FROM attachment_refs "
+                f"WHERE conversation_id IN ({placeholders})",
+                cid_params,
+            )
         ).fetchone()
 
-        result: AggregateMessageStats = {
+        return {
             **message_stats,
             "attachment_refs": _row_int(att_row, "attachment_ref_count"),
             "distinct_attachments": _row_int(att_row, "distinct_attachment_count"),
@@ -154,8 +166,6 @@ async def aggregate_message_stats(
             "max_sort_key": _row_float(date_row, "max_sk"),
             "providers": providers,
         }
-        await conn.execute("DROP TABLE IF EXISTS _stat_ids")
-        return result
 
     # Unfiltered path
     message_stats = await _message_aggregate()

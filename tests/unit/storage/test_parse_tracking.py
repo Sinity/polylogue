@@ -24,6 +24,7 @@ from polylogue.storage.sqlite.schema import (
     SCHEMA_VERSION,
     _ensure_schema,
 )
+from polylogue.types import Provider
 
 # ─── Backend method tests ──────────────────────────────────────────────────
 
@@ -304,11 +305,12 @@ class TestResetParseStatus:
             ("chatgpt", "inbox-b"),
             ("claude-ai", "inbox-a"),
         ]
-        for i, (_provider, source_name) in enumerate(rows):
+        for i, (provider, source_name) in enumerate(rows):
             await backend.save_raw_conversation(
                 RawConversationRecord(
                     raw_id=f"raw-{i}",
                     source_name=source_name,
+                    payload_provider=Provider.from_string(provider),
                     source_path=f"/path/{i}.json",
                     blob_size=len(f'{{"i": {i}}}'.encode()),
                     acquired_at="2026-01-01T00:00:00Z",
@@ -387,11 +389,12 @@ class TestResetValidationStatus:
             ("chatgpt", "inbox-b"),
             ("claude-ai", "inbox-a"),
         ]
-        for i, (_provider, source_name) in enumerate(rows):
+        for i, (provider, source_name) in enumerate(rows):
             await backend.save_raw_conversation(
                 RawConversationRecord(
                     raw_id=f"raw-{i}",
                     source_name=source_name,
+                    payload_provider=Provider.from_string(provider),
                     source_path=f"/path/{i}.json",
                     blob_size=len(f'{{"i": {i}}}'.encode()),
                     acquired_at="2026-01-01T00:00:00Z",
