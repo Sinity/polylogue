@@ -127,3 +127,4 @@ default unless opted out; Business/Enterprise = no training). See
 @docs/architecture.md
 @docs/internals.md
 @docs/devtools.md
+@docs/cloud-agents.md
