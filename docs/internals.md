@@ -197,6 +197,49 @@ RTL (Arabic, Hebrew), bidi overrides, zero-width joiners and ZWNJ/ZWSP,
 non-BMP characters (CJK extension B), ZWJ emoji sequences with skin-tone
 modifiers, and unpaired surrogates.
 
+## WAL Management
+
+SQLite WAL behavior for the archive database (see also
+`polylogue/storage/sqlite/connection_profile.py`):
+
+- **Journal mode**: WAL on the write profile. Set once per database
+  the first time a writer opens it; persists in the file header.
+- **Autocheckpoint threshold**: `WAL_AUTOCHECKPOINT_PAGES = 10000` =
+  40 MiB. When the WAL crosses this, SQLite runs a PASSIVE checkpoint
+  inline with the next commit.
+- **Size cap** (#1614): `WAL_JOURNAL_SIZE_LIMIT_BYTES = 160 MiB` (4x
+  the autocheckpoint threshold). Set via `PRAGMA journal_size_limit`
+  on the write profile. When a TRUNCATE checkpoint succeeds (no
+  readers blocking), SQLite truncates the WAL file down to the cap.
+  A reader-blocked WAL still grows past the cap during the blocked
+  window; the first successful TRUNCATE after the reader closes
+  shrinks it back.
+- **Read profile** (#1614): the canonical read profile sets
+  `PRAGMA query_only = ON`. Read connections opened via
+  `open_readonly_connection` already use the `mode=ro` URI flag for
+  file-level read-only enforcement; the pragma additionally rejects
+  accidental writes at SQL parse time instead of contending for the
+  write lock and timing out.
+
+### Relationship to #1602 (autocheckpoint revert)
+
+A previous PR (3c5cc1a0) lowered the autocheckpoint threshold to 4 MB
+to shrink the symptom of unbounded WAL growth under reader-blocked
+TRUNCATE checkpoints. That tightening was reverted in #1602 once the
+real fix landed: the autocheckpoint threshold is back to 40 MB
+(`WAL_AUTOCHECKPOINT_PAGES = 10000`), and the new
+`journal_size_limit` cap from #1614 is what bounds WAL growth
+without paying the per-commit cost of a tighter autocheckpoint
+threshold. The two work together — autocheckpoint is the routine
+trim, journal_size_limit is the post-blocked-window shrink.
+
+### Daemon-side periodic checkpoint
+
+The daemon runs `maybe_checkpoint_wal()` every 5 minutes via the
+periodic loop. This explicit TRUNCATE pass is the primary mechanism
+that exercises the `journal_size_limit` cap in production — once the
+reader contention clears, the next periodic pass shrinks the WAL.
+
 ## Content Hash Model
 
 Archive writes are idempotent by content hash:
