@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar, cast
 
@@ -12,8 +13,10 @@ from polylogue.archive.conversation.models import ConversationSummary
 from polylogue.archive.query.spec import ConversationQuerySpec
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec, project_message_content
 from polylogue.archive.semantic.pricing import (
+    CostEstimatePayload,
     _normalize_model,
     estimate_conversation_cost,
+    estimate_cost_from_provider_meta,
     generated_at,
 )
 from polylogue.config import ConfigError
@@ -304,15 +307,23 @@ def _week_coverage_insight(insight: WeekSessionSummaryInsight) -> ArchiveCoverag
     )
 
 
-def _session_cost_insight(conversation: Conversation, *, materialized_at: str) -> SessionCostInsight:
-    estimate = estimate_conversation_cost(conversation)
-    source_updated = conversation.updated_at or conversation.created_at
+def _build_session_cost_insight(
+    *,
+    conversation_id: str,
+    source_name: str,
+    title: str | None,
+    created_at: datetime | None,
+    updated_at: datetime | None,
+    estimate: CostEstimatePayload,
+    materialized_at: str,
+) -> SessionCostInsight:
+    source_updated = updated_at or created_at
     return SessionCostInsight(
-        conversation_id=str(conversation.id),
-        source_name=str(conversation.provider),
-        title=conversation.title,
-        created_at=conversation.created_at.isoformat() if conversation.created_at is not None else None,
-        updated_at=conversation.updated_at.isoformat() if conversation.updated_at is not None else None,
+        conversation_id=conversation_id,
+        source_name=source_name,
+        title=title,
+        created_at=created_at.isoformat() if created_at is not None else None,
+        updated_at=updated_at.isoformat() if updated_at is not None else None,
         estimate=estimate,
         provenance=ArchiveInsightProvenance(
             materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
@@ -320,6 +331,50 @@ def _session_cost_insight(conversation: Conversation, *, materialized_at: str) -
             source_updated_at=source_updated.isoformat() if source_updated is not None else None,
             source_sort_key=source_updated.timestamp() if source_updated is not None else None,
         ),
+    )
+
+
+def _session_cost_insight(conversation: Conversation, *, materialized_at: str) -> SessionCostInsight:
+    return _build_session_cost_insight(
+        conversation_id=str(conversation.id),
+        source_name=str(conversation.provider),
+        title=conversation.title,
+        created_at=conversation.created_at,
+        updated_at=conversation.updated_at,
+        estimate=estimate_conversation_cost(conversation),
+        materialized_at=materialized_at,
+    )
+
+
+def _session_cost_insight_from_summary(
+    summary: ConversationSummary,
+    *,
+    materialized_at: str,
+) -> SessionCostInsight:
+    """#1671: build SessionCostInsight from a summary's provider_meta alone."""
+    source_name = str(summary.provider)
+    conversation_id = str(summary.id)
+    estimate = estimate_cost_from_provider_meta(
+        source_name=source_name,
+        conversation_id=conversation_id,
+        provider_meta=summary.provider_meta,
+    ) or CostEstimatePayload(
+        source_name=source_name,
+        conversation_id=conversation_id,
+        status="unavailable",
+        confidence=0.0,
+        missing_reasons=("provider_meta_no_cost",),
+        unavailable_reason="no_tokens",
+        provenance=("conversation_provider_meta",),
+    )
+    return _build_session_cost_insight(
+        conversation_id=conversation_id,
+        source_name=source_name,
+        title=summary.title,
+        created_at=summary.created_at,
+        updated_at=summary.updated_at,
+        estimate=estimate,
+        materialized_at=materialized_at,
     )
 
 
@@ -985,17 +1040,37 @@ class ArchiveInsightAggregateMixin:
         self,
         query: CostRollupInsightQuery | None = None,
     ) -> list[CostRollupInsight]:
+        """Aggregate per-(source_name, model) cost rollups across the archive.
+
+        #1671: this path used to fetch every Conversation with messages via
+        ``list_session_cost_insights`` so it could call
+        ``estimate_conversation_cost`` per session. On a 7.9K-conversation
+        archive that pulled 3.7M message rows into Python and hung the MCP
+        stdio loop past its 60s deadline (#1621).
+
+        Now we route through summaries: ``list_session_cost_insights_from_summaries``
+        reads only conversation metadata + provider_meta and computes each
+        session's cost via ``estimate_cost_from_provider_meta``. Sessions
+        whose provider_meta does not carry a usable cost end up as
+        ``status="unavailable"`` rollups — accurate for the aggregate view
+        because the unavailable bucket is itself one of the reported rollup
+        states.
+        """
         request = _default_query(query, CostRollupInsightQuery)
-        session_costs = await self.list_session_cost_insights(
-            SessionCostInsightQuery(
-                provider=request.provider,
-                since=request.since,
-                until=request.until,
-                model=request.model,
-                limit=None,
-            )
+        materialized_at = generated_at()
+        summaries = await self.repository.list_summaries(
+            provider=request.provider,
+            since=request.since,
+            until=request.until,
+            limit=None,
+            include_provider_meta=True,
         )
-        rollups = aggregate_cost_rollup_insights(session_costs, materialized_at=generated_at())
+        session_costs = [
+            _session_cost_insight_from_summary(summary, materialized_at=materialized_at) for summary in summaries
+        ]
+        if request.model:
+            session_costs = [insight for insight in session_costs if _cost_model_matches(insight, request.model)]
+        rollups = aggregate_cost_rollup_insights(session_costs, materialized_at=materialized_at)
         return _slice_insights(rollups, offset=request.offset, limit=request.limit)
 
     async def get_insight_readiness_report(

@@ -32,6 +32,7 @@ class ConversationListQueryKwargs(TypedDict):
     max_messages: int | None
     min_words: int | None
     message_type: str | None
+    include_provider_meta: bool
 
 
 class ConversationCountQueryKwargs(TypedDict):
@@ -87,6 +88,7 @@ class ConversationRecordQuery:
     min_words: int | None = None
     since_session_id: str | None = None
     message_type: str | None = None
+    include_provider_meta: bool = False
 
     def with_limit(self, limit: int | None) -> ConversationRecordQuery:
         return replace(self, limit=limit)
@@ -138,6 +140,7 @@ class ConversationRecordQuery:
             "max_messages": self.max_messages,
             "min_words": self.min_words,
             "message_type": self.message_type,
+            "include_provider_meta": self.include_provider_meta,
         }
 
     def to_count_kwargs(self) -> ConversationCountQueryKwargs:

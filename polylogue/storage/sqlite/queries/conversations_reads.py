@@ -61,7 +61,9 @@ async def list_conversations(
     max_messages: int | None = None,
     min_words: int | None = None,
     message_type: str | None = None,
+    include_provider_meta: bool = False,
 ) -> list[ConversationRecord]:
+    del include_provider_meta  # list_conversations always loads via SELECT *
     use_stats_join = _needs_stats_join(
         has_tool_use=has_tool_use,
         has_thinking=has_thinking,
@@ -152,6 +154,7 @@ async def list_conversation_summaries(
     max_messages: int | None = None,
     min_words: int | None = None,
     message_type: str | None = None,
+    include_provider_meta: bool = False,
 ) -> list[ConversationRecord]:
     use_stats_join = _needs_stats_join(
         has_tool_use=has_tool_use,
@@ -162,6 +165,8 @@ async def list_conversation_summaries(
         max_messages=max_messages,
         min_words=min_words,
     )
+    pm_qualified = "c.provider_meta" if include_provider_meta else "NULL AS provider_meta"
+    pm_bare = "provider_meta" if include_provider_meta else "NULL AS provider_meta"
     where_sql, params = _build_conversation_filters(
         source=source,
         provider=provider,
@@ -189,7 +194,7 @@ async def list_conversation_summaries(
 
     if use_stats_join:
         from_clause = "FROM conversations c LEFT JOIN conversation_stats cs ON cs.conversation_id = c.conversation_id"
-        select_clause = """
+        select_clause = f"""
         SELECT
             c.conversation_id,
             c.source_name,
@@ -199,7 +204,7 @@ async def list_conversation_summaries(
             c.updated_at,
             c.sort_key,
             c.content_hash,
-            NULL AS provider_meta,
+            {pm_qualified},
             c.metadata,
             c.version,
             c.parent_conversation_id,
@@ -209,7 +214,7 @@ async def list_conversation_summaries(
         order_clause = "ORDER BY (c.sort_key IS NULL) ASC, c.sort_key DESC, c.conversation_id DESC"
     else:
         from_clause = "FROM conversations"
-        select_clause = """
+        select_clause = f"""
         SELECT
             conversation_id,
             source_name,
@@ -219,7 +224,7 @@ async def list_conversation_summaries(
             updated_at,
             sort_key,
             content_hash,
-            NULL AS provider_meta,
+            {pm_bare},
             metadata,
             version,
             parent_conversation_id,
