@@ -66,8 +66,8 @@ exceptions:
     reason: "shared operation contracts for ingest/maintenance/mutation/insight aggregation routes (#861, #862, #1134); split candidate: per-domain operation modules under operations/"
 
   - path: polylogue/daemon/cli.py
-    ceiling: 1110
-    reason: "fresh-init FTS readiness race guard (#1603) added 4 lines; split candidate: lift _ensure_fts_startup_readiness_sync into daemon/fts_startup.py"
+    ceiling: 1130
+    reason: "fresh-init FTS readiness race guard (#1603, +4) and post-catchup freshness write (#1628, +15) added lines; split candidate: lift _ensure_fts_startup_readiness_sync and _record_fts_freshness_snapshot_sync into daemon/fts_startup.py"
 
   - path: polylogue/daemon/status.py
     ceiling: 1380

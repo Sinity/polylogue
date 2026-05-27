@@ -97,6 +97,25 @@ def _table_exists_sync(conn: sqlite3.Connection, table_name: str) -> bool:
     return row is not None
 
 
+def _record_fts_freshness_snapshot_sync(conn: sqlite3.Connection) -> None:
+    """Write per-surface freshness rows after a successful startup readiness pass.
+
+    Without this, the bounded-repair and healthy startup paths leave
+    ``fts_freshness_state`` empty, so ``/healthz/ready`` returns 503
+    indefinitely and ``message_fts_search_readiness_sync`` keeps refusing
+    queries even though triggers + index are intact (#1628).
+    """
+    from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
+    from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
+
+    try:
+        snapshot = fts_invariant_snapshot_sync(conn)
+    except sqlite3.Error:
+        logger.warning("daemon: FTS startup freshness snapshot failed", exc_info=True)
+        return
+    record_fts_invariant_snapshot_sync(conn, snapshot)
+
+
 def _active_fts_triggers_sync(conn: sqlite3.Connection) -> tuple[str, ...]:
     expected: list[str] = []
     if _table_exists_sync(conn, "messages") and _table_exists_sync(conn, "messages_fts"):
@@ -199,6 +218,7 @@ def _ensure_fts_startup_readiness_sync() -> None:
             if not outcome.success:
                 logger.warning("daemon: bounded FTS repair failed after trigger restore: %s", outcome.detail)
                 rebuild_fts_index_sync(conn)
+            _record_fts_freshness_snapshot_sync(conn)
             conn.commit()
             logger.info("daemon: FTS trigger recovery complete.")
             return
@@ -213,6 +233,7 @@ def _ensure_fts_startup_readiness_sync() -> None:
             logger.info("daemon: FTS rebuild complete.")
             return
 
+        _record_fts_freshness_snapshot_sync(conn)
         conn.commit()
     except Exception:
         logger.warning("daemon: FTS startup check failed", exc_info=True)
