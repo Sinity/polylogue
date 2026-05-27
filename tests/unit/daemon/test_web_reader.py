@@ -226,7 +226,8 @@ class TestReaderSearchState:
         }
         assert row["anchor"] == "conversation-c1"
         assert row["actions"]["open"]["enabled"] is True
-        assert row["actions"]["annotate"] == {"enabled": True}
+        assert row["actions"]["annotate"]["enabled"] is True
+        assert row["actions"]["annotate"]["state"] == "enabled"
 
     def test_facets_envelope_includes_scoped_flag(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
@@ -314,7 +315,8 @@ class TestReaderConversationState:
         }
         assert message["anchor"] == "message-m-c1"
         assert message["actions"]["copy_text"]["enabled"] is True
-        assert message["actions"]["annotate"] == {"enabled": True}
+        assert message["actions"]["annotate"]["enabled"] is True
+        assert message["actions"]["annotate"]["state"] == "enabled"
 
     def test_unknown_conversation_yields_404(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):

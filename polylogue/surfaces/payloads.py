@@ -255,7 +255,19 @@ def reader_message_actions() -> dict[str, ReaderActionAvailabilityPayload]:
 
 
 class ConversationMessagePayload(SurfacePayloadModel):
-    """Machine-readable message payload shared across CLI and MCP surfaces."""
+    """Machine-readable message payload shared across CLI and MCP surfaces.
+
+    #1487: this is the canonical ``MessageRenderEnvelope`` for every
+    reader entry. Both conversation-detail and paginated-message
+    endpoints emit this exact shape so the UI can render parent/branch
+    state, paste/attachment flags, raw/source refs, usage/cost
+    metadata, and disabled actions without per-endpoint special cases.
+
+    Every field beyond the original id/role/text/target_ref/anchor/
+    actions/timestamp/message_type/content_blocks/parent_id set is
+    additive with sensible default — so existing callers that only
+    set the original fields continue to work unchanged.
+    """
 
     id: str
     role: str
@@ -267,6 +279,35 @@ class ConversationMessagePayload(SurfacePayloadModel):
     message_type: str = "message"
     content_blocks: list[dict[str, object]] = Field(default_factory=list)
     parent_id: str | None = None
+    # #1487 envelope: branch/lineage state.
+    branch_index: int = 0
+    # #1487 envelope: per-message content flags. Surface what the storage
+    # layer already projects (#1201/#1583) so the reader does not have
+    # to re-derive them from the rendered text.
+    has_paste: bool = False
+    has_tool_use: bool = False
+    has_thinking: bool = False
+    # #1487 envelope: usage/cost metadata. Carries through from parsers
+    # that populated token counts (claude-code session JSONL records
+    # usage; codex sometimes does). All four default to zero so
+    # rendering paths can compute cost without dispatching on presence.
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    model_name: str | None = None
+    # #1487 envelope: provider attachment identifiers for the message.
+    # Tuple (immutable + ordered) so the reader can render them in
+    # parser order and the test contract pins exact equality.
+    attachment_refs: tuple[str, ...] = ()
+    # #1487 envelope: raw/source refs so the inspector can deep-link
+    # to provenance without re-querying. ``raw_id`` is the
+    # content-addressed blob id from ``raw_conversations``;
+    # ``source_path`` is the on-disk path the conversation was
+    # acquired from. Both default to None for messages whose
+    # conversation has no recorded raw artifact.
+    raw_id: str | None = None
+    source_path: str | None = None
 
     @classmethod
     def from_message(
@@ -274,6 +315,8 @@ class ConversationMessagePayload(SurfacePayloadModel):
         message: Message,
         *,
         conversation_id: object | None = None,
+        raw_id: str | None = None,
+        source_path: str | None = None,
     ) -> ConversationMessagePayload:
         raw_message_type = getattr(message, "message_type", None)
         if raw_message_type is None:
@@ -287,6 +330,11 @@ class ConversationMessagePayload(SurfacePayloadModel):
             if conversation_id is not None
             else None
         )
+        attachment_refs = tuple(
+            str(getattr(attachment, "id", ""))
+            for attachment in getattr(message, "attachments", ())
+            if getattr(attachment, "id", None)
+        )
         return cls(
             id=str(message.id),
             role=normalize_role(message.role),
@@ -297,6 +345,18 @@ class ConversationMessagePayload(SurfacePayloadModel):
             message_type=message_type,
             content_blocks=message.content_blocks,
             parent_id=message.parent_id,
+            branch_index=int(getattr(message, "branch_index", 0) or 0),
+            has_paste=bool(getattr(message, "has_paste", False)),
+            has_tool_use=bool(getattr(message, "has_tool_use", False)),
+            has_thinking=bool(getattr(message, "has_thinking", False)),
+            input_tokens=int(getattr(message, "input_tokens", 0) or 0),
+            output_tokens=int(getattr(message, "output_tokens", 0) or 0),
+            cache_read_tokens=int(getattr(message, "cache_read_tokens", 0) or 0),
+            cache_write_tokens=int(getattr(message, "cache_write_tokens", 0) or 0),
+            model_name=getattr(message, "model_name", None),
+            attachment_refs=attachment_refs,
+            raw_id=raw_id,
+            source_path=source_path,
         )
 
 
