@@ -318,19 +318,53 @@ components:
       type: object
     ReaderActionAvailabilityPayload:
       additionalProperties: false
-      description: Per-target reader action availability with explicit disabled reason.
+      description: 'Per-target reader action availability with explicit disabled reason.
+
+
+        Reader actions surface seven distinct states (see :data:`ReaderActionState`)
+
+        so the UI can render "disabled because X" / "loading" / "dangerous"
+
+        without conflating them under a single boolean (#1488). ``enabled``
+
+        is kept as a back-compat alias derived from ``state`` so existing
+
+        call sites that only know about enabled/disabled continue to work.'
       properties:
         enabled:
+          default: true
           title: Enabled
           type: boolean
+        state:
+          default: enabled
+          enum:
+          - enabled
+          - disabled
+          - partial
+          - dangerous
+          - loading
+          - target
+          - unavailable
+          title: State
+          type: string
         disabled_reason:
           anyOf:
           - type: string
           - type: 'null'
           default: null
           title: Disabled Reason
-      required:
-      - enabled
+        repair_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Repair Path
+        inspect_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Inspect Path
       title: ReaderActionAvailabilityPayload
       type: object
     TargetRefPayload:

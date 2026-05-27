@@ -153,11 +153,80 @@ class TargetRefPayload(SurfacePayloadModel):
         )
 
 
-class ReaderActionAvailabilityPayload(SurfacePayloadModel):
-    """Per-target reader action availability with explicit disabled reason."""
+#: Closed vocabulary of reader action states. Per #1488: every visible
+#: action surfaces one of these explicit states with a disabled-reason
+#: when applicable. ``enabled`` is the default; the other states encode
+#: distinct UI semantics that should never be conflated.
+#:
+#: - ``enabled`` — actionable now.
+#: - ``disabled`` — known unavailable; ``disabled_reason`` explains why.
+#: - ``partial`` — usable in a degraded form (e.g., copy of best-effort
+#:   text when paste boundaries are not exact).
+#: - ``dangerous`` — actionable but irreversible; UI should require a
+#:   confirmation gesture.
+#: - ``loading`` — temporarily disabled while the prerequisite resolves.
+#: - ``target`` — placeholder for an action that targets a different
+#:   object than the one displayed (e.g., "continue elsewhere").
+#: - ``unavailable`` — the action cannot be enabled in this archive
+#:   shape (e.g., copy_raw on a quarantined raw record).
+ReaderActionState: TypeAlias = Literal[
+    "enabled",
+    "disabled",
+    "partial",
+    "dangerous",
+    "loading",
+    "target",
+    "unavailable",
+]
 
-    enabled: bool
+#: Stable registry of action ids the reader knows about. The canonical
+#: set covers the actions named in #1488: copy text/markdown/raw/permalink,
+#: copy selected range, typed-only/paste-only copy variants, open raw/
+#: source, inspect provenance, mark/annotate, add to context, compare,
+#: open stack, continue elsewhere. New actions must be added here so
+#: the payload contract stays a closed enum rather than a free-form
+#: string field.
+READER_ACTION_IDS: tuple[str, ...] = (
+    "open",
+    "copy_text",
+    "copy_markdown",
+    "copy_raw",
+    "copy_link",
+    "copy_permalink",
+    "copy_selected_range",
+    "copy_typed_only",
+    "copy_paste_only",
+    "open_raw",
+    "open_source",
+    "inspect_provenance",
+    "mark",
+    "annotate",
+    "add_to_context",
+    "compare",
+    "open_stack",
+    "continue_elsewhere",
+)
+
+
+class ReaderActionAvailabilityPayload(SurfacePayloadModel):
+    """Per-target reader action availability with explicit disabled reason.
+
+    Reader actions surface seven distinct states (see :data:`ReaderActionState`)
+    so the UI can render "disabled because X" / "loading" / "dangerous"
+    without conflating them under a single boolean (#1488). ``enabled``
+    is kept as a back-compat alias derived from ``state`` so existing
+    call sites that only know about enabled/disabled continue to work.
+    """
+
+    enabled: bool = True
+    state: ReaderActionState = "enabled"
     disabled_reason: str | None = None
+    #: Optional opt-in path to surface a repair affordance when the action
+    #: is disabled (e.g., a CLI command operators can run to enable it).
+    repair_path: str | None = None
+    #: Optional opt-in path to surface an inspector affordance when the
+    #: action is disabled or partial (e.g., a "see why" link).
+    inspect_path: str | None = None
 
 
 def reader_anchor(target_type: Literal["conversation", "message"], target_id: object) -> str:
