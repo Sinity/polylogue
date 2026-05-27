@@ -1,0 +1,18 @@
+{
+  "env": {
+    "POLYLOGUE_ARCHIVE_ROOT": "/tmp/polylogue-archive",
+    "POLYLOGUE_FORCE_PLAIN": "1",
+    "HYPOTHESIS_PROFILE": "ci"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(uv:*)",
+      "Bash(pytest:*)",
+      "Bash(ruff:*)",
+      "Bash(mypy:*)",
+      "Bash(devtools:*)",
+      "Bash(polylogue:*)",
+      "Bash(polylogued:*)"
+    ]
+  }
+}
