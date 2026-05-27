@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, overload
 
 from pydantic import BaseModel
 
-from polylogue.errors import PolylogueError, SchemaIncompatibleError
+from polylogue.errors import (
+    EmbeddingRetrievalNotReadyError,
+    PolylogueError,
+    SchemaIncompatibleError,
+)
 from polylogue.logging import get_logger
 from polylogue.mcp.payloads import MCPErrorPayload, MCPFencedCodeBlock
 from polylogue.operations import ArchiveOperations
@@ -135,6 +139,17 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
             tool=fn_name,
             current_version=exc.current_version,
             expected_version=exc.expected_version,
+        )
+    elif isinstance(exc, EmbeddingRetrievalNotReadyError):
+        # The message is by construction free of secrets — closed
+        # vocabulary status enum + fixed command names — so forward it
+        # verbatim instead of redacting to the class name (#1503 AC4).
+        payload = MCPErrorPayload(
+            error=str(exc),
+            code="embedding_retrieval_not_ready",
+            detail=type(exc).__name__,
+            tool=fn_name,
+            readiness_status=exc.readiness_status,
         )
     elif isinstance(exc, PolylogueError):
         payload = MCPErrorPayload(

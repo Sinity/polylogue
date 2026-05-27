@@ -18,7 +18,6 @@ from polylogue.archive.semantic.pricing import (
 )
 from polylogue.config import ConfigError
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.errors import DatabaseError
 from polylogue.insights.archive import (
     ArchiveCoverageInsight,
     ArchiveCoverageInsightQuery,
@@ -382,20 +381,26 @@ class ArchiveSearchMixin:
             retrieval_ready = max(embedded_messages - stale_messages, 0) > 0
         if not retrieval_ready:
             status = getattr(archive_stats, "embedding_readiness_status", None) or "none"
-            raise DatabaseError(
+            from polylogue.errors import EmbeddingRetrievalNotReadyError
+
+            raise EmbeddingRetrievalNotReadyError(
                 "Semantic or hybrid retrieval requires retrieval-ready embeddings "
                 f"(current status: {status}). Run `polylogue embed status`, then "
-                "`polylogue embed backfill` or let polylogued converge after enabling embeddings."
+                "`polylogue embed backfill` or let polylogued converge after enabling embeddings.",
+                readiness_status=str(status),
             )
 
         from polylogue.storage.search_providers import create_vector_provider
 
         vector_provider = create_vector_provider(self.config, db_path=self.backend.db_path)
         if vector_provider is None:
-            raise DatabaseError(
+            from polylogue.errors import EmbeddingRetrievalNotReadyError
+
+            raise EmbeddingRetrievalNotReadyError(
                 "Semantic or hybrid retrieval requires vector search support, but vector provider initialization "
                 "failed or embeddings are disabled. Run `polylogue embed status`, then `polylogue embed enable` "
-                "if needed."
+                "if needed.",
+                readiness_status="disabled",
             )
         return vector_provider
 

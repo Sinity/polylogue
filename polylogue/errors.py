@@ -62,4 +62,35 @@ class SchemaIncompatibleError(DatabaseError):
         self.expected_version = expected_version
 
 
-__all__ = ["DatabaseError", "PolylogueError", "SchemaIncompatibleError"]
+class EmbeddingRetrievalNotReadyError(DatabaseError):
+    """Raised when ``--similar``/``--semantic`` is asked for but vectors aren't ready.
+
+    Carries an operator-actionable message naming the current readiness
+    status and the next step (``polylogue embed status`` →
+    ``polylogue embed backfill``/``enable``). Unlike a generic
+    :class:`DatabaseError`, this class lets surfaces forward the message
+    verbatim to the client because the contents are by construction free
+    of secrets — the readiness status enum is a closed vocabulary
+    (``ready``/``partial``/``pending``/``disabled``/``none``) and the
+    follow-up command names are fixed strings, not user data.
+
+    Used by the operations layer's
+    ``_resolve_vector_provider_for_search`` so that CLI, MCP, and HTTP
+    surfaces all surface the same actionable error instead of the CLI
+    getting the message and MCP getting only the exception class name
+    (#1503 AC4).
+    """
+
+    http_status_code: int = HTTPStatus.CONFLICT
+
+    def __init__(self, message: str, *, readiness_status: str) -> None:
+        super().__init__(message)
+        self.readiness_status = readiness_status
+
+
+__all__ = [
+    "DatabaseError",
+    "EmbeddingRetrievalNotReadyError",
+    "PolylogueError",
+    "SchemaIncompatibleError",
+]
