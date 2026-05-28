@@ -249,5 +249,119 @@ class RepositoryArchiveConversationMixin:
         ):
             yield message_from_record(record, attachments=[], provider=source_name)
 
+    async def aggregate_facet_families(
+        self,
+        *,
+        conversation_ids: list[str] | None = None,
+    ) -> dict[str, dict[str, int]]:
+        """Run per-family SQL aggregators for facets that can't be computed
+        from conversation summaries alone.
+
+        Returns a dict keyed by family name (``repos``, ``message_types``,
+        ``action_types``, ``has_flags``). When ``conversation_ids`` is
+        provided, results are scoped to those conversations.
+
+        #1672 (phase 2 of #1623).
+        """
+        result: dict[str, dict[str, int]] = {
+            "repos": {},
+            "message_types": {},
+            "action_types": {},
+            "has_flags": {},
+        }
+        # Empty list produces SQL ``IN ()`` which is a syntax error.
+        if conversation_ids is not None and not conversation_ids:
+            return result
+        # SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 999. When the
+        # scoped path passes >900 IDs we chunk and merge so the query
+        # never exceeds the engine limit. The global path (None) has no
+        # IN clause and does not need chunking.
+        _max_in_vars = 900
+
+        from typing import Any
+
+        async def _scoped_rows(
+            conn: Any,
+            scoped_sql: str,
+            global_sql: str,
+            params: list[str] | None,
+        ) -> list[Any]:
+            """Run a possibly-chunked scoped query or a single global query."""
+            if params is None:
+                return list(await (await conn.execute(global_sql)).fetchall())
+            rows: list[object] = []
+            for i in range(0, len(params), _max_in_vars):
+                chunk = params[i : i + _max_in_vars]
+                placeholders = ",".join("?" for _ in chunk)
+                rows.extend(await (await conn.execute(scoped_sql.format(placeholders), chunk)).fetchall())
+            return rows
+
+        # Accumulate keyed results from possibly-chunked rows.
+        def _keyed(rows: list[Any]) -> dict[str, int]:
+            return {row[0]: row[1] for row in rows if row[0]}
+
+        async with self._backend.connection() as conn:
+            ids = conversation_ids  # None → global, list → scoped
+
+            result["repos"] = _keyed(
+                await _scoped_rows(
+                    conn,
+                    """SELECT git_repository_url, count(*) AS n
+                    FROM conversations
+                    WHERE git_repository_url IS NOT NULL
+                      AND conversation_id IN ({})
+                    GROUP BY git_repository_url""",
+                    """SELECT git_repository_url, count(*) AS n
+                    FROM conversations
+                    WHERE git_repository_url IS NOT NULL
+                    GROUP BY git_repository_url""",
+                    ids,
+                )
+            )
+
+            result["message_types"] = _keyed(
+                await _scoped_rows(
+                    conn,
+                    """SELECT message_type, count(*) AS n
+                    FROM messages
+                    WHERE conversation_id IN ({})
+                    GROUP BY message_type""",
+                    """SELECT message_type, count(*) AS n
+                    FROM messages
+                    GROUP BY message_type""",
+                    ids,
+                )
+            )
+
+            result["action_types"] = _keyed(
+                await _scoped_rows(
+                    conn,
+                    """SELECT action_kind, count(*) AS n
+                    FROM action_events
+                    WHERE conversation_id IN ({})
+                    GROUP BY action_kind""",
+                    """SELECT action_kind, count(*) AS n
+                    FROM action_events
+                    GROUP BY action_kind""",
+                    ids,
+                )
+            )
+
+            flag_rows = await _scoped_rows(
+                conn,
+                """SELECT coalesce(sum(has_tool_use),0), coalesce(sum(has_thinking),0),
+                coalesce(sum(has_paste),0) FROM messages WHERE conversation_id IN ({})""",
+                """SELECT coalesce(sum(has_tool_use),0), coalesce(sum(has_thinking),0),
+                coalesce(sum(has_paste),0) FROM messages""",
+                ids,
+            )
+            # Merge chunked flag rows by summing corresponding columns.
+            tool_use = sum(r[0] for r in flag_rows)
+            thinking = sum(r[1] for r in flag_rows)
+            paste = sum(r[2] for r in flag_rows)
+            result["has_flags"] = {"has_tool_use": tool_use, "has_thinking": thinking, "has_paste": paste}
+
+        return result
+
 
 __all__ = ["RepositoryArchiveConversationMixin"]
