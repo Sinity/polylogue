@@ -308,6 +308,10 @@ class ConversationMessagePayload(SurfacePayloadModel):
     # conversation has no recorded raw artifact.
     raw_id: str | None = None
     source_path: str | None = None
+    # #1655: paste boundary state — exact, projected, whole_message_fallback,
+    # hash_only, or None when the message has no paste evidence. Populated
+    # from the stored ``messages.paste_boundary_state`` column.
+    paste_boundary_state: str | None = None
 
     @classmethod
     def from_message(
