@@ -71,6 +71,56 @@
     }
   },
   {
+    "name": "aggregate_sessions",
+    "parameters": {
+      "properties": {
+        "group_by": {
+          "default": "workflow_shape",
+          "title": "Group By",
+          "type": "string"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since"
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Until"
+        }
+      },
+      "title": "aggregate_sessionsArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "archive_coverage",
     "parameters": {
       "properties": {
@@ -323,6 +373,130 @@
         "conversation_id"
       ],
       "title": "clear_correctionsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "compare_sessions",
+    "parameters": {
+      "properties": {
+        "session_ids": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Ids"
+        }
+      },
+      "title": "compare_sessionsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "compose_context_preamble",
+    "parameters": {
+      "properties": {
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        },
+        "limit": {
+          "default": 5,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "recent_files": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Recent Files",
+          "type": "array"
+        },
+        "repo_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Repo Path"
+        }
+      },
+      "title": "compose_context_preambleArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "correlate_sessions",
+    "parameters": {
+      "properties": {
+        "metric_x": {
+          "title": "Metric X",
+          "type": "string"
+        },
+        "metric_y": {
+          "title": "Metric Y",
+          "type": "string"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since"
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Until"
+        }
+      },
+      "required": [
+        "metric_x",
+        "metric_y"
+      ],
+      "title": "correlate_sessionsArguments",
       "type": "object"
     }
   },
@@ -1408,6 +1582,32 @@
         "repo_path"
       ],
       "title": "find_resume_candidatesArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "find_similar_sessions",
+    "parameters": {
+      "properties": {
+        "limit": {
+          "default": 10,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "similarity_dimension": {
+          "default": "auto",
+          "title": "Similarity Dimension",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "find_similar_sessionsArguments",
       "type": "object"
     }
   },
