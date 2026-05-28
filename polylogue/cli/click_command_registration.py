@@ -143,6 +143,7 @@ def _L(name: str) -> _LazyCommand:  # noqa: N802
 # ── command list ───────────────────────────────────────────────────
 
 ROOT_COMMANDS: tuple[click.Command, ...] = (
+    _L("context"),
     _L("context_pack"),
     _L("backup"),
     _L("check"),
