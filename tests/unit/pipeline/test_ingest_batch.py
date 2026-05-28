@@ -183,6 +183,7 @@ def _message_tuple(
         0,  # cache_write_tokens
         None,  # model_name
         "message",
+        None,  # paste_boundary_state
     )
 
 

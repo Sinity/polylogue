@@ -115,6 +115,7 @@ MessageTuple = tuple[
     int,  # cache_write_tokens
     str | None,  # model_name
     str,  # message_type
+    str | None,  # paste_boundary_state
 ]
 ContentBlockTuple = tuple[
     str,
@@ -861,6 +862,7 @@ def _message_tuple(conversation: MaterializedConversation, message: Materialized
         message.cache_write_tokens,
         message.model_name,
         message.message_type.value,
+        message.paste_boundary_state,
     )
 
 

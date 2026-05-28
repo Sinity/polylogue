@@ -60,8 +60,8 @@ INSERT INTO messages (
     sort_key, content_hash, version, parent_message_id, branch_index,
     source_name, word_count, has_tool_use, has_thinking, has_paste,
     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-    model_name, message_type
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    model_name, message_type, paste_boundary_state
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(message_id) DO UPDATE SET
     role = excluded.role,
     text = excluded.text,
@@ -79,7 +79,8 @@ ON CONFLICT(message_id) DO UPDATE SET
     cache_read_tokens = excluded.cache_read_tokens,
     cache_write_tokens = excluded.cache_write_tokens,
     model_name = excluded.model_name,
-    message_type = excluded.message_type
+    message_type = excluded.message_type,
+    paste_boundary_state = excluded.paste_boundary_state
 WHERE
     content_hash != excluded.content_hash
     OR IFNULL(role, '') != IFNULL(excluded.role, '')
