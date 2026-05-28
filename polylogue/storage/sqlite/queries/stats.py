@@ -167,8 +167,40 @@ async def aggregate_message_stats(
             "providers": providers,
         }
 
-    # Unfiltered path
-    message_stats = await _message_aggregate()
+    # Unfiltered path — #1678: use conversation_stats for pre-aggregated
+    # counts (7.9K rows) instead of scanning 3.7M messages. Only the
+    # role-level splits (user/assistant/system) need the messages table.
+    stats_row = await (
+        await conn.execute(
+            """
+            SELECT
+                COALESCE(SUM(message_count), 0)  AS total_msgs,
+                COALESCE(SUM(word_count), 0)     AS total_words
+            FROM conversation_stats
+            """
+        )
+    ).fetchone()
+    total_msgs = _row_int(stats_row, "total_msgs")
+    words_approx = _row_int(stats_row, "total_words")
+
+    role_row = await (
+        await conn.execute(
+            """
+            SELECT
+                SUM(CASE WHEN role = 'user'      THEN 1 ELSE 0 END) AS user_count,
+                SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END) AS assistant_count,
+                SUM(CASE WHEN role = 'system'    THEN 1 ELSE 0 END) AS system_count
+            FROM messages
+            """
+        )
+    ).fetchone()
+    unfiltered_message_stats: _MessageAggregate = {
+        "total": total_msgs,
+        "user": _row_int(role_row, "user_count"),
+        "assistant": _row_int(role_row, "assistant_count"),
+        "system": _row_int(role_row, "system_count"),
+        "words_approx": words_approx,
+    }
 
     date_row = await (
         await conn.execute("SELECT MIN(sort_key) as min_sk, MAX(sort_key) as max_sk FROM conversations")
@@ -176,7 +208,7 @@ async def aggregate_message_stats(
 
     prov_rows = await (
         await conn.execute(
-            "SELECT source_name, COUNT(*) as cnt FROM conversations GROUP BY source_name ORDER BY cnt DESC"
+            "SELECT source_name, COUNT(*) as cnt FROM conversation_stats GROUP BY source_name ORDER BY cnt DESC"
         )
     ).fetchall()
     providers = {str(r["source_name"]): _row_int(r, "cnt") for r in prov_rows}
@@ -191,7 +223,7 @@ async def aggregate_message_stats(
     ).fetchone()
 
     return {
-        **message_stats,
+        **unfiltered_message_stats,
         "attachment_refs": _row_int(att_row, "attachment_ref_count"),
         "distinct_attachments": _row_int(att_row, "distinct_attachment_count"),
         "min_sort_key": _row_float(date_row, "min_sk"),
