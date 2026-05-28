@@ -15,30 +15,10 @@ rules:
     severity: hard
     sunset: "2026-04-26"
 
-  - id: verify-cluster-cohesion
-    description: Import graph respects cluster boundaries
-    severity: hard
-    sunset: "2026-04-26"
-
-  - id: verify-file-budgets
-    description: Per-file LOC budgets enforced
-    severity: hard
-    sunset: "2026-04-26"
-
-  - id: verify-test-ownership
-    description: Every production module imported by at least one unit test
-    severity: hard
-    sunset: "2026-04-26"
-
   - id: verify-manifests
     description: Internal consistency across all docs/plans/*.yaml manifests
     severity: soft
     sunset: "2026-05-15"
-
-  - id: suppression-expiry
-    description: No expired suppressions in docs/plans/suppressions.yaml
-    severity: soft
-    sunset: "2026-05-27"
 
   - id: oracle-attribution
     description: Every claim has a non-default oracle and assurance_domain

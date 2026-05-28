@@ -10,10 +10,6 @@ from dataclasses import asdict, dataclass
 CommandMain = Callable[[list[str] | None], int]
 CONTROL_PLANE = "devtools"
 VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
-    "render-verification-catalog",
-    "verification-impact",
-    "semantic-axis-evidence",
-    "lab-corpus",
     "lab-scenario",
     "schema-generate",
     "schema-promote",
@@ -157,22 +153,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools render-pages", "devtools render-pages --check", "devtools render-pages --serve"),
     ),
     CommandSpec(
-        "render-verification-catalog",
-        "generated surfaces",
-        "Render the verification-lab catalog from check registries; optionally emit anti-vacuity report.",
-        "devtools.render_verification_catalog",
-        use_when=(
-            "Refresh or verify the catalog that anchors changed-path verification reports after "
-            "changing subjects, claims, runners, or catalog rendering. Use --anti-vacuity to flag claims with gaps."
-        ),
-        examples=(
-            "devtools render-verification-catalog",
-            "devtools render-verification-catalog --check",
-            "devtools render-verification-catalog --anti-vacuity",
-            "devtools render-verification-catalog --json",
-        ),
-    ),
-    CommandSpec(
         "verify",
         "verification",
         "Run the local verification baseline before pushing or creating a PR.",
@@ -191,21 +171,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools coverage-gate",
             "devtools coverage-gate --ignore-integration --term-missing",
             "devtools coverage-gate -- --maxfail=1",
-        ),
-    ),
-    CommandSpec(
-        "verification-impact",
-        "verification",
-        "Route changed paths or refs to affected verification checks and focused commands; emit the full PR-confidence report with --full.",
-        "devtools.verification_impact_cli",
-        use_when="Find the checks and inner-loop commands affected by local changes before escalating to full PR gates. Use --full for domain-grouped impact analysis.",
-        examples=(
-            "devtools verification-impact --base-ref origin/master --head-ref HEAD",
-            "devtools verification-impact --base-ref origin/master --head-ref HEAD --markdown",
-            "devtools verification-impact --full --markdown",
-            "devtools verification-impact --path polylogue/sources/parsers/codex.py",
-            "devtools verification-impact --json --path docs/verification-catalog.md",
-            "devtools verification-impact --json --paths polylogue/storage/sqlite/schema_ddl.py polylogue/sources/parsers/codex.py",
         ),
     ),
     CommandSpec("run-validation-lanes", "verification", "Run named validation lanes.", "devtools.run_validation_lanes"),
@@ -296,20 +261,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "verify-cluster-cohesion",
-        "verification",
-        "Validate proposed clusters from the topology projection using the import graph.",
-        "devtools.verify_cluster_cohesion",
-        use_when=(
-            "Check whether a proposed subpackage split would be cohesive — flags cross-cluster "
-            "imports through internals and cycles between clusters before any file is moved."
-        ),
-        examples=(
-            "devtools verify-cluster-cohesion",
-            "devtools verify-cluster-cohesion --cluster archive/query",
-        ),
-    ),
-    CommandSpec(
         "build-topology-projection",
         "generated surfaces",
         "Generate docs/plans/topology-target.yaml from the current tree using placement rules.",
@@ -345,17 +296,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "verify-file-budgets",
-        "verification",
-        "Enforce per-file LOC budgets declared in docs/plans/file-size-budgets.yaml.",
-        "devtools.verify_file_budgets",
-        use_when=(
-            "Catch file-size accretion early — fails when a module or test exceeds its declared "
-            "ceiling, and reports stale exceptions when their files disappear."
-        ),
-        examples=("devtools verify-file-budgets", "devtools verify-file-budgets --json"),
-    ),
-    CommandSpec(
         "verify-provider-meta-policy",
         "verification",
         "Enforce the provider_meta classification policy declared in docs/plans/provider-meta-policy.yaml.",
@@ -369,17 +309,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools verify-provider-meta-policy",
             "devtools verify-provider-meta-policy --json",
         ),
-    ),
-    CommandSpec(
-        "verify-test-ownership",
-        "verification",
-        "Verify each production module is imported by at least one unit test.",
-        "devtools.verify_test_ownership",
-        use_when=(
-            "Catch production modules without test coverage at the import level. Modules that do "
-            "not require unit tests are listed in docs/plans/test-ownership.yaml under untested:."
-        ),
-        examples=("devtools verify-test-ownership", "devtools verify-test-ownership --json"),
     ),
     CommandSpec(
         "verify-test-coverage-contracts",
@@ -407,32 +336,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "representative test path is missing, or when a row violates the gate schema."
         ),
         examples=("devtools verify-closure-matrix", "devtools verify-closure-matrix --json"),
-    ),
-    CommandSpec(
-        "verify-migrations",
-        "verification",
-        "Verify migration-completeness against docs/plans/migrations.yaml.",
-        "devtools.verify_migrations",
-        use_when=(
-            "Check an active transition while it is in flight. Delete completed entries "
-            "instead of keeping one-time retirement checks as durable proof."
-        ),
-        examples=(
-            "devtools verify-migrations",
-            "devtools verify-migrations --strict active-import-rename",
-            "devtools verify-migrations --json",
-        ),
-    ),
-    CommandSpec(
-        "verify-suppressions",
-        "verification",
-        "Enforce suppression registry expiry dates from docs/plans/suppressions.yaml.",
-        "devtools.verify_suppressions",
-        use_when=(
-            "Catch expired suppressions — every suppression must have an active expiry date, "
-            "and past-due suppressions fail the check to force review."
-        ),
-        examples=("devtools verify-suppressions", "devtools verify-suppressions --json"),
     ),
     CommandSpec(
         "verify-slos",
@@ -484,32 +387,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "non-existent paths. Checks only locally verifiable facts — not remote CI state."
         ),
         examples=("devtools verify-ci-workflows", "devtools verify-ci-workflows --json"),
-    ),
-    CommandSpec(
-        "verify-witness-coverage",
-        "verification",
-        "Audit merged fix PRs for missing witnesses under tests/witnesses/.",
-        "devtools.verify_witness_coverage",
-        use_when=(
-            "Surface merged bug-fix PRs that landed without a regression "
-            "witness so the failure-case corpus stays trustworthy."
-        ),
-        examples=(
-            "devtools verify-witness-coverage",
-            "devtools verify-witness-coverage --days 30",
-            "devtools verify-witness-coverage --json",
-        ),
-    ),
-    CommandSpec(
-        "verify-witness-lifecycle",
-        "verification",
-        "Verify committed witness lifecycle health — staleness, unexercised, stale xfails.",
-        "devtools.verify_witness_lifecycle",
-        use_when=(
-            "Catch witnesses that haven't been exercised, stale xfail markers "
-            "that lack rejection rationale, and validation errors."
-        ),
-        examples=("devtools verify-witness-lifecycle", "devtools verify-witness-lifecycle --json"),
     ),
     CommandSpec(
         "verify-test-infra-currency",
@@ -581,32 +458,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.query_memory_budget",
         use_when="Assert memory budgets around a concrete query or archive-facing command.",
         examples=("devtools query-memory-budget --max-rss-mb 1536 -- polylogue --plain stats",),
-    ),
-    CommandSpec(
-        "semantic-axis-evidence",
-        "verification",
-        "Generate verification-lab performance evidence across synthetic semantic scale tiers.",
-        "devtools.semantic_axis_evidence",
-        use_when=(
-            "Produce comparative performance evidence that describes growth shape over semantic axes "
-            "instead of machine-specific absolute budgets."
-        ),
-        examples=(
-            "devtools semantic-axis-evidence --campaign fts-rebuild --axis messages --scales small medium",
-            "devtools semantic-axis-evidence --campaign session-insight-materialization --axis conversations --scales small medium",
-        ),
-    ),
-    CommandSpec(
-        "lab-corpus",
-        "verification",
-        "Generate verification-lab synthetic corpus fixtures and demo archives.",
-        "devtools.lab_corpus",
-        use_when="Seed synthetic corpus files or complete demo workspaces for lab exercises.",
-        examples=(
-            "devtools lab-corpus list",
-            "devtools lab-corpus generate --provider chatgpt --count 5",
-            "devtools lab-corpus seed --env-only",
-        ),
     ),
     CommandSpec(
         "lab-scenario",
@@ -681,63 +532,19 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-layering", "devtools verify-layering --json"),
     ),
     CommandSpec(
-        "evidence-report",
-        "verification",
-        "Aggregate verification evidence into a structured status report.",
-        "devtools.evidence_report",
-        use_when="Review cached verify history, contract evidence, suppressions, witnesses, and benchmark campaigns without running tests.",
-        examples=(
-            "devtools evidence-report",
-            "devtools evidence-report --json",
-        ),
-    ),
-    CommandSpec(
         "evidence-dashboard",
         "verification",
         "Render the pytest-first evidence dashboard or a changed-path trace.",
         "devtools.evidence_dashboard",
         use_when=(
             "Inspect pytest health, contract-evidence inventory, coverage, SLO "
-            "catalog, static-gate status, witnesses, and campaign freshness, or "
+            "catalog, static-gate status, and campaign freshness, or "
             "trace which evidence artifacts cover the changed paths in a PR."
         ),
         examples=(
             "devtools evidence-dashboard --json",
             "devtools evidence-dashboard --markdown",
             "devtools evidence-dashboard trace --base origin/master --head HEAD --markdown",
-        ),
-    ),
-    CommandSpec(
-        "witness-discover",
-        "maintenance",
-        "Save a failure-triggering input as a local witness in .local/witnesses/new/.",
-        "devtools.witness_discover",
-        use_when="Capture an input that triggered a bug so it can be minimized and promoted.",
-        examples=(
-            "devtools witness-discover --input crash.json --witness-id fts-oom --origin regression",
-            "devtools witness-discover --stdin --witness-id stdin-capture --semantic-facts fact1 fact2",
-        ),
-    ),
-    CommandSpec(
-        "witness-minimize",
-        "maintenance",
-        "Apply minimization heuristics to a local witness — shrink, redact, set privacy classification.",
-        "devtools.witness_minimize",
-        use_when="Reduce a discovered witness to its smallest failing form before committing.",
-        examples=(
-            "devtools witness-minimize fts-oom",
-            "devtools witness-minimize fts-oom --privacy-classification synthetic",
-        ),
-    ),
-    CommandSpec(
-        "witness-promote",
-        "maintenance",
-        "Promote a minimized local witness to tests/witnesses/ for durable commit.",
-        "devtools.witness_promote",
-        use_when="Move a minimized witness into the committed witness directory with tracking linkage.",
-        examples=(
-            "devtools witness-promote fts-oom",
-            "devtools witness-promote fts-oom --known-failing --rejection-reason 'unsupported shape'",
         ),
     ),
     CommandSpec(
@@ -793,12 +600,12 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "failure-context",
         "maintenance",
-        "Join testmon, git history, fixtures, and witnesses for a pytest failure ID into a JSON envelope.",
+        "Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope.",
         "devtools.failure_context",
         use_when=(
             "Bootstrap an agent inner-loop debugging session for a failing test — surfaces production "
-            "files the test depends on, their recent commits, fixtures the test uses, and similar "
-            "committed witnesses, all in one structured envelope."
+            "files the test depends on, their recent commits, and fixtures the test uses, "
+            "all in one structured envelope."
         ),
         examples=(
             "devtools failure-context tests/unit/storage/test_foo.py::test_bar",

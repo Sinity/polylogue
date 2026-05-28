@@ -1,9 +1,0 @@
-# Active migration completeness manifest.
-#
-# Keep only active transitions here. Once a transition lands, delete its
-# entry and replace any still-important behavior with a semantic boundary
-# check. This file is not a durable archive of closed issues.
-
-migrations: {}
-
-completed: []

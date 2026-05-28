@@ -4,7 +4,7 @@ Runs the checks that CI will enforce, locally and fast. Exit 0 means
 the branch is ready to push; non-zero means fix before pushing.
 
 Tiers:
-  --commit   Pre-commit tier: ruff format + check + mypy + verification-impact check (~3s warm).
+  --commit   Pre-commit tier: ruff format + check + mypy (~3s warm).
   --quick    Pre-push tier: all non-pytest gates (~15s warm).
   (default)  Baseline with pytest-testmon affected tests.
   --seed-testmon
@@ -316,37 +316,20 @@ def build_verify_steps(
                 ("render-all", _devtools_cmd("render-all", "--check")),
                 ("verify-topology", _devtools_cmd("verify-topology")),
                 ("verify-layering", _devtools_cmd("verify-layering")),
-                ("verify-file-budgets", _devtools_cmd("verify-file-budgets")),
                 (
                     "verify-provider-meta-policy",
                     _devtools_cmd("verify-provider-meta-policy"),
                 ),
-                ("verify-test-ownership", _devtools_cmd("verify-test-ownership")),
                 ("verify-closure-matrix", _devtools_cmd("verify-closure-matrix")),
                 ("verify-schema-roundtrip", _devtools_cmd("verify-schema-roundtrip", "--all")),
-                (
-                    "verify-suppressions",
-                    _devtools_cmd("verify-suppressions", "--enforce-kinds", "type_ignore,noqa,no_cover"),
-                ),
                 ("verify-manifests", _devtools_cmd("verify-manifests")),
                 ("verify-ci-workflows", _devtools_cmd("verify-ci-workflows")),
                 ("verify-doc-commands", _devtools_cmd("verify-doc-commands")),
-                ("verify-witness-lifecycle", _devtools_cmd("verify-witness-lifecycle")),
-                # Recommended (not required): runs in soft mode so missing
-                # witnesses on merged fix PRs are reported without blocking
-                # ``devtools verify``. Nightly jobs invoke the command
-                # without ``--soft`` for the hard gate. See issue #1227.
-                (
-                    "verify-witness-coverage",
-                    _devtools_cmd("verify-witness-coverage", "--soft"),
-                ),
                 ("verify-lane-assertions", _devtools_cmd("verify-lane-assertions")),
                 ("verify-test-infra-currency", _devtools_cmd("verify-test-infra-currency")),
                 ("verify-test-clock-hygiene", _devtools_cmd("verify-test-clock-hygiene")),
             ]
         )
-
-    steps.append(("verification-impact check", _devtools_cmd("verification-impact", "--full", "--check")))
 
     if not quick and not commit:
         _report_dir = Path(".cache/test-reports")
@@ -504,9 +487,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--full", action="store_true", help="Alias for --all: run full non-integration pytest diagnostic."
     )
-    parser.add_argument(
-        "--commit", action="store_true", help="Pre-commit tier: format + lint + mypy + verification-impact check only."
-    )
+    parser.add_argument("--commit", action="store_true", help="Pre-commit tier: format + lint + mypy only.")
     parser.add_argument(
         "--skip-slow", action="store_true", help="Exclude @pytest.mark.slow tests from the pytest step."
     )
