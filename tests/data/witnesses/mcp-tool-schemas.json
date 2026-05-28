@@ -444,6 +444,44 @@
     }
   },
   {
+    "name": "correlate_session",
+    "parameters": {
+      "properties": {
+        "confidence_threshold": {
+          "default": 0.3,
+          "title": "Confidence Threshold",
+          "type": "number"
+        },
+        "repo_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Repo Path"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "since_hours": {
+          "default": 2,
+          "title": "Since Hours",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "correlate_sessionArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "correlate_sessions",
     "parameters": {
       "properties": {
@@ -4101,6 +4139,22 @@
         }
       },
       "title": "session_tag_rollupsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "session_tool_timing",
+    "parameters": {
+      "properties": {
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "session_tool_timingArguments",
       "type": "object"
     }
   },
