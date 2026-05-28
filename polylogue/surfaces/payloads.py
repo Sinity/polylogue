@@ -1174,6 +1174,87 @@ class FacetsResponse(SurfacePayloadModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
 
+class ContextPreamble(SurfacePayloadModel):
+    """Typed delivery envelope for SessionStart context injection (#1696).
+
+    Assembled by polylogue MCP tools and delivered via SessionStart hook
+    scripts so new agent sessions receive relevant context: prior sessions,
+    open issues, git state, lineage, guidance.
+    """
+
+    preamble_version: str = "1.0"
+    injected_at: str | None = None
+    source_tool_calls: dict[str, str] = Field(default_factory=dict)
+
+    session_lineage: ContextPreambleLineage | None = None
+    recent_related_sessions: list[ContextPreambleSession] = Field(default_factory=list)
+    open_issues: list[ContextPreambleIssue] = Field(default_factory=list)
+    project_state: ContextPreambleProjectState | None = None
+    blackboard_notes: list[ContextPreambleBlackboardNote] = Field(default_factory=list)
+    guidance: str | None = None
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ContextPreambleLineage(SurfacePayloadModel):
+    """Session lineage for the context preamble."""
+
+    logical_session_root: str | None = None
+    parent_session_id: str | None = None
+    sibling_session_ids: list[str] = Field(default_factory=list)
+    continuation_chain_depth: int = 0
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ContextPreambleSession(SurfacePayloadModel):
+    """A recent related session for the context preamble."""
+
+    session_id: str
+    title: str | None = None
+    date: str | None = None
+    terminal_state: str | None = None
+    summary: str | None = None
+    provider: str | None = None
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ContextPreambleIssue(SurfacePayloadModel):
+    """A GitHub issue for the context preamble."""
+
+    number: int
+    title: str
+    state: str = "open"
+    labels: list[str] = Field(default_factory=list)
+    active_session: str | None = None
+    url: str | None = None
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ContextPreambleProjectState(SurfacePayloadModel):
+    """Current project state for the context preamble."""
+
+    branch: str | None = None
+    recent_commits: list[str] = Field(default_factory=list)
+    active_worktrees: list[str] = Field(default_factory=list)
+    dirty_files: list[str] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ContextPreambleBlackboardNote(SurfacePayloadModel):
+    """A blackboard note for the context preamble."""
+
+    key: str
+    content: str
+    repo: str | None = None
+    created_at: str | None = None
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
 class MutationResultPayload(SurfacePayloadModel):
     """Shared result envelope for tag, metadata, and delete mutations.
 
@@ -1256,6 +1337,12 @@ __all__ = [
     "ConversationListResponse",
     "ConversationListRowPayload",
     "ConversationMessagePayload",
+    "ContextPreamble",
+    "ContextPreambleBlackboardNote",
+    "ContextPreambleIssue",
+    "ContextPreambleLineage",
+    "ContextPreambleProjectState",
+    "ContextPreambleSession",
     "ConversationNeighborCandidatePayload",
     "ConversationNeighborReasonPayload",
     "ConversationSearchHitPayload",
