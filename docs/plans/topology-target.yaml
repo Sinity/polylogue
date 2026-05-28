@@ -267,7 +267,7 @@ files:
     owner: archive-message
     reason: archive-domain semantics
   - path: polylogue/archive/message/paste_detection.py
-    loc: 158
+    loc: 189
     target: polylogue/archive/message/paste_detection.py
     owner: archive-message
     reason: archive-domain semantics
@@ -655,7 +655,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 181
+    loc: 182
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -677,6 +677,10 @@ files:
   - path: polylogue/cli/commands/backup.py
     loc: 60
     target: polylogue/cli/commands/backup.py
+    owner: stable
+  - path: polylogue/cli/commands/blackboard.py
+    loc: 142
+    target: polylogue/cli/commands/blackboard.py
     owner: stable
   - path: polylogue/cli/commands/check.py
     loc: 116
@@ -983,7 +987,7 @@ files:
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/common.py
-    loc: 235
+    loc: 236
     target: polylogue/core/common.py
     owner: core-primitive
     reason: core primitive
@@ -1308,7 +1312,7 @@ files:
     target: polylogue/insights/archive.py
     owner: stable
   - path: polylogue/insights/archive_models.py
-    loc: 317
+    loc: 321
     target: polylogue/insights/archive_models.py
     owner: stable
     cross_cut: { lifecycle: model }
@@ -1562,7 +1566,7 @@ files:
     target: polylogue/pipeline/ingest_support.py
     owner: stable
   - path: polylogue/pipeline/materialization_runtime.py
-    loc: 498
+    loc: 513
     target: polylogue/pipeline/materialization_runtime.py
     owner: stable
     cross_cut: { lifecycle: runtime }
@@ -1575,7 +1579,7 @@ files:
     target: polylogue/pipeline/prepare.py
     owner: stable
   - path: polylogue/pipeline/prepare_enrichment.py
-    loc: 294
+    loc: 295
     target: polylogue/pipeline/prepare_enrichment.py
     owner: stable
   - path: polylogue/pipeline/prepare_models.py
@@ -1665,7 +1669,7 @@ files:
     target: polylogue/pipeline/services/ingest_batch/_summary.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_worker.py
-    loc: 1170
+    loc: 1172
     target: polylogue/pipeline/services/ingest_worker.py
     owner: stable
   - path: polylogue/pipeline/services/parsing.py
@@ -2992,7 +2996,7 @@ files:
     target: polylogue/storage/insights/session/latency_profiles.py
     owner: stable
   - path: polylogue/storage/insights/session/profiles.py
-    loc: 786
+    loc: 812
     target: polylogue/storage/insights/session/profiles.py
     owner: stable
   - path: polylogue/storage/insights/session/rebuild.py
@@ -3208,7 +3212,7 @@ files:
     target: polylogue/storage/runtime/archive/__init__.py
     owner: stable
   - path: polylogue/storage/runtime/archive/records.py
-    loc: 239
+    loc: 240
     target: polylogue/storage/runtime/archive/records.py
     owner: stable
   - path: polylogue/storage/runtime/raw/__init__.py
@@ -3393,7 +3397,7 @@ files:
     target: polylogue/storage/sqlite/queries/mappers.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/mappers_archive.py
-    loc: 284
+    loc: 285
     target: polylogue/storage/sqlite/queries/mappers_archive.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/mappers_insight_aggregates.py
@@ -3426,7 +3430,7 @@ files:
     target: polylogue/storage/sqlite/queries/message_query_stats.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/message_query_writes.py
-    loc: 81
+    loc: 82
     target: polylogue/storage/sqlite/queries/message_query_writes.py
     owner: stable
     cross_cut: { layer: write }
@@ -3534,7 +3538,7 @@ files:
     target: polylogue/storage/sqlite/schema_bootstrap.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl.py
-    loc: 136
+    loc: 140
     target: polylogue/storage/sqlite/schema_ddl.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_actions.py
@@ -3542,7 +3546,7 @@ files:
     target: polylogue/storage/sqlite/schema_ddl_actions.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_archive.py
-    loc: 676
+    loc: 716
     target: polylogue/storage/sqlite/schema_ddl_archive.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_aux.py
@@ -3598,7 +3602,7 @@ files:
     target: polylogue/surfaces/__init__.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 1305
+    loc: 1396
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/types.py

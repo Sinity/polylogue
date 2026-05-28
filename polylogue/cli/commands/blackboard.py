@@ -8,11 +8,11 @@ from polylogue.cli.shared.types import AppEnv
 
 
 @click.group("blackboard")
-def blackboard_group() -> None:
+def blackboard_command() -> None:
     """Persistent agent-addressable notes surface."""
 
 
-@blackboard_group.command("post")
+@blackboard_command.command("post")
 @click.option(
     "--kind",
     "-k",
@@ -72,7 +72,7 @@ def blackboard_post(
     env.ui.console.print(f"[bold green]Posted {kind} note:[/bold green] {note_id}")
 
 
-@blackboard_group.command("list")
+@blackboard_command.command("list")
 @click.option(
     "--kind", "-k", type=click.Choice(["finding", "blocker", "decision", "handoff", "question", "observation"])
 )
@@ -137,6 +137,6 @@ def blackboard_list(
         conn.close()
 
 
-def _table_exists(conn: object, table: str) -> bool:  # sqlite3.Connection
-    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", (table,)).fetchone()
+def _table_exists(conn: object, table: str) -> bool:
+    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", (table,)).fetchone()  # type: ignore[attr-defined]
     return row is not None
