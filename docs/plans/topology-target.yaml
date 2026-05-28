@@ -651,15 +651,15 @@ files:
     target: polylogue/cli/bulk_export.py
     owner: stable
   - path: polylogue/cli/click_app.py
-    loc: 257
+    loc: 264
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 183
+    loc: 184
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
-    loc: 388
+    loc: 395
     target: polylogue/cli/click_option_groups.py
     owner: stable
   - path: polylogue/cli/command_inventory.py
@@ -694,12 +694,16 @@ files:
     loc: 84
     target: polylogue/cli/commands/config.py
     owner: stable
+  - path: polylogue/cli/commands/context.py
+    loc: 87
+    target: polylogue/cli/commands/context.py
+    owner: stable
   - path: polylogue/cli/commands/context_pack.py
     loc: 186
     target: polylogue/cli/commands/context_pack.py
     owner: stable
   - path: polylogue/cli/commands/correlate.py
-    loc: 142
+    loc: 146
     target: polylogue/cli/commands/correlate.py
     owner: stable
   - path: polylogue/cli/commands/cost.py
@@ -1486,7 +1490,7 @@ files:
     target: polylogue/mcp/server_context_tools.py
     owner: stable
   - path: polylogue/mcp/server_insight_tools.py
-    loc: 449
+    loc: 500
     target: polylogue/mcp/server_insight_tools.py
     owner: stable
   - path: polylogue/mcp/server_maintenance_tools.py
@@ -3542,7 +3546,7 @@ files:
     target: polylogue/storage/sqlite/schema_bootstrap.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl.py
-    loc: 140
+    loc: 144
     target: polylogue/storage/sqlite/schema_ddl.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_actions.py
@@ -3550,7 +3554,7 @@ files:
     target: polylogue/storage/sqlite/schema_ddl_actions.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_archive.py
-    loc: 716
+    loc: 746
     target: polylogue/storage/sqlite/schema_ddl_archive.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_aux.py
