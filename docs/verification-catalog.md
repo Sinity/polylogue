@@ -8,7 +8,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `599`
+- subjects: `602`
 - claims: `37`
 - runner bindings: `37`
 - proof obligations: `471`
@@ -40,7 +40,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 20 |
 | `assurance.coverage_item` | 107 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 78 |
+| `cli.command` | 81 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -63,6 +63,8 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue auth` | `polylogue/cli/click_app.py` `polylogue auth` |
 | `polylogue backup` | `polylogue/cli/click_app.py` `polylogue backup` |
 | `polylogue blackboard` | `polylogue/cli/click_app.py` `polylogue blackboard` |
+| `polylogue blackboard list` | `polylogue/cli/commands/blackboard.py:75` `polylogue.cli.commands.blackboard.blackboard_list` |
+| `polylogue blackboard post` | `polylogue/cli/commands/blackboard.py:15` `polylogue.cli.commands.blackboard.blackboard_post` |
 | `polylogue bulk-export` | `polylogue/cli/click_app.py` `polylogue bulk-export` |
 | `polylogue commands` | `polylogue/cli/click_app.py` `polylogue commands` |
 | `polylogue completions` | `polylogue/cli/click_app.py` `polylogue completions` |
@@ -121,6 +123,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue messages` | `polylogue/cli/click_app.py` `polylogue messages` |
 | `polylogue neighbors` | `polylogue/cli/click_app.py` `polylogue neighbors` |
 | `polylogue open` | `polylogue/cli/click_app.py` `polylogue open` |
+| `polylogue paths` | `polylogue/cli/click_app.py` `polylogue paths` |
 | `polylogue raw` | `polylogue/cli/click_app.py` `polylogue raw` |
 | `polylogue recent` | `polylogue/cli/click_app.py` `polylogue recent` |
 | `polylogue reset` | `polylogue/cli/click_app.py` `polylogue reset` |

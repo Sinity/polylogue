@@ -189,6 +189,7 @@ Commands:
   messages           List messages from matched conversations.
   neighbors          Show semantic neighbors for a conversation.
   open               Open matched conversation in the daemon web reader.
+  paths              Print canonical archive paths and bind-mount detection.
   raw                Show raw archive payloads for matched conversations.
   recent
   reset              Reset local archive state.
