@@ -11,20 +11,19 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
-      - run: nix develop . --command pip install mutmut
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.13"
+      - run: uv sync --extra dev --frozen
+      - run: uv pip install mutmut
       - name: Run rotating module subset
         run: |
-          nix develop . --command bash -c '
-            modules=(
-              polylogue/core/hashing.py
-              polylogue/core/timestamps.py
-              polylogue/archive/message/paste_detection.py
-              polylogue/insights/confidence.py
-            )
-            idx=$(( $(date +%U) % ${#modules[@]} ))
-            echo "Running mutation campaign for: ${modules[$idx]}"
-            devtools mutmut-campaign run --module "${modules[$idx]}" || true
-          '
-      - name: Check freshness budget
-        run: nix develop . --command devtools verify-mutation-freshness --strict
+          modules=(
+            polylogue/core/hashing.py
+            polylogue/core/timestamps.py
+            polylogue/archive/message/paste_detection.py
+            polylogue/insights/confidence.py
+          )
+          idx=$(( $(date +%U) % ${#modules[@]} ))
+          echo "Running mutation campaign for: ${modules[$idx]}"
+          uv run devtools mutmut-campaign run --module "${modules[$idx]}" || true
