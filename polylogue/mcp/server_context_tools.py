@@ -268,5 +268,95 @@ def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("build_context_pack", run)
 
+    @mcp.tool()
+    async def compose_context_preamble(
+        repo_path: str | None = None,
+        cwd: str | None = None,
+        recent_files: tuple[str, ...] = (),
+        limit: int = 5,
+    ) -> str:
+        """Compose a ContextPreamble for SessionStart context injection (#1494).
+
+        Builds a typed preamble with session lineage, recent related sessions,
+        and project state for Claude Code and Codex sessions. Designed for
+        SessionStart hook scripts that inject context into new agent sessions.
+        """
+
+        async def run() -> str:
+            from datetime import datetime, timezone
+
+            from polylogue.surfaces.payloads import (
+                ContextPreamble,
+                ContextPreambleProjectState,
+                ContextPreambleSession,
+            )
+
+            poly = hooks.get_polylogue()
+
+            # Recent related sessions from resume candidates.
+            recent: list[ContextPreambleSession] = []
+            try:
+                candidates = await poly.find_resume_candidates(
+                    repo_path=repo_path or ".",
+                    cwd=cwd,
+                    recent_files=recent_files,
+                    limit=hooks.clamp_limit(limit),
+                )
+                for c in candidates:
+                    cid: str = getattr(c, "logical_conversation_id", None) or getattr(c, "conversation_id", "") or "?"
+                    recent.append(
+                        ContextPreambleSession(
+                            session_id=cid,
+                            title=getattr(c, "title", None),
+                            date=getattr(c, "date", None),
+                            terminal_state=getattr(c, "terminal_state", None),
+                            summary=getattr(c, "summary", None),
+                            provider=getattr(c, "provider", None),
+                        )
+                    )
+            except Exception:
+                pass
+
+            # Project state from git.
+            project: ContextPreambleProjectState | None = None
+            try:
+                import subprocess
+
+                branch: str | None = None
+                commits: list[str] = []
+                result = subprocess.run(
+                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    cwd=cwd or ".",
+                )
+                if result.returncode == 0:
+                    branch = result.stdout.strip()
+                result2 = subprocess.run(
+                    ["git", "log", "--oneline", "-5"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    cwd=cwd or ".",
+                )
+                if result2.returncode == 0:
+                    commits = [line.strip() for line in result2.stdout.strip().split("\n") if line]
+                if branch or commits:
+                    project = ContextPreambleProjectState(branch=branch, recent_commits=commits)
+            except Exception:
+                pass
+
+            preamble = ContextPreamble(
+                preamble_version="1.0",
+                injected_at=datetime.now(timezone.utc).isoformat(),
+                source_tool_calls={"compose_context_preamble": "polylogue-mcp"},
+                recent_related_sessions=recent,
+                project_state=project,
+            )
+            return hooks.json_payload(preamble, exclude_none=True)
+
+        return await hooks.async_safe_call("compose_context_preamble", run)
+
 
 __all__ = ["register_context_tools"]
