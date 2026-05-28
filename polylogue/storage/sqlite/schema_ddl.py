@@ -21,6 +21,9 @@ from polylogue.storage.sqlite.schema_ddl_archive import (
     MESSAGE_FTS_DDL as _MESSAGE_FTS_DDL,
 )
 from polylogue.storage.sqlite.schema_ddl_archive import (
+    OTLP_SPANS_DDL as _OTLP_SPANS_DDL,
+)
+from polylogue.storage.sqlite.schema_ddl_archive import (
     RAW_ARCHIVE_DDL as _RAW_ARCHIVE_DDL,
 )
 from polylogue.storage.sqlite.schema_ddl_archive import (
@@ -78,7 +81,7 @@ from polylogue.storage.sqlite.schema_ddl_repo_identity import (
     REPO_IDENTITY_DDL as _REPO_IDENTITY_DDL,
 )
 
-SCHEMA_VERSION = 18  # Canonical schema. No migration chain: mismatch → re-ingest from source. Added blackboard_notes table for persistent agent notes (#1697).
+SCHEMA_VERSION = 19  # Canonical schema. No migration chain: mismatch → re-ingest from source. Added otlp_spans table for OTLP telemetry ingestion (#1686).
 
 
 # Complete target schema applied to fresh databases.
@@ -101,6 +104,7 @@ SCHEMA_DDL += "\n\n" + _READER_WORKSPACES_DDL
 SCHEMA_DDL += "\n\n" + _USER_CORRECTIONS_DDL
 SCHEMA_DDL += "\n\n" + _TOPOLOGY_EDGES_DDL
 SCHEMA_DDL += "\n\n" + _BLACKBOARD_NOTES_DDL
+SCHEMA_DDL += "\n\n" + _OTLP_SPANS_DDL
 SCHEMA_DDL += "\n\n" + _REPO_IDENTITY_DDL
 
 _SESSION_INSIGHT_DDL = (

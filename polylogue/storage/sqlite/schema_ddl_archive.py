@@ -666,6 +666,36 @@ TOPOLOGY_EDGES_DDL = """
             ON topology_edges(src_conversation_id);
 """
 
+OTLP_SPANS_DDL = """
+        CREATE TABLE IF NOT EXISTS otlp_spans (
+            span_id         TEXT PRIMARY KEY,
+            trace_id        TEXT NOT NULL,
+            parent_span_id  TEXT,
+            agent_id        TEXT,
+            parent_agent_id TEXT,
+            session_id      TEXT,
+            operation_name  TEXT NOT NULL,
+            start_time_unix_ns INTEGER NOT NULL,
+            end_time_unix_ns   INTEGER NOT NULL,
+            duration_ms     INTEGER NOT NULL,
+            status_code     INTEGER NOT NULL DEFAULT 0,
+            status_message  TEXT,
+            attributes_json TEXT NOT NULL DEFAULT '{}',
+            ingested_at     TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_otlp_spans_trace
+            ON otlp_spans(trace_id);
+
+        CREATE INDEX IF NOT EXISTS idx_otlp_spans_session
+            ON otlp_spans(session_id)
+            WHERE session_id IS NOT NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_otlp_spans_agent
+            ON otlp_spans(agent_id)
+            WHERE agent_id IS NOT NULL;
+"""
+
 BLACKBOARD_NOTES_DDL = """
         CREATE TABLE IF NOT EXISTS blackboard_notes (
             note_id         TEXT PRIMARY KEY,
