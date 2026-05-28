@@ -388,6 +388,7 @@ def build_verify_steps(
         steps.append(("lab scenario", _devtools_cmd("lab-scenario", "run", "archive-smoke", "--tier", "0")))
         steps.append(("verify-slos", _devtools_cmd("verify-slos", "--include-lab")))
         steps.append(("verify-schema-upgrade-lane", _devtools_cmd("verify-schema-upgrade-lane")))
+        steps.append(("verify-test-coverage-contracts", _devtools_cmd("verify-test-coverage-contracts")))
     return steps
 
 
