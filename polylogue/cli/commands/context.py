@@ -34,10 +34,8 @@ def compose_command(env: AppEnv, conversation_id: str, related_limit: int) -> No
         topology = run_coroutine_sync(env.polylogue.get_session_topology(conversation_id))
         if topology:
             lineage = {
-                "logical_session_root": topology.logical_conversation_id,
-                "parent_session_id": topology.parent_conversation_id,
-                "sibling_count": len(topology.siblings or ()),
-                "chain_depth": len(topology.ancestors or ()),
+                "logical_session_root": getattr(topology, "logical_conversation_id", None),
+                "parent_session_id": getattr(topology, "parent_conversation_id", None),
             }
     except Exception:
         pass
@@ -45,7 +43,8 @@ def compose_command(env: AppEnv, conversation_id: str, related_limit: int) -> No
     # Recent related sessions.
     related: list[dict[str, object]] = []
     try:
-        repo = (conv.provider_meta or {}).get("git_repository_url") if isinstance(conv.provider_meta, dict) else None
+        meta = conv.provider_meta or {}
+        repo: object = meta.get("git_repository_url")
         candidates = run_coroutine_sync(
             env.polylogue.find_resume_candidates(
                 repo_path=str(repo) if repo else ".",
@@ -55,27 +54,27 @@ def compose_command(env: AppEnv, conversation_id: str, related_limit: int) -> No
         for c in candidates:
             related.append(
                 {
-                    "session_id": c.conversation_id,
-                    "title": c.title,
-                    "date": c.date,
-                    "terminal_state": c.terminal_state,
-                    "summary": c.summary,
+                    "session_id": getattr(c, "logical_conversation_id", None) or getattr(c, "conversation_id", "?"),
+                    "title": getattr(c, "title", None),
+                    "terminal_state": getattr(c, "terminal_state", None),
                 }
             )
     except Exception:
         pass
 
-    # Project state — git branch and recent commits.
+    # Project state.
     project: dict[str, object] = {}
-    git_repo = (conv.provider_meta or {}).get("git_repository_url") if isinstance(conv.provider_meta, dict) else None
-    git_branch = (conv.provider_meta or {}).get("git_branch") if isinstance(conv.provider_meta, dict) else None
-    if git_repo or git_branch:
-        project = {
-            "repo": str(git_repo) if git_repo else None,
-            "branch": str(git_branch) if git_branch else None,
-        }
+    meta = conv.provider_meta or {}
+    if isinstance(meta, dict):
+        git_repo = meta.get("git_repository_url")
+        git_branch = meta.get("git_branch")
+        if git_repo or git_branch:
+            project = {
+                "repo": str(git_repo) if git_repo else None,
+                "branch": str(git_branch) if git_branch else None,
+            }
 
-    preamble = {
+    preamble: dict[str, object] = {
         "preamble_version": "1.0",
         "injected_at": datetime.now(timezone.utc).isoformat(),
         "session_lineage": lineage or None,
