@@ -295,33 +295,37 @@ MESSAGE_FTS_DDL = """
             HAVING group_concat(source.part, char(10)) IS NOT NULL;
         END;
 
+        -- #1606: INSERT trigger is O(1) per block instead of O(N).
+        -- Instead of DELETE + full re-projection scanning ALL blocks
+        -- for the message (O(N²) cumulative for N blocks), we do a
+        -- single INSERT OR REPLACE that reads the existing FTS text,
+        -- appends the new block's fields, and writes back. The DELETE
+        -- and UPDATE triggers still do full rebuilds — those are rare.
         CREATE TRIGGER IF NOT EXISTS content_blocks_fts_ai
         AFTER INSERT ON content_blocks BEGIN
-            DELETE FROM messages_fts
-            WHERE rowid = (SELECT rowid FROM messages WHERE message_id = new.message_id);
-            INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
-            SELECT m.rowid, m.message_id, m.conversation_id, group_concat(source.part, char(10))
-            FROM messages AS m
-            JOIN (
-                SELECT m2.message_id, m2.text AS part, -1 AS block_index, 0 AS part_index
-                FROM messages AS m2
-                WHERE m2.message_id = new.message_id AND m2.text IS NOT NULL AND m2.text != ''
-                UNION ALL
-                SELECT cb.message_id, cb.text AS part, cb.block_index, 1 AS part_index
-                FROM content_blocks AS cb
-                WHERE cb.message_id = new.message_id AND cb.text IS NOT NULL AND cb.text != ''
-                UNION ALL
-                SELECT cb.message_id, cb.tool_input AS part, cb.block_index, 2 AS part_index
-                FROM content_blocks AS cb
-                WHERE cb.message_id = new.message_id AND cb.tool_input IS NOT NULL AND cb.tool_input != ''
-                UNION ALL
-                SELECT cb.message_id, cb.metadata AS part, cb.block_index, 3 AS part_index
-                FROM content_blocks AS cb
-                WHERE cb.message_id = new.message_id AND cb.metadata IS NOT NULL AND cb.metadata != ''
-                ORDER BY message_id, block_index, part_index
-            ) AS source ON source.message_id = m.message_id
-            WHERE m.message_id = new.message_id
-            HAVING group_concat(source.part, char(10)) IS NOT NULL;
+            INSERT OR REPLACE INTO messages_fts(rowid, message_id, conversation_id, text)
+            SELECT
+                msg.rowid,
+                new.message_id,
+                msg.conversation_id,
+                -- Preserve existing FTS text (if any), falling back to
+                -- message body text, falling back to empty string. Then
+                -- append the new block's text, tool_input, and metadata
+                -- separated by newlines.
+                COALESCE(
+                    (SELECT mf.text FROM messages_fts AS mf
+                     WHERE mf.rowid = msg.rowid),
+                    CASE WHEN msg.text IS NOT NULL AND msg.text != ''
+                         THEN msg.text ELSE '' END
+                )
+                || CASE WHEN new.text IS NOT NULL AND new.text != ''
+                      THEN char(10) || new.text ELSE '' END
+                || CASE WHEN new.tool_input IS NOT NULL AND new.tool_input != ''
+                      THEN char(10) || new.tool_input ELSE '' END
+                || CASE WHEN new.metadata IS NOT NULL AND new.metadata != ''
+                      THEN char(10) || new.metadata ELSE '' END
+            FROM messages AS msg
+            WHERE msg.message_id = new.message_id;
         END;
 
         CREATE TRIGGER IF NOT EXISTS content_blocks_fts_ad
