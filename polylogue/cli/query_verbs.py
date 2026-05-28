@@ -120,6 +120,31 @@ def stats_verb(ctx: click.Context, stats_by: str | None, output_format: str | No
     _execute_query_verb(ctx, request)
 
 
+@click.command("recent")
+@click.option("--limit", "-n", type=int, default=10, show_default=True, help="Maximum conversations to list.")
+@click.option("--provider", "-p", "provider_filter", default=None, help="Filter by provider.")
+@click.option("--format", "-f", "output_format", default=None, help="Output format: json, ndjson, yaml, csv.")
+@click.pass_context
+def recent_verb(
+    ctx: click.Context,
+    limit: int,
+    provider_filter: str | None,
+    output_format: str | None,
+) -> None:
+    """List the most recently updated conversations."""
+    request = _parent_request(ctx).with_param_updates(
+        list_mode=True,
+        sort="updated_at",
+        reverse=True,
+        limit=limit,
+    )
+    if provider_filter:
+        request = request.with_param_updates(provider=provider_filter)
+    if output_format:
+        request = request.with_param_updates(output_format=output_format)
+    _execute_query_verb(ctx, request)
+
+
 @click.command("show")
 @click.argument("target_terms", nargs=-1)
 @click.pass_context

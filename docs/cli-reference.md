@@ -184,6 +184,7 @@ Commands:
   neighbors          Show semantic neighbors for a conversation.
   open               Open matched conversation in the daemon web reader.
   raw                Show raw archive payloads for matched conversations.
+  recent
   reset              Reset local archive state.
   resume             Resume from recent conversation context.
   resume-candidates  Rank resume candidates for the current context.
