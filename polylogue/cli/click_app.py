@@ -134,6 +134,7 @@ def cli(
     # Output
     output: str | None,
     output_format: str | None,
+    output_as_json: bool,
     transform: str | None,
     no_code_blocks: bool,
     no_tool_calls: bool,
@@ -201,6 +202,12 @@ def cli(
         polylogue <subcommand> --help     # per-subcommand help
         polylogue --diagnose <args>       # explain parser decisions
     """
+    # #1689: --json forces plain output and defaults to JSON format.
+    if output_as_json:
+        plain = True
+        if not output_format:
+            output_format = "json"
+
     # Set up logging early so all output goes to stderr
     configure_logging(verbose=verbose)
 
