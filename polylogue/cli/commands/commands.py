@@ -1,0 +1,30 @@
+"""polylogue commands — discoverable command surface audit (#1681)."""
+
+from __future__ import annotations
+
+import click
+
+from polylogue.cli.shared.types import AppEnv
+
+_COMMAND_CATEGORIES: dict[str, tuple[str, ...]] = {
+    "Query & Search": ("list", "count", "stats", "open", "show", "recent", "select"),
+    "Archive Management": ("ingest", "check", "reset", "backup", "maintenance"),
+    "Insights & Analytics": ("insights", "facets", "correlate", "neighbors", "resume"),
+    "User-State Objects": ("user-state", "blackboard", "tags", "feedback"),
+    "Context & Sessions": ("context", "context-pack", "export"),
+    "Configuration": ("config", "init", "auth", "completions", "dashboard", "tutorial"),
+    "Embeddings": ("embed",),
+    "Schema": ("schema",),
+    "Diagnostics": ("diagnostics", "status"),
+}
+
+
+@click.command("commands")
+@click.pass_obj
+def commands_command(env: AppEnv) -> None:
+    """List available polylogue commands grouped by category (#1681)."""
+    env.ui.console.print("\n[bold]Polylogue Commands[/bold]\n")
+    for category, cmds in _COMMAND_CATEGORIES.items():
+        env.ui.console.print(f"[bold]{category}[/bold]")
+        env.ui.console.print(f"  {', '.join(cmds)}")
+        env.ui.console.print()
