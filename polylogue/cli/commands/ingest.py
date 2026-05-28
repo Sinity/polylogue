@@ -150,7 +150,9 @@ def ingest_command(
         f"  Staged file:  {staged}\n"
         f"  Operation:    {operation.operation_id}\n"
         f"  Daemon:       {daemon_url}\n"
-        f"  Next:         run 'polylogue status' to watch the daemon converge."
+        f"  Next:         the daemon will process the staged file automatically.\n"
+        f"                Check progress:  journalctl --user -u polylogued.service -f\n"
+        f"                Verify ingested: polylogue stats"
     )
 
 

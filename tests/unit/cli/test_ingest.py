@@ -97,10 +97,12 @@ def test_ingest_command_stages_local_path_before_daemon_request(
     assert captured["timeout"] == 5
 
     # Truthfulness: success output must point at observable state — the
-    # staged inbox path AND a pointer to 'polylogue status' so the user
-    # can verify processing is actually happening.
+    # staged inbox path AND actionable next-step guidance. The old
+    # "polylogue status" message was misleading (status doesn't show
+    # recent completed operations); #1679 replaced it with journalctl
+    # for live progress and polylogue stats to verify the import landed.
     assert str(staged) in result.output
-    assert "polylogue status" in result.output
+    assert "polylogue stats" in result.output
 
 
 def test_ingest_rejects_missing_path(tmp_path: Path) -> None:
