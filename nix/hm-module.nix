@@ -1,56 +1,50 @@
+# Polylogue Home Manager module (per-user systemd unit).
+#
+# Pairs with ``nix/module.nix`` for system-mode deployments. Both
+# share their option tree and TOML rendering via ``nix/lib/settings.nix``
+# so the polylogue.toml schema cannot drift between deployment modes.
 { config, lib, pkgs, ... }:
 
 let
   cfg = config.programs.polylogued;
   inherit (lib) mkEnableOption mkOption types;
 
-  tomlFormat = pkgs.formats.toml { };
+  settingsLib = import ./lib/settings.nix { inherit lib pkgs; };
 
-  polylogueToml = {
-    archive = lib.optionalAttrs (cfg.settings.archive.root != null) {
-      root = cfg.settings.archive.root;
-    };
-    daemon =
-      let
-        base = lib.optionalAttrs (cfg.settings.daemon != { }) (
-          lib.filterAttrs (_: v: v != null) {
-            host = cfg.settings.daemon.host;
-            port = cfg.settings.daemon.port;
-            watch = cfg.settings.daemon.watch;
-          }
-        );
-        api = lib.optionalAttrs (cfg.settings.daemon-api != { }) {
-          api = lib.filterAttrs (_: v: v != null) {
-            host = cfg.settings.daemon-api.host;
-            port = cfg.settings.daemon-api.port;
-            auth_token = cfg.settings.daemon-api.auth-token;
-          };
-        };
-        browser-capture = lib.optionalAttrs (cfg.settings.browser-capture != { }) {
-          browser-capture = lib.filterAttrs (_: v: v != null) {
-            port = cfg.settings.browser-capture.port;
-            allowed_origins = cfg.settings.browser-capture.allowed-origins;
-          };
-        };
-      in
-      base // api // browser-capture;
-    embedding = lib.optionalAttrs (cfg.settings.embedding != { }) (
-      lib.filterAttrs (_: v: v != null) {
-        enabled = cfg.settings.embedding.enabled;
-        model = cfg.settings.embedding.model;
-        dimension = cfg.settings.embedding.dimension;
-        max_cost_usd = cfg.settings.embedding.max-cost-usd;
-      }
-    );
-    logging = lib.optionalAttrs (cfg.settings.logging != { }) (
-      lib.filterAttrs (_: v: v != null) {
-        level = cfg.settings.logging.level;
-        force_plain = cfg.settings.logging.force-plain;
-      }
-    );
+  watch = settingsLib.effectiveWatch {
+    settings = cfg.settings;
+    discoverSources = cfg.discoverSources;
   };
 
-  configFile = tomlFormat.generate "polylogue.toml" polylogueToml;
+  effectiveSettings = cfg.settings // {
+    daemon = cfg.settings.daemon // { inherit watch; };
+  };
+
+  storeConfigFile = settingsLib.renderConfigFile effectiveSettings;
+
+  xdgRelPath = "polylogue/polylogue.toml";
+
+  # When configLocation = "xdg" the polylogued unit reads the user's
+  # editable config from $XDG_CONFIG_HOME, which is polylogue's normal
+  # discovery path — no POLYLOGUE_CONFIG override needed. When
+  # ``store`` the unit gets a /nix/store path passed via the env var.
+  useXdg = cfg.configLocation == "xdg";
+
+  # polylogued run reads its component ports from CLI flags, not the
+  # TOML. Build the flag list so the ExecStart matches what the user
+  # configured in settings. Omitted flags fall back to the daemon
+  # defaults (127.0.0.1 / 8765 / 8766).
+  bcHost = cfg.settings.daemon.host;
+  bcPort = cfg.settings."browser-capture".port;
+  apiHost = cfg.settings."daemon-api".host or cfg.settings.daemon.host;
+  apiPort = cfg.settings."daemon-api".port or cfg.settings.daemon.port;
+
+  daemonFlags = lib.concatStringsSep " " (
+    lib.optional (bcHost != null) "--host ${bcHost}"
+    ++ lib.optional (bcPort != null) "--port ${toString bcPort}"
+    ++ lib.optional (apiHost != null) "--api-host ${apiHost}"
+    ++ lib.optional (apiPort != null) "--api-port ${toString apiPort}"
+  );
 
 in
 {
@@ -62,130 +56,67 @@ in
       description = "The polylogue package to use.";
     };
 
-    configPath = mkOption {
-      type = types.path;
-      default = configFile;
-      defaultText = "generated TOML from programs.polylogued.settings";
-      description = "Path to polylogue.toml. Generated from settings by default.";
-    };
-
     autoStart = mkOption {
       type = types.bool;
       default = true;
-      description = "Whether to start the polylogued user systemd unit at login (WantedBy default.target).";
+      description = ''
+        Whether to start the polylogued user systemd unit at login
+        (``WantedBy = default.target``).
+      '';
     };
 
-    settings = {
-      archive = {
-        root = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          description = "Archive root directory (default: $XDG_DATA_HOME/polylogue).";
-        };
-      };
+    configLocation = settingsLib.configLocationOption;
 
-      daemon = {
-        host = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          description = "Daemon listen host (default: 127.0.0.1).";
-        };
-        port = mkOption {
-          type = types.nullOr types.port;
-          default = null;
-          description = "Daemon listen port (default: 8766).";
-        };
-        watch = mkOption {
-          type = types.nullOr (types.listOf types.str);
-          default = null;
-          description = "Additional watch roots for live ingestion.";
-        };
-      };
+    discoverSources = settingsLib.discoverSourcesOption;
 
-      daemon-api = {
-        host = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          description = "API listen host.";
-        };
-        port = mkOption {
-          type = types.nullOr types.port;
-          default = null;
-          description = "API listen port.";
-        };
-        auth-token = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          description = "API Bearer auth token.";
-        };
-      };
+    settings = settingsLib.settingsOptions;
 
-      browser-capture = {
-        port = mkOption {
-          type = types.nullOr types.port;
-          default = null;
-          description = "Browser capture receiver port.";
-        };
-        allowed-origins = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          description = "Comma-separated allowed CORS origins.";
-        };
-      };
+    service = settingsLib.serviceOptions;
 
-      embedding = {
-        enabled = mkOption {
-          type = types.nullOr types.bool;
-          default = null;
-          description = "Enable post-ingest embedding generation.";
-        };
-        model = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          description = "Voyage AI model name.";
-        };
-        dimension = mkOption {
-          type = types.nullOr types.ints.unsigned;
-          default = null;
-          description = "Embedding dimension (default: 1024).";
-        };
-        max-cost-usd = mkOption {
-          type = types.nullOr types.number;
-          default = null;
-          description = "Maximum USD cost for embeddings (0 = unlimited).";
-        };
-      };
-
-      logging = {
-        level = mkOption {
-          type = types.nullOr (types.enum [ "DEBUG" "INFO" "WARNING" "ERROR" ]);
-          default = null;
-          description = "Log level.";
-        };
-        force-plain = mkOption {
-          type = types.nullOr types.bool;
-          default = null;
-          description = "Force plain (non-rich) output.";
-        };
-      };
+    extraServiceConfig = mkOption {
+      type = types.attrsOf types.unspecified;
+      default = { };
+      example = lib.literalExpression ''
+        {
+          Slice = "background.slice";
+          CPUWeight = 50;
+        }
+      '';
+      description = ''
+        Extra ``Service`` keys merged onto the polylogued user unit.
+        Use this for site-specific resource-class wiring (slices,
+        cgroup hooks) without forking the module.
+      '';
     };
   };
 
   config = lib.mkIf cfg.enable {
     home.packages = [ cfg.package ];
 
+    xdg.configFile = lib.mkIf useXdg {
+      ${xdgRelPath} = {
+        source = storeConfigFile;
+      };
+    };
+
     systemd.user.services.polylogued = {
       Unit = {
         Description = "Polylogue daemon (live watcher, browser capture, HTTP API)";
-        After = [ "network.target" ];
+        After = [ "default.target" ];
       };
-      Service = {
-        Type = "simple";
-        ExecStart = "${cfg.package}/bin/polylogued run";
-        Restart = "on-failure";
-        RestartSec = "5s";
-        Environment = "POLYLOGUE_CONFIG=${cfg.configPath}";
-      };
+      Service = lib.mkMerge [
+        {
+          Type = "simple";
+          ExecStart = "${cfg.package}/bin/polylogued run ${daemonFlags}";
+          Restart = "on-failure";
+          RestartSec = "5s";
+        }
+        (lib.optionalAttrs (!useXdg) {
+          Environment = "POLYLOGUE_CONFIG=${storeConfigFile}";
+        })
+        (settingsLib.serviceDirectives cfg.service)
+        cfg.extraServiceConfig
+      ];
       Install = lib.mkIf cfg.autoStart {
         WantedBy = [ "default.target" ];
       };
