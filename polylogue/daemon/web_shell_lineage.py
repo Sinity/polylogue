@@ -134,6 +134,60 @@ function renderInspectorLineage(el, c) {
   });
   html += '</div>';
 
+  // --- Edge-detail section (#1518 slice 4b) ------------------------------
+  // Renders every edge as a detail card showing type, resolved status,
+  // source (child) → target (parent) with clickable links, and any
+  // confidence or evidence metadata present on the edge.
+  var allEdges = data.edges || [];
+  html += '<div class="inspector-section"><h4>Edges (' + allEdges.length + ')</h4>';
+  if (!allEdges.length) {
+    html += '<div style="font-size:var(--small);color:var(--text-dim)">No edges recorded.</div>';
+  } else {
+    allEdges.forEach(function(edge) {
+      var statusChip;
+      if (edge.resolved) {
+        statusChip = '<span class="chip q-canonical">resolved</span>';
+      } else {
+        statusChip = '<span class="chip q-unresolved">unresolved</span>';
+      }
+      var kindChip = '<span class="chip ' + esc(lineageEdgeKindClass(edge.kind)) + '">' + esc(edge.kind) + '</span>';
+      var sourceText = (edge.child_id) ? String(edge.child_id).substring(0, 12) + '…' : '?';
+      var sourceLink = (edge.child_id)
+        ? '<button class="user-action" style="padding:0 4px;font-size:10px;border:none;background:none;color:var(--accent);cursor:pointer" onclick="selectConversation(\'' + escAttr(edge.child_id) + '\', true)">' + esc(sourceText) + '</button>'
+        : '<span style="color:var(--text-dim)">?</span>';
+      var targetLink;
+      if (edge.resolved && edge.parent_id) {
+        var parentText = String(edge.parent_id).substring(0, 12) + '…';
+        targetLink = '<button class="user-action" style="padding:0 4px;font-size:10px;border:none;background:none;color:var(--accent);cursor:pointer" onclick="selectConversation(\'' + escAttr(edge.parent_id) + '\', true)">' + esc(parentText) + '</button>';
+      } else if (edge.parent_native_id) {
+        // Unresolved edge — render placeholder with provider-native ID (#1518 slice 4c).
+        targetLink = '<span class="chip q-unresolved" title="Not yet ingested">' + esc(String(edge.parent_native_id).substring(0, 30)) + '</span>';
+      } else {
+        targetLink = '<span style="color:var(--text-dim)">—</span>';
+      }
+      html += '<div class="inspector-field" style="flex-wrap:wrap;align-items:flex-start;padding:5px 0">'
+        + '<div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;width:100%">'
+        + kindChip + statusChip
+        + '<span style="color:var(--text-dim);font-size:10px">' + sourceLink + ' → ' + targetLink + '</span>'
+        + '</div>';
+      // Confidence / evidence summary when available.
+      if (edge.confidence != null) {
+        html += '<div style="font-size:10px;color:var(--text-dim);margin-top:2px">'
+          + 'confidence: ' + Number(edge.confidence).toFixed(2) + '</div>';
+      }
+      if (edge.evidence) {
+        html += '<div style="font-size:10px;color:var(--text-dim);margin-top:1px">'
+          + esc(String(edge.evidence).substring(0, 120)) + '</div>';
+      }
+      if (edge.reason) {
+        html += '<div style="font-size:10px;color:var(--text-muted);margin-top:1px">'
+          + 'reason: ' + esc(String(edge.reason).substring(0, 120)) + '</div>';
+      }
+      html += '</div>';
+    });
+  }
+  html += '</div>';
+
   // Unresolved native pointer block — provider-native parent IDs that did
   // not resolve to a stored conversation. Surfaced as a dedicated section
   // so late-arriving parents are visible to the operator.

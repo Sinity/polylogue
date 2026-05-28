@@ -285,6 +285,8 @@ __WORKSPACE_HTML__
   <div id="footer">
     <span class="hint"><kbd>/</kbd> search</span>
     <span class="hint"><kbd>j</kbd><kbd>k</kbd> navigate</span>
+    <span class="hint"><kbd>g g</kbd> top</span>
+    <span class="hint"><kbd>G</kbd> bottom</span>
     <span class="hint"><kbd>n</kbd><kbd>p</kbd> prev/next</span>
     <span class="hint"><kbd>Esc</kbd> clear</span>
     <span class="hint"><kbd>?</kbd> help</span>
