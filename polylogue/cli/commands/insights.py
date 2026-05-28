@@ -152,21 +152,22 @@ class _InsightsGroup(click.Group):
     )
 
     def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
-        section_commands: dict[str, list[tuple[str, click.Command]]] = {sec[0]: [] for sec in self._SECTIONS}
-        other: list[tuple[str, click.Command]] = []
+        section_commands: dict[str, list[tuple[str, str]]] = {sec[0]: [] for sec in self._SECTIONS}
+        other: list[tuple[str, str]] = []
 
         for name in self.list_commands(ctx):
             cmd = self.get_command(ctx, name)
             if cmd is None:
                 continue
+            help_text = cmd.get_short_help_str(limit=formatter.width) if cmd.help else ""
             placed = False
             for section_title, cmd_names in self._SECTIONS:
                 if name in cmd_names:
-                    section_commands[section_title].append((name, cmd))
+                    section_commands[section_title].append((name, help_text))
                     placed = True
                     break
             if not placed:
-                other.append((name, cmd))
+                other.append((name, help_text))
 
         limit = formatter.width
         for section_title, _ in self._SECTIONS:
