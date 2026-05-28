@@ -269,6 +269,9 @@ class RepositoryArchiveConversationMixin:
             "action_types": {},
             "has_flags": {},
         }
+        # Empty list produces SQL ``IN ()`` which is a syntax error.
+        if conversation_ids is not None and not conversation_ids:
+            return result
         async with self._backend.connection() as conn:
             # repos — grouped by git_repository_url on conversations
             if conversation_ids is not None:
