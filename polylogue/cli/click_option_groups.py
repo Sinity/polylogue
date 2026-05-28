@@ -295,6 +295,13 @@ OUTPUT_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         help="Output destinations: browser, clipboard, stdout (comma-separated)",
     ),
     click.option(
+        "--json",
+        "output_as_json",
+        is_flag=True,
+        default=False,
+        help="Shortcut for --format json. Disables color and progress for pipeable output. (#1689)",
+    ),
+    click.option(
         "--format",
         "-f",
         "output_format",

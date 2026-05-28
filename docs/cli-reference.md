@@ -124,6 +124,8 @@ Options:
   --sample INTEGER                Random sample of N conversations
   -o, --output TEXT               Output destinations: browser, clipboard,
                                   stdout (comma-separated)
+  --json                          Shortcut for --format json. Disables color
+                                  and progress for pipeable output. (#1689)
   -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|plaintext|csv]
                                   Output format (for --latest, --stream, or
                                   verb output). `ndjson` emits one JSON
