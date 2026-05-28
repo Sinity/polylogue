@@ -8,7 +8,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `598`
+- subjects: `599`
 - claims: `37`
 - runner bindings: `37`
 - proof obligations: `471`
@@ -40,7 +40,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 20 |
 | `assurance.coverage_item` | 107 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 77 |
+| `cli.command` | 78 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -64,6 +64,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue backup` | `polylogue/cli/click_app.py` `polylogue backup` |
 | `polylogue blackboard` | `polylogue/cli/click_app.py` `polylogue blackboard` |
 | `polylogue bulk-export` | `polylogue/cli/click_app.py` `polylogue bulk-export` |
+| `polylogue commands` | `polylogue/cli/click_app.py` `polylogue commands` |
 | `polylogue completions` | `polylogue/cli/click_app.py` `polylogue completions` |
 | `polylogue config` | `polylogue/cli/click_app.py` `polylogue config` |
 | `polylogue context` | `polylogue/cli/click_app.py` `polylogue context` |

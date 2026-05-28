@@ -655,7 +655,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 184
+    loc: 185
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -686,6 +686,10 @@ files:
     loc: 116
     target: polylogue/cli/commands/check.py
     owner: stable
+  - path: polylogue/cli/commands/commands.py
+    loc: 30
+    target: polylogue/cli/commands/commands.py
+    owner: stable
   - path: polylogue/cli/commands/completions.py
     loc: 66
     target: polylogue/cli/commands/completions.py
@@ -695,7 +699,7 @@ files:
     target: polylogue/cli/commands/config.py
     owner: stable
   - path: polylogue/cli/commands/context.py
-    loc: 87
+    loc: 86
     target: polylogue/cli/commands/context.py
     owner: stable
   - path: polylogue/cli/commands/context_pack.py

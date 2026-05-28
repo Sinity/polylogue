@@ -165,6 +165,7 @@ Commands:
   backup             Create a timestamped backup of the archive database.
   blackboard
   bulk-export        Bulk export every matched conversation in one process.
+  commands
   completions        Emit shell completion setup for polylogue.
   config             Show configuration paths and resolved settings.
   context
