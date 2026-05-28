@@ -3,19 +3,18 @@ name: GitHub Pages
 on:
   push:
     branches: [master]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
   group: pages
   cancel-in-progress: true
 
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -28,19 +27,58 @@ jobs:
       - name: Build site
         run: nix develop --command devtools render-pages
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v5
+      - name: Deploy to gh-pages (main)
+        if: github.ref == 'refs/heads/master'
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          path: .cache/site/
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: .cache/site
+          destination_dir: main
+          keep_files: true
+          commit_message: "ci: deploy main docs site"
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Deploy root redirect
+        if: github.ref == 'refs/heads/master'
+        run: |
+          mkdir -p /tmp/gh-pages-root
+          cat > /tmp/gh-pages-root/index.html << 'HTML'
+          <!DOCTYPE html>
+          <html><head><meta http-equiv="refresh" content="0;url=main/"></head></html>
+          HTML
+          echo "polylogue docs — see /main/" > /tmp/gh-pages-root/README.txt
+
+      - name: Deploy root redirect to gh-pages
+        if: github.ref == 'refs/heads/master'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: /tmp/gh-pages-root
+          keep_files: true
+          commit_message: "ci: deploy root redirect to /main/"
+
+      - name: Deploy versioned docs (tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG_NAME="${{ github.ref_name }}"
+          # e.g. v1.2.3 → v1.2.3
+          echo "Deploying version ${TAG_NAME}"
+
+      - name: Deploy to gh-pages (versioned)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: .cache/site
+          destination_dir: ${{ github.ref_name }}
+          keep_files: true
+          commit_message: "ci: deploy versioned docs for ${{ github.ref_name }}"
+
+      - name: Deploy latest alias
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: .cache/site
+          destination_dir: latest
+          keep_files: true
+          commit_message: "ci: deploy latest docs alias (${{ github.ref_name }})"
