@@ -445,5 +445,56 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("insight_rigor_audit", run)
 
+    @mcp.tool()
+    async def aggregate_sessions(
+        group_by: str = "workflow_shape",
+        since: str | None = None,
+        until: str | None = None,
+        provider: str | None = None,
+    ) -> str:
+        """Aggregate session counts by a dimension (workflow_shape, terminal_state, provider).
+
+        #1691: programmatic session analysis primitives — GROUP BY over session profiles.
+        """
+
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            profiles = await poly.list_session_profile_insights(
+                SessionProfileInsightQuery(
+                    provider=provider,
+                    since=since,
+                    until=until,
+                    limit=hooks.clamp_limit(10000),
+                )
+            )
+            buckets: dict[str, int] = {}
+            for p in profiles:
+                if group_by == "workflow_shape":
+                    key = (p.inference.workflow_shape if p.inference else None) or "unknown"
+                elif group_by == "terminal_state":
+                    key = (p.inference.terminal_state if p.inference else None) or "unknown"
+                elif group_by == "provider":
+                    key = p.source_name or "unknown"
+                else:
+                    return hooks.json_payload(
+                        MCPRootPayload(
+                            root={
+                                "error": f"Unknown group_by: {group_by!r}. Supported: workflow_shape, terminal_state, provider."
+                            }
+                        )
+                    )
+                buckets[key] = buckets.get(key, 0) + 1
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "group_by": group_by,
+                        "total_sessions": len(profiles),
+                        "buckets": buckets,
+                    }
+                )
+            )
+
+        return await hooks.async_safe_call("aggregate_sessions", run)
+
 
 __all__ = ["register_insight_tools"]
