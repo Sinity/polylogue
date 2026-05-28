@@ -42,7 +42,7 @@ jobs:
           name: sinity
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build and push package
-        run: nix build .#sinity --print-out-paths
+        run: nix build .#polylogue --print-out-paths
       - name: Build and push api-python
         run: nix build .#api-python --print-out-paths
       - name: Build and push devshell closure
