@@ -8,7 +8,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 
 ## Snapshot
 
-- subjects: `596`
+- subjects: `597`
 - claims: `37`
 - runner bindings: `37`
 - proof obligations: `471`
@@ -40,7 +40,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `assurance.coverage_gap` | 20 |
 | `assurance.coverage_item` | 107 |
 | `assurance.coverage_manifest` | 9 |
-| `cli.command` | 75 |
+| `cli.command` | 76 |
 | `cli.json_command` | 5 |
 | `diagnostic.observable` | 1 |
 | `error.surface` | 2 |
@@ -67,6 +67,7 @@ This catalog is generated from the proof-obligation kernel. It records subjects,
 | `polylogue completions` | `polylogue/cli/click_app.py` `polylogue completions` |
 | `polylogue config` | `polylogue/cli/click_app.py` `polylogue config` |
 | `polylogue context-pack` | `polylogue/cli/click_app.py` `polylogue context-pack` |
+| `polylogue correlate` | `polylogue/cli/click_app.py` `polylogue correlate` |
 | `polylogue cost` | `polylogue/cli/click_app.py` `polylogue cost` |
 | `polylogue cost outlook` | `polylogue/cli/commands/cost.py:39` `polylogue.cli.commands.cost.outlook_command` |
 | `polylogue cost rollup` | `polylogue/cli/commands/cost.py:107` `polylogue.cli.commands.cost.rollup_command` |

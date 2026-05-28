@@ -166,6 +166,7 @@ Commands:
   completions        Emit shell completion setup for polylogue.
   config             Show configuration paths and resolved settings.
   context-pack       Build a provenance-rich context pack for agent analysis.
+  correlate
   cost               Summarize conversation cost telemetry.
   count              Print count of matched conversations.
   dashboard          Open the local dashboard.
