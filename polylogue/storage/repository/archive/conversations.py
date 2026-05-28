@@ -378,7 +378,8 @@ class RepositoryArchiveConversationMixin:
                         """
                     )
                 ).fetchall()
-            row = flag_rows[0] if flag_rows else (0, 0, 0)
+            flag_list = list(flag_rows)
+            row = flag_list[0] if flag_list else (0, 0, 0)
             result["has_flags"] = {
                 "has_tool_use": row[0],
                 "has_thinking": row[1],

@@ -207,7 +207,7 @@ class PolylogueArchiveMixin:
             scoped_summaries = await filter_obj.list_summaries()
             scoped_buckets = compute_facets(scoped_summaries)
             # #1672: SQL aggregators scoped to matching conversations.
-            scoped_ids = [s.id for s in scoped_summaries]
+            scoped_ids = [str(s.id) for s in scoped_summaries]
             scoped_sql = await self.repository.aggregate_facet_families(
                 conversation_ids=scoped_ids if scoped_ids else None,
             )
