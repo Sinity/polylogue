@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from polylogue.logging import get_logger
+
 from .assembly import (
     ClaudeCodeHistoryPasteIndex,
     ClaudeCodeSessionIndex,
@@ -16,6 +18,8 @@ from .parsers.claude.index import (
     enrich_conversation_from_index,
     parse_sessions_index,
 )
+
+logger = get_logger(__name__)
 
 # `~/.claude/history.jsonl` is global to a Claude Code install; rooted with
 # ``~/.claude/projects/...`` on the source-walk side, the history sidecar
@@ -113,6 +117,22 @@ def _annotate_messages_with_history_paste(
             if abs(msg_ts - entry.timestamp_ms) <= _HISTORY_TIMESTAMP_TOLERANCE_MS:
                 candidates.append(idx)
         if len(candidates) != 1:
+            # #1656: surface unmatched/ambiguous history rows as structured
+            # diagnostics so operators can audit paste-evidence coverage.
+            if not candidates:
+                logger.info(
+                    "history.paste.unmatched",
+                    session_id=entry.session_id,
+                    timestamp_ms=entry.timestamp_ms,
+                    paste_count=len(entry.pastes),
+                )
+            else:
+                logger.info(
+                    "history.paste.ambiguous",
+                    session_id=entry.session_id,
+                    timestamp_ms=entry.timestamp_ms,
+                    candidate_count=len(candidates),
+                )
             continue
         marked_indices.add(candidates[0])
     if not marked_indices:
