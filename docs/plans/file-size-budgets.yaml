@@ -95,8 +95,8 @@ exceptions:
     reason: "archive facade for read/query/insight/maintenance surfaces; added audit_insights_rigor entrypoint (#1275), scoped/global facets entrypoint (#1269), and SQL-backed facet family aggregators (#1672); split candidate: extract per-domain facades (insights, maintenance) under polylogue/api/"
 
   - path: polylogue/surfaces/payloads.py
-    ceiling: 1300
-    reason: "typed payload models for CLI/MCP/daemon surfaces; added FacetTimeRange + scoped/global facet envelopes (#1269), the ReaderActionState / READER_ACTION_IDS closed vocabulary (#1488), and the MessageRenderEnvelope additions (branch_index, has_paste, has_tool_use, has_thinking, token/cache usage, model_name, attachment_refs, raw_id, source_path; #1487); split candidate: per-domain payload modules under polylogue/surfaces/"
+    ceiling: 1320
+    reason: "typed payload models for CLI/MCP/daemon surfaces; added FacetTimeRange + scoped/global facet envelopes (#1269), the ReaderActionState / READER_ACTION_IDS closed vocabulary (#1488), MessageRenderEnvelope additions (#1487), SQL-backed facet families (#1672), and ConversationListRowPayload created_at/updated_at/message_count harmonization (#1673); split candidate: per-domain payload modules under polylogue/surfaces/"
 
   - path: tests/unit/storage/test_backend.py
     ceiling: 1750
