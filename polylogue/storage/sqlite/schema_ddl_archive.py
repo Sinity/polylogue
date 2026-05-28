@@ -666,6 +666,39 @@ TOPOLOGY_EDGES_DDL = """
             ON topology_edges(src_conversation_id);
 """
 
+BLACKBOARD_NOTES_DDL = """
+        CREATE TABLE IF NOT EXISTS blackboard_notes (
+            note_id         TEXT PRIMARY KEY,
+            kind            TEXT NOT NULL CHECK (kind IN
+                ('finding', 'blocker', 'decision', 'handoff', 'question', 'observation')),
+            title           TEXT NOT NULL,
+            content         TEXT NOT NULL DEFAULT '',
+            scope_repo      TEXT,
+            scope_session   TEXT,
+            scope_issue     INTEGER,
+            scope_path      TEXT,
+            related_session_ids_json TEXT DEFAULT '[]',
+            created_at       TEXT NOT NULL,
+            resolved_at      TEXT,
+            resolution      TEXT,
+            materialized_at  TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_blackboard_kind
+            ON blackboard_notes(kind);
+
+        CREATE INDEX IF NOT EXISTS idx_blackboard_scope_repo
+            ON blackboard_notes(scope_repo)
+            WHERE scope_repo IS NOT NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_blackboard_resolved
+            ON blackboard_notes(resolved_at)
+            WHERE resolved_at IS NOT NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_blackboard_created
+            ON blackboard_notes(created_at);
+"""
+
 
 __all__ = [
     "ARCHIVE_STORAGE_DDL",

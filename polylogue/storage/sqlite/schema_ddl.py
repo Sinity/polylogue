@@ -12,6 +12,9 @@ from polylogue.storage.sqlite.schema_ddl_archive import (
     ARCHIVE_STORAGE_DDL as _ARCHIVE_STORAGE_DDL,
 )
 from polylogue.storage.sqlite.schema_ddl_archive import (
+    BLACKBOARD_NOTES_DDL as _BLACKBOARD_NOTES_DDL,
+)
+from polylogue.storage.sqlite.schema_ddl_archive import (
     BLOB_LEASE_DDL as _BLOB_LEASE_DDL,
 )
 from polylogue.storage.sqlite.schema_ddl_archive import (
@@ -75,7 +78,7 @@ from polylogue.storage.sqlite.schema_ddl_repo_identity import (
     REPO_IDENTITY_DDL as _REPO_IDENTITY_DDL,
 )
 
-SCHEMA_VERSION = 17  # Canonical schema. No migration chain: mismatch → re-ingest from source. Added paste_boundary_state TEXT column to messages (#1655).
+SCHEMA_VERSION = 18  # Canonical schema. No migration chain: mismatch → re-ingest from source. Added blackboard_notes table for persistent agent notes (#1697).
 
 
 # Complete target schema applied to fresh databases.
@@ -97,6 +100,7 @@ SCHEMA_DDL += "\n\n" + _RECALL_PACKS_DDL
 SCHEMA_DDL += "\n\n" + _READER_WORKSPACES_DDL
 SCHEMA_DDL += "\n\n" + _USER_CORRECTIONS_DDL
 SCHEMA_DDL += "\n\n" + _TOPOLOGY_EDGES_DDL
+SCHEMA_DDL += "\n\n" + _BLACKBOARD_NOTES_DDL
 SCHEMA_DDL += "\n\n" + _REPO_IDENTITY_DDL
 
 _SESSION_INSIGHT_DDL = (

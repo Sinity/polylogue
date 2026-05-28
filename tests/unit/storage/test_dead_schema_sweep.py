@@ -42,15 +42,13 @@ def fresh_schema_db() -> Generator[Mapping[str, sqlite3.Connection], None, None]
 # ---------------------------------------------------------------------------
 
 
-def test_schema_version_is_17() -> None:
-    # Bumped from 3 → 4 by #1241 (action_events_fts external-content),
-    # then 4 → 5 by #1252 (first-class attachment native identifiers
-    # + upload_origin column for the #1199 attachment library), then
-    # 5 → 6 by #1258 (topology_edges table), 6 → 7 by #1260,
-    # 7 → 8 by #1253, 8 → 9 by #1486, 13 → 14 by #1511,
+def test_schema_version_is_18() -> None:
+    # Bumped from 3 → 4 by #1241, 4 → 5 by #1252, 5 → 6 by #1258,
+    # 6 → 7 by #1260, 7 → 8 by #1253, 8 → 9 by #1486, 13 → 14 by #1511,
     # 14 → 16 by subsequent schema-touching PRs,
-    # 16 → 17 by #1655 (paste_boundary_state on messages).
-    assert SCHEMA_VERSION == 17
+    # 16 → 17 by #1655 (paste_boundary_state on messages),
+    # 17 → 18 by #1697 (blackboard_notes table).
+    assert SCHEMA_VERSION == 18
 
 
 def test_content_blocks_table_has_no_media_type_column(fresh_schema_db: Mapping[str, sqlite3.Connection]) -> None:
