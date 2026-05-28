@@ -108,6 +108,10 @@ def _get_cached_connection(path: Path) -> sqlite3.Connection:
     with _schema_lock_for_path(path):
         _ensure_schema(conn)
 
+    from polylogue.paths.archive_db_stub import ensure_canonical_archive_db_name
+
+    ensure_canonical_archive_db_name(path)
+
     cache[key] = conn
     return conn
 
