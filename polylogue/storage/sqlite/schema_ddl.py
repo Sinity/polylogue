@@ -81,7 +81,7 @@ from polylogue.storage.sqlite.schema_ddl_repo_identity import (
     REPO_IDENTITY_DDL as _REPO_IDENTITY_DDL,
 )
 
-SCHEMA_VERSION = 19  # Canonical schema. No migration chain: mismatch → re-ingest from source. Added otlp_spans table for OTLP telemetry ingestion (#1686).
+SCHEMA_VERSION = 20  # Canonical schema. No migration chain: mismatch → re-ingest from source. Added session_commit_edges table for session-to-git-commit attribution (#1690).
 
 
 # Complete target schema applied to fresh databases.

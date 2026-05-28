@@ -707,7 +707,7 @@ files:
     target: polylogue/cli/commands/context_pack.py
     owner: stable
   - path: polylogue/cli/commands/correlate.py
-    loc: 146
+    loc: 257
     target: polylogue/cli/commands/correlate.py
     owner: stable
   - path: polylogue/cli/commands/cost.py
@@ -1380,6 +1380,10 @@ files:
     loc: 263
     target: polylogue/insights/rigor.py
     owner: stable
+  - path: polylogue/insights/session_commit.py
+    loc: 548
+    target: polylogue/insights/session_commit.py
+    owner: stable
   - path: polylogue/insights/storage.py
     loc: 139
     target: polylogue/insights/storage.py
@@ -1490,11 +1494,11 @@ files:
     target: polylogue/mcp/server.py
     owner: stable
   - path: polylogue/mcp/server_context_tools.py
-    loc: 272
+    loc: 362
     target: polylogue/mcp/server_context_tools.py
     owner: stable
   - path: polylogue/mcp/server_insight_tools.py
-    loc: 500
+    loc: 1001
     target: polylogue/mcp/server_insight_tools.py
     owner: stable
   - path: polylogue/mcp/server_maintenance_tools.py
@@ -3598,7 +3602,7 @@ files:
     target: polylogue/storage/sqlite/schema_ddl_provider_events.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_repo_identity.py
-    loc: 56
+    loc: 80
     target: polylogue/storage/sqlite/schema_ddl_repo_identity.py
     owner: stable
   - path: polylogue/storage/sqlite/sqlite_vec_extension.py

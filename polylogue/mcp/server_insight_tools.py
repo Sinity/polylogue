@@ -912,5 +912,90 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("correlate_sessions", run)
 
+    @mcp.tool()
+    async def correlate_session(
+        session_id: str,
+        repo_path: str | None = None,
+        since_hours: int = 2,
+        confidence_threshold: float = 0.3,
+    ) -> str:
+        """Link a session to git commits and GitHub issue/PR references (#1690).
+
+        Returns git commits likely produced by the session (via time-window
+        analysis and file-overlap scoring), plus GitHub issue/PR references
+        extracted from session message text.
+        """
+
+        async def run() -> str:
+            from polylogue.archive.message.models import Message
+            from polylogue.insights.session_commit import (
+                build_correlation_result,
+                correlation_result_to_payload,
+            )
+
+            poly = hooks.get_polylogue()
+            conv = await poly.get_conversation(session_id)
+            if conv is None:
+                return hooks.error_json(
+                    "Conversation not found",
+                    code="not_found",
+                    conversation_id=session_id,
+                )
+
+            # Build messages list from the conversation
+            messages: list[dict[str, object]] = []
+            for msg in conv.messages:
+                if isinstance(msg, Message):
+                    msg_dict: dict[str, object] = {
+                        "id": msg.id,
+                        "role": msg.role.value if hasattr(msg.role, "value") else str(msg.role),
+                        "text": msg.text,
+                        "content_blocks": list(msg.content_blocks) if msg.content_blocks else [],
+                    }
+                    messages.append(msg_dict)
+                else:
+                    msg_id = getattr(msg, "id", "")
+                    msg_text = getattr(msg, "text", None)
+                    content_blocks = getattr(msg, "content_blocks", None) or []
+                    msg_dict = {
+                        "id": str(msg_id),
+                        "role": str(getattr(msg, "role", "")),
+                        "text": msg_text,
+                        "content_blocks": list(content_blocks) if content_blocks else [],
+                    }
+                    messages.append(msg_dict)
+
+            # Determine repo path from metadata
+            meta: dict[str, object] = conv.provider_meta or {} if isinstance(conv.provider_meta, dict) else {}
+            repo: str = repo_path or "."
+            if not repo_path:
+                repo_url = meta.get("git_repository_url")
+                if repo_url and isinstance(repo_url, str):
+                    repo = repo_url
+                else:
+                    cwd = meta.get("cwd")
+                    repo = str(cwd) if cwd and isinstance(cwd, str) else "."
+
+            start = conv.created_at
+            end = conv.updated_at
+
+            result = build_correlation_result(
+                session_id=session_id,
+                messages=messages,
+                session_created_at=start,
+                session_updated_at=end,
+                repo_path=repo,
+                before_hours=since_hours,
+                after_hours=since_hours,
+                confidence_threshold=confidence_threshold,
+            )
+
+            return hooks.json_payload(
+                MCPRootPayload(root=correlation_result_to_payload(result)),
+                exclude_none=True,
+            )
+
+        return await hooks.async_safe_call("correlate_session", run)
+
 
 __all__ = ["register_insight_tools"]
