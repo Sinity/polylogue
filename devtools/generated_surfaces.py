@@ -15,7 +15,6 @@ from devtools import (
     render_pages,
     render_quality_reference,
     render_topology_status,
-    render_verification_catalog,
 )
 from devtools.command_catalog import control_plane_argv
 
@@ -87,14 +86,6 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         command=control_plane_argv("render-quality-reference"),
         main=render_quality_reference.main,
         inputs=("devtools/run_validation_lanes.py", "pyproject.toml"),
-    ),
-    GeneratedSurface(
-        name="verification-catalog",
-        label="Verification catalog",
-        description="Render docs/verification-catalog.md from verification check registries.",
-        command=control_plane_argv("render-verification-catalog"),
-        main=render_verification_catalog.main,
-        inputs=("proof/",),
     ),
     GeneratedSurface(
         name="docs-surface",

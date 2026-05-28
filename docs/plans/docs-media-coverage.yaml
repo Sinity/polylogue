@@ -62,14 +62,6 @@ surfaces:
       docs/test-quality-workflows.md from live validation,
       mutation, and benchmark registries. Generated.
 
-  verification_catalog:
-    path: docs/verification-catalog.md
-    generated_by: devtools render-verification-catalog
-    verified_by: devtools render-all --check
-    notes: >
-      docs/verification-catalog.md with proof subjects, claims,
-      runners. Generated from proof registries.
-
   topology_status:
     path: docs/topology-status.md
     generated_by: devtools render-topology-status

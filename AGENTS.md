@@ -34,28 +34,6 @@ on push, but the default baseline must pass before the PR is opened.
 Do not treat CI as the first verification pass. Anticipate failures
 locally.
 
-### Verification Impact workflow
-
-Every PR gets a `Polylogue Verification Impact` comment. Treat it as a
-verification impact report, not as decorative CI output and not as a complete
-proof.
-
-Use it this way:
-
-- Read the `Required Gates` before choosing verification. Run the gates that
-  match the touched files, or state in the PR why a suggested gate is only an
-  optional confidence gate for that change.
-- Use nonzero affected domains and claims to decide which focused tests or
-  contract/property suites to run. Ignore zero-claim domain noise unless the
-  changed files genuinely belong to that domain.
-- Treat `Known Gaps` as actionable only when they are in a changed or directly
-  affected domain. Broad repo-wide gap dumps should not block unrelated PRs, but
-  recurring noise should be folded back into #594.
-- Real verification closure comes from pytest, coverage, benchmark, CI,
-  static-check, and runtime evidence artifacts — not from catalog metadata.
-- If the report is noisy, misleading, or misses a relevant gate, comment on
-  the PR or #594 with the concrete mismatch. Do not silently ignore it.
-
 ### PR body discipline
 
 The PR template requires sections: Summary, Problem, Solution,
@@ -367,11 +345,6 @@ diagnostic.
 Add `devtools build-package` or `nix flake check` when touching packaging or
 Nix expressions. See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md)
 for details.
-
-Verification Impact: every PR gets a `Polylogue Verification Impact` comment. It's a verification
-impact report showing affected domains, required gates, and known gaps. Use it
-to choose focused verification — run the gates that match touched files, state
-in the PR why a suggested gate is only optional for that change.
 
 ## PR Body Discipline
 
@@ -1429,10 +1402,6 @@ repo verification checks and evidence records, not end-user archive workflows.
 
 | Command | Role |
 | --- | --- |
-| `devtools render-verification-catalog` | Refresh or verify the catalog that anchors changed-path verification reports after changing subjects, claims, runners, or catalog rendering. Use --anti-vacuity to flag claims with gaps. |
-| `devtools verification-impact` | Find the checks and inner-loop commands affected by local changes before escalating to full PR gates. Use --full for domain-grouped impact analysis. |
-| `devtools semantic-axis-evidence` | Produce comparative performance evidence that describes growth shape over semantic axes instead of machine-specific absolute budgets. |
-| `devtools lab-corpus` | Seed synthetic corpus files or complete demo workspaces for lab exercises. |
 | `devtools lab-scenario` | Run showcase exercise smoke scenarios and committed baseline checks outside the archive CLI. |
 | `devtools schema-generate` | Refresh provider schema package artifacts from archive observations outside the archive CLI. |
 | `devtools schema-promote` | Turn reviewed schema evidence clusters into committed provider schema packages. |
@@ -1477,7 +1446,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools render-quality-reference` | Render docs/test-quality-workflows.md from live validation, mutation, and benchmark registries. |
 | `devtools render-readme-media` | Generate README media assets (architecture diagrams, flowcharts) under docs/media/. |
 | `devtools render-topology-status` | Render docs/topology-status.md from the topology projection and realized tree. |
-| `devtools render-verification-catalog` | Render the verification-lab catalog from check registries; optionally emit anti-vacuity report. |
 
 ### Verification
 
@@ -1487,8 +1455,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools coverage-gate` | Run pytest with the repository coverage floor from pyproject.toml. |
 | `devtools daemon-workload-probe` | Inspect daemon ingest workload, convergence debt, and hot query plans. |
 | `devtools evidence-dashboard` | Render the pytest-first evidence dashboard or a changed-path trace. |
-| `devtools evidence-report` | Aggregate verification evidence into a structured status report. |
-| `devtools lab-corpus` | Generate verification-lab synthetic corpus fixtures and demo archives. |
 | `devtools lab-scenario` | Run verification-lab showcase scenario sets and baseline checks. |
 | `devtools pipeline-probe` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
 | `devtools query-memory-budget` | Measure query-memory envelopes on generated fixtures. |
@@ -1498,31 +1464,22 @@ These are the commands worth remembering during normal repo work:
 | `devtools schema-audit` | Run committed provider schema package quality checks. |
 | `devtools schema-generate` | Generate provider schema packages and optional evidence clusters. |
 | `devtools schema-promote` | Promote a schema evidence cluster into a registered package version. |
-| `devtools semantic-axis-evidence` | Generate verification-lab performance evidence across synthetic semantic scale tiers. |
-| `devtools verification-impact` | Route changed paths or refs to affected verification checks and focused commands; emit the full PR-confidence report with --full. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
 | `devtools verify-ci-workflows` | Verify CI workflow files reference locally-known devtools commands and existing paths. |
 | `devtools verify-closure-matrix` | Verify docs/plans/test-closure-matrix.yaml stays grounded in the realized tree. |
-| `devtools verify-cluster-cohesion` | Validate proposed clusters from the topology projection using the import graph. |
 | `devtools verify-distribution-surface` | Verify wheel/sdist installed artifacts expose only supported runtime entrypoints. |
 | `devtools verify-doc-commands` | Verify README/docs command examples resolve to live polylogue, polylogued, and devtools commands. |
-| `devtools verify-file-budgets` | Enforce per-file LOC budgets declared in docs/plans/file-size-budgets.yaml. |
 | `devtools verify-lane-assertions` | Verify scenario lanes classified as SEMANTIC_OUTPUT carry semantic assertions. |
 | `devtools verify-layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
 | `devtools verify-manifests` | Verify internal consistency across all docs/plans/*.yaml manifest files. |
-| `devtools verify-migrations` | Verify migration-completeness against docs/plans/migrations.yaml. |
 | `devtools verify-provider-meta-policy` | Enforce the provider_meta classification policy declared in docs/plans/provider-meta-policy.yaml. |
 | `devtools verify-schema-roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
 | `devtools verify-schema-upgrade-lane` | Verify any in-place schema upgrade helper has a paired driving test under tests/unit/storage/migrations/ (#1302). |
 | `devtools verify-slos` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
-| `devtools verify-suppressions` | Enforce suppression registry expiry dates from docs/plans/suppressions.yaml. |
 | `devtools verify-test-clock-hygiene` | Verify test files use the frozen_clock fixture instead of reading the host wall clock (#1300). |
 | `devtools verify-test-coverage-contracts` | Verify every production module >150 AST lines has a matching test file or exemption. |
 | `devtools verify-test-infra-currency` | Verify tests/infra/ helpers reference only tables that exist in the current SCHEMA_VERSION. |
-| `devtools verify-test-ownership` | Verify each production module is imported by at least one unit test. |
 | `devtools verify-topology` | Verify the realized polylogue tree against the topology projection. |
-| `devtools verify-witness-coverage` | Audit merged fix PRs for missing witnesses under tests/witnesses/. |
-| `devtools verify-witness-lifecycle` | Verify committed witness lifecycle health — staleness, unexercised, stale xfails. |
 
 ### Campaigns
 
@@ -1538,10 +1495,7 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools archive-space-report` | Report SQLite archive file/page/object space by table and index. |
 | `devtools build-package` | Build the default Nix package with the out-link under .local/result. |
-| `devtools failure-context` | Join testmon, git history, fixtures, and witnesses for a pytest failure ID into a JSON envelope. |
-| `devtools witness-discover` | Save a failure-triggering input as a local witness in .local/witnesses/new/. |
-| `devtools witness-minimize` | Apply minimization heuristics to a local witness — shrink, redact, set privacy classification. |
-| `devtools witness-promote` | Promote a minimized local witness to tests/witnesses/ for durable commit. |
+| `devtools failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
 | `devtools worktree-gc` | Safe worktree garbage collection — list and remove merged or abandoned git worktrees. |
 | `devtools xtask` | Record and query agent task execution history (.agent/xtask/tasks.jsonl). |
 

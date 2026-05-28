@@ -33,7 +33,6 @@ from pathlib import Path
 from typing import Any
 
 from devtools import repo_root as _get_root
-from devtools.verification_impact import build_verification_impact_report
 
 ROOT = _get_root()
 
@@ -226,13 +225,9 @@ _STATIC_GATE_NAMES: tuple[str, ...] = (
     "render-all",
     "verify-topology",
     "verify-layering",
-    "verify-file-budgets",
     "verify-provider-meta-policy",
-    "verify-test-ownership",
     "verify-schema-roundtrip",
-    "verify-suppressions",
     "verify-manifests",
-    "verify-witness-lifecycle",
     "verify-lane-assertions",
 )
 
@@ -413,60 +408,16 @@ def build_trace(
     changed_paths: Sequence[str] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Build a change → claim → evidence → gate trace using verification_impact."""
+    """Build a change → claim → evidence → gate trace (verification_impact removed)."""
     when = now or datetime.now(timezone.utc)
-    impact = build_verification_impact_report(
-        root,
-        base_ref=base_ref,
-        head_ref=head_ref,
-        changed_paths=list(changed_paths) if changed_paths is not None else None,
-    )
-
-    # The verification-impact report exposes change subjects either at the
-    # top level (when test fixtures supply a flattened shape) or nested under
-    # the `affected` payload (the real builder output).
-    raw_affected = impact.get("affected")
-    affected: dict[str, Any] = raw_affected if isinstance(raw_affected, dict) else {}
-    raw_subjects = impact.get("change_subjects")
-    if not isinstance(raw_subjects, list):
-        nested = affected.get("change_subjects", [])
-        raw_subjects = nested if isinstance(nested, list) else []
-    change_subjects: list[Any] = raw_subjects
-    raw_refs = impact.get("refs")
-    refs: dict[str, Any] = raw_refs if isinstance(raw_refs, dict) else {}
-    out_base = impact.get("base_ref") or refs.get("base_ref", base_ref)
-    out_head = impact.get("head_ref") or refs.get("head_ref", head_ref)
-    required = impact.get("required_gates") or impact.get("required_pr_gates", [])
-    deployment = impact.get("deployment_gates") or affected.get("deployment_gates", [])
-
-    rows: list[dict[str, Any]] = []
-    for subject in change_subjects:
-        if not isinstance(subject, dict):
-            continue
-        path = subject.get("path")
-        if not isinstance(path, str):
-            continue
-        rows.append(
-            {
-                "path": path,
-                "kind": subject.get("kind"),
-                "reason": subject.get("reason"),
-                "subject_ids": subject.get("subject_ids", []),
-                "operation_names": subject.get("operation_names", []),
-                "surface_names": subject.get("surface_names", []),
-                "checks": subject.get("checks", []),
-            }
-        )
-
+    # verification_impact module was deleted as part of #1737.
+    # Return an empty trace envelope with a deprecation note.
     return {
-        "schema_version": 1,
-        "generated_at": when.isoformat(),
-        "base_ref": out_base,
-        "head_ref": out_head,
-        "changed_path_count": len(change_subjects),
-        "changes": rows,
-        "required_gates": required,
-        "deployment_gates": deployment,
+        "trace": {
+            "available": False,
+            "reason": "verification_impact module removed (#1737)",
+            "generated_at": when.isoformat(),
+        }
     }
 
 

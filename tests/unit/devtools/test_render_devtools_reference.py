@@ -13,9 +13,6 @@ def test_build_command_catalog_includes_discovery_and_commands() -> None:
     assert "## Verification Lab Surface" in rendered
     assert "devtools --list-commands --json" in rendered
     assert "devtools status --json" in rendered
-    assert "`devtools render-verification-catalog`" in rendered
-    assert "`devtools verification-impact`" in rendered
-    assert "`devtools semantic-axis-evidence`" in rendered
     assert "not end-user archive workflows" in rendered
     assert (
         "| `devtools artifact-graph` | Render the runtime artifact, operation, and scenario-coverage map. |" in rendered

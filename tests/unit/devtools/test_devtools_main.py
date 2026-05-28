@@ -14,10 +14,6 @@ def test_list_commands_json_includes_generated_surface(capsys: pytest.CaptureFix
     payload = json.loads(capsys.readouterr().out)
     commands = {entry["name"] for entry in payload["commands"]}
     assert payload["surfaces"]["verification_lab"] == [
-        "render-verification-catalog",
-        "verification-impact",
-        "semantic-axis-evidence",
-        "lab-corpus",
         "lab-scenario",
         "schema-generate",
         "schema-promote",
@@ -28,7 +24,6 @@ def test_list_commands_json_includes_generated_surface(capsys: pytest.CaptureFix
     assert "regression-capture" in commands
     assert "scenario-projections" in commands
     assert "render-devtools-reference" in commands
-    assert "render-verification-catalog" in commands
     assert "status" in commands
 
 
@@ -36,8 +31,6 @@ def test_list_commands_human_output(capsys: pytest.CaptureFixture[str]) -> None:
     assert devtools_main.main(["--list-commands"]) == 0
     captured = capsys.readouterr()
     assert "verification lab surface:" in captured.out
-    assert "semantic-axis-evidence" in captured.out
-    assert "lab-corpus" in captured.out
     assert "lab-scenario" in captured.out
     assert "schema-generate" in captured.out
     assert "schema-promote" in captured.out
@@ -47,7 +40,6 @@ def test_list_commands_human_output(capsys: pytest.CaptureFixture[str]) -> None:
     assert "regression-capture" in captured.out
     assert "scenario-projections" in captured.out
     assert "render-devtools-reference" in captured.out
-    assert "render-verification-catalog" in captured.out
 
 
 def test_global_json_flag_is_forwarded_to_command(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -29,8 +29,6 @@ files:
     reason: "Measures real subprocess startup latency for the diagnose CLI surface."
 
   # --- Legitimate one-shot timestamp construction (no production read of now) ---
-  - path: tests/conftest_witness.py
-    reason: "Witness manifest writer records the actual file-discovery timestamp; no production code reads it back."
   - path: tests/unit/cli/test_check.py
     reason: "Constructs a wall-clock anchor for doctor envelope assertions; production envelope embeds the same now() within the same call."
   - path: tests/unit/cli/test_query_exec_laws.py

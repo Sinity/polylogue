@@ -43,7 +43,7 @@ def test_verification_lab_surface_is_explicit_and_implemented() -> None:
     specs = verification_lab_command_specs()
 
     assert tuple(spec.name for spec in specs) == VERIFICATION_LAB_COMMAND_NAMES
-    assert {spec.category for spec in specs} == {"generated surfaces", "verification"}
+    assert {spec.category for spec in specs} == {"verification"}
     assert len({spec.module for spec in specs}) == len(specs)
 
     for spec in specs:

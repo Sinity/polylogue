@@ -97,7 +97,6 @@ _CLASS_PREFIXES: tuple[tuple[str, str], ...] = (
     ("query-memory-budget", "query"),
     ("regression-capture", "query"),
     ("scenario-projections", "query"),
-    ("semantic-axis-evidence", "verify"),
     ("coverage-gate", "verify"),
     ("build-package", "render"),
     ("build-topology-projection", "render"),

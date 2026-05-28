@@ -11,14 +11,10 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.showcase.exercises import Exercise
 from polylogue.showcase.runner import ExerciseResult
-
-if TYPE_CHECKING:
-    from polylogue.proof.models import Claim
 
 # Sentinel for skipping an invariant check on a particular exercise
 SKIP = "SKIP"
@@ -34,26 +30,6 @@ class Invariant:
 
     def applies_to(self, exercise: Exercise) -> bool:
         return True
-
-    def to_claim(self) -> Claim:
-        from polylogue.proof.models import BreakerMetadata, Claim, Kind
-
-        return Claim(
-            id=f"showcase.invariant.{self.name}",
-            description=self.description,
-            subject_query=Kind("showcase.exercise"),
-            evidence_schema={
-                "type": "object",
-                "required": ["exercise_name", "invariant_name", "status"],
-                "additionalProperties": True,
-            },
-            bug_classes=(f"showcase.invariant.{self.name}",),
-            breaker=BreakerMetadata(
-                description="A showcase exercise output that violates the invariant becomes a counterexample.",
-                issue="#192",
-                command=("devtools", "lab-scenario", "run", "archive-smoke", "--tier", "0"),
-            ),
-        )
 
 
 @dataclass(slots=True)

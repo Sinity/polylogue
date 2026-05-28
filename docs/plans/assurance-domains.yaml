@@ -132,9 +132,7 @@ domains:
     notes: >
       Schema is fresh-first rather than migration-chain driven. Version
       mismatch blocks with a reset/re-import diagnostic unless an explicit,
-      reviewed in-place upgrade exists for that exact transition. Active
-      transition checks can use docs/plans/migrations.yaml while work is in
-      flight, but completed retirements are not durable proof.
+      reviewed in-place upgrade exists for that exact transition.
 
   provider_coverage:
     description: Known provider support breadth and depth
@@ -188,12 +186,11 @@ domains:
       and regression gates.
 
   architecture_discipline:
-    description: Topology, layering, file-budget, and structural manifest enforcement
+    description: Topology, layering, and structural manifest enforcement
     notes: >
-      verify-topology, verify-layering, verify-file-budgets,
-      verify-manifests, schema-roundtrip, and witness lifecycle gates
-      should report directly as static checks or pytest artifacts rather
-      than routing through proof obligations.
+      verify-topology, verify-layering, verify-manifests, and
+      schema-roundtrip gates should report directly as static checks or
+      pytest artifacts rather than routing through proof obligations.
 
   unclassified:
     description: Uncategorized or cross-cutting concerns

@@ -275,11 +275,6 @@ Add `devtools build-package` or `nix flake check` when touching packaging or
 Nix expressions. See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md)
 for details.
 
-Verification Impact: every PR gets a `Polylogue Verification Impact` comment. It's a verification
-impact report showing affected domains, required gates, and known gaps. Use it
-to choose focused verification — run the gates that match touched files, state
-in the PR why a suggested gate is only optional for that change.
-
 ## PR Body Discipline
 
 The PR template requires four sections:

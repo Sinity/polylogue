@@ -23,8 +23,7 @@ dimensions:
     last_verified: "2026-04-26"
     notes: >
       Coverage floor at 90% in pyproject.toml. Enforced by
-      devtools coverage-gate and CI. test-ownership.yaml tracks
-      per-module test import coverage.
+      devtools coverage-gate and CI.
 
   flakiness:
     description: Flaky test identification and tracking
