@@ -914,12 +914,20 @@ def _emit_raw_record_metrics(lines: list[str], conn: sqlite3.Connection) -> None
         )
         return
 
-    total = _scalar_int(conn, "SELECT COUNT(*) FROM raw_conversations")
-    parsed = _scalar_int(conn, "SELECT COUNT(*) FROM raw_conversations WHERE parsed_at IS NOT NULL")
-    validated = _scalar_int(conn, "SELECT COUNT(*) FROM raw_conversations WHERE validated_at IS NOT NULL")
-    with_errors = _scalar_int(
-        conn, "SELECT COUNT(*) FROM raw_conversations WHERE parse_error IS NOT NULL OR validation_status = 'failed'"
-    )
+    # #1629: one scan of raw_conversations instead of four separate COUNT(*).
+    counts = conn.execute(
+        """SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN parsed_at IS NOT NULL THEN 1 ELSE 0 END) AS parsed,
+            SUM(CASE WHEN validated_at IS NOT NULL THEN 1 ELSE 0 END) AS validated,
+            SUM(CASE WHEN parse_error IS NOT NULL OR validation_status = 'failed'
+                THEN 1 ELSE 0 END) AS errors
+        FROM raw_conversations"""
+    ).fetchone()
+    total = counts["total"]
+    parsed = counts["parsed"]
+    validated = counts["validated"]
+    with_errors = counts["errors"]
 
     _emit_metric(
         lines,
