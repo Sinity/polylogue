@@ -63,15 +63,13 @@ def test_content_blocks_fts_trigger_growth_is_subquadratic(tmp_path: Path) -> No
         conn.close()
         means[n] = sum(times) / len(times)
 
-    # O(N²) would give mean@200 ≈ 10× mean@20 (200/20 = 10).
-    # The constant is dominated by SQLite overhead at small N, so we
-    # use a loose bound. If this fails, the trigger got slower.
+    # With the #1606 fix, INSERT triggers are O(1) per block.
+    # Per-block time should stay nearly flat: mean@200 ≈ mean@20.
     ratio = means[200] / means[20]
-    assert ratio < 5.0, (
-        f"Per-block FTS trigger time grows superlinearly: "
+    assert ratio < 2.0, (
+        f"Per-block FTS trigger time still grows superlinearly: "
         f"mean@200={means[200]:.6f}s vs mean@20={means[20]:.6f}s "
-        f"(ratio={ratio:.1f}, expected < 5.0). "
-        f"#1606 O(N²) trigger amplification confirmed."
+        f"(ratio={ratio:.1f}, expected < 2.0 after #1606 fix)."
     )
 
 
