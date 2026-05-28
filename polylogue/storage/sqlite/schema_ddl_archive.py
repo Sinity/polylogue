@@ -106,6 +106,9 @@ ARCHIVE_STORAGE_DDL = """
             cache_write_tokens INTEGER NOT NULL DEFAULT 0,
             model_name TEXT,
             message_type TEXT NOT NULL DEFAULT 'message',
+            paste_boundary_state TEXT CHECK (paste_boundary_state IN
+                ('exact', 'projected', 'whole_message_fallback', 'hash_only')
+                OR paste_boundary_state IS NULL),
             FOREIGN KEY (conversation_id)
                 REFERENCES conversations(conversation_id) ON DELETE CASCADE
         );

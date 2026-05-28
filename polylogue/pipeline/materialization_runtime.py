@@ -77,6 +77,7 @@ class MaterializedMessage:
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     model_name: str | None = None
+    paste_boundary_state: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -345,6 +346,19 @@ def materialize_conversation(
         # Claude Code history sidecar recorded a paste.
         meta_paste_evidence = bool((msg.provider_meta or {}).get("claude_code_history_paste"))
         has_paste = 1 if (detect_paste(msg.text) or meta_paste_evidence) else 0
+        # #1655: resolve paste boundary state from strongest available evidence.
+        from polylogue.archive.message.paste_detection import resolve_paste_boundary_state
+
+        paste_boundary_state = (
+            resolve_paste_boundary_state(
+                message_text=msg.text,
+                history_has_paste=meta_paste_evidence,
+                history_has_content=bool((msg.provider_meta or {}).get("claude_code_history_paste_content")),
+                hook_has_paste=bool((msg.provider_meta or {}).get("claude_code_hook_paste")),
+            )
+            if has_paste
+            else None
+        )
         if message_type == MessageType.MESSAGE:
             if has_thinking_block:
                 message_type = MessageType.THINKING
@@ -376,6 +390,7 @@ def materialize_conversation(
                 has_tool_use=has_tool_use,
                 has_thinking=has_thinking,
                 has_paste=has_paste,
+                paste_boundary_state=paste_boundary_state,
                 message_type=message_type,
                 blocks=blocks,
                 # Token counts flow through from parsers that populated them

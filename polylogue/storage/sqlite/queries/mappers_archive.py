@@ -84,6 +84,7 @@ def _row_to_message(row: sqlite3.Row) -> MessageRecord:
         has_tool_use=_row_int(row, "has_tool_use", 0) or 0,
         has_thinking=_row_int(row, "has_thinking", 0) or 0,
         has_paste=_row_int(row, "has_paste", 0) or 0,
+        paste_boundary_state=_row_text(row, "paste_boundary_state"),
         input_tokens=_row_int(row, "input_tokens", 0) or 0,
         output_tokens=_row_int(row, "output_tokens", 0) or 0,
         cache_read_tokens=_row_int(row, "cache_read_tokens", 0) or 0,

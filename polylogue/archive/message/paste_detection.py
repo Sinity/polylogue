@@ -155,4 +155,35 @@ def has_paste_indicator(hook_payload: Any) -> bool:
     return any(detect_paste(text) == 1 for text in _flatten_payload_text(hook_payload))
 
 
-__all__ = ["detect_paste", "has_paste_indicator"]
+#: #1655 — boundary-state vocabulary for paste evidence.
+#: ``exact``: paste span boundaries known to the character; recoverable text.
+#: ``projected``: paste boundaries inferred (heuristic marker match).
+#: ``whole_message_fallback``: paste exists but no boundaries; whole message.
+#: ``hash_only``: pastedContents recorded paste existence but content unrecoverable.
+_PASTE_BOUNDARY_STATES = frozenset({"exact", "projected", "whole_message_fallback", "hash_only"})
+
+
+def resolve_paste_boundary_state(
+    *,
+    message_text: str | None = None,
+    history_has_paste: bool = False,
+    history_has_content: bool = False,
+    hook_has_paste: bool = False,
+) -> str | None:
+    """Resolve paste boundary state from available evidence sources.
+
+    Priority: history exact-content > hook markers > history hash-only
+    > text heuristics > none.
+    """
+    if history_has_paste and history_has_content:
+        return "exact"
+    if hook_has_paste:
+        return "projected"
+    if history_has_paste and not history_has_content:
+        return "hash_only"
+    if detect_paste(message_text):
+        return "whole_message_fallback"
+    return None
+
+
+__all__ = ["detect_paste", "has_paste_indicator", "resolve_paste_boundary_state"]

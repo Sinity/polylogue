@@ -70,6 +70,7 @@ async def save_messages(
             r.cache_write_tokens,
             r.model_name,
             r.message_type.value,
+            r.paste_boundary_state,
         )
         for r in records
     ]

@@ -144,6 +144,7 @@ class MessageRecord(BaseModel):
     cache_write_tokens: int = 0
     model_name: str | None = None
     message_type: MessageType = MessageType.MESSAGE
+    paste_boundary_state: str | None = None
 
     @field_validator("role", mode="before")
     @classmethod
