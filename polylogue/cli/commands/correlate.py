@@ -43,20 +43,21 @@ def correlate_command(
     window_end = end + timedelta(hours=since_hours)
 
     # Determine repo path.
-    repo = repo_path
-    if not repo:
-        meta = conv.provider_meta or {}
-        repo_url = meta.get("git_repository_url") or conv.git_repository_url
-        cwd = meta.get("cwd") or ""
-        repo = cwd if cwd and not repo_url else "."
+    repo: str = repo_path or "."
+    meta: dict[str, object] = conv.provider_meta or {} if isinstance(conv.provider_meta, dict) else {}
+    if not repo_path:
+        repo_url = meta.get("git_repository_url")
+        if repo_url and isinstance(repo_url, str):
+            repo = repo_url
+        else:
+            cwd = meta.get("cwd")
+            repo = str(cwd) if cwd and isinstance(cwd, str) else "."
 
-    # Get touched file paths from the session.
+    # Collect file paths from conversation metadata.
     file_paths: set[str] = set()
-    for msg in conv.messages:
-        if msg.provider_meta:
-            paths = msg.provider_meta.get("touched_paths", [])
-            if isinstance(paths, list):
-                file_paths.update(str(p) for p in paths)
+    cwd = meta.get("cwd")
+    if cwd and isinstance(cwd, str):
+        file_paths.add(cwd)
 
     # Run git log.
     try:
@@ -112,8 +113,11 @@ def correlate_command(
 
     env.ui.console.print(f"\n[bold]Commits in window:[/bold] {len(commits)}")
     for c in commits:
-        marker = " [green]●[/green]" if c["overlaps_files"] else "  "
-        env.ui.console.print(f"{marker} [bold]{c['short_hash']}[/bold] {c['date'][:10]}  {c['subject'][:72]}")
+        marker = " [green]●[/green]" if c.get("overlaps_files") else "  "
+        env.ui.console.print(
+            f"{marker} [bold]{c.get('short_hash', '?')}[/bold] "
+            f"{str(c.get('date', ''))[:10]}  {str(c.get('subject', ''))[:72]}"
+        )
 
 
 def _parse_git_log(output: str, session_files: set[str]) -> list[dict[str, object]]:
