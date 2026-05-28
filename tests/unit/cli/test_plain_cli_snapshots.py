@@ -124,3 +124,78 @@ def test_plain_list_provider_filter_snapshot(
     """``polylogue --plain -p chatgpt list`` pins filtered list shape."""
     output = _invoke(runner, ["--plain", "-p", "chatgpt", "list"])
     assert output == snapshot
+
+
+# ───────────────────────────────────────────────────────────────────────
+# JSON output snapshots (#1689)
+# ───────────────────────────────────────────────────────────────────────
+#
+# These pin the stable JSON shapes emitted by the primary query and
+# introspection commands.  We use ``--format json`` on the verb itself
+# rather than the root-level ``--json`` shorthand because the shorthand
+# is a root-group option that forces plain mode but does not always
+# propagate ``output_format`` to query-verb subcommands through the
+# Click parameter chain (known gap, tracked in #1689).
+
+
+def _invoke_json(runner: CliRunner, args: list[str]) -> str:
+    """Invoke with --plain and redact ephemeral content from JSON output."""
+    result = runner.invoke(cli, ["--plain", *args], catch_exceptions=False)
+    assert result.exit_code == 0, f"args={args!r} exit={result.exit_code} output={result.output!r}"
+    return _redact(result.output)
+
+
+def test_json_list_snapshot(
+    runner: CliRunner,
+    seeded_db_env: Path,
+    snapshot: object,
+) -> None:
+    """``polylogue --plain list --format json`` pins JSON list envelope."""
+    output = _invoke_json(runner, ["list", "--format", "json"])
+    assert output == snapshot
+
+
+def test_json_count_snapshot(
+    runner: CliRunner,
+    seeded_db_env: Path,
+    snapshot: object,
+) -> None:
+    """``polylogue --plain count`` pins the integer count surface.
+
+    ``count`` does not accept ``--format``; it always emits a bare integer,
+    which is the simplest machine-readable contract.
+    """
+    output = _invoke(runner, ["--plain", "count"])
+    assert output == snapshot
+
+
+def test_json_stats_snapshot(
+    runner: CliRunner,
+    seeded_db_env: Path,
+    snapshot: object,
+) -> None:
+    """``polylogue --plain stats --format json`` pins JSON stats envelope."""
+    output = _invoke_json(runner, ["stats", "--format", "json"])
+    assert output == snapshot
+
+
+def test_json_facets_snapshot(
+    runner: CliRunner,
+    seeded_db_env: Path,
+    snapshot: object,
+) -> None:
+    """``polylogue --plain facets --format json`` pins JSON facets envelope."""
+    output = _invoke_json(runner, ["facets", "--format", "json"])
+    assert output == snapshot
+
+
+def test_json_status_snapshot(
+    runner: CliRunner,
+    seeded_db_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    snapshot: object,
+) -> None:
+    """``polylogue --plain status --format json`` pins JSON status shape when daemon is unreachable."""
+    monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:1")
+    output = _invoke_json(runner, ["status", "--format", "json"])
+    assert output == snapshot

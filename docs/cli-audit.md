@@ -285,6 +285,103 @@ Commands requiring deprecation aliases:
 
 ---
 
+## JSON Output Support
+
+Ref [#1689](https://github.com/Sinity/polylogue/issues/1689). Every command
+should accept `--json` (shortcut for `--format json`) and emit pipeable,
+machine-parseable output without ANSI escape codes. This section inventories
+the current state.
+
+### Envelope Convention
+
+Commands that produce structured output use one of two conventions:
+
+1. **Success/error envelope** (`{"status": "ok"|"error", ...}`): Used by
+   commands that can fail at runtime (query verbs, schema explain, doctor,
+   tags, feedback). Success carries a `result` key; errors carry `code` and
+   `message`. Defined in `polylogue/cli/shared/machine_errors.py` and
+   published as `docs/schemas/cli-output/machine-success.schema.json` and
+   `docs/schemas/cli-output/machine-error.schema.json`.
+
+2. **Raw JSON dump**: Used by commands that always succeed or whose output
+   is a simple Pydantic `model_dump(mode="json")` (facets, status, config,
+   cost rollup). These do not wrap in the machine envelope.
+
+### Stable JSON Output (Snapshot-Covered)
+
+These commands have dedicated syrupy snapshot tests pinning their JSON shape.
+Changes to the output schema will cause a snapshot diff and must be intentional.
+
+| Command | Format Invocation | Snapshot Test | Envelope |
+|---------|-------------------|---------------|----------|
+| `list` | `polylogue --plain list --format json` | `test_json_list_snapshot` | N/A (structured rows) |
+| `count` | `polylogue --plain count` | `test_json_count_snapshot` | N/A (bare integer) |
+| `stats` | `polylogue --plain stats --format json` | `test_json_stats_snapshot` | N/A (dimension/rows/summary) |
+| `facets` | `polylogue --plain facets --format json` | `test_json_facets_snapshot` | N/A (Pydantic model dump) |
+| `status` | `polylogue --plain status --format json` | `test_json_status_snapshot` | N/A (direct JSON) |
+
+Snapshots live in `tests/unit/cli/__snapshots__/test_plain_cli_snapshots.ambr`.
+
+### Contract-Tested JSON Output
+
+These commands are tested for the machine envelope contract in
+`tests/unit/cli/test_json_envelope_contract.py`. They emit
+`{"status": "ok"|"error", ...}` envelopes but do not have full snapshot
+coverage of their result payloads.
+
+| Command | Format Invocation | Contract Test |
+|---------|-------------------|---------------|
+| `doctor` | `polylogue doctor --format json` | `TestCheckJsonEnvelope` |
+| `tags` | `polylogue tags --format json` | `TestTagsJsonEnvelope` |
+| `schema explain` | `polylogue schema explain --provider <p> --format json` | `TestSchemaExplainJsonContract` |
+| `schema list` | `polylogue schema list --format json` | `TestAllJsonCommandsProduceValidJson` |
+| `config` | `polylogue config --format json` | `TestConfigJsonContract` |
+| `cost rollup` | `polylogue cost rollup --format json` | `TestCostJsonContract` |
+
+### Crash-Free (Parametrized Test)
+
+The parametrized test in `tests/unit/cli/test_json_output.py`
+(`TestAllCommandsAcceptJson`) verifies that every non-destructive
+command accepts `--json --plain` without tracebacks, ANSI codes, or
+broken JSON output. 78 commands are covered as of 2026-05-28.
+
+### Known Gaps
+
+| Gap | Detail | Issue |
+|-----|--------|-------|
+| Root `--json` doesn't propagate to all query verbs | `polylogue --json list` produces plain text, not JSON. The root `--json` sets `output_format` in the root context but query verbs with their own `--format` option do not inherit it. Use the per-verb `--format json` flag as a workaround. | #1689 |
+| `recent` hardcodes invalid sort field | `recent_verb` passes `sort="updated_at"` which is rejected by `ConversationQuerySpec`. The `--json` test excludes `recent` until this is fixed. | Pre-existing |
+| `count` has no `--format` flag | The `count` verb always emits a bare integer; there is no way to request a JSON envelope. | #1689 |
+| Deeply-nested groups (`user-state`, `blackboard`) don't dispatch through lazy wrappers | Commands registered as `_LazyCommand` but implemented as Click groups don't dispatch subcommands through the lazy wrapper. | #1725 |
+| No `--json` test for mutation commands | `delete`, `reset`, `ingest`, `backup` are excluded from the parametrized test because they modify state. They should still accept `--json`/`--machine` without crashing. | #1689 |
+
+### Commands Without JSON Support
+
+These commands have no `--json` or `--format json` flag and do not emit
+machine-parseable output:
+
+- `completions` — emits shell scripts
+- `dashboard` — side effect (opens browser)
+- `open` — side effect (opens browser)
+- `tutorial` — interactive
+- `auth` — interactive, OAuth flow
+- `init` — interactive, writes config
+- `backup` — creates file, prints path
+- `messages` — has `--format json` but not snapshot-covered
+- `raw` — has `--format json` but not snapshot-covered
+- `export` — has `--format json` but not snapshot-covered
+- `insights *` — 14 subcommands, mixed JSON support (`status`/`audit` contract-tested)
+- `diagnostics *` — 3 subcommands, no JSON snapshots
+- `maintenance *` — 5 subcommands, contract-tested for `status`
+
+### JSON Schema Publication
+
+Published JSON Schemas for stable CLI output surfaces live under
+`docs/schemas/cli-output/`. Run `devtools render-cli-output-schemas` to
+regenerate after changing a Pydantic model that feeds a CLI output surface.
+
+---
+
 ## Related Issues
 
 - [#1625](https://github.com/Sinity/polylogue/issues/1625) — `insights coverage|debt|...` hang with no output
