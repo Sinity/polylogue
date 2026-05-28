@@ -676,6 +676,14 @@ class LiveBatchProcessor:
                     path for path in unique_paths if path in states and bool(getattr(states[path], "converged", False))
                 }
                 debt_items = convergence_debt_from_states(unique_paths, states)
+                # #1654: after convergence, check for new hook events
+                # that carry paste evidence and update matching messages.
+                try:
+                    from polylogue.sources.live.hook_paste_enrichment import enrich_paste_from_hooks
+
+                    enrich_paste_from_hooks(self._cursor._db_path)
+                except Exception:
+                    logger.debug("hook_paste: enrichment failed (non-fatal)", exc_info=True)
                 return (
                     batch_completed,
                     time.perf_counter() - started,
