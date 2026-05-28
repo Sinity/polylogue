@@ -707,7 +707,7 @@ files:
     target: polylogue/cli/commands/context_pack.py
     owner: stable
   - path: polylogue/cli/commands/correlate.py
-    loc: 257
+    loc: 299
     target: polylogue/cli/commands/correlate.py
     owner: stable
   - path: polylogue/cli/commands/cost.py
@@ -1360,6 +1360,10 @@ files:
     loc: 216
     target: polylogue/insights/feedback.py
     owner: stable
+  - path: polylogue/insights/otlp_correlation.py
+    loc: 517
+    target: polylogue/insights/otlp_correlation.py
+    owner: stable
   - path: polylogue/insights/provenance.py
     loc: 130
     target: polylogue/insights/provenance.py
@@ -1498,7 +1502,7 @@ files:
     target: polylogue/mcp/server_context_tools.py
     owner: stable
   - path: polylogue/mcp/server_insight_tools.py
-    loc: 1001
+    loc: 1034
     target: polylogue/mcp/server_insight_tools.py
     owner: stable
   - path: polylogue/mcp/server_maintenance_tools.py

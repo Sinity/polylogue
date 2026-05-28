@@ -67,6 +67,7 @@ EXPECTED_TOOL_NAMES = {
     "find_similar_sessions",
     "correlate_session",
     "correlate_sessions",
+    "session_tool_timing",
     "cost_outlook",
     "archive_debt",
     "session_profiles",

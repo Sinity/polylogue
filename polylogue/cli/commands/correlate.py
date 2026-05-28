@@ -30,6 +30,12 @@ if TYPE_CHECKING:
     default=True,
     help="Cross-reference issue/PR references with GitHub API if gh CLI is available.",
 )
+@click.option(
+    "--otlp",
+    is_flag=True,
+    default=False,
+    help="Add OTLP span evidence to the correlation output.",
+)
 @click.pass_obj
 def correlate_command(
     env: AppEnv,
@@ -39,6 +45,7 @@ def correlate_command(
     output_format: str | None,
     confidence_threshold: float,
     github_api: bool,
+    otlp: bool,
 ) -> None:
     """Show git commits and GitHub refs within the session's time window (#1690)."""
     from polylogue.api.sync.bridge import run_coroutine_sync
@@ -104,6 +111,41 @@ def correlate_command(
         return
 
     _print_correlation_result(env, result)
+
+    # OTLP span evidence
+    if otlp:
+        _print_otlp_evidence(env, conversation_id, output_format)
+
+
+def _print_otlp_evidence(env: AppEnv, conversation_id: str, output_format: str | None) -> None:
+    """Print OTLP span evidence for a session, if available."""
+    from polylogue.insights.otlp_correlation import get_session_tool_timing
+    from polylogue.paths import db_path
+
+    try:
+        timing = get_session_tool_timing(str(db_path()), conversation_id)
+    except Exception:
+        env.ui.console.print("\n[dim]No OTLP data available.[/dim]")
+        return
+
+    if output_format == "json":
+        env.ui.console.print(json.dumps({"otlp_tool_timing": timing.as_dict()}, indent=2))
+        return
+
+    if not timing.evidence_available or not timing.tool_timings:
+        env.ui.console.print("\n[dim]No OTLP data for this session.[/dim]")
+        return
+
+    env.ui.console.print(f"\n[bold]OTLP Tool Timing[/bold] ({timing.total_tools_with_otlp} tools)")
+    env.ui.console.print("  Evidence source: otlp_span")
+
+    for t in timing.tool_timings:
+        status_color = "green" if t.status == "ok" else "red"
+        env.ui.console.print(
+            f"  - [bold]{t.tool_name}[/bold] [{status_color}]{t.status}[/{status_color}] [dim]{t.duration_ms}ms[/dim]"
+        )
+        if t.start_time:
+            env.ui.console.print(f"    {t.start_time} → {t.end_time}")
 
 
 def _enrich_with_github_api(result: SessionCorrelationResult) -> SessionCorrelationResult:

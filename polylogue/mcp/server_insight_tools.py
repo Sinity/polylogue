@@ -997,5 +997,38 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("correlate_session", run)
 
+    @mcp.tool()
+    async def session_tool_timing(session_id: str) -> str:
+        """Get per-tool timing breakdown with evidence provenance.
+
+        Returns per-tool timing from OTLP spans when available, falling back
+        to message-gap estimates. Each timing entry carries an
+        ``evidence_source`` field: ``"otlp_span"`` for exact wallclock timing
+        from instrumented tool calls, or ``"message_gap_estimate"`` for timing
+        inferred from inter-message gaps.
+        """
+
+        async def run() -> str:
+            # Verify the session exists
+            poly = hooks.get_polylogue()
+            conv = await poly.get_conversation(session_id)
+            if conv is None:
+                return hooks.error_json(
+                    "Conversation not found",
+                    code="not_found",
+                    conversation_id=session_id,
+                )
+
+            from polylogue.insights.otlp_correlation import get_session_tool_timing
+            from polylogue.paths import db_path
+
+            timing = get_session_tool_timing(str(db_path()), session_id)
+            return hooks.json_payload(
+                MCPRootPayload(root=timing.as_dict()),
+                exclude_none=True,
+            )
+
+        return await hooks.async_safe_call("session_tool_timing", run)
+
 
 __all__ = ["register_insight_tools"]
