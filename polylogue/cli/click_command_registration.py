@@ -169,6 +169,7 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("maintenance"),
     _L("tutorial"),
     _L("facets"),
+    _L("blackboard"),
 )
 
 
