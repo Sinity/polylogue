@@ -1,0 +1,30 @@
+name: Mutation Testing
+
+on:
+  schedule:
+    - cron: "37 3 * * 0" # weekly Sunday at 03:37 UTC
+  workflow_dispatch: {}
+
+jobs:
+  mutate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - run: nix develop . --command pip install mutmut
+      - name: Run rotating module subset
+        run: |
+          nix develop . --command bash -c '
+            modules=(
+              polylogue/core/hashing.py
+              polylogue/core/timestamps.py
+              polylogue/archive/message/paste_detection.py
+              polylogue/insights/confidence.py
+            )
+            idx=$(( $(date +%U) % ${#modules[@]} ))
+            echo "Running mutation campaign for: ${modules[$idx]}"
+            devtools mutmut-campaign run --module "${modules[$idx]}" || true
+          '
+      - name: Check freshness budget
+        run: nix develop . --command devtools verify-mutation-freshness --strict
