@@ -163,6 +163,29 @@ def session_enrichment_payload(
     raw_outcome = assistant_turns[-1] if assistant_turns else (user_turns[-1] if user_turns else None)
     outcome_summary = _clean_topic_text(raw_outcome, width=220) if raw_outcome else None
     fallback_reasons = enrichment_fallback_reasons(analysis, user_turns=user_turns)
+
+    # #1687: detect /goal-driven autonomous sessions from first user message.
+    import re
+
+    _goal_re = re.compile(r"^/goal\s+", re.IGNORECASE)
+    is_goal_session = False
+    goal_text: str | None = None
+    goal_outcome: str | None = None
+    if raw_intent and _goal_re.search(raw_intent):
+        is_goal_session = True
+        goal_text = _clean_topic_text(raw_intent, width=500) if raw_intent else None
+        # Classify outcome from terminal state and session shape.
+        ts = profile.terminal_state
+        if ts == "completed":
+            goal_outcome = "completed"
+        elif ts in ("abandoned", "error", "interrupted"):
+            goal_outcome = "failed" if ts == "error" else "abandoned"
+        elif ts == "timed_out":
+            goal_outcome = "timed_out"
+        elif ts == "stuck":
+            goal_outcome = "failed"
+        # Fall through: unknown terminal state → None
+
     return SessionEnrichmentPayload(
         intent_summary=intent_summary,
         outcome_summary=outcome_summary,
@@ -172,6 +195,9 @@ def session_enrichment_payload(
         support_signals=support_signals_val,
         input_band_summary=input_band_summary,
         fallback_reasons=fallback_reasons,
+        is_goal_session=is_goal_session,
+        goal_text=goal_text,
+        goal_outcome=goal_outcome,
     )
 
 

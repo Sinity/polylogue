@@ -199,6 +199,10 @@ class SessionEnrichmentPayload(ArchiveInsightModel):
     support_signals: tuple[str, ...] = ()
     input_band_summary: dict[str, int] = Field(default_factory=dict)
     fallback_reasons: tuple[FallbackReason, ...] = ()
+    # #1687: goal-driven session detection from /goal command in first user message.
+    is_goal_session: bool = False
+    goal_text: str | None = None
+    goal_outcome: str | None = None  # completed / failed / abandoned / timed_out
 
 
 def _normalize_timed_documents(value: object) -> object:
