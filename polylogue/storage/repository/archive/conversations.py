@@ -272,122 +272,94 @@ class RepositoryArchiveConversationMixin:
         # Empty list produces SQL ``IN ()`` which is a syntax error.
         if conversation_ids is not None and not conversation_ids:
             return result
+        # SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 999. When the
+        # scoped path passes >900 IDs we chunk and merge so the query
+        # never exceeds the engine limit. The global path (None) has no
+        # IN clause and does not need chunking.
+        _max_in_vars = 900
+
+        from typing import Any
+
+        async def _scoped_rows(
+            conn: Any,
+            scoped_sql: str,
+            global_sql: str,
+            params: list[str] | None,
+        ) -> list[Any]:
+            """Run a possibly-chunked scoped query or a single global query."""
+            if params is None:
+                return list(await (await conn.execute(global_sql)).fetchall())
+            rows: list[object] = []
+            for i in range(0, len(params), _max_in_vars):
+                chunk = params[i : i + _max_in_vars]
+                placeholders = ",".join("?" for _ in chunk)
+                rows.extend(await (await conn.execute(scoped_sql.format(placeholders), chunk)).fetchall())
+            return rows
+
+        # Accumulate keyed results from possibly-chunked rows.
+        def _keyed(rows: list[Any]) -> dict[str, int]:
+            return {row[0]: row[1] for row in rows if row[0]}
+
         async with self._backend.connection() as conn:
-            # repos — grouped by git_repository_url on conversations
-            if conversation_ids is not None:
-                placeholders = ",".join("?" for _ in conversation_ids)
-                repo_rows = await (
-                    await conn.execute(
-                        f"""
-                        SELECT git_repository_url, count(*) AS n
-                        FROM conversations
-                        WHERE git_repository_url IS NOT NULL
-                          AND conversation_id IN ({placeholders})
-                        GROUP BY git_repository_url
-                        """,
-                        conversation_ids,
-                    )
-                ).fetchall()
-            else:
-                repo_rows = await (
-                    await conn.execute(
-                        """
-                        SELECT git_repository_url, count(*) AS n
-                        FROM conversations
-                        WHERE git_repository_url IS NOT NULL
-                        GROUP BY git_repository_url
-                        """
-                    )
-                ).fetchall()
-            result["repos"] = {row[0]: row[1] for row in repo_rows if row[0]}
+            ids = conversation_ids  # None → global, list → scoped
 
-            # message_types
-            if conversation_ids is not None:
-                placeholders = ",".join("?" for _ in conversation_ids)
-                mt_rows = await (
-                    await conn.execute(
-                        f"""
-                        SELECT message_type, count(*) AS n
-                        FROM messages
-                        WHERE conversation_id IN ({placeholders})
-                        GROUP BY message_type
-                        """,
-                        conversation_ids,
-                    )
-                ).fetchall()
-            else:
-                mt_rows = await (
-                    await conn.execute(
-                        """
-                        SELECT message_type, count(*) AS n
-                        FROM messages
-                        GROUP BY message_type
-                        """
-                    )
-                ).fetchall()
-            result["message_types"] = {row[0]: row[1] for row in mt_rows if row[0]}
+            result["repos"] = _keyed(
+                await _scoped_rows(
+                    conn,
+                    """SELECT git_repository_url, count(*) AS n
+                    FROM conversations
+                    WHERE git_repository_url IS NOT NULL
+                      AND conversation_id IN ({})
+                    GROUP BY git_repository_url""",
+                    """SELECT git_repository_url, count(*) AS n
+                    FROM conversations
+                    WHERE git_repository_url IS NOT NULL
+                    GROUP BY git_repository_url""",
+                    ids,
+                )
+            )
 
-            # action_types
-            if conversation_ids is not None:
-                placeholders = ",".join("?" for _ in conversation_ids)
-                at_rows = await (
-                    await conn.execute(
-                        f"""
-                        SELECT action_kind, count(*) AS n
-                        FROM action_events
-                        WHERE conversation_id IN ({placeholders})
-                        GROUP BY action_kind
-                        """,
-                        conversation_ids,
-                    )
-                ).fetchall()
-            else:
-                at_rows = await (
-                    await conn.execute(
-                        """
-                        SELECT action_kind, count(*) AS n
-                        FROM action_events
-                        GROUP BY action_kind
-                        """
-                    )
-                ).fetchall()
-            result["action_types"] = {row[0]: row[1] for row in at_rows if row[0]}
+            result["message_types"] = _keyed(
+                await _scoped_rows(
+                    conn,
+                    """SELECT message_type, count(*) AS n
+                    FROM messages
+                    WHERE conversation_id IN ({})
+                    GROUP BY message_type""",
+                    """SELECT message_type, count(*) AS n
+                    FROM messages
+                    GROUP BY message_type""",
+                    ids,
+                )
+            )
 
-            # has_flags — booleans on messages
-            if conversation_ids is not None:
-                placeholders = ",".join("?" for _ in conversation_ids)
-                flag_rows = await (
-                    await conn.execute(
-                        f"""
-                        SELECT
-                            coalesce(sum(has_tool_use), 0) AS tool_use,
-                            coalesce(sum(has_thinking), 0) AS thinking,
-                            coalesce(sum(has_paste), 0)   AS paste
-                        FROM messages
-                        WHERE conversation_id IN ({placeholders})
-                        """,
-                        conversation_ids,
-                    )
-                ).fetchall()
-            else:
-                flag_rows = await (
-                    await conn.execute(
-                        """
-                        SELECT
-                            coalesce(sum(has_tool_use), 0) AS tool_use,
-                            coalesce(sum(has_thinking), 0) AS thinking,
-                            coalesce(sum(has_paste), 0)   AS paste
-                        FROM messages
-                        """
-                    )
-                ).fetchall()
-            flag_list = list(flag_rows)
-            row = flag_list[0] if flag_list else (0, 0, 0)
-            result["has_flags"] = {
-                "has_tool_use": row[0],
-                "has_thinking": row[1],
-                "has_paste": row[2],
-            }
+            result["action_types"] = _keyed(
+                await _scoped_rows(
+                    conn,
+                    """SELECT action_kind, count(*) AS n
+                    FROM action_events
+                    WHERE conversation_id IN ({})
+                    GROUP BY action_kind""",
+                    """SELECT action_kind, count(*) AS n
+                    FROM action_events
+                    GROUP BY action_kind""",
+                    ids,
+                )
+            )
+
+            flag_rows = await _scoped_rows(
+                conn,
+                """SELECT coalesce(sum(has_tool_use),0), coalesce(sum(has_thinking),0),
+                coalesce(sum(has_paste),0) FROM messages WHERE conversation_id IN ({})""",
+                """SELECT coalesce(sum(has_tool_use),0), coalesce(sum(has_thinking),0),
+                coalesce(sum(has_paste),0) FROM messages""",
+                ids,
+            )
+            # Merge chunked flag rows by summing corresponding columns.
+            tool_use = sum(r[0] for r in flag_rows)
+            thinking = sum(r[1] for r in flag_rows)
+            paste = sum(r[2] for r in flag_rows)
+            result["has_flags"] = {"has_tool_use": tool_use, "has_thinking": thinking, "has_paste": paste}
 
         return result
 

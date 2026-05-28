@@ -118,7 +118,14 @@ def compute_idf(buckets: FacetBuckets) -> dict[str, dict[str, float]]:
     if total <= 0:
         return {}
     out: dict[str, dict[str, float]] = {}
-    for family_name, family in (("providers", buckets.providers), ("tags", buckets.tags)):
+    for family_name, family in (
+        ("providers", buckets.providers),
+        ("tags", buckets.tags),
+        ("repos", buckets.repos),
+        ("message_types", buckets.message_types),
+        ("action_types", buckets.action_types),
+        ("has_flags", buckets.has_flags),
+    ):
         family_out: dict[str, float] = {}
         for value, count in family.items():
             if count <= 0:
