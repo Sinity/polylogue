@@ -167,6 +167,7 @@ Commands:
   bulk-export        Bulk export every matched conversation in one process.
   completions        Emit shell completion setup for polylogue.
   config             Show configuration paths and resolved settings.
+  context
   context-pack       Build a provenance-rich context pack for agent analysis.
   correlate
   cost               Summarize conversation cost telemetry.
