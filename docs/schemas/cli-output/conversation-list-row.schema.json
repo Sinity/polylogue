@@ -183,6 +183,18 @@
       "default": null,
       "title": "Anchor"
     },
+    "created_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Created At"
+    },
     "cwd_display": {
       "anyOf": [
         {
@@ -222,7 +234,13 @@
       "title": "Id",
       "type": "string"
     },
+    "message_count": {
+      "default": 0,
+      "title": "Message Count",
+      "type": "integer"
+    },
     "messages": {
+      "default": 0,
       "title": "Messages",
       "type": "integer"
     },
@@ -277,6 +295,18 @@
       "title": "Title",
       "type": "string"
     },
+    "updated_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Updated At"
+    },
     "words": {
       "anyOf": [
         {
@@ -293,8 +323,7 @@
   "required": [
     "id",
     "provider",
-    "title",
-    "messages"
+    "title"
   ],
   "title": "Conversation List Row",
   "type": "object",

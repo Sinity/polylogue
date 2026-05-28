@@ -451,8 +451,14 @@ class ConversationListRowPayload(SurfacePayloadModel):
     target_ref: TargetRefPayload | None = None
     anchor: str | None = None
     actions: dict[str, ReaderActionAvailabilityPayload] = Field(default_factory=reader_conversation_actions)
-    date: str | None = None
-    messages: int
+    # #1673 (field-name harmonization): created_at/updated_at replace the
+    # single ``date`` field; ``message_count`` replaces ``messages``.
+    # Old keys are kept for one release cycle so consumers can migrate.
+    created_at: str | None = None
+    updated_at: str | None = None
+    date: str | None = None  # deprecated — use created_at
+    message_count: int = 0
+    messages: int = 0  # deprecated — use message_count
     tags: tuple[str, ...] = ()
     summary: str | None = None
     words: int | None = None
@@ -463,14 +469,21 @@ class ConversationListRowPayload(SurfacePayloadModel):
     @classmethod
     def from_conversation(cls, conversation: Conversation) -> ConversationListRowPayload:
         conversation_id = str(conversation.id)
+        created_at = conversation.created_at.isoformat() if conversation.created_at else None
+        updated_at = conversation.updated_at.isoformat() if conversation.updated_at else None
+        display_date = conversation.display_date.isoformat() if conversation.display_date else None
+        msg_count = len(conversation.messages)
         return cls(
             id=conversation_id,
             provider=str(conversation.provider),
             title=conversation.display_title,
             target_ref=TargetRefPayload.conversation(conversation_id),
             anchor=reader_anchor("conversation", conversation_id),
-            date=conversation.display_date.isoformat() if conversation.display_date else None,
-            messages=len(conversation.messages),
+            created_at=created_at,
+            updated_at=updated_at,
+            date=display_date,  # deprecated — kept for one release cycle
+            message_count=msg_count,
+            messages=msg_count,  # deprecated — kept for one release cycle
             tags=tuple(conversation.tags),
             summary=conversation.summary,
             words=sum(message.word_count for message in conversation.messages),
@@ -491,14 +504,20 @@ class ConversationListRowPayload(SurfacePayloadModel):
         cwd_display: str | None = None,
     ) -> ConversationListRowPayload:
         conversation_id = str(summary.id)
+        created_at = summary.created_at.isoformat() if summary.created_at else None
+        updated_at = summary.updated_at.isoformat() if summary.updated_at else None
+        display_date = summary.display_date.isoformat() if summary.display_date else None
         return cls(
             id=conversation_id,
             provider=str(summary.provider),
             title=summary.display_title,
             target_ref=TargetRefPayload.conversation(conversation_id),
             anchor=reader_anchor("conversation", conversation_id),
-            date=summary.display_date.isoformat() if summary.display_date else None,
-            messages=message_count,
+            created_at=created_at,
+            updated_at=updated_at,
+            date=display_date,  # deprecated — kept for one release cycle
+            message_count=message_count,
+            messages=message_count,  # deprecated — kept for one release cycle
             tags=tuple(summary.tags),
             summary=summary.summary,
             words=word_count,
