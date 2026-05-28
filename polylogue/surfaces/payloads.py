@@ -1112,6 +1112,10 @@ class FacetBucketsPayload(SurfacePayloadModel):
 
     providers: dict[str, int] = Field(default_factory=dict)
     tags: dict[str, int] = Field(default_factory=dict)
+    repos: dict[str, int] = Field(default_factory=dict)
+    message_types: dict[str, int] = Field(default_factory=dict)
+    action_types: dict[str, int] = Field(default_factory=dict)
+    has_flags: dict[str, int] = Field(default_factory=dict)
     total_conversations: int = 0
     total_messages: int = 0
 

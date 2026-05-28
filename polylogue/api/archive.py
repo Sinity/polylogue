@@ -206,6 +206,21 @@ class PolylogueArchiveMixin:
             filter_obj = spec.build_filter(self.repository)
             scoped_summaries = await filter_obj.list_summaries()
             scoped_buckets = compute_facets(scoped_summaries)
+            # #1672: SQL aggregators scoped to matching conversations.
+            scoped_ids = [s.id for s in scoped_summaries]
+            scoped_sql = await self.repository.aggregate_facet_families(
+                conversation_ids=scoped_ids if scoped_ids else None,
+            )
+            scoped_buckets = _FacetBuckets(
+                providers=scoped_buckets.providers,
+                tags=scoped_buckets.tags,
+                repos=scoped_sql.get("repos", {}),
+                message_types=scoped_sql.get("message_types", {}),
+                action_types=scoped_sql.get("action_types", {}),
+                has_flags=scoped_sql.get("has_flags", {}),
+                total_conversations=scoped_buckets.total_conversations,
+                total_messages=scoped_buckets.total_messages,
+            )
         else:
             scoped_buckets = global_buckets
 
@@ -216,6 +231,10 @@ class PolylogueArchiveMixin:
             return FacetBucketsPayload(
                 providers=dict(b.providers),
                 tags=dict(b.tags),
+                repos=dict(b.repos),
+                message_types=dict(b.message_types),
+                action_types=dict(b.action_types),
+                has_flags=dict(b.has_flags),
                 total_conversations=b.total_conversations,
                 total_messages=b.total_messages,
             )
@@ -225,6 +244,10 @@ class PolylogueArchiveMixin:
                 "scoped_to_query": scoped_to_query,
                 "providers": dict(active.providers),
                 "tags": dict(active.tags),
+                "repos": dict(active.repos),
+                "message_types": dict(active.message_types),
+                "action_types": dict(active.action_types),
+                "has_flags": dict(active.has_flags),
                 "total_conversations": active.total_conversations,
                 "total_messages": active.total_messages,
                 "scoped": _payload(scoped_buckets),
@@ -238,15 +261,31 @@ class PolylogueArchiveMixin:
 
         Uses the same fluent filter machinery as the scoped path with
         no active predicates so both buckets are derived from one code
-        path.
+        path.  Per-message families (message_types, action_types,
+        has_flags) and repos are populated via SQL aggregators (#1672).
         """
+        from polylogue.archive.query.facets import FacetBuckets as _Buckets
         from polylogue.archive.query.facets import compute_facets
         from polylogue.archive.query.spec import ConversationQuerySpec
 
         empty_spec = ConversationQuerySpec()
         filter_obj = empty_spec.build_filter(self.repository)
         summaries = await filter_obj.list_summaries()
-        return compute_facets(summaries)
+        base = compute_facets(summaries)
+
+        # #1672: SQL-backed families that can't be derived from summaries.
+        sql_buckets = await self.repository.aggregate_facet_families()
+
+        return _Buckets(
+            providers=base.providers,
+            tags=base.tags,
+            repos=sql_buckets.get("repos", {}),
+            message_types=sql_buckets.get("message_types", {}),
+            action_types=sql_buckets.get("action_types", {}),
+            has_flags=sql_buckets.get("has_flags", {}),
+            total_conversations=base.total_conversations,
+            total_messages=base.total_messages,
+        )
 
     async def health_check(self) -> ReadinessReport:
         """Return the canonical archive readiness report."""

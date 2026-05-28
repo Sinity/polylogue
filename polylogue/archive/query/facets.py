@@ -32,10 +32,19 @@ class FacetBuckets:
     and value the number of conversations in the input set that carry
     the bucket. ``total_conversations``/``total_messages`` describe the
     input set itself.
+
+    The per-message families (``message_types``, ``action_types``,
+    ``has_flags``) and ``repos`` are populated by SQL-backed aggregators
+    because they require scanning tables beyond the conversation summary
+    surface.
     """
 
     providers: dict[str, int] = field(default_factory=dict)
     tags: dict[str, int] = field(default_factory=dict)
+    repos: dict[str, int] = field(default_factory=dict)
+    message_types: dict[str, int] = field(default_factory=dict)
+    action_types: dict[str, int] = field(default_factory=dict)
+    has_flags: dict[str, int] = field(default_factory=dict)
     total_conversations: int = 0
     total_messages: int = 0
 

@@ -117,6 +117,10 @@ class TestFacetsResponseEnvelope:
         assert dumped["scoped"] == {
             "providers": {"chatgpt": 1},
             "tags": {},
+            "repos": {},
+            "message_types": {},
+            "action_types": {},
+            "has_flags": {},
             "total_conversations": 1,
             "total_messages": 0,
         }

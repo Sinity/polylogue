@@ -249,5 +249,143 @@ class RepositoryArchiveConversationMixin:
         ):
             yield message_from_record(record, attachments=[], provider=source_name)
 
+    async def aggregate_facet_families(
+        self,
+        *,
+        conversation_ids: list[str] | None = None,
+    ) -> dict[str, dict[str, int]]:
+        """Run per-family SQL aggregators for facets that can't be computed
+        from conversation summaries alone.
+
+        Returns a dict keyed by family name (``repos``, ``message_types``,
+        ``action_types``, ``has_flags``). When ``conversation_ids`` is
+        provided, results are scoped to those conversations.
+
+        #1672 (phase 2 of #1623).
+        """
+        result: dict[str, dict[str, int]] = {
+            "repos": {},
+            "message_types": {},
+            "action_types": {},
+            "has_flags": {},
+        }
+        async with self._backend.connection() as conn:
+            # repos — grouped by git_repository_url on conversations
+            if conversation_ids is not None:
+                placeholders = ",".join("?" for _ in conversation_ids)
+                repo_rows = await (
+                    await conn.execute(
+                        f"""
+                        SELECT git_repository_url, count(*) AS n
+                        FROM conversations
+                        WHERE git_repository_url IS NOT NULL
+                          AND conversation_id IN ({placeholders})
+                        GROUP BY git_repository_url
+                        """,
+                        conversation_ids,
+                    )
+                ).fetchall()
+            else:
+                repo_rows = await (
+                    await conn.execute(
+                        """
+                        SELECT git_repository_url, count(*) AS n
+                        FROM conversations
+                        WHERE git_repository_url IS NOT NULL
+                        GROUP BY git_repository_url
+                        """
+                    )
+                ).fetchall()
+            result["repos"] = {row[0]: row[1] for row in repo_rows if row[0]}
+
+            # message_types
+            if conversation_ids is not None:
+                placeholders = ",".join("?" for _ in conversation_ids)
+                mt_rows = await (
+                    await conn.execute(
+                        f"""
+                        SELECT message_type, count(*) AS n
+                        FROM messages
+                        WHERE conversation_id IN ({placeholders})
+                        GROUP BY message_type
+                        """,
+                        conversation_ids,
+                    )
+                ).fetchall()
+            else:
+                mt_rows = await (
+                    await conn.execute(
+                        """
+                        SELECT message_type, count(*) AS n
+                        FROM messages
+                        GROUP BY message_type
+                        """
+                    )
+                ).fetchall()
+            result["message_types"] = {row[0]: row[1] for row in mt_rows if row[0]}
+
+            # action_types
+            if conversation_ids is not None:
+                placeholders = ",".join("?" for _ in conversation_ids)
+                at_rows = await (
+                    await conn.execute(
+                        f"""
+                        SELECT action_kind, count(*) AS n
+                        FROM action_events
+                        WHERE conversation_id IN ({placeholders})
+                        GROUP BY action_kind
+                        """,
+                        conversation_ids,
+                    )
+                ).fetchall()
+            else:
+                at_rows = await (
+                    await conn.execute(
+                        """
+                        SELECT action_kind, count(*) AS n
+                        FROM action_events
+                        GROUP BY action_kind
+                        """
+                    )
+                ).fetchall()
+            result["action_types"] = {row[0]: row[1] for row in at_rows if row[0]}
+
+            # has_flags — booleans on messages
+            if conversation_ids is not None:
+                placeholders = ",".join("?" for _ in conversation_ids)
+                flag_rows = await (
+                    await conn.execute(
+                        f"""
+                        SELECT
+                            coalesce(sum(has_tool_use), 0) AS tool_use,
+                            coalesce(sum(has_thinking), 0) AS thinking,
+                            coalesce(sum(has_paste), 0)   AS paste
+                        FROM messages
+                        WHERE conversation_id IN ({placeholders})
+                        """,
+                        conversation_ids,
+                    )
+                ).fetchall()
+            else:
+                flag_rows = await (
+                    await conn.execute(
+                        """
+                        SELECT
+                            coalesce(sum(has_tool_use), 0) AS tool_use,
+                            coalesce(sum(has_thinking), 0) AS thinking,
+                            coalesce(sum(has_paste), 0)   AS paste
+                        FROM messages
+                        """
+                    )
+                ).fetchall()
+            row = flag_rows[0] if flag_rows else (0, 0, 0)
+            result["has_flags"] = {
+                "has_tool_use": row[0],
+                "has_thinking": row[1],
+                "has_paste": row[2],
+            }
+
+        return result
+
 
 __all__ = ["RepositoryArchiveConversationMixin"]
