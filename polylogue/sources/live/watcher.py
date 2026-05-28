@@ -530,7 +530,9 @@ def default_sources() -> tuple[WatchSource, ...]:
         WatchSource(name="gemini-cli", root=gemini_cli_path(), suffixes=(".json", ".jsonl")),
         WatchSource(name="hermes", root=hermes_sessions_path(), suffixes=(".json",)),
         WatchSource(name="antigravity", root=antigravity_path(), suffixes=(".metadata.json",)),
-        WatchSource(name="inbox", root=archive_root() / "inbox"),
+        # #1683: inbox accepts archive, zip, and json-line formats so that
+        # GDPR exports (typically .zip) and raw .json dumps are observed.
+        WatchSource(name="inbox", root=archive_root() / "inbox", suffixes=(".jsonl", ".zip", ".json", ".ndjson")),
         WatchSource(name="hooks", root=hooks_sidecar_dir()),
     )
 

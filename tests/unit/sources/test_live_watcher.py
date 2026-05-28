@@ -1513,6 +1513,17 @@ def test_watch_source_accepts_configured_suffixes(tmp_path: Path) -> None:
     assert src.accepts(tmp_path / "README.md") is False
 
 
+def test_inbox_source_accepts_zip_and_archive_formats() -> None:
+    """#1683: inbox must accept .zip (GDPR exports), .json, .jsonl, .ndjson."""
+    from polylogue.sources.live.watcher import default_sources
+
+    inbox = next(s for s in default_sources() if s.name == "inbox")
+    assert ".zip" in inbox.suffixes
+    assert ".json" in inbox.suffixes
+    assert ".jsonl" in inbox.suffixes
+    assert ".ndjson" in inbox.suffixes
+
+
 # --- end-to-end via watchfiles -------------------------------------------------
 
 

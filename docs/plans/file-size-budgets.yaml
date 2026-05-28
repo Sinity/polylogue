@@ -75,8 +75,8 @@ exceptions:
     reason: "tiered health checks (fast/medium/expensive) with typed alerts, FTS-trigger drift detection + auto-restore (#1229), maintenance failure escalation (#1198), cursor-lag SLO + auto-calibrating anomaly band (#1232/#1349), and INFO-severity bulk-stage gating for the FTS trigger drift probe (#1613); split candidate: per-tier modules under daemon/health/"
 
   - path: tests/unit/sources/test_live_watcher.py
-    ceiling: 1600
-    reason: "kitchen-sink live-ingest test file (cursor, watcher, batch, debounce, bootstrap); split candidate: per-subject suites under tests/unit/sources/live/"
+    ceiling: 1620
+    reason: "kitchen-sink live-ingest test file (cursor, watcher, batch, debounce, bootstrap) + inbox suffix coverage (#1683); split candidate: per-subject suites under tests/unit/sources/live/"
 
   - path: polylogue/storage/sqlite/schema_bootstrap.py
     ceiling: 1700
