@@ -14,6 +14,7 @@ VERB_NAMES: frozenset[str] = frozenset(
         "messages",
         "raw",
         "select",
+        "recent",
     }
 )
 QUERY_VERB_NAMES = VERB_NAMES
