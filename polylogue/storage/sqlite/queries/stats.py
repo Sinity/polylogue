@@ -167,9 +167,13 @@ async def aggregate_message_stats(
             "providers": providers,
         }
 
-    # Unfiltered path — #1678: use conversation_stats for pre-aggregated
-    # counts (7.9K rows) instead of scanning 3.7M messages. Only the
-    # role-level splits (user/assistant/system) need the messages table.
+    # Unfiltered path — #1678: total/words moved from a full messages scan
+    # to conversation_stats (pre-aggregated, ~1 row per conversation).
+    # The role-level splits still scan messages, but the query is index-only
+    # (role is in idx_messages_provider_stats) — no table access for word_count.
+    # Provider counts also move to conversation_stats; this is consistent with
+    # get_provider_conversation_counts which queries conversations directly
+    # because zero-message conversations have no stats row.
     stats_row = await (
         await conn.execute(
             """
