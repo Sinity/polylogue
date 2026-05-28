@@ -820,9 +820,18 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         else:
             self._send_error(HTTPStatus.NOT_FOUND, "not_found")
 
+    # #1677: client disconnects (refresh, navigate, tab close) surface as
+    # BrokenPipeError from wfile.write(). Stdlib lets that escape as a
+    # traceback to journal; we demote it to debug — the client has already
+    # given up by the time we know.
+    _CLIENT_DISCONNECT = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
     def do_GET(self) -> None:
-        path, params = self._parse_path()
-        self._dispatch_get(path, params)
+        try:
+            path, params = self._parse_path()
+            self._dispatch_get(path, params)
+        except self._CLIENT_DISCONNECT as exc:
+            logger.debug("daemon.http.client_disconnected", method="GET", path=self.path, error=repr(exc))
 
     def _check_cross_origin(self) -> bool:
         """Reject browser cross-origin POSTs to mutating endpoints.
@@ -839,6 +848,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         return False
 
     def do_POST(self) -> None:
+        try:
+            self._do_post_impl()
+        except self._CLIENT_DISCONNECT as exc:
+            logger.debug("daemon.http.client_disconnected", method="POST", path=self.path, error=repr(exc))
+
+    def _do_post_impl(self) -> None:
         path, params = self._parse_path()
 
         # OTLP receiver endpoints (#1321) gated on the explicit
@@ -882,6 +897,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self._send_error(HTTPStatus.NOT_FOUND, "not_found")
 
     def do_DELETE(self) -> None:
+        try:
+            self._do_delete_impl()
+        except self._CLIENT_DISCONNECT as exc:
+            logger.debug("daemon.http.client_disconnected", method="DELETE", path=self.path, error=repr(exc))
+
+    def _do_delete_impl(self) -> None:
         path, params = self._parse_path()
 
         if not self._check_auth():
