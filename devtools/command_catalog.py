@@ -382,6 +382,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify-test-ownership", "devtools verify-test-ownership --json"),
     ),
     CommandSpec(
+        "verify-test-coverage-contracts",
+        "verification",
+        "Verify every production module >150 AST lines has a matching test file or exemption.",
+        "devtools.verify_test_coverage_contracts",
+        use_when=(
+            "Catches new production modules added without a dedicated test file. "
+            "Existing modules are grandfathered via docs/plans/test-coverage-exemptions.yaml. "
+            "Run as part of devtools verify --lab."
+        ),
+        examples=(
+            "devtools verify-test-coverage-contracts",
+            "devtools verify-test-coverage-contracts --json",
+            "devtools verify-test-coverage-contracts --threshold 100",
+        ),
+    ),
+    CommandSpec(
         "verify-closure-matrix",
         "verification",
         "Verify docs/plans/test-closure-matrix.yaml stays grounded in the realized tree.",

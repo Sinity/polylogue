@@ -655,7 +655,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 185
+    loc: 187
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -707,7 +707,7 @@ files:
     target: polylogue/cli/commands/context_pack.py
     owner: stable
   - path: polylogue/cli/commands/correlate.py
-    loc: 146
+    loc: 299
     target: polylogue/cli/commands/correlate.py
     owner: stable
   - path: polylogue/cli/commands/cost.py
@@ -757,6 +757,10 @@ files:
   - path: polylogue/cli/commands/neighbors.py
     loc: 121
     target: polylogue/cli/commands/neighbors.py
+    owner: stable
+  - path: polylogue/cli/commands/paths.py
+    loc: 244
+    target: polylogue/cli/commands/paths.py
     owner: stable
   - path: polylogue/cli/commands/reset.py
     loc: 243
@@ -1360,6 +1364,10 @@ files:
     loc: 216
     target: polylogue/insights/feedback.py
     owner: stable
+  - path: polylogue/insights/otlp_correlation.py
+    loc: 501
+    target: polylogue/insights/otlp_correlation.py
+    owner: stable
   - path: polylogue/insights/provenance.py
     loc: 130
     target: polylogue/insights/provenance.py
@@ -1379,6 +1387,10 @@ files:
   - path: polylogue/insights/rigor.py
     loc: 263
     target: polylogue/insights/rigor.py
+    owner: stable
+  - path: polylogue/insights/session_commit.py
+    loc: 548
+    target: polylogue/insights/session_commit.py
     owner: stable
   - path: polylogue/insights/storage.py
     loc: 139
@@ -1490,11 +1502,11 @@ files:
     target: polylogue/mcp/server.py
     owner: stable
   - path: polylogue/mcp/server_context_tools.py
-    loc: 272
+    loc: 362
     target: polylogue/mcp/server_context_tools.py
     owner: stable
   - path: polylogue/mcp/server_insight_tools.py
-    loc: 500
+    loc: 1034
     target: polylogue/mcp/server_insight_tools.py
     owner: stable
   - path: polylogue/mcp/server_maintenance_tools.py
@@ -1560,6 +1572,10 @@ files:
   - path: polylogue/paths/_roots.py
     loc: 130
     target: polylogue/paths/_roots.py
+    owner: stable
+  - path: polylogue/paths/archive_db_stub.py
+    loc: 66
+    target: polylogue/paths/archive_db_stub.py
     owner: stable
   - path: polylogue/paths/sanitize.py
     loc: 59
@@ -3314,7 +3330,7 @@ files:
     target: polylogue/storage/sqlite/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/async_sqlite.py
-    loc: 567
+    loc: 570
     target: polylogue/storage/sqlite/async_sqlite.py
     owner: stable
   - path: polylogue/storage/sqlite/async_sqlite_archive.py
@@ -3326,7 +3342,7 @@ files:
     target: polylogue/storage/sqlite/async_sqlite_raw.py
     owner: stable
   - path: polylogue/storage/sqlite/connection.py
-    loc: 252
+    loc: 256
     target: polylogue/storage/sqlite/connection.py
     owner: stable
   - path: polylogue/storage/sqlite/connection_profile.py
@@ -3598,7 +3614,7 @@ files:
     target: polylogue/storage/sqlite/schema_ddl_provider_events.py
     owner: stable
   - path: polylogue/storage/sqlite/schema_ddl_repo_identity.py
-    loc: 56
+    loc: 80
     target: polylogue/storage/sqlite/schema_ddl_repo_identity.py
     owner: stable
   - path: polylogue/storage/sqlite/sqlite_vec_extension.py

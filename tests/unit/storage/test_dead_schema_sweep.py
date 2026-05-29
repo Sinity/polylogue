@@ -48,8 +48,9 @@ def test_schema_version_is_18() -> None:
     # 14 → 16 by subsequent schema-touching PRs,
     # 16 → 17 by #1655 (paste_boundary_state on messages),
     # 17 → 18 by #1697 (blackboard_notes table),
-    # 18 → 19 by #1686 (otlp_spans table).
-    assert SCHEMA_VERSION == 19
+    # 18 → 19 by #1686 (otlp_spans table),
+    # 19 → 20 by #1690 (session_commit_edges table).
+    assert SCHEMA_VERSION == 20
 
 
 def test_content_blocks_table_has_no_media_type_column(fresh_schema_db: Mapping[str, sqlite3.Connection]) -> None:

@@ -102,6 +102,7 @@ _SHORT_HELP: dict[str, str] = {
     "insights": "Rebuild and inspect derived session insights.",
     "maintenance": "Preview and run maintenance backfill operations.",
     "neighbors": "Show semantic neighbors for a conversation.",
+    "paths": "Print canonical archive paths and bind-mount detection.",
     "reset": "Reset local archive state.",
     "resume": "Resume from recent conversation context.",
     "resume_candidates": "Rank resume candidates for the current context.",
@@ -117,6 +118,7 @@ _COMMAND_NAMES: dict[str, str] = {
 }
 
 _GROUP_ATTRS: dict[str, str] = {
+    "blackboard": "blackboard_command",
     "cost": "cost_command",
     "diagnostics": "diagnostics_group",
     "embed": "embed_command",
@@ -158,6 +160,7 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("completions"),
     _L("dashboard"),
     _L("neighbors"),
+    _L("paths"),
     _L("export"),
     _L("resume"),
     _L("resume_candidates"),

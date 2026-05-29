@@ -1,4 +1,212 @@
 # serializer version: 1
+# name: test_json_count_snapshot
+  '''
+  2
+  
+  '''
+# ---
+# name: test_json_facets_snapshot
+  '''
+  {
+    "scoped_to_query": false,
+    "providers": {
+      "chatgpt": 2
+    },
+    "tags": {},
+    "repos": {},
+    "cwd_prefixes": {},
+    "message_types": {
+      "message": 10
+    },
+    "action_types": {},
+    "has_flags": {
+      "has_tool_use": 0,
+      "has_thinking": 0,
+      "has_paste": 0
+    },
+    "time_range": null,
+    "total_conversations": 2,
+    "total_messages": 10,
+    "scoped": {
+      "providers": {
+        "chatgpt": 2
+      },
+      "tags": {},
+      "repos": {},
+      "message_types": {
+        "message": 10
+      },
+      "action_types": {},
+      "has_flags": {
+        "has_tool_use": 0,
+        "has_thinking": 0,
+        "has_paste": 0
+      },
+      "total_conversations": 2,
+      "total_messages": 10
+    },
+    "global": {
+      "providers": {
+        "chatgpt": 2
+      },
+      "tags": {},
+      "repos": {},
+      "message_types": {
+        "message": 10
+      },
+      "action_types": {},
+      "has_flags": {
+        "has_tool_use": 0,
+        "has_thinking": 0,
+        "has_paste": 0
+      },
+      "total_conversations": 2,
+      "total_messages": 10
+    },
+    "idf": {
+      "providers": {
+        "chatgpt": 0.0
+      },
+      "message_types": {
+        "message": -1.<HASH>
+      }
+    }
+  }
+  
+  '''
+# ---
+# name: test_json_list_snapshot
+  '''
+  {
+    "items": [
+      {
+        "id": "chatgpt:402913ec-9ef2-493e-b0ac-<HASH>",
+        "provider": "chatgpt",
+        "title": "corpus-01",
+        "target_ref": {
+          "target_type": "conversation",
+          "target_id": "chatgpt:402913ec-9ef2-493e-b0ac-<HASH>",
+          "conversation_id": "chatgpt:402913ec-9ef2-493e-b0ac-<HASH>",
+          "identity_key": "conversation:chatgpt:402913ec-9ef2-493e-b0ac-<HASH>"
+        },
+        "anchor": "conversation-chatgpt-402913ec-9ef2-493e-b0ac-<HASH>",
+        "actions": {
+          "open": {
+            "enabled": true,
+            "state": "enabled"
+          },
+          "copy_link": {
+            "enabled": true,
+            "state": "enabled"
+          },
+          "annotate": {
+            "enabled": true,
+            "state": "enabled"
+          }
+        },
+        "created_at": "<TIMESTAMP>",
+        "updated_at": "<TIMESTAMP>",
+        "date": "<TIMESTAMP>",
+        "message_count": 5,
+        "messages": 5,
+        "tags": []
+      },
+      {
+        "id": "chatgpt:8a476a87-e49d-481d-91d8-<HASH>",
+        "provider": "chatgpt",
+        "title": "corpus-00",
+        "target_ref": {
+          "target_type": "conversation",
+          "target_id": "chatgpt:8a476a87-e49d-481d-91d8-<HASH>",
+          "conversation_id": "chatgpt:8a476a87-e49d-481d-91d8-<HASH>",
+          "identity_key": "conversation:chatgpt:8a476a87-e49d-481d-91d8-<HASH>"
+        },
+        "anchor": "conversation-chatgpt-8a476a87-e49d-481d-91d8-<HASH>",
+        "actions": {
+          "open": {
+            "enabled": true,
+            "state": "enabled"
+          },
+          "copy_link": {
+            "enabled": true,
+            "state": "enabled"
+          },
+          "annotate": {
+            "enabled": true,
+            "state": "enabled"
+          }
+        },
+        "created_at": "<TIMESTAMP>",
+        "updated_at": "<TIMESTAMP>",
+        "date": "<TIMESTAMP>",
+        "message_count": 5,
+        "messages": 5,
+        "tags": []
+      }
+    ],
+    "total": 2,
+    "limit": 2,
+    "offset": 0
+  }
+  
+  '''
+# ---
+# name: test_json_stats_snapshot
+  '''
+  {
+    "dimension": "archive",
+    "multi_membership": false,
+    "rows": [],
+    "summary": {
+      "conversations": 2,
+      "messages_total": 10,
+      "messages_user": 6,
+      "messages_assistant": 4,
+      "words_approx": 254,
+      "attachment_refs": 0,
+      "distinct_attachments": 0,
+      "providers": {
+        "chatgpt": 2
+      },
+      "date_range": "<TIMESTAMP> to <TIMESTAMP>",
+      "filtered": false,
+      "embeddings": {
+        "embedded_conversations": 0,
+        "embedded_messages": 0,
+        "pending_embedding_conversations": 2,
+        "stale_embedding_messages": 0,
+        "messages_missing_embedding_provenance": 0,
+        "embedding_coverage_percent": 0.0,
+        "embedding_readiness_status": "none",
+        "retrieval_ready": false
+      }
+    }
+  }
+  
+  '''
+# ---
+# name: test_json_status_snapshot
+  '''
+  {
+    "daemon_liveness": false,
+    "archive_root": "<PATH>",
+    "db_exists": true,
+    "config_exists": false,
+    "config_path": "<PATH>",
+    "next_action": "polylogue init",
+    "diagnostic": {
+      "kind": "no_sources",
+      "headline": "No configured chat sources.",
+      "detail": "No `<PATH>` found. Run `polylogue init` to detect chat sources and write a starter config.",
+      "next_action": "polylogue init"
+    },
+    "conversations": 2,
+    "messages": 10,
+    "raw_records": 2
+  }
+  
+  '''
+# ---
 # name: test_plain_count_snapshot
   '''
   2

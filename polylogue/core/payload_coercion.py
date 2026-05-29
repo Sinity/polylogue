@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import TypeAlias, TypeGuard
 
 PayloadMapping: TypeAlias = Mapping[str, object]
@@ -51,11 +51,22 @@ def optional_string(value: object) -> str | None:
 
 
 def optional_datetime(value: object) -> datetime | None:
+    """Coerce a value to a UTC-aware datetime or None.
+
+    ISO strings without timezone offsets are treated as UTC.
+    Already-aware datetimes are returned as-is (converted to UTC).
+    Naive datetimes are assumed to be UTC.
+    """
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value
-    return datetime.fromisoformat(str(value))
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+    dt = datetime.fromisoformat(str(value))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 def optional_date(value: object) -> date | None:

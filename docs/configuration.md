@@ -22,6 +22,53 @@ Polylogue follows XDG Base Directory specification:
 └── token.json                      # OAuth token cache
 ```
 
+## Canonical Paths
+
+Polylogue resolves all filesystem locations through `polylogue.paths` using
+XDG environment variables. The defaults (when no override is set) are:
+
+| Location | Default path | Override |
+|---|---|---|
+| Archive root | `~/.local/share/polylogue/` | `POLYLOGUE_ARCHIVE_ROOT` |
+| Database | `~/.local/share/polylogue/polylogue.db` | (follows data home) |
+| Blob store | `~/.local/share/polylogue/blob/` | (follows data home) |
+| Config file | `~/.config/polylogue/polylogue.toml` | `POLYLOGUE_CONFIG` |
+| Config dir | `~/.config/polylogue/` | `XDG_CONFIG_HOME` |
+
+Use `polylogue paths` to print the resolved paths for the current
+environment, or `polylogue paths --format json` for machine-readable
+output. The command also reports any detected bind mounts and
+non-canonical files at the archive root.
+
+### Bind Mounts and `/realm/data/captures/`
+
+Some deployments (such as the [sinnix](https://github.com/Sinity/sinnix)
+NixOS configuration) expose the archive at two path strings through a
+btrfs subvolume bind mount:
+
+```
+~/.local/share/polylogue/       → same files as below
+/realm/data/captures/polylogue/ → same files as above
+```
+
+Both paths refer to the **same physical directory** — they share device
+and inode numbers. The bind mount is transparent to Polylogue; the
+daemon, CLI, and MCP server all operate on whichever path they resolve.
+
+**Which path to use in `polylogue.toml`:**
+
+- Use `~/.local/share/polylogue` (the XDG default) as the canonical
+  path in configuration and MCP server settings. It is portable across
+  hosts and does not depend on the sinnix data-lake layout.
+- `/realm/data/captures/polylogue` is the same directory via bind mount
+  and is equally correct at runtime. It only exists on hosts that run
+  the sinnix configuration; referencing it from config files makes them
+  host-specific.
+
+If both path strings appear in logs or tool output, they do **not**
+indicate two separate archives or a misconfiguration — they are the
+same directory tree.
+
 ## Input Conventions
 
 - `polylogued run` watches configured source roots and owns ingestion.

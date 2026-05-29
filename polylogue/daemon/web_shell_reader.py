@@ -27,6 +27,19 @@ READER_CSS = r"""
 }
 .msg-actions .act-btn:hover { color: var(--text); border-color: var(--text-dim); }
 .msg-actions .act-btn.flash { color: var(--ok); border-color: var(--ok); }
+
+/* --- message anchor permalink (#1518 slice 1a) -------------------------- */
+.msg-anchor-link {
+  display: none; color: var(--text-dim); font-size: 12px; text-decoration: none;
+  padding: 0 4px; cursor: pointer; user-select: none; line-height: 1;
+  font-weight: 400; margin-left: 2px;
+}
+.msg-block:hover .msg-anchor-link { display: inline; }
+.msg-anchor-link:hover { color: var(--accent); }
+.msg-anchor-link.flash { color: var(--ok); }
+.msg-anchor-link.copied { color: var(--ok); }
+.msg-anchor-target { scroll-margin-top: 48px; }
+
 .msg-fold {
   display: flex; align-items: center; gap: 6px; padding: 4px 8px; margin: 4px 0;
   border: 1px solid var(--border); border-radius: var(--radius);
@@ -62,6 +75,44 @@ READER_CSS = r"""
   margin: 0; padding: 8px 12px; font-family: var(--font-mono); font-size: var(--code);
   white-space: pre-wrap; word-break: break-word; color: var(--text);
 }
+
+/* --- long-text fold (#1518 slice 1b) ------------------------------------ */
+.msg-text-fold {
+  margin: 4px 0; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--panel-subtle);
+}
+.msg-text-fold .fold-bar {
+  display: flex; gap: 6px; padding: 3px 8px; cursor: pointer;
+  color: var(--text-muted); font-family: var(--font-mono); font-size: 11px;
+  user-select: none; border-bottom: 1px solid transparent;
+}
+.msg-text-fold .fold-bar:hover { color: var(--text); }
+.msg-text-fold.open .fold-bar { border-bottom-color: var(--border); }
+.msg-text-fold .fold-arrow { color: var(--text-dim); width: 10px; display: inline-block; }
+.msg-text-fold.open .fold-arrow::before { content: '\25BE'; }
+.msg-text-fold:not(.open) .fold-arrow::before { content: '\25B8'; }
+.msg-text-fold .text-fold-body { display: none; }
+.msg-text-fold.open .text-fold-body { display: block; }
+.msg-text-fold .text-fold-body .msg-text {
+  max-height: 300px; overflow-y: auto; padding: 6px 10px;
+  font-family: var(--font-mono); font-size: var(--code);
+  white-space: pre-wrap; word-break: break-word; color: var(--text);
+}
+
+/* --- density toggle (#1518 slice 1c) ------------------------------------ */
+[data-density] #msg-list .msg-block { padding: 7px 16px; }
+[data-density="compact"] #msg-list .msg-block { padding: 3px 12px; }
+[data-density="compact"] #msg-list .msg-block .msg-header { margin-bottom: 1px; }
+[data-density="compact"] #msg-list .msg-text { font-size: 10px; line-height: 1.35; }
+[data-density="compact"] #msg-list .msg-code-fold .code-body pre { padding: 3px 8px; font-size: 10px; }
+[data-density="compact"] .msg-fold { padding: 2px 4px; margin: 1px 0; font-size: 10px; }
+.density-toggle {
+  background: var(--panel-elevated); border: 1px solid var(--border);
+  color: var(--text-muted); padding: 2px 8px; border-radius: 3px;
+  cursor: pointer; font-size: 10px; font-family: var(--font-ui); line-height: 1.4;
+}
+.density-toggle:hover { color: var(--text); border-color: var(--text-dim); }
+.density-toggle.active { color: var(--accent); border-color: var(--accent-soft); background: var(--accent-bg); }
 """
 
 
@@ -70,18 +121,25 @@ READER_CSS = r"""
 #   - ``renderMessageBlocks(messages)``       — installed as ``messageBlocksHtml``
 #   - ``togglePolyFold(el)``                  — fold/unfold a tool/thinking block
 #   - ``toggleCodeFold(el)``                  — fold/unfold a code block
+#   - ``toggleTextFold(el)``                  — fold/unfold a long text block (#1518)
 #   - ``copyMessageById(messageId)``          — copy message text to clipboard
+#   - ``copyMessageAnchor(anchor)``           — copy message anchor URL (#1518)
 #   - ``jumpToAnchor(anchor)``                — set URL hash and scroll into view
 #   - ``focusMessageByIndex(idx)``            — focus a message card (j/k drive)
 #   - ``installReaderShortcuts()``            — registers the keydown handler
+#   - ``installDensityToggle()``              — inits density preference + UI (#1518)
 #
 # The fold policy:
 #   tool_use / tool_result / role==='tool'   → fold by default, show summary
 #   thinking block (heuristic)               → fold by default, show "[thinking N tokens]"
 #   code blocks (\u200b\u200bdetected via    → fold per block, button per block
 #     fenced ``` markers in the text)
+#   long text blocks (>40 lines or >500      → fold by default (#1518 slice 1b)
+#     chars) applied post-render
 READER_JS = r"""
 // MK3 reader message-card slice (#1202).
+// Extended with anchor permalinks, long-text folds, density toggle,
+// and g g / G scroll shortcuts (#1518 slices 1a–1d).
 
 // Word-count proxy used in fold-summary chips. Token-true counts would
 // require a tokenizer round-trip; the word count is what the daemon
@@ -376,8 +434,10 @@ function renderMessageBlocks(messages) {
     return ''
       + '<div class="' + blockClass + '" id="msg-' + idx + '" data-msg-id="' + escAttr(String(m.id || ''))
       +   '" data-anchor="' + escAttr(anchor) + '" tabindex="-1">'
-      +   '<a id="' + escAttr(anchor) + '" style="position:absolute;visibility:hidden"></a>'
+      +   '<a id="' + escAttr(anchor) + '" class="msg-anchor-target"></a>'
       +   '<div class="msg-header">'
+      +     '<span class="msg-anchor-link" title="Copy anchor link" '
+      +       'onclick="copyMessageAnchor(\'' + escAttr(anchor) + '\')">#</span>'
       +     '<span class="' + roleClass + '">' + esc(role || '?') + '</span>'
       +     typeTag + tsHtml + rail
       +   '</div>'
@@ -394,6 +454,69 @@ function togglePolyFold(headerEl) {
 function toggleCodeFold(wrapperEl) {
   if (!wrapperEl) return;
   wrapperEl.classList.toggle('open');
+}
+
+function toggleTextFold(wrapperEl) {
+  if (!wrapperEl) return;
+  wrapperEl.classList.toggle('open');
+}
+
+function copyMessageAnchor(anchor) {
+  if (!anchor) return;
+  var url = window.location.origin + window.location.pathname + '#' + anchor;
+  var linkEl = document.querySelector('.msg-actions[data-anchor="' + anchor.replace(/"/g, '\\"') + '"] .act-btn[data-act="jump-anchor"]');
+  _polyClipboardWrite(url, linkEl);
+}
+
+// --- long-text fold post-render hook (#1518 slice 1b) -------------------
+// After the message list is rendered, walk .msg-text elements and fold
+// any that exceed the threshold (40+ lines or 500+ chars). A sibling
+// fold-bar is prepended so the operator can expand on click.
+var _TEXT_FOLD_LINE_LIMIT = 40;
+var _TEXT_FOLD_CHAR_LIMIT = 500;
+
+function _polyApplyTextFolds(container) {
+  if (!container) return;
+  var textBlocks = container.querySelectorAll('.msg-text');
+  textBlocks.forEach(function(el) {
+    var text = el.textContent || '';
+    var lines = text.split('\n').length;
+    var chars = text.length;
+    if (lines < _TEXT_FOLD_LINE_LIMIT && chars < _TEXT_FOLD_CHAR_LIMIT) return;
+    if (el.closest('.msg-fold-body') || el.closest('.text-fold-body') || el.closest('.code-body')) return;
+    var wrapper = document.createElement('div');
+    wrapper.className = 'msg-text-fold open';
+    var foldBar = document.createElement('div');
+    foldBar.className = 'fold-bar';
+    foldBar.innerHTML = '<span class="fold-arrow"></span>'
+      + '<span class="fold-label" style="color:var(--accent)">text</span>'
+      + '<span class="fold-meta" style="color:var(--text-dim);margin-left:auto">'
+      + lines + ' lines, ' + chars + ' chars</span>';
+    foldBar.onclick = function() { toggleTextFold(wrapper); };
+    var body = document.createElement('div');
+    body.className = 'text-fold-body';
+    el.parentNode.insertBefore(wrapper, el);
+    wrapper.appendChild(foldBar);
+    body.appendChild(el);
+    wrapper.appendChild(body);
+    // Start collapsed after the first paint so the operator sees the
+    // fold bar rather than a wall of text.
+    wrapper.classList.remove('open');
+  });
+}
+
+function _polyInstallTextFoldObserver() {
+  // After renderMessageBlocks writes to #msg-list, apply folds.
+  var msgList = document.getElementById('msg-list');
+  if (!msgList || typeof MutationObserver === 'undefined') return;
+  var obs = new MutationObserver(function(mutations) {
+    mutations.forEach(function(m) {
+      m.addedNodes.forEach(function(node) {
+        if (node.nodeType === 1) _polyApplyTextFolds(node);
+      });
+    });
+  });
+  obs.observe(msgList, {childList: true, subtree: true});
 }
 
 function _flashActButton(btn) {
@@ -517,6 +640,43 @@ function _polyHandleOpenConversation() {
   return false;
 }
 
+// --- density toggle (#1518 slice 1c) -----------------------------------
+var _DENSITY_KEY = 'polylogue-reader-density';
+var _doubleGtimer = 0;
+
+function _applyDensity(density) {
+  document.documentElement.setAttribute('data-density', density);
+  try { localStorage.setItem(_DENSITY_KEY, density); } catch(_) {}
+  var btns = document.querySelectorAll('.density-toggle');
+  btns.forEach(function(b) {
+    b.classList.toggle('active', b.dataset.density === density);
+  });
+}
+
+function installDensityToggle() {
+  var saved = 'comfortable';
+  try { saved = localStorage.getItem(_DENSITY_KEY) || 'comfortable'; } catch(_) {}
+  _applyDensity(saved);
+  // Append a small toggle button next to the help button in the search box.
+  var searchBox = document.getElementById('search-box');
+  if (searchBox) {
+    var btn = document.createElement('button');
+    btn.className = 'density-toggle';
+    btn.title = 'Toggle message density (compact / comfortable)';
+    btn.dataset.density = saved;
+    btn.textContent = saved === 'compact' ? 'C' : 'A';
+    btn.onclick = function() {
+      var next = saved === 'compact' ? 'comfortable' : 'compact';
+      saved = next;
+      _applyDensity(next);
+      btn.textContent = next === 'compact' ? 'C' : 'A';
+      btn.dataset.density = next;
+    };
+    btn.classList.toggle('active', saved === 'compact');
+    searchBox.appendChild(btn);
+  }
+}
+
 function installReaderShortcuts() {
   // The base handler in web_shell.py owns ``/``, ``?``, ``Esc``, ``n/p`` and
   // delegates ``j/k`` to a hook so this slice can switch between sidebar
@@ -535,6 +695,28 @@ function installReaderShortcuts() {
       if (_polyHandleCopyFocused()) { e.preventDefault(); e.stopPropagation(); }
     } else if (e.key === 'o') {
       if (_polyHandleOpenConversation()) { e.preventDefault(); e.stopPropagation(); }
+    }
+    // g g — scroll to top of message list (#1518 slice 1d)
+    if (e.key === 'g' && !e.shiftKey && hasConversation) {
+      var now = Date.now();
+      if (now - _doubleGtimer < 500) {
+        var msgList = document.getElementById('msg-list');
+        if (msgList) { msgList.scrollTo({top: 0, behavior: 'smooth'}); }
+        e.preventDefault(); e.stopPropagation();
+        _doubleGtimer = 0;
+      } else {
+        _doubleGtimer = now;
+      }
+      return;
+    }
+    // G (shift-g) — scroll to bottom of message list (#1518 slice 1d)
+    if (e.key === 'G' && hasConversation) {
+      _doubleGtimer = 0;
+      var msgList2 = document.getElementById('msg-list');
+      if (msgList2) {
+        msgList2.scrollTo({top: msgList2.scrollHeight, behavior: 'smooth'});
+      }
+      e.preventDefault(); e.stopPropagation();
     }
   }, true);
 
@@ -558,9 +740,15 @@ function installReaderShortcuts() {
 // Install on load — both the original ``DOMContentLoaded`` and the
 // already-loaded case are covered.
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', installReaderShortcuts);
+  document.addEventListener('DOMContentLoaded', function() {
+    installReaderShortcuts();
+    installDensityToggle();
+    _polyInstallTextFoldObserver();
+  });
 } else {
   installReaderShortcuts();
+  installDensityToggle();
+  _polyInstallTextFoldObserver();
 }
 """
 
@@ -571,6 +759,8 @@ if (document.readyState === 'loading') {
 READER_HELP_HTML = r"""
       <kbd>o</kbd><span>Open focused conversation</span>
       <kbd>c</kbd><span>Copy focused message text</span>
+      <kbd>g g</kbd><span>Scroll to top of messages</span>
+      <kbd>G</kbd><span>Scroll to bottom of messages</span>
 """
 
 __all__ = ["READER_CSS", "READER_JS", "READER_HELP_HTML"]

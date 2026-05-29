@@ -85,6 +85,13 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "build_context_pack": "single_object",
     "readiness_check": "single_object",
     "insight_rigor_audit": "single_object",
+    "aggregate_sessions": "single_object",
+    "compare_sessions": "single_object",
+    "find_similar_sessions": "single_object",
+    "correlate_sessions": "single_object",
+    "correlate_session": "single_object",
+    "session_tool_timing": "single_object",
+    "compose_context_preamble": "single_object",
     # ------- stats / map -------
     "get_stats_by": "stats_map",
     "tool_call_latency_distribution": "single_object",

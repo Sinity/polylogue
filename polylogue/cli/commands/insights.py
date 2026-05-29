@@ -141,7 +141,48 @@ def _build_insight_command(pt: InsightType) -> click.Command:
     )
 
 
-@click.group("insights")
+class _InsightsGroup(click.Group):
+    """Click group with section headers for command listing."""
+
+    _SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("Session-level", ("profiles", "work-events", "phases", "timeline")),
+        ("Aggregate", ("threads", "tag-rollups", "coverage", "tags")),
+        ("Analytics", ("tool-usage", "costs", "cost-rollups", "debt", "latency")),
+        ("Admin", ("status", "audit", "export")),
+    )
+
+    def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        section_commands: dict[str, list[tuple[str, str]]] = {sec[0]: [] for sec in self._SECTIONS}
+        other: list[tuple[str, str]] = []
+
+        for name in self.list_commands(ctx):
+            cmd = self.get_command(ctx, name)
+            if cmd is None:
+                continue
+            help_text = cmd.get_short_help_str(limit=formatter.width) if cmd.help else ""
+            placed = False
+            for section_title, cmd_names in self._SECTIONS:
+                if name in cmd_names:
+                    section_commands[section_title].append((name, help_text))
+                    placed = True
+                    break
+            if not placed:
+                other.append((name, help_text))
+
+        limit = formatter.width
+        for section_title, _ in self._SECTIONS:
+            cmds = section_commands[section_title]
+            if not cmds:
+                continue
+            with formatter.section(section_title):
+                formatter.write_dl(sorted(cmds), col_max=limit)
+
+        if other:
+            with formatter.section("Other"):
+                formatter.write_dl(sorted(other), col_max=limit)
+
+
+@click.group("insights", cls=_InsightsGroup)
 def insights_command() -> None:
     """Inspect durable archive insights."""
 
