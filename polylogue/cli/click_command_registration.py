@@ -90,7 +90,9 @@ _SHORT_HELP: dict[str, str] = {
     "check": "Run archive health checks and repairs.",
     "completions": "Emit shell completion setup for polylogue.",
     "config": "Show configuration paths and resolved settings.",
+    "context": "Compose context preamble from archive objects.",
     "context_pack": "Build a provenance-rich context pack for agent analysis.",
+    "correlate": "Cross-reference sessions with git commits, issues, and PRs.",
     "cost": "Summarize conversation cost telemetry.",
     "dashboard": "Open the local dashboard.",
     "diagnostics": "Temporal session diagnostics",
@@ -119,6 +121,7 @@ _COMMAND_NAMES: dict[str, str] = {
 
 _GROUP_ATTRS: dict[str, str] = {
     "blackboard": "blackboard_command",
+    "context": "context_command",
     "cost": "cost_command",
     "diagnostics": "diagnostics_group",
     "embed": "embed_command",
