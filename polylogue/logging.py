@@ -1,4 +1,8 @@
-"""Structured logging configuration."""
+"""Structured logging configuration.
+
+structlog is imported lazily — the default CLI path (no --verbose, no --json-logs)
+never pays the ~600ms import cost. Only configure_logging() triggers the import.
+"""
 
 from __future__ import annotations
 
@@ -6,12 +10,12 @@ import logging
 import sys
 from collections.abc import Iterable, Iterator
 from types import TracebackType
-from typing import BinaryIO, Protocol, TextIO
-
-import structlog
-from structlog.types import Processor
+from typing import TYPE_CHECKING, BinaryIO, Protocol, TextIO
 
 from polylogue.config import load_polylogue_config
+
+if TYPE_CHECKING:
+    from structlog.types import Processor
 
 
 class BoundLoggerLike(Protocol):
@@ -129,10 +133,70 @@ class _StderrProxy(TextIO):
 
 _stderr_proxy = _StderrProxy()
 
+_structlog_configured = False
+_log_level = logging.INFO
 
-# Configure structlog
+
+class _StdlibBoundLogger:
+    """Lightweight BoundLoggerLike backed by stdlib logging.
+
+    Used when structlog hasn't been configured yet — the common case for
+    plain CLI invocations. Avoids the ~600ms structlog import penalty.
+    """
+
+    def __init__(self, logger: logging.Logger) -> None:
+        self._logger = logger
+
+    def bind(self, **new_values: object) -> _StdlibBoundLogger:
+        return self  # no-op: stdlib doesn't support structured context
+
+    def debug(self, message: str, *args: object, **event_kw: object) -> None:
+        self._logger.debug(message, *args)
+
+    def info(self, message: str, *args: object, **event_kw: object) -> None:
+        self._logger.info(message, *args)
+
+    def warning(self, message: str, *args: object, **event_kw: object) -> None:
+        self._logger.warning(message, *args)
+
+    def error(self, message: str, *args: object, **event_kw: object) -> None:
+        self._logger.error(message, *args)
+
+    def exception(self, message: str, *args: object, **event_kw: object) -> None:
+        self._logger.exception(message, *args)
+
+
+def get_logger(name: str | None = None) -> BoundLoggerLike:
+    """Return a logger — stdlib-backed before structlog is configured.
+
+    After configure_logging() is called, subsequent calls return the
+    structlog logger. Before that, a lightweight stdlib logger is used
+    to avoid the ~600ms structlog import cost.
+    """
+    if _structlog_configured:
+        import structlog
+
+        logger: BoundLoggerLike = structlog.get_logger(name)
+        return logger
+
+    stdlib_logger = logging.getLogger(name)
+    stdlib_logger.setLevel(_log_level)
+    if not stdlib_logger.handlers:
+        stdlib_logger.addHandler(logging.StreamHandler(sys.stderr))
+    return _StdlibBoundLogger(stdlib_logger)
+
+
 def configure_logging(verbose: bool = False, json_logs: bool = False) -> None:
-    level = logging.DEBUG if verbose else logging.INFO
+    """Configure structlog. Only called when structured logging is needed.
+
+    The default CLI path (no --verbose, no --json-logs) never calls this,
+    so structlog is never imported and startup stays fast.
+    """
+    import structlog
+
+    global _structlog_configured, _log_level
+
+    _log_level = logging.DEBUG if verbose else logging.INFO
 
     processors: list[Processor] = [
         structlog.contextvars.merge_contextvars,
@@ -160,13 +224,10 @@ def configure_logging(verbose: bool = False, json_logs: bool = False) -> None:
 
     structlog.configure(
         processors=processors,
-        wrapper_class=structlog.make_filtering_bound_logger(level),
+        wrapper_class=structlog.make_filtering_bound_logger(_log_level),
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(file=_stderr_proxy),
         cache_logger_on_first_use=True,
     )
 
-
-def get_logger(name: str | None = None) -> BoundLoggerLike:
-    logger: BoundLoggerLike = structlog.get_logger(name)
-    return logger
+    _structlog_configured = True

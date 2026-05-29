@@ -35,7 +35,7 @@ def test_process_ingest_batch_sync_records_wal_checkpoint_observation(
         conn.execute(
             """
             INSERT INTO raw_conversations
-                (raw_id, source_name, source_path, blob_size, acquired_at)
+                (raw_id, payload_provider, source_name, source_path, blob_size, acquired_at)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (

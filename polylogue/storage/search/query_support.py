@@ -77,15 +77,29 @@ def escape_fts5_query(query: str) -> str:
     if query.upper() in _FTS5_OPERATORS:
         return f'"{query}"'
     if _FTS5_SPECIAL.search(query):
-        return _quoted(query)
+        # * at the end of a word token is valid FTS5 prefix syntax.
+        # Only quote if other special characters are present, or if *
+        # appears in a non-prefix position (e.g. *word, w*rd).
+        if "*" in query:
+            without_prefix = re.sub(r"\*(\s|$)", r"\1", query).rstrip("*")
+            if _FTS5_SPECIAL.search(without_prefix):
+                return _quoted(query)
+            # Only special char was * in prefix position — don't quote
+            # for that, but still check operator edge cases below.
+        else:
+            return _quoted(query)
+
+    def _is_op(word: str) -> bool:
+        return word.rstrip("*").upper() in _FTS5_OPERATORS
 
     words = query.split()
-    if len(words) > 1:
-        if words[0].upper() in _FTS5_OPERATORS or words[-1].upper() in _FTS5_OPERATORS:
+    if len(words) >= 1:
+        if _is_op(words[0]) or (len(words) > 1 and _is_op(words[-1])):
             return _quoted(query)
-        for index in range(len(words) - 1):
-            if words[index].upper() in _FTS5_OPERATORS and words[index + 1].upper() in _FTS5_OPERATORS:
-                return _quoted(query)
+        if len(words) > 1:
+            for index in range(len(words) - 1):
+                if _is_op(words[index]) and _is_op(words[index + 1]):
+                    return _quoted(query)
     return query
 
 

@@ -59,7 +59,7 @@ def test_process_ingest_batch_repairs_fts_for_unchanged_conversation(
         conn.execute(
             """
             INSERT INTO raw_conversations
-                (raw_id, source_name, source_path, blob_size, acquired_at)
+                (raw_id, payload_provider, source_name, source_path, blob_size, acquired_at)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (

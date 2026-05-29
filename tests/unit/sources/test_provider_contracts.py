@@ -18,6 +18,7 @@ from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.validator import validate_provider_export
 from polylogue.schemas.validator_resolution import available_providers
 from polylogue.sources.dispatch import parse_payload
+from polylogue.sources.parsers.base import ParsedConversation
 
 # Providers that have both committed schemas AND synthetic generator support.
 _VALIDATOR_PROVIDERS = set(available_providers())
@@ -37,7 +38,7 @@ def _load_payload(raw_bytes: bytes, provider: str) -> object:
     return json.loads(raw_bytes)
 
 
-def _generate_and_parse(provider: str) -> tuple[object, list[object]]:
+def _generate_and_parse(provider: str) -> tuple[object, list[ParsedConversation]]:
     """Generate a synthetic payload for a provider and parse it.
 
     Returns (raw_payload, parsed_conversations).

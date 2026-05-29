@@ -455,8 +455,7 @@ curl -sf "http://127.0.0.1:8765/api/raw_artifacts/<artifact_id>" | jq .
 polylogue ingest <path-to-source>
 
 # 5. If the artifact is fine but the parser rejects it, the fix is
-#    in the parser. Capture a witness, file an issue.
-devtools witness-discover <path-to-artifact>
+#    in the parser. File an issue with the provider and artifact details.
 
 # 6. While the upstream fix is in flight, you can tombstone the
 #    bad conversation so it stops blocking convergence:

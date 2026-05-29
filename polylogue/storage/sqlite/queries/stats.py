@@ -243,15 +243,37 @@ async def upsert_conversation_stats(
     messages: list[MessageRecord],
     transaction_depth: int,
 ) -> None:
-    """Upsert precomputed per-conversation aggregate stats."""
+    """Upsert precomputed per-conversation aggregate stats including per-role counts."""
     message_count = len(messages)
     word_count = sum(m.word_count for m in messages)
     tool_use_count = sum(1 for m in messages if m.has_tool_use)
     thinking_count = sum(1 for m in messages if m.has_thinking)
     paste_count = sum(1 for m in messages if m.has_paste)
+    from polylogue.archive.message.roles import Role
+
+    user_msg_count = sum(1 for m in messages if m.role == Role.USER)
+    assistant_msg_count = sum(1 for m in messages if m.role == Role.ASSISTANT)
+    system_msg_count = sum(1 for m in messages if m.role == Role.SYSTEM)
+    tool_msg_count = sum(1 for m in messages if m.role == Role.TOOL)
+    user_word_count = sum(m.word_count for m in messages if m.role == Role.USER)
+    assistant_word_count = sum(m.word_count for m in messages if m.role == Role.ASSISTANT)
     await conn.execute(
         _STATS_UPSERT_SQL,
-        (conversation_id, source_name, message_count, word_count, tool_use_count, thinking_count, paste_count),
+        (
+            conversation_id,
+            source_name,
+            message_count,
+            word_count,
+            tool_use_count,
+            thinking_count,
+            paste_count,
+            user_msg_count,
+            assistant_msg_count,
+            system_msg_count,
+            tool_msg_count,
+            user_word_count,
+            assistant_word_count,
+        ),
     )
     if transaction_depth == 0:
         await conn.commit()
@@ -324,15 +346,11 @@ async def get_provider_metrics_rows(
 ) -> list[ProviderMetricsRow]:
     """Return raw provider aggregation rows for analytics reporting.
 
-    Aggregates that are already pre-computed per-conversation
-    (conversation_count, message_count, tool_use_count, thinking_count,
-    conversations_with_tools, conversations_with_thinking) come from
-    ``conversation_stats`` — one row per conversation, far smaller than
-    ``messages``. Role-keyed splits (user/assistant counts and word sums)
-    are not pre-aggregated and still come from ``messages`` via the
-    ``idx_messages_provider_stats`` covering index (#1314).
+    All aggregates come from ``conversation_stats`` — one row per
+    conversation, far smaller than ``messages``. As of schema v21,
+    per-role message counts and word sums are also pre-aggregated,
+    eliminating the former messages-table scan (#1314 companion).
     """
-    # Per-conversation pre-aggregates from the small stats table.
     stats_cursor = await conn.execute(
         """
         SELECT
@@ -342,53 +360,26 @@ async def get_provider_metrics_rows(
             COALESCE(SUM(cs.tool_use_count), 0)                       AS tool_use_count,
             COALESCE(SUM(cs.thinking_count), 0)                       AS thinking_count,
             SUM(CASE WHEN cs.tool_use_count > 0 THEN 1 ELSE 0 END)    AS conversations_with_tools,
-            SUM(CASE WHEN cs.thinking_count > 0 THEN 1 ELSE 0 END)    AS conversations_with_thinking
+            SUM(CASE WHEN cs.thinking_count > 0 THEN 1 ELSE 0 END)    AS conversations_with_thinking,
+            COALESCE(SUM(cs.user_msg_count), 0)                       AS user_message_count,
+            COALESCE(SUM(cs.assistant_msg_count), 0)                  AS assistant_message_count,
+            COALESCE(SUM(cs.user_word_count), 0)                      AS user_word_sum,
+            COALESCE(SUM(cs.assistant_word_count), 0)                 AS assistant_word_sum
         FROM conversation_stats cs
         GROUP BY COALESCE(NULLIF(cs.source_name, ''), 'unknown')
         """
     )
     stats_rows = await stats_cursor.fetchall()
 
-    # Role-keyed splits (not pre-aggregated) from messages via the
-    # idx_messages_provider_stats covering index. Only user/assistant rows
-    # are read; other roles aren't reported as per-role splits.
-    role_cursor = await conn.execute(
-        """
-        SELECT
-            COALESCE(NULLIF(m.source_name, ''), c.source_name, 'unknown') AS source_name,
-            SUM(CASE WHEN m.role = 'user'      THEN 1 ELSE 0 END)             AS user_message_count,
-            SUM(CASE WHEN m.role = 'assistant' THEN 1 ELSE 0 END)             AS assistant_message_count,
-            SUM(CASE WHEN m.role = 'user'      THEN m.word_count ELSE 0 END)  AS user_word_sum,
-            SUM(CASE WHEN m.role = 'assistant' THEN m.word_count ELSE 0 END)  AS assistant_word_sum
-        FROM messages m
-        LEFT JOIN conversations c ON c.conversation_id = m.conversation_id
-        WHERE m.role IN ('user', 'assistant')
-        GROUP BY COALESCE(NULLIF(m.source_name, ''), c.source_name, 'unknown')
-        """
-    )
-    role_rows = await role_cursor.fetchall()
-    role_by_provider: dict[str, dict[str, int]] = {
-        str(row["source_name"] or "unknown"): {
+    merged: list[ProviderMetricsRow] = []
+    for row in stats_rows:
+        provider = str(row["source_name"] or "unknown")
+        role_split = {
             "user_message_count": int(row["user_message_count"] or 0),
             "assistant_message_count": int(row["assistant_message_count"] or 0),
             "user_word_sum": int(row["user_word_sum"] or 0),
             "assistant_word_sum": int(row["assistant_word_sum"] or 0),
         }
-        for row in role_rows
-    }
-
-    merged: list[ProviderMetricsRow] = []
-    for row in stats_rows:
-        provider = str(row["source_name"] or "unknown")
-        role_split = role_by_provider.get(
-            provider,
-            {
-                "user_message_count": 0,
-                "assistant_message_count": 0,
-                "user_word_sum": 0,
-                "assistant_word_sum": 0,
-            },
-        )
         merged.append(
             {
                 "source_name": provider,

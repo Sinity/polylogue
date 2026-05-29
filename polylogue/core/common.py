@@ -118,15 +118,23 @@ ON CONFLICT(message_id, block_index) DO UPDATE SET
 
 _STATS_UPSERT_SQL = """
 INSERT INTO conversation_stats
-    (conversation_id, source_name, message_count, word_count, tool_use_count, thinking_count, paste_count)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+    (conversation_id, source_name, message_count, word_count, tool_use_count, thinking_count, paste_count,
+     user_msg_count, assistant_msg_count, system_msg_count, tool_msg_count,
+     user_word_count, assistant_word_count)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(conversation_id) DO UPDATE SET
-    source_name  = excluded.source_name,
-    message_count  = excluded.message_count,
-    word_count     = excluded.word_count,
-    tool_use_count = excluded.tool_use_count,
-    thinking_count = excluded.thinking_count,
-    paste_count    = excluded.paste_count
+    source_name         = excluded.source_name,
+    message_count       = excluded.message_count,
+    word_count          = excluded.word_count,
+    tool_use_count      = excluded.tool_use_count,
+    thinking_count      = excluded.thinking_count,
+    paste_count         = excluded.paste_count,
+    user_msg_count      = excluded.user_msg_count,
+    assistant_msg_count  = excluded.assistant_msg_count,
+    system_msg_count    = excluded.system_msg_count,
+    tool_msg_count      = excluded.tool_msg_count,
+    user_word_count     = excluded.user_word_count,
+    assistant_word_count = excluded.assistant_word_count
 """
 
 _ACTION_EVENT_INSERT_SQL = """

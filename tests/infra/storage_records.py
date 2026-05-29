@@ -681,6 +681,7 @@ def _upsert_conversation_stats_sync(
     ``ConversationBuilder`` uses a sync sqlite3 connection, so we share
     the same SQL statement constant but execute it synchronously here.
     """
+    from polylogue.archive.message.roles import Role
     from polylogue.core.common import SQL_STATS_UPSERT
 
     message_count = len(messages)
@@ -688,6 +689,12 @@ def _upsert_conversation_stats_sync(
     tool_use_count = sum(1 for m in messages if m.has_tool_use)
     thinking_count = sum(1 for m in messages if m.has_thinking)
     paste_count = sum(1 for m in messages if m.has_paste)
+    user_msg_count = sum(1 for m in messages if m.role == Role.USER)
+    assistant_msg_count = sum(1 for m in messages if m.role == Role.ASSISTANT)
+    system_msg_count = sum(1 for m in messages if m.role == Role.SYSTEM)
+    tool_msg_count = sum(1 for m in messages if m.role == Role.TOOL)
+    user_word_count = sum(m.word_count for m in messages if m.role == Role.USER)
+    assistant_word_count = sum(m.word_count for m in messages if m.role == Role.ASSISTANT)
     conn.execute(
         SQL_STATS_UPSERT,
         (
@@ -698,6 +705,12 @@ def _upsert_conversation_stats_sync(
             tool_use_count,
             thinking_count,
             paste_count,
+            user_msg_count,
+            assistant_msg_count,
+            system_msg_count,
+            tool_msg_count,
+            user_word_count,
+            assistant_word_count,
         ),
     )
 

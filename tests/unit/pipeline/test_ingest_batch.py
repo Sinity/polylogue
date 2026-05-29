@@ -408,7 +408,7 @@ def test_write_conversation_replaces_runtime_rows_on_content_change(tmp_path: Pa
                     text="beta",
                 ),
             ],
-            stats_tuple=(ConversationId("codex:replace"), "codex", 2, 2, 0, 0, 0),
+            stats_tuple=(ConversationId("codex:replace"), "codex", 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0),
             attachment_tuples=[
                 _attachment_tuple("att-1"),
                 _attachment_tuple("att-2", mime_type="image/jpeg"),
@@ -444,7 +444,7 @@ def test_write_conversation_replaces_runtime_rows_on_content_change(tmp_path: Pa
                     text="alpha updated",
                 )
             ],
-            stats_tuple=(ConversationId("codex:replace"), "codex", 1, 2, 0, 0, 0),
+            stats_tuple=(ConversationId("codex:replace"), "codex", 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0),
             attachment_tuples=[_attachment_tuple("att-1")],
             attachment_ref_tuples=[_attachment_ref_tuple("att-1", "codex:replace", "msg-1")],
         )
@@ -511,7 +511,7 @@ def test_write_conversation_append_mode_preserves_existing_messages(tmp_path: Pa
                     sort_key=1.0,
                 )
             ],
-            stats_tuple=(ConversationId("codex:append"), "codex", 1, 1, 0, 0, 0),
+            stats_tuple=(ConversationId("codex:append"), "codex", 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0),
         )
         tail = _conversation_data(
             "codex:append",
@@ -983,7 +983,7 @@ def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cac
         conn.execute(
             """
             INSERT INTO raw_conversations
-                (raw_id, source_name, source_path, blob_size, acquired_at)
+                (raw_id, payload_provider, source_name, source_path, blob_size, acquired_at)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (

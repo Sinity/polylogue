@@ -151,7 +151,7 @@ class TestComposeContextPreambleHappyPath:
             mock_get_poly.return_value = mock_poly
 
             # Two git calls: first for branch, second for log.
-            def _git_side_effect(args, **kwargs):
+            def _git_side_effect(args: list[str], **kwargs: object) -> MagicMock:
                 if "rev-parse" in args:
                     return MagicMock(returncode=0, stdout="feature/test-branch\n", stderr="")
                 if "log" in args:

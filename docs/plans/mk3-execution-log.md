@@ -345,11 +345,11 @@ Target:
 Coordination:
 
 - Main-agent implementation; no subagent needed because the write set is
-  limited to `devtools verify-suppressions` and its unit tests.
+  limited to `verify-suppressions` and its unit tests.
 
 Outcome:
 
-- `devtools verify-suppressions` now discovers real source-level exception
+- `verify-suppressions` now discovers real source-level exception
   mechanisms across `polylogue/`, `tests/`, and `devtools/`: `pytest.skip`,
   `pytest.xfail`, `pytest.mark.skip/skipif/xfail`, `# noqa`,
   `# type: ignore[...]`, and coverage ignores.
@@ -361,7 +361,7 @@ Outcome:
 
 Observed baseline:
 
-- `devtools verify-suppressions --json`: 175 discovered source exceptions,
+- `verify-suppressions --json`: 175 discovered source exceptions,
   all currently unregistered; `blocking=False` without
   `--enforce-discovered`.
 
@@ -370,7 +370,7 @@ Verification:
 - `pytest -q tests/unit/devtools/test_verify_suppressions.py`
 - `ruff check devtools/verify_suppressions.py tests/unit/devtools/test_verify_suppressions.py`
 - `mypy --strict devtools/verify_suppressions.py tests/unit/devtools/test_verify_suppressions.py`
-- `devtools verify-suppressions --json`
+- `verify-suppressions --json`
 
 ### 2026-05-15 - MK3 design pack dissolved into tracker
 
