@@ -66,13 +66,22 @@ def _write_large_session(path: Path, session_id: str, n_messages: int) -> int:
     """Write a large Claude Code session JSONL, returning byte size.
 
     Each message payload is padded to ~200 bytes so 50K msgs ~ 10 MB.
+    Timestamps use valid hours spanning multiple days to avoid minute/hour
+    overflow.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     total = 0
     pad = "A" * 160  # padding so each record is ~200 bytes
+    base_ts = 12 * 3600  # start at T12:00:00
     with path.open("w", encoding="utf-8") as fh:
         for i in range(n_messages):
             role = "user" if i % 2 == 0 else "assistant"
+            total_seconds = base_ts + i  # 1-second spacing
+            h = (total_seconds // 3600) % 24
+            m = (total_seconds // 60) % 60
+            s = total_seconds % 60
+            # Day-of-month increments naturally; stays valid ISO.
+            day = 20 + total_seconds // 86400
             record = {
                 "parentUuid": None if i == 0 else f"msg-{session_id}-{i - 1:06d}",
                 "sessionId": session_id,
@@ -82,7 +91,7 @@ def _write_large_session(path: Path, session_id: str, n_messages: int) -> int:
                     "content": f"Msg {i:06d}: {pad}",
                 },
                 "uuid": f"msg-{session_id}-{i:06d}",
-                "timestamp": f"2026-05-20T00:{i // 60:02d}:{i % 60:02d}.000Z",
+                "timestamp": f"2026-05-{day:02d}T{h:02d}:{m:02d}:{s:02d}.000Z",
                 "cwd": "/realm/project/polylogue",
                 "version": "1.0.6",
                 "isSidechain": False,
