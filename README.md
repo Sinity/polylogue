@@ -242,8 +242,7 @@ Start with the generated command and architecture references; use [docs/README.m
 | [MCP Integration](docs/mcp-integration.md) | Model Context Protocol server setup and usage. |
 | [Configuration](docs/configuration.md) | XDG paths, environment variables, and runtime configuration. |
 | [Developer Tools](docs/devtools.md) | `devtools` guide for generated surfaces, validation, and repo hygiene. |
-| [Verification Catalog](docs/verification-catalog.md) | Generated verification subjects, claims, runners, and catalog self-checks. |
-| [Verification Lab](docs/verification-lab.md) | Accepted command-surface decision for verification catalog, routing, and evidence operators. |
+| [Verification](docs/devtools.md) | Developer tooling: verification gates, quality workflows, and repo hygiene. |
 | [Providers](docs/providers/README.md) | Provider-specific parsing and export-format notes. |
 
 <!-- END GENERATED: docs-surface -->

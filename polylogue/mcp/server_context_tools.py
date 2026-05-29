@@ -33,9 +33,9 @@ if TYPE_CHECKING:
 _DEFAULT_MAX_CONVERSATIONS = 5
 _DEFAULT_MAX_MESSAGES = 20
 _DETAIL_DEFAULTS: dict[str, tuple[int, bool]] = {
-    "summary": (0, True),
-    "compact": (200, True),
-    "full": (0, False),
+    "summary": (0, False),  # metadata only, no messages
+    "compact": (200, True),  # truncated messages
+    "full": (0, True),  # full messages, untruncated
 }
 
 

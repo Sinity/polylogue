@@ -79,12 +79,11 @@ def _init_work_events_table(db_path: str) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS messages (
-            id TEXT,
+            message_id TEXT,
             conversation_id TEXT,
             role TEXT,
             text TEXT,
-            timestamp TEXT,
-            created_at TEXT
+            sort_key REAL
         );
     """)
     conn.commit()
@@ -177,15 +176,15 @@ def _insert_message(
     conversation_id: str = "session-1",
     role: str = "assistant",
     text: str = "",
-    timestamp: str = "2024-01-15T10:00:30",
+    sort_key: float = 1705312830.0,
 ) -> None:
     conn = sqlite3.connect(db_path)
     conn.execute(
         """
-        INSERT INTO messages (id, conversation_id, role, text, timestamp, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO messages (message_id, conversation_id, role, text, sort_key)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (msg_id, conversation_id, role, text, timestamp, timestamp),
+        (msg_id, conversation_id, role, text, sort_key),
     )
     conn.commit()
     conn.close()
@@ -433,14 +432,14 @@ class TestGetSessionLLMTiming:
             msg_id="msg-1",
             conversation_id="session-1",
             role="user",
-            timestamp="2024-01-15T10:00:00",
+            sort_key=1705312800.0,
         )
         _insert_message(
             db_path,
             msg_id="msg-2",
             conversation_id="session-1",
             role="assistant",
-            timestamp="2024-01-15T10:00:05",
+            sort_key=1705312805.0,
         )
 
         timing = get_session_llm_timing(db_path, "session-1")

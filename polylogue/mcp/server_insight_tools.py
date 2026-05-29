@@ -480,12 +480,10 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 elif group_by == "provider":
                     key = p.source_name or "unknown"
                 else:
-                    return hooks.json_payload(
-                        MCPRootPayload(
-                            root={
-                                "error": f"Unknown group_by: {group_by!r}. Supported: workflow_shape, terminal_state, provider."
-                            }
-                        )
+                    return hooks.error_json(
+                        f"Unknown group_by: {group_by!r}. Supported: workflow_shape, terminal_state, provider.",
+                        code="invalid_argument",
+                        tool="aggregate_sessions",
                     )
                 buckets[key] = buckets.get(key, 0) + 1
             return hooks.json_payload(
@@ -646,9 +644,20 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                             ),
                             exclude_none=True,
                         )
-                except Exception:
+                except Exception as exc:
+                    import logging
+
+                    logger = logging.getLogger(__name__)
+                    logger.debug("find_similar_sessions: embedding path failed, falling back to metadata: %s", exc)
                     # Fall through to metadata similarity on any failure.
-                    pass
+
+            if similarity_dimension == "embedding" and not use_metadata:
+                return hooks.error_json(
+                    "Embedding-based similarity is not available.",
+                    code="embeddings_unavailable",
+                    detail="Enable embeddings in polylogue.toml or use similarity_dimension='auto'.",
+                    tool="find_similar_sessions",
+                )
 
             if not use_metadata and not use_neighbor:
                 return hooks.error_json(

@@ -140,25 +140,30 @@ def _query_spans_for_session(db_path: str, session_id: str) -> list[dict[str, An
         return [dict(row) for row in rows]
 
 
-def _query_work_events(db_path: str, session_id: str, columns: str = "*") -> list[dict[str, Any]]:
+def _query_work_events(db_path: str, session_id: str) -> list[dict[str, Any]]:
     """Return session work events for a session."""
     with _connect(db_path) as conn:
         rows = conn.execute(
-            f"SELECT {columns} FROM session_work_events WHERE conversation_id = ? ORDER BY event_index ASC",
+            "SELECT * FROM session_work_events WHERE conversation_id = ? ORDER BY event_index ASC",
             (session_id,),
         ).fetchall()
         return [dict(row) for row in rows]
 
 
 def _query_messages(db_path: str, session_id: str) -> list[dict[str, Any]]:
-    """Return messages for a session."""
+    """Return messages for a session.
+
+    Returns rows with ``message_id``, ``role``, and ``sort_key`` (epoch seconds).
+    The ``sort_key`` mirrors ``Conversation.sort_key`` semantics — present for
+    every message, stable within a source family.
+    """
     with _connect(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT id, role, timestamp
+            SELECT message_id, role, sort_key
             FROM messages
             WHERE conversation_id = ?
-            ORDER BY created_at ASC, id ASC
+            ORDER BY sort_key ASC
             """,
             (session_id,),
         ).fetchall()
@@ -194,11 +199,7 @@ def correlate_spans_to_work_events(db_path: str, session_id: str) -> list[dict[s
         for s in spans
     ]
 
-    work_event_rows = _query_work_events(
-        db_path,
-        session_id,
-        columns="event_id, conversation_id, heuristic_label, start_time, end_time, duration_ms, summary, tools_used_json, file_paths_json",
-    )
+    work_event_rows = _query_work_events(db_path, session_id)
 
     results: list[dict[str, object]] = []
     for we in work_event_rows:
@@ -302,11 +303,7 @@ def get_session_tool_timing(db_path: str, session_id: str) -> SessionToolTiming:
 
 def _tool_timing_from_work_events(db_path: str, session_id: str) -> SessionToolTiming:
     """Fallback: estimate tool timing from work events (message gaps)."""
-    rows = _query_work_events(
-        db_path,
-        session_id,
-        columns="event_id, heuristic_label, start_time, end_time, duration_ms, tools_used_json",
-    )
+    rows = _query_work_events(db_path, session_id)
 
     timings: list[ToolTimingEntry] = []
     for d in rows:
@@ -391,39 +388,40 @@ def _llm_timing_from_message_gaps(db_path: str, session_id: str) -> SessionLLMTi
     rows = _query_messages(db_path, session_id)
 
     timings: list[LLMTimingEntry] = []
-    prev_ts: str | None = None
+    prev_sort_key: float | None = None
+    prev_iso: str | None = None
     turn_index = 0
 
     for d in rows:
         role = cast(str, d.get("role", ""))
-        current_ts_raw = d.get("timestamp")
-        current_ts = str(current_ts_raw) if current_ts_raw and isinstance(current_ts_raw, str) else None
+        current_sk_raw = d.get("sort_key")
+        try:
+            current_sk = float(current_sk_raw) if current_sk_raw is not None else None
+        except (TypeError, ValueError):
+            current_sk = None
+        current_iso = (
+            datetime.fromtimestamp(current_sk, tz=timezone.utc).isoformat() if current_sk is not None else None
+        )
 
         # Assistant messages represent LLM turns
         if role in ("assistant", "Assistant"):
-            start: str | None = prev_ts if prev_ts else current_ts
-            duration = 0
-            if current_ts and prev_ts:
-                try:
-                    prev_dt = datetime.fromisoformat(prev_ts)
-                    curr_dt = datetime.fromisoformat(current_ts)
-                    duration = int((curr_dt - prev_dt).total_seconds() * 1000)
-                except (ValueError, TypeError):
-                    pass
-
+            start = prev_iso or current_iso
+            duration_ms = 0
+            if current_sk is not None and prev_sort_key is not None:
+                duration_ms = max(0, int((current_sk - prev_sort_key) * 1000))
             timings.append(
                 LLMTimingEntry(
                     turn_index=turn_index,
                     start_time=start,
-                    end_time=current_ts,
-                    duration_ms=max(0, duration),
+                    end_time=current_iso,
+                    duration_ms=duration_ms,
                     evidence_source="message_gap_estimate",
                 )
             )
             turn_index += 1
 
-        if current_ts:
-            prev_ts = current_ts
+        prev_sort_key = current_sk
+        prev_iso = current_iso
 
     return SessionLLMTiming(
         session_id=session_id,
