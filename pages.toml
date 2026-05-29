@@ -162,13 +162,6 @@ title = "Contributing"
 source = "CONTRIBUTING.md"
 
 [[pages]]
-path = "/verifiability/catalog/"
-title = "Proof Catalog"
-template = "verifiability_catalog.html"
-[pages.data]
-source_command = "render-verification-catalog"
-
-[[pages]]
 path = "/verifiability/coverage/"
 title = "Coverage Map"
 template = "verifiability_coverage.html"

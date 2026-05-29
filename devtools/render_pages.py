@@ -69,14 +69,12 @@ def _run_render_commands(verbose: bool = False) -> None:
         render_docs_surface,
         render_quality_reference,
         render_topology_status,
-        render_verification_catalog,
     )
 
     renderers = [
         ("render-cli-reference", render_cli_reference.main),
         ("render-devtools-reference", render_devtools_reference.main),
         ("render-docs-surface", render_docs_surface.main),
-        ("render-verification-catalog", render_verification_catalog.main),
         ("render-quality-reference", render_quality_reference.main),
         ("render-topology-status", render_topology_status.main),
     ]

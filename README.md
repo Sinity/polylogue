@@ -186,7 +186,7 @@ nix run github:Sinity/polylogue -- --help
 For experimenting without ingesting real exports:
 
 ```bash
-eval "$(devtools lab-corpus seed --count 8 --env-only)"
+devtools lab-scenario generate --count 8
 
 polylogue list --limit 5
 polylogue insights profiles --limit 5
@@ -215,18 +215,12 @@ See [docs/devtools.md](docs/devtools.md) for the full command catalog and
 
 ## Verification lab
 
-Every documented claim is anchored to a verification subject and claim
-runner under `proof/`. Operators choose focused checks via the impact
-report before escalating to the full repository baseline:
+Operators choose focused checks via the verification baseline:
 
 ```bash
-devtools render-verification-catalog --check
-devtools verification-impact --path polylogue/cli/query.py
+devtools verify --quick
 devtools lab-scenario verify-baselines
 ```
-
-See [docs/verification-lab.md](docs/verification-lab.md) for the catalog,
-routing, and evidence-operator surface.
 
 <!-- BEGIN GENERATED: docs-surface -->
 ## Documentation

@@ -287,29 +287,26 @@ Options:
   --help  Show this message and exit.
 
 Session-level:
-  phases       List durable session-phase insights.
-  profiles     List durable session-profile insights.
-  timeline     Render a per-session timeline with hook-vs-sort-key fidelity
-               tags.
-  work-events  List durable work-event insights.
+  phases
+  profiles
+  timeline
+  work-events
 
 Aggregate:
-  coverage  List archive coverage buckets by provider, day, or week.
-  tags      List durable session-tag rollup insights.
-  threads   List durable work-thread insights.
+  coverage
+  tags
+  threads
 
 Analytics:
-  cost-rollups  List provider/model cost rollups.
-  costs         List session-level cost estimates.
-  debt          List archive debt and maintenance readiness insights.
-  tool-usage    Per-tool, per-provider rollups over canonical action events
-                with coverage map.
+  cost-rollups
+  costs
+  debt
+  tool-usage
 
 Admin:
-  audit   Report per-product rigor profile across materialized insights
-          (#1275).
-  export  Export versioned archive-insight bundles.
-  status  Report insight materialization coverage and readiness.
+  audit
+  export
+  status
 ```
 
 ## Doctor

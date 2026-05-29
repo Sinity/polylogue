@@ -93,37 +93,6 @@ def check_lint_escalation(plans_dir: Path) -> list[str]:
     return errors
 
 
-def check_suppressions(plans_dir: Path) -> list[str]:
-    """Validate suppressions.yaml structure."""
-    errors: list[str] = []
-    path = plans_dir / "suppressions.yaml"
-    if not path.exists():
-        return errors  # optional, not yet created
-
-    try:
-        data = load_manifest(path)
-    except ValueError as exc:
-        return [str(exc)]
-
-    suppressions = data.get("suppressions")
-    if not isinstance(suppressions, list):
-        errors.append(f"{path}: 'suppressions' must be a list")
-        return errors
-
-    for s in suppressions:
-        if not isinstance(s, dict):
-            errors.append(f"{path}: suppression is not a mapping")
-            continue
-        sid = s.get("id")
-        if not isinstance(sid, str):
-            errors.append(f"{path}: suppression missing 'id'")
-        expires = s.get("expires_at")
-        if not isinstance(expires, str):
-            errors.append(f"{path}: suppression {sid!r} missing 'expires_at'")
-
-    return errors
-
-
 def check_assurance_domains(plans_dir: Path) -> list[str]:
     """Validate assurance-domains.yaml stays a documentation inventory."""
     errors: list[str] = []
@@ -807,7 +776,6 @@ def main(argv: list[str] | None = None) -> int:
     for check in (
         check_pydantic_models,
         check_lint_escalation,
-        check_suppressions,
         check_assurance_domains,
         check_coverage_gaps,
         check_coverage_references,

@@ -616,7 +616,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             use_neighbor = similarity_dimension in ("auto", "embedding")
             use_metadata = similarity_dimension in ("auto", "metadata")
 
-            if use_neighbor and poly.config.embedding_enabled:  # type: ignore[attr-defined]
+            if use_neighbor and poly.config.embedding_enabled:
                 try:
                     neighbors = await poly.neighbor_candidates(
                         conversation_id=session_id,

@@ -56,10 +56,6 @@ def test_devtools_verify_topology_exists() -> None:
     assert (ROOT / "devtools" / "verify_topology.py").exists()
 
 
-def test_devtools_verify_cluster_cohesion_exists() -> None:
-    assert (ROOT / "devtools" / "verify_cluster_cohesion.py").exists()
-
-
 def test_topology_projection_yaml_exists() -> None:
     assert (ROOT / "docs" / "plans" / "topology-target.yaml").exists()
 

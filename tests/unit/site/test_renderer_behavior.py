@@ -307,20 +307,20 @@ site_name = "Polylogue"
 site_url = "/polylogue/"
 
 [[pages]]
-path = "/verifiability/catalog/"
-title = "Proof Catalog"
-template = "verifiability_catalog.html"
+path = "/architecture/contributing/"
+title = "Contributing"
+template = "standard.html"
 [pages.data]
-source_command = "render-verification-catalog"
+source_command = "render-cli-reference"
 custom_marker = "frontmatter-roundtrip-ok"
 """,
         encoding="utf-8",
     )
 
     cfg = load_pages_config(config_path)
-    catalog_entry = next(p for p in cfg.pages if p.path == "/verifiability/catalog/")
-    assert catalog_entry.data == {
-        "source_command": "render-verification-catalog",
+    page_entry = next(p for p in cfg.pages if p.path == "/architecture/contributing/")
+    assert page_entry.data == {
+        "source_command": "render-cli-reference",
         "custom_marker": "frontmatter-roundtrip-ok",
     }
 
@@ -331,7 +331,7 @@ custom_marker = "frontmatter-roundtrip-ok"
     real_render = Template.render
 
     def _spy(self: Template, *args: object, **kwargs: object) -> str:
-        if self.name == "verifiability_catalog.html":
+        if self.name == "standard.html":
             captured.update(kwargs)
         return real_render(self, *args, **kwargs)
 
@@ -340,10 +340,10 @@ custom_marker = "frontmatter-roundtrip-ok"
     out = tmp_path / "out"
     build_site(config_path=config_path, output_dir=out)
 
-    assert captured.get("source_command") == "render-verification-catalog"
+    assert captured.get("source_command") == "render-cli-reference"
     assert captured.get("custom_marker") == "frontmatter-roundtrip-ok"
-    assert captured.get("title") == "Proof Catalog"
-    assert captured.get("current_path") == "/verifiability/catalog/"
+    assert captured.get("title") == "Contributing"
+    assert captured.get("current_path") == "/architecture/contributing/"
 
 
 # ---------------------------------------------------------------------------

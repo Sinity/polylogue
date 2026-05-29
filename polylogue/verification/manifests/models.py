@@ -100,39 +100,6 @@ class LintEscalationManifest(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Suppressions manifest  (suppressions.yaml)
-# ──────────────────────────────────────────────────────────────────────
-
-
-class Suppression(BaseModel):
-    """A single suppression entry."""
-
-    model_config = ConfigDict(extra="forbid")
-    id: str
-    reason: str
-    expires_at: str  # ISO-8601 date string
-    issue: str | None = None
-    paths: list[str] = Field(default_factory=list)
-    claims: list[str] = Field(default_factory=list)
-
-    @field_validator("expires_at")
-    @classmethod
-    def _check_expires_at(cls, v: str) -> str:
-        try:
-            date.fromisoformat(v)
-        except (ValueError, TypeError) as err:
-            raise ValueError(f"expires_at is not a valid ISO date: {v!r}") from err
-        return v
-
-
-class SuppressionsManifest(BaseModel):
-    """Root of suppressions.yaml."""
-
-    model_config = ConfigDict(extra="forbid")
-    suppressions: list[Suppression]
-
-
-# ──────────────────────────────────────────────────────────────────────
 # Coverage Gap  (shared fragment in many *coverage*.yaml manifests)
 # ──────────────────────────────────────────────────────────────────────
 
@@ -315,68 +282,6 @@ class LayeringManifest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     rules: list[LayeringRule]
-
-
-# ──────────────────────────────────────────────────────────────────────
-# File-size-budgets manifest  (file-size-budgets.yaml)
-# ──────────────────────────────────────────────────────────────────────
-
-
-class FileBudgetDefaults(BaseModel):
-    """Default LOC ceilings."""
-
-    model_config = ConfigDict(extra="forbid")
-    source_loc_ceiling: int = 1100
-    test_loc_ceiling: int = 1500
-
-
-class PerPackageBudget(BaseModel):
-    """Per-package budget overrides."""
-
-    model_config = ConfigDict(extra="forbid")
-    source_loc_ceiling: int | None = None
-    test_loc_ceiling: int | None = None
-
-
-class FileBudgetException(BaseModel):
-    """A single file-size budget exception."""
-
-    model_config = ConfigDict(extra="forbid")
-    path: str
-    ceiling: int
-    reason: str
-
-
-class FileSizeBudgetsManifest(BaseModel):
-    """Root of file-size-budgets.yaml."""
-
-    model_config = ConfigDict(extra="forbid")
-    defaults: FileBudgetDefaults = Field(default_factory=FileBudgetDefaults)
-    per_package: dict[str, PerPackageBudget] = Field(default_factory=dict)
-    exceptions: list[FileBudgetException] = Field(default_factory=list)
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Migrations manifest  (migrations.yaml)
-# ──────────────────────────────────────────────────────────────────────
-
-
-class MigrationEntry(BaseModel):
-    """A single migration record."""
-
-    model_config = ConfigDict(extra="forbid")
-    id: str
-    description: str
-    status: str
-    completed_at: str | None = None
-
-
-class MigrationsManifest(BaseModel):
-    """Root of migrations.yaml."""
-
-    model_config = ConfigDict(extra="forbid")
-    migrations: dict[str, MigrationEntry] = Field(default_factory=dict)
-    completed: list[str] = Field(default_factory=list)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -689,27 +594,6 @@ class TestQualityCoverageManifest(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Test-ownership manifest  (test-ownership.yaml)
-# ──────────────────────────────────────────────────────────────────────
-
-
-class UntestedEntry(BaseModel):
-    """An untested module entry."""
-
-    model_config = ConfigDict(extra="forbid")
-    path: str
-    reason: str
-
-
-class TestOwnershipManifest(BaseModel):
-    """Root of test-ownership.yaml."""
-
-    model_config = ConfigDict(extra="forbid")
-    untested: list[UntestedEntry] = Field(default_factory=list)
-    shared: list[UntestedEntry] = Field(default_factory=list)
-
-
-# ──────────────────────────────────────────────────────────────────────
 # Provider-meta policy manifest  (provider-meta-policy.yaml)
 # ──────────────────────────────────────────────────────────────────────
 
@@ -765,12 +649,9 @@ MANIFEST_MODELS: dict[str, type[BaseModel]] = {
     "topology-target.yaml": TopologyManifest,
     "assurance-domains.yaml": AssuranceDomainsManifest,
     "lint-escalation.yaml": LintEscalationManifest,
-    "suppressions.yaml": SuppressionsManifest,
     "scenario-coverage.yaml": ScenarioCoverageManifest,
     "campaign-coverage.yaml": CampaignCoverageManifest,
     "layering.yaml": LayeringManifest,
-    "file-size-budgets.yaml": FileSizeBudgetsManifest,
-    "migrations.yaml": MigrationsManifest,
     "oracle-quality.yaml": OracleQualityManifest,
     "evidence-freshness.yaml": EvidenceFreshnessManifest,
     "api-parity.yaml": ApiParityManifest,
@@ -778,7 +659,6 @@ MANIFEST_MODELS: dict[str, type[BaseModel]] = {
     "distribution-coverage.yaml": DistributionCoverageManifest,
     "docs-media-coverage.yaml": DocsMediaCoverageManifest,
     "test-quality-coverage.yaml": TestQualityCoverageManifest,
-    "test-ownership.yaml": TestOwnershipManifest,
     "provider-meta-policy.yaml": ProviderMetaPolicyManifest,
 }
 
@@ -840,9 +720,6 @@ __all__ = [
     "DocMediaSurface",
     "DocsMediaCoverageManifest",
     "EvidenceFreshnessManifest",
-    "FileBudgetDefaults",
-    "FileBudgetException",
-    "FileSizeBudgetsManifest",
     "FlakyTest",
     "FreshnessPolicy",
     "FuzzTool",
@@ -851,14 +728,11 @@ __all__ = [
     "LintEscalationManifest",
     "LintRule",
     "MANIFEST_MODELS",
-    "MigrationEntry",
-    "MigrationsManifest",
     "MutationCampaignEntry",
     "OperationEntry",
     "OracleEntry",
     "OracleQualityManifest",
     "ParityCheckEntry",
-    "PerPackageBudget",
     "PlatformCoverage",
     "ProviderMetaField",
     "ProviderMetaPolicyManifest",
@@ -867,17 +741,13 @@ __all__ = [
     "SecurityControl",
     "SecurityPrivacyManifest",
     "StaleThreshold",
-    "Suppression",
-    "SuppressionsManifest",
     "SurfaceEntry",
     "TestCount",
     "TestCoverage",
     "TestLocations",
-    "TestOwnershipManifest",
     "TestQualityCoverageManifest",
     "TestQualityDimension",
     "TopologyEntry",
     "TopologyManifest",
-    "UntestedEntry",
     "validate_manifest",
 ]

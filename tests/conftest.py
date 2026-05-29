@@ -32,7 +32,6 @@ pytest_plugins = (
     "tests.infra.corpus_fixtures",
     "tests.infra.scale_fixtures",
     "tests.infra.frozen_clock",
-    "tests.conftest_witness",
 )
 
 if TYPE_CHECKING:

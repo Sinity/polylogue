@@ -34,21 +34,15 @@ def test_quick_verify_omits_pytest() -> None:
         "render-all",
         "verify-topology",
         "verify-layering",
-        "verify-file-budgets",
         "verify-provider-meta-policy",
-        "verify-test-ownership",
         "verify-closure-matrix",
         "verify-schema-roundtrip",
-        "verify-suppressions",
         "verify-manifests",
         "verify-ci-workflows",
         "verify-doc-commands",
-        "verify-witness-lifecycle",
-        "verify-witness-coverage",
         "verify-lane-assertions",
         "verify-test-infra-currency",
         "verify-test-clock-hygiene",
-        "verification-impact check",
     ]
 
 

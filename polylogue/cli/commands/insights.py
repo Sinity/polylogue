@@ -159,7 +159,7 @@ class _InsightsGroup(click.Group):
             cmd = self.get_command(ctx, name)
             if cmd is None:
                 continue
-            help_text = cmd.get_short_help_str(limit=formatter.width) if cmd.help else ""
+            help_text = cmd.short_help or ""
             placed = False
             for section_title, cmd_names in self._SECTIONS:
                 if name in cmd_names:
