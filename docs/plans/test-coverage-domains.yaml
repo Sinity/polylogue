@@ -265,22 +265,6 @@ domains:
       - tests/unit/devtools/test_pipeline_probe.py
     notes: partial — core tooling covered; some leaf commands have no direct tests
 
-  - domain: verification_reports
-    production_modules:
-      - polylogue/proof/
-      - devtools/verification_impact.py
-      - devtools/verification_impact_cli.py
-    covering_tests:
-      - tests/unit/proof/test_generated_scenario_obligations.py
-      - tests/unit/devtools/test_verification_impact.py
-      - tests/unit/devtools/test_verification_impact_cli.py
-    notes: >
-      transitional — #594/#1065 own migrating this domain to reports
-      over pytest/coverage/benchmark/CI artifacts and deleting obsolete
-      proof rows. The contract-evidence recorder/fixture was removed in
-      #1322 (no production consumer); contract behavior is pinned by
-      ordinary pytest assertions instead of bounded-evidence artifacts.
-
 # -- Known gaps (from recon report #807) ----------------------------------
 #
 # These domains lack dedicated behavioral tests:

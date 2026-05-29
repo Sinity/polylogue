@@ -104,7 +104,7 @@ def test_claude_code_progress_records_produce_zero_messages() -> None:
     carried alongside tool invocations.  They are NOT message content and
     must be dropped by the parser.
     """
-    from polylogue.sources.parsers.claude.code_parser import _parse_code_records
+    from polylogue.sources.dispatch import parse_payload
 
     records: list[dict[str, object]] = [
         {
@@ -155,7 +155,13 @@ def test_claude_code_progress_records_produce_zero_messages() -> None:
         },
     ]
 
-    result = _parse_code_records(records, fallback_id="test-progress")
+    # Use parse_payload (the public API) rather than the private
+    # _parse_code_records.  parse_payload returns a list; for
+    # claude-code the list has one element since all records belong
+    # to the same session.
+    parsed = parse_payload("claude-code", records, fallback_id="test-progress")
+    assert len(parsed) == 1, f"Expected 1 parsed conversation, got {len(parsed)}"
+    result = parsed[0]
     assert result.messages, "Should have at least some messages"
 
     # No message should have text containing progress/hook data.
@@ -174,7 +180,7 @@ def test_claude_code_init_records_produce_zero_messages() -> None:
 
     These are internal lifecycle records, not message content.
     """
-    from polylogue.sources.parsers.claude.code_parser import _parse_code_records
+    from polylogue.sources.dispatch import parse_payload
 
     records: list[dict[str, object]] = [
         {
@@ -201,7 +207,9 @@ def test_claude_code_init_records_produce_zero_messages() -> None:
         },
     ]
 
-    result = _parse_code_records(records, fallback_id="test-init")
+    parsed = parse_payload("claude-code", records, fallback_id="test-init")
+    assert len(parsed) == 1, f"Expected 1 parsed conversation, got {len(parsed)}"
+    result = parsed[0]
     assert len(result.messages) == 2, (
         f"Expected 2 messages (user + assistant), got {len(result.messages)}. Init record should not produce a message."
     )

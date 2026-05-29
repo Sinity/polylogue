@@ -655,7 +655,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 187
+    loc: 188
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -747,7 +747,7 @@ files:
     target: polylogue/cli/commands/init.py
     owner: stable
   - path: polylogue/cli/commands/insights.py
-    loc: 435
+    loc: 476
     target: polylogue/cli/commands/insights.py
     owner: stable
   - path: polylogue/cli/commands/maintenance.py
@@ -1048,7 +1048,7 @@ files:
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/payload_coercion.py
-    loc: 126
+    loc: 137
     target: polylogue/core/payload_coercion.py
     owner: core-primitive
     reason: core primitive
@@ -1271,7 +1271,7 @@ files:
     target: polylogue/daemon/user_state_http.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
-    loc: 1463
+    loc: 1465
     target: polylogue/daemon/web_shell.py
     owner: stable
   - path: polylogue/daemon/web_shell_attachments.py
@@ -1283,7 +1283,7 @@ files:
     target: polylogue/daemon/web_shell_bulk.py
     owner: stable
   - path: polylogue/daemon/web_shell_lineage.py
-    loc: 183
+    loc: 237
     target: polylogue/daemon/web_shell_lineage.py
     owner: stable
   - path: polylogue/daemon/web_shell_paste.py
@@ -1295,7 +1295,7 @@ files:
     target: polylogue/daemon/web_shell_provenance.py
     owner: stable
   - path: polylogue/daemon/web_shell_reader.py
-    loc: 576
+    loc: 766
     target: polylogue/daemon/web_shell_reader.py
     owner: stable
   - path: polylogue/daemon/web_shell_realtime.py
@@ -1756,62 +1756,6 @@ files:
   - path: polylogue/pipeline/stage_specs.py
     loc: 162
     target: polylogue/pipeline/stage_specs.py
-    owner: stable
-  - path: polylogue/proof/__init__.py
-    loc: 137
-    target: polylogue/proof/__init__.py
-    owner: stable
-  - path: polylogue/proof/catalog.py
-    loc: 1121
-    target: polylogue/proof/catalog.py
-    owner: stable
-  - path: polylogue/proof/corpus.py
-    loc: 56
-    target: polylogue/proof/corpus.py
-    owner: stable
-  - path: polylogue/proof/coverage_manifests.py
-    loc: 353
-    target: polylogue/proof/coverage_manifests.py
-    owner: stable
-  - path: polylogue/proof/diffing.py
-    loc: 848
-    target: polylogue/proof/diffing.py
-    owner: stable
-  - path: polylogue/proof/generated_scenarios.py
-    loc: 314
-    target: polylogue/proof/generated_scenarios.py
-    owner: stable
-  - path: polylogue/proof/models.py
-    loc: 639
-    target: polylogue/proof/models.py
-    owner: stable
-  - path: polylogue/proof/rendering.py
-    loc: 253
-    target: polylogue/proof/rendering.py
-    owner: stable
-  - path: polylogue/proof/runners.py
-    loc: 514
-    target: polylogue/proof/runners.py
-    owner: stable
-  - path: polylogue/proof/sources/__init__.py
-    loc: 5
-    target: polylogue/proof/sources/__init__.py
-    owner: stable
-  - path: polylogue/proof/sources/effect_compiler.py
-    loc: 130
-    target: polylogue/proof/sources/effect_compiler.py
-    owner: stable
-  - path: polylogue/proof/subjects.py
-    loc: 739
-    target: polylogue/proof/subjects.py
-    owner: stable
-  - path: polylogue/proof/suppressions.py
-    loc: 168
-    target: polylogue/proof/suppressions.py
-    owner: stable
-  - path: polylogue/proof/witnesses.py
-    loc: 313
-    target: polylogue/proof/witnesses.py
     owner: stable
   - path: polylogue/protocols.py
     loc: 474
@@ -2398,7 +2342,7 @@ files:
     owner: stable
     reason: verification-lab showcase substrate retained
   - path: polylogue/showcase/invariants.py
-    loc: 301
+    loc: 277
     target: polylogue/showcase/invariants.py
     owner: stable
     reason: verification-lab showcase substrate retained
@@ -3703,7 +3647,7 @@ files:
     target: polylogue/verification/manifests/__init__.py
     owner: stable
   - path: polylogue/verification/manifests/models.py
-    loc: 883
+    loc: 753
     target: polylogue/verification/manifests/models.py
     owner: stable
   - path: polylogue/version.py

@@ -231,15 +231,18 @@ def _wait_for_conversations(
     )
 
 
-def _wait_for_daemon_ready(pid: int, *, timeout_s: float = 30.0) -> bool:
-    """Wait for daemon process to be alive and responding."""
+def _wait_for_daemon_ready(proc: subprocess.Popen[bytes], *, timeout_s: float = 30.0) -> bool:
+    """Wait for daemon process to be alive and responding.
+
+    Uses ``proc.poll() is None`` to check liveness rather than
+    ``os.kill(pid, 0)``, which is vulnerable to PID reuse: on a busy
+    system the daemon's PID could be recycled between the daemon
+    exiting and the next liveness check.
+    """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)  # signal 0 checks liveness
+        if proc.poll() is None:
             return True
-        except OSError:
-            pass
         time.sleep(0.1)
     return False
 
@@ -317,17 +320,28 @@ def _cleanup_process(proc: subprocess.Popen[bytes] | None) -> int | None:
             return None
 
 
+_HAS_SYSTEMD_SCOPE: bool | None = None
+
+
 def _has_systemd_scope() -> bool:
-    """Check whether ``systemd-run --user --scope`` is available."""
-    try:
-        result = subprocess.run(
-            ["systemd-run", "--user", "--scope", "--quiet", "--", "true"],
-            capture_output=True,
-            timeout=5,
-        )
-        return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return False
+    """Check whether ``systemd-run --user --scope`` is available.
+
+    The result is memoised so the subprocess runs at most once per
+    test session, avoiding repeated fork+exec at collection time (the
+    function is called by ``@pytest.mark.skipif`` at module load).
+    """
+    global _HAS_SYSTEMD_SCOPE
+    if _HAS_SYSTEMD_SCOPE is None:
+        try:
+            result = subprocess.run(
+                ["systemd-run", "--user", "--scope", "--quiet", "--", "true"],
+                capture_output=True,
+                timeout=5,
+            )
+            _HAS_SYSTEMD_SCOPE = result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            _HAS_SYSTEMD_SCOPE = False
+    return _HAS_SYSTEMD_SCOPE
 
 
 # ---------------------------------------------------------------------------
@@ -382,8 +396,10 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
         )
         _assert_daemon_alive(proc)
 
-        # 3. Wait for ingest to begin (messages in DB).
-        msg_count = _wait_for_messages(db, min_count=1, timeout_s=60.0)
+        # 3. Wait for substantial ingest progress so the SIGKILL reliably
+        # lands during active ingestion rather than after the daemon has
+        # already finished processing.
+        msg_count = _wait_for_messages(db, min_count=max(5, N_SESSIONS * MESSAGES_PER_SESSION // 2), timeout_s=60.0)
         assert msg_count > 0, "No messages were ingested before SIGKILL"
 
         # 4. SIGKILL.
@@ -413,7 +429,7 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
         )
         try:
             _assert_daemon_alive(restart)
-            assert _wait_for_daemon_ready(restart.pid, timeout_s=30.0), "Daemon did not reach ready state after restart"
+            assert _wait_for_daemon_ready(restart, timeout_s=30.0), "Daemon did not reach ready state after restart"
 
             # Let it catch up.
             _wait_for_conversations(db, min_count=N_SESSIONS, timeout_s=60.0)
@@ -448,7 +464,7 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
             assert leaked == 0, f"Leaked blob references: {leaked}"
 
             # Daemon alive.
-            os.kill(restart.pid, 0)
+            assert restart.poll() is None, "Daemon should still be alive after recovery"
         finally:
             _cleanup_process(restart)
     finally:
@@ -542,7 +558,7 @@ def test_wal_checkpoint_recovery(workspace_env: dict[str, Path]) -> None:
             )
             try:
                 _assert_daemon_alive(restart)
-                assert _wait_for_daemon_ready(restart.pid, timeout_s=30.0)
+                assert _wait_for_daemon_ready(restart, timeout_s=30.0)
                 # Give it a moment to checkpoint.
                 time.sleep(3)
 
@@ -706,23 +722,25 @@ def test_large_session_file(workspace_env: dict[str, Path]) -> None:
         # Verify daemon is still alive.
         assert proc.poll() is None, f"Daemon exited prematurely with code {proc.returncode}"
 
-        # Check RSS from /proc.
+        # Check VmPeak from /proc — the high-water mark of virtual memory
+        # usage.  VmRSS sampled after ingestion has finished reports the
+        # post-cleanup state, not the peak.
         pid = proc.pid
-        rss_bytes = 0
+        peak_bytes = 0
         try:
             status_path = Path(f"/proc/{pid}/status")
             for line in status_path.read_text(encoding="utf-8", errors="replace").splitlines():
-                if line.startswith("VmRSS:"):
+                if line.startswith("VmPeak:"):
                     parts = line.split()
                     if len(parts) >= 2:
-                        rss_bytes = int(parts[1]) * 1024  # kB → bytes
+                        peak_bytes = int(parts[1]) * 1024  # kB → bytes
                     break
         except OSError:
             pass
 
-        rss_mb = rss_bytes / (1024 * 1024) if rss_bytes > 0 else 0
-        if rss_mb > 0:
-            assert rss_bytes <= 2 * 1024 * 1024 * 1024, f"Daemon RSS exceeds 2 GB: {rss_mb:.0f} MiB"
+        peak_mb = peak_bytes / (1024 * 1024) if peak_bytes > 0 else 0
+        if peak_mb > 0:
+            assert peak_bytes <= 2 * 1024 * 1024 * 1024, f"Daemon VmPeak exceeds 2 GB: {peak_mb:.0f} MiB"
 
         # All messages ingested.
         with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
@@ -762,7 +780,13 @@ def test_large_session_file(workspace_env: dict[str, Path]) -> None:
 
 
 def test_concurrent_access_safety(workspace_env: dict[str, Path]) -> None:
-    """Verify daemon concurrency guards and read-during-write safety.
+    """Verify WAL read-during-write safety and daemon pidfile locking.
+
+    The daemon runs with ``--no-api``, so ``polylogue --plain status``
+    and ``polylogue --plain count`` fall through to direct SQLite reads
+    against the WAL journal.  This is the correct test for WAL-mode
+    concurrency: a reader must be able to open the database while the
+    daemon writer holds an active transaction.
 
     1. Start daemon, let it begin ingesting.
     2. Start a second daemon process — assert it exits non-zero (pidfile locked).

@@ -152,7 +152,7 @@ def test_generated_claude_code_contains_varied_block_types() -> None:
 
 def test_claude_code_message_with_empty_text_parses() -> None:
     """A Claude Code record with empty string content must parse without error."""
-    from polylogue.sources.parsers.claude.code_parser import _parse_code_records
+    from polylogue.sources.dispatch import parse_payload
 
     records = [
         {
@@ -172,7 +172,9 @@ def test_claude_code_message_with_empty_text_parses() -> None:
         },
     ]
 
-    result = _parse_code_records(records, fallback_id="test-empty")
+    parsed = parse_payload("claude-code", records, fallback_id="test-empty")
+    assert len(parsed) >= 1, f"Expected at least 1 parsed conversation, got {len(parsed)}"
+    result = parsed[0]
     assert result.messages, "Should produce at least one message"
     user_msgs = [m for m in result.messages if m.role and str(m.role) == "user"]
     assert len(user_msgs) >= 1, "Empty-text user message should be parsed"
@@ -216,7 +218,7 @@ def test_chatgpt_message_with_null_content_parses() -> None:
 
 def test_claude_code_user_only_roles() -> None:
     """A claude-code session with only user-type records must parse."""
-    from polylogue.sources.parsers.claude.code_parser import _parse_code_records
+    from polylogue.sources.dispatch import parse_payload
 
     records: list[dict[str, object]] = [
         {
@@ -229,13 +231,15 @@ def test_claude_code_user_only_roles() -> None:
         for i in range(3)
     ]
 
-    result = _parse_code_records(records, fallback_id="test-user-only")
+    parsed = parse_payload("claude-code", records, fallback_id="test-user-only")
+    assert len(parsed) == 1, f"Expected 1 parsed conversation, got {len(parsed)}"
+    result = parsed[0]
     assert len(result.messages) == 3, f"Expected 3 messages, got {len(result.messages)}"
 
 
 def test_claude_code_assistant_only_roles() -> None:
     """A claude-code session with only assistant-type records must parse."""
-    from polylogue.sources.parsers.claude.code_parser import _parse_code_records
+    from polylogue.sources.dispatch import parse_payload
 
     records: list[dict[str, object]] = [
         {
@@ -248,7 +252,9 @@ def test_claude_code_assistant_only_roles() -> None:
         for i in range(3)
     ]
 
-    result = _parse_code_records(records, fallback_id="test-assistant-only")
+    parsed = parse_payload("claude-code", records, fallback_id="test-assistant-only")
+    assert len(parsed) == 1, f"Expected 1 parsed conversation, got {len(parsed)}"
+    result = parsed[0]
     assert len(result.messages) == 3, f"Expected 3 messages, got {len(result.messages)}"
 
 
@@ -256,7 +262,7 @@ def test_claude_code_system_records_not_messages() -> None:
     """System-type records (queue-operation, file-history-snapshot) must NOT
     produce message rows.  This is the contract that the parser skips
     internal bookkeeping records."""
-    from polylogue.sources.parsers.claude.code_parser import _parse_code_records
+    from polylogue.sources.dispatch import parse_payload
 
     records: list[dict[str, object]] = [
         {
@@ -289,7 +295,9 @@ def test_claude_code_system_records_not_messages() -> None:
         },
     ]
 
-    result = _parse_code_records(records, fallback_id="test-sys-skip")
+    parsed = parse_payload("claude-code", records, fallback_id="test-sys-skip")
+    assert len(parsed) == 1, f"Expected 1 parsed conversation, got {len(parsed)}"
+    result = parsed[0]
     role_texts = {str(m.role) for m in result.messages if m.role}
     assert "system" not in role_texts, f"System records should not produce message rows, got roles: {role_texts}"
     assert len(result.messages) == 2, f"Expected 2 messages (user + assistant), got {len(result.messages)}"

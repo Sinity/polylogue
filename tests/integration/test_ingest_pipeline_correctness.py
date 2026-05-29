@@ -70,8 +70,8 @@ def _write_corpus_files(
     count: int,
     seed: int,
     dest: Path,
-) -> list[Path]:
-    """Generate synthetic corpus wire-format files and return their paths."""
+) -> None:
+    """Generate synthetic corpus wire-format files under *dest*."""
     available = set(SyntheticCorpus.available_providers())
     specs = build_default_corpus_specs(
         providers=(p for p in providers if p in available),
@@ -80,13 +80,10 @@ def _write_corpus_files(
         messages_max=12,
         seed=seed,
     )
-    written_files: list[Path] = []
     for spec in specs:
         provider_dir = dest / spec.provider
         provider_dir.mkdir(parents=True, exist_ok=True)
-        result = SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="corpus")
-        written_files.extend(provider_dir / f.name for f in result.files)
-    return written_files
+        SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="corpus")
 
 
 async def _ingest_corpus(archive_root: Path, corpus_dir: Path, db_path: Path) -> int:
@@ -224,8 +221,8 @@ def test_full_pipeline_replay_produces_correct_archive(
 
     # session_profiles are materialized by the daemon convergence loop, not
     # by prepare_records alone.  The prepare_records path stores the archive
-    # rows but derived insights may not be populated.
-    assert snap1["session_profiles"] >= 0, "session_profiles should be >= 0 (may be 0 without convergence)"
+    # rows but derived insights are not populated without daemon convergence.
+    assert snap1["session_profiles"] == 0, "session_profiles materialized by daemon convergence, not prepare_records"
 
     # ── FTS integrity ──
     assert snap1["fts_docsize"] == snap1["messages"], (
