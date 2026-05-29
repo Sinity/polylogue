@@ -171,6 +171,7 @@ def _table_names(db_path: Path) -> set[str]:
 def _table_row_count(db_path: Path, table_name: str) -> int:
     """Return the row count for a given table."""
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    result = None
     try:
         # Virtual tables (FTS5) use docsize for row counting.
         if table_name.endswith("_fts"):

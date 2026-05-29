@@ -193,8 +193,10 @@ def _wait_for_messages(
                 last_count = count
                 if count >= min_count:
                     return count
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as exc:
+            msg = str(exc).lower()
+            if not any(token in msg for token in ("locked", "no such table", "unable to open database file")):
+                raise
         time.sleep(poll_interval)
     raise TimeoutError(
         f"Timed out waiting for {min_count} messages after {timeout_s}s; last observed count: {last_count}"
@@ -219,8 +221,10 @@ def _wait_for_conversations(
                 last_count = count
                 if count >= min_count:
                     return count
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as exc:
+            msg = str(exc).lower()
+            if not any(token in msg for token in ("locked", "no such table", "unable to open database file")):
+                raise
         time.sleep(poll_interval)
     raise TimeoutError(
         f"Timed out waiting for {min_count} conversations after {timeout_s}s; last observed count: {last_count}"
@@ -277,8 +281,11 @@ def _pending_blob_refs(db: Path) -> int:
         with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
             cur = conn.execute("SELECT COUNT(*) FROM pending_blob_refs")
             return cur.fetchone()[0]
-    except sqlite3.OperationalError:
-        return 0
+    except sqlite3.OperationalError as exc:
+        msg = str(exc).lower()
+        if any(token in msg for token in ("locked", "no such table")):
+            return 0
+        raise
 
 
 def _wal_size(db: Path) -> int:
@@ -727,10 +734,23 @@ def test_large_session_file(workspace_env: dict[str, Path]) -> None:
         missing = _expected_fts_triggers() - set(triggers)
         assert not missing, f"Missing FTS triggers: {sorted(missing)}"
 
-        # FTS index populated.
-        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
-            fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
-        assert fts_count >= n_messages, f"FTS index under-populated: {fts_count} < {n_messages}"
+        # FTS index may still be converging (triggers suspended during bulk
+        # ingest are restored + rebuilt by the convergence stage). Poll for
+        # the expected row count with a grace window.
+        fts_deadline = time.monotonic() + 30.0
+        fts_count = 0
+        while time.monotonic() < fts_deadline:
+            try:
+                with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+                    fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+                if fts_count >= n_messages:
+                    break
+            except sqlite3.OperationalError as exc:
+                msg = str(exc).lower()
+                if not any(token in msg for token in ("locked", "no such table", "unable to open database file")):
+                    raise
+            time.sleep(0.5)
+        assert fts_count >= n_messages, f"FTS index under-populated after 30s: {fts_count} < {n_messages}"
     finally:
         if proc is not None:
             _cleanup_process(proc)
