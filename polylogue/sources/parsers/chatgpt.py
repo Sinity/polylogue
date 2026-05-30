@@ -26,22 +26,46 @@ def _coerce_float(value: object) -> float | None:
     return None
 
 
-def extract_messages_from_mapping(mapping: Mapping[str, object]) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
-    entries: list[tuple[float | None, int, ParsedMessage]] = []
-    attachments: list[ParsedAttachment] = []
-    for idx, node in enumerate(mapping.values(), start=1):
-        if not isinstance(node, dict):
-            continue
-        msg = node.get("message")
-        if not isinstance(msg, dict):
-            continue
-        content = msg.get("content")
-        if not isinstance(content, dict):
-            continue
-        parts = content.get("parts") or []
-        if not isinstance(parts, list):
-            continue
-        text_parts = []
+def _resolve_active_path_ids(mapping: Mapping[str, object], current_node: str | None) -> list[str]:
+    """Resolve the node ids to emit, in order, from a ChatGPT message graph.
+
+    When ``current_node`` is present (every real ChatGPT export carries it), walk
+    parent pointers up from it — the active leaf the user last saw — to the root,
+    then reverse. Only this active path is emitted, so abandoned regeneration and
+    edit branches are not flattened into sibling messages (#1744).
+
+    When ``current_node`` is absent (synthetic fixtures, malformed exports), fall
+    back to the original all-nodes-in-insertion-order behavior. That path has no
+    way to know which branch was active, so preserving every node is the
+    lossless choice; downstream sorting by ``create_time`` still applies.
+    """
+    if current_node and current_node in mapping:
+        path: list[str] = []
+        seen: set[str] = set()
+        node_id: str | None = current_node
+        while node_id is not None and node_id in mapping and node_id not in seen:
+            seen.add(node_id)
+            path.append(node_id)
+            node = mapping[node_id]
+            node_id = node.get("parent") if isinstance(node, dict) else None
+        path.reverse()
+        return path
+
+    return list(mapping.keys())
+
+
+def _extract_content_text(content: Mapping[str, object]) -> str:
+    """Extract message text from a ChatGPT content block.
+
+    Handles the common ``parts`` array (strings and structured dicts carrying
+    ``text``) and falls back to non-``parts`` content shapes — ``code`` and
+    ``execution_output`` carry a top-level ``text``, browsing display carries a
+    ``result``. Without this fallback those messages have empty text and are
+    dropped entirely (#1744).
+    """
+    parts = content.get("parts")
+    if isinstance(parts, list):
+        text_parts: list[str] = []
         for part in parts:
             if isinstance(part, str) and part:
                 text_parts.append(part)
@@ -51,7 +75,38 @@ def extract_messages_from_mapping(mapping: Mapping[str, object]) -> tuple[list[P
                 if isinstance(t, str) and t:
                     text_parts.append(t)
                 # Skip image_asset_pointer and other non-text dicts
-        text = "\n".join(text_parts)
+        if text_parts:
+            return "\n".join(text_parts)
+    # Non-parts content shapes: code / execution_output carry top-level text;
+    # browsing display carries a result string.
+    top_text = content.get("text")
+    if isinstance(top_text, str) and top_text:
+        return top_text
+    result = content.get("result")
+    if isinstance(result, str) and result:
+        return result
+    return ""
+
+
+def extract_messages_from_mapping(
+    mapping: Mapping[str, object],
+    current_node: str | None = None,
+) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
+    entries: list[tuple[float | None, int, ParsedMessage]] = []
+    attachments: list[ParsedAttachment] = []
+    path_ids = _resolve_active_path_ids(mapping, current_node)
+    for idx, node_id in enumerate(path_ids, start=1):
+        node = mapping.get(node_id)
+        if not isinstance(node, dict):
+            continue
+        msg = node.get("message")
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, dict):
+            continue
+        parts = content.get("parts") or []
+        text = _extract_content_text(content)
         if not text:
             continue
         # Role is required - skip messages without one
@@ -159,6 +214,24 @@ def extract_messages_from_mapping(mapping: Mapping[str, object]) -> tuple[list[P
                     metadata={"content_type": content_type},
                 )
             )
+        elif content_type == "code":
+            # Code-interpreter input — top-level text, no parts (#1744).
+            content_blocks.append(
+                ParsedContentBlock(
+                    type=ContentBlockType.CODE,
+                    text=text,
+                    metadata={"content_type": content_type},
+                )
+            )
+        elif content_type == "execution_output":
+            # Code-interpreter output — top-level text, no parts (#1744).
+            content_blocks.append(
+                ParsedContentBlock(
+                    type=ContentBlockType.TOOL_RESULT,
+                    text=text,
+                    metadata={"content_type": content_type},
+                )
+            )
         elif parts:
             for part in parts:
                 if isinstance(part, str) and part:
@@ -236,7 +309,9 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedConversation
     mapping = payload.get("mapping") or {}
     if not isinstance(mapping, dict):
         mapping = {}
-    messages, attachments = extract_messages_from_mapping(mapping)
+    current_node = payload.get("current_node")
+    current_node = current_node if isinstance(current_node, str) else None
+    messages, attachments = extract_messages_from_mapping(mapping, current_node)
     title = payload.get("title") or payload.get("name") or fallback_id
     conv_id = payload.get("id") or payload.get("uuid") or payload.get("conversation_id")
 

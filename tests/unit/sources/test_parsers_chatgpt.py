@@ -811,3 +811,148 @@ def test_chatgpt_metadata_permutation_roundtrip(
             assert actual == expected_value, f"[{desc}] {field_name}: expected {expected_value!r}, got {actual!r}"
         else:
             assert actual == expected_value, f"[{desc}] {field_name}: expected {expected_value!r}, got {actual!r}"
+
+
+# ---------------------------------------------------------------------------
+# #1744 — active-leaf graph traversal (abandoned branches not emitted)
+# ---------------------------------------------------------------------------
+
+
+def _branch_node(
+    msg_id: str,
+    role: str,
+    text: str,
+    *,
+    parent: str | None = None,
+    children: list[str] | None = None,
+    content_type: str = "text",
+) -> dict:
+    """Mapping node helper that does not force a create_time (graph order is truth)."""
+    return {
+        "id": msg_id,
+        "message": {
+            "id": msg_id,
+            "author": {"role": role},
+            "content": {"content_type": content_type, "parts": [text]},
+            "create_time": None,
+        },
+        "parent": parent,
+        "children": children or [],
+    }
+
+
+def test_regeneration_emits_only_active_branch_via_current_node() -> None:
+    """A regenerated assistant turn must yield the active branch only (#1744).
+
+    ``u1`` has two assistant children: ``a_old`` (abandoned) and ``a_new``
+    (active, pointed at by current_node). Before the fix both were flattened
+    into sibling messages, duplicating the assistant turn.
+    """
+    nodes = [
+        _branch_node("root", "system", "", parent=None, children=["u1"]),
+        _branch_node("u1", "user", "question", parent="root", children=["a_old", "a_new"]),
+        _branch_node("a_old", "assistant", "OLD wrong answer", parent="u1", children=[]),
+        _branch_node("a_new", "assistant", "NEW correct answer", parent="u1", children=[]),
+    ]
+    payload = {
+        "title": "Regenerated",
+        "mapping": {n["id"]: n for n in nodes},
+        "current_node": "a_new",
+        "create_time": 1700000000.0,
+    }
+    conv = chatgpt_parse(payload, "fallback-id")
+    texts = [m.text for m in conv.messages]
+    assert texts == ["question", "NEW correct answer"]
+    assert "OLD wrong answer" not in texts
+
+
+def test_no_current_node_preserves_all_nodes_losslessly() -> None:
+    """Without current_node, every node is preserved (lossless fallback) (#1744).
+
+    Real ChatGPT exports always carry current_node; synthetic/edge inputs may
+    not. With no active-leaf pointer there is no way to know which branch was
+    active, so the fallback keeps all nodes rather than silently dropping one.
+    """
+    nodes = [
+        _branch_node("u1", "user", "question", parent=None, children=["a_old", "a_new"]),
+        _branch_node("a_old", "assistant", "OLD answer", parent="u1", children=[]),
+        _branch_node("a_new", "assistant", "NEW answer", parent="u1", children=[]),
+    ]
+    payload = {
+        "title": "Regenerated no current_node",
+        "mapping": {n["id"]: n for n in nodes},
+        "create_time": 1700000000.0,
+    }
+    conv = chatgpt_parse(payload, "fallback-id")
+    texts = [m.text for m in conv.messages]
+    assert texts == ["question", "OLD answer", "NEW answer"]
+
+
+def test_current_node_pointing_at_old_branch_selects_that_branch() -> None:
+    """current_node is authoritative: if it points at the older branch, emit it."""
+    nodes = [
+        _branch_node("u1", "user", "question", parent=None, children=["a_old", "a_new"]),
+        _branch_node("a_old", "assistant", "kept answer", parent="u1", children=[]),
+        _branch_node("a_new", "assistant", "discarded answer", parent="u1", children=[]),
+    ]
+    payload = {
+        "title": "Old branch active",
+        "mapping": {n["id"]: n for n in nodes},
+        "current_node": "a_old",
+        "create_time": 1700000000.0,
+    }
+    conv = chatgpt_parse(payload, "fallback-id")
+    texts = [m.text for m in conv.messages]
+    assert texts == ["question", "kept answer"]
+    assert "discarded answer" not in texts
+
+
+# ---------------------------------------------------------------------------
+# #1744 — non-`parts` content is preserved (code interpreter, execution output)
+# ---------------------------------------------------------------------------
+
+
+def test_code_interpreter_content_is_preserved() -> None:
+    """A code node carries top-level content.text (no parts) — must not drop (#1744)."""
+    nodes = [
+        _branch_node("u1", "user", "run this", parent=None, children=["tool"]),
+        {
+            "id": "tool",
+            "message": {
+                "id": "tool",
+                "author": {"role": "assistant", "name": "python"},
+                "content": {"content_type": "code", "text": "print(1)"},
+                "create_time": None,
+            },
+            "parent": "u1",
+            "children": ["out"],
+        },
+        {
+            "id": "out",
+            "message": {
+                "id": "out",
+                "author": {"role": "tool"},
+                "content": {"content_type": "execution_output", "text": "1\n"},
+                "create_time": None,
+            },
+            "parent": "tool",
+            "children": [],
+        },
+    ]
+    payload = {
+        "title": "Code interpreter",
+        "mapping": {n["id"]: n for n in nodes},
+        "current_node": "out",
+        "create_time": 1700000000.0,
+    }
+    conv = chatgpt_parse(payload, "fallback-id")
+    texts = [m.text for m in conv.messages]
+    assert "print(1)" in texts
+    assert "1\n" in texts
+    # Content-block types reflect the code-interpreter semantics.
+    from polylogue.types import ContentBlockType
+
+    code_msg = next(m for m in conv.messages if m.text == "print(1)")
+    assert any(b.type == ContentBlockType.CODE for b in code_msg.content_blocks)
+    out_msg = next(m for m in conv.messages if m.text == "1\n")
+    assert any(b.type == ContentBlockType.TOOL_RESULT for b in out_msg.content_blocks)
