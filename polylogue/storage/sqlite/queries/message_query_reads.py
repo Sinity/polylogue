@@ -131,19 +131,55 @@ async def iter_messages(
     message_roles: MessageRoleFilter = (),
     limit: int | None = None,
 ) -> AsyncIterator[MessageRecord]:
-    offset = 0
+    """Stream a conversation's messages in deterministic order, chunked.
+
+    Pagination is keyset, not ``LIMIT/OFFSET``: each chunk is seeded by the
+    previous chunk's last ``(sort_key, message_id)`` so a single conversation's
+    stream stays linear instead of re-scanning and discarding all prior rows
+    (O(M^2)) on every chunk. The ordering
+    ``(sort_key IS NULL), sort_key, message_id`` is unchanged and served by
+    ``idx_messages_conversation_sortkey``. ``message_id`` is the table primary
+    key (globally unique), so the keyset cursor is a total order with no skipped
+    or duplicated rows across chunk boundaries. NULL-``sort_key`` rows form the
+    ordering tail and are advanced by a distinct cursor branch.
+    """
     yielded = 0
     effective_roles = message_roles or ((Role.USER, Role.ASSISTANT) if dialogue_only else ())
     role_values = message_role_sql_values(effective_roles)
 
+    # Keyset cursor of the previous chunk's final row. ``have_cursor``
+    # distinguishes the first chunk from a genuine NULL-sort_key boundary
+    # (``last_sort`` is None in both cases).
+    last_sort: float | None = None
+    last_id: str = ""
+    have_cursor = False
+
     while True:
         query = "SELECT * FROM messages WHERE conversation_id = ?"
-        params: list[str | int] = [conversation_id]
+        params: list[str | float] = [conversation_id]
 
         if role_values:
             placeholders = ",".join("?" for _ in role_values)
             query += f" AND role IN ({placeholders})"
             params.extend(role_values)
+
+        if have_cursor:
+            if last_sort is not None:
+                # Cursor in the non-NULL sort_key group: advance within it and
+                # always include the NULL group that follows in the ordering.
+                query += (
+                    " AND ("
+                    "(sort_key IS NOT NULL"
+                    " AND (sort_key > ? OR (sort_key = ? AND message_id > ?)))"
+                    " OR sort_key IS NULL"
+                    ")"
+                )
+                params.extend([last_sort, last_sort, last_id])
+            else:
+                # Cursor in the NULL sort_key group (ordering tail): only
+                # NULL-sort_key rows with a greater message_id remain.
+                query += " AND sort_key IS NULL AND message_id > ?"
+                params.append(last_id)
 
         query += " ORDER BY (sort_key IS NULL), sort_key, message_id"
 
@@ -154,8 +190,8 @@ async def iter_messages(
                 break
             fetch_limit = min(chunk_size, remaining)
 
-        query += " LIMIT ? OFFSET ?"
-        params.extend([fetch_limit, offset])
+        query += " LIMIT ?"
+        params.append(fetch_limit)
 
         cursor = await conn.execute(query, tuple(params))
         rows = list(await cursor.fetchall())
@@ -163,13 +199,17 @@ async def iter_messages(
         if not rows:
             break
 
+        last_row = rows[-1]
+        last_sort = last_row["sort_key"]
+        last_id = str(last_row["message_id"])
+        have_cursor = True
+
         for row in rows:
             yield _row_to_message(row)
             yielded += 1
             if limit is not None and yielded >= limit:
                 return
 
-        offset += len(rows)
         if len(rows) < fetch_limit:
             break
 

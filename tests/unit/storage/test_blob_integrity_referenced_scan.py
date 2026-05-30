@@ -1,0 +1,70 @@
+"""Tests for the referenced-raw-id scan (#1750 F4).
+
+``_raw_conversation_hashes`` dropped a redundant ``ORDER BY acquired_at DESC,
+raw_id`` — its result is consumed as an unordered set, so the sort over the full
+``raw_conversations`` scan was pure overhead. These tests pin the contract that
+actually matters: the full set of non-empty ``raw_id`` values is returned
+(order irrelevant).
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+from polylogue.storage.blob_integrity import _raw_conversation_hashes
+from polylogue.storage.sqlite.schema import _ensure_schema
+
+
+def _init_db(tmp_path: Path) -> sqlite3.Connection:
+    db = tmp_path / "archive.db"
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    _ensure_schema(conn)
+    conn.commit()
+    return conn
+
+
+def _insert_raw(conn: sqlite3.Connection, raw_id: str, acquired_at: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO raw_conversations (
+            raw_id, source_name, source_path, source_index, blob_size, acquired_at, file_mtime
+        ) VALUES (?, 'codex', ?, 0, 1, ?, ?)
+        """,
+        (raw_id, f"/src/{raw_id}.jsonl", acquired_at, acquired_at),
+    )
+
+
+def test_returns_all_non_empty_raw_ids(tmp_path: Path) -> None:
+    conn = _init_db(tmp_path)
+    try:
+        _insert_raw(conn, "r_b", "2026-01-02")
+        _insert_raw(conn, "r_a", "2026-01-03")
+        _insert_raw(conn, "r_c", "2026-01-01")
+        conn.commit()
+        result = set(_raw_conversation_hashes(conn))
+    finally:
+        conn.close()
+    assert result == {"r_a", "r_b", "r_c"}
+
+
+def test_empty_table(tmp_path: Path) -> None:
+    conn = _init_db(tmp_path)
+    try:
+        assert _raw_conversation_hashes(conn) == []
+    finally:
+        conn.close()
+
+
+def test_missing_table_returns_empty(tmp_path: Path) -> None:
+    db = tmp_path / "bare.db"
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    try:
+        assert _raw_conversation_hashes(conn) == []
+    finally:
+        conn.close()
+
+
+__all__: list[str] = []

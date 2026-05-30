@@ -98,7 +98,10 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
 def _raw_conversation_hashes(conn: sqlite3.Connection) -> list[str]:
     if not _table_exists(conn, "raw_conversations"):
         return []
-    rows = conn.execute("SELECT raw_id FROM raw_conversations ORDER BY acquired_at DESC, raw_id").fetchall()
+    # No ORDER BY: the result is consumed unordered into a set
+    # (scan_blob_integrity builds ``set(referenced)``), so sorting the full
+    # raw_conversations scan on unindexed ``acquired_at`` was pure overhead.
+    rows = conn.execute("SELECT raw_id FROM raw_conversations").fetchall()
     return [str(row[0]) for row in rows if row[0]]
 
 
