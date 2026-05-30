@@ -87,7 +87,7 @@ class SqliteVecEmbeddingMixin:
             return False
         if msg.role == "system":
             return False
-        if msg.role == "tool_result":
+        if msg.role == "tool":
             text = msg.text.strip().lower()
             if text in ("ok", "success", "done", "error", "failed"):
                 return False
