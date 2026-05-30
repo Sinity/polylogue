@@ -7,6 +7,8 @@ Provides a protocol for token persistence with two implementations:
 
 from __future__ import annotations
 
+import os
+import tempfile
 from contextlib import suppress
 from importlib import import_module
 from pathlib import Path
@@ -69,8 +71,25 @@ class FileTokenStore:
     def save(self, key: str, data: str) -> None:
         path = self._path_for_key(key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(data, encoding="utf-8")
-        path.chmod(0o600)
+        # Write to a temp file created 0o600 from the start, then atomically
+        # replace the destination. A plain ``write_text`` + ``chmod`` leaves
+        # a window where the OAuth token is world-readable under the umask
+        # default (mirrors the blob store's mkstemp pattern).
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(data)
+            os.replace(tmp_path, path)
+        except BaseException:
+            with suppress(FileNotFoundError):
+                tmp_path.unlink()
+            raise
 
     def delete(self, key: str) -> None:
         path = self._path_for_key(key)

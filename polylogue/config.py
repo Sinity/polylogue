@@ -10,6 +10,7 @@ Precedence (highest wins):
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -855,12 +856,77 @@ def _apply_env_overrides(cfg: dict[str, object]) -> None:
                 cfg[cfg_key] = value
 
 
+#: Flat config keys whose values are secrets and must never be rendered in
+#: cleartext on any display surface (``polylogue config`` toml/json/layers,
+#: logs, bug reports). The redaction is keyed on the flat config key so it
+#: applies regardless of the display section/short-key mapping.
+SECRET_CONFIG_KEYS: frozenset[str] = frozenset(
+    {
+        "voyage_api_key",
+        "notification_webhook_secret",
+        "notification_email_password",
+        "api_auth_token",
+        "browser_capture_auth_token",
+    }
+)
+
+#: Placeholder substituted for a secret that is set to a non-empty value.
+SECRET_SET_PLACEHOLDER = "<set>"
+#: Placeholder substituted for a secret that is unset / empty.
+SECRET_UNSET_PLACEHOLDER = "<unset>"
+
+
+def is_secret_config_key(flat_key: str) -> bool:
+    """Return True when ``flat_key`` holds a secret that must be redacted.
+
+    Matches the explicit :data:`SECRET_CONFIG_KEYS` set plus any key that
+    ends in a sensitive suffix (``_api_key``, ``_secret``, ``_password``,
+    ``_auth_token``, ``_token``) or a bare ``auth_token``/``password``/
+    ``secret`` so newly added secret-bearing keys are redacted by default
+    rather than leaking until the set is updated.
+    """
+    if flat_key in SECRET_CONFIG_KEYS:
+        return True
+    sensitive_suffixes = ("_api_key", "_secret", "_password", "_auth_token", "_token")
+    return flat_key in {"auth_token", "password", "secret"} or flat_key.endswith(sensitive_suffixes)
+
+
+def redact_secret_value(value: object) -> str:
+    """Map a secret config value to a non-revealing presence placeholder."""
+    if value is None:
+        return SECRET_UNSET_PLACEHOLDER
+    if isinstance(value, str) and value == "":
+        return SECRET_UNSET_PLACEHOLDER
+    return SECRET_SET_PLACEHOLDER
+
+
+def redact_config_mapping(cfg: Mapping[str, object]) -> dict[str, object]:
+    """Return a copy of ``cfg`` with every secret-bearing key redacted.
+
+    Used by JSON and layer-source display surfaces so a secret value never
+    appears verbatim in shared config output.
+    """
+    redacted: dict[str, object] = {}
+    for key, value in cfg.items():
+        if is_secret_config_key(key):
+            redacted[key] = redact_secret_value(value)
+        else:
+            redacted[key] = value
+    return redacted
+
+
 def format_config_toml(cfg: dict[str, object]) -> str:
     """Render loaded config as TOML for display.
 
     Round-trips with :func:`_merge_toml`: the generated TOML uses short keys
     inside their sections (``[archive] root = ...``) so the output can be
     written back as a ``polylogue.toml`` file and re-loaded.
+
+    Secret-bearing keys are redacted to a presence placeholder
+    (:data:`SECRET_SET_PLACEHOLDER` / :data:`SECRET_UNSET_PLACEHOLDER`) so the
+    rendered TOML can be safely pasted into bug reports, and values are
+    serialized with a real TOML emitter (``tomli_w``) rather than raw f-string
+    interpolation so quotes/backslashes/newlines cannot corrupt the output.
     """
     # (section_name, [(short_key, flat_key), ...])
     sections_layout: list[tuple[str, list[tuple[str, str]]]] = [
@@ -955,27 +1021,31 @@ def format_config_toml(cfg: dict[str, object]) -> str:
         ),
     ]
 
+    import tomli_w
+
     lines: list[str] = []
     for section, key_pairs in sections_layout:
-        section_lines: list[str] = []
+        section_table: dict[str, object] = {}
         for short_key, flat_key in key_pairs:
             if flat_key not in cfg:
                 continue
             value = cfg[flat_key]
             if value is None:
                 continue
-            if isinstance(value, (list, tuple)):
-                items = ", ".join(f'"{v}"' for v in value)
-                section_lines.append(f"{short_key} = [{items}]")
-            elif isinstance(value, str):
-                section_lines.append(f'{short_key} = "{value}"')
-            elif isinstance(value, bool):
-                section_lines.append(f"{short_key} = {str(value).lower()}")
+            if is_secret_config_key(flat_key):
+                section_table[short_key] = redact_secret_value(value)
+                continue
+            if isinstance(value, tuple):
+                section_table[short_key] = list(value)
             else:
-                section_lines.append(f"{short_key} = {value}")
-        if section_lines:
+                section_table[short_key] = value
+        if section_table:
             lines.append(f"[{section}]")
-            lines.extend(section_lines)
+            # ``tomli_w`` escapes quotes/backslashes/newlines correctly, so a
+            # value containing TOML metacharacters cannot break the output.
+            rendered = tomli_w.dumps(section_table).rstrip("\n")
+            if rendered:
+                lines.append(rendered)
             lines.append("")
 
     return "\n".join(lines)
@@ -988,6 +1058,9 @@ __all__ = [
     "DriveConfig",
     "IndexConfig",
     "PolylogueConfig",
+    "SECRET_CONFIG_KEYS",
+    "SECRET_SET_PLACEHOLDER",
+    "SECRET_UNSET_PLACEHOLDER",
     "Source",
     "describe_config_layers",
     "format_config_toml",
@@ -995,5 +1068,8 @@ __all__ = [
     "get_drive_config",
     "get_index_config",
     "get_sources",
+    "is_secret_config_key",
     "load_polylogue_config",
+    "redact_config_mapping",
+    "redact_secret_value",
 ]

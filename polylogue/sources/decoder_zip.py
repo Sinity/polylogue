@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import io
 import zipfile
 from collections.abc import Iterable
 from pathlib import Path
+from typing import IO
 
 from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.logging import get_logger
@@ -19,6 +21,77 @@ logger = get_logger(__name__)
 
 MAX_COMPRESSION_RATIO = 1000
 MAX_UNCOMPRESSED_SIZE = 10 * 1024 * 1024 * 1024
+
+#: Chunk size used when bounding ZIP entry decompression. Read in fixed
+#: windows so a malicious entry cannot allocate more than this much extra
+#: memory beyond the running total before the ceiling check fires.
+_ZIP_READ_CHUNK_SIZE = 1024 * 1024
+
+
+class ZipBombError(Exception):
+    """Raised when an entry's real decompressed size exceeds the hard cap.
+
+    The declared header sizes (``ZipInfo.file_size`` / ``compress_size``)
+    are attacker-controllable, so they are used only for an early cheap
+    skip. The authoritative ceiling is enforced here against the actual
+    bytes produced by decompression.
+    """
+
+
+class _BoundedZipReader(io.RawIOBase):
+    """Wrap a ZIP entry stream and abort once ``max_bytes`` is exceeded.
+
+    Every read is counted against the real decompressed byte total. If the
+    total would cross ``max_bytes`` the reader raises :class:`ZipBombError`
+    instead of returning the bytes, so downstream consumers never receive
+    an over-cap payload regardless of the entry's declared sizes.
+    """
+
+    def __init__(self, raw: IO[bytes], *, max_bytes: int, entry_name: str) -> None:
+        super().__init__()
+        self._raw = raw
+        self._max_bytes = max_bytes
+        self._entry_name = entry_name
+        self._total = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: object) -> int:
+        view = memoryview(buffer)  # type: ignore[arg-type]
+        chunk = self._raw.read(len(view))
+        if not chunk:
+            return 0
+        self._total += len(chunk)
+        if self._total > self._max_bytes:
+            raise ZipBombError(
+                f"ZIP entry {self._entry_name!r} exceeded the {self._max_bytes}-byte decompression ceiling during read"
+            )
+        view[: len(chunk)] = chunk
+        return len(chunk)
+
+    def close(self) -> None:
+        try:
+            self._raw.close()
+        finally:
+            super().close()
+
+
+def open_bounded_zip_entry(
+    zf: zipfile.ZipFile,
+    name: str,
+    *,
+    max_bytes: int = MAX_UNCOMPRESSED_SIZE,
+) -> io.BufferedReader:
+    """Open a ZIP entry with a hard real-byte decompression ceiling.
+
+    Returns a buffered stream that raises :class:`ZipBombError` if the
+    actual decompressed size would exceed ``max_bytes``. This does not
+    trust the (forgeable) declared header sizes — the ceiling is enforced
+    against bytes produced by the decompressor itself.
+    """
+    raw = zf.open(name)
+    return io.BufferedReader(_BoundedZipReader(raw, max_bytes=max_bytes, entry_name=name))
 
 
 class ZipEntryValidator:
@@ -132,26 +205,45 @@ def process_zip(
             )
             emitter = _ConversationEmitter(ctx)
             precomputed_raw: RawConversationData | None = None
-            if capture_raw and entry_should_group:
-                with zf.open(name) as handle:
-                    blob_hash, blob_size = get_blob_store().write_from_fileobj(handle)
-                precomputed_raw = RawConversationData(
-                    raw_bytes=b"",
-                    source_path=f"{zip_path}:{name}",
-                    source_index=None,
-                    file_mtime=file_mtime,
-                    provider_hint=entry_provider_hint,
-                    blob_hash=blob_hash,
-                    blob_size=blob_size,
+            try:
+                if capture_raw and entry_should_group:
+                    # ``open_bounded_zip_entry`` enforces a hard real-byte
+                    # ceiling during decompression, independent of the
+                    # entry's (forgeable) declared header sizes.
+                    with open_bounded_zip_entry(zf, name) as handle:
+                        blob_hash, blob_size = get_blob_store().write_from_fileobj(handle)
+                    precomputed_raw = RawConversationData(
+                        raw_bytes=b"",
+                        source_path=f"{zip_path}:{name}",
+                        source_index=None,
+                        file_mtime=file_mtime,
+                        provider_hint=entry_provider_hint,
+                        blob_hash=blob_hash,
+                        blob_size=blob_size,
+                    )
+                with open_bounded_zip_entry(zf, name) as handle:
+                    yield from emitter.emit(handle, name, precomputed_raw=precomputed_raw)
+            except ZipBombError as exc:
+                logger.warning(
+                    "Skipping ZIP entry %s in %s: %s",
+                    name,
+                    zip_path,
+                    exc,
                 )
-            with zf.open(name) as handle:
-                yield from emitter.emit(handle, name, precomputed_raw=precomputed_raw)
+                _record_cursor_failure(
+                    cursor_state,
+                    f"{zip_path}:{name}",
+                    str(exc),
+                )
+                continue
 
 
 __all__ = [
     "MAX_COMPRESSION_RATIO",
     "MAX_UNCOMPRESSED_SIZE",
+    "ZipBombError",
     "ZipEntryValidator",
+    "open_bounded_zip_entry",
     "process_zip",
     "zip_entry_provider_hint",
 ]

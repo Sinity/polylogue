@@ -116,9 +116,17 @@ def _render_preflight_json(report: PreflightReport) -> None:
 
 
 def _embedding_section_lines(*, enabled: bool, voyage_api_key: str | None) -> list[str]:
-    body: list[str] = ["[embedding]", f"enabled = {str(enabled).lower()}"]
+    import tomli_w
+
+    table: dict[str, object] = {"enabled": enabled}
     if voyage_api_key:
-        body.append(f'voyage_api_key = "{voyage_api_key}"')
+        table["voyage_api_key"] = voyage_api_key
+    # ``tomli_w`` escapes quotes, backslashes, and newlines so a key value
+    # containing TOML metacharacters cannot corrupt the persisted file.
+    rendered = tomli_w.dumps(table).rstrip("\n")
+    body: list[str] = ["[embedding]"]
+    if rendered:
+        body.extend(rendered.splitlines())
     body.append("")
     return body
 
