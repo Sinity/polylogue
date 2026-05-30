@@ -6,6 +6,7 @@ import io
 import zipfile
 from collections.abc import Iterable
 from pathlib import Path
+from typing import IO
 
 from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.logging import get_logger
@@ -46,7 +47,7 @@ class _BoundedZipReader(io.RawIOBase):
     an over-cap payload regardless of the entry's declared sizes.
     """
 
-    def __init__(self, raw: io.BufferedIOBase, *, max_bytes: int, entry_name: str) -> None:
+    def __init__(self, raw: IO[bytes], *, max_bytes: int, entry_name: str) -> None:
         super().__init__()
         self._raw = raw
         self._max_bytes = max_bytes
@@ -56,7 +57,7 @@ class _BoundedZipReader(io.RawIOBase):
     def readable(self) -> bool:
         return True
 
-    def readinto(self, buffer: object) -> int:  # type: ignore[override]
+    def readinto(self, buffer: object) -> int:
         view = memoryview(buffer)  # type: ignore[arg-type]
         chunk = self._raw.read(len(view))
         if not chunk:
