@@ -168,9 +168,10 @@ Commands:
   commands
   completions        Emit shell completion setup for polylogue.
   config             Show configuration paths and resolved settings.
-  context
+  context            Compose context preamble from archive objects.
   context-pack       Build a provenance-rich context pack for agent analysis.
-  correlate
+  correlate          Cross-reference sessions with git commits, issues, and
+                     PRs.
   cost               Summarize conversation cost telemetry.
   count              Print count of matched conversations.
   dashboard          Open the local dashboard.

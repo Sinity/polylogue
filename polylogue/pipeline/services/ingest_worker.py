@@ -167,7 +167,7 @@ ProviderEventTuple = tuple[
     str | None,
     int,
 ]
-StatsTuple = tuple[ConversationId, str, int, int, int, int, int]
+StatsTuple = tuple[ConversationId, str, int, int, int, int, int, int, int, int, int, int, int]
 AttachmentTuple = tuple[
     AttachmentId,
     str | None,
@@ -932,6 +932,12 @@ def _stats_tuple(conversation: MaterializedConversation, message_tuples: list[Me
         sum(message[12] for message in message_tuples),
         sum(message[13] for message in message_tuples),
         sum(message[14] for message in message_tuples),
+        sum(1 for m in message_tuples if m[3] == Role.USER),
+        sum(1 for m in message_tuples if m[3] == Role.ASSISTANT),
+        sum(1 for m in message_tuples if m[3] == Role.SYSTEM),
+        sum(1 for m in message_tuples if m[3] == Role.TOOL),
+        sum(m[11] for m in message_tuples if m[3] == Role.USER),
+        sum(m[11] for m in message_tuples if m[3] == Role.ASSISTANT),
     )
 
 

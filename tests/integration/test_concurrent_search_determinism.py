@@ -9,25 +9,20 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
-from polylogue.storage.sqlite.connection import open_connection, open_readonly_connection
+from polylogue.storage.sqlite.connection import open_read_connection
+from polylogue.storage.sqlite.connection_profile import open_connection
 
 
 @pytest.mark.slow
 @pytest.mark.integration
-def test_search_results_monotonic_under_concurrent_writes(
-    workspace_env: None, tmp_path: pytest.TempPathFactory
-) -> None:
+def test_search_results_monotonic_under_concurrent_writes(workspace_env: None, tmp_path: Path) -> None:
     """Concurrent writer + reader: already-indexed results must be stable."""
-    import os
 
-    # Use workspace_env's archive db path
-    from polylogue.config import PolylogueConfig
-
-    cfg = PolylogueConfig.from_env()
-    db_path = cfg.archive_db_path
+    db_path = tmp_path / "test_search_determinism.db"
 
     # Seed initial data
     conn = open_connection(db_path)
@@ -54,8 +49,7 @@ def test_search_results_monotonic_under_concurrent_writes(
     stop_flag = threading.Event()
 
     def reader() -> None:
-        rconn = open_readonly_connection(os.fspath(db_path))
-        try:
+        with open_read_connection(db_path) as rconn:
             while not stop_flag.is_set():
                 try:
                     rows = rconn.execute(
@@ -69,8 +63,6 @@ def test_search_results_monotonic_under_concurrent_writes(
                     with results_lock:
                         errors.append(exc)
                 time.sleep(0.01)
-        finally:
-            rconn.close()
 
     def writer() -> None:
         wconn = open_connection(db_path)

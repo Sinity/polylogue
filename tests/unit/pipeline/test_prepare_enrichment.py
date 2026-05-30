@@ -58,7 +58,7 @@ def _make_conversation_record(
         "raw_id": None,
     }
     defaults.update(kwargs)
-    return ConversationRecord(**defaults)
+    return ConversationRecord(**defaults)  # type: ignore[arg-type]
 
 
 def _make_message_record(
@@ -93,7 +93,7 @@ def _make_message_record(
         "paste_boundary_state": paste_boundary_state,
     }
     defaults.update(kwargs)
-    return MessageRecord(**defaults)
+    return MessageRecord(**defaults)  # type: ignore[arg-type]
 
 
 def _make_transform(
@@ -155,7 +155,7 @@ def _make_parsed_conversation(
         title=title,
         messages=msgs,
         provider_meta=provider_meta,
-        **kwargs,
+        **kwargs,  # type: ignore[arg-type]
     )
 
 

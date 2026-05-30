@@ -189,7 +189,8 @@ def _wait_for_messages(
         try:
             with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
                 cur = conn.execute("SELECT COUNT(*) FROM messages")
-                count = cur.fetchone()[0]
+                row = cur.fetchone()
+                count = int(row[0]) if row else 0
                 last_count = count
                 if count >= min_count:
                     return count
@@ -217,7 +218,8 @@ def _wait_for_conversations(
         try:
             with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
                 cur = conn.execute("SELECT COUNT(*) FROM conversations")
-                count = cur.fetchone()[0]
+                row = cur.fetchone()
+                count = int(row[0]) if row else 0
                 last_count = count
                 if count >= min_count:
                     return count
@@ -283,7 +285,8 @@ def _pending_blob_refs(db: Path) -> int:
     try:
         with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
             cur = conn.execute("SELECT COUNT(*) FROM pending_blob_refs")
-            return cur.fetchone()[0]
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
     except sqlite3.OperationalError as exc:
         msg = str(exc).lower()
         if any(token in msg for token in ("locked", "no such table")):

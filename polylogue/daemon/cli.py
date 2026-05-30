@@ -482,6 +482,11 @@ async def run_daemon_services(
     # daemon's pidfile.
     _pidfile_path = pidfile
 
+    # Ensure all configured source roots exist so health checks don't flag
+    # never-yet-used sources (e.g. hooks sidecar dir) as missing.
+    for src in sources:
+        src.root.mkdir(parents=True, exist_ok=True)
+
     # Periodic maintenance tasks. If schema preflight blocks the watcher, do
     # not start any background loop that opens the archive: a mismatched
     # runtime/database pair must remain observable without doing catch-up,

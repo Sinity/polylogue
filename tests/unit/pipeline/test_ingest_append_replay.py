@@ -41,7 +41,7 @@ def test_append_mode_filters_unchanged_replayed_rows(tmp_path: Path) -> None:
                     text="first block",
                 )
             ],
-            stats_tuple=(ConversationId("codex:append-replay"), "codex", 1, 1, 0, 0, 0),
+            stats_tuple=(ConversationId("codex:append-replay"), "codex", 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0),
         )
         replay = _conversation_data(
             "codex:append-replay",
@@ -137,7 +137,7 @@ def test_append_mode_updates_stats_without_full_message_recount(
                     sort_key=1.0,
                 )
             ],
-            stats_tuple=(ConversationId("codex:append-stats"), "codex", 1, 2, 0, 0, 0),
+            stats_tuple=(ConversationId("codex:append-stats"), "codex", 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0),
         )
         changed_initial, _initial_counts = _write_conversation(conn, initial)
         conn.commit()
@@ -205,7 +205,7 @@ def test_append_mode_repairs_missing_stats_on_unchanged_replay(tmp_path: Path) -
                     sort_key=1.0,
                 )
             ],
-            stats_tuple=(ConversationId("codex:append-stats-repair"), "codex", 1, 2, 0, 0, 0),
+            stats_tuple=(ConversationId("codex:append-stats-repair"), "codex", 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0),
         )
         changed_initial, _initial_counts = _write_conversation(conn, initial)
         conn.execute(

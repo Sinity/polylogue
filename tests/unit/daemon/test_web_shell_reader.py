@@ -15,7 +15,12 @@ The module is organized by slice:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
+
+if TYPE_CHECKING:
+    from polylogue.insights.topology import SessionTopology
 
 # All test classes in this module that start HTTP servers share an xdist
 # group to prevent cross-worker port interference.
@@ -311,7 +316,7 @@ class TestKeyboardNavigation:
 # ---------------------------------------------------------------------------
 
 
-def _make_topology():
+def _make_topology() -> SessionTopology:
     """Build a small SessionTopology covering parent+target+sibling+child+unresolved."""
     from polylogue.insights.topology import (
         SessionTopology,
@@ -463,12 +468,12 @@ class TestTopologyEdgeDetail:
 
         topology = _make_topology()
         envelope = build_topology_envelope(topology)
-        edges = envelope["edges"]
+        edges: list[dict[str, object]] = envelope["edges"]  # type: ignore[assignment]
         # Find the unresolved edge.
-        unresolved = [e for e in edges if not e["resolved"]]  # type: ignore[attr-defined]
+        unresolved = [e for e in edges if not e["resolved"]]
         assert len(unresolved) >= 1
-        assert unresolved[0]["parent_native_id"] == "missing-parent-native"  # type: ignore[index]
-        assert unresolved[0]["parent_id"] is None  # type: ignore[index]
+        assert unresolved[0]["parent_native_id"] == "missing-parent-native"
+        assert unresolved[0]["parent_id"] is None
 
     def test_lineage_js_consumes_all_edge_fields_from_envelope(self) -> None:
         """Every field the edge-detail section reads from edge objects
@@ -477,9 +482,9 @@ class TestTopologyEdgeDetail:
 
         topology = _make_topology()
         envelope = build_topology_envelope(topology)
-        edges = envelope["edges"]
+        edges: list[dict[str, object]] = envelope["edges"]  # type: ignore[assignment]
         assert len(edges) >= 1
-        edge_keys = set(edges[0].keys())  # type: ignore[index]
+        edge_keys = set(edges[0].keys())
         for key in ("child_id", "parent_id", "parent_native_id", "kind", "resolved"):
             assert key in edge_keys, f"envelope edge must include '{key}'"
 

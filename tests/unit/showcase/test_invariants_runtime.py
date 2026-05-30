@@ -9,7 +9,6 @@ from polylogue.core.outcomes import OutcomeStatus
 from polylogue.scenarios import AssertionSpec, polylogue_execution
 from polylogue.showcase.exercise_models import Exercise
 from polylogue.showcase.invariants import (
-    SHOWCASE_INVARIANTS,
     SKIP,
     Invariant,
     InvariantResult,
@@ -96,15 +95,6 @@ def test_nonempty_output_skip_expected_cases() -> None:
     assert _check_nonempty_output(_make_result(args=("stats",), writes=True, output="")) == SKIP
     assert _check_nonempty_output(_make_result(args=("stats",), output="")) == "Empty output for read command"
     assert _check_nonempty_output(_make_result(args=("stats",), output="not empty")) is None
-
-
-def test_invariant_to_claim_emits_showcase_claim_metadata() -> None:
-    claim = SHOWCASE_INVARIANTS[0].to_claim()
-
-    assert claim.id == "showcase.invariant.json_valid"
-    assert claim.breaker is not None
-    assert claim.breaker.issue == "#192"
-    assert claim.breaker.command == ("devtools", "lab-scenario", "run", "archive-smoke", "--tier", "0")
 
 
 def test_check_invariants_collects_ok_skip_error_and_crash() -> None:

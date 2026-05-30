@@ -36,7 +36,7 @@ def _try_parse_json(text: str) -> object | None:
     if not stripped:
         return None
     try:
-        return json.loads(stripped)
+        return json.loads(stripped)  # type: ignore[no-any-return]
     except json.JSONDecodeError:
         return None
 

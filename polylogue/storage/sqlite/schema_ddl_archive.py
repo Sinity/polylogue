@@ -163,14 +163,20 @@ ARCHIVE_STORAGE_DDL = """
         WHERE type = 'tool_use';
 
         CREATE TABLE IF NOT EXISTS conversation_stats (
-            conversation_id TEXT PRIMARY KEY
+            conversation_id       TEXT PRIMARY KEY
                 REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-            source_name     TEXT NOT NULL DEFAULT '',
-            message_count   INTEGER NOT NULL DEFAULT 0,
-            word_count      INTEGER NOT NULL DEFAULT 0,
-            tool_use_count  INTEGER NOT NULL DEFAULT 0,
-            thinking_count  INTEGER NOT NULL DEFAULT 0,
-            paste_count     INTEGER NOT NULL DEFAULT 0
+            source_name           TEXT NOT NULL DEFAULT '',
+            message_count         INTEGER NOT NULL DEFAULT 0,
+            word_count            INTEGER NOT NULL DEFAULT 0,
+            tool_use_count        INTEGER NOT NULL DEFAULT 0,
+            thinking_count        INTEGER NOT NULL DEFAULT 0,
+            paste_count           INTEGER NOT NULL DEFAULT 0,
+            user_msg_count        INTEGER NOT NULL DEFAULT 0,
+            assistant_msg_count   INTEGER NOT NULL DEFAULT 0,
+            system_msg_count      INTEGER NOT NULL DEFAULT 0,
+            tool_msg_count        INTEGER NOT NULL DEFAULT 0,
+            user_word_count       INTEGER NOT NULL DEFAULT 0,
+            assistant_word_count  INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE INDEX IF NOT EXISTS idx_conv_stats_source

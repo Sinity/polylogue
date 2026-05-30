@@ -142,14 +142,12 @@ def test_stderr_proxy_delegates_to_current_sys_stderr() -> None:
 
 
 def test_configure_logging_supports_console_and_json_modes_and_get_logger() -> None:
+
     with (
-        # POLYLOGUE_FORCE_PLAIN=1 (set by CI and devshell) forces colors off
-        # at the env-read site. The test exercises the colored-output branch,
-        # so isolate it from ambient env.
         patch.dict("os.environ", {}, clear=False) as env,
-        patch("polylogue.logging.structlog.configure") as configure,
-        patch("polylogue.logging.structlog.dev.ConsoleRenderer", return_value="console-renderer") as console_renderer,
-        patch("polylogue.logging.structlog.processors.JSONRenderer", return_value="json-renderer") as json_renderer,
+        patch("structlog.configure") as configure,
+        patch("structlog.dev.ConsoleRenderer", return_value="console-renderer") as console_renderer,
+        patch("structlog.processors.JSONRenderer", return_value="json-renderer") as json_renderer,
         patch("sys.stderr.isatty", return_value=True),
     ):
         env.pop("POLYLOGUE_FORCE_PLAIN", None)
@@ -164,16 +162,17 @@ def test_configure_logging_supports_console_and_json_modes_and_get_logger() -> N
         json_renderer.assert_called_once_with()
 
     bound_logger = cast(BoundLoggerLike, object())
-    with patch("polylogue.logging.structlog.get_logger", return_value=bound_logger) as get_logger:
+    with patch("structlog.get_logger", return_value=bound_logger) as get_logger:
         assert logging_mod.get_logger("polylogue.tests") is bound_logger
     get_logger.assert_called_once_with("polylogue.tests")
 
 
 def test_configure_logging_accepts_typed_force_plain_config() -> None:
+
     with (
         patch("polylogue.logging.load_polylogue_config", return_value={"force_plain": True}),
-        patch("polylogue.logging.structlog.configure"),
-        patch("polylogue.logging.structlog.dev.ConsoleRenderer", return_value="console-renderer") as console_renderer,
+        patch("structlog.configure"),
+        patch("structlog.dev.ConsoleRenderer", return_value="console-renderer") as console_renderer,
         patch("sys.stderr.isatty", return_value=True),
     ):
         logging_mod.configure_logging(verbose=False, json_logs=False)

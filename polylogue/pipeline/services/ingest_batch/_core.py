@@ -334,7 +334,13 @@ def _upsert_stats_from_messages(conn: sqlite3.Connection, conversation_id: str, 
             COALESCE(SUM(word_count), 0) AS word_count,
             COALESCE(SUM(has_tool_use), 0) AS tool_use_count,
             COALESCE(SUM(has_thinking), 0) AS thinking_count,
-            COALESCE(SUM(has_paste), 0) AS paste_count
+            COALESCE(SUM(has_paste), 0) AS paste_count,
+            COALESCE(SUM(CASE WHEN role = 'user'      THEN 1 ELSE 0 END), 0) AS user_msg_count,
+            COALESCE(SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END), 0) AS assistant_msg_count,
+            COALESCE(SUM(CASE WHEN role = 'system'    THEN 1 ELSE 0 END), 0) AS system_msg_count,
+            COALESCE(SUM(CASE WHEN role = 'tool'      THEN 1 ELSE 0 END), 0) AS tool_msg_count,
+            COALESCE(SUM(CASE WHEN role = 'user'      THEN word_count ELSE 0 END), 0) AS user_word_count,
+            COALESCE(SUM(CASE WHEN role = 'assistant' THEN word_count ELSE 0 END), 0) AS assistant_word_count
         FROM messages
         WHERE conversation_id = ?
         """,
@@ -350,6 +356,12 @@ def _upsert_stats_from_messages(conn: sqlite3.Connection, conversation_id: str, 
             int(row["tool_use_count"] or 0),
             int(row["thinking_count"] or 0),
             int(row["paste_count"] or 0),
+            int(row["user_msg_count"] or 0),
+            int(row["assistant_msg_count"] or 0),
+            int(row["system_msg_count"] or 0),
+            int(row["tool_msg_count"] or 0),
+            int(row["user_word_count"] or 0),
+            int(row["assistant_word_count"] or 0),
         ),
     )
 
