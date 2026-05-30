@@ -2578,6 +2578,10 @@ files:
     loc: 71
     target: polylogue/sources/live/conversation_convergence.py
     owner: stable
+  - path: polylogue/sources/live/_lag_sample_ddl.py
+    loc: 27
+    target: polylogue/sources/live/_lag_sample_ddl.py
+    owner: stable
   - path: polylogue/sources/live/cursor.py
     loc: 1171
     target: polylogue/sources/live/cursor.py
