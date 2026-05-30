@@ -794,11 +794,27 @@ concurrent GC before the main transaction commits, then calls
 <code>release_operation_leases(conn, operation_id)</code> after the commit so
 the blob is now durably referenced by <code>raw_conversations</code> and the
 lease can drop.</p>
+<p>The acquire/release pair is wrapped in <code>try/finally</code> keyed by
+<code>operation_id</code> (#1746). The lease is committed on its own connection,
+so rolling back the main transaction on failure does NOT undo it — if
+FTS repair or the commit raises, the <code>finally</code> opens a fresh
+immediate-commit connection and releases the lease anyway. Without this
+the lease row would leak into <code>pending_blob_refs</code> permanently and the
+blob it named could never be GC'd.</p>
+<p>The durable backstop is <code>sweep_orphaned_blob_leases</code>, run at daemon
+startup (<code>polylogue/daemon/cli.py:_sweep_orphaned_blob_leases</code>,
+mirroring <code>CursorStore._mark_interrupted_attempts</code> for
+<code>live_ingest_attempt</code>). A writer SIGKILLed between acquire and release
+cannot run its <code>finally</code>; the sweep deletes any <code>pending_blob_refs</code>
+row older than <code>ORPHAN_LEASE_MAX_AGE_S</code> (3600 s), a bound generous
+enough that a slow-but-live ingest is never swept out from under
+itself.</p>
 <p><code>gc_generations</code> tracks the high-water mark of completed GC runs. The
-&quot;defense-in-depth&quot; age check requires candidate blobs to be older than
-the previous generation plus <code>MIN_AGE_S</code> so that a brand-new blob is
-never considered for deletion within the same GC run cycle that
-created it.</p>
+&quot;defense-in-depth&quot; age gate is enforced in <code>run_blob_gc</code> (#1746): a
+candidate blob must be older than <code>max(MIN_AGE_S, now - prev_generation.completed_at)</code>. The generation term means a blob
+created during the same window as the previous GC pass is never
+reclaimed before its eventual reference can land. With no prior
+generation recorded, the static <code>MIN_AGE_S</code> floor applies on its own.</p>
 <ul>
 <li><strong>Known issues</strong>: GC has bugs with orphan detection and integrity
 verification (<a href="https://github.com/Sinity/polylogue/issues/818">#818</a>)
