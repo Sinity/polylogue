@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
 from typing import IO, Protocol, TypeAlias, TypeGuard
 
@@ -43,6 +44,33 @@ class IjsonModuleLike(Protocol):
     common: IjsonCommonLike
 
     def items(self, handle: JsonReadable, prefix: str) -> Iterable[JsonValue]: ...
+
+
+class PartialJsonStreamError(ValueError):
+    """A prefixed JSON stream was truncated/corrupted partway through decoding.
+
+    Surfaced instead of silently returning the records accumulated before the
+    corruption. ``recovered`` is the number of items successfully yielded before
+    the failure; ``offset`` is the byte offset of the failure when ``ijson``
+    reports one (``None`` otherwise).
+    """
+
+    def __init__(
+        self,
+        path_name: str,
+        *,
+        recovered: int,
+        offset: int | None,
+        cause: BaseException,
+    ) -> None:
+        self.path_name = path_name
+        self.recovered = recovered
+        self.offset = offset
+        self.cause = cause
+        location = f" at byte offset {offset}" if offset is not None else ""
+        super().__init__(
+            f"partial JSON stream decode of {path_name}: corruption{location} after {recovered} record(s): {cause}"
+        )
 
 
 def _is_json_value(value: object) -> TypeGuard[JsonValue]:
@@ -175,11 +203,44 @@ def _stream_prefixed_items(
             found_any = True
             records.append(item)
         return (found_any, records)
-    except ijson_module.common.JSONError:
+    except ijson_module.common.JSONError as exc:
+        if found_any:
+            # Mid-stream corruption: the array/object was valid for the first
+            # ``len(records)`` items then broke. Returning the partial set here
+            # silently truncates the conversation set, so surface a typed error
+            # instead. A JSONError with zero items found is a normal
+            # "wrong prefix, try the next strategy" signal and is swallowed.
+            offset = _json_error_offset(exc)
+            logger_obj.warning(
+                "Partial JSON stream decode of %s (strategy %s): corruption after %d record(s)%s",
+                path_name,
+                strategy_name,
+                len(records),
+                f" at byte offset {offset}" if offset is not None else "",
+            )
+            raise PartialJsonStreamError(
+                path_name,
+                recovered=len(records),
+                offset=offset,
+                cause=exc,
+            ) from exc
         return (found_any, records)
     except Exception as exc:
         logger_obj.debug("Strategy %s failed for %s: %s", strategy_name, path_name, exc)
         return (found_any, records)
+
+
+def _json_error_offset(exc: BaseException) -> int | None:
+    """Extract a byte/char offset from an ijson JSONError when available."""
+    for attr in ("pos", "offset"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+    # ijson messages often embed the byte position, e.g. "... at 1234".
+    match = re.search(r"at (\d+)", str(exc))
+    if match:
+        return int(match.group(1))
+    return None
 
 
 def iter_json_stream_with(
@@ -243,6 +304,7 @@ __all__ = [
     "JsonReadable",
     "JsonValue",
     "LoggerLike",
+    "PartialJsonStreamError",
     "decode_json_bytes",
     "decode_json_bytes_with",
     "iter_json_stream",

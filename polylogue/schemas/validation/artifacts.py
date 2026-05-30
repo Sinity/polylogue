@@ -135,6 +135,10 @@ def prove_raw_artifact_coverage(
             stats.unknown_records += 1
         elif observation.support_status is ArtifactSupportStatus.DECODE_FAILED:
             stats.decode_errors += 1
+        elif observation.support_status is ArtifactSupportStatus.PARTIAL_DECODE:
+            # Partial decode is still record loss — count it as a decode error
+            # so it is never silently absent from the artifact proof (#1745).
+            stats.decode_errors += 1
 
     for provider, state in linkage_state.items():
         stats = stats_by_provider.setdefault(

@@ -36,6 +36,7 @@ def _initial_counts() -> ValidationCounts:
         "drift": 0,
         "skipped_no_schema": 0,
         "errors": 0,
+        "malformed_jsonl_lines": 0,
     }
 
 
@@ -160,11 +161,15 @@ def _validate_record_sync(
                 drift_count=0,
                 counts_delta=counts_delta,
             )
+        # Advisory mode does not fail the record, but the malformed-line loss is
+        # still counted and surfaced rather than silently demoted (#1745).
+        counts_delta["malformed_jsonl_lines"] += malformed_lines
         logger.warning(
-            "Malformed JSONL lines ignored in advisory mode",
+            "Malformed JSONL lines counted in advisory mode",
             raw_id=raw_record.raw_id,
             provider=raw_record.source_name,
             malformed_lines=malformed_lines,
+            malformed_detail=malformed_detail,
         )
 
     validator = _validator_for_payload(

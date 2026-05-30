@@ -32,6 +32,30 @@ class AntigravityExportError(RuntimeError):
     """Raised when Antigravity's local export surface cannot be queried."""
 
 
+class AntigravityBinaryUnavailableError(AntigravityExportError):
+    """Raised when the Antigravity language-server binary is not installed.
+
+    This is the benign case — Antigravity is simply not present — and callers
+    should fall back to the brain-artifact walk at INFO level without treating
+    it as data loss.
+    """
+
+
+class AntigravityPartialExportError(AntigravityExportError):
+    """Raised when the language-server export aborts mid-iteration.
+
+    Distinct from a binary-absent condition: some conversations were already
+    obtained before the failure, so the remainder is genuinely at risk of being
+    dropped. Carries obtained-vs-expected counts so callers can surface the loss
+    instead of silently truncating.
+    """
+
+    def __init__(self, message: str, *, obtained: int, expected: int) -> None:
+        self.obtained = obtained
+        self.expected = expected
+        super().__init__(f"{message} (obtained {obtained} of {expected} conversations)")
+
+
 @dataclass(frozen=True, slots=True)
 class AntigravityConversationSummary:
     cascade_id: str
@@ -88,7 +112,7 @@ class AntigravityLanguageServerClient:
             return
         binary = self.language_server_path or discover_language_server()
         if binary is None:
-            raise AntigravityExportError("Antigravity language_server_linux_x64 was not found")
+            raise AntigravityBinaryUnavailableError("Antigravity language_server_linux_x64 was not found")
 
         cmd = [
             str(binary),
@@ -292,9 +316,25 @@ def iter_language_server_exports(
     if owned_client:
         runtime_client.start()
     try:
-        for summary in runtime_client.search_conversations():
-            markdown = runtime_client.export_markdown(summary.cascade_id)
-            yield parse_markdown_export_payload(markdown_export_payload(summary, markdown), summary.cascade_id)
+        summaries = runtime_client.search_conversations()
+        expected = len(summaries)
+        for obtained, summary in enumerate(summaries):
+            try:
+                markdown = runtime_client.export_markdown(summary.cascade_id)
+            except AntigravityExportError as exc:
+                # A mid-iteration export failure would otherwise abort the
+                # generator after yielding only the conversations seen so far,
+                # silently dropping the remainder. Surface obtained-vs-expected
+                # so the caller can distinguish partial loss from a benign
+                # binary-absent fallback. ``obtained`` is the number already
+                # yielded (the index of the failing summary).
+                raise AntigravityPartialExportError(
+                    f"Antigravity export aborted on cascade {summary.cascade_id}: {exc}",
+                    obtained=obtained,
+                    expected=expected,
+                ) from exc
+            else:
+                yield parse_markdown_export_payload(markdown_export_payload(summary, markdown), summary.cascade_id)
     finally:
         if owned_client:
             runtime_client.close()
@@ -401,9 +441,11 @@ def _string(value: object) -> str | None:
 
 
 __all__ = [
+    "AntigravityBinaryUnavailableError",
     "AntigravityConversationSummary",
     "AntigravityExportError",
     "AntigravityLanguageServerClient",
+    "AntigravityPartialExportError",
     "discover_language_server",
     "iter_language_server_exports",
     "looks_like_brain_metadata",
