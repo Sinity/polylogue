@@ -63,11 +63,64 @@ MIN_AGE_S = 60
 # GC generation constants
 _INITIAL_GENERATION = 0
 
+# Orphaned-lease sweep bound. A lease whose owning operation crashed before
+# release (see ``commit_archive_write_effects``) is reclaimed once it is older
+# than this many seconds, mirroring ``_mark_interrupted_attempts`` for
+# ``live_ingest_attempt``. Generous so a slow-but-live ingest is never swept
+# out from under itself.
+ORPHAN_LEASE_MAX_AGE_S = 3600
+
 
 def _current_generation(conn: sqlite3.Connection) -> int:
     """Return the latest completed GC generation, or 0 if none."""
     row = conn.execute("SELECT COALESCE(MAX(generation), 0) FROM gc_generations").fetchone()
     return row[0] if row else 0
+
+
+def _previous_generation_completed_at(conn: sqlite3.Connection) -> int | None:
+    """Return ``completed_at`` of the latest completed GC generation, or None.
+
+    Used by ``run_blob_gc`` to enforce safety invariant #3: a blob must be
+    older than the previous generation's completion before it is eligible for
+    deletion (defense-in-depth against clock skew and delayed lease writes).
+    """
+    row = conn.execute("SELECT completed_at FROM gc_generations ORDER BY generation DESC LIMIT 1").fetchone()
+    if row is None:
+        return None
+    completed_at = row[0]
+    return int(completed_at) if completed_at is not None else None
+
+
+def sweep_orphaned_blob_leases(
+    db_path: str | Path,
+    *,
+    max_age_s: int = ORPHAN_LEASE_MAX_AGE_S,
+) -> int:
+    """Remove ``pending_blob_refs`` rows older than ``max_age_s`` seconds.
+
+    A lease is acquired before the data transaction commits and released on
+    every exit path of ``commit_archive_write_effects``. If the owning process
+    is SIGKILLed between acquire and release, the lease row leaks and
+    permanently blocks GC of the blob it names. This sweep is the daemon
+    startup counterpart to ``CursorStore._mark_interrupted_attempts``: it
+    reclaims leases that no live operation could still own.
+
+    Returns the number of orphaned lease rows removed.
+    """
+    cutoff = int(time.time()) - int(max_age_s)
+    conn = open_connection(db_path)
+    try:
+        cursor = conn.execute(
+            "DELETE FROM pending_blob_refs WHERE acquired_at < ?",
+            (cutoff,),
+        )
+        removed = max(cursor.rowcount, 0)
+        conn.commit()
+        if removed:
+            logger.info("Swept %d orphaned blob lease(s) older than %ds", removed, max_age_s)
+        return removed
+    finally:
+        conn.close()
 
 
 def _has_active_lease(conn: sqlite3.Connection, blob_hash: str) -> bool:
@@ -198,7 +251,17 @@ def run_blob_gc(
     conn.row_factory = sqlite3.Row
     try:
         generation = _current_generation(conn)
-        older_than = MIN_AGE_S
+        # Safety invariant #3: a candidate must be older than BOTH the static
+        # MIN_AGE_S floor AND the previous completed GC generation. The
+        # generation high-water mark prevents a blob created during the same
+        # window as the previous GC pass from being reclaimed before its
+        # eventual reference can land (defense-in-depth against clock skew and
+        # delayed lease writes). Without a prior generation the floor applies.
+        prev_completed_at = _previous_generation_completed_at(conn)
+        older_than = float(MIN_AGE_S)
+        if prev_completed_at is not None:
+            since_prev_generation = time.time() - prev_completed_at
+            older_than = max(older_than, since_prev_generation)
         candidates = _candidate_blobs(blob_path, older_than=older_than)
         if not candidates:
             return 0
@@ -395,10 +458,12 @@ def release_operation_leases(
 
 __all__ = [
     "MIN_AGE_S",
+    "ORPHAN_LEASE_MAX_AGE_S",
     "GCHistoryRow",
     "GCRunEvidence",
     "acquire_blob_leases",
     "read_gc_history",
     "release_operation_leases",
     "run_blob_gc",
+    "sweep_orphaned_blob_leases",
 ]

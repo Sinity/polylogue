@@ -63,6 +63,8 @@ files:
     reason: "Blob aging uses time.time() to backdate file mtime; production GC reads file mtime, not datetime.now."
   - path: tests/unit/storage/test_blob_store_contracts.py
     reason: "Same as test_blob_gc_concurrency: time.time() backdates file mtime."
+  - path: tests/unit/storage/test_blob_gc_lease_recovery.py
+    reason: "#1746 lease/GC tests backdate blob mtime and pending_blob_refs.acquired_at with time.time(); production GC reads file mtime and integer acquired_at, not datetime.now()."
   - path: tests/unit/storage/test_raw_ingest_artifacts.py
     reason: "Raw-ingest test uses now() as opaque acquired_at metadata."
   - path: tests/unit/daemon/test_fts_trigger_drift.py
