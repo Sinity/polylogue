@@ -46,28 +46,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from polylogue.daemon.cursor_lag_status import CursorLagItem, CursorLagSummary
+from polylogue.sources.live._lag_sample_ddl import _LAG_SAMPLE_DDL, _LAG_SAMPLE_INDEX_DDL
 from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
-
-# The substrate table. Created in two places (idempotent ``IF NOT EXISTS``):
-# the dedicated ensure helper here for tests + lazy first-use, and the daemon
-# :class:`~polylogue.sources.live.cursor.CursorStore` on startup so the
-# periodic health loop always finds the table ready.
-_LAG_SAMPLE_DDL = """
-CREATE TABLE IF NOT EXISTS live_cursor_lag_sample (
-    sample_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    family TEXT NOT NULL,
-    observed_at TEXT NOT NULL,
-    max_lag_s REAL NOT NULL,
-    stuck_file_count INTEGER NOT NULL,
-    p50_lag_s REAL NOT NULL,
-    p95_lag_s REAL NOT NULL
-)
-"""
-
-_LAG_SAMPLE_INDEX_DDL = """
-CREATE INDEX IF NOT EXISTS idx_lag_sample_family_time
-ON live_cursor_lag_sample(family, observed_at DESC)
-"""
 
 
 def ensure_lag_sample_table(conn: sqlite3.Connection) -> None:

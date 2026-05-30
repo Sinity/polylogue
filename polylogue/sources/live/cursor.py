@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from polylogue.sources.live._lag_sample_ddl import _LAG_SAMPLE_DDL, _LAG_SAMPLE_INDEX_DDL
 from polylogue.sources.live.convergence_debt_store import (
     clear_convergence_debt_except_sync,
     record_convergence_debt_sync,
@@ -142,26 +143,9 @@ CREATE TABLE IF NOT EXISTS live_convergence_debt (
 )
 """
 
-# Per-source-family cursor-lag sample history (#1349). The table feeds the
-# anomaly-band rolling baseline computed by
-# :mod:`polylogue.daemon.cursor_lag_baseline`. Daemon-runtime state, not
-# part of SCHEMA_VERSION — same lifecycle as live_cursor / live_convergence_debt.
-_LAG_SAMPLE_DDL = """
-CREATE TABLE IF NOT EXISTS live_cursor_lag_sample (
-    sample_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    family TEXT NOT NULL,
-    observed_at TEXT NOT NULL,
-    max_lag_s REAL NOT NULL,
-    stuck_file_count INTEGER NOT NULL,
-    p50_lag_s REAL NOT NULL,
-    p95_lag_s REAL NOT NULL
-)
-"""
-
-_LAG_SAMPLE_INDEX_DDL = """
-CREATE INDEX IF NOT EXISTS idx_lag_sample_family_time
-ON live_cursor_lag_sample(family, observed_at DESC)
-"""
+# Per-source-family cursor-lag sample history (#1349). Daemon-runtime state,
+# not part of SCHEMA_VERSION — same lifecycle as live_cursor / live_convergence_debt.
+# DDL is shared with cursor_lag_baseline via polylogue.sources.live._lag_sample_ddl.
 
 
 @dataclass(frozen=True, slots=True)
