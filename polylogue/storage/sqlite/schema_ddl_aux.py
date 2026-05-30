@@ -32,6 +32,7 @@ ARTIFACT_OBSERVATION_DDL = """
                     'recognized_unparsed',
                     'unsupported_parseable',
                     'decode_failed',
+                    'partial_decode',
                     'unknown'
                 )),
             malformed_jsonl_lines INTEGER NOT NULL DEFAULT 0,

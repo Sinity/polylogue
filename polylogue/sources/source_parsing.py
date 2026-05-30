@@ -58,7 +58,29 @@ def iter_source_conversations_with_raw(
         try:
             for conversation in antigravity.iter_language_server_exports(source.path):
                 yield (None, conversation)
+        except antigravity.AntigravityBinaryUnavailableError as exc:
+            # Benign: Antigravity is simply not installed. Fall back to the
+            # brain-artifact walk at INFO — this is not data loss.
+            logger.info(
+                "Antigravity language server unavailable for %s; using parseable artifacts: %s",
+                source.path,
+                exc,
+            )
+        except antigravity.AntigravityPartialExportError as exc:
+            # Mid-export failure: some conversations were obtained before the
+            # abort and the remainder is dropped. Surface obtained-vs-expected
+            # loudly instead of conflating it with a benign fallback.
+            logger.error(
+                "Antigravity language-server export of %s truncated mid-iteration: "
+                "obtained %d of %d conversations; %d lost before fallback: %s",
+                source.path,
+                exc.obtained,
+                exc.expected,
+                max(exc.expected - exc.obtained, 0),
+                exc,
+            )
         except antigravity.AntigravityExportError as exc:
+            # Connection/protocol failure before any conversation was obtained.
             logger.warning(
                 "Antigravity language-server export failed for %s; falling back to parseable artifacts: %s",
                 source.path,

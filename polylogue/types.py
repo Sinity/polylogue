@@ -129,6 +129,7 @@ class ArtifactSupportStatus(str, Enum):
     RECOGNIZED_UNPARSED = "recognized_unparsed"
     UNSUPPORTED_PARSEABLE = "unsupported_parseable"
     DECODE_FAILED = "decode_failed"
+    PARTIAL_DECODE = "partial_decode"
     UNKNOWN = "unknown"
 
     @classmethod

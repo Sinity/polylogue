@@ -460,6 +460,12 @@ def _build_stream_parse_plan(
             context.raw_source,
             max_samples=64,
             jsonl_dict_only=True,
+            # The sample probe stays bounded (STRICT widens it). The accurate,
+            # whole-file malformed-line count for the operator-facing surface is
+            # produced by the durable artifact observation
+            # (storage/artifacts/inspection.py full-scan, #1745); this probe
+            # only needs to *detect* malformed presence for the advisory warning
+            # and STRICT failure below, which the bounded sample already does.
             scan_full=context.validation_mode is ValidationMode.STRICT,
         )
     except Exception:
@@ -559,15 +565,26 @@ def _validate_parse_plan(
         return _PlanValidation(status=ValidationStatus.SKIPPED)
     if not plan.artifact.schema_eligible or plan.schema_payload is None:
         return _PlanValidation(status=ValidationStatus.PASSED)
-    if plan.malformed_jsonl_lines and context.validation_mode is ValidationMode.STRICT:
+    if plan.malformed_jsonl_lines:
         malformed_error = _format_malformed_jsonl_error(
             malformed_lines=plan.malformed_jsonl_lines,
             malformed_detail=plan.malformed_jsonl_detail,
         )
-        return _PlanValidation(
-            status=ValidationStatus.FAILED,
-            validation_error=malformed_error,
-            parse_error=malformed_error,
+        if context.validation_mode is ValidationMode.STRICT:
+            return _PlanValidation(
+                status=ValidationStatus.FAILED,
+                validation_error=malformed_error,
+                parse_error=malformed_error,
+            )
+        # Advisory mode: do not fail the record, but surface the loss at
+        # WARNING level so it is not silently dropped (#1745). The accurate
+        # whole-file count is also persisted on the durable artifact
+        # observation (storage/artifacts/inspection.py full-scan) and is
+        # rolled into the artifact proof's decode-error tally.
+        logger.warning(
+            "Malformed JSONL lines counted in advisory mode for %s: %s",
+            context.raw_record.source_path or context.raw_record.raw_id,
+            malformed_error,
         )
 
     try:
