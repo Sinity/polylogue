@@ -333,7 +333,8 @@ def iter_language_server_exports(
                     obtained=obtained,
                     expected=expected,
                 ) from exc
-            yield parse_markdown_export_payload(markdown_export_payload(summary, markdown), summary.cascade_id)
+            else:
+                yield parse_markdown_export_payload(markdown_export_payload(summary, markdown), summary.cascade_id)
     finally:
         if owned_client:
             runtime_client.close()
