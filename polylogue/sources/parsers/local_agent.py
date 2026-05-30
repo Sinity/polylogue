@@ -71,7 +71,7 @@ def parse_hermes(payload: JSONDocument, fallback_id: str) -> ParsedConversation:
     )
     provider_meta = _conversation_meta(
         payload,
-        keys=("model", "base_url", "platform", "tools", "message_count"),
+        keys=("model", "base_url", "platform", "tools"),
         source_family="hermes",
     )
     return ParsedConversation(
