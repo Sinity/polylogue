@@ -23,6 +23,8 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from devtools import repo_root as _get_root
 
 ROOT = _get_root()
@@ -32,53 +34,8 @@ KERNEL_OWNERS = frozenset({"kernel", "storage-root", "stable"})
 
 
 def parse_yaml(text: str) -> list[dict[str, Any]]:
-    """Tiny YAML parser for our flat list-of-records shape.
-
-    Avoids a PyYAML dep so this can run in any environment. Format is fixed
-    by `build_projection.py`.
-    """
-    rows: list[dict[str, Any]] = []
-    current: dict[str, Any] | None = None
-    for raw in text.splitlines():
-        line = raw.rstrip()
-        if not line or line.lstrip().startswith("#"):
-            continue
-        if line == "files:":
-            continue
-        if line.startswith("  - path: "):
-            if current is not None:
-                rows.append(current)
-            current = {"path": line[len("  - path: ") :].strip(), "cross_cut": {}}
-            continue
-        if current is None:
-            continue
-        stripped = line.lstrip()
-        indent = len(line) - len(stripped)
-        if indent != 4:
-            continue
-        if ": " in stripped:
-            key, _, value = stripped.partition(": ")
-            value = value.strip()
-            if value.startswith('"') and value.endswith('"'):
-                value = value[1:-1].replace('\\"', '"')
-            if key == "loc":
-                try:
-                    current[key] = int(value)
-                except ValueError:
-                    current[key] = 0
-            elif key == "cross_cut":
-                inner = value.strip("{ }")
-                tags = {}
-                if inner:
-                    for pair in inner.split(", "):
-                        k, _, v = pair.partition(": ")
-                        tags[k.strip()] = v.strip()
-                current[key] = tags
-            else:
-                current[key] = value
-    if current is not None:
-        rows.append(current)
-    return rows
+    data: dict[str, list[dict[str, Any]]] = yaml.safe_load(text)
+    return data["files"]
 
 
 def walk_tree() -> set[str]:
