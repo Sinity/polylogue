@@ -190,6 +190,35 @@ async def _periodic_db_optimize() -> None:
             logger.warning("daemon: DB optimize failed", exc_info=True)
 
 
+def _sweep_orphaned_blob_leases_sync() -> None:
+    """Remove blob leases leaked by writers killed mid-commit (#1746).
+
+    ``commit_archive_write_effects`` acquires a blob lease on a separate
+    immediate-commit connection before the data transaction. If the process is
+    SIGKILLed between acquire and release, the lease row leaks into
+    ``pending_blob_refs`` and permanently blocks GC of that blob. This is the
+    startup counterpart to ``CursorStore._mark_interrupted_attempts`` for
+    ``live_ingest_attempt``.
+    """
+    from polylogue.paths import db_path
+    from polylogue.storage.blob_gc import sweep_orphaned_blob_leases
+
+    db = db_path()
+    if not db.exists():
+        return
+    try:
+        removed = sweep_orphaned_blob_leases(db)
+        if removed:
+            logger.info("daemon: swept %d orphaned blob lease(s) on startup", removed)
+    except Exception:
+        logger.warning("daemon: orphaned blob lease sweep failed", exc_info=True)
+
+
+async def _sweep_orphaned_blob_leases() -> None:
+    """Run the orphaned blob-lease startup sweep without blocking the loop."""
+    await asyncio.to_thread(_sweep_orphaned_blob_leases_sync)
+
+
 async def _periodic_convergence_check(sources: tuple[WatchSource, ...]) -> None:
     """Periodically retry recorded derived convergence debt."""
     from polylogue.paths import db_path
@@ -565,6 +594,9 @@ async def run_daemon_services(
         # archives, bounded SQLite maintenance can fault substantial file cache.
         if not watcher_blocked:
             maintenance_tasks.append(asyncio.create_task(_ensure_fts_startup_readiness()))
+            # Reclaim blob leases leaked by a previously SIGKILLed writer so a
+            # later GC pass is not blocked indefinitely (#1746).
+            maintenance_tasks.append(asyncio.create_task(_sweep_orphaned_blob_leases()))
 
         # Preflight already ran at the top of run_daemon_services (see
         # ``watcher_blocked`` above); reuse that result.
