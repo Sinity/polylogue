@@ -25,13 +25,28 @@ from polylogue.cli.shared.types import AppEnv
 @click.pass_obj
 def config_command(env: AppEnv, output_format: str, show_layers: bool) -> None:
     """Show resolved Polylogue configuration with precedence sources."""
-    from polylogue.config import describe_config_layers, format_config_toml, load_polylogue_config
+    from polylogue.config import (
+        describe_config_layers,
+        format_config_toml,
+        is_secret_config_key,
+        load_polylogue_config,
+        redact_config_mapping,
+        redact_secret_value,
+    )
 
     cfg = load_polylogue_config()
+
+    def _display_value(key: str) -> object:
+        raw_value = cfg.raw.get(key)
+        if is_secret_config_key(key):
+            return redact_secret_value(raw_value)
+        return raw_value
 
     if show_layers:
         # ``console.print`` interprets ``[brackets]`` as Rich markup; disable
         # markup so JSON output and TOML section headers survive verbatim.
+        # Secret-bearing keys are redacted before display so the layer dump
+        # never reveals a cleartext secret.
         layer_paths = describe_config_layers()
         payload: dict[str, object] = {
             "layers": {
@@ -41,7 +56,9 @@ def config_command(env: AppEnv, output_format: str, show_layers: bool) -> None:
                 "env": "POLYLOGUE_* environment variables",
                 "cli": "CLI overrides (per-invocation)",
             },
-            "values": {key: {"value": cfg.raw.get(key), "layer": cfg.layer_of(key)} for key in sorted(cfg.raw.keys())},
+            "values": {
+                key: {"value": _display_value(key), "layer": cfg.layer_of(key)} for key in sorted(cfg.raw.keys())
+            },
         }
         if output_format == "json":
             import json
@@ -75,8 +92,13 @@ def config_command(env: AppEnv, output_format: str, show_layers: bool) -> None:
 
         # ``console.print`` interprets ``[brackets]`` as Rich markup, which
         # would mangle JSON output and TOML section headers. Print without
-        # markup parsing to preserve exact bytes.
-        env.ui.console.print(json.dumps(cfg.raw, indent=2, default=str), markup=False, highlight=False)
+        # markup parsing to preserve exact bytes. Secret-bearing keys are
+        # redacted so the JSON dump never reveals a cleartext secret.
+        env.ui.console.print(
+            json.dumps(redact_config_mapping(cfg.raw), indent=2, default=str),
+            markup=False,
+            highlight=False,
+        )
     else:
         env.ui.console.print(format_config_toml(cfg.raw), markup=False, highlight=False)
 
