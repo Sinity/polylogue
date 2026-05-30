@@ -169,23 +169,12 @@ async def test_repository_resave_existing_conversation_is_idempotent(workspace_e
             conv_record, msg_records, attachment_records = scenario.records_from_connection(conn)
             before = scenario.facts_from_connection(conn)
 
-        # Fix up the UUID hash from ConversationBuilder with a real SHA-256
-        # hash so save_via_backend's row-graph validation can function.
-        from polylogue.storage.repository.archive.writes.conversations import _compute_hash_from_row_graph
-
-        real_hash = _compute_hash_from_row_graph(
-            conversation=conv_record,
-            messages=msg_records,
-            attachments=attachment_records,
-        )
-        conv_record = conv_record.model_copy(update={"content_hash": real_hash})
-
-        # First write: the DB still has the seed's UUID hash, so this
-        # updates the conversation row with the real SHA-256 hash.
+        # First write: no prior DB entry, so this stores the record with
+        # ConversationBuilder's hash (any stable hash value works for
+        # idempotency — the key invariant is DB hash == record hash).
         await repository.save_conversation(conv_record, msg_records, attachment_records)
 
-        # Second write: now DB hash == record hash == row-graph hash, so
-        # the idempotency skip path should be clean.
+        # Second write: DB hash == record hash → idempotency skip fires.
         counts = await repository.save_conversation(conv_record, msg_records, attachment_records)
         assert counts["conversations"] == 0
         assert counts["messages"] == 0
@@ -404,27 +393,14 @@ async def test_repository_record_resave_replaces_explicit_provider_events_on_has
     )
     repository = repository_for_scenario_db(db_path)
     try:
-        from polylogue.storage.repository.archive.writes.conversations import _compute_hash_from_row_graph
-
-        # Fix up the UUID hash from ConversationBuilder with a real SHA-256
-        # hash so that save_via_backend's row-graph validation works correctly.
-        real_hash_pe = _compute_hash_from_row_graph(
-            conversation=conv_record,
-            messages=msg_records,
-            attachments=attachment_records,
-        )
-        conv_record = conv_record.model_copy(update={"content_hash": real_hash_pe})
-
         counts = await repository.save_conversation(
             conv_record,
             msg_records,
             attachment_records,
             provider_events=[replacement],
         )
-        # The row-graph hash (with replacement provider events) does not match
-        # the record hash (computed without provider events).  The validation
-        # detects the mismatch and forces a full write, which includes the
-        # replacement provider events.
+        # First write with replacement provider events — always written since
+        # there is no prior DB entry.
         assert counts["provider_events"] == 1
 
         refreshed = await repository.get(scenario.resolved_conversation_id)
@@ -435,107 +411,14 @@ async def test_repository_record_resave_replaces_explicit_provider_events_on_has
 
 
 # ---------------------------------------------------------------------------
-# Hash honesty tests -- prove that the write path validates row-graph / hash
-# consistency and that action events are correctly derived from content.
+# Hash idempotency tests -- prove that the write path correctly skips on
+# hash match and that action events are correctly derived from content.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio()
-async def test_compute_hash_from_row_graph_matches_domain_hash(workspace_env: Mapping[str, Path]) -> None:
-    """_compute_hash_from_row_graph produces the same hash as the canonical domain path."""
-    from polylogue.storage.hydrators import conversation_from_records
-    from polylogue.storage.repository.archive.writes.conversations import (
-        _compute_hash_from_row_graph,
-        _content_hash_from_metadata_or_domain,
-    )
-
-    scenario = ArchiveScenario(
-        name="hash-roundtrip",
-        provider="claude-code",
-        title="Hash roundtrip",
-        messages=(
-            ScenarioMessage(role="user", text="Roundtrip question", message_id="m1"),
-            ScenarioMessage(role="assistant", text="Roundtrip answer", message_id="m2"),
-        ),
-    )
-    db_path, _ = seed_workspace_scenarios(workspace_env, [scenario])
-    with open_connection(db_path) as conn:
-        conv_record, msg_records, attachment_records = scenario.records_from_connection(conn)
-
-    domain = conversation_from_records(conv_record, msg_records, attachment_records)
-    domain_hash = _content_hash_from_metadata_or_domain(domain, metadata={})
-    row_graph_hash = _compute_hash_from_row_graph(
-        conversation=conv_record,
-        messages=msg_records,
-        attachments=attachment_records,
-    )
-    assert domain_hash == row_graph_hash, f"domain={domain_hash[:16]}... row_graph={row_graph_hash[:16]}..."
-
-
-@pytest.mark.asyncio()
-async def test_hash_consistency_forces_write_on_stale_hash(workspace_env: Mapping[str, Path]) -> None:
-    """When the row graph diverges from the record hash, the write path must not skip."""
-    from polylogue.storage.repository.archive.writes.conversations import _compute_hash_from_row_graph
-
-    scenario = ArchiveScenario(
-        name="stale-hash-fix",
-        provider="chatgpt",
-        title="Stale hash",
-        messages=(
-            ScenarioMessage(role="user", text="Original text", message_id="m1"),
-            ScenarioMessage(role="assistant", text="Original response", message_id="m2"),
-        ),
-    )
-    db_path, _ = seed_workspace_scenarios(workspace_env, [scenario])
-    repository = repository_for_scenario_db(db_path)
-    try:
-        with open_connection(db_path) as conn:
-            conv_record, msg_records, attachment_records = scenario.records_from_connection(conn)
-
-        # Compute the real content hash so the validation sees a consistent
-        # row-graph-to-hash mapping.  ConversationBuilder generates UUID hashes.
-        real_hash = _compute_hash_from_row_graph(
-            conversation=conv_record,
-            messages=msg_records,
-            attachments=attachment_records,
-        )
-        conv_record = conv_record.model_copy(update={"content_hash": real_hash})
-
-        # First write: hash won't match DB (or no prior entry) so full write.
-        counts_init = await repository.save_conversation(conv_record, msg_records, attachment_records)
-        assert counts_init["messages"] == 2
-
-        # Re-save identical records -- hash + row graph both agree -> skip.
-        counts_skip = await repository.save_conversation(conv_record, msg_records, attachment_records)
-        assert counts_skip["skipped_messages"] == 2
-
-        # Modify a message but keep the OLD (now stale) content_hash.
-        modified_messages = [
-            msg_records[0].model_copy(update={"text": "Changed text"}),
-            msg_records[1],
-        ]
-        counts = await repository.save_conversation(
-            conv_record,  # still has old content_hash
-            modified_messages,
-            attachment_records,
-        )
-        # Validation detected the mismatch and forced a full write.
-        assert counts["messages"] == 2, f"Expected 2 messages written, got {counts}"
-        assert counts["skipped_messages"] == 0
-
-        refreshed = await repository.get(scenario.resolved_conversation_id)
-        assert refreshed is not None
-        texts = [msg.text for msg in refreshed.messages]
-        assert "Changed text" in texts
-    finally:
-        await repository.close()
-
-
-@pytest.mark.asyncio()
 async def test_hash_match_skips_writes_when_row_graph_agrees(workspace_env: Mapping[str, Path]) -> None:
-    """When both the stored hash and the row graph agree, writes are correctly skipped."""
-    from polylogue.storage.repository.archive.writes.conversations import _compute_hash_from_row_graph
-
+    """When the stored hash matches the record hash, writes are correctly skipped."""
     scenario = ArchiveScenario(
         name="hash-match-skip",
         provider="chatgpt",
@@ -551,18 +434,10 @@ async def test_hash_match_skips_writes_when_row_graph_agrees(workspace_env: Mapp
         with open_connection(db_path) as conn:
             conv_record, msg_records, attachment_records = scenario.records_from_connection(conn)
 
-        # Compute the real content hash and set it.
-        real_hash = _compute_hash_from_row_graph(
-            conversation=conv_record,
-            messages=msg_records,
-            attachments=attachment_records,
-        )
-        conv_record = conv_record.model_copy(update={"content_hash": real_hash})
-
-        # First write stores records with the correct hash.
+        # First write stores records with ConversationBuilder's hash.
         await repository.save_conversation(conv_record, msg_records, attachment_records)
 
-        # Re-save identical records -- everything should be skipped.
+        # Re-save identical records -- DB hash == record hash → everything skipped.
         counts = await repository.save_conversation(conv_record, msg_records, attachment_records)
         assert counts["skipped_conversations"] == 1
         assert counts["skipped_messages"] == 2
@@ -582,7 +457,6 @@ async def test_action_events_are_derived_and_replaced_on_content_change(
     When the hash matches (content unchanged), they are skipped because
     the messages that would produce them haven't changed either.
     """
-    from polylogue.storage.repository.archive.writes.conversations import _compute_hash_from_row_graph
     from polylogue.storage.sqlite.queries import action_events as action_events_q
 
     scenario = ArchiveScenario(
@@ -610,14 +484,6 @@ async def test_action_events_are_derived_and_replaced_on_content_change(
         with open_connection(db_path) as conn:
             conv_record, msg_records, attachment_records = scenario.records_from_connection(conn)
 
-        # Compute the real content hash.
-        real_hash = _compute_hash_from_row_graph(
-            conversation=conv_record,
-            messages=msg_records,
-            attachments=attachment_records,
-        )
-        conv_record = conv_record.model_copy(update={"content_hash": real_hash})
-
         # First write creates action events from the tool_use content block.
         counts_init = await repository.save_conversation(conv_record, msg_records, attachment_records)
         assert counts_init["messages"] == 2, "Initial write should persist messages"
@@ -630,12 +496,16 @@ async def test_action_events_are_derived_and_replaced_on_content_change(
         counts = await repository.save_conversation(conv_record, msg_records, attachment_records)
         assert counts["skipped_messages"] == 2, "Identical content should be skipped"
 
-        # Now change a message -- action events must be rebuilt.
+        # Now change a message and provide a new content_hash (mirrors what the
+        # pipeline does when content changes: the hash is recomputed from the new
+        # payload).  The hash change signals content_unchanged=False, so messages
+        # and action events are rebuilt.
         modified = [
             msg_records[0],
             msg_records[1].model_copy(update={"text": "Running it differently"}),
         ]
-        counts2 = await repository.save_conversation(conv_record, modified, attachment_records)
+        changed_conv = conv_record.model_copy(update={"content_hash": "b" * 64})
+        counts2 = await repository.save_conversation(changed_conv, modified, attachment_records)
         assert counts2["messages"] == 2, "Changed message should trigger full write"
 
         async with repository._backend.connection() as aconn:

@@ -27,10 +27,20 @@ replaced when explicitly supplied, regardless of hash match — they carry
 supplementary indexing-level data that may be updated without changing the
 semantic content.
 
-``save_via_backend()`` validates that the row graph passed by the caller agrees
-with ``ConversationRecord.content_hash`` by re-deriving the hash from the
-storage records and comparing.  A mismatch is logged as a warning and forces a
-full write instead of the idempotency skip.
+``save_via_backend()`` trusts ``ConversationRecord.content_hash`` directly: it
+compares the stored DB hash against the record hash to decide the idempotency
+skip, exactly as the bulk daemon ingest path does
+(``pipeline/services/ingest_batch/_core.py:_check_content_unchanged``).  There is
+intentionally no re-derivation of the hash from the storage row graph (#1747).
+The row graph is a lossy projection of the parsed conversation and the fallback
+identity rules (``msg-N`` provider-message ids, attachment digest provenance)
+are not reconstructible from the stored records without duplicating — and
+forever tracking — the canonical ``pipeline/ids.py`` logic.  An earlier
+cross-validator attempted that reconstruction; it diverged on essentially every
+conversation (full ``message_id`` instead of the bare provider id, a
+``sort_key`` epoch instead of the original ISO timestamp, no attachment digest),
+producing permanent ``save_via_backend_hash_mismatch`` warning noise and
+defeating the idempotency skip on the single-conversation (CLI/API) path.
 """
 
 from __future__ import annotations
@@ -42,7 +52,7 @@ from polylogue.archive.conversation.models import Conversation
 from polylogue.archive.provider.events import ProviderEvent
 from polylogue.archive.topology.edge import TopologyEdgeRecord
 from polylogue.core.hashing import hash_payload
-from polylogue.core.json import JSONValue, json_document, loads
+from polylogue.core.json import JSONValue, json_document
 from polylogue.pipeline.ids import _content_block_payload, _conversation_hash_payload, _normalize_for_hash
 from polylogue.storage.action_events.rows import attach_blocks_to_messages, build_action_event_records
 from polylogue.storage.conversation_replacement import (
@@ -188,128 +198,6 @@ def provider_event_to_record(event: ProviderEvent) -> ProviderEventRecord:
     )
 
 
-def _content_block_record_to_hash_payload(block: ContentBlockRecord) -> dict[str, JSONValue]:
-    """Build a hash-stable payload for a ``ContentBlockRecord``.
-
-    Mirrors ``_content_block_payload()`` in ``pipeline/ids.py`` but accepts the
-    storage record type instead of the parsed source type.
-    """
-    payload: dict[str, JSONValue] = {
-        "type": str(block.type),
-        "text": _normalize_for_hash(block.text),
-    }
-    if block.tool_name:
-        payload["tool_name"] = _normalize_for_hash(block.tool_name)
-    if block.tool_id:
-        payload["tool_id"] = _normalize_for_hash(block.tool_id)
-    if block.tool_input is not None:
-        # ContentBlockRecord stores tool_input as a JSON string, but the canonical
-        # hash hashes the dict representation.  Parse and re-hash for consistency.
-        try:
-            parsed = loads(block.tool_input)
-            if isinstance(parsed, dict):
-                payload["tool_input"] = hash_payload(parsed)
-            else:
-                payload["tool_input"] = hash_payload(block.tool_input)
-        except Exception:
-            payload["tool_input"] = hash_payload(block.tool_input)
-    # #1240: media_type is carried inside block.metadata (JSON) for image/document
-    # blocks instead of a dedicated column. Re-extract it so the row-graph hash
-    # matches the parser-side hash computed in pipeline/ids.py.
-    if block.metadata:
-        try:
-            parsed_meta = loads(block.metadata)
-        except Exception:
-            parsed_meta = None
-        if isinstance(parsed_meta, dict):
-            media_type = parsed_meta.get("media_type")
-            if isinstance(media_type, str) and media_type:
-                payload["media_type"] = _normalize_for_hash(media_type)
-    return payload
-
-
-def _compute_hash_from_row_graph(
-    *,
-    conversation: ConversationRecord,
-    messages: builtins.list[MessageRecord],
-    attachments: builtins.list[AttachmentRecord],
-    provider_events: builtins.list[ProviderEventRecord] | None = None,
-) -> str:
-    """Re-derive the conversation content hash from the storage record graph.
-
-    Uses the same canonical ``_conversation_hash_payload`` helper as
-    ``pipeline/ids.py`` but sources field values from storage records instead
-    of the domain ``Conversation`` model.  This function exists so that
-    ``save_via_backend`` can validate that the row graph the caller supplied
-    actually agrees with ``ConversationRecord.content_hash``.
-
-    Returns the full SHA-256 hex digest.
-    """
-    messages_payload: list[dict[str, JSONValue]] = []
-    for msg in messages:
-        timestamp_str = None
-        if msg.sort_key is not None:
-            try:
-                dt = datetime.fromtimestamp(msg.sort_key, tz=timezone.utc)
-                timestamp_str = dt.isoformat()
-            except (ValueError, OverflowError, OSError):
-                timestamp_str = str(msg.sort_key)
-
-        msg_entry: dict[str, JSONValue] = {
-            "id": str(msg.message_id),
-            "role": _normalize_for_hash(str(msg.role) if msg.role else None),
-            "text": _normalize_for_hash(msg.text),
-            "timestamp": _normalize_for_hash(timestamp_str),
-        }
-        if msg.content_blocks:
-            msg_entry["content_blocks"] = [_content_block_record_to_hash_payload(b) for b in msg.content_blocks]
-        messages_payload.append(msg_entry)
-
-    attachments_payload: list[dict[str, JSONValue]] = []
-    for att in attachments:
-        att_name: str | None = None
-        if att.provider_meta and isinstance(att.provider_meta, dict):
-            raw_name = att.provider_meta.get("name")
-            if isinstance(raw_name, str):
-                att_name = raw_name
-        if att_name is None:
-            att_name = att.attachment_id
-
-        attachments_payload.append(
-            {
-                "id": _normalize_for_hash(att.attachment_id),
-                "message_id": _normalize_for_hash(att.message_id),
-                "name": _normalize_for_hash(att_name),
-                "mime_type": _normalize_for_hash(att.mime_type),
-                "size_bytes": _normalize_for_hash(att.size_bytes),
-            }
-        )
-
-    provider_events_payload: list[dict[str, JSONValue]] = []
-    if provider_events:
-        for event in provider_events:
-            provider_events_payload.append(
-                {
-                    "event_index": event.event_index,
-                    "event_type": _normalize_for_hash(event.event_type),
-                    "timestamp": _normalize_for_hash(event.timestamp),
-                    "source_message_id": _normalize_for_hash(event.source_message_id),
-                    "payload": hash_payload(event.payload),
-                }
-            )
-
-    return hash_payload(
-        _conversation_hash_payload(
-            title=conversation.title,
-            created_at=conversation.created_at,
-            updated_at=conversation.updated_at,
-            messages=messages_payload,
-            attachments=attachments_payload,
-            provider_events=provider_events_payload,
-        )
-    )
-
-
 async def save_via_backend(
     backend: RepositoryBackendProtocol,
     conversation: ConversationRecord,
@@ -348,37 +236,12 @@ async def save_via_backend(
             existing_hash = row["content_hash"]
         timings["hash_check"] = _time.perf_counter() - t0
 
+        # Trust the canonical pipeline content hash for the idempotency skip,
+        # exactly as the bulk daemon ingest path does (#1747).  The stored DB
+        # hash and the record hash are both produced by
+        # ``pipeline/ids.conversation_content_hashes``; when they agree the
+        # parsed payload is unchanged and the row writes can be skipped.
         content_unchanged = existing_hash is not None and existing_hash == conversation.content_hash
-
-        # ------------------------------------------------------------------
-        # Cross-validate: does the row graph the caller supplied actually
-        # agree with ConversationRecord.content_hash?  A mismatch means the
-        # caller built records that diverged from what was hashed — the hash
-        # is no longer a trustworthy signal for the idempotency skip.
-        # ------------------------------------------------------------------
-        row_graph_hash = _compute_hash_from_row_graph(
-            conversation=conversation,
-            messages=messages,
-            attachments=attachments,
-            provider_events=provider_events_for_write if should_replace_provider_events else None,
-        )
-        if row_graph_hash != conversation.content_hash:
-            from polylogue.logging import get_logger
-
-            logger = get_logger(__name__)
-            logger.warning(
-                "save_via_backend_hash_mismatch",
-                conversation_id=str(conversation.conversation_id),
-                record_hash=str(conversation.content_hash),
-                row_graph_hash=row_graph_hash,
-                content_unchanged=content_unchanged,
-            )
-            if content_unchanged:
-                # The stored DB hash agrees with our (stale) record hash, but
-                # the row graph we are about to write disagrees.  The record
-                # hash is no longer trustworthy — force a full write so that
-                # changed rows are not silently skipped.
-                content_unchanged = False
 
         t0 = _time.perf_counter()
         await conversations_q.save_conversation_record(conn, conversation, backend.transaction_depth)
@@ -410,15 +273,21 @@ async def save_via_backend(
                 timings["save_msgs"] = _time.perf_counter() - t0
                 counts["messages"] = len(messages)
 
-                t0 = _time.perf_counter()
-                await stats_q.upsert_conversation_stats(
-                    conn,
-                    conversation.conversation_id,
-                    conversation.source_name,
-                    messages,
-                    backend.transaction_depth,
-                )
-                timings["upsert_stats"] = _time.perf_counter() - t0
+            # Always upsert the aggregate stats row, even for a zero-message
+            # conversation (#1747).  An empty message list yields an all-zero
+            # row so ``--typed-only`` (paste_count = 0) and provider rollups
+            # that count from ``conversation_stats`` stay consistent with
+            # ``get_provider_conversation_counts`` instead of dropping the
+            # conversation through a missing LEFT JOIN row.
+            t0 = _time.perf_counter()
+            await stats_q.upsert_conversation_stats(
+                conn,
+                conversation.conversation_id,
+                conversation.source_name,
+                messages,
+                backend.transaction_depth,
+            )
+            timings["upsert_stats"] = _time.perf_counter() - t0
 
             t0 = _time.perf_counter()
             all_blocks: builtins.list[ContentBlockRecord] = list(content_blocks or [])
