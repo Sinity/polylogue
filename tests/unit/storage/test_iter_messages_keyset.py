@@ -100,7 +100,7 @@ async def _reference_offset_walk(
     conn: aiosqlite.Connection,
     conversation_id: str,
     chunk_size: int,
-    role_values: list[str],
+    role_values: tuple[str, ...] | list[str],
     limit: int | None,
 ) -> list[str]:
     """Pre-#1750 LIMIT/OFFSET walk — the contract the keyset rewrite preserves."""
