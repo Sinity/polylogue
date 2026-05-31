@@ -13,7 +13,6 @@ def test_build_docs_readme_groups_docs_by_reader_task() -> None:
     assert "[CLI Reference](cli-reference.md)" in rendered
     assert "[Browser Capture](browser-capture.md)" in rendered
     assert "## Verification and Quality" in rendered
-    assert "[Verification Lab](verification-lab.md)" in rendered
     assert "[Developer Tools](devtools.md)" in rendered
     assert "## Contributor Workflow" in rendered
     assert "[Contributing](../CONTRIBUTING.md)" in rendered

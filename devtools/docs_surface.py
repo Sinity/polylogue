@@ -74,16 +74,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "docs/test-quality-workflows.md",
         "Generated validation lanes, mutation campaigns, and benchmark campaigns.",
     ),
-    DocsEntry(
-        "Verification Catalog",
-        "docs/verification-catalog.md",
-        "Generated verification subjects, claims, runners, and catalog self-checks.",
-    ),
-    DocsEntry(
-        "Verification Lab",
-        "docs/verification-lab.md",
-        "Accepted command-surface decision for verification catalog, routing, and evidence operators.",
-    ),
 )
 
 REPO_GUIDE_ENTRIES: tuple[DocsEntry, ...] = (
@@ -104,8 +94,6 @@ README_DOC_TITLES: tuple[str, ...] = (
     "MCP Integration",
     "Configuration",
     "Developer Tools",
-    "Verification Catalog",
-    "Verification Lab",
     "Providers",
 )
 
