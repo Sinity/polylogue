@@ -36,9 +36,24 @@ class RootModeRequest:
     def _from_normalized_params(cls, params: dict[str, object], query_terms: tuple[str, ...]) -> RootModeRequest:
         # --lexical and --semantic are ergonomic shortcuts that desugar
         # into existing query knobs so downstream specs stay unchanged.
+        import click
+
         lexical = bool(params.pop("lexical", False))
         semantic = bool(params.pop("semantic", False))
-        if semantic and query_terms:
+        has_similar = bool(params.get("similar_text"))
+        # --lexical (FTS-only) and --semantic/--similar (vector-only) are
+        # opposing retrieval overrides; accepting both silently ran whichever
+        # branch was checked first. Reject the contradiction (#1749).
+        if lexical and (semantic or has_similar):
+            conflicting = "--semantic" if semantic else "--similar"
+            raise click.UsageError(
+                f"{conflicting} cannot be combined with --lexical (they are opposing retrieval modes)."
+            )
+        if semantic and not query_terms:
+            # --semantic promotes the query terms into a similarity prompt;
+            # with no terms it was previously a silent no-op (#1749).
+            raise click.UsageError("--semantic requires query terms to use as the similarity prompt.")
+        if semantic:
             params["similar_text"] = " ".join(query_terms)
             query_terms = ()
         if lexical:

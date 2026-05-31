@@ -415,19 +415,24 @@ components:
         \ response shape (#1266). The same envelope\nis emitted from every read surface so downstream consumers — shell\n\
         pipelines, LLM tool-use harnesses, web clients — see one stable\ncontract regardless of which surface produced the\
         \ result.\n\nFields:\n\n- ``hits``: ordered tuple of :class:`ConversationSearchHitPayload`\n  (already evidence-bearing\
-        \ — see #873).\n- ``total``: total number of matching conversations when known,\n  ``None`` when the underlying lane\
-        \ cannot compute it cheaply.\n- ``limit``: applied page size.\n- ``offset``: applied byte/row offset (offset-based\
+        \ — see #873).\n- ``total``: total number of matching conversations. Every read surface\n  (CLI, MCP, daemon HTTP,\
+        \ Python API) computes this via the shared\n  ``spec.count()`` so the field carries a concrete count uniformly\n \
+        \ (#1749). ``None`` is reserved for the genuine no-spec case where a\n  surface emits a hits list with no backing\
+        \ query spec to count from.\n- ``limit``: applied page size.\n- ``offset``: applied byte/row offset (offset-based\
         \ pagination is\n  \"best-effort, not stable\" for ranked results; prefer ``next_cursor``).\n- ``next_offset``: convenience\
         \ pointer for offset-based clients; only\n  set when more results are likely available.\n- ``next_cursor``: opaque\
         \ keyset cursor encoding (rank, conversation_id)\n  for stable rank-first pagination. Pass back unchanged in the\n\
         \  following request.\n- ``query``: the search query text actually applied (after CLI/MCP/HTTP\n  coercion). Empty\
         \ string when there is no FTS query.\n- ``sort``: applied sort field, e.g. ``\"rank\"`` (default for ranked\n  search),\
         \ ``\"date\"``, ``\"messages\"``. ``None`` when no explicit sort\n  was requested and the underlying lane order is\
-        \ preserved.\n- ``retrieval_lane``: resolved lane name — one of ``\"dialogue\"``,\n  ``\"actions\"``, ``\"hybrid\"\
-        ``, ``\"semantic\"``, ``\"auto\"``. ``auto``\n  means the surface left the lane to the planner.\n- ``ranking_policy``:\
-        \ policy identifier the lane used to order hits.\n  Currently always :data:`RANKING_POLICY_MIXED`.\n- ``ranking_policy_version``:\
-        \ numeric version of the ranking policy\n  so external consumers can detect ordering changes.\n- ``diagnostics``:\
-        \ optional zero-result explanation when the query\n  produced no hits but filters were applied."
+        \ preserved.\n- ``retrieval_lane``: the *resolved* per-hit ranking lane — one of\n  ``\"dialogue\"``, ``\"actions\"\
+        ``, ``\"hybrid\"``, ``\"semantic\"``,\n  ``\"auto\"``. This is distinct from the *request* ``retrieval_lane``\n  input\
+        \ parameter, whose closed accepted vocabulary is only\n  ``QUERY_RETRIEVAL_LANES`` (``\"auto\"``/``\"dialogue\"``/``\"\
+        actions\"``/\n  ``\"hybrid\"``) — ``\"semantic\"`` is never a request lane (a vector-only\n  run is driven by ``similar_text``)\
+        \ but IS reported here as the\n  resolved lane for vector hits (#1749). ``auto`` means the surface\n  left the lane\
+        \ to the planner.\n- ``ranking_policy``: policy identifier the lane used to order hits.\n  Currently always :data:`RANKING_POLICY_MIXED`.\n\
+        - ``ranking_policy_version``: numeric version of the ranking policy\n  so external consumers can detect ordering changes.\n\
+        - ``diagnostics``: optional zero-result explanation when the query\n  produced no hits but filters were applied."
       properties:
         hits:
           items:

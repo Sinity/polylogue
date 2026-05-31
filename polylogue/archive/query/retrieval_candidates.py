@@ -100,8 +100,13 @@ def candidate_batch_limit(plan: ConversationQueryPlan) -> int:
 
 
 def search_limit(plan: ConversationQueryPlan) -> int:
+    # When no explicit --limit is set (e.g. the CLI query-first path with a
+    # bare token), effective_fetch_limit() is None. Fall back to the shared
+    # MAX_QUERY_LIMIT ceiling rather than an unbounded 10000 fetch (#1749).
+    from polylogue.archive.query.spec import MAX_QUERY_LIMIT
+
     fetch_limit = plan.effective_fetch_limit()
-    return max(fetch_limit, 100) if fetch_limit is not None else 10000
+    return max(fetch_limit, 100) if fetch_limit is not None else MAX_QUERY_LIMIT
 
 
 @overload

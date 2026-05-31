@@ -485,7 +485,6 @@ def _build_query_spec_params(
         "until",
         "sort",
         "similar_text",
-        "since_session",
         "since_session_id",
         "message_type",
     ):
@@ -1199,9 +1198,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_list_conversations(self, params: dict[str, list[str]]) -> None:
+        from polylogue.archive.query.spec import clamp_query_limit
+
         query_params = _build_query_spec_params(params, self)
-        limit = self._get_int(params, "limit", 50)
-        offset = self._get_int(params, "offset", 0)
+        # Clamp to the shared MAX_QUERY_LIMIT ceiling so the daemon honors the
+        # same page-size cap as MCP instead of an arbitrary ?limit=99999999
+        # (#1749). The default stays 50; clamp_query_limit only caps the top.
+        limit = clamp_query_limit(self._get_int(params, "limit", 50), default=50)
+        offset = max(0, self._get_int(params, "offset", 0))
         cursor_values = params.get("cursor") or []
         cursor = cursor_values[0] if cursor_values else None
         if cursor:
@@ -1230,6 +1234,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # When search terms are present, return ranked result envelope with
         # per-hit match evidence instead of plain row dicts.
         if query_text and not query_params.get("similar_text"):
+            return await self._do_search_list(poly, spec, limit, offset)
+
+        # A pure vector-only request (similar_text, no FTS term) must surface
+        # the same typed EmbeddingRetrievalNotReadyError the CLI and MCP give,
+        # not an opaque 500. Routing through the operations layer resolves the
+        # vector provider (raising the typed readiness error when embeddings
+        # are not ready), which daemon_safe_handler maps to its 409 status
+        # instead of falling through to a generic ValueError (#1749).
+        if query_params.get("similar_text"):
             return await self._do_search_list(poly, spec, limit, offset)
 
         filter_obj = spec.build_filter(poly.repository)

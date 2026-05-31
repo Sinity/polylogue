@@ -495,16 +495,18 @@ def format_search_envelope(
     limit: int,
     offset: int,
     sort: str | None,
+    total: int | None = None,
     message_counts: dict[str, int] | None = None,
     cursor: SearchCursor | None = None,
 ) -> str:
     """Render the canonical :class:`SearchEnvelope` JSON for ranked search.
 
     Used for ``--format json`` so CLI JSON output matches MCP, daemon HTTP,
-    and the Python API's ``Polylogue.search_envelope()`` shape (#1266).
-    The CLI does not query the archive for ``total`` independently, so
-    the envelope reports ``total=None`` ("unknown total") unless the
-    caller threads in a count.
+    and the Python API's ``Polylogue.search_envelope()`` shape (#1266, #1749).
+    ``total`` is the shared "count when known" field: callers that hold the
+    query spec thread the ``spec.count()`` result so the CLI reports a
+    concrete count like every other surface. ``None`` is retained only for
+    the genuine no-spec case where no count is available.
     """
     counts = message_counts or {}
     hit_payloads = [
@@ -517,7 +519,7 @@ def format_search_envelope(
     resolved_lane = hits[0].retrieval_lane if hits else (retrieval_lane or "auto")
     envelope = build_search_envelope(
         hit_payloads,
-        total=None,
+        total=total,
         limit=limit,
         offset=offset,
         query=query,
@@ -534,14 +536,17 @@ async def output_search_hits(
     output: QueryOutputSpec,
     repo: ConversationOutputStore | None = None,
     *,
+    total: int | None = None,
     cursor: SearchCursor | None = None,
 ) -> None:
     """Output evidence-bearing search hits with optional rich table rendering.
 
-    ``cursor`` carries a previously-decoded :class:`SearchCursor` when the
-    request is a paginated follow-up (#1268); JSON envelope output uses
-    it to drop hits up to and including the anchor and to mint a fresh
-    ``next_cursor`` from the page tail.
+    ``total`` is the count of matching conversations (from ``spec.count()``)
+    threaded by the caller so the JSON envelope reports a concrete total like
+    every other read surface (#1749). ``cursor`` carries a previously-decoded
+    :class:`SearchCursor` when the request is a paginated follow-up (#1268);
+    JSON envelope output uses it to drop hits up to and including the anchor
+    and to mint a fresh ``next_cursor`` from the page tail.
     """
     msg_counts: dict[str, int] = {}
     if repo:
@@ -564,6 +569,7 @@ async def output_search_hits(
                 limit=limit_value,
                 offset=offset_value,
                 sort=sort_value,
+                total=total,
                 message_counts=msg_counts,
                 cursor=cursor,
             )

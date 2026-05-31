@@ -355,7 +355,15 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("get_logical_session", run)
 
     @mcp.tool()
-    async def get_stats_by(group_by: Literal["provider", "month", "year"] = "provider") -> str:
+    async def get_stats_by(group_by: Literal["provider", "day", "month", "year"] = "provider") -> str:
+        """Conversation counts grouped by a calendar/provider dimension.
+
+        These are the conversations-table count dimensions. The CLI ``stats
+        --by`` surface additionally supports ``action``/``tool``/``repo``/
+        ``work-kind``, which are insight-summary aggregations over a different
+        code path, not plain conversation counts (#1749).
+        """
+
         async def run() -> str:
             root = await hooks.get_archive_ops().get_stats_by(group_by)
             return hooks.json_payload(MCPStatsByPayload(root=root))
