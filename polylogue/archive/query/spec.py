@@ -47,7 +47,58 @@ class QuerySpecError(PolylogueError):
 
 QUERY_ACTION_TYPES = tuple(category.value for category in ToolCategory) + ("none",)
 QUERY_SEQUENCE_ACTION_TYPES = tuple(category.value for category in ToolCategory)
+#: Closed vocabulary of retrieval lanes accepted at the query boundary. This is
+#: the single source of truth shared by the CLI ``--retrieval-lane`` choice, the
+#: MCP ``retrieval_lane`` parameter, daemon HTTP, and the ``SearchEnvelope``
+#: contract. ``similar_text`` (vector-only similarity) is a separate request
+#: knob, not a lane — there is deliberately no ``"semantic"`` member.
 QUERY_RETRIEVAL_LANES = ("auto", "dialogue", "actions", "hybrid")
+
+#: Shared maximum page size enforced by every read surface (CLI query-first,
+#: MCP, daemon HTTP). Surfaces clamp their requested ``limit`` to this ceiling
+#: so no single caller can request an unbounded fetch.
+MAX_QUERY_LIMIT = 1000
+
+
+def clamp_query_limit(limit: object, *, default: int = 10) -> int:
+    """Clamp a requested ``limit`` into ``[1, MAX_QUERY_LIMIT]``.
+
+    Shared by every read surface so the page-size ceiling is identical across
+    CLI, MCP, and daemon HTTP. Non-integer or non-positive input falls back to
+    ``default`` (then itself clamped), matching the historical MCP behavior.
+    """
+    try:
+        if isinstance(limit, bool):
+            raise TypeError
+        if isinstance(limit, int):
+            value = limit
+        elif isinstance(limit, float):
+            value = int(limit)
+        elif isinstance(limit, str | bytes | bytearray):
+            value = int(limit)
+        else:
+            value = int(str(limit))
+    except (TypeError, ValueError):
+        value = default
+    return max(1, min(value, MAX_QUERY_LIMIT))
+
+
+def normalize_retrieval_lane(value: object) -> str:
+    """Validate a retrieval-lane token against the closed vocabulary."""
+    if value is None:
+        return "auto"
+    candidate = str(value).strip().lower() or "auto"
+    if candidate not in QUERY_RETRIEVAL_LANES:
+        raise QuerySpecError("retrieval_lane", str(value))
+    return candidate
+
+
+def optional_non_negative_int(field: str, value: object) -> int | None:
+    """Parse an optional integer, rejecting negative values with a typed error."""
+    parsed = optional_int(value)
+    if parsed is not None and parsed < 0:
+        raise QuerySpecError(field, str(value))
+    return parsed
 
 
 def _iter_values(value: object) -> Iterable[object]:
@@ -174,7 +225,6 @@ _RECOGNIZED_PARAMS: frozenset[str] = frozenset(
         "min_words",
         "similar_text",
         "since_session_id",
-        "since_session",
         "message_type",
         "offset",
         "cursor",
@@ -251,13 +301,13 @@ def build_query_spec_from_params(
         validate_params_known(params, strict=True)
     cwd_prefix = optional_text(params.get("cwd_prefix"))
     _validate_path_component("cwd_prefix", cwd_prefix)
-    since_session_id = optional_text(params.get("since_session_id") or params.get("since_session"))
+    since_session_id = optional_text(params.get("since_session_id"))
     _validate_path_component("since_session_id", since_session_id)
     return spec_cls(
         query_terms=as_tuple(params.get("query")),
         contains_terms=as_tuple(params.get("contains")),
         exclude_text_terms=as_tuple(params.get("exclude_text")),
-        retrieval_lane=str(params.get("retrieval_lane") or "auto"),
+        retrieval_lane=normalize_retrieval_lane(params.get("retrieval_lane")),
         referenced_path=as_tuple(params.get("referenced_path")),
         cwd_prefix=cwd_prefix,
         action_terms=normalize_action_terms("action", params.get("action")),
@@ -285,9 +335,9 @@ def build_query_spec_from_params(
         filter_has_thinking=bool(params.get("filter_has_thinking")),
         filter_has_paste=bool(params.get("filter_has_paste")),
         typed_only=bool(params.get("typed_only")),
-        min_messages=optional_int(params.get("min_messages")),
-        max_messages=optional_int(params.get("max_messages")),
-        min_words=optional_int(params.get("min_words")),
+        min_messages=optional_non_negative_int("min_messages", params.get("min_messages")),
+        max_messages=optional_non_negative_int("max_messages", params.get("max_messages")),
+        min_words=optional_non_negative_int("min_words", params.get("min_words")),
         similar_text=optional_text(params.get("similar_text")),
         since_session_id=since_session_id,
         message_type=optional_message_type(params.get("message_type")),
@@ -473,7 +523,10 @@ class ConversationQuerySpec:
 
 __all__ = [
     "ConversationQuerySpec",
+    "MAX_QUERY_LIMIT",
     "QUERY_ACTION_TYPES",
     "QUERY_RETRIEVAL_LANES",
     "QuerySpecError",
+    "clamp_query_limit",
+    "normalize_retrieval_lane",
 ]
