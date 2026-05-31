@@ -72,9 +72,7 @@ def clamp_query_limit(limit: object, *, default: int = 10) -> int:
             raise TypeError
         if isinstance(limit, int):
             value = limit
-        elif isinstance(limit, float):
-            value = int(limit)
-        elif isinstance(limit, str | bytes | bytearray):
+        elif isinstance(limit, float | str | bytes | bytearray):
             value = int(limit)
         else:
             value = int(str(limit))
