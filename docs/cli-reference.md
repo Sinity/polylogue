@@ -543,6 +543,7 @@ Published JSON Schemas live under [`docs/schemas/cli-output/`](./schemas/cli-out
 | Command | JSON contract | Snapshot | `--plain` | NDJSON | Schema | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | `list` | yes | yes | yes | yes | [`conversation-list-row.schema.json`](./schemas/cli-output/conversation-list-row.schema.json) | --format json|ndjson|yaml|csv all backed by ConversationListRowPayload. |
+| `recent` | yes | no | yes | yes | — | Lists the latest sessions; --format json|ndjson|... like list, streaming-friendly. |
 
 ### Family: `search`
 
@@ -560,6 +561,8 @@ Published JSON Schemas live under [`docs/schemas/cli-output/`](./schemas/cli-out
 
 | Command | JSON contract | Snapshot | `--plain` | NDJSON | Schema | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
+| `context` | yes | no | yes | no | — | Composes a context preamble from archive objects; compose emits JSON. |
+| `correlate` | yes | no | yes | no | — | Cross-references sessions with git commits/issues/PRs; --format json structured output. |
 | `cost` | yes | yes | yes | no | — |  |
 | `diagnostics` | yes | yes | yes | no | — | Temporal session diagnostics; JSON output for downstream analytics. |
 | `insights` | yes | yes | yes | no | — | Rebuild/inspect derived insights; subcommands emit insight-specific JSON. |
@@ -587,11 +590,13 @@ Published JSON Schemas live under [`docs/schemas/cli-output/`](./schemas/cli-out
 | `auth` | yes | yes | yes | no | — |  |
 | `config` | yes | yes | yes | no | — | --format json emits resolved settings dictionary. |
 | `init` | no | yes | yes | no | — | Writes a polylogue.toml; --machine emits success/error envelope. |
+| `paths` | yes | no | yes | no | — | Prints canonical archive paths; --format json emits a structured path map. |
 
 ### Family: `shell`
 
 | Command | JSON contract | Snapshot | `--plain` | NDJSON | Schema | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
+| `commands` | no | yes | yes | no | — | Discovery listing of command groups; plain deterministic output. |
 | `completions` | no | yes | yes | no | — | Emits shell-specific completion script; covered by completion contract tests. |
 
 ### Family: `maintenance`
@@ -599,6 +604,7 @@ Published JSON Schemas live under [`docs/schemas/cli-output/`](./schemas/cli-out
 | Command | JSON contract | Snapshot | `--plain` | NDJSON | Schema | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | `backup` | no | yes | yes | no | — | Side-effect command; prints destination path. |
+| `blackboard` | no | yes | yes | no | — | Agent-addressable notes group (list/add/clear); plain output. |
 | `doctor` | yes | yes | yes | no | — | Archive health check; --json emits structured report. |
 | `maintenance` | yes | yes | yes | no | — |  |
 | `reset` | no | yes | yes | no | — |  |

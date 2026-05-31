@@ -670,7 +670,10 @@ def _materialize_parsed_conversations(
         try:
             cdata = _transform_to_tuples(
                 normalized_convo,
-                source_name=context.source_name,
+                # Use the plan's resolved provider (trusted source_name for known
+                # providers; the content-detected provider when the raw source was
+                # unknown) — not the raw source_name, which would discard detection.
+                source_name=plan.payload_provider,
                 archive_root=context.archive_root,
                 raw_id=context.raw_record.raw_id,
                 append_only=context.raw_record.source_index == -1,
