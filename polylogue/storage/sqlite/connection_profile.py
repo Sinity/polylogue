@@ -132,8 +132,15 @@ def open_connection(path: str | Path, *, timeout: float = DB_TIMEOUT) -> sqlite3
     use ``connection_context`` from ``connection.py`` instead.
     """
     conn = sqlite3.connect(str(path), timeout=timeout)
-    for stmt in WRITE_CONNECTION_PRAGMA_STATEMENTS:
-        conn.execute(stmt)
+    try:
+        for stmt in WRITE_CONNECTION_PRAGMA_STATEMENTS:
+            conn.execute(stmt)
+    except BaseException:
+        # A pragma can fail (e.g. a WAL-mode write pragma against a
+        # lock-held database). Close the just-opened connection before
+        # propagating so it is not orphaned by the caller's ``with``/``closing``.
+        conn.close()
+        raise
     return conn
 
 
@@ -145,8 +152,12 @@ def open_readonly_connection(path: str | Path, *, timeout: float = READ_DB_TIMEO
     does not exist.
     """
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=timeout)
-    for stmt in READ_CONNECTION_PRAGMA_STATEMENTS:
-        conn.execute(stmt)
+    try:
+        for stmt in READ_CONNECTION_PRAGMA_STATEMENTS:
+            conn.execute(stmt)
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,7 +43,7 @@ def _seeded_archive_counts(db_path: Path) -> dict[str, int]:
     if not db_path.exists():
         return {}
     counts: dict[str, int] = {}
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         for table in ("raw_conversations", "conversations", "messages"):
             if table in tables:

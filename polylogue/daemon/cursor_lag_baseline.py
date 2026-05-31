@@ -41,6 +41,7 @@ unconfident baseline that the anomaly check refuses to alert on.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -130,7 +131,7 @@ def record_cursor_lag_sample(
         return 0
     dbf.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with open_connection(dbf, timeout=0.1) as conn:
+        with closing(open_connection(dbf, timeout=0.1)) as conn:
             ensure_lag_sample_table(conn)
             conn.executemany(
                 """
@@ -166,7 +167,7 @@ def gc_cursor_lag_samples(
         return 0
     cutoff = ((now or datetime.now(UTC)) - timedelta(days=retention_days)).isoformat()
     try:
-        with open_connection(dbf, timeout=0.1) as conn:
+        with closing(open_connection(dbf, timeout=0.1)) as conn:
             ensure_lag_sample_table(conn)
             cur = conn.execute(
                 "DELETE FROM live_cursor_lag_sample WHERE observed_at < ?",

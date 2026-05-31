@@ -977,10 +977,14 @@ class LiveBatchProcessor:
         return result
 
     def _assert_writable_archive_layout(self) -> None:
+        from contextlib import closing
+
         from polylogue.storage.sqlite.connection_profile import open_connection
         from polylogue.storage.sqlite.schema import assert_supported_archive_layout
 
-        with open_connection(self._cursor._db_path, timeout=10.0) as conn:
+        # ``open_connection`` hands back a connection the caller must close;
+        # ``with conn`` alone only commits. ``closing`` guarantees the close.
+        with closing(open_connection(self._cursor._db_path, timeout=10.0)) as conn:
             assert_supported_archive_layout(conn)
 
     def _mark_excluded_cursor(self, path: Path, stat: object, *, source_name: str) -> None:

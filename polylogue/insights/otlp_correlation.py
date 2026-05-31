@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import json
 import sqlite3
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, cast
@@ -108,11 +109,20 @@ class SessionLLMTiming:
 # ── Query helpers ────────────────────────────────────────────────────────
 
 
-def _connect(db_path: str) -> sqlite3.Connection:
-    """Open a read-only SQLite connection with Row factory."""
+@contextlib.contextmanager
+def _connect(db_path: str) -> Iterator[sqlite3.Connection]:
+    """Open a SQLite connection with Row factory and always close it.
+
+    A bare ``with sqlite3.connect(...)`` only commits on exit, never closes —
+    these are read-only query helpers, so the per-call connection would leak.
+    """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def _has_otlp_data(db_path: str) -> bool:

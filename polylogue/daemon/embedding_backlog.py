@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from polylogue.config import load_polylogue_config
@@ -57,7 +58,7 @@ def drain_embedding_backlog_once(db_path: Path) -> int:
     cfg = load_polylogue_config()
     monthly_cap = float(str(cfg.get("embedding_max_cost_usd", 0.0)))
     try:
-        with open_readonly_connection(db_path, timeout=5.0) as conn:
+        with closing(open_readonly_connection(db_path, timeout=5.0)) as conn:
             if monthly_cap > 0:
                 month_spend = embedding_catchup_estimated_cost_this_month(conn)
                 if month_spend >= monthly_cap:

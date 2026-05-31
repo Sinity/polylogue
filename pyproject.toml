@@ -142,7 +142,6 @@ markers = [
     "xdist_group(group_name): distribute parametrized tests within a file across workers (#1026)",
 ]
 filterwarnings = [
-    "ignore::ResourceWarning",           # Unclosed sqlite3 connections in thread-local backend
     "ignore::DeprecationWarning:dateparser",  # dateparser strptime deprecation (external)
     "ignore::pytest.PytestUnhandledThreadExceptionWarning",  # aiosqlite cleanup in xdist workers
 ]
