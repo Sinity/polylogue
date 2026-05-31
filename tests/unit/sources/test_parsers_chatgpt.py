@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TypeAlias
+from typing import Any, TypeAlias
 
 import pytest
 
@@ -826,7 +826,7 @@ def _branch_node(
     parent: str | None = None,
     children: list[str] | None = None,
     content_type: str = "text",
-) -> dict:
+) -> dict[str, Any]:
     """Mapping node helper that does not force a create_time (graph order is truth)."""
     return {
         "id": msg_id,

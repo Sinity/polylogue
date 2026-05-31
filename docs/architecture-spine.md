@@ -11,7 +11,7 @@ with the implementation; this document records the *why* and the *rules*.
 | **Archive Substrate** | Owns stored meaning: acquisition, parsing, persistence, query | `sources/`, `pipeline/`, `storage/`, `archive/`, `operations/` |
 | **Derived Read Models** | Stored insights computed over the archive | `insights/`, `storage/insights/session/` |
 | **Surfaces** | Expose the archive to users and machines | `cli/`, `mcp/`, `api/`, `rendering/`, `ui/`, `daemon/` |
-| **Verification** | Schema, showcase, devtools, tests | `schemas/`, `showcase/`, `proof/`, `devtools/`, `tests/` |
+| **Verification** | Schema, showcase, devtools, tests | `schemas/`, `showcase/`, `devtools/`, `tests/` |
 
 **Rules:**
 - New semantics go into substrate or insights first, then surfaces adapt.
@@ -26,11 +26,7 @@ Every `docs/plans/*.yaml` manifest is enforced by a lint in `devtools verify`.
 |----------|------|-----------------|
 | `layering.yaml` | `verify-layering` | Surface-to-substrate coupling |
 | `topology-target.yaml` | `verify-topology` | Orphaned/unclassified modules |
-| `file-size-budgets.yaml` | `verify-file-budgets` | Unbounded file growth |
-| `test-ownership.yaml` | `verify-test-ownership` | Untested production modules |
-| `suppressions.yaml` | `verify-suppressions` | Stale suppressions |
 | `campaign-coverage.yaml` | `verify-manifests` | Missing campaign declarations |
-| `migrations.yaml` | `verify-migrations` | Incomplete migration records |
 | `coverage-manifest.yaml` | `verify-manifests` | Stale gap/coverage declarations |
 
 ## Major Decisions

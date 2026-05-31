@@ -30,49 +30,16 @@ DEFAULT_TIER = "cheap-local"
 
 
 # ---------------------------------------------------------------------------
-# YAML parsing (tiny, no PyYAML dependency)
+# YAML parsing
 # ---------------------------------------------------------------------------
 
 
 def _parse_slo_catalog(text: str) -> dict[str, dict[str, object]]:
     """Parse the SLO catalog YAML and return a surface → config dict."""
-    surfaces: dict[str, dict[str, object]] = {}
-    current_surface: str | None = None
-    current_config: dict[str, object] | None = None
+    import yaml
 
-    for raw_line in text.splitlines():
-        line = raw_line.rstrip()
-        if not line or line.lstrip().startswith("#"):
-            continue
-        stripped = line.lstrip()
-        indent = len(line) - len(stripped)
-
-        if indent == 0 and stripped.endswith(":"):
-            # Top-level key (e.g. "surfaces:")
-            pass
-        elif indent == 2 and not stripped.startswith("-") and stripped.endswith(":"):
-            # Surface name (e.g. "  query:")
-            current_surface = stripped.rstrip(":")
-            current_config = {}
-            surfaces[current_surface] = current_config
-        elif indent == 4 and current_config is not None and ": " in stripped:
-            key, _, value = stripped.partition(": ")
-            current_config[key] = _coerce_slo_value(value.strip())
-        elif indent == 4 and current_config is not None and stripped.endswith(":"):
-            # Start of a nested block — skip for now
-            pass
-
-    return surfaces
-
-
-def _coerce_slo_value(value: str) -> str | int:
-    """Coerce a YAML scalar to str or int."""
-    if value.startswith('"') and value.endswith('"'):
-        return value[1:-1]
-    try:
-        return int(value)
-    except ValueError:
-        return value
+    data = yaml.safe_load(text)
+    return {k: dict(v) for k, v in data["surfaces"].items()}
 
 
 # ---------------------------------------------------------------------------
