@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any, cast
 
@@ -106,7 +107,7 @@ def build_space_report(db: Path, *, limit: int = 25, include_objects: bool = Fal
             "db_path": str(db),
             "error": "database_not_found",
         }
-    with open_readonly_connection(db) as conn:
+    with closing(open_readonly_connection(db)) as conn:
         page_size = _scalar_int(conn, "PRAGMA page_size")
         page_count = _scalar_int(conn, "PRAGMA page_count")
         freelist_count = _scalar_int(conn, "PRAGMA freelist_count")
