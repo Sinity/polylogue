@@ -17,6 +17,10 @@ from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 
 MCPToolLimit: TypeAlias = Annotated[int, Field(ge=1)]
 MCPToolOffset: TypeAlias = Annotated[int, Field(ge=0)]
+#: Optional non-negative count bound (min_messages/max_messages/min_words).
+#: ``ge=0`` rejects negatives at the MCP boundary, symmetric with the
+#: ``ge=1``/``ge=0`` guards already on limit/offset (#1749).
+MCPCountBound: TypeAlias = Annotated[int, Field(ge=0)] | None
 
 _QUERY_PARAM_ALIASES = {
     "has_tool_use": "filter_has_tool_use",
@@ -70,17 +74,16 @@ class MCPConversationQueryRequest:
     exclude_tool: str | None = None
     sort: str | None = None
     reverse: bool = False
-    latest: str | None = None
+    latest: bool = False
     has_tool_use: bool = False
     has_thinking: bool = False
     has_paste: bool = False
     typed_only: bool = False
-    min_messages: int | None = None
-    max_messages: int | None = None
-    min_words: int | None = None
+    min_messages: MCPCountBound = None
+    max_messages: MCPCountBound = None
+    min_words: MCPCountBound = None
     sample: int | None = None
     similar_text: str | None = None
-    since_session: str | None = None
     since_session_id: str | None = None
     message_type: str | None = None
     offset: MCPToolOffset = 0
@@ -125,7 +128,6 @@ class MCPConversationQueryRequest:
             min_words=self.min_words,
             sample=self.sample,
             similar_text=self.similar_text,
-            since_session=self.since_session,
             since_session_id=self.since_session_id,
             message_type=self.message_type,
             offset=self.offset,

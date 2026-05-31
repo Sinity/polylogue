@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, overload
 
 from pydantic import BaseModel
 
+from polylogue.archive.query.spec import clamp_query_limit
 from polylogue.errors import (
     EmbeddingRetrievalNotReadyError,
     PolylogueError,
@@ -94,19 +95,12 @@ def _json_payload(payload: BaseModel, *, exclude_none: bool = False) -> str:
 
 
 def _clamp_limit(limit: int | object) -> int:
-    """Ensure limit is a positive integer capped at 1000, defaulting to 10 on bad input."""
-    try:
-        if isinstance(limit, bool):
-            raise TypeError
-        if isinstance(limit, int):
-            return max(1, min(limit, 1000))
-        if isinstance(limit, float):
-            return max(1, min(int(limit), 1000))
-        if isinstance(limit, str | bytes | bytearray):
-            return max(1, min(int(limit), 1000))
-        return max(1, min(int(str(limit)), 1000))
-    except (TypeError, ValueError):
-        return 10
+    """Clamp limit to the shared ``[1, MAX_QUERY_LIMIT]`` ceiling, default 10.
+
+    Delegates to the canonical :func:`clamp_query_limit` so the MCP, CLI
+    query-first, and daemon HTTP page-size ceilings stay identical (#1749).
+    """
+    return clamp_query_limit(limit, default=10)
 
 
 def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:

@@ -280,14 +280,29 @@ async def upsert_conversation_stats(
 
 
 async def get_stats_by(conn: aiosqlite.Connection, group_by: str = "provider") -> dict[str, int]:
-    """Get conversation counts grouped by provider, month, or year.
+    """Get conversation counts grouped by provider, day, month, or year.
 
     Raises ValueError on unknown ``group_by`` rather than silently returning
     provider counts. Each branch is a literal SQL constant — the validated
     input never reaches string interpolation — but the explicit reject closes
     the door on future branches that might.
+
+    These are the conversations-table calendar/provider dimensions. The CLI's
+    additional ``action``/``tool``/``repo``/``work-kind`` dimensions are not
+    plain conversation counts — they are computed via insight-summary
+    aggregation paths in ``cli/query.py:_handle_stats_by`` and are not exposed
+    through this substrate count (#1749).
     """
-    if group_by == "month":
+    if group_by == "day":
+        cursor = await conn.execute(
+            """
+            SELECT strftime('%Y-%m-%d', updated_at) as period, COUNT(*) as count
+            FROM conversations
+            WHERE updated_at IS NOT NULL
+            GROUP BY period ORDER BY period DESC
+            """
+        )
+    elif group_by == "month":
         cursor = await conn.execute(
             """
             SELECT strftime('%Y-%m', updated_at) as period, COUNT(*) as count
@@ -314,7 +329,7 @@ async def get_stats_by(conn: aiosqlite.Connection, group_by: str = "provider") -
             """
         )
     else:
-        raise ValueError(f"Unknown group_by {group_by!r}; expected one of: provider, month, year")
+        raise ValueError(f"Unknown group_by {group_by!r}; expected one of: provider, day, month, year")
     rows = await cursor.fetchall()
     return {row["period"]: row["count"] for row in rows}
 

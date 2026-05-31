@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, overload
 
@@ -105,104 +105,13 @@ def summary_to_dict(summary: ConversationSummary, message_count: int) -> JSONDoc
 
 
 # ---------------------------------------------------------------------------
-# Query frontdoor (from query_frontdoor.py)
+# Query frontdoor
 # ---------------------------------------------------------------------------
-
-_ROOT_GLOBAL_OPTIONS = frozenset({"--plain", "--verbose", "-v"})
-
-
-def _option_arity(group: click.Group) -> dict[str, int]:
-    value_options: dict[str, int] = {}
-    for param in group.params:
-        if isinstance(param, click.Option) and not param.is_flag:
-            nargs = param.nargs if param.nargs > 0 else 1
-            for opt in param.opts + param.secondary_opts:
-                value_options[opt] = nargs
-    return value_options
-
-
-def _matches_option(option: str, token: str) -> bool:
-    return token == option or token.startswith(f"{option}=")
-
-
-def _is_root_global_option(token: str) -> bool:
-    return any(_matches_option(option, token) for option in _ROOT_GLOBAL_OPTIONS)
-
-
-def _iter_option_values(args: list[str], start: int, nargs: int) -> Iterable[str]:
-    for offset in range(1, nargs + 1):
-        if start + offset < len(args):
-            yield args[start + offset]
-
-
-def _command_option_names(command: click.Command) -> frozenset[str]:
-    options: set[str] = set()
-    ctx = click.Context(command)
-    for param in command.get_params(ctx):
-        if isinstance(param, click.Option):
-            options.update(param.opts)
-            options.update(param.secondary_opts)
-    return frozenset(options)
-
-
-def _find_root_option_after_verb(
-    group: click.Group,
-    verb: str,
-    trailing_args: list[str],
-) -> str | None:
-    root_option_names = frozenset(_option_arity(group)) | _ROOT_GLOBAL_OPTIONS
-    command = group.commands.get(verb)
-    command_option_names = _command_option_names(command) if command is not None else frozenset()
-    for token in trailing_args:
-        if not token.startswith("-"):
-            continue
-        for option in root_option_names:
-            if not _matches_option(option, token):
-                continue
-            if option in command_option_names:
-                break
-            return option
-    return None
-
-
-def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[str], tuple[str, ...], bool]:
-    from polylogue.cli.verb_names import VERB_NAMES
-
-    option_arity = _option_arity(group)
-    option_args: list[str] = []
-    query_terms: list[str] = []
-    index = 0
-
-    while index < len(args):
-        arg = args[index]
-        if arg == "--":
-            query_terms.extend(args[index + 1 :])
-            break
-        if arg.startswith("-"):
-            option_args.append(arg)
-            nargs = option_arity.get(arg, 0)
-            option_args.extend(_iter_option_values(args, index, nargs))
-            index += nargs + 1
-            continue
-        # Non-verb subcommands (run, doctor, insights, etc.) recognized when
-        # no bare-word query terms have been collected yet.  Filter options
-        # (--provider, --since, …) do NOT prevent subcommand detection — they
-        # are consumed by the root group during Click's normal parse phase.
-        if not query_terms and arg in group.commands and arg not in VERB_NAMES:
-            return args, (), True
-        # Verb commands recognized at any position (even after filters/query terms)
-        if arg in VERB_NAMES:
-            misplaced_option = _find_root_option_after_verb(group, arg, list(args[index + 1 :]))
-            if misplaced_option is not None:
-                raise click.UsageError(
-                    f"Query filters and root output flags must appear before the verb. Move {misplaced_option} before `{arg}`."
-                )
-            verb_args = option_args + [arg] + list(args[index + 1 :])
-            return verb_args, tuple(query_terms), True
-        query_terms.append(arg)
-        index += 1
-
-    return option_args, tuple(query_terms), False
+#
+# The query-first arg splitter lives in the lightweight ``query_group`` module
+# (``_split_query_mode_args`` and helpers) so ``parse_args`` can route without
+# importing this heavy module. A drifted duplicate previously lived here; it
+# was dead (only referenced among its own helpers) and has been removed (#1749).
 
 
 def handle_query_mode(
@@ -271,6 +180,18 @@ def _create_query_vector_provider(config: Config, *, db_path: Path | None = None
 
 def _stats_dimension(plan: QueryExecutionPlan) -> str:
     return plan.stats_dimension or "all"
+
+
+async def _envelope_total(repo: QueryExecutionStore, plan: QueryExecutionPlan) -> int | None:
+    """Compute the matching-conversation count for the JSON search envelope.
+
+    The CLI search-hit JSON envelope reports ``total`` like every other read
+    surface (#1749). The count is only computed for ``--format json`` so the
+    rich/text output paths do not pay an extra count query.
+    """
+    if plan.output.output_format != "json":
+        return None
+    return await plan.selection.count(repo)
 
 
 def _archive_embedding_retrieval_ready(archive_stats: object) -> bool:
@@ -532,7 +453,12 @@ async def _handle_summary_list(
             summary_diagnostics = await _diagnose_query_miss(repo, plan.selection, config=config)
             no_results(env, params, diagnostics=summary_diagnostics)
         await _query_output.output_search_hits(
-            env, search_hits, plan.output, repo, cursor=_decode_cursor_or_none(plan.selection.cursor)
+            env,
+            search_hits,
+            plan.output,
+            repo,
+            total=await _envelope_total(repo, plan),
+            cursor=_decode_cursor_or_none(plan.selection.cursor),
         )
         return
 
@@ -771,7 +697,12 @@ async def _handle_default(
         search_hits = await _search_hits_for_execution_plan(repo, plan, vector_provider=vector_provider)
         if search_hits is not None:
             await _query_output.output_search_hits(
-                env, search_hits, plan.output, repo, cursor=_decode_cursor_or_none(plan.selection.cursor)
+                env,
+                search_hits,
+                plan.output,
+                repo,
+                total=await _envelope_total(repo, plan),
+                cursor=_decode_cursor_or_none(plan.selection.cursor),
             )
             return
     _query_output.output_results(

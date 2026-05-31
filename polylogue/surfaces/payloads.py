@@ -764,8 +764,11 @@ class SearchEnvelope(SurfacePayloadModel):
 
     - ``hits``: ordered tuple of :class:`ConversationSearchHitPayload`
       (already evidence-bearing — see #873).
-    - ``total``: total number of matching conversations when known,
-      ``None`` when the underlying lane cannot compute it cheaply.
+    - ``total``: total number of matching conversations. Every read surface
+      (CLI, MCP, daemon HTTP, Python API) computes this via the shared
+      ``spec.count()`` so the field carries a concrete count uniformly
+      (#1749). ``None`` is reserved for the genuine no-spec case where a
+      surface emits a hits list with no backing query spec to count from.
     - ``limit``: applied page size.
     - ``offset``: applied byte/row offset (offset-based pagination is
       "best-effort, not stable" for ranked results; prefer ``next_cursor``).
@@ -779,9 +782,15 @@ class SearchEnvelope(SurfacePayloadModel):
     - ``sort``: applied sort field, e.g. ``"rank"`` (default for ranked
       search), ``"date"``, ``"messages"``. ``None`` when no explicit sort
       was requested and the underlying lane order is preserved.
-    - ``retrieval_lane``: resolved lane name — one of ``"dialogue"``,
-      ``"actions"``, ``"hybrid"``, ``"semantic"``, ``"auto"``. ``auto``
-      means the surface left the lane to the planner.
+    - ``retrieval_lane``: the *resolved* per-hit ranking lane — one of
+      ``"dialogue"``, ``"actions"``, ``"hybrid"``, ``"semantic"``,
+      ``"auto"``. This is distinct from the *request* ``retrieval_lane``
+      input parameter, whose closed accepted vocabulary is only
+      ``QUERY_RETRIEVAL_LANES`` (``"auto"``/``"dialogue"``/``"actions"``/
+      ``"hybrid"``) — ``"semantic"`` is never a request lane (a vector-only
+      run is driven by ``similar_text``) but IS reported here as the
+      resolved lane for vector hits (#1749). ``auto`` means the surface
+      left the lane to the planner.
     - ``ranking_policy``: policy identifier the lane used to order hits.
       Currently always :data:`RANKING_POLICY_MIXED`.
     - ``ranking_policy_version``: numeric version of the ranking policy
