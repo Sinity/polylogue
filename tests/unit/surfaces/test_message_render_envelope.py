@@ -46,6 +46,7 @@ _ENVELOPE_FIELDS: tuple[str, ...] = (
     "parent_id",
     "branch_index",
     "has_paste",
+    "paste_boundary_state",
     "has_tool_use",
     "has_thinking",
     "input_tokens",
