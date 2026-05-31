@@ -563,7 +563,11 @@ class TestPolylogueConfigFormatTOML:
 
         cfg = load_polylogue_config(cli_overrides={"source_roots": ("/a", "/b")})
         formatted = format_config_toml(cfg.raw)
-        assert 'roots = ["/a", "/b"]' in formatted
+        # The TOML serializer renders arrays multi-line; assert the array shape
+        # and both members rather than a single-line spelling.
+        assert "roots = [" in formatted
+        assert '"/a"' in formatted
+        assert '"/b"' in formatted
 
 
 class TestPolylogueConfigLayerPrecedence:
