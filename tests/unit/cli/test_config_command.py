@@ -9,10 +9,13 @@ its three output surfaces: the default TOML, ``--format json``, and
 from __future__ import annotations
 
 import json
+from io import StringIO
 from pathlib import Path
+from typing import cast
 
 import pytest
 from click.testing import CliRunner
+from rich.console import Console
 
 from polylogue.cli.commands.config import config_command
 from tests.infra.app_env import make_app_env
@@ -47,6 +50,10 @@ def config_with_secrets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(cfg))
     # Avoid a site-layer file leaking into the resolved config.
     monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", str(tmp_path / "absent-site.toml"))
+    # The flat ``voyage_api_key`` secret is populated from the ``VOYAGE_API_KEY``
+    # env var (config._apply_env_overrides), which the autouse env-stripping
+    # fixture removes — set it so the secret is present for redaction assertions.
+    monkeypatch.setenv("VOYAGE_API_KEY", _VOYAGE_SECRET)
     return cfg
 
 
@@ -54,7 +61,7 @@ def _run(args: list[str]) -> str:
     env = make_app_env()
     result = CliRunner().invoke(config_command, obj=env, args=args)
     assert result.exit_code == 0, (result.output, result.exception)
-    return str(env.ui.console.file.getvalue())
+    return cast(StringIO, cast(Console, env.ui.console).file).getvalue()
 
 
 @pytest.mark.parametrize(
@@ -89,6 +96,9 @@ def test_unset_secret_renders_unset_in_json(tmp_path: Path, monkeypatch: pytest.
     cfg.write_text("[embedding]\nenabled = false\n", encoding="utf-8")
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(cfg))
     monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", str(tmp_path / "absent-site.toml"))
+    # Present-but-empty secret: ``VOYAGE_API_KEY=""`` lands in the config as an
+    # empty value, which must render as ``<unset>`` (never null/cleartext).
+    monkeypatch.setenv("VOYAGE_API_KEY", "")
     payload = json.loads(_run(["-f", "json"]))
     # An unset secret is reported as <unset>, never as null masquerading as a value.
     assert payload["voyage_api_key"] == "<unset>"

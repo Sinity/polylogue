@@ -42,15 +42,16 @@ def fresh_schema_db() -> Generator[Mapping[str, sqlite3.Connection], None, None]
 # ---------------------------------------------------------------------------
 
 
-def test_schema_version_is_18() -> None:
+def test_schema_version_is_22() -> None:
     # Bumped from 3 → 4 by #1241, 4 → 5 by #1252, 5 → 6 by #1258,
     # 6 → 7 by #1260, 7 → 8 by #1253, 8 → 9 by #1486, 13 → 14 by #1511,
     # 14 → 16 by subsequent schema-touching PRs,
     # 16 → 17 by #1655 (paste_boundary_state on messages),
     # 17 → 18 by #1697 (blackboard_notes table),
     # 18 → 19 by #1686 (otlp_spans table),
-    # 19 → 20 by #1690 (session_commit_edges table).
-    assert SCHEMA_VERSION == 20
+    # 19 → 20 by #1690 (session_commit_edges table),
+    # 20 → 21 by #1742 (schema v21 rebuild), 21 → 22 (per-role conversation_stats counts).
+    assert SCHEMA_VERSION == 22
 
 
 def test_content_blocks_table_has_no_media_type_column(fresh_schema_db: Mapping[str, sqlite3.Connection]) -> None:

@@ -43,7 +43,15 @@ _STORAGE_ROOT: Final = Path("polylogue/storage")
 # currently-safe interpolation. This dict exists for the rare future case
 # where an interpolation site cannot be expressed as a single trusted-name
 # reference (e.g. an inline expression). Each entry MUST carry a rationale.
-_AUDITED_SITES: Final[dict[tuple[str, int], str]] = {}
+_AUDITED_SITES: Final[dict[tuple[str, int], str]] = {
+    # Chunked IN-clause: scoped_sql is a trusted compile-time SQL template (a
+    # literal with a ``{}`` for the placeholder list); ``placeholders`` is a
+    # generated ``?,?`` string sized to the bound ``chunk``; values flow through
+    # bound params, never the format string.
+    ("polylogue/storage/repository/archive/conversations.py", 296): (
+        "chunked IN-clause: literal scoped_sql template + '?,?' placeholders, values bound"
+    ),
+}
 
 
 def _execute_call_target(node: ast.Call) -> str | None:
