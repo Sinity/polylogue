@@ -78,10 +78,10 @@ def _seed(conn: sqlite3.Connection, rows: list[tuple[str, float | None, str]]) -
     )
     conn.executemany(
         """
-        INSERT INTO messages (message_id, conversation_id, role, sort_key, version)
-        VALUES (?, ?, ?, ?, 1)
+        INSERT INTO messages (message_id, conversation_id, role, sort_key, version, content_hash)
+        VALUES (?, ?, ?, ?, 1, ?)
         """,
-        [(mid, CONV, role, sort_key) for mid, sort_key, role in rows],
+        [(mid, CONV, role, sort_key, mid) for mid, sort_key, role in rows],
     )
     conn.commit()
 
@@ -211,8 +211,8 @@ async def test_keyset_isolates_conversations(tmp_path: object) -> None:
             (cid,),
         )
         sync_conn.executemany(
-            "INSERT INTO messages (message_id, conversation_id, role, sort_key, version) VALUES (?, ?, ?, ?, 1)",
-            [(mid, cid, role, sk) for mid, sk, role in rows],
+            "INSERT INTO messages (message_id, conversation_id, role, sort_key, version, content_hash) VALUES (?, ?, ?, ?, 1, ?)",
+            [(mid, cid, role, sk, mid) for mid, sk, role in rows],
         )
     sync_conn.commit()
     sync_conn.close()
