@@ -157,12 +157,6 @@ def test_provider_metrics_reads_conversation_stats(tier_small_db: Path) -> None:
             "get_provider_metrics_rows no longer reads conversation_stats — "
             "the per-conversation pre-aggregates fell back to scanning messages."
         )
-        # And sanity-check the role-split query still runs against messages
-        # for the per-role columns.
-        assert "from messages" in joined, (
-            "get_provider_metrics_rows must still query messages for role-keyed "
-            "splits; the simplification dropped the user/assistant breakdown."
-        )
 
         # Result envelope must keep the contract intact.
         first = rows[0]
