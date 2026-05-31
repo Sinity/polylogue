@@ -309,7 +309,7 @@ site_url = "/polylogue/"
 [[pages]]
 path = "/architecture/contributing/"
 title = "Contributing"
-template = "standard.html"
+template = "doc.html"
 [pages.data]
 source_command = "render-cli-reference"
 custom_marker = "frontmatter-roundtrip-ok"
@@ -331,7 +331,7 @@ custom_marker = "frontmatter-roundtrip-ok"
     real_render = Template.render
 
     def _spy(self: Template, *args: object, **kwargs: object) -> str:
-        if self.name == "standard.html":
+        if self.name == "doc.html":
             captured.update(kwargs)
         return real_render(self, *args, **kwargs)
 

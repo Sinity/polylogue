@@ -16,7 +16,7 @@
     "repos": {},
     "cwd_prefixes": {},
     "message_types": {
-      "message": 10
+      "message": 6
     },
     "action_types": {},
     "has_flags": {
@@ -26,7 +26,7 @@
     },
     "time_range": null,
     "total_conversations": 2,
-    "total_messages": 10,
+    "total_messages": 6,
     "scoped": {
       "providers": {
         "chatgpt": 2
@@ -34,7 +34,7 @@
       "tags": {},
       "repos": {},
       "message_types": {
-        "message": 10
+        "message": 6
       },
       "action_types": {},
       "has_flags": {
@@ -43,7 +43,7 @@
         "has_paste": 0
       },
       "total_conversations": 2,
-      "total_messages": 10
+      "total_messages": 6
     },
     "global": {
       "providers": {
@@ -52,7 +52,7 @@
       "tags": {},
       "repos": {},
       "message_types": {
-        "message": 10
+        "message": 6
       },
       "action_types": {},
       "has_flags": {
@@ -61,7 +61,7 @@
         "has_paste": 0
       },
       "total_conversations": 2,
-      "total_messages": 10
+      "total_messages": 6
     },
     "idf": {
       "providers": {
@@ -107,8 +107,8 @@
         "created_at": "<TIMESTAMP>",
         "updated_at": "<TIMESTAMP>",
         "date": "<TIMESTAMP>",
-        "message_count": 5,
-        "messages": 5,
+        "message_count": 3,
+        "messages": 3,
         "tags": []
       },
       {
@@ -139,8 +139,8 @@
         "created_at": "<TIMESTAMP>",
         "updated_at": "<TIMESTAMP>",
         "date": "<TIMESTAMP>",
-        "message_count": 5,
-        "messages": 5,
+        "message_count": 3,
+        "messages": 3,
         "tags": []
       }
     ],
@@ -159,10 +159,10 @@
     "rows": [],
     "summary": {
       "conversations": 2,
-      "messages_total": 10,
-      "messages_user": 6,
-      "messages_assistant": 4,
-      "words_approx": 254,
+      "messages_total": 6,
+      "messages_user": 4,
+      "messages_assistant": 2,
+      "words_approx": 181,
       "attachment_refs": 0,
       "distinct_attachments": 0,
       "providers": {
@@ -201,7 +201,7 @@
       "next_action": "polylogue init"
     },
     "conversations": 2,
-    "messages": 10,
+    "messages": 6,
     "raw_records": 2
   }
   
@@ -215,15 +215,15 @@
 # ---
 # name: test_plain_list_provider_filter_snapshot
   '''
-  chatgpt:402913ec-9ef2-49  <TIMESTAMP>  chatgpt       corpus-01 (5 msgs)
-  chatgpt:8a476a87-e49d-48  <TIMESTAMP>  chatgpt       corpus-00 (5 msgs)
+  chatgpt:402913ec-9ef2-49  <TIMESTAMP>  chatgpt       corpus-01 (3 msgs)
+  chatgpt:8a476a87-e49d-48  <TIMESTAMP>  chatgpt       corpus-00 (3 msgs)
   
   '''
 # ---
 # name: test_plain_list_snapshot
   '''
-  chatgpt:402913ec-9ef2-49  <TIMESTAMP>  chatgpt       corpus-01 (5 msgs)
-  chatgpt:8a476a87-e49d-48  <TIMESTAMP>  chatgpt       corpus-00 (5 msgs)
+  chatgpt:402913ec-9ef2-49  <TIMESTAMP>  chatgpt       corpus-01 (3 msgs)
+  chatgpt:8a476a87-e49d-48  <TIMESTAMP>  chatgpt       corpus-00 (3 msgs)
   
   '''
 # ---
@@ -232,8 +232,8 @@
   
   Conversations: 2
   
-  Messages: 10 total (6 user, 4 assistant)
-  Words: ~254
+  Messages: 6 total (4 user, 2 assistant)
+  Words: ~181
   Providers: chatgpt (2)
   Attachment refs: 0
   Unique attachments: 0

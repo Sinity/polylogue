@@ -583,10 +583,15 @@ async def test_async_read_connection_closes_cleanly_after_pool_teardown(tmp_path
     await slow_backend.close()
 
 
-async def test_async_backend_connection_error_surfaces() -> None:
+async def test_async_backend_connection_error_surfaces(tmp_path: Path) -> None:
     """Invalid targets must surface an error instead of silently succeeding."""
+    # A missing DB reads as empty (None) by design; an *existing* file that is
+    # not a valid SQLite database is a genuine invalid target and must surface an
+    # error rather than silently returning None.
+    bogus = tmp_path / "not-a-database.sqlite"
+    bogus.write_bytes(b"this is plainly not a sqlite database header\n" * 64)
     with pytest.raises((OSError, PermissionError, Exception)):
-        backend = SQLiteBackend(db_path=Path("/nonexistent/deeply/nested/path/db.db"))
+        backend = SQLiteBackend(db_path=bogus)
         await backend.get_conversation("test")
 
 
