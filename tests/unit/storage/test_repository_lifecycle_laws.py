@@ -479,11 +479,16 @@ async def test_action_events_are_derived_and_replaced_on_content_change(
         ),
     )
     db_path, _ = seed_workspace_scenarios(workspace_env, [scenario])
-    repository = repository_for_scenario_db(db_path)
-    try:
-        with open_connection(db_path) as conn:
-            conv_record, msg_records, attachment_records = scenario.records_from_connection(conn)
+    with open_connection(db_path) as conn:
+        conv_record, msg_records, attachment_records = scenario.records_from_connection(conn)
 
+    # seed_workspace_scenarios already persisted the scenario into db_path, so
+    # exercise save_conversation against a FRESH archive: a genuine first write
+    # (which derives action events), not an idempotent re-save of seeded rows.
+    fresh_db = workspace_env["data_root"] / "polylogue" / "lifecycle-fresh.db"
+    fresh_db.parent.mkdir(parents=True, exist_ok=True)
+    repository = repository_for_scenario_db(fresh_db)
+    try:
         # First write creates action events from the tool_use content block.
         counts_init = await repository.save_conversation(conv_record, msg_records, attachment_records)
         assert counts_init["messages"] == 2, "Initial write should persist messages"

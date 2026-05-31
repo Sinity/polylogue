@@ -1331,7 +1331,7 @@ def test_async_execute_query_summary_list_uses_evidence_hits_for_search_contract
 
     repo.search_summary_hits.assert_awaited_once_with("needle", limit=5, providers=None, since=None)
     filter_chain.list_summaries.assert_not_called()
-    mock_output_search_hits.assert_awaited_once_with(env, [hit], plan.output, repo, cursor=None)
+    mock_output_search_hits.assert_awaited_once_with(env, [hit], plan.output, repo, total=None, cursor=None)
     mock_output_summary_list.assert_not_called()
 
 
