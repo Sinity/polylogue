@@ -99,7 +99,6 @@ def test_hermes_session_document_parses_through_dispatch() -> None:
         "base_url": "http://localhost",
         "platform": "linux",
         "tools": [{"name": "shell"}],
-        "message_count": 3,
     }
     assert conversation.messages[0].role == "system"
     assert conversation.messages[2].role == "assistant"

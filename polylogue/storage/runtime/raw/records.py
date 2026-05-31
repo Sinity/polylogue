@@ -28,8 +28,12 @@ class RawConversationRecord(BaseModel):
 
     @field_validator("raw_id", "source_name", "source_path")
     @classmethod
-    def non_empty_string(cls, v: str) -> str:
-        if not v or not v.strip():
+    def non_empty_string(cls, v: str | None) -> str | None:
+        # Runs after type validation: required ``str`` fields (raw_id, source_path)
+        # reject None at the type layer, so None only reaches here from the
+        # nullable ``source_name`` (legacy/unknown source, legitimately None).
+        # Reject only an explicitly-empty string.
+        if v is not None and not v.strip():
             raise ValueError("Field cannot be empty")
         return v
 

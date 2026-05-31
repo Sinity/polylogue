@@ -71,7 +71,7 @@ def _make_raw_record(
 
     return RawConversationRecord(
         raw_id=actual_raw_id,  # Use the actual hash as raw_id
-        source_name="test",
+        source_name=provider,
         source_path=path,
         source_index=None,
         blob_size=blob_size,
