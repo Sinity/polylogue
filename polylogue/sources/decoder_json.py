@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import re
 from collections.abc import Iterable
@@ -253,6 +254,13 @@ def iter_json_stream_with(
     if path_name.lower().endswith((".jsonl", ".jsonl.txt", ".ndjson")):
         yield from _iter_jsonl_stream(logger_obj, handle, path_name)
         return
+
+    # The ijson multi-strategy parse below rewinds via ``handle.seek(0)``. A
+    # ZIP-entry stream (zipfile.ZipExtFile) is not seekable, so materialize it
+    # into a seekable buffer once before the seeking strategies run.
+    seekable = getattr(handle, "seekable", None)
+    if callable(seekable) and not seekable():
+        handle = io.BytesIO(handle.read())
 
     if unpack_lists:
         found_any, records = _stream_prefixed_items(
