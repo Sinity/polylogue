@@ -1009,6 +1009,15 @@ Options:
 <td><a href="./schemas/cli-output/conversation-list-row.schema.json"><code>conversation-list-row.schema.json</code></a></td>
 <td>--format json</td>
 </tr>
+<tr>
+<td><code>recent</code></td>
+<td>yes</td>
+<td>no</td>
+<td>yes</td>
+<td>yes</td>
+<td>—</td>
+<td>Lists the latest sessions; --format json</td>
+</tr>
 </tbody>
 </table>
 <h3>Family: <code>search</code></h3>
@@ -1075,6 +1084,24 @@ Options:
 </tr>
 </thead>
 <tbody>
+<tr>
+<td><code>context</code></td>
+<td>yes</td>
+<td>no</td>
+<td>yes</td>
+<td>no</td>
+<td>—</td>
+<td>Composes a context preamble from archive objects; compose emits JSON.</td>
+</tr>
+<tr>
+<td><code>correlate</code></td>
+<td>yes</td>
+<td>no</td>
+<td>yes</td>
+<td>no</td>
+<td>—</td>
+<td>Cross-references sessions with git commits/issues/PRs; --format json structured output.</td>
+</tr>
 <tr>
 <td><code>cost</code></td>
 <td>yes</td>
@@ -1231,6 +1258,15 @@ Options:
 <td>—</td>
 <td>Writes a polylogue.toml; --machine emits success/error envelope.</td>
 </tr>
+<tr>
+<td><code>paths</code></td>
+<td>yes</td>
+<td>no</td>
+<td>yes</td>
+<td>no</td>
+<td>—</td>
+<td>Prints canonical archive paths; --format json emits a structured path map.</td>
+</tr>
 </tbody>
 </table>
 <h3>Family: <code>shell</code></h3>
@@ -1247,6 +1283,15 @@ Options:
 </tr>
 </thead>
 <tbody>
+<tr>
+<td><code>commands</code></td>
+<td>no</td>
+<td>yes</td>
+<td>yes</td>
+<td>no</td>
+<td>—</td>
+<td>Discovery listing of command groups; plain deterministic output.</td>
+</tr>
 <tr>
 <td><code>completions</code></td>
 <td>no</td>
@@ -1280,6 +1325,15 @@ Options:
 <td>no</td>
 <td>—</td>
 <td>Side-effect command; prints destination path.</td>
+</tr>
+<tr>
+<td><code>blackboard</code></td>
+<td>no</td>
+<td>yes</td>
+<td>yes</td>
+<td>no</td>
+<td>—</td>
+<td>Agent-addressable notes group (list/add/clear); plain output.</td>
 </tr>
 <tr>
 <td><code>doctor</code></td>
