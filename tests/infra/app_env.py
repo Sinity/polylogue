@@ -10,11 +10,13 @@ this restores it.
 from __future__ import annotations
 
 import io
+from typing import cast
 
 from rich.console import Console
 
 from polylogue.cli.shared.types import AppEnv
 from polylogue.ui import UI
+from polylogue.ui.facade import ConsoleLike
 
 
 def make_app_env() -> AppEnv:
@@ -26,5 +28,5 @@ def make_app_env() -> AppEnv:
     ``POLYLOGUE_CONFIG`` the caller sets.
     """
     ui = UI(plain=True)
-    ui.console = Console(file=io.StringIO(), force_terminal=False, width=200)
+    ui.console = cast(ConsoleLike, Console(file=io.StringIO(), force_terminal=False, width=200))
     return AppEnv(ui=ui)

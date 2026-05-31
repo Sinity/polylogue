@@ -9,10 +9,13 @@ its three output surfaces: the default TOML, ``--format json``, and
 from __future__ import annotations
 
 import json
+from io import StringIO
 from pathlib import Path
+from typing import cast
 
 import pytest
 from click.testing import CliRunner
+from rich.console import Console
 
 from polylogue.cli.commands.config import config_command
 from tests.infra.app_env import make_app_env
@@ -58,7 +61,7 @@ def _run(args: list[str]) -> str:
     env = make_app_env()
     result = CliRunner().invoke(config_command, obj=env, args=args)
     assert result.exit_code == 0, (result.output, result.exception)
-    return str(env.ui.console.file.getvalue())
+    return cast(StringIO, cast(Console, env.ui.console).file).getvalue()
 
 
 @pytest.mark.parametrize(
