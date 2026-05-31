@@ -196,11 +196,11 @@ class TestSharedLimitCeiling:
         """CLI query-first fallback is MAX_QUERY_LIMIT, not the old 10000."""
         from polylogue.archive.query.plan import ConversationQueryPlan
         from polylogue.archive.query.retrieval_candidates import search_limit
-        from polylogue.archive.query.spec import MAX_QUERY_LIMIT, ConversationQuerySpec
+        from polylogue.archive.query.spec import MAX_QUERY_LIMIT
 
-        # Build a plan with no explicit limit (the query-first bare-token case)
-        spec = ConversationQuerySpec.from_params({})
-        plan = ConversationQueryPlan(spec)
+        # Build a plan with no explicit limit (the query-first bare-token case).
+        # ConversationQueryPlan is a dataclass; limit defaults to None.
+        plan = ConversationQueryPlan()
         # effective_fetch_limit() returns None when no limit is set
         assert plan.effective_fetch_limit() is None
         # search_limit must fall back to MAX_QUERY_LIMIT, not 10000
