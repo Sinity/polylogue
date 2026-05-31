@@ -126,7 +126,8 @@ class TestAttachmentPathMove:
 
 class TestConversationIdValidation:
     def test_rejects_empty_provider(self) -> None:
-        with pytest.raises(ValueError, match="provider"):
+        # provider→source_name rename: the empty-first-arg error now names source_name.
+        with pytest.raises(ValueError, match="source_name"):
             conversation_id("", "conv-123")
 
     def test_rejects_empty_provider_conversation_id(self) -> None:

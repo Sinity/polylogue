@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -44,10 +44,11 @@ def test_string_sequence_and_optional_string_handle_scalars_and_mappings() -> No
 
 
 def test_optional_datetime_and_date_support_instances_and_iso_strings() -> None:
-    dt = datetime(2026, 4, 23, 12, 30, 0)
+    dt = datetime(2026, 4, 23, 12, 30, 0, tzinfo=UTC)
     day = date(2026, 4, 23)
 
-    assert optional_datetime(dt) is dt
+    # optional_datetime always returns UTC-aware datetimes (9735a6fd).
+    assert optional_datetime(dt) == dt
     assert optional_datetime("2026-04-23T12:30:00") == dt
     assert optional_date(dt) == day
     assert optional_date(day) == day

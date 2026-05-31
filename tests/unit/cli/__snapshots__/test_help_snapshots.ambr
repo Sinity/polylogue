@@ -114,6 +114,8 @@
     --sample INTEGER                Random sample of N conversations
     -o, --output TEXT               Output destinations: browser, clipboard,
                                     stdout (comma-separated)
+    --json                          Shortcut for --format json. Disables color and
+                                    progress for pipeable output. (#1689)
     -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|plaintext|csv]
                                     Output format (for --latest, --stream, or verb
                                     output). `ndjson` emits one JSON document per
@@ -150,10 +152,14 @@
   Commands:
     auth               Authenticate optional external services.
     backup             Create a timestamped backup of the archive database.
+    blackboard
     bulk-export        Bulk export every matched conversation in one process.
+    commands
     completions        Emit shell completion setup for polylogue.
     config             Show configuration paths and resolved settings.
+    context            Compose context preamble from archive objects.
     context-pack       Build a provenance-rich context pack for agent analysis.
+    correlate          Cross-reference sessions with git commits, issues, and PRs.
     cost               Summarize conversation cost telemetry.
     count              Print count of matched conversations.
     dashboard          Open the local dashboard.
@@ -172,7 +178,9 @@
     messages           List messages from matched conversations.
     neighbors          Show semantic neighbors for a conversation.
     open               Open matched conversation in the daemon web reader.
+    paths              Print canonical archive paths and bind-mount detection.
     raw                Show raw archive payloads for matched conversations.
+    recent
     reset              Reset local archive state.
     resume             Resume from recent conversation context.
     resume-candidates  Rank resume candidates for the current context.
