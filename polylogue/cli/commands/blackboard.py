@@ -78,7 +78,7 @@ def blackboard_post(
 )
 @click.option("--scope-repo", "-r")
 @click.option("--unresolved", is_flag=True, help="Only show unresolved notes (blockers, questions).")
-@click.option("--limit", "-n", type=int, default=20)
+@click.option("--limit", "-l", type=int, default=20)
 @click.pass_obj
 def blackboard_list(
     env: AppEnv,

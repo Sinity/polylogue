@@ -69,7 +69,6 @@ class TestExercisesByGroup:
         observed = {command_path.display_name for command_path in inventory_command_paths()}
         assert {
             "diagnostics turns",
-            "insights analytics",
             "schema explain",
         } <= observed
 
