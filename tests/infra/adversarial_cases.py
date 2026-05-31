@@ -96,7 +96,7 @@ FTS5_ESCAPE_SECURITY_CASES: tuple[tuple[str, str, bool], ...] = (
     ("test AND something", "test AND something", True),
     ("test NOT anything", "test NOT anything", True),
     ("word1 NEAR word2", "word1 NEAR word2", True),
-    ("test*", '"test*"', True),
+    ("test*", "test*", True),  # word-suffixed * is a valid FTS5 prefix; preserved unquoted
     ("test?", '"test?"', True),
     ("*", '""', True),
     ("?", '"?"', True),
