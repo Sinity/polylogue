@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -283,10 +284,21 @@ class CursorStore:
             self._ensure_columns(conn)
             self._mark_interrupted_attempts(conn)
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        # ``open_connection`` hands back a fresh connection the caller owns and
+        # must close. The inner ``with conn`` preserves the prior commit-on-
+        # success / rollback-on-exception transaction semantics; the surrounding
+        # ``finally`` adds the close every call site previously omitted (``with
+        # sqlite3.Connection`` only commits, it never closes — a per-operation
+        # connection leak in the live cursor store).
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = open_connection(self._db_path, timeout=10.0)
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _ensure_columns(self, conn: sqlite3.Connection) -> None:
         existing = {row[1] for row in conn.execute("PRAGMA table_info(live_cursor)")}

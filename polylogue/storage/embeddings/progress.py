@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypedDict
@@ -92,8 +94,17 @@ def ensure_embedding_catchup_runs_table(conn: sqlite3.Connection) -> None:
     """)
 
 
-def _connect(db_path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(db_path, timeout=30.0)
+@contextmanager
+def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
+    # ``with conn`` commits on success / rolls back on error; the ``finally``
+    # closes it (a bare ``with sqlite3.connect(...)`` only commits, never
+    # closes — a per-call connection leak).
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def start_embedding_catchup_run(db_path: Path, start: CatchupRunStart) -> str:

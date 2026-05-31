@@ -6,10 +6,11 @@ import os
 import sqlite3
 import stat as _stat
 import sys
+import threading
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from pathlib import Path
-from types import ModuleType
-from typing import TYPE_CHECKING
+from types import FrameType, ModuleType
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from hypothesis import HealthCheck, settings
@@ -118,6 +119,132 @@ settings.register_profile(
     database=_HYPOTHESIS_DB,
 )
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
+
+
+_CONNECTION_MACHINERY = (
+    "storage/sqlite/connection.py",
+    "storage/sqlite/connection_profile.py",
+    "contextlib.py",
+)
+_TESTS_ROOT = str(Path(__file__).resolve().parent)
+
+
+@pytest.fixture(autouse=True)
+def _close_test_opened_sqlite_connections(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Close sync ``sqlite3`` connections that *test code* opened but never closed.
+
+    Many tests use ``with sqlite3.connect(...) as conn:`` which commits on exit
+    but does NOT close the connection — a per-call leak that surfaces as
+    ``ResourceWarning: unclosed database`` now that ``ignore::ResourceWarning``
+    is removed from ``filterwarnings``. Rather than hand-close hundreds of call
+    sites (and re-fight the same battle on every new test), track connections
+    whose real opening call site lives under ``tests/`` and close them at
+    teardown — per-thread, so each is closed from the thread that created it
+    (``sqlite3`` connections are ``check_same_thread`` by default).
+
+    Connections opened from *production* code (``polylogue/...``) are
+    deliberately NOT tracked. If production leaks a connection the warning still
+    fires, so this fixture cannot silently mask a real production leak — the
+    kind this change just fixed in the live cursor store, the cursor-lag
+    baseline, the embedding progress ledger, and the OTLP correlation reader.
+
+    The async (``aiosqlite``) leg is symmetric in spirit but simpler: every
+    production async path opens its connection with ``async with
+    aiosqlite.connect(...)`` (auto-closed), so a connection still open at
+    teardown is necessarily a test that built a facade/backend and never
+    ``await``-ed ``close()``. Those are registered at construction and closed
+    via a fresh event loop (``aiosqlite`` bridges ``close()`` onto its own
+    worker thread, so a new loop closes it cleanly).
+    """
+    import aiosqlite
+
+    main_ident = threading.get_ident()
+    sync_local = threading.local()
+    async_tracked: list[aiosqlite.Connection] = []
+    real_async_init = aiosqlite.Connection.__init__
+
+    def _bucket() -> list[sqlite3.Connection]:
+        conns: list[sqlite3.Connection] | None = getattr(sync_local, "conns", None)
+        if conns is None:
+            conns = []
+            sync_local.conns = conns
+        return conns
+
+    def _close_current_thread() -> None:
+        for conn in _bucket():
+            try:
+                conn.close()
+            except Exception:
+                pass
+        sync_local.conns = []
+
+    real_connect = sqlite3.connect
+    real_thread_run = threading.Thread.run
+
+    def _opened_by_test() -> bool:
+        # Walk past the connection-opener machinery to the real call site.
+        frame: FrameType | None = sys._getframe(2)
+        while frame is not None:
+            filename = frame.f_code.co_filename
+            if not any(part in filename for part in _CONNECTION_MACHINERY):
+                return filename.startswith(_TESTS_ROOT)
+            frame = frame.f_back
+        return False
+
+    def _tracking_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        conn: sqlite3.Connection = real_connect(*args, **kwargs)
+        if _opened_by_test():
+            _bucket().append(conn)
+        return conn
+
+    def _thread_run(self: threading.Thread) -> None:
+        try:
+            real_thread_run(self)
+        finally:
+            _close_current_thread()
+            # A worker thread that used the production thread-local connection
+            # cache (``connection_context``/``open_connection`` from
+            # ``connection.py``) leaves its cached connection open — the cache is
+            # per-thread reuse with no thread-exit hook. Clear it here, from the
+            # worker thread itself, so the cached connection is closed rather
+            # than leaked when the thread ends. This only closes the production
+            # cache (designed to be cleared), so it does not mask a real leak.
+            from polylogue.storage.sqlite.connection import _clear_connection_cache
+
+            try:
+                _clear_connection_cache()
+            except Exception:
+                pass
+
+    def _tracking_async_init(self: aiosqlite.Connection, *args: object, **kwargs: object) -> None:
+        real_async_init(self, *args, **kwargs)  # type: ignore[arg-type]
+        async_tracked.append(self)
+
+    monkeypatch.setattr(sqlite3, "connect", _tracking_connect)
+    monkeypatch.setattr(threading.Thread, "run", _thread_run)
+    monkeypatch.setattr(aiosqlite.Connection, "__init__", _tracking_async_init)
+    try:
+        yield
+    finally:
+        monkeypatch.undo()
+        if threading.get_ident() == main_ident:
+            _close_current_thread()
+        still_open = [c for c in async_tracked if getattr(c, "_connection", None) is not None]
+        async_tracked.clear()
+        if still_open:
+            import asyncio
+
+            async def _close_async() -> None:
+                for conn in still_open:
+                    try:
+                        await conn.close()
+                    except Exception:
+                        pass
+
+            try:
+                asyncio.run(_close_async())
+            except Exception:
+                pass
 
 
 @pytest.fixture(autouse=True)

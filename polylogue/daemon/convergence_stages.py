@@ -780,6 +780,8 @@ def _embed_conversations_sync(
     stop_after_seconds: int | None = None,
     max_cost_usd: float | None = None,
 ) -> bool:
+    from contextlib import closing
+
     from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.storage.embeddings.materialization import embed_conversation_sync
     from polylogue.storage.embeddings.progress import (
@@ -803,7 +805,7 @@ def _embed_conversations_sync(
     if not voyage_key:
         return True
 
-    with open_readonly_connection(db_path, timeout=5.0) as conn:
+    with closing(open_readonly_connection(db_path, timeout=5.0)) as conn:
         pending = _pending_embedding_conversation_window(conn, conversation_ids)
     if not pending:
         return True
