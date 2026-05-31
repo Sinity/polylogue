@@ -1243,11 +1243,30 @@ concurrent GC before the main transaction commits, then calls
 the blob is now durably referenced by `raw_conversations` and the
 lease can drop.
 
+The acquire/release pair is wrapped in `try/finally` keyed by
+`operation_id` (#1746). The lease is committed on its own connection,
+so rolling back the main transaction on failure does NOT undo it — if
+FTS repair or the commit raises, the `finally` opens a fresh
+immediate-commit connection and releases the lease anyway. Without this
+the lease row would leak into `pending_blob_refs` permanently and the
+blob it named could never be GC'd.
+
+The durable backstop is `sweep_orphaned_blob_leases`, run at daemon
+startup (`polylogue/daemon/cli.py:_sweep_orphaned_blob_leases`,
+mirroring `CursorStore._mark_interrupted_attempts` for
+`live_ingest_attempt`). A writer SIGKILLed between acquire and release
+cannot run its `finally`; the sweep deletes any `pending_blob_refs`
+row older than `ORPHAN_LEASE_MAX_AGE_S` (3600 s), a bound generous
+enough that a slow-but-live ingest is never swept out from under
+itself.
+
 `gc_generations` tracks the high-water mark of completed GC runs. The
-"defense-in-depth" age check requires candidate blobs to be older than
-the previous generation plus `MIN_AGE_S` so that a brand-new blob is
-never considered for deletion within the same GC run cycle that
-created it.
+"defense-in-depth" age gate is enforced in `run_blob_gc` (#1746): a
+candidate blob must be older than `max(MIN_AGE_S, now -
+prev_generation.completed_at)`. The generation term means a blob
+created during the same window as the previous GC pass is never
+reclaimed before its eventual reference can land. With no prior
+generation recorded, the static `MIN_AGE_S` floor applies on its own.
 
 - **Known issues**: GC has bugs with orphan detection and integrity
   verification ([#818](https://github.com/Sinity/polylogue/issues/818))
