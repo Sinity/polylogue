@@ -377,12 +377,18 @@ devtools verify
 # pytest-testmon's dependency database
 devtools verify --seed-testmon --skip-slow
 
-# Stop on first failure
-pytest -x --ignore=tests/integration
+# Focused inner-loop runs — prefer `devtools test` over raw pytest. It runs the
+# selection through the managed harness (repo env, single-process by default,
+# live output) and serializes overlapping runs from the same checkout so two
+# suites do not race. Any pytest arguments go after the command name.
+devtools test tests/unit/storage/test_hybrid_laws.py
+devtools test -k "test_name"
+devtools test tests/unit/pipeline -x
+POLYLOGUE_PYTEST_WORKERS=8 devtools test tests/unit/storage   # override workers
 
-# Specific file or test
+# Raw pytest still works for ad-hoc needs the wrapper does not cover:
+pytest -x --ignore=tests/integration
 pytest tests/unit/storage/test_hybrid_laws.py
-pytest -k "test_name"
 
 # Explicit full non-integration pytest diagnostic
 devtools verify --all
@@ -1437,6 +1443,8 @@ These are the commands worth remembering during normal repo work:
   Common forms: `devtools render-all`, `devtools render-all --check`.
 - `devtools verify`: Run format, lint, mypy, render-all, and test checks locally before pushing.
   Common forms: `devtools verify`, `devtools verify --quick`, `devtools verify --lab`.
+- `devtools test`: Run a specific test file, directory, or -k/-m selection in the inner loop without invoking raw pytest.
+  Common forms: `devtools test tests/unit/pipeline`, `devtools test -k hybrid`, `devtools test tests/unit/storage -x`.
 - `devtools mutmut-campaign`: Run or inspect focused mutation-testing work without shrinking the committed mutmut scope.
   Common forms: `devtools mutmut-campaign list`, `devtools mutmut-campaign run filters`.
 - `devtools benchmark-campaign`: Record durable benchmark artifacts or compare a candidate run against a baseline artifact.
@@ -1483,6 +1491,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools schema-audit` | Run committed provider schema package quality checks. |
 | `devtools schema-generate` | Generate provider schema packages and optional evidence clusters. |
 | `devtools schema-promote` | Promote a schema evidence cluster into a registered package version. |
+| `devtools test` | Run a focused pytest selection through the managed harness. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
 | `devtools verify-ci-workflows` | Verify CI workflow files reference locally-known devtools commands and existing paths. |
 | `devtools verify-closure-matrix` | Verify docs/plans/test-closure-matrix.yaml stays grounded in the realized tree. |

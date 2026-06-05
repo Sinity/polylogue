@@ -1,0 +1,69 @@
+"""Tests for the ``devtools test`` focused runner (devtools/run_tests.py)."""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from devtools import run_tests
+
+
+def test_build_pytest_cmd_defaults_to_single_process() -> None:
+    cmd = run_tests.build_pytest_cmd(["tests/unit/pipeline"])
+    assert cmd[0] == "pytest"
+    assert "tests/unit/pipeline" in cmd
+    assert cmd[-2:] == ["-n", "0"]
+
+
+def test_build_pytest_cmd_respects_explicit_worker_flag() -> None:
+    cmd = run_tests.build_pytest_cmd(["tests/unit", "-n", "4"])
+    # No injected -n when the caller already chose one.
+    assert cmd.count("-n") == 1
+    assert cmd[-2:] == ["-n", "4"]
+
+
+def test_build_pytest_cmd_honors_workers_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "8")
+    cmd = run_tests.build_pytest_cmd(["tests/unit"])
+    assert cmd[-2:] == ["-n", "8"]
+
+
+def test_main_requires_a_selection(capsys: pytest.CaptureFixture[str]) -> None:
+    assert run_tests.main([]) == 2
+    err = capsys.readouterr().err
+    assert "give a selection" in err
+    assert "devtools verify" in err
+
+
+def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def _fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setattr("devtools.run_tests.subprocess.run", _fake_run)
+    assert run_tests.main(["tests/unit/pipeline", "--json"]) == 0
+    assert "--json" not in captured["cmd"]
+    assert "tests/unit/pipeline" in captured["cmd"]
+
+
+def test_main_returns_pytest_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(cmd, 5)
+
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setattr("devtools.run_tests.subprocess.run", _fake_run)
+    assert run_tests.main(["tests/unit/does_not_exist"]) == 5
+
+
+def test_managed_env_sets_repo_roots() -> None:
+    env = run_tests._managed_env()
+    assert env["POLYLOGUE_ROOT"] == str(run_tests.ROOT)
+    assert env["POLYLOGUE_REPO_ROOT"] == str(run_tests.ROOT)
+    assert env["PYTHONPYCACHEPREFIX"] == str(run_tests.ROOT / ".cache" / "pycache")
+    assert Path(env["POLYLOGUE_ROOT"]).is_dir()
