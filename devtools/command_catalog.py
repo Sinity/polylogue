@@ -162,6 +162,19 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
+        "test",
+        "verification",
+        "Run a focused pytest selection through the managed harness.",
+        "devtools.run_tests",
+        use_when="Run a specific test file, directory, or -k/-m selection in the inner loop without invoking raw pytest.",
+        examples=(
+            "devtools test tests/unit/pipeline",
+            "devtools test -k hybrid",
+            "devtools test tests/unit/storage -x",
+        ),
+        featured=True,
+    ),
+    CommandSpec(
         "coverage-gate",
         "verification",
         "Run pytest with the repository coverage floor from pyproject.toml.",

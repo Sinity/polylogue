@@ -13,12 +13,18 @@ devtools verify
 # pytest-testmon's dependency database
 devtools verify --seed-testmon --skip-slow
 
-# Stop on first failure
-pytest -x --ignore=tests/integration
+# Focused inner-loop runs — prefer `devtools test` over raw pytest. It runs the
+# selection through the managed harness (repo env, single-process by default,
+# live output) and serializes overlapping runs from the same checkout so two
+# suites do not race. Any pytest arguments go after the command name.
+devtools test tests/unit/storage/test_hybrid_laws.py
+devtools test -k "test_name"
+devtools test tests/unit/pipeline -x
+POLYLOGUE_PYTEST_WORKERS=8 devtools test tests/unit/storage   # override workers
 
-# Specific file or test
+# Raw pytest still works for ad-hoc needs the wrapper does not cover:
+pytest -x --ignore=tests/integration
 pytest tests/unit/storage/test_hybrid_laws.py
-pytest -k "test_name"
 
 # Explicit full non-integration pytest diagnostic
 devtools verify --all
