@@ -3,10 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import stat as _stat
 import sys
 import threading
+import time
+import uuid
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from pathlib import Path
 from types import FrameType, ModuleType
@@ -73,14 +76,67 @@ def pytest_configure(config: pytest.Config) -> None:
 
     shm = Path("/dev/shm")
     if shm.is_dir() and (_stat.S_ISVTX & shm.stat().st_mode) and config.option.basetemp is None:
-        # Use a per-checkout suffix so parallel worktrees/agents do not
-        # collide on basetemp cleanup — pytest prunes old basetemps on
-        # startup, which would wipe a peer run's xdist worker dirs and
-        # cause spurious FileNotFoundError under setup (#1026).
-        rootdir = str(config.rootpath)
-        suffix = hashlib.sha1(rootdir.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
-        config.option.basetemp = str(shm / f"pytest-polylogue-{suffix}")
+        # Basetemp name = per-checkout hash + per-run id. The checkout hash
+        # keeps parallel worktrees/agents apart; the run id keeps two
+        # *concurrent* runs from the same checkout apart too. pytest
+        # ensure_reset_dir()s an explicit basetemp at startup, so two runs
+        # sharing one path would wipe each other's xdist worker dirs
+        # mid-flight (spurious FileNotFoundError under setup). The controller
+        # mints the run id once and exports it (plus the checkout hash) so
+        # this run's xdist workers inherit the identical path while a
+        # concurrent run gets its own (#1026).
+        checkout = hashlib.sha1(str(config.rootpath).encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
+        os.environ["POLYLOGUE_PYTEST_CHECKOUT"] = checkout
+        run_id = os.environ.get("POLYLOGUE_PYTEST_RUN_ID")
+        if run_id is None:
+            run_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+            os.environ["POLYLOGUE_PYTEST_RUN_ID"] = run_id
+            _sweep_stale_tmpfs_basetemps(shm)
+        config.option.basetemp = str(shm / f"pytest-polylogue-{checkout}-{run_id}")
         sys.stderr.write(f"pytest: basetemp → {config.option.basetemp} (tmpfs, #1026)\n")
+
+
+# Per-run basetemps live in RAM (/dev/shm) and are freed on sessionfinish.
+# A run killed before sessionfinish (SIGKILL, OOM) leaks its basetemp, so the
+# controller reclaims clearly-dead orphans on startup. The age floor is
+# generous enough that a live concurrent run is never swept out from under
+# itself (this suite runs in minutes, not hours), and seeded corpora
+# (``pytest-polylogue-seeded-*``) are excluded because they are shared,
+# reusable across runs, and bounded to one per checkout.
+_STALE_BASETEMP_MAX_AGE_S = 6 * 3600
+
+
+def _sweep_stale_tmpfs_basetemps(shm: Path, *, max_age_s: int = _STALE_BASETEMP_MAX_AGE_S) -> None:
+    """Best-effort reclaim of per-run tmpfs basetemps left by crashed runs."""
+    cutoff = time.time() - max_age_s
+    for entry in shm.glob("pytest-polylogue-*"):
+        if "-seeded-" in entry.name:
+            continue
+        try:
+            if entry.is_dir() and entry.stat().st_mtime < cutoff:
+                shutil.rmtree(entry, ignore_errors=True)
+        except OSError:
+            pass
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Free this run's per-run tmpfs basetemp (controller only).
+
+    xdist workers share the controller's basetemp, so only the controller
+    (no ``PYTEST_XDIST_WORKER`` in env) removes it, and only when we minted
+    a per-run name — never a caller-supplied ``--basetemp`` or the shared
+    seeded corpus root.
+    """
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        return
+    if not os.environ.get("POLYLOGUE_PYTEST_RUN_ID"):
+        return
+    basetemp = session.config.option.basetemp
+    if not basetemp:
+        return
+    basetemp_str = str(basetemp)
+    if basetemp_str.startswith("/dev/shm/pytest-polylogue-") and "-seeded-" not in basetemp_str:
+        shutil.rmtree(basetemp_str, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -727,9 +783,19 @@ def seeded_db(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
     # isn't available (macOS, CI without tmpfs).
     shm = Path("/dev/shm")
     if shm.is_dir() and (_stat.S_ISVTX & shm.stat().st_mode):
-        suffix = hashlib.sha1(str(tmp_path_factory.getbasetemp()).encode("utf-8"), usedforsecurity=False).hexdigest()[
-            :8
-        ]
+        # Key the shared seeded corpus on the checkout (rootpath hash), NOT
+        # on the now per-run basetemp. The seeded DB is read-only after build
+        # and safe to reuse across runs — and across concurrent runs, since
+        # the build is serialized by the flock below — so checkout-keying
+        # preserves cross-run reuse that a per-run basetemp would otherwise
+        # break (#1026). ``POLYLOGUE_PYTEST_CHECKOUT`` is exported by
+        # pytest_configure; fall back to the basetemp hash when it is absent
+        # (e.g. a caller-supplied --basetemp skips that block).
+        suffix = os.environ.get("POLYLOGUE_PYTEST_CHECKOUT")
+        if not suffix:
+            suffix = hashlib.sha1(
+                str(tmp_path_factory.getbasetemp()).encode("utf-8"), usedforsecurity=False
+            ).hexdigest()[:8]
         shared_root = shm / f"pytest-polylogue-seeded-{suffix}"
     else:
         shared_root = tmp_path_factory.getbasetemp() / "seeded-shared"
