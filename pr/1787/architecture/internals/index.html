@@ -557,11 +557,10 @@ storage schema) are still regenerated fresh via
 </ul>
 <p>This design intentionally rejects in-place upgrade-chain complexity (no
 Alembic, no forward/reverse upgrade scripts, no partially-applied upgrade
-states, no <code>_apply_version_upgrade_plan</code> rollback windows) at the cost
-of requiring users with out-of-band archives to re-ingest. The recent
-session-loss audit (<code>MEMORY.md</code> § Claude Session Loss Incident
-2026-03-21) confirmed that no relevant retired single-file DB instances exist in
-practice, so the trade is decisively in favour of the simpler runtime.</p>
+states, no <code>_apply_version_upgrade_plan</code> rollback windows). If the configured
+archive path is not the current schema, the operator moves it aside and
+re-ingests from source. Files that are not configured archive paths are not
+classified or handled by the archive runtime.</p>
 <h2>Archive Activation</h2>
 <p>The archive file set is split by durability class:</p>
 <ul>
@@ -586,9 +585,7 @@ polylogue maintenance archive-read --limit 20
 </code></pre>
 <p><code>archive-init</code> bootstraps the archive file set. The daemon and explicit
 ingest paths populate <code>source.db</code> and <code>index.db</code> directly from source
-artifacts; they do not copy rows out of a retired <code>polylogue.db</code>. Root
-query commands route through the archive adapter by default when the
-active <code>index.db</code> exists.</p>
+artifacts. Root query commands use the active <code>index.db</code>.</p>
 <h2>Topology Edges (#1258)</h2>
 <p><code>topology_edges</code> persists every parent reference asserted by a parser as a
 typed row, including references whose parent has not yet been ingested
