@@ -792,15 +792,15 @@ def test_daemon_cli_active_archive_uses_archive_file_set_without_polylogue_db(
     assert daemon_cli._active_index_db_path() == index_db
 
 
-def test_daemon_cli_active_archive_ignores_polylogue_db_when_present(
+def test_daemon_cli_active_archive_uses_index_when_db_anchor_exists(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
-    legacy_db = tmp_path / "polylogue.db"
-    legacy_db.touch()
+    db_anchor = tmp_path / "polylogue.db"
+    db_anchor.touch()
     index_db = tmp_path / "index.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)
 
@@ -809,7 +809,7 @@ def test_daemon_cli_active_archive_ignores_polylogue_db_when_present(
     assert daemon_cli._active_index_db_path() == index_db
 
 
-def test_daemon_cli_heartbeat_counts_archive_archive(tmp_path: Path) -> None:
+def test_daemon_cli_heartbeat_counts_archive(tmp_path: Path) -> None:
     from polylogue.archive.message.roles import Role
     from polylogue.daemon import cli as daemon_cli
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
@@ -836,7 +836,7 @@ def test_daemon_cli_heartbeat_counts_archive_archive(tmp_path: Path) -> None:
     assert daemon_cli._heartbeat_counts(archive_root / "index.db") == (1, 1, "sessions")
 
 
-def test_ensure_fts_startup_readiness_handles_archive_archive(
+def test_ensure_fts_startup_readiness_handles_archive(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:

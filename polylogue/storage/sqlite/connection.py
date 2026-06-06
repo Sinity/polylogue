@@ -108,10 +108,6 @@ def _get_cached_connection(path: Path) -> sqlite3.Connection:
         _load_sqlite_vec(conn)
         with _schema_lock_for_path(path):
             _ensure_schema(conn)
-
-        from polylogue.paths.archive_db_stub import ensure_canonical_archive_db_name
-
-        ensure_canonical_archive_db_name(path)
     except BaseException:
         # Pragma/schema setup can fail (e.g. locked database). Close the
         # just-opened connection before propagating so it is neither cached

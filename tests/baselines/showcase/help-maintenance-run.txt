@@ -29,7 +29,7 @@ Options:
                                   plain]
   --session-id TEXT               Restrict scope to one or more session ids
                                   (repeatable).
-  -p, --provider TEXT             Restrict scope to one provider name.
+  -o, --origin TEXT               Restrict scope to one origin token.
   --source-family TEXT            Restrict scope to one source family (e.g.
                                   claude-code-session).
   --source-root TEXT              Restrict scope to one source runtime root

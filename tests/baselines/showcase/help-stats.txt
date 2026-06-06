@@ -3,7 +3,7 @@ Usage: polylogue stats [OPTIONS]
   Show statistics for matched sessions.
 
 Options:
-  --by [provider|month|year|day|action|tool|repo|work-kind]
+  --by [origin|month|year|day|action|tool|repo|work-kind]
                                   Aggregate by dimension
   -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|plaintext|csv]
                                   Output format (ndjson = one JSON document

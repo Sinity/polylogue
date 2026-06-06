@@ -62,7 +62,7 @@ def test_backup_archive_copy_can_be_opened_and_queried(
 
 
 @pytest.mark.contract
-def test_backup_archive_prefers_archive_db(
+def test_backup_archive_includes_archive_files(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
@@ -70,13 +70,13 @@ def test_backup_archive_prefers_archive_db(
     archive_root = workspace_env["archive_root"]
     data_home.mkdir(parents=True, exist_ok=True)
     archive_root.mkdir(parents=True, exist_ok=True)
-    legacy_db = data_home / "polylogue.db"
+    db_anchor = data_home / "polylogue.db"
     source_db = archive_root / "source.db"
     user_db = archive_root / "user.db"
     embeddings_db = archive_root / "embeddings.db"
     index_db = archive_root / "index.db"
 
-    with sqlite3.connect(legacy_db) as conn:
+    with sqlite3.connect(db_anchor) as conn:
         conn.execute("CREATE TABLE marker (value TEXT NOT NULL)")
         conn.execute("INSERT INTO marker VALUES ('legacy')")
     with sqlite3.connect(source_db) as conn:
@@ -96,7 +96,7 @@ def test_backup_archive_prefers_archive_db(
     assert result.ok
     assert result.output_path is not None
     backup_path = Path(result.output_path)
-    assert backup_path.name.startswith("polylogue-v1-")
+    assert backup_path.name.startswith("polylogue-archive-")
     assert backup_path.is_dir()
     assert not (backup_path / "index.db").exists()
     assert not (backup_path / "ops.db").exists()
@@ -109,7 +109,7 @@ def test_backup_archive_prefers_archive_db(
 
 
 @pytest.mark.contract
-def test_backup_archive_archive_file_set_copies_precious_tiers_and_referenced_blobs(
+def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
@@ -199,9 +199,7 @@ def test_backup_archive_archive_file_set_copies_precious_tiers_and_referenced_bl
     assert manifest["blob_count"] == 1
 
 
-def test_backup_archive_archive_file_set_requires_precious_tiers(
-    workspace_env: dict[str, Path], tmp_path: Path
-) -> None:
+def test_backup_archive_requires_precious_tiers(workspace_env: dict[str, Path], tmp_path: Path) -> None:
     archive_root = workspace_env["archive_root"]
     archive_root.mkdir(parents=True, exist_ok=True)
     sqlite3.connect(archive_root / "index.db").close()

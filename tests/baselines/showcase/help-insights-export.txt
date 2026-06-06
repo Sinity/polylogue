@@ -6,7 +6,7 @@ Options:
   --out PATH               Output bundle directory.  [required]
   --insight TEXT           Insight to include. Defaults to all exportable
                            insights.
-  -p, --provider TEXT      Limit supported insights to one provider.
+  -o, --origin TEXT        Limit supported insights to one origin.
   --since TEXT             Limit supported insights to rows at/after this
                            timestamp or date.
   --until TEXT             Limit supported insights to rows at/before this

@@ -74,9 +74,9 @@ def test_status_snapshot_refresh_default_prefers_archive(
     archive_root = workspace_env["archive_root"]
     data_home.mkdir(parents=True, exist_ok=True)
     archive_root.mkdir(parents=True, exist_ok=True)
-    legacy_db = data_home / "polylogue.db"
+    db_anchor = data_home / "polylogue.db"
     archive_db = archive_root / "index.db"
-    legacy_db.touch()
+    db_anchor.touch()
     archive_db.touch()
     monkeypatch.setattr(
         "polylogue.daemon.status.daemon_status_payload",
@@ -508,12 +508,12 @@ def test_archive_storage_info_uses_configured_archive_root(tmp_path: Path) -> No
     default_root.mkdir()
     active_root.mkdir()
     initialize_archive_database(default_root / "ops.db", ArchiveTier.OPS)
-    legacy_db = active_root / "polylogue.db"
-    legacy_db.touch()
+    db_anchor = active_root / "polylogue.db"
+    db_anchor.touch()
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=default_root),
-        patch("polylogue.daemon.status.db_path", return_value=legacy_db),
+        patch("polylogue.daemon.status.db_path", return_value=db_anchor),
         patch("polylogue.daemon.status.index_db_path", return_value=default_root / "index.db"),
     ):
         storage = status_module._archive_storage_info()
@@ -571,7 +571,7 @@ def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> N
 
 
 def test_insight_freshness_reads_archive_file_set_without_polylogue_db(tmp_path: Path) -> None:
-    legacy_db = tmp_path / "index.db"
+    db_anchor = tmp_path / "index.db"
     archive_db = tmp_path / "index.db"
     initialize_archive_database(archive_db, ArchiveTier.INDEX)
     with sqlite3.connect(archive_db) as conn:
@@ -593,7 +593,7 @@ def test_insight_freshness_reads_archive_file_set_without_polylogue_db(tmp_path:
         )
         conn.commit()
 
-    with patch("polylogue.daemon.status.db_path", return_value=legacy_db):
+    with patch("polylogue.daemon.status.db_path", return_value=db_anchor):
         assert _insight_freshness_info() == {
             "sessions_with_profiles": 1,
             "total_sessions": 2,
@@ -619,7 +619,7 @@ def test_daemon_status_fts_readiness_uses_lightweight_table_probe(tmp_path: Path
 
 
 def test_daemon_status_fts_readiness_reads_archive_file_set_without_polylogue_db(tmp_path: Path) -> None:
-    legacy_db = tmp_path / "index.db"
+    db_anchor = tmp_path / "index.db"
     archive_db = tmp_path / "index.db"
     initialize_archive_database(archive_db, ArchiveTier.INDEX)
     with sqlite3.connect(archive_db) as conn:
@@ -644,7 +644,7 @@ def test_daemon_status_fts_readiness_reads_archive_file_set_without_polylogue_db
         )
         conn.commit()
 
-    with patch("polylogue.daemon.status.db_path", return_value=legacy_db):
+    with patch("polylogue.daemon.status.db_path", return_value=db_anchor):
         readiness = status_module._fts_readiness_info()
 
     assert readiness["indexed_surface"] == "blocks_fts"
@@ -664,9 +664,9 @@ def test_daemon_status_fts_readiness_reads_archive_file_set_without_polylogue_db
 
 
 def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path) -> None:
-    legacy_db = tmp_path / "polylogue.db"
+    db_anchor = tmp_path / "polylogue.db"
     archive_db = tmp_path / "index.db"
-    with sqlite3.connect(legacy_db) as conn:
+    with sqlite3.connect(db_anchor) as conn:
         conn.executescript(
             """
             CREATE TABLE messages (text TEXT);
@@ -676,7 +676,7 @@ def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path
     initialize_archive_database(archive_db, ArchiveTier.INDEX)
 
     with (
-        patch("polylogue.daemon.status.db_path", return_value=legacy_db),
+        patch("polylogue.daemon.status.db_path", return_value=db_anchor),
         patch("polylogue.daemon.status.index_db_path", return_value=archive_db),
     ):
         readiness = status_module._fts_readiness_info()

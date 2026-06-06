@@ -1,7 +1,6 @@
 Usage: polylogue insights tool-usage [OPTIONS]
 
-  Per-tool, per-provider rollups over canonical action events with coverage
-  map.
+  Per-tool, per-origin rollups over canonical action events with coverage map.
 
 Options:
   --tool TEXT          Only entries for this normalized tool name

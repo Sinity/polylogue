@@ -128,9 +128,6 @@ async def ensure_schema_once(backend: SQLiteBackend) -> None:
             os.chmod(backend._db_path, 0o600)
             await configure_connection(init_conn)
             await backend._ensure_schema(init_conn)
-        from polylogue.paths.archive_db_stub import ensure_canonical_archive_db_name
-
-        ensure_canonical_archive_db_name(backend._db_path)
         backend._schema_ensured = True
 
 

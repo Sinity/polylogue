@@ -156,11 +156,11 @@ def _seed_archive_raw_session(
 ) -> tuple[Path, Path]:
     """Seed one archive `source.db` ``raw_sessions`` row.
 
-    Returns ``(legacy_db, index_db)`` paths to patch onto
+    Returns ``(db_anchor, index_db)`` paths to patch onto
     ``polylogue.daemon.status`` so ``_active_status_db_path`` resolves to
     ``tmp_path/index.db`` and reads ``tmp_path/source.db``.
     """
-    legacy_db = tmp_path / "polylogue.db"
+    db_anchor = tmp_path / "polylogue.db"
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
     initialize_archive_database(source_db, ArchiveTier.SOURCE)
@@ -188,14 +188,14 @@ def _seed_archive_raw_session(
             ),
         )
         conn.commit()
-    return legacy_db, index_db
+    return db_anchor, index_db
 
 
 class TestRawFailureInfoProducesTypedSamples:
     """_raw_failure_info() returns typed RawFailureSample instances."""
 
     def test_raw_failure_info_reads_archive_file_set_without_polylogue_db(self, tmp_path: Path) -> None:
-        legacy_db = tmp_path / "polylogue.db"
+        db_anchor = tmp_path / "polylogue.db"
         index_db = tmp_path / "index.db"
         archive_db = tmp_path / "source.db"
         initialize_archive_database(archive_db, ArchiveTier.SOURCE)
@@ -241,7 +241,7 @@ class TestRawFailureInfoProducesTypedSamples:
             conn.commit()
 
         with (
-            patch("polylogue.daemon.status.db_path", return_value=legacy_db),
+            patch("polylogue.daemon.status.db_path", return_value=db_anchor),
             patch("polylogue.daemon.status.index_db_path", return_value=index_db),
         ):
             info = _raw_failure_info()
@@ -257,7 +257,7 @@ class TestRawFailureInfoProducesTypedSamples:
         assert "/home/user/private.py" not in samples[1].redacted_error
 
     def test_raw_failure_info_samples_are_typed(self, tmp_path: Path) -> None:
-        legacy_db, index_db = _seed_archive_raw_session(
+        db_anchor, index_db = _seed_archive_raw_session(
             tmp_path,
             raw_id="raw-1",
             origin="claude-code-session",
@@ -268,7 +268,7 @@ class TestRawFailureInfoProducesTypedSamples:
         )
 
         with (
-            patch("polylogue.daemon.status.db_path", return_value=legacy_db),
+            patch("polylogue.daemon.status.db_path", return_value=db_anchor),
             patch("polylogue.daemon.status.index_db_path", return_value=index_db),
         ):
             info = _raw_failure_info()
@@ -284,7 +284,7 @@ class TestRawFailureInfoProducesTypedSamples:
         assert "JSONDecodeError" in sample.redacted_error
 
     def test_raw_failure_info_schema_violation_kind(self, tmp_path: Path) -> None:
-        legacy_db, index_db = _seed_archive_raw_session(
+        db_anchor, index_db = _seed_archive_raw_session(
             tmp_path,
             raw_id="raw-2",
             origin="chatgpt-export",
@@ -296,7 +296,7 @@ class TestRawFailureInfoProducesTypedSamples:
         )
 
         with (
-            patch("polylogue.daemon.status.db_path", return_value=legacy_db),
+            patch("polylogue.daemon.status.db_path", return_value=db_anchor),
             patch("polylogue.daemon.status.index_db_path", return_value=index_db),
         ):
             info = _raw_failure_info()
@@ -309,7 +309,7 @@ class TestRawFailureInfoProducesTypedSamples:
         assert sample.provider_hint == "chatgpt-export"
 
     def test_raw_failure_info_generic_parse_error_kind(self, tmp_path: Path) -> None:
-        legacy_db, index_db = _seed_archive_raw_session(
+        db_anchor, index_db = _seed_archive_raw_session(
             tmp_path,
             raw_id="raw-3",
             origin="unknown-export",
@@ -320,7 +320,7 @@ class TestRawFailureInfoProducesTypedSamples:
         )
 
         with (
-            patch("polylogue.daemon.status.db_path", return_value=legacy_db),
+            patch("polylogue.daemon.status.db_path", return_value=db_anchor),
             patch("polylogue.daemon.status.index_db_path", return_value=index_db),
         ):
             info = _raw_failure_info()

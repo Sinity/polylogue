@@ -1,0 +1,12 @@
+Usage: polylogue maintenance archive-plan [OPTIONS]
+
+  Inspect readiness for the archive file set.
+
+  Read-only. The command reports the planned source/index/embeddings/user/ops
+  target files, required backups, and blockers before archive initialization.
+
+Options:
+  --replace-existing            Classify existing archive tier files as
+                                replaceable instead of blocking.
+  --output-format [plain|json]  Output format.  [default: plain]
+  -h, --help                    Show this message and exit.

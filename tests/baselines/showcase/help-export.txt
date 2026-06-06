@@ -1,10 +1,10 @@
 Usage: polylogue export [OPTIONS] [SESSION_ID]
 
-  Export one known session by ID. IDs can use the provider:id-prefix form
-  (e.g. claude-ai:abc123).
+  Export one known session by ID. IDs can use the origin:id-prefix form (e.g.
+  claude-ai-export:abc123).
 
   The session id may be omitted when a root filter like ``--latest`` or
-  ``--provider`` narrows the archive to a single match (#1642).
+  ``--origin`` narrows the archive to a single match (#1642).
 
 Options:
   -f, --format [markdown|json|html|yaml|plaintext|csv|obsidian|org]

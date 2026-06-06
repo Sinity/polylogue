@@ -12,7 +12,7 @@ Options:
   -R, --project-repo TEXT     Filter by git repo URL or name
   -s, --since TEXT            Start date (ISO 8601)
   -u, --until TEXT            End date (ISO 8601)
-  -p, --provider TEXT         Provider name filter
+  -o, --origin TEXT           Source-origin filter
   -q, --query TEXT            Free-text query
   -n, --max-sessions INTEGER  Max sessions (1-20)
   -m, --max-messages INTEGER  Max messages per session (1-100)

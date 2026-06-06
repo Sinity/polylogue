@@ -183,14 +183,14 @@ def _archive_topology_edge_kind(branch_type: str | None) -> TopologyEdgeKind:
 def _archive_session_topology(archive: object, session_id: str) -> SessionTopology | None:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    archive_archive = archive if isinstance(archive, ArchiveStore) else None
-    if archive_archive is None:
+    archive_store = archive if isinstance(archive, ArchiveStore) else None
+    if archive_store is None:
         return None
     try:
-        target_id = archive_archive.resolve_session_id(session_id)
+        target_id = archive_store.resolve_session_id(session_id)
     except KeyError:
         return None
-    envelopes = archive_archive.get_session_tree(target_id)
+    envelopes = archive_store.get_session_tree(target_id)
     if not envelopes:
         return None
     by_id = {envelope.session_id: envelope for envelope in envelopes}
@@ -218,7 +218,7 @@ def _archive_session_topology(archive: object, session_id: str) -> SessionTopolo
     # they must be reported so late repair has something to reconcile.
     placeholders = ", ".join("?" for _ in by_id)
     if placeholders:
-        unresolved_rows = archive_archive._conn.execute(
+        unresolved_rows = archive_store._conn.execute(
             f"""
             SELECT src_session_id, dst_session_native_id, link_type
             FROM session_links

@@ -1,6 +1,6 @@
 Usage: polylogue insights cost-rollups [OPTIONS]
 
-  List provider/model cost rollups.
+  List origin/model cost rollups.
 
 Options:
   --model TEXT         Only this model or normalized model

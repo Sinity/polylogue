@@ -11,6 +11,6 @@ Options:
     zsh:  add  eval "$(polylogue completions --shell zsh)"   to ~/.zshrc
     fish: polylogue completions --shell fish > ~/.config/fish/completions/polylogue.fish
 
-  Dynamic completers cover: session IDs, providers/source-families,
+  Dynamic completers cover: session IDs, origins/source-families,
   tags, repos, cwd prefixes, action categories and sequences, tool names,
   message types, retrieval lanes.

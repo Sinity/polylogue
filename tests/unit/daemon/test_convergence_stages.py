@@ -72,7 +72,7 @@ def _truncate(path: Path, size: int) -> None:
         handle.truncate(size)
 
 
-def _seed_minimal_archive_archive(db_path: Path, source_path: Path, *, session_id: str = "codex-session:s1") -> None:
+def _seed_minimal_archive(db_path: Path, source_path: Path, *, session_id: str = "codex-session:s1") -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     source_path.write_text("{}\n", encoding="utf-8")
     with sqlite3.connect(db_path.with_name("source.db")) as conn:
@@ -172,11 +172,11 @@ def _seed_minimal_archive_archive(db_path: Path, source_path: Path, *, session_i
         conn.commit()
 
 
-def test_fts_stage_repairs_archive_archive_when_legacy_db_exists(tmp_path: Path) -> None:
+def test_fts_stage_repairs_archive_when_db_anchor_exists(tmp_path: Path) -> None:
     archive_db = tmp_path / "index.db"
     (tmp_path / "polylogue.db").touch()
     source_path = tmp_path / "codex.jsonl"
-    _seed_minimal_archive_archive(archive_db, source_path)
+    _seed_minimal_archive(archive_db, source_path)
 
     stage = make_fts_stage(tmp_path / "polylogue.db")
 
@@ -190,7 +190,7 @@ def test_insights_stage_materializes_archive_profiles_without_polylogue_db(tmp_p
     archive_db = tmp_path / "index.db"
     source_path = tmp_path / "codex.jsonl"
     session_id = "codex-session:s1"
-    _seed_minimal_archive_archive(archive_db, source_path, session_id=session_id)
+    _seed_minimal_archive(archive_db, source_path, session_id=session_id)
 
     stage = make_insights_stage(tmp_path / "polylogue.db")
 

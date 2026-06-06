@@ -2,7 +2,7 @@ Usage: polylogue bulk-export [OPTIONS]
 
   Bulk export every matched session in one process.
 
-  Reuses the parent filter chain (``--provider``, ``--since``, ``--referenced-
+  Reuses the parent filter chain (``--origin``, ``--since``, ``--referenced-
   path``, ``--message-role``, etc.). Default ``--format jsonl`` emits one
   single-line session JSON per line, suitable for piping into ``jq`` or
   downstream analysis tools. Other formats are concatenated with ``\n---\n``

@@ -267,13 +267,13 @@ def test_readiness_unconfigured_when_enabled_flag_off(
 
 
 def test_readiness_reads_archive_file_set_without_polylogue_db(tmp_path: Path) -> None:
-    legacy_db = tmp_path / "polylogue.db"
+    db_anchor = tmp_path / "polylogue.db"
     archive_db = tmp_path / "index.db"
     _seed_archive_embedding_readiness_db(archive_db)
 
     cfg = _FakeCfg(embedding_enabled=True, voyage_api_key="vk-live")
     with patch("polylogue.config.load_polylogue_config", return_value=cfg):
-        info = embedding_readiness_info(legacy_db)
+        info = embedding_readiness_info(db_anchor)
 
     assert info["embedding_enabled"] is True
     assert info["embedding_status"] == "partial"
@@ -301,10 +301,10 @@ def test_readiness_reads_archive_file_set_detail_counts_pending_messages(tmp_pat
     assert info["embedding_estimated_cost_usd"] == 0.0
 
 
-def test_readiness_prefers_archive_archive_when_legacy_db_exists(tmp_path: Path) -> None:
-    legacy_db = tmp_path / "polylogue.db"
+def test_readiness_reads_index_when_db_anchor_exists(tmp_path: Path) -> None:
+    db_anchor = tmp_path / "polylogue.db"
     archive_db = tmp_path / "index.db"
-    with sqlite3.connect(legacy_db) as conn:
+    with sqlite3.connect(db_anchor) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
         conn.execute("INSERT INTO sessions VALUES ('legacy-pending')")
         conn.commit()
@@ -312,7 +312,7 @@ def test_readiness_prefers_archive_archive_when_legacy_db_exists(tmp_path: Path)
 
     cfg = _FakeCfg(embedding_enabled=True, voyage_api_key="vk-live")
     with patch("polylogue.config.load_polylogue_config", return_value=cfg):
-        info = embedding_readiness_info(legacy_db)
+        info = embedding_readiness_info(db_anchor)
 
     assert info["embedding_status"] == "partial"
     assert info["embedding_pending_count"] == 2

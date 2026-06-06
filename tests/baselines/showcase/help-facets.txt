@@ -3,18 +3,18 @@ Usage: polylogue facets [OPTIONS]
   Show scoped and global facet aggregates.
 
   With no filters the scoped and global counts are identical. When
-  ``--provider``, ``--tag``, or ``--query`` narrows the view, the scoped
-  buckets describe the filtered slice while the global buckets describe the
-  whole archive (#1269 / slice D of #873).
+  ``--origin``, ``--tag``, or ``--query`` narrows the view, the scoped buckets
+  describe the filtered slice while the global buckets describe the whole
+  archive (#1269 / slice D of #873).
 
   Examples:
       polylogue facets                           # Global counts only
-      polylogue facets -p chatgpt                # Scoped to ChatGPT
+      polylogue facets -o chatgpt-export         # Scoped to ChatGPT exports
       polylogue facets -t draft -f json          # JSON, scoped to "draft"
       polylogue facets -q "vector store" --no-idf
 
 Options:
-  -p, --provider TEXT       Filter to this provider
+  -o, --origin TEXT         Filter to this origin
   -t, --tag TEXT            Filter to this tag
   -q, --query TEXT          Free-text FTS query for the scoped view
   -f, --format [text|json]  Output format

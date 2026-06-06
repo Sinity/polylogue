@@ -91,6 +91,27 @@ class TestPlainOutputIsAscii:
 class TestPlainEmptyArchiveMessages:
     """Empty-archive plain messages are stable and human-readable."""
 
+    def test_plain_count_missing_archive_files_returns_zero(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """``polylogue --plain count`` succeeds before archive files exist."""
+        exit_code, stdout, stderr = _invoke_plain(["--plain", "count"], monkeypatch)
+        assert exit_code == 0, f"unexpected exit {exit_code}: stdout={stdout!r} stderr={stderr!r}"
+        assert stdout == "0\n"
+
+    def test_plain_stats_missing_archive_files_reports_empty(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """``polylogue --plain stats`` succeeds before archive files exist."""
+        exit_code, stdout, stderr = _invoke_plain(["--plain", "stats"], monkeypatch)
+        assert exit_code == 0, f"unexpected exit {exit_code}: stdout={stdout!r} stderr={stderr!r}"
+        assert "Sessions: 0" in stdout
+        assert "Messages: 0" in stdout
+
     def test_plain_list_empty_archive_message(
         self,
         monkeypatch: pytest.MonkeyPatch,

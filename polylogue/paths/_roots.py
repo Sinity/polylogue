@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 def _xdg_path(env_var: str, fallback: Path) -> Path:
-    raw = os.environ.get(env_var, "").strip()  # XDG/legacy env kept for path bootstrapping
+    raw = os.environ.get(env_var, "").strip()
     if raw:
         return Path(raw).expanduser()
     return fallback
@@ -54,12 +54,7 @@ def state_home() -> Path:
 
 
 def db_path() -> Path:
-    """Retired monolithic database path.
-
-    Runtime archive reads and writes use the split files.
-    This path remains visible only so operator surfaces can report a leftover
-    retired artifact explicitly.
-    """
+    """Default configured database anchor."""
     return data_home() / "polylogue.db"
 
 

@@ -184,8 +184,8 @@ async def test_user_state_mutations_write_archive_user_tier(
     assert correction_row[0:3] == ("session", ARCHIVE_USER_STATE_SESSION_ID, "tag_accept")
     assert json.loads(correction_row[3])["payload"] == {"tag": "archive"}
 
-    legacy_db = archive_root / "polylogue.db"
-    assert not legacy_db.exists()
+    db_anchor = archive_root / "polylogue.db"
+    assert not db_anchor.exists()
 
 
 @pytest.mark.asyncio

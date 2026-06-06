@@ -1,9 +1,0 @@
-Usage: polylogue insights day-summaries [OPTIONS]
-
-  List durable day-level session summary insights.
-
-Options:
-  --limit INTEGER   Maximum rows  [default: 90]
-  --offset INTEGER  Start offset  [default: 0]
-  --format [json]   Output format
-  -h, --help        Show this message and exit.

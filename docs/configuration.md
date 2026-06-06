@@ -45,8 +45,7 @@ XDG environment variables. The defaults (when no override is set) are:
 
 Use `polylogue paths` to print the resolved paths for the current
 environment, or `polylogue paths --format json` for machine-readable
-output. The command also reports any detected bind mounts and
-non-canonical files at the archive root.
+output. The command also reports any detected bind mounts.
 
 ### Bind Mounts and `/realm/data/captures/`
 

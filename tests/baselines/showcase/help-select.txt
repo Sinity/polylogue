@@ -3,6 +3,6 @@ Usage: polylogue select [OPTIONS] [[session]]
   Select one matched session and print a field.
 
 Options:
-  --print [id|title|provider|json]
+  --print [id|title|origin|json]
   -l, -n, --limit INTEGER         Max candidates to offer
   --help                          Show this message and exit.

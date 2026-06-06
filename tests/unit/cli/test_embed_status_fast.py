@@ -157,10 +157,10 @@ def test_status_json_fast_path_handles_absent_embedding_tables(tmp_path: Path) -
 
 
 def test_status_json_reads_archive_file_set_when_polylogue_db_absent(tmp_path: Path) -> None:
-    legacy_db = tmp_path / "polylogue.db"
+    db_anchor = tmp_path / "polylogue.db"
     _seed_archive_file_set_without_polylogue_db(tmp_path / "index.db")
 
-    payload = _run_status(legacy_db, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     assert payload["status"] == "partial"
     assert payload["total_sessions"] == 2
@@ -175,7 +175,7 @@ def test_status_json_reads_archive_file_set_when_polylogue_db_absent(tmp_path: P
 
 
 def test_status_json_reads_latest_catchup_from_ops_db(tmp_path: Path) -> None:
-    legacy_db = tmp_path / "polylogue.db"
+    db_anchor = tmp_path / "polylogue.db"
     archive_db = tmp_path / "index.db"
     ops_db = tmp_path / "ops.db"
     _seed_archive_file_set_without_polylogue_db(archive_db)
@@ -196,7 +196,7 @@ def test_status_json_reads_latest_catchup_from_ops_db(tmp_path: Path) -> None:
             estimated_cost_usd=0.001,
         )
 
-    payload = _run_status(legacy_db, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    payload = _run_status(db_anchor, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     latest = payload["latest_catchup_run"]
     assert latest["run_id"] == "v1-run"
@@ -206,13 +206,13 @@ def test_status_json_reads_latest_catchup_from_ops_db(tmp_path: Path) -> None:
     assert latest["estimated_cost_usd"] == 0.001
 
 
-def test_status_json_prefers_archive_archive_when_legacy_db_exists(tmp_path: Path) -> None:
-    legacy_db = tmp_path / "polylogue.db"
-    _seed_archive_without_embedding_ledgers(legacy_db)
+def test_status_json_reads_index_when_db_anchor_exists(tmp_path: Path) -> None:
+    db_anchor = tmp_path / "polylogue.db"
+    _seed_archive_without_embedding_ledgers(db_anchor)
     _seed_archive_file_set_without_polylogue_db(tmp_path / "index.db")
 
     payload = _run_status(
-        legacy_db,
+        db_anchor,
         cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"),
     )
 

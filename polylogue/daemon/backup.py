@@ -250,13 +250,13 @@ def backup_archive(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     del include_blobs
-    result = _backup_archive_archive(output_dir=output_dir, started=started)
+    result = _backup_archive(output_dir=output_dir, started=started)
     if verify and result.ok and result.output_path is not None:
         _verify_backup_result(result)
     return result
 
 
-def _backup_archive_archive(*, output_dir: Path, started: float) -> BackupResult:
+def _backup_archive(*, output_dir: Path, started: float) -> BackupResult:
     root = archive_root()
     warnings = _check_prerequisites()
     if _has_backup_error(warnings):
@@ -270,7 +270,7 @@ def _backup_archive_archive(*, output_dir: Path, started: float) -> BackupResult
         )
 
     ts = _timestamp()
-    backup_root = output_dir / f"polylogue-v1-{ts}"
+    backup_root = output_dir / f"polylogue-archive-{ts}"
     backup_root.mkdir(parents=False, exist_ok=False)
 
     db_size = 0

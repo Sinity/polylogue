@@ -5,8 +5,8 @@ Usage: polylogue backup [OPTIONS]
 Options:
   --output-dir PATH  Directory to write the backup into.  [required]
   --check            Verify backup prerequisites without creating a backup.
-  --include-blobs    Also back up the blob store directory for legacy
-                     archives.
+  --include-blobs    Accepted for compatibility; backups copy referenced blobs
+                     automatically.
   --verify           Restore the finished backup into a scratch directory and
                      run smoke checks.
   -h, --help         Show this message and exit.

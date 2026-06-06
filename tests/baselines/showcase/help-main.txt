@@ -12,14 +12,14 @@ Usage: polylogue [OPTIONS] COMMAND [ARGS]...
 
   Query mode (default):
       polylogue "search terms"
-      polylogue -p claude-ai --since "last week"
+      polylogue --origin claude-ai-export --since "last week"
       polylogue --latest --output browser
 
   Verbs (actions on matched sessions):
-      polylogue "error" -p claude-ai --since 2025-01 list
+      polylogue "error" --origin claude-ai-export --since 2025-01 list
       polylogue --has thinking --sort tokens list --limit 10
-      polylogue -p chatgpt count
-      polylogue --provider codex stats --by provider
+      polylogue --origin chatgpt-export count
+      polylogue --origin codex-session stats --by origin
       polylogue --latest open
       polylogue "urgent" --tag review delete --dry-run
       polylogue list --format json
@@ -31,7 +31,7 @@ Usage: polylogue [OPTIONS] COMMAND [ARGS]...
       polylogue --action-text "pytest -q" list
       polylogue "pytest -q tests/unit/core/test_semantic_facts.py" --retrieval-lane actions --limit 5
       polylogue --action other stats --by tool --format json
-      polylogue --provider claude-code --since 2026-01-01 stats --by repo --format json
+      polylogue --origin claude-code-session --since 2026-01-01 stats --by repo --format json
       polylogue --tool bash --exclude-tool read list
       polylogue --similar "sqlite locking bug in parser" --limit 5
 
@@ -56,8 +56,8 @@ Options:
                                   populated).
   --semantic                      Treat the query as a similarity prompt
                                   (vector-only; requires embeddings).
-  -p, --provider TEXT             Include providers (comma = OR)
-  --exclude-provider TEXT         Exclude providers
+  --origin TEXT                   Include origins (comma = OR)
+  --exclude-origin TEXT           Exclude origins
   -r, --repo TEXT                 Filter by repository name (comma = OR)
   -t, --tag TEXT                  Include tags (comma = OR, supports
                                   key:value)

@@ -124,14 +124,25 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     archive_root = archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
     index_db_path = archive_root / "index.db"
     typo_hint = maybe_subcommand_typo_hint(request.query_terms)
+    origins = _resolve_origins(params)
+    origin = origins[0] if len(origins) == 1 else None
+    output_format = str(params.get("output_format") or "markdown")
+    fields = _optional_str(params.get("fields"))
+    query = _query_text(request.query_terms, params)
     if not index_db_path.exists():
+        if _emit_missing_archive_empty_read(
+            params,
+            output_format=output_format,
+            origin=origin,
+            query=query,
+            fields=fields,
+        ):
+            return
         message = f"archive index database not found at {index_db_path}"
         if typo_hint is not None:
             message = f"{message}\n{typo_hint}"
         _fail(message)
 
-    origins = _resolve_origins(params)
-    origin = origins[0] if len(origins) == 1 else None
     tags_to_add = _tuple_tokens(params.get("add_tag"))
     metadata_to_set = _metadata_pairs(params.get("set_meta"))
     tags = _tags(params.get("tag"))
@@ -170,8 +181,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             raise click.UsageError("Root query --sample must be positive.")
         limit = sample_count
         page_offset = 0
-    output_format = str(params.get("output_format") or "markdown")
-    fields = _optional_str(params.get("fields"))
     message_roles = _message_roles(params)
     content_projection = ContentProjectionSpec.from_params(params)
     transform = _transform(params.get("transform"))
@@ -179,7 +188,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     stream_output_format = QueryOutputSpec.from_params(params).stream_format()
     sort = _sort(params.get("sort"))
     reverse = bool(params.get("reverse"))
-    query = _query_text(request.query_terms, params)
     similar_text = _optional_str(params.get("similar_text"))
     retrieval_lane = _optional_str(params.get("retrieval_lane")) or "auto"
     delete_matched = bool(params.get("delete_matched"))
@@ -962,6 +970,50 @@ def _query_text(query_terms: tuple[str, ...], params: dict[str, object]) -> str:
     if isinstance(contains, Iterable) and not isinstance(contains, str | bytes):
         terms.extend(str(term) for term in contains if term)
     return " ".join(terms).strip()
+
+
+def _emit_missing_archive_empty_read(
+    params: dict[str, object],
+    *,
+    output_format: str,
+    origin: str | None,
+    query: str,
+    fields: str | None,
+) -> bool:
+    if params.get("count_only"):
+        _emit_count(0, output_format=output_format, origin=origin)
+        return True
+    if params.get("stats_by"):
+        _emit_stats_by(
+            {},
+            group_by=str(params["stats_by"]),
+            output_format=output_format,
+            origin=origin,
+            query=query,
+            fields=fields,
+        )
+        return True
+    if params.get("stats_only"):
+        _emit_stats(
+            ArchiveStats(total_sessions=0, total_messages=0),
+            output_format=output_format,
+            origin=origin,
+            query=query,
+            fields=fields,
+        )
+        return True
+    if params.get("list_mode") and not query:
+        _emit_list(
+            [],
+            limit=_limit(params),
+            offset=_offset(params),
+            next_cursor=None,
+            output_format=output_format,
+            origin=origin,
+            fields=fields,
+        )
+        return True
+    return False
 
 
 def _emit_count(count: int, *, output_format: str, origin: str | None) -> None:

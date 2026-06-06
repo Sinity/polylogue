@@ -70,40 +70,6 @@ def paths_command(output_format: str) -> None:
     with contextlib.suppress(Exception):
         _detect_bind_mounts(archive, bind_mounts)
 
-    # ── Non-canonical files at the archive root ───────────────────
-    non_canonical: list[dict[str, object]] = []
-    if archive.exists() and archive.is_dir():
-        canonical_names = {
-            "source.db",
-            "source.db-wal",
-            "source.db-shm",
-            "index.db",
-            "index.db-wal",
-            "index.db-shm",
-            "embeddings.db",
-            "embeddings.db-wal",
-            "embeddings.db-shm",
-            "ops.db",
-            "ops.db-wal",
-            "ops.db-shm",
-            "user.db",
-            "user.db-wal",
-            "user.db-shm",
-        }
-        for entry in sorted(archive.iterdir()):
-            if entry.name in canonical_names:
-                continue
-            if entry.name.startswith("."):
-                continue
-            stat = entry.stat()
-            non_canonical.append(
-                {
-                    "name": entry.name,
-                    "kind": _entry_kind(entry),
-                    "size_bytes": stat.st_size,
-                }
-            )
-
     # ── JSON output ────────────────────────────────────────────────
     if output_format == "json":
         payload: dict[str, object] = {
@@ -146,7 +112,6 @@ def paths_command(output_format: str) -> None:
             "blob_store_exists": blob.exists(),
             "data_home": str(data_home().resolve()),
             "bind_mounts": bind_mounts,
-            "non_canonical_files": non_canonical,
         }
         click.echo(json.dumps(payload, indent=2, default=str))
         return
@@ -184,16 +149,6 @@ def paths_command(output_format: str) -> None:
             tgt = bm.get("target", "?")
             fs = bm.get("filesystem", "?")
             click.echo(f"  {tgt}  <-  {src}  ({fs})")
-        click.echo()
-
-    if non_canonical:
-        click.echo("Non-canonical files at archive root:")
-        for nc in non_canonical:
-            kind = nc.get("kind", "?")
-            name = nc.get("name", "?")
-            raw_size = nc.get("size_bytes", 0)
-            size_bytes = raw_size if isinstance(raw_size, int) else 0
-            click.echo(f"  {name}  ({kind}, {_size_fmt_bytes(size_bytes)})")
         click.echo()
 
 
@@ -312,16 +267,6 @@ def _active_database_role(active_db: Path, *, tier_paths: dict[str, Path]) -> st
     for name, path in tier_paths.items():
         if active_db == path:
             return name
-    return "unknown"
-
-
-def _entry_kind(entry: Path) -> str:
-    if entry.is_symlink():
-        return "symlink"
-    if entry.is_dir():
-        return "directory"
-    if entry.is_file():
-        return "file"
     return "unknown"
 
 

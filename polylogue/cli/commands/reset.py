@@ -38,24 +38,24 @@ _V1_DATABASES = (
 )
 
 
-def _archive_archive_root() -> Path:
+def _archive_root() -> Path:
     return archive_file_set_root_for_paths(archive_root_path=archive_root(), db_anchor=data_home() / "polylogue.db")
 
 
 def _index_db_path() -> Path:
-    return _archive_archive_root() / "index.db"
+    return _archive_root() / "index.db"
 
 
 def _source_db_path() -> Path:
-    return _archive_archive_root() / "source.db"
+    return _archive_root() / "source.db"
 
 
 def _user_db_path() -> Path:
-    return _archive_archive_root() / "user.db"
+    return _archive_root() / "user.db"
 
 
 def _archive_database_targets() -> list[tuple[str, Path]]:
-    root = _archive_archive_root()
+    root = _archive_root()
     targets: list[tuple[str, Path]] = []
     for name, filename in _V1_DATABASES:
         path = root / filename
