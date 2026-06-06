@@ -126,7 +126,7 @@ jobs:
           # shellcheck disable=SC1091
           source .venv-smoke/bin/activate
           python -m pip install --upgrade pip
-          wheel=$(ls dist/*.whl | head -n1)
+          wheel=$(find dist -maxdepth 1 -type f -name '*.whl' | sort | head -n1)
           echo "Installing ${wheel}"
           python -m pip install "${wheel}"
       - name: Smoke installed entrypoints against an empty XDG archive
@@ -178,7 +178,7 @@ jobs:
           # shellcheck disable=SC1091
           source .venv-hooks/bin/activate
           python -m pip install --upgrade pip
-          wheel=$(ls dist-hooks/*.whl | head -n1)
+          wheel=$(find dist-hooks -maxdepth 1 -type f -name '*.whl' | sort | head -n1)
           python -m pip install "${wheel}"
           # Confirm zero third-party runtime closure (only pip/setuptools/wheel + polylogue-hooks).
           python -m pip list --format=freeze | sort > installed.txt
@@ -237,8 +237,8 @@ jobs:
           # shellcheck disable=SC1091
           source .venv-mcp/bin/activate
           python -m pip install --upgrade pip
-          main_wheel=$(ls dist/*.whl | head -n1)
-          mcp_wheel=$(ls dist-mcp/*.whl | head -n1)
+          main_wheel=$(find dist -maxdepth 1 -type f -name '*.whl' | sort | head -n1)
+          mcp_wheel=$(find dist-mcp -maxdepth 1 -type f -name '*.whl' | sort | head -n1)
           python -m pip install "${main_wheel}" "${mcp_wheel}"
       - name: Smoke polylogue-mcp wrapper console script
         shell: bash
@@ -264,7 +264,7 @@ jobs:
           python-version: "3.13"
       - name: Generate CycloneDX SBOM from built wheel
         run: |
-          wheel=$(ls dist/*.whl | head -n1)
+          wheel=$(find dist -maxdepth 1 -type f -name '*.whl' | sort | head -n1)
           mkdir -p sbom
           # Resolve the dependency closure inside a fresh venv so the SBOM
           # reflects what `pip install polylogue==X.Y.Z` would actually pull.
@@ -403,4 +403,3 @@ jobs:
         with:
           skip-existing: true
           verbose: true
-

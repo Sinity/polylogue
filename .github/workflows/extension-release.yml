@@ -72,7 +72,7 @@ jobs:
       - name: Web-ext lint Firefox xpi
         run: |
           set -euo pipefail
-          xpi=$(ls dist/polylogue-browser-capture-*-firefox.xpi | head -n1)
+          xpi=$(find dist -maxdepth 1 -type f -name 'polylogue-browser-capture-*-firefox.xpi' | sort | head -n1)
           npx --yes web-ext@8 lint --self-hosted --source-dir <(unzip -p "$xpi" /dev/null 2>/dev/null || true) || true
           # web-ext lint actually wants a directory; unpack the xpi.
           mkdir -p dist/firefox-unpacked
@@ -148,6 +148,6 @@ jobs:
             --clobber --repo "${GITHUB_REPOSITORY}"
           # Screenshots are uploaded as a tar.gz so the release page does
           # not balloon with 18 individual PNGs.
-          tar -C artifacts/screenshots -czf store-screenshots-${TAG}.tar.gz .
+          tar -C artifacts/screenshots -czf "store-screenshots-${TAG}.tar.gz" .
           gh release upload "${TAG}" "store-screenshots-${TAG}.tar.gz" \
             --clobber --repo "${GITHUB_REPOSITORY}"
