@@ -890,7 +890,7 @@ only daemon-RSS signals readable without IPC).</li>
 churn/read amplification, debt-by-stage, and hot-query EXPLAIN evidence.
 On archives, churn is read across <code>source.db.raw_sessions</code>
 and <code>index.db.sessions</code> so full-vs-append raw rows and unmaterialized raw
-payloads stay visible without a legacy <code>raw_sessions</code> table.</li>
+payloads stay visible without requiring <code>raw_sessions</code> in <code>index.db</code>.</li>
 </ul>
 <p>The compare mode refuses incompatible <code>report_version</code> inputs loudly and
 requires both inputs to be <code>ok: True</code>.  Numeric fields produce
