@@ -3,7 +3,7 @@
 Tests cover hybrid search methods, reciprocal rank fusion algorithm,
 provider filtering, and integration scenarios.
 
-Extracted from monolithic test_search_index.py.
+Extracted from test_search_index.py.
 """
 
 from __future__ import annotations

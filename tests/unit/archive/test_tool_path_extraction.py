@@ -69,7 +69,7 @@ def test_looks_like_path_candidate_rejects_known_false_positives(value: str) -> 
         "polylogue/archive.py",
         "data/raw.json",
         "/etc/hosts",  # absolute, no extension — still a path
-        "~/.local/share/polylogue/polylogue.db",
+        "~/.local/share/polylogue/index.db",
     ],
 )
 def test_looks_like_path_candidate_accepts_real_paths(value: str) -> None:

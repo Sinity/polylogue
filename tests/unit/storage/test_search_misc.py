@@ -3,7 +3,7 @@
 Tests cover database rebuild checks, vec0 tables, asset handling, raw session
 storage, session index parsing, and related edge cases.
 
-Extracted from monolithic test_search_index.py.
+Extracted from test_search_index.py.
 """
 
 from __future__ import annotations

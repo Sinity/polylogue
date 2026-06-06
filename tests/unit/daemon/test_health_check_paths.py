@@ -558,7 +558,7 @@ def test_repeated_stage_failures_error_when_many_recent_failures(
     assert "recent attempts failed" in alert.message
 
 
-def test_repeated_stage_failures_reads_ops_tier_without_polylogue_db(
+def test_repeated_stage_failures_reads_ops_tier_from_archive_tiers(
     workspace_env: dict[str, Path],
 ) -> None:
     dbf = index_db_path()

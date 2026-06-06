@@ -112,14 +112,14 @@ def _db_path() -> Path:
     """Return the resolved polylogue database path.
 
     Uses the same resolution as ``polylogue.paths.db_path()``:
-    ``XDG_DATA_HOME / "polylogue" / "polylogue.db"``.
+    ``XDG_DATA_HOME / "polylogue" / "index.db"``.
     When ``XDG_DATA_HOME`` is not set in the environment, falls back
     to ``~/.local/share`` (matching the ``_xdg_path`` default in
     ``polylogue.paths._roots``).
     """
     xdg_data = os.environ.get("XDG_DATA_HOME")
     data_polylogue = Path(xdg_data) / "polylogue" if xdg_data else Path.home() / ".local" / "share" / "polylogue"
-    return data_polylogue / "polylogue.db"
+    return data_polylogue / "index.db"
 
 
 def _assert_daemon_alive(proc: subprocess.Popen[bytes]) -> None:

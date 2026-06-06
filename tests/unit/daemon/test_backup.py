@@ -70,7 +70,7 @@ def test_backup_archive_includes_archive_files(
     archive_root = workspace_env["archive_root"]
     data_home.mkdir(parents=True, exist_ok=True)
     archive_root.mkdir(parents=True, exist_ok=True)
-    db_anchor = data_home / "polylogue.db"
+    db_anchor = data_home / "index.db"
     source_db = archive_root / "source.db"
     user_db = archive_root / "user.db"
     embeddings_db = archive_root / "embeddings.db"

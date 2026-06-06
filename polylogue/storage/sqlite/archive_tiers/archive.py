@@ -1637,7 +1637,7 @@ class ArchiveStore:
         When ``session_id`` is supplied (and no explicit target filter),
         the result includes both the session-target annotation and every
         message-target annotation whose native message id is prefixed by the
-        session id (``session_id:message_native_id``). This mirrors the monolithic
+        session id (``session_id:message_native_id``). This mirrors the read model
         contract where annotations on messages belonging to a session were
         listed under that session.
         """
@@ -2661,7 +2661,7 @@ class ArchiveStore:
         match_query = normalize_fts5_query(query)
         if match_query is None:
             # Empty / whitespace / asterisk-only query: no FTS expression to
-            # run. Mirror the monolithic lexical path and return no hits rather
+            # run. Mirror the read model lexical path and return no hits rather
             # than raising ``fts5: syntax error``.
             return []
         # A real query needs the block FTS index. Surface a degraded index as a

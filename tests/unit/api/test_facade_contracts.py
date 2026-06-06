@@ -249,7 +249,7 @@ def _discovered_public_async_methods() -> set[str]:
 
 def _archive(tmp_path: Path) -> Polylogue:
     """Construct a Polylogue facade against an isolated tmp archive."""
-    return Polylogue(archive_root=tmp_path, db_path=tmp_path / "polylogue.db")
+    return Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
 
 
 @pytest.mark.asyncio
@@ -547,7 +547,7 @@ async def test_list_sessions_returns_seeded_rows(tmp_path: Path) -> None:
     from polylogue.archive.session.domain_models import Session
 
     archive = _archive(tmp_path)
-    db_path = archive.config.archive_root / "polylogue.db"
+    db_path = archive.config.archive_root / "index.db"
     # Ensure schema is initialized by touching the repository before seeding.
     _ = archive.repository
     await _seed_two_sessions(db_path)
@@ -567,7 +567,7 @@ async def test_list_sessions_respects_origin_filter(tmp_path: Path) -> None:
     """``list_sessions(origin=...)`` narrows the result set."""
     archive = _archive(tmp_path)
     _ = archive.repository
-    db_path = archive.config.archive_root / "polylogue.db"
+    db_path = archive.config.archive_root / "index.db"
     await _seed_two_sessions(db_path)
     try:
         rows = await archive.list_sessions(origin="claude-ai-export")
@@ -581,7 +581,7 @@ async def test_list_sessions_respects_limit(tmp_path: Path) -> None:
     """``list_sessions(limit=1)`` returns at most one row."""
     archive = _archive(tmp_path)
     _ = archive.repository
-    db_path = archive.config.archive_root / "polylogue.db"
+    db_path = archive.config.archive_root / "index.db"
     await _seed_two_sessions(db_path)
     try:
         rows = await archive.list_sessions(limit=1)
@@ -594,7 +594,7 @@ async def test_stats_reflects_seeded_archive(tmp_path: Path) -> None:
     """``stats()`` reports the seeded session count."""
     archive = _archive(tmp_path)
     _ = archive.repository
-    db_path = archive.config.archive_root / "polylogue.db"
+    db_path = archive.config.archive_root / "index.db"
     await _seed_two_sessions(db_path)
     try:
         result = await archive.stats()
@@ -611,7 +611,7 @@ async def test_get_session_returns_typed_object(tmp_path: Path) -> None:
 
     archive = _archive(tmp_path)
     _ = archive.repository
-    db_path = archive.config.archive_root / "polylogue.db"
+    db_path = archive.config.archive_root / "index.db"
     await _seed_two_sessions(db_path)
     try:
         conv = await archive.get_session("claude-ai-export:conv-alpha")
@@ -769,7 +769,7 @@ async def test_save_annotation_rejects_blank_inputs(tmp_path: Path) -> None:
     """``save_annotation`` validates non-empty ``annotation_id`` and ``note_text``."""
     archive = _archive(tmp_path)
     _ = archive.repository
-    db_path = archive.config.archive_root / "polylogue.db"
+    db_path = archive.config.archive_root / "index.db"
     await _seed_two_sessions(db_path)
     try:
         with pytest.raises(ValueError):
@@ -1179,7 +1179,6 @@ async def test_archive_tiers_parse_file_writes_source_and_index_tiers(tmp_path: 
             artifacts, total = archive_db.raw_artifacts_for_session("gemini-cli-session:gemini-v1-parse")
         assert total == 1
         assert artifacts[0]["source_path"] == str(source_path)
-        assert not (tmp_path / "polylogue.db").exists()
     finally:
         await archive.close()
 
@@ -1239,7 +1238,6 @@ async def test_archive_tiers_api_user_mutations_write_user_tier(tmp_path: Path) 
         assert metadata == {"priority": "high", "status": "open"}
         assert deleted.outcome == "deleted"
         assert missing_delete.outcome == "not_found"
-        assert not (tmp_path / "polylogue.db").exists()
 
         with sqlite3.connect(tmp_path / "user.db") as conn:
             remaining_tags = conn.execute("SELECT COUNT(*) FROM session_tags").fetchone()[0]
@@ -1317,7 +1315,6 @@ async def test_archive_tiers_api_tag_rollups_read_index_and_user_tiers(tmp_path:
         assert rollup.provider_breakdown == {Provider.CODEX.value: 2}
         assert rollup.repo_breakdown == {"https://example.test/polylogue.git": 2}
         assert rollup.provenance.source_updated_at == "2026-02-02T02:41:00Z"
-        assert not (tmp_path / "polylogue.db").exists()
     finally:
         await archive.close()
 
@@ -1444,7 +1441,6 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
         assert week_rows[0].group_by == "week"
         assert week_rows[0].session_count == 1
         assert week_rows[0].provider_breakdown == {Provider.CODEX.value: 1}
-        assert not (tmp_path / "polylogue.db").exists()
     finally:
         await archive.close()
 
@@ -1525,7 +1521,6 @@ async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) 
         assert coverage[Provider.CODEX.value].action_event_count == 1
         assert coverage[Provider.CHATGPT.value].data_available is False
         assert coverage[Provider.CHATGPT.value].session_count == 1
-        assert not (tmp_path / "polylogue.db").exists()
     finally:
         await archive.close()
 
@@ -1565,7 +1560,6 @@ async def test_archive_tiers_api_delete_uses_index_tier_and_keeps_user_overlay(t
         assert second.outcome == "not_found"
         assert bool_deleted is False
         assert missing is None
-        assert not (tmp_path / "polylogue.db").exists()
 
         with sqlite3.connect(tmp_path / "index.db") as index_conn:
             session_count = index_conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
@@ -1623,7 +1617,6 @@ async def test_archive_tiers_api_raw_artifacts_read_source_tier(tmp_path: Path) 
         ]
         assert missing_artifacts == []
         assert missing_total == 0
-        assert not (tmp_path / "polylogue.db").exists()
     finally:
         await archive.close()
 
@@ -1737,7 +1730,6 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
         assert phases[0].source_name == Provider.CODEX.value
         assert phases[0].provenance.materializer_version == 8
         assert phases[0].evidence.tool_counts == {"apply_patch": 1}
-        assert not (tmp_path / "polylogue.db").exists()
     finally:
         await archive.close()
 
@@ -1926,7 +1918,6 @@ async def test_archive_tiers_api_work_threads_read_index_tier(tmp_path: Path) ->
         assert thread.thread.provider_breakdown == {Provider.CLAUDE_CODE.value: 2}
         assert thread.thread.member_evidence[1].parent_id == parent_id
         assert thread.thread.member_evidence[1].role == "child"
-        assert not (tmp_path / "polylogue.db").exists()
     finally:
         await archive.close()
 
@@ -2041,7 +2032,6 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
         assert unavailable_rollup.unavailable_session_count == 1
         assert unavailable_rollup.unavailable_reason_counts == {"no_tokens": 1}
         assert model_rollups == []
-        assert not (tmp_path / "polylogue.db").exists()
     finally:
         await archive.close()
 
@@ -2136,7 +2126,6 @@ async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path
         assert profile.latency.median_tool_call_ms == 0
         assert profile.latency.stuck_tool_count == 0
         assert profile.latency.tool_call_count_by_category == {"file_read": 1}
-        assert not (tmp_path / "polylogue.db").exists()
     finally:
         await archive.close()
 
@@ -2187,7 +2176,6 @@ async def test_archive_tiers_api_archive_debt_reads_archive_consistency(tmp_path
         assert by_name["archive_user_overlay_orphans"].category == "archive_cleanup"
         assert by_name["archive_user_overlay_orphans"].issue_count == 1
         assert all(not debt.healthy for debt in debts)
-        assert not (tmp_path / "polylogue.db").exists()
 
         cleanup_debts = await archive.list_archive_debt_insights(
             ArchiveDebtInsightQuery(category="archive_cleanup", only_actionable=True, limit=20)
@@ -2288,7 +2276,6 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
         assert inference_only.evidence is None
         assert inference_only.inference is not None
         assert missing is None
-        assert not (tmp_path / "polylogue.db").exists()
     finally:
         await archive.close()
 
@@ -2385,7 +2372,6 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
         assert status.thread_count == 2
         assert status.root_threads == 2
         assert status.threads_ready is True
-        assert not (tmp_path / "polylogue.db").exists()
     finally:
         await archive.close()
 
@@ -2441,7 +2427,6 @@ async def test_archive_tiers_api_marks_and_annotations_write_user_tier(tmp_path:
         assert annotations == [annotation]
         assert annotation_deleted is True
         assert annotation_missing is False
-        assert not (tmp_path / "polylogue.db").exists()
 
         with sqlite3.connect(tmp_path / "user.db") as conn:
             mark_count = conn.execute("SELECT COUNT(*) FROM marks").fetchone()[0]
@@ -2535,7 +2520,6 @@ async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path
         assert workspaces == [workspace]
         assert workspace["mode"] == "stack"
         assert json.loads(workspace["layout_json"]) == {"panes": 2}
-        assert not (tmp_path / "polylogue.db").exists()
 
         assert await archive.delete_view("view-v1") is True
         assert await archive.delete_view("view-v1") is False
@@ -2603,7 +2587,6 @@ async def test_archive_tiers_api_corrections_write_user_tier(tmp_path: Path) -> 
         assert deleted is True
         assert missing_delete is False
         assert cleared == 1
-        assert not (tmp_path / "polylogue.db").exists()
 
         with sqlite3.connect(tmp_path / "user.db") as conn:
             assert conn.execute("SELECT COUNT(*) FROM corrections").fetchone()[0] == 0

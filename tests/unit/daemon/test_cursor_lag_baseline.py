@@ -65,7 +65,7 @@ def _summary(
 
 
 def test_ensure_lag_sample_table_is_idempotent(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     conn = sqlite3.connect(str(db))
     try:
         ensure_lag_sample_table(conn)
@@ -84,7 +84,7 @@ def test_ensure_lag_sample_table_is_idempotent(tmp_path: Path) -> None:
 
 
 def test_record_sample_no_stuck_files_writes_nothing(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     summary = CursorLagSummary()  # all-default = no stuck
     assert record_cursor_lag_sample(db, summary) == 0
     assert not db.exists()
@@ -92,7 +92,7 @@ def test_record_sample_no_stuck_files_writes_nothing(tmp_path: Path) -> None:
 
 
 def test_record_sample_writes_one_row_per_stuck_family(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     summary = _summary("claude-code-session", stuck_count=2, max_lag_s=120.0, item_lags=[60.0, 120.0])
     now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
 
@@ -123,7 +123,7 @@ def test_record_sample_falls_back_when_stuck_list_does_not_include_family(tmp_pa
     # The CursorLagSummary.stuck list is bounded; if a family's items did
     # not make the top-10, the row still records the family's max_lag_s
     # with p50/p95 collapsed to that single value.
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     summary = CursorLagSummary(
         tracked_file_count=1,
         stuck_file_count=1,
@@ -147,7 +147,7 @@ def test_record_sample_falls_back_when_stuck_list_does_not_include_family(tmp_pa
 
 
 def test_gc_drops_samples_older_than_retention(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
     summary = _summary("f", stuck_count=1, max_lag_s=10.0)
     # Old sample
@@ -164,7 +164,7 @@ def test_gc_drops_samples_older_than_retention(tmp_path: Path) -> None:
 
 
 def test_gc_is_noop_when_retention_zero(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     assert gc_cursor_lag_samples(db, retention_days=0) == 0
 
 
@@ -185,7 +185,7 @@ def test_load_baseline_returns_unconfident_when_db_missing(tmp_path: Path) -> No
 
 
 def test_load_baseline_returns_unconfident_when_table_missing(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     sqlite3.connect(str(db)).close()
     baseline = load_family_baseline(db, "f", window_days=7, min_samples=50)
     assert baseline.sample_count == 0
@@ -193,7 +193,7 @@ def test_load_baseline_returns_unconfident_when_table_missing(tmp_path: Path) ->
 
 
 def test_load_baseline_computes_p50_p95_over_window(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
     # 100 samples ranging 1..100; expected p50=50.5, p95=95.05
     for i in range(1, 101):
@@ -209,7 +209,7 @@ def test_load_baseline_computes_p50_p95_over_window(tmp_path: Path) -> None:
 
 
 def test_load_baseline_excludes_samples_outside_window(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
     # 50 fresh samples + 50 ancient ones
     for i in range(50):
@@ -225,7 +225,7 @@ def test_load_baseline_excludes_samples_outside_window(tmp_path: Path) -> None:
 
 
 def test_load_baseline_unconfident_below_min_samples(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
     for i in range(10):
         record_cursor_lag_sample(db, _summary("f", stuck_count=1, max_lag_s=10.0), now=now - timedelta(minutes=i))
@@ -236,7 +236,7 @@ def test_load_baseline_unconfident_below_min_samples(tmp_path: Path) -> None:
 
 
 def test_load_family_baselines_batches_reads(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
     for family in ("a", "b"):
         for i in range(60):
@@ -253,7 +253,7 @@ def test_load_family_baselines_batches_reads(tmp_path: Path) -> None:
 
 
 def test_load_baseline_handles_single_sample_gracefully(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     record_cursor_lag_sample(db, _summary("f", stuck_count=1, max_lag_s=42.0))
     baseline = load_family_baseline(db, "f", window_days=7, min_samples=1)
     assert baseline.sample_count == 1
@@ -262,8 +262,8 @@ def test_load_baseline_handles_single_sample_gracefully(tmp_path: Path) -> None:
     assert baseline.confident is True
 
 
-def test_load_baseline_reads_ops_tier_without_polylogue_db(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+def test_load_baseline_reads_ops_tier_from_archive_tiers(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
     now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
     for i in range(60):
         record_cursor_lag_sample(db, _summary("f", stuck_count=1, max_lag_s=10.0 + i), now=now - timedelta(minutes=i))
@@ -276,8 +276,8 @@ def test_load_baseline_reads_ops_tier_without_polylogue_db(tmp_path: Path) -> No
     assert 65.0 <= baseline.rolling_p95_lag_s <= 67.0
 
 
-def test_gc_drops_ops_tier_samples_without_polylogue_db(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+def test_gc_drops_ops_tier_samples_from_archive_tiers(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
     now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
     summary = _summary("f", stuck_count=1, max_lag_s=10.0)
     record_cursor_lag_sample(db, summary, now=now - timedelta(days=30))
@@ -294,7 +294,7 @@ def test_gc_drops_ops_tier_samples_without_polylogue_db(tmp_path: Path) -> None:
 def test_baseline_restart_safe_persists_history(tmp_path: Path) -> None:
     # AC #6: stopping the daemon for N hours, restarting, and observing
     # one health-loop tick reproduces the same baseline.
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
     # Pre-restart: 60 samples accumulated.
     for i in range(60):

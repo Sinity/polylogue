@@ -124,7 +124,7 @@ class TestBatchReadScale:
 
 
 class TestListScale:
-    """Native list at scale, with and without provider filter."""
+    """Archive list at scale, with and without provider filter."""
 
     @pytest.mark.asyncio
     async def test_list_returns_all(self, workspace_env: dict[str, Path]) -> None:

@@ -222,7 +222,7 @@ async def test_execute_ingest_stage_routes_active_archive_to_native_writer(tmp_p
 
     with patch("polylogue.pipeline.services.parsing.ParsingService") as parsing_service:
         result = await run_stages.execute_ingest_stage(
-            config=SimpleNamespace(archive_root=archive_root, db_path=tmp_path / "polylogue.db"),
+            config=SimpleNamespace(archive_root=archive_root, db_path=tmp_path / "index.db"),
             repository=SimpleNamespace(),
             archive_root=archive_root,
             sources=[Source(name="gemini-cli", path=source_path)],
@@ -239,7 +239,6 @@ async def test_execute_ingest_stage_routes_active_archive_to_native_writer(tmp_p
     assert observation["archive_index_rows"] == 1
     with ArchiveStore.open_existing(archive_root) as archive_db:
         assert archive_db.search_blocks("needle")
-    assert not (tmp_path / "polylogue.db").exists()
 
 
 @pytest.mark.asyncio

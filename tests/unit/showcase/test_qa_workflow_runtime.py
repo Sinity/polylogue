@@ -172,7 +172,7 @@ def test_run_live_ingest_uses_schema_stage_sequence_when_regenerating() -> None:
 
     config = SimpleNamespace(
         archive_root=Path("/archive"),
-        db_path=Path("/archive/polylogue.sqlite"),
+        db_path=Path("/archive/index.db"),
         sources=[
             Source(name="chatgpt", path=Path("/sources/chatgpt")),
             Source(name="codex", path=Path("/sources/codex")),
@@ -191,10 +191,10 @@ def test_run_live_ingest_uses_schema_stage_sequence_when_regenerating() -> None:
 
     mock_get_config.assert_called_once_with()
     schema_stage.assert_awaited_once_with()
-    polylogue = _RecordingPolylogue.instances[-1]
-    assert polylogue.archive_root == Path("/archive")
-    assert polylogue.db_path == Path("/archive/polylogue.sqlite")
-    parse_args = polylogue.parse_sources.await_args
+    archive = _RecordingPolylogue.instances[-1]
+    assert archive.archive_root == Path("/archive")
+    assert archive.db_path == Path("/archive/index.db")
+    parse_args = archive.parse_sources.await_args
     assert parse_args is not None
     assert [source.name for source in parse_args.args[0]] == ["chatgpt", "codex"]
 

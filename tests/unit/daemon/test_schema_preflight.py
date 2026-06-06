@@ -236,7 +236,7 @@ async def test_ingest_files_short_circuits_when_degraded(tmp_path: Path) -> None
         f.write_bytes(b'{"ok": true}\n')
         files.append(f)
 
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     cursor = _StubCursor(db_path)
 
     class _StubPolylogue:
@@ -345,7 +345,7 @@ async def test_ingest_files_short_circuits_under_burst_after_degraded(
         f.write_bytes(b'{"ok": true}\n')
         files.append(f)
 
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     db_path.touch()
     db_size_before = db_path.stat().st_size
 
@@ -386,7 +386,7 @@ async def test_live_batch_marks_structural_database_error_degraded(
     f = tmp_path / "event.jsonl"
     f.write_bytes(b'{"ok": true}\n')
 
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     db_path.touch()
     cursor = _StubCursor(db_path)
 

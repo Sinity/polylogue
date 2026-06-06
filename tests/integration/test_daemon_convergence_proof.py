@@ -153,7 +153,7 @@ def test_daemon_convergence_proof_full_archive_state(
     asserts the resulting archive state via ``daemon_workload_probe``.
     """
     corpus_root = tmp_path / "corpus" / "projects"
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
 

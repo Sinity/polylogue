@@ -57,7 +57,7 @@ def _seed_archive_without_embedding_ledgers(db_path: Path, *, vec_table: bool = 
         conn.commit()
 
 
-def _seed_archive_file_set_without_polylogue_db(index_db: Path) -> None:
+def _seed_archive_file_set_from_archive_tiers(index_db: Path) -> None:
     embeddings_db = index_db.with_name("embeddings.db")
     with sqlite3.connect(index_db) as conn:
         conn.executescript(
@@ -156,9 +156,9 @@ def test_status_json_fast_path_handles_absent_embedding_tables(tmp_path: Path) -
     assert payload["retrieval_bands"] == {}
 
 
-def test_status_json_reads_archive_file_set_when_polylogue_db_absent(tmp_path: Path) -> None:
-    db_anchor = tmp_path / "polylogue.db"
-    _seed_archive_file_set_without_polylogue_db(tmp_path / "index.db")
+def test_status_json_reads_archive_file_set_from_archive_index(tmp_path: Path) -> None:
+    db_anchor = tmp_path / "custom.sqlite"
+    _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
 
     payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
@@ -175,10 +175,10 @@ def test_status_json_reads_archive_file_set_when_polylogue_db_absent(tmp_path: P
 
 
 def test_status_json_reads_latest_catchup_from_ops_db(tmp_path: Path) -> None:
-    db_anchor = tmp_path / "polylogue.db"
+    db_anchor = tmp_path / "index.db"
     archive_db = tmp_path / "index.db"
     ops_db = tmp_path / "ops.db"
-    _seed_archive_file_set_without_polylogue_db(archive_db)
+    _seed_archive_file_set_from_archive_tiers(archive_db)
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.ops_write import upsert_embedding_catchup_run
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -207,9 +207,9 @@ def test_status_json_reads_latest_catchup_from_ops_db(tmp_path: Path) -> None:
 
 
 def test_status_json_reads_index_when_db_anchor_exists(tmp_path: Path) -> None:
-    db_anchor = tmp_path / "polylogue.db"
+    db_anchor = tmp_path / "custom.sqlite"
     _seed_archive_without_embedding_ledgers(db_anchor)
-    _seed_archive_file_set_without_polylogue_db(tmp_path / "index.db")
+    _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
 
     payload = _run_status(
         db_anchor,

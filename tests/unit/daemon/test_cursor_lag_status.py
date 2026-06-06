@@ -69,8 +69,8 @@ def test_cursor_lag_summary_returns_empty_when_db_missing(tmp_path: Path) -> Non
     assert summary.family_summaries == []
 
 
-def test_cursor_lag_summary_reads_ops_tier_without_polylogue_db(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+def test_cursor_lag_summary_reads_ops_tier_from_archive_tiers(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
     ops_db = db.with_name("ops.db")
     now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
     initialize_archive_database(ops_db, ArchiveTier.OPS)
@@ -103,8 +103,8 @@ def test_cursor_lag_summary_reads_ops_tier_without_polylogue_db(tmp_path: Path) 
     assert [item.source_path for item in summary.stuck] == ["/x/behind.jsonl"]
 
 
-def test_cursor_lag_summary_decorates_ops_tier_baseline_without_polylogue_db(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+def test_cursor_lag_summary_decorates_ops_tier_baseline_from_archive_tiers(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
     ops_db = db.with_name("ops.db")
     now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
     initialize_archive_database(ops_db, ArchiveTier.OPS)
@@ -138,7 +138,7 @@ def test_cursor_lag_summary_decorates_ops_tier_baseline_without_polylogue_db(tmp
 
 
 def test_cursor_lag_summary_prefers_archive_ops_when_both_exist(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
     _seed_cursor(
         db,
@@ -168,7 +168,7 @@ def test_cursor_lag_summary_prefers_archive_ops_when_both_exist(tmp_path: Path) 
 
 
 def test_cursor_lag_summary_returns_empty_when_table_missing(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     conn = sqlite3.connect(str(db))
     try:
         conn.execute("CREATE TABLE other_table (id INTEGER)")
@@ -180,7 +180,7 @@ def test_cursor_lag_summary_returns_empty_when_table_missing(tmp_path: Path) -> 
 
 
 def test_cursor_lag_summary_classifies_caught_up_cursor_as_idle(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
     _seed_cursor(
         db,
@@ -197,7 +197,7 @@ def test_cursor_lag_summary_classifies_caught_up_cursor_as_idle(tmp_path: Path) 
 
 
 def test_cursor_lag_summary_classifies_behind_cursor_as_stuck(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
     _seed_cursor(
         db,
@@ -215,7 +215,7 @@ def test_cursor_lag_summary_classifies_behind_cursor_as_stuck(tmp_path: Path) ->
 
 
 def test_cursor_lag_summary_classifies_failing_cursor_as_stuck(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
     _seed_cursor(
         db,
@@ -232,7 +232,7 @@ def test_cursor_lag_summary_classifies_failing_cursor_as_stuck(tmp_path: Path) -
 def test_cursor_lag_summary_treats_excluded_cursor_as_idle(tmp_path: Path) -> None:
     # Quarantined cursors live under the raw-failures alert surface, not the
     # SLO alert surface. They must not raise cursor-lag alerts.
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
     _seed_cursor(
         db,
@@ -246,7 +246,7 @@ def test_cursor_lag_summary_treats_excluded_cursor_as_idle(tmp_path: Path) -> No
 
 
 def test_cursor_lag_summary_buckets_by_family_unknown_for_arbitrary_path(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
     _seed_cursor(
         db,
@@ -270,7 +270,7 @@ def test_cursor_lag_summary_buckets_by_family_unknown_for_arbitrary_path(tmp_pat
 
 
 def test_cursor_lag_summary_sorts_stuck_items_by_lag_desc(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
     _seed_cursor(
         db,

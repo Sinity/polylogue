@@ -579,7 +579,7 @@ class TestNativeReadSurfaceHonorsContract:
         with _patch("polylogue.mcp.server._get_config") as mock_get_config:
             mock_get_config.return_value = SimpleNamespace(
                 archive_root=archive_root,
-                db_path=archive_root / "polylogue.db",
+                db_path=archive_root / "index.db",
             )
             raw = invoke_surface(admin_server._tool_manager._tools[tool_name].fn, **call_kwargs)
 

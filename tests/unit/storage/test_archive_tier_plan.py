@@ -18,7 +18,7 @@ def _planted_db(path: Path, *, user_version: int) -> None:
 
 
 def test_archive_plan_creates_absent_tier_targets(tmp_path: Path) -> None:
-    (tmp_path / "polylogue.db").write_text("unrelated file", encoding="utf-8")
+    (tmp_path / "stray.sqlite").write_text("unrelated file", encoding="utf-8")
 
     plan = build_archive_init_plan(archive_root=tmp_path)
 
@@ -67,7 +67,7 @@ def test_archive_plan_classifies_replace_existing_by_durability(tmp_path: Path) 
     }
 
 
-def test_archive_plan_creates_targets_when_polylogue_db_is_absent(tmp_path: Path) -> None:
+def test_archive_plan_creates_targets_when_targets_are_absent(tmp_path: Path) -> None:
     plan = build_archive_init_plan(archive_root=tmp_path)
 
     assert plan.ready is True

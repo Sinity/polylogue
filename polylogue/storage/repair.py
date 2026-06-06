@@ -23,8 +23,6 @@ from polylogue.storage.action_events.artifacts import ActionEventArtifactState
 from polylogue.storage.blob_repair import count_orphaned_blobs_sync, repair_orphaned_blobs_data
 from polylogue.storage.insights.session.repair_assessment import (
     assess_session_insight_repairs,
-    session_insight_fts_ready,
-    session_insight_status_ready,
 )
 from polylogue.storage.message_type_backfill import (
     BackfillResult,
@@ -815,21 +813,18 @@ def repair_session_insights(
     set instead of touching the full archive — used by the maintenance
     planner to honor :class:`MaintenanceScopeFilter.session_ids`.
     """
-    from polylogue.storage.fts.fts_lifecycle import rebuild_session_insight_fts_sync
-    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
-    from polylogue.storage.insights.session.status import (
-        session_insight_status_sync,
-        session_profile_repair_candidate_ids_sync,
-    )
-    from polylogue.storage.sqlite.connection import connection_context
+    from polylogue.api.archive import _rebuild_archive_session_insights
+    from polylogue.paths import active_index_db_path
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     try:
-        with connection_context(None) as conn:
-            status = session_insight_status_sync(conn)
+        archive_root = active_index_db_path().parent
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            status = archive.session_insight_status()
             assessment = assess_session_insight_repairs(status)
 
             if dry_run:
-                pending = min(assessment.pending, len(session_ids)) if session_ids is not None else assessment.pending
+                pending = min(assessment.row_debt, len(session_ids)) if session_ids is not None else assessment.row_debt
                 return _repair_result(
                     "session_insights",
                     repaired_count=pending,
@@ -839,7 +834,7 @@ def repair_session_insights(
                     else f"Would: rebuild session insights ({pending:,} pending items)",
                 )
 
-            if session_ids is None and assessment.pending == 0 and session_insight_status_ready(status):
+            if session_ids is None and assessment.row_debt == 0:
                 return _repair_result(
                     "session_insights",
                     repaired_count=0,
@@ -847,44 +842,24 @@ def repair_session_insights(
                     detail="Session insights already ready",
                 )
 
-            if session_ids is None and assessment.row_debt == 0 and assessment.fts_debt > 0:
-                rebuild_session_insight_fts_sync(conn)
-                conn.commit()
-                rebuilt_count = assessment.fts_debt
-            else:
-                rebuild_session_ids = session_ids
-                if session_ids is None and assessment.row_debt > 0:
-                    candidates = tuple(session_profile_repair_candidate_ids_sync(conn))
-                    if candidates:
-                        rebuild_session_ids = candidates
-                rebuilt = rebuild_session_insights_sync(
-                    conn,
-                    session_ids=rebuild_session_ids,
-                    progress_callback=progress_callback,
-                    progress_total=progress_total,
-                )
-                conn.commit()
-                rebuilt_count = rebuilt.total()
-            refreshed = session_insight_status_sync(conn)
-            if session_ids is None and not session_insight_status_ready(refreshed):
-                rebuilt = rebuild_session_insights_sync(
-                    conn,
+            rebuilt = _rebuild_archive_session_insights(
+                archive,
+                session_ids=session_ids,
+                progress_callback=progress_callback,
+            )
+            rebuilt_count = rebuilt.total()
+            refreshed = archive.session_insight_status()
+            if session_ids is None and assess_session_insight_repairs(refreshed).row_debt > 0:
+                rebuilt = _rebuild_archive_session_insights(
+                    archive,
                     session_ids=None,
                     progress_callback=progress_callback,
-                    progress_total=progress_total,
                 )
-                conn.commit()
                 rebuilt_count += rebuilt.total()
-                refreshed = session_insight_status_sync(conn)
-            if session_ids is None and not session_insight_fts_ready(refreshed):
-                fts_debt = assess_session_insight_repairs(refreshed).fts_debt
-                rebuild_session_insight_fts_sync(conn)
-                conn.commit()
-                rebuilt_count += fts_debt
-                refreshed = session_insight_status_sync(conn)
+                refreshed = archive.session_insight_status()
             # A narrowed rebuild only attests its own slice; do not
             # demand global readiness for a scope-filtered call.
-            success = True if session_ids is not None else session_insight_status_ready(refreshed)
+            success = True if session_ids is not None else assess_session_insight_repairs(refreshed).row_debt == 0
             return _repair_result(
                 "session_insights",
                 repaired_count=rebuilt_count,

@@ -16,7 +16,6 @@ from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
 from polylogue.paths import (
-    archive_file_set_root_for_paths,
     archive_root,
     blob_store_root,
     cache_home,
@@ -29,7 +28,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_suppression
 
-_V1_DATABASES = (
+_ARCHIVE_DATABASES = (
     ("source database", "source.db"),
     ("index database", "index.db"),
     ("embeddings database", "embeddings.db"),
@@ -39,7 +38,7 @@ _V1_DATABASES = (
 
 
 def _archive_root() -> Path:
-    return archive_file_set_root_for_paths(archive_root_path=archive_root(), db_anchor=data_home() / "polylogue.db")
+    return archive_root()
 
 
 def _index_db_path() -> Path:
@@ -57,7 +56,7 @@ def _user_db_path() -> Path:
 def _archive_database_targets() -> list[tuple[str, Path]]:
     root = _archive_root()
     targets: list[tuple[str, Path]] = []
-    for name, filename in _V1_DATABASES:
+    for name, filename in _ARCHIVE_DATABASES:
         path = root / filename
         if path.exists():
             targets.append((name, path))

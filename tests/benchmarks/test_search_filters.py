@@ -49,7 +49,7 @@ def test_bench_fts_search_multi_word(benchmark: BenchmarkFixture, bench_db_5k: P
 
 # ``SessionFilter`` executes over ``index.db`` and is keyword-only
 # (``SessionFilter(archive_root=...)``). The benchmark fixtures seed a
-# monolithic SQLiteBackend database, so these benchmarks exercise the
+# SQLiteBackend database, so these benchmarks exercise the
 # equivalent repository query surface (``list_summaries`` / ``count_by_query``)
 # at scale.
 

@@ -232,7 +232,7 @@ def test_staleness_inventory_performs_no_writes(workspace_env: dict[str, Path]) 
     assert isinstance(inv, StalenessInventory)
     # The active archive is the archive store; the inventory reads
     # the session/message/block tree from ``index.db`` (not the legacy
-    # single-file ``polylogue.db``).
+    # single-file ``index.db``).
     assert inv.db_path.endswith("index.db")
 
 

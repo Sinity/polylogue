@@ -215,7 +215,7 @@ class TestResourceSurfaces:
         with patch("polylogue.mcp.server._get_config") as mock_get_config:
             mock_get_config.return_value = SimpleNamespace(
                 archive_root=archive_root,
-                db_path=archive_root / "polylogue.db",
+                db_path=archive_root / "index.db",
             )
             result = invoke_surface(mcp_server._resource_manager._resources["polylogue://stats"].fn)
 
@@ -250,9 +250,9 @@ class TestResourceSurfaces:
         ):
             mock_get_config.return_value = SimpleNamespace(
                 archive_root=archive_root,
-                db_path=archive_root / "polylogue.db",
+                db_path=archive_root / "index.db",
             )
-            mock_get_polylogue.side_effect = AssertionError("stats resource must not open monolithic ops")
+            mock_get_polylogue.side_effect = AssertionError("stats resource must not open archive operations")
             result = invoke_surface(mcp_server._resource_manager._resources["polylogue://stats"].fn)
 
         stats = json.loads(result)
@@ -273,7 +273,7 @@ class TestResourceSurfaces:
         with patch("polylogue.mcp.server._get_config") as mock_get_config:
             mock_get_config.return_value = SimpleNamespace(
                 archive_root=archive_root,
-                db_path=archive_root / "polylogue.db",
+                db_path=archive_root / "index.db",
             )
             result = await invoke_surface_async(mcp_server._resource_manager._resources["polylogue://sessions"].fn)
 
@@ -292,8 +292,8 @@ class TestResourceSurfaces:
             session_id = _write_archive_session(
                 archive,
                 native_id="resource-list-v1",
-                title="Native list resource",
-                text="listed from schema archive",
+                title="Archive list resource",
+                text="listed from archive index",
             )
 
         with (
@@ -302,9 +302,9 @@ class TestResourceSurfaces:
         ):
             mock_get_config.return_value = SimpleNamespace(
                 archive_root=archive_root,
-                db_path=archive_root / "polylogue.db",
+                db_path=archive_root / "index.db",
             )
-            mock_get_query_store.side_effect = AssertionError("sessions resource must not open monolithic storage")
+            mock_get_query_store.side_effect = AssertionError("sessions resource must not open archive query store")
             result = await invoke_surface_async(mcp_server._resource_manager._resources["polylogue://sessions"].fn)
 
         payload = json.loads(result)
@@ -339,7 +339,7 @@ class TestResourceSurfaces:
         with patch("polylogue.mcp.server._get_config") as mock_get_config:
             mock_get_config.return_value = SimpleNamespace(
                 archive_root=archive_root,
-                db_path=archive_root / "polylogue.db",
+                db_path=archive_root / "index.db",
             )
             result = invoke_surface(
                 mcp_server._resource_manager._templates["polylogue://session/{conv_id}"].fn,
@@ -360,7 +360,7 @@ class TestResourceSurfaces:
                 archive,
                 native_id="resource-single-v1",
                 title="Native single resource",
-                text="single from schema archive",
+                text="single from archive index",
             )
 
         with (
@@ -369,9 +369,9 @@ class TestResourceSurfaces:
         ):
             mock_get_config.return_value = SimpleNamespace(
                 archive_root=archive_root,
-                db_path=archive_root / "polylogue.db",
+                db_path=archive_root / "index.db",
             )
-            mock_get_polylogue.side_effect = AssertionError("session resource must not open monolithic ops")
+            mock_get_polylogue.side_effect = AssertionError("session resource must not open archive operations")
             result = invoke_surface(
                 mcp_server._resource_manager._templates["polylogue://session/{conv_id}"].fn,
                 conv_id=session_id[:12],
@@ -405,7 +405,7 @@ class TestResourceSurfaces:
                 archive,
                 native_id="resource-messages-v1",
                 title="Native messages resource",
-                text="message body from schema archive",
+                text="message body from archive index",
             )
 
         with (
@@ -414,9 +414,9 @@ class TestResourceSurfaces:
         ):
             mock_get_config.return_value = SimpleNamespace(
                 archive_root=archive_root,
-                db_path=archive_root / "polylogue.db",
+                db_path=archive_root / "index.db",
             )
-            mock_get_polylogue.side_effect = AssertionError("messages resource must not open monolithic ops")
+            mock_get_polylogue.side_effect = AssertionError("messages resource must not open archive operations")
             result = invoke_surface(
                 mcp_server._resource_manager._templates["polylogue://messages/{conv_id}"].fn,
                 conv_id=session_id,
@@ -425,7 +425,7 @@ class TestResourceSurfaces:
         payload = json.loads(result)
         assert payload["session_id"] == session_id
         assert payload["total"] == 1
-        assert payload["messages"][0]["text"] == "message body from schema archive"
+        assert payload["messages"][0]["text"] == "message body from archive index"
 
     @pytest.mark.asyncio
     async def test_origin_recent_resource_reads_archive_file_set(
@@ -452,9 +452,9 @@ class TestResourceSurfaces:
         ):
             mock_get_config.return_value = SimpleNamespace(
                 archive_root=archive_root,
-                db_path=archive_root / "polylogue.db",
+                db_path=archive_root / "index.db",
             )
-            mock_get_query_store.side_effect = AssertionError("origin resource must not open monolithic storage")
+            mock_get_query_store.side_effect = AssertionError("origin resource must not open archive query store")
             result = await invoke_surface_async(
                 mcp_server._resource_manager._templates["polylogue://origin/{name}/recent"].fn,
                 name="codex-session",
@@ -514,9 +514,9 @@ class TestArchiveGenericToolSurfaces:
         ):
             mock_get_config.return_value = SimpleNamespace(
                 archive_root=archive_root,
-                db_path=archive_root / "polylogue.db",
+                db_path=archive_root / "index.db",
             )
-            mock_get_polylogue.side_effect = AssertionError("list tool must not open monolithic ops")
+            mock_get_polylogue.side_effect = AssertionError("list tool must not open archive operations")
             result = await invoke_surface_async(mcp_server._tool_manager._tools["list_sessions"].fn)
 
         payload = json.loads(result)
@@ -533,7 +533,7 @@ class TestArchiveGenericToolSurfaces:
                 archive,
                 native_id="tool-search-v1",
                 title="Tool search v1",
-                text="needle appears in schema archive",
+                text="needle appears in archive index",
             )
 
         with (
@@ -542,9 +542,9 @@ class TestArchiveGenericToolSurfaces:
         ):
             mock_get_config.return_value = SimpleNamespace(
                 archive_root=archive_root,
-                db_path=archive_root / "polylogue.db",
+                db_path=archive_root / "index.db",
             )
-            mock_get_polylogue.side_effect = AssertionError("search tool must not open monolithic ops")
+            mock_get_polylogue.side_effect = AssertionError("search tool must not open archive operations")
             result = await invoke_surface_async(
                 mcp_server._tool_manager._tools["search"].fn,
                 query="needle",
@@ -571,9 +571,9 @@ class TestArchiveGenericToolSurfaces:
         ):
             mock_get_config.return_value = SimpleNamespace(
                 archive_root=archive_root,
-                db_path=archive_root / "polylogue.db",
+                db_path=archive_root / "index.db",
             )
-            mock_get_polylogue.side_effect = AssertionError("get tools must not open monolithic Polylogue")
+            mock_get_polylogue.side_effect = AssertionError("get tools must not open Polylogue facade")
             result = invoke_surface(mcp_server._tool_manager._tools["get_session"].fn, id=session_id[:12])
             summary_result = invoke_surface(
                 mcp_server._tool_manager._tools["get_session_summary"].fn,
@@ -594,7 +594,7 @@ class TestArchiveGenericToolSurfaces:
                 archive,
                 native_id="tool-messages-v1",
                 title="Tool messages v1",
-                text="tool message from schema archive",
+                text="tool message from archive index",
             )
 
         with (
@@ -603,9 +603,9 @@ class TestArchiveGenericToolSurfaces:
         ):
             mock_get_config.return_value = SimpleNamespace(
                 archive_root=archive_root,
-                db_path=archive_root / "polylogue.db",
+                db_path=archive_root / "index.db",
             )
-            mock_get_polylogue.side_effect = AssertionError("get_messages must not open monolithic Polylogue")
+            mock_get_polylogue.side_effect = AssertionError("get_messages must not open Polylogue facade")
             result = invoke_surface(
                 mcp_server._tool_manager._tools["get_messages"].fn,
                 session_id=session_id,
@@ -613,7 +613,7 @@ class TestArchiveGenericToolSurfaces:
 
         payload = json.loads(result)
         assert payload["session_id"] == session_id
-        assert payload["messages"][0]["text"] == "tool message from schema archive"
+        assert payload["messages"][0]["text"] == "tool message from archive index"
 
 
 class TestPromptSurfaces:
@@ -627,7 +627,7 @@ class TestPromptSurfaces:
                 archive,
                 native_id="prompt-errors-v1",
                 title="Prompt errors v1",
-                text="error from schema archive prompt path",
+                text="error from archive index prompt path",
             )
 
         with (
@@ -636,13 +636,13 @@ class TestPromptSurfaces:
         ):
             mock_get_config.return_value = SimpleNamespace(
                 archive_root=archive_root,
-                db_path=archive_root / "polylogue.db",
+                db_path=archive_root / "index.db",
             )
-            mock_get_query_store.side_effect = AssertionError("prompt must not open monolithic storage")
+            mock_get_query_store.side_effect = AssertionError("prompt must not open archive query store")
             result = await invoke_surface_async(mcp_server._prompt_manager._prompts["analyze_errors"].fn)
 
         assert "1 sessions" in result
-        assert "error from schema archive" in result
+        assert "error from archive index" in result
         assert '"origin": "codex-session"' in result
         assert '"provider"' not in result
 
@@ -671,9 +671,9 @@ class TestPromptSurfaces:
         ):
             mock_get_config.return_value = SimpleNamespace(
                 archive_root=archive_root,
-                db_path=archive_root / "polylogue.db",
+                db_path=archive_root / "index.db",
             )
-            mock_get_query_store.side_effect = AssertionError("compare prompt must not open monolithic storage")
+            mock_get_query_store.side_effect = AssertionError("compare prompt must not open archive query store")
             result = await invoke_surface_async(
                 mcp_server._prompt_manager._prompts["compare_sessions"].fn,
                 id1=first_id,
@@ -695,7 +695,7 @@ class TestPromptSurfaces:
                 archive,
                 native_id="prompt-code-v1",
                 title="Prompt code v1",
-                text="```python\nprint('schema archive')\n```",
+                text="```python\nprint('archive index')\n```",
             )
 
         with (
@@ -704,16 +704,16 @@ class TestPromptSurfaces:
         ):
             mock_get_config.return_value = SimpleNamespace(
                 archive_root=archive_root,
-                db_path=archive_root / "polylogue.db",
+                db_path=archive_root / "index.db",
             )
-            mock_get_query_store.side_effect = AssertionError("code prompt must not open monolithic storage")
+            mock_get_query_store.side_effect = AssertionError("code prompt must not open archive query store")
             result = await invoke_surface_async(
                 mcp_server._prompt_manager._prompts["extract_code"].fn,
                 language="python",
             )
 
         assert "Found 1 code blocks" in result
-        assert "schema archive" in result
+        assert "archive index" in result
 
     @pytest.mark.asyncio
     async def test_analyze_errors_with_sessions(
@@ -761,7 +761,7 @@ class TestPromptSurfaces:
         with patch("polylogue.mcp.server._get_config") as mock_get_config:
             mock_get_config.return_value = SimpleNamespace(
                 archive_root=archive_root,
-                db_path=archive_root / "polylogue.db",
+                db_path=archive_root / "index.db",
             )
             result = await invoke_surface_async(mcp_server._prompt_manager._prompts["analyze_errors"].fn)
 
@@ -903,7 +903,7 @@ class TestExportSessionTool:
         joins all block text verbatim. So ``no_code_blocks=True`` does NOT strip
         fenced code on the archive store. This test pins the *current* archive
         contract (text returned verbatim) so the divergence is visible and the
-        gap is tracked; the monolithic behaviour stripped code via
+        gap is tracked; the previous behavior stripped code via
         ``content_projection``.
         """
         body = "Alpha\n\n```python\nprint('x')\n```\n\nOmega"
@@ -928,7 +928,7 @@ class TestExportSessionTool:
         with patch("polylogue.mcp.server._get_config") as mock_get_config:
             mock_get_config.return_value = SimpleNamespace(
                 archive_root=archive_root,
-                db_path=archive_root / "polylogue.db",
+                db_path=archive_root / "index.db",
             )
             result = invoke_surface(
                 mcp_server._tool_manager._tools["get_messages"].fn,

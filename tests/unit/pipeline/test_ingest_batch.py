@@ -961,7 +961,7 @@ def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cac
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     archive_root = tmp_path / "archive"
     blob_root = tmp_path / "blob"
     source_path = tmp_path / "raw.jsonl"

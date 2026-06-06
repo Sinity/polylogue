@@ -1,6 +1,6 @@
 """Fixtures for storage tests.
 
-Extracted from the monolithic test_search_index.py to support module-level
+Extracted from the test_search_index.py to support module-level
 fixtures used across storage test files.
 """
 

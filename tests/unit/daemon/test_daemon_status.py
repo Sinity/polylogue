@@ -74,7 +74,7 @@ def test_status_snapshot_refresh_default_prefers_archive(
     archive_root = workspace_env["archive_root"]
     data_home.mkdir(parents=True, exist_ok=True)
     archive_root.mkdir(parents=True, exist_ok=True)
-    db_anchor = data_home / "polylogue.db"
+    db_anchor = data_home / "index.db"
     archive_db = archive_root / "index.db"
     db_anchor.touch()
     archive_db.touch()
@@ -308,7 +308,7 @@ def test_daemon_status_reports_live_ingest_attempts(tmp_path: Path) -> None:
     assert "Catch-up: catching_up 0/1 files, read amp 0.0x" in lines
 
 
-def test_daemon_status_reads_ops_tier_without_polylogue_db(tmp_path: Path) -> None:
+def test_daemon_status_reads_ops_tier_from_archive_tiers(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     ops_db = tmp_path / "ops.db"
     with sqlite3.connect(ops_db) as conn:
@@ -508,7 +508,7 @@ def test_archive_storage_info_uses_configured_archive_root(tmp_path: Path) -> No
     default_root.mkdir()
     active_root.mkdir()
     initialize_archive_database(default_root / "ops.db", ArchiveTier.OPS)
-    db_anchor = active_root / "polylogue.db"
+    db_anchor = active_root / "custom.sqlite"
     db_anchor.touch()
 
     with (
@@ -570,8 +570,8 @@ def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> N
     assert freshness_info.call_count >= 1
 
 
-def test_insight_freshness_reads_archive_file_set_without_polylogue_db(tmp_path: Path) -> None:
-    db_anchor = tmp_path / "index.db"
+def test_insight_freshness_reads_archive_file_set_from_archive_tiers(tmp_path: Path) -> None:
+    db_anchor = tmp_path / "custom.sqlite"
     archive_db = tmp_path / "index.db"
     initialize_archive_database(archive_db, ArchiveTier.INDEX)
     with sqlite3.connect(archive_db) as conn:
@@ -593,7 +593,10 @@ def test_insight_freshness_reads_archive_file_set_without_polylogue_db(tmp_path:
         )
         conn.commit()
 
-    with patch("polylogue.daemon.status.db_path", return_value=db_anchor):
+    with (
+        patch("polylogue.daemon.status.db_path", return_value=db_anchor),
+        patch("polylogue.daemon.status.index_db_path", return_value=archive_db),
+    ):
         assert _insight_freshness_info() == {
             "sessions_with_profiles": 1,
             "total_sessions": 2,
@@ -618,7 +621,7 @@ def test_daemon_status_fts_readiness_uses_lightweight_table_probe(tmp_path: Path
     assert readiness["invariant_ready"] is False
 
 
-def test_daemon_status_fts_readiness_reads_archive_file_set_without_polylogue_db(tmp_path: Path) -> None:
+def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(tmp_path: Path) -> None:
     db_anchor = tmp_path / "index.db"
     archive_db = tmp_path / "index.db"
     initialize_archive_database(archive_db, ArchiveTier.INDEX)
@@ -664,7 +667,7 @@ def test_daemon_status_fts_readiness_reads_archive_file_set_without_polylogue_db
 
 
 def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path) -> None:
-    db_anchor = tmp_path / "polylogue.db"
+    db_anchor = tmp_path / "custom.sqlite"
     archive_db = tmp_path / "index.db"
     with sqlite3.connect(db_anchor) as conn:
         conn.executescript(

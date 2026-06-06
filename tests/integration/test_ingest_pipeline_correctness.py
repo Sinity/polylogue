@@ -276,7 +276,7 @@ def test_idempotent_reingest(
 ) -> None:
     """Re-ingest the same corpus twice; all counts and hashes must be stable."""
     archive_root = workspace_env["archive_root"]
-    db_path = archive_root / "polylogue.db"
+    db_path = archive_root / "index.db"
 
     with open_connection(db_path):
         pass
@@ -306,7 +306,7 @@ def test_content_blocks_present_for_all_providers(
 ) -> None:
     """Every provider must produce at least some content_blocks rows."""
     archive_root = workspace_env["archive_root"]
-    db_path = archive_root / "polylogue.db"
+    db_path = archive_root / "index.db"
 
     with open_connection(db_path):
         pass

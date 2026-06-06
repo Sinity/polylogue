@@ -81,7 +81,7 @@ class TestDiagnoseSchemaMismatch:
 
         data_home, config_home = _set_xdg(monkeypatch, tmp_path)
         data_home.mkdir(parents=True, exist_ok=True)
-        retired = sqlite3.connect(data_home / "polylogue.db")
+        retired = sqlite3.connect(data_home / "index.db")
         retired.execute("PRAGMA user_version = 99")
         retired.commit()
         retired.close()
@@ -173,7 +173,7 @@ class TestDiagnoseNoDaemon:
         assert diag.kind == "no_daemon"
         assert "polylogued run" in diag.next_action
 
-    def test_no_daemon_when_index_exists_without_polylogue_db(
+    def test_no_daemon_when_index_exists_from_archive_tiers(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION

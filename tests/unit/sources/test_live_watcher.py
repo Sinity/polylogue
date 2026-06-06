@@ -569,22 +569,6 @@ def test_watcher_default_cursor_uses_archive_database(tmp_path: Path) -> None:
     assert watcher._cursor._db_path == db_path
 
 
-def test_watcher_default_cursor_upgrades_legacy_backend_path(tmp_path: Path) -> None:
-    root = tmp_path / "src"
-    root.mkdir()
-    polylogue = cast(
-        Any,
-        SimpleNamespace(
-            archive_root=tmp_path,
-            backend=SimpleNamespace(db_path=tmp_path / "polylogue.db"),
-        ),
-    )
-
-    watcher = LiveWatcher(polylogue, (WatchSource(name="test", root=root),))
-
-    assert watcher._cursor._db_path == tmp_path / "ops.db"
-
-
 def test_catch_up_uses_bulk_cursor_records(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "src"
     root.mkdir()

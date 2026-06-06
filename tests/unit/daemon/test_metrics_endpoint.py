@@ -180,11 +180,12 @@ class TestFormatMetricsExpositionShape:
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
         initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
-        with sqlite3.connect(tmp_path / "polylogue.db") as conn:
+        unrelated_db = tmp_path / "custom.sqlite"
+        with sqlite3.connect(unrelated_db) as conn:
             conn.execute("CREATE TABLE unsupported_marker (id INTEGER)")
             conn.commit()
 
-        body = format_metrics(tmp_path / "index.db")
+        body = format_metrics(unrelated_db)
 
         assert 'polylogue_archive_tier_present{tier="ops"} 1' in body
         assert 'polylogue_archive_tier_count{state="present"} 1' in body
@@ -195,7 +196,7 @@ class TestFormatMetricsExpositionShape:
         assert 'polylogue_archive_storage_ready{state="final_shape"} 0' in body
         assert 'polylogue_archive_active_store{store="archive_file_set"} 0' in body
         assert 'polylogue_archive_active_store{store="empty"} 1' in body
-        assert 'polylogue_archive_active_tier_role{role="index"} 1' in body
+        assert 'polylogue_archive_active_tier_role{role="unknown"} 1' in body
         assert "polylogue_archive_ready 0" in body
         assert "polylogue_archive_blocker_count 4" in body
         assert 'polylogue_archive_blocker{blocker="missing_archive_tiers"} 1' in body
@@ -463,12 +464,12 @@ class TestFormatMetricsReadsArchiveState:
         assert 'polylogue_live_ingest_memory_mebibytes{kind="rss_current"} 88.0' in body
         assert 'polylogue_live_ingest_memory_mebibytes{kind="cgroup_file"} 33.0' in body
 
-    def test_throughput_metrics_read_ops_tier_without_polylogue_db(self, tmp_path: Path) -> None:
+    def test_throughput_metrics_read_ops_tier_from_archive_tiers(self, tmp_path: Path) -> None:
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
         from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
-        db = tmp_path / "polylogue.db"
+        db = tmp_path / "index.db"
         ops_db = db.with_name("ops.db")
         initialize_archive_database(ops_db, ArchiveTier.OPS)
         with sqlite3.connect(ops_db) as conn:
@@ -487,12 +488,12 @@ class TestFormatMetricsReadsArchiveState:
         assert "polylogue_ingest_throughput_sessions_per_second 4.0" in body
         assert "polylogue_ingest_throughput_messages_per_second 2.0" in body
 
-    def test_live_ingest_metrics_read_ops_tier_without_polylogue_db(self, tmp_path: Path) -> None:
+    def test_live_ingest_metrics_read_ops_tier_from_archive_tiers(self, tmp_path: Path) -> None:
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
         from polylogue.storage.sqlite.archive_tiers.ops_write import add_convergence_debt, record_ingest_attempt
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
-        db = tmp_path / "polylogue.db"
+        db = tmp_path / "index.db"
         ops_db = db.with_name("ops.db")
         initialize_archive_database(ops_db, ArchiveTier.OPS)
         with sqlite3.connect(ops_db) as conn:
@@ -565,7 +566,7 @@ class TestFormatMetricsReadsArchiveState:
         assert 'polylogue_embedding_latest_catchup_messages{state="embedded"} 2' in body
         assert "polylogue_embedding_latest_catchup_estimated_cost_usd 0.003" in body
 
-    def test_embedding_backlog_reads_archive_sessions_without_monolithic_tables(self, tmp_path: Path) -> None:
+    def test_embedding_backlog_reads_archive_sessions_from_archive_tiers(self, tmp_path: Path) -> None:
         db = tmp_path / "archive.db"
         ops_db = tmp_path / "ops.db"
         with sqlite3.connect(db) as conn:

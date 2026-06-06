@@ -289,7 +289,7 @@ class TestSimilarPayloadStates:
         assert result is not None
         assert result["limit"] == SIMILAR_RESULTS_MAX
 
-    def test_archive_file_set_disabled_envelope_without_polylogue_db(
+    def test_archive_file_set_disabled_envelope_from_archive_tiers(
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _disable_embeddings(monkeypatch)

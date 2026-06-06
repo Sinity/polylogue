@@ -24,7 +24,7 @@ def test_populate_proof_sets_report_without_workspace_override(tmp_path: Path) -
     proof_report = SimpleNamespace(is_clean=True)
 
     with (
-        patch("polylogue.paths.db_path", return_value=tmp_path / "polylogue.db") as mock_db_path,
+        patch("polylogue.paths.db_path", return_value=tmp_path / "index.db") as mock_db_path,
         patch(
             "polylogue.schemas.validation.artifacts.prove_raw_artifact_coverage", return_value=proof_report
         ) as mock_prove,
@@ -33,7 +33,7 @@ def test_populate_proof_sets_report_without_workspace_override(tmp_path: Path) -
 
     mock_db_path.assert_called_once_with()
     mock_prove.assert_called_once()
-    assert mock_prove.call_args.kwargs["db_path"] == tmp_path / "polylogue.db"
+    assert mock_prove.call_args.kwargs["db_path"] == tmp_path / "index.db"
     assert result.proof_report is proof_report
     assert result.proof_error is None
 
@@ -43,7 +43,7 @@ def test_populate_proof_uses_workspace_override_context(tmp_path: Path) -> None:
     proof_report = SimpleNamespace(is_clean=True)
 
     with (
-        patch("polylogue.paths.db_path", return_value=tmp_path / "polylogue.db"),
+        patch("polylogue.paths.db_path", return_value=tmp_path / "index.db"),
         patch(
             "polylogue.showcase.qa_runner_stages.override_workspace_env", return_value=nullcontext()
         ) as mock_override,

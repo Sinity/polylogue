@@ -360,7 +360,7 @@ class TestParsingServiceIntegration:
         (inbox / "sessions.json").write_text(
             json.dumps([self._session_json("test-conv-1", "Test Session", "Hello, world!")])
         )
-        # This ParsingService/SQLiteBackend path persists into monolithic
+        # This ParsingService/SQLiteBackend path persists into read model
         # sessions/messages tables. cli_workspace["db_path"] is the archive
         # index.db, so this test writes to its own fresh backend database
         # alongside it.

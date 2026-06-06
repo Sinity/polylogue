@@ -22,13 +22,13 @@ def _archive_env(archive_root: Path) -> AppEnv:
     services: Any = MagicMock()
     services.get_config.return_value = SimpleNamespace(
         archive_root=archive_root,
-        db_path=archive_root / "polylogue.db",
+        db_path=archive_root / "index.db",
     )
     services.get_repository.side_effect = AssertionError("context pack must not open the unsupported repository path")
     return AppEnv(services=services)
 
 
-def test_context_pack_reads_archive_without_polylogue_db(tmp_path: Path) -> None:
+def test_context_pack_reads_archive_from_archive_tiers(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     with ArchiveStore(archive_root) as archive:
         archive.write_parsed(

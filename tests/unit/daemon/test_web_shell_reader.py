@@ -69,7 +69,7 @@ def _running_server(
 
 
 def _index_db_path(workspace: dict[str, Path]) -> Path:
-    return workspace["data_root"] / "polylogue" / "polylogue.db"
+    return workspace["data_root"] / "polylogue" / "index.db"
 
 
 def _seed_test_db(workspace: dict[str, Path]) -> None:

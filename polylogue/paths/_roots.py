@@ -54,8 +54,8 @@ def state_home() -> Path:
 
 
 def db_path() -> Path:
-    """Default configured database anchor."""
-    return data_home() / "polylogue.db"
+    """Default archive index database path."""
+    return index_db_path()
 
 
 def source_db_path() -> Path:
@@ -96,7 +96,7 @@ def archive_file_set_root_for_paths(*, archive_root_path: Path, db_anchor: Path)
 
 def active_index_db_path() -> Path:
     """Currently active query/index database path."""
-    return resolve_active_index_db_path(db_anchor=db_path(), index_db=index_db_path())
+    return index_db_path()
 
 
 def browser_capture_spool_root() -> Path:

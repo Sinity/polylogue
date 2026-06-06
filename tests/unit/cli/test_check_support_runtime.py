@@ -29,7 +29,7 @@ def _config() -> Config:
     return Config(
         archive_root=Path("/tmp/archive"),
         render_root=Path("/tmp/render"),
-        db_path=Path("/tmp/archive/polylogue.sqlite"),
+        db_path=Path("/tmp/archive/index.db"),
         sources=[],
     )
 

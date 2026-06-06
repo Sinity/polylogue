@@ -184,12 +184,9 @@ async def test_user_state_mutations_write_archive_user_tier(
     assert correction_row[0:3] == ("session", ARCHIVE_USER_STATE_SESSION_ID, "tag_accept")
     assert json.loads(correction_row[3])["payload"] == {"tag": "archive"}
 
-    db_anchor = archive_root / "polylogue.db"
-    assert not db_anchor.exists()
-
 
 @pytest.mark.asyncio
-async def test_user_state_target_resolution_reads_archive_file_set_without_polylogue_db(tmp_path: Path) -> None:
+async def test_user_state_target_resolution_reads_archive_file_set_from_archive_tiers(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     with ArchiveStore(archive_root) as archive:
         session_id = archive.write_parsed(
@@ -216,11 +213,9 @@ async def test_user_state_target_resolution_reads_archive_file_set_without_polyl
         conn.commit()
     message_id = envelope.messages[0].message_id
 
-    async with Polylogue(db_path=archive_root / "polylogue.db", archive_root=archive_root) as poly:
+    async with Polylogue(db_path=archive_root / "index.db", archive_root=archive_root) as poly:
         assert await poly.add_mark(session_id, "star", target_type="session")
         assert await poly.add_mark(session_id, "pin", target_type="message", message_id=message_id)
-
-    assert not (archive_root / "polylogue.db").exists()
     with sqlite3.connect(archive_root / "user.db") as conn:
         rows = conn.execute(
             """

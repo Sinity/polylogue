@@ -45,7 +45,7 @@ def test_create_verification_workspace_exposes_full_xdg_layout(tmp_path: Path) -
 
     assert workspace.config_home == tmp_path / "workspace" / "config"
     assert workspace.cache_home == tmp_path / "workspace" / "cache"
-    assert workspace.db_path == tmp_path / "workspace" / "data" / "polylogue" / "polylogue.db"
+    assert workspace.db_path == tmp_path / "workspace" / "archive" / "index.db"
     assert workspace.env_vars["XDG_CONFIG_HOME"] == str(workspace.config_home)
     assert workspace.env_vars["XDG_CACHE_HOME"] == str(workspace.cache_home)
 

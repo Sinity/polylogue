@@ -133,9 +133,9 @@ class TestNoArchiveStatus:
         assert "Sessions: 0" in combined
         assert "polylogued run" in combined
 
-    def test_direct_status_reads_archive_file_set_without_polylogue_db(self, tmp_path: Path) -> None:
+    def test_direct_status_reads_archive_file_set_from_archive_tiers(self, tmp_path: Path) -> None:
         env = _make_app_env()
-        db_anchor = tmp_path / "polylogue.db"
+        db_anchor = tmp_path / "custom.sqlite"
         index_db = tmp_path / "index.db"
         source_db = tmp_path / "source.db"
         with sqlite3.connect(index_db) as conn:
@@ -178,9 +178,9 @@ class TestNoArchiveStatus:
         assert "Messages: 2" in combined
         assert "Raw records: 1" in combined
 
-    def test_direct_status_json_reads_archive_file_set_without_polylogue_db(self, tmp_path: Path) -> None:
+    def test_direct_status_json_reads_archive_file_set_from_archive_tiers(self, tmp_path: Path) -> None:
         env = _make_app_env()
-        db_anchor = tmp_path / "polylogue.db"
+        db_anchor = tmp_path / "custom.sqlite"
         index_db = tmp_path / "index.db"
         source_db = tmp_path / "source.db"
         with sqlite3.connect(index_db) as conn:
@@ -262,7 +262,7 @@ class TestNoArchiveStatus:
         active_root = tmp_path / "active"
         configured_root.mkdir()
         active_root.mkdir()
-        db_anchor = active_root / "polylogue.db"
+        db_anchor = active_root / "index.db"
         initialize_archive_database(active_root / "source.db", ArchiveTier.SOURCE)
         initialize_archive_database(active_root / "index.db", ArchiveTier.INDEX)
         (configured_root / "user.db").write_text("configured decoy", encoding="utf-8")
@@ -305,7 +305,7 @@ class TestNoArchiveStatus:
 
     def test_direct_status_reports_archive_surface_blockers(self, tmp_path: Path) -> None:
         env = _make_app_env()
-        db_anchor = tmp_path / "polylogue.db"
+        db_anchor = tmp_path / "custom.sqlite"
         initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
         initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
         with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -365,7 +365,7 @@ class TestNoArchiveStatus:
 
     def test_direct_status_json_reports_archive_surface_blockers(self, tmp_path: Path) -> None:
         env = _make_app_env()
-        db_anchor = tmp_path / "polylogue.db"
+        db_anchor = tmp_path / "index.db"
         initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
         initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
         with sqlite3.connect(tmp_path / "index.db") as conn:
@@ -407,7 +407,7 @@ class TestNoArchiveStatus:
 
     def test_direct_status_uses_active_archive_root(self, tmp_path: Path) -> None:
         env = _make_app_env()
-        db_anchor = tmp_path / "polylogue.db"
+        db_anchor = tmp_path / "custom.sqlite"
         index_db = tmp_path / "index.db"
         with sqlite3.connect(db_anchor) as conn:
             conn.executescript(
@@ -686,7 +686,7 @@ class TestStatusDiagnosticIntegration:
 
         data_home = tmp_path / "data" / "polylogue"
         data_home.mkdir(parents=True, exist_ok=True)
-        db = data_home / "polylogue.db"
+        db = data_home / "index.db"
         conn = sqlite3.connect(db)
         conn.execute("PRAGMA user_version = 99")
         conn.commit()
@@ -707,7 +707,7 @@ class TestStatusDiagnosticIntegration:
 
         data_home = tmp_path / "data" / "polylogue"
         data_home.mkdir(parents=True, exist_ok=True)
-        sqlite3.connect(data_home / "polylogue.db").close()
+        sqlite3.connect(data_home / "index.db").close()
         archive = tmp_path / "polylogue"
         archive.mkdir(parents=True, exist_ok=True)
         (archive / "daemon.pid").write_text("99999999\n")
@@ -727,7 +727,7 @@ class TestStatusDiagnosticIntegration:
 
         data_home = tmp_path / "data" / "polylogue"
         data_home.mkdir(parents=True, exist_ok=True)
-        sqlite3.connect(data_home / "polylogue.db").close()
+        sqlite3.connect(data_home / "index.db").close()
         config_home = tmp_path / "config" / "polylogue"
         config_home.mkdir(parents=True, exist_ok=True)
         (config_home / "polylogue.toml").write_text("[sources]\nroots = []\n")

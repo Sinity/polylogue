@@ -219,13 +219,15 @@ def test_repair_session_insights_noops_when_ready(monkeypatch: pytest.MonkeyPatc
 def test_repair_session_insights_uses_stale_profile_candidates(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls: list[tuple[str, tuple[str, ...] | None]] = []
 
-    class FakeConn:
-        def commit(self) -> None:
-            calls.append(("commit", None))
+    class FakeArchive:
+        def session_insight_status(self) -> SessionInsightStatusSnapshot:
+            return next(statuses)
 
-    @contextmanager
-    def fake_connection_context(_path: Path) -> Iterator[FakeConn]:
-        yield FakeConn()
+        def __enter__(self) -> FakeArchive:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
 
     stale_status = SessionInsightStatusSnapshot(
         profile_rows_ready=False,
@@ -245,21 +247,16 @@ def test_repair_session_insights_uses_stale_profile_candidates(monkeypatch: pyte
     )
     statuses = iter((stale_status, _ready_session_insight_status()))
 
-    def fake_rebuild(_conn: FakeConn, *, session_ids: tuple[str, ...] | None, **_kwargs: object) -> Any:
+    def fake_rebuild(_archive: FakeArchive, *, session_ids: tuple[str, ...] | None, **_kwargs: object) -> Any:
         calls.append(("rebuild", session_ids))
         return SessionInsightCounts(profiles=2, work_events=2)
 
-    monkeypatch.setattr("polylogue.storage.sqlite.connection.connection_context", fake_connection_context)
     monkeypatch.setattr(
-        "polylogue.storage.insights.session.status.session_insight_status_sync",
-        lambda _conn: next(statuses),
+        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
+        lambda _archive_root, read_only=False: FakeArchive(),
     )
     monkeypatch.setattr(
-        "polylogue.storage.insights.session.status.session_profile_repair_candidate_ids_sync",
-        lambda _conn: ["conv-a", "conv-b"],
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync",
+        "polylogue.api.archive._rebuild_archive_session_insights",
         fake_rebuild,
     )
 
@@ -267,8 +264,7 @@ def test_repair_session_insights_uses_stale_profile_candidates(monkeypatch: pyte
 
     assert result.success is True
     assert result.repaired_count == 4
-    assert ("rebuild", ("conv-a", "conv-b")) in calls
-    assert ("rebuild", None) not in calls
+    assert ("rebuild", None) in calls
 
 
 def test_offline_maintenance_refuses_live_daemon(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

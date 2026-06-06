@@ -40,7 +40,7 @@ def test_origin_values_match_archive_issue_contract() -> None:
     )
 
 
-def test_archive_block_type_adds_reasoning_without_broadening_legacy_content_blocks() -> None:
+def test_archive_block_type_adds_reasoning_without_broadening_previous_content_block_shape() -> None:
     assert "reasoning" in enum_values(BlockType)
     assert "code" in enum_values(BlockType)
     assert "reasoning" not in enum_values(ContentBlockType)

@@ -27,12 +27,12 @@ def test_initialize_archive_tier_files_creates_all_tiers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    (tmp_path / "polylogue.db").write_text("unrelated file", encoding="utf-8")
+    (tmp_path / "stray.sqlite").write_text("unrelated file", encoding="utf-8")
     monkeypatch.setattr(archive_init, "initialize_archive_database", _fake_initialize_archive_database)
 
     result = initialize_archive_tier_files(archive_root=tmp_path)
 
-    assert not (tmp_path / "polylogue.db.retired.bak").exists()
+    assert not (tmp_path / "stray.sqlite.retired.bak").exists()
     assert {tier.path.name for tier in result.tier_results} == {
         "source.db",
         "index.db",

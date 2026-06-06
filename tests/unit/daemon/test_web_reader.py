@@ -199,7 +199,7 @@ def _seed_archive_test_archive(workspace: dict[str, Path]) -> str:
 
 
 def _index_db_path(workspace: dict[str, Path]) -> Path:
-    return workspace["data_root"] / "polylogue" / "polylogue.db"
+    return workspace["data_root"] / "polylogue" / "index.db"
 
 
 def _get_json(base_url: str, path: str, *, headers: dict[str, str] | None = None) -> object:
@@ -338,7 +338,7 @@ class TestReaderSearchState:
         assert hit["match"]["anchor"] == "message-claude-code-session-c1-m-c1"
         assert hit["match"]["actions"]["copy_text"]["enabled"] is True
 
-    def test_archive_file_set_lists_without_polylogue_db(
+    def test_archive_file_set_lists_from_archive_tiers(
         self,
         workspace_env: dict[str, Path],
         monkeypatch: pytest.MonkeyPatch,
@@ -355,7 +355,7 @@ class TestReaderSearchState:
         assert "provider" not in row
         assert row["target_ref"]["identity_key"] == f"session:{session_id}"
 
-    def test_archive_file_set_searches_without_polylogue_db(
+    def test_archive_file_set_searches_from_archive_tiers(
         self,
         workspace_env: dict[str, Path],
         monkeypatch: pytest.MonkeyPatch,
@@ -370,7 +370,7 @@ class TestReaderSearchState:
         assert hit["session"]["id"] == session_id
         assert hit["match"]["target_ref"]["identity_key"].startswith(f"message:{session_id}:")
 
-    def test_archive_file_set_facets_without_polylogue_db(
+    def test_archive_file_set_facets_from_archive_tiers(
         self,
         workspace_env: dict[str, Path],
         monkeypatch: pytest.MonkeyPatch,
@@ -433,7 +433,7 @@ class TestReaderSessionState:
         assert message["actions"]["annotate"]["enabled"] is True
         assert message["actions"]["annotate"]["state"] == "enabled"
 
-    def test_archive_file_set_session_detail_and_messages_without_polylogue_db(
+    def test_archive_file_set_session_detail_and_messages_from_archive_tiers(
         self,
         workspace_env: dict[str, Path],
         monkeypatch: pytest.MonkeyPatch,
@@ -571,7 +571,7 @@ class TestReaderWorkspaceRoutes:
         assert compare_status == 200
         assert "renderCompareWorkspace" in compare_body
 
-    def test_archive_file_set_stack_route_without_polylogue_db(
+    def test_archive_file_set_stack_route_from_archive_tiers(
         self,
         workspace_env: dict[str, Path],
         monkeypatch: pytest.MonkeyPatch,
@@ -588,7 +588,7 @@ class TestReaderWorkspaceRoutes:
         assert items[0]["status"] == "resolved"
         assert items[1]["status"] == "missing"
 
-    def test_archive_file_set_compare_route_without_polylogue_db(
+    def test_archive_file_set_compare_route_from_archive_tiers(
         self,
         workspace_env: dict[str, Path],
         monkeypatch: pytest.MonkeyPatch,

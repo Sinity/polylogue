@@ -87,7 +87,7 @@ def _request(tmp_path: Path) -> RootModeRequest:
                 archive_root=tmp_path,
                 render_root=tmp_path / "render",
                 sources=[],
-                db_path=tmp_path / "polylogue.db",
+                db_path=tmp_path / "index.db",
             )
         }
     )

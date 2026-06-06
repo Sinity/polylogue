@@ -174,11 +174,11 @@ def _seed_minimal_archive(db_path: Path, source_path: Path, *, session_id: str =
 
 def test_fts_stage_repairs_archive_when_db_anchor_exists(tmp_path: Path) -> None:
     archive_db = tmp_path / "index.db"
-    (tmp_path / "polylogue.db").touch()
+    (tmp_path / "index.db").touch()
     source_path = tmp_path / "codex.jsonl"
     _seed_minimal_archive(archive_db, source_path)
 
-    stage = make_fts_stage(tmp_path / "polylogue.db")
+    stage = make_fts_stage(tmp_path / "index.db")
 
     assert stage.check(source_path) is True
     assert stage.execute(source_path) is True
@@ -186,13 +186,13 @@ def test_fts_stage_repairs_archive_when_db_anchor_exists(tmp_path: Path) -> None
         assert conn.execute("SELECT COUNT(*) FROM blocks_fts_docsize").fetchone()[0] == 1
 
 
-def test_insights_stage_materializes_archive_profiles_without_polylogue_db(tmp_path: Path) -> None:
+def test_insights_stage_materializes_archive_profiles_from_archive_tiers(tmp_path: Path) -> None:
     archive_db = tmp_path / "index.db"
     source_path = tmp_path / "codex.jsonl"
     session_id = "codex-session:s1"
     _seed_minimal_archive(archive_db, source_path, session_id=session_id)
 
-    stage = make_insights_stage(tmp_path / "polylogue.db")
+    stage = make_insights_stage(tmp_path / "index.db")
 
     assert stage.check_sessions is not None
     assert stage.execute_sessions is not None

@@ -115,7 +115,7 @@ def test_paths_json_paths_are_absolute(cli_workspace: dict[str, Path], cli_runne
 def test_paths_json_reports_database_existence(cli_workspace: dict[str, Path], cli_runner: CliRunner) -> None:
     """The paths JSON output reports a missing archive."""
     _clear_archive_tiers(cli_workspace["archive_root"])
-    (cli_workspace["archive_root"] / "polylogue.db").write_text("unrelated file", encoding="utf-8")
+    (cli_workspace["archive_root"] / "stray.sqlite").write_text("unrelated file", encoding="utf-8")
 
     result = cli_runner.invoke(
         paths_command,
@@ -156,7 +156,7 @@ def test_paths_json_reports_archive_final_shape(
     archive = cli_workspace["archive_root"]
     for name in _ARCHIVE_TIERS:
         (archive / name).write_text("fake database")
-    (archive / "polylogue.db").write_text("unrelated file", encoding="utf-8")
+    (archive / "stray.sqlite").write_text("unrelated file", encoding="utf-8")
 
     result = cli_runner.invoke(
         paths_command,
@@ -243,7 +243,7 @@ def test_paths_text_reports_archive_layout_blockers(
 ) -> None:
     """The text output exposes why the archive layout is not ready."""
     _clear_archive_tiers(cli_workspace["archive_root"])
-    (cli_workspace["archive_root"] / "polylogue.db").write_text("unrelated file", encoding="utf-8")
+    (cli_workspace["archive_root"] / "stray.sqlite").write_text("unrelated file", encoding="utf-8")
 
     result = cli_runner.invoke(paths_command, [], catch_exceptions=False)
 
@@ -251,4 +251,4 @@ def test_paths_text_reports_archive_layout_blockers(
     assert "Archive layout" in result.output
     assert "not ready" in result.output
     assert "missing_archive_tiers" in result.output
-    assert "polylogue.db" not in result.output
+    assert "stray.sqlite" not in result.output

@@ -243,7 +243,7 @@ class TestProvenancePayload:
         assert result["raw_preview_cap_bytes"] == RAW_PREVIEW_MAX_BYTES
         assert result["quarantined"] is False
 
-    def test_reads_archive_file_set_without_polylogue_db(self, workspace_env: dict[str, Path]) -> None:
+    def test_reads_archive_file_set_from_archive_tiers(self, workspace_env: dict[str, Path]) -> None:
         payload_bytes = b'{"archive": "current"}'
         raw_blob_id = _seed_raw_blob(payload_bytes)
         _seed_archive_provenance(

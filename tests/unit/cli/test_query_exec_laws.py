@@ -2326,7 +2326,7 @@ def test_async_execute_query_archive_transforms_first_list_match(
     assert [message["message_id"] for message in payload["messages"]] == ["codex-session:native-1:m1"]
 
 
-def test_async_execute_query_archive_rejects_unsupported_legacy_filters(
+def test_async_execute_query_archive_rejects_unsupported_historical_filters(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2449,8 +2449,8 @@ class TestSearchEdgeCases:
     ) -> None:
         """No args routes through the archive executor (no query term required).
 
-        After the archive-route cleanup (#1743) the legacy bare-invocation
-        stats branch is gone: a bare ``polylogue`` runs the query. On an
+        After the archive-route cleanup (#1743), a bare ``polylogue`` runs
+        the query. On an
         empty archive that matches nothing, so the documented no-results
         contract (exit code 2) applies rather than a crash or usage error.
         """

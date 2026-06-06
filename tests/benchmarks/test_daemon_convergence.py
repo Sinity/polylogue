@@ -121,7 +121,7 @@ def _run_convergence_probe(
     from polylogue.sources.live.watcher import WatchSource
 
     # Use a fresh DB for clean measurement.
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     os.environ["POLYLOGUE_ARCHIVE_ROOT"] = str(tmp_path)
     os.environ["POLYLOGUE_CONFIG"] = str(tmp_path / "polylogue.toml")
 
@@ -258,7 +258,7 @@ def _run_convergence_memory_probe(
     from polylogue.sources.live.cursor import CursorStore
     from polylogue.sources.live.watcher import WatchSource
 
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     os.environ["POLYLOGUE_ARCHIVE_ROOT"] = str(tmp_path)
 
     files = list(corpus_root.rglob("*.jsonl"))

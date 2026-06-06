@@ -126,7 +126,7 @@ def test_raw_failure_info_surfaces_maintenance_with_no_db(tmp_path: Path) -> Non
 
 
 def test_raw_failure_info_merges_ingest_and_maintenance(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     index_db = _seed_raw_table(db, parse_error="JSONDecodeError at /tmp/foo")
 
     archive_root = tmp_path / "archive"
@@ -160,7 +160,7 @@ def test_check_raw_failures_medium_escalates_on_maintenance(tmp_path: Path) -> N
     for i in range(5):
         _route(archive_root, op_id=f"op-batch-{i}")
 
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     _seed_raw_table(db)
 
     with (
@@ -181,7 +181,7 @@ def test_check_raw_failures_medium_critical_on_large_maintenance_backlog(tmp_pat
     for _ in range(60):
         _route(archive_root, op_id="op-backlog")
 
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     _seed_raw_table(db)
 
     with (

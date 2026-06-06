@@ -327,7 +327,7 @@ def _archive_config(archive_root: Path) -> Iterator[None]:
     with patch("polylogue.mcp.server._get_config") as mock_get_config:
         mock_get_config.return_value = SimpleNamespace(
             archive_root=archive_root,
-            db_path=archive_root / "polylogue.db",
+            db_path=archive_root / "index.db",
         )
         yield
 
@@ -347,7 +347,7 @@ class TestQueryTools:
         _seed_archive(archive_root)
 
         # The archive read path builds the same SessionQuerySpec and hands it
-        # to the schema archive payload helpers. Spy on those helpers to capture the
+        # to the archive index payload helpers. Spy on those helpers to capture the
         # spec so the MCP-args -> spec mapping contract stays pinned, while the
         # tool still executes end to end against the seeded archive.
         captured: dict[str, SessionQuerySpec] = {}
@@ -1150,9 +1150,9 @@ class TestStatsTool:
         ):
             mock_get_config.return_value = SimpleNamespace(
                 archive_root=archive_root,
-                db_path=archive_root / "polylogue.db",
+                db_path=archive_root / "index.db",
             )
-            mock_get_polylogue.side_effect = AssertionError("stats must not open monolithic ops")
+            mock_get_polylogue.side_effect = AssertionError("stats must not open archive operations")
             result = invoke_surface(mcp_server._tool_manager._tools["stats"].fn)
 
         data = json.loads(result)
@@ -1620,7 +1620,7 @@ class TestMutationTools:
         ):
             mock_get_config.return_value = SimpleNamespace(
                 archive_root=archive_root,
-                db_path=archive_root / "polylogue.db",
+                db_path=archive_root / "index.db",
             )
             mock_format.return_value = '{"exported": true}'
 

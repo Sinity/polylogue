@@ -185,7 +185,7 @@ def test_readiness_configured_reports_enabled_with_model_and_dimension(
     workspace_env: dict[str, Path],
 ) -> None:
     """When config is enabled and key is present, readiness reports the configured model/dim."""
-    db = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+    db = workspace_env["data_root"] / "polylogue" / "index.db"
     db.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
@@ -215,7 +215,7 @@ def test_readiness_unconfigured_reports_disabled_when_no_api_key(
     workspace_env: dict[str, Path],
 ) -> None:
     """When no API key is present, ``embedding_enabled`` is False and counts are zero."""
-    db = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+    db = workspace_env["data_root"] / "polylogue" / "index.db"
     db.parent.mkdir(parents=True, exist_ok=True)
     db.touch()
 
@@ -234,7 +234,7 @@ def test_readiness_unconfigured_when_enabled_flag_off(
     workspace_env: dict[str, Path],
 ) -> None:
     """Even disabled config still exposes the backlog instead of hiding it."""
-    db = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+    db = workspace_env["data_root"] / "polylogue" / "index.db"
     db.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
@@ -266,8 +266,8 @@ def test_readiness_unconfigured_when_enabled_flag_off(
     assert detailed["embedding_pending_message_count_exact"] is True
 
 
-def test_readiness_reads_archive_file_set_without_polylogue_db(tmp_path: Path) -> None:
-    db_anchor = tmp_path / "polylogue.db"
+def test_readiness_reads_archive_index(tmp_path: Path) -> None:
+    db_anchor = tmp_path / "custom.sqlite"
     archive_db = tmp_path / "index.db"
     _seed_archive_embedding_readiness_db(archive_db)
 
@@ -302,7 +302,7 @@ def test_readiness_reads_archive_file_set_detail_counts_pending_messages(tmp_pat
 
 
 def test_readiness_reads_index_when_db_anchor_exists(tmp_path: Path) -> None:
-    db_anchor = tmp_path / "polylogue.db"
+    db_anchor = tmp_path / "custom.sqlite"
     archive_db = tmp_path / "index.db"
     with sqlite3.connect(db_anchor) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
@@ -321,11 +321,9 @@ def test_readiness_reads_index_when_db_anchor_exists(tmp_path: Path) -> None:
 # ── 3. embedding failure branch ────────────────────────────────────
 
 
-def test_readiness_failure_branch_counts_error_message_rows(
-    workspace_env: dict[str, Path],
-) -> None:
+def test_readiness_failure_branch_counts_error_message_rows(tmp_path: Path) -> None:
     """Rows with non-null ``error_message`` show up in ``embedding_failure_count``."""
-    db = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+    db = tmp_path / "status.sqlite"
     db.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")

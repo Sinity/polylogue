@@ -121,7 +121,7 @@ def _export_result(tmp_path: Path) -> InsightExportBundleResult:
             generated_at="2026-04-23T00:00:00+00:00",
             polylogue_version="1.0.0",
             archive_root="/tmp/archive",
-            database_path="/tmp/archive/polylogue.db",
+            database_path="/tmp/archive/index.db",
             query={"provider": "codex"},
             insights=(
                 InsightExportFileSummary(

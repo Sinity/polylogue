@@ -1378,7 +1378,7 @@ The report has a stable top-level shape carrying its `report_version`,
   churn/read amplification, debt-by-stage, and hot-query EXPLAIN evidence.
   On archives, churn is read across `source.db.raw_sessions`
   and `index.db.sessions` so full-vs-append raw rows and unmaterialized raw
-  payloads stay visible without a legacy `raw_sessions` table.
+  payloads stay visible without requiring `raw_sessions` in `index.db`.
 
 The compare mode refuses incompatible `report_version` inputs loudly and
 requires both inputs to be `ok: True`.  Numeric fields produce

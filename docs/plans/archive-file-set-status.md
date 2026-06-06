@@ -29,7 +29,7 @@ blob-GC path.
 | Rebuild/rederive framework | partial | Archive rederive comes from source artifacts and archive materializers on public paths, but duplicate internal helpers still need retirement. |
 | Insight slimming | partial | Archive insight tables and copied read models exist, but not every duplicate insight column or view/materialization boundary has been retired from active code. |
 | Action-events retirement | partial | The archive exposes action-like data from blocks, while `action_events` machinery still exists in active paths. |
-| Daemon split adoption | partial | `ops.db` tables and some status projections exist; the daemon still has monolithic-runtime table assumptions to remove. |
+| Daemon split adoption | partial | `ops.db` tables and some status projections exist; the daemon still has runtime table assumptions to remove. |
 | Embeddings/blob/GC rewrite | partial | Embedding/blob-reference DDL exists; full production embedding and blob-GC behavior has not been rewritten around the split. |
 | Provider vocabulary purge | partial | Public query/read surfaces now expose `origin` tokens and omit `provider` from archive payloads; internal provider-wire/schema metadata and compatibility bridges remain until their owning boundaries are removed. |
 | Broad diagnostic gate | blocked by separate issue | `devtools verify` is green; `devtools verify --all` has xdist/load instability tracked by #1775. |

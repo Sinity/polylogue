@@ -18,7 +18,7 @@ def test_process_ingest_batch_repairs_fts_for_unchanged_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     archive_root = tmp_path / "archive"
     blob_root = tmp_path / "blob"
     source_path = tmp_path / "raw.jsonl"

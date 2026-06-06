@@ -52,7 +52,7 @@ def _count_profiles(db_path: Path) -> int:
 def test_delete_tables_with_progress_emits_one_event_per_table(tmp_path: Path) -> None:
     """The helper that wraps the seven DELETEs must emit a progress event
     per table so the operator sees forward motion at table granularity."""
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     conn = sqlite3.connect(str(db_path))
     try:
         conn.execute("CREATE TABLE a (id INT)")
@@ -87,7 +87,7 @@ def test_delete_tables_with_progress_emits_one_event_per_table(tmp_path: Path) -
 
 def test_delete_tables_progress_callback_is_optional(tmp_path: Path) -> None:
     """Missing callback must not raise; the DELETEs still execute."""
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     conn = sqlite3.connect(str(db_path))
     try:
         conn.execute("CREATE TABLE t (id INT)")

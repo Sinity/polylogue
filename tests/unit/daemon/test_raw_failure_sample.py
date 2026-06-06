@@ -160,7 +160,7 @@ def _seed_archive_raw_session(
     ``polylogue.daemon.status`` so ``_active_status_db_path`` resolves to
     ``tmp_path/index.db`` and reads ``tmp_path/source.db``.
     """
-    db_anchor = tmp_path / "polylogue.db"
+    db_anchor = tmp_path / "index.db"
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
     initialize_archive_database(source_db, ArchiveTier.SOURCE)
@@ -194,8 +194,8 @@ def _seed_archive_raw_session(
 class TestRawFailureInfoProducesTypedSamples:
     """_raw_failure_info() returns typed RawFailureSample instances."""
 
-    def test_raw_failure_info_reads_archive_file_set_without_polylogue_db(self, tmp_path: Path) -> None:
-        db_anchor = tmp_path / "polylogue.db"
+    def test_raw_failure_info_reads_archive_file_set_from_archive_tiers(self, tmp_path: Path) -> None:
+        db_anchor = tmp_path / "index.db"
         index_db = tmp_path / "index.db"
         archive_db = tmp_path / "source.db"
         initialize_archive_database(archive_db, ArchiveTier.SOURCE)
@@ -333,7 +333,7 @@ class TestRawFailureInfoProducesTypedSamples:
         assert sample.failure_kind == "parse_error"
 
     def test_raw_failure_info_empty_when_no_failures(self, tmp_path: Path) -> None:
-        db = tmp_path / "polylogue.db"
+        db = tmp_path / "index.db"
         with sqlite3.connect(db) as conn:
             conn.executescript(
                 """

@@ -16,7 +16,7 @@ def test_runtime_archive_helpers_use_configured_archive_index(tmp_path: Path) ->
     override_root = tmp_path / "override"
     archive_root.mkdir()
     override_root.mkdir()
-    db_path = override_root / "polylogue.db"
+    db_path = override_root / "index.db"
     (archive_root / "index.db").write_text("index")
 
     config = SimpleNamespace(archive_root=archive_root, db_path=db_path)
@@ -34,7 +34,7 @@ def test_runtime_archive_helpers_do_not_depend_on_polylogue_db(tmp_path: Path) -
     override_root = tmp_path / "override"
     archive_root.mkdir()
     override_root.mkdir()
-    db_path = override_root / "polylogue.db"
+    db_path = override_root / "index.db"
 
     config = SimpleNamespace(archive_root=archive_root, db_path=db_path)
 

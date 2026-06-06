@@ -763,7 +763,7 @@ def test_append_ingest_preserves_successes_when_other_plan_fails(
         assert conn.execute("SELECT native_id FROM sessions").fetchone()[0] == "append-ok"
 
 
-def test_append_ingest_writes_archive_file_set_without_monolithic_persistence(
+def test_append_ingest_writes_archive_file_set_through_archive_tiers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -858,13 +858,13 @@ def test_append_ingest_bootstraps_archive_root(
         assert conn.execute("SELECT native_id FROM sessions").fetchone()[0] == "append-bootstrap"
 
 
-def test_live_raw_compaction_ignores_legacy_archive_without_source_db(tmp_path: Path) -> None:
+def test_live_raw_compaction_ignores_cursor_db_without_source_db(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     root.mkdir()
     path = root / "session.jsonl"
     path.write_text("{}\n", encoding="utf-8")
-    legacy_db = tmp_path / "live.sqlite"
-    cursor = CursorStore(legacy_db)
+    cursor_db = tmp_path / "live.sqlite"
+    cursor = CursorStore(cursor_db)
     with cursor._connect() as conn:
         conn.executescript(
             """
@@ -882,7 +882,7 @@ def test_live_raw_compaction_ignores_legacy_archive_without_source_db(tmp_path: 
             """
         )
     processor = LiveBatchProcessor(
-        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=legacy_db))),
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor_db))),
         (WatchSource(name="codex", root=root),),
         cursor=cursor,
         parser_fingerprint="test-parser",

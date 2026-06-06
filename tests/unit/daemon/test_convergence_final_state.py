@@ -76,7 +76,7 @@ def test_convergence_produces_consistent_final_archive_state(
     - No convergence debt remains
     """
     corpus_root = tmp_path / "corpus" / "proj"
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")

@@ -125,7 +125,7 @@ def test_double_ingest_is_idempotent(
 ) -> None:
     """Ingest same corpus twice; verify all counts and hashes are stable."""
     archive_root = workspace_env["archive_root"]
-    db_path = archive_root / "polylogue.db"
+    db_path = archive_root / "index.db"
 
     # Initialize schema.
     with open_connection(db_path):
@@ -177,7 +177,7 @@ def test_triple_ingest_is_idempotent(
 ) -> None:
     """Three ingest passes — stronger check against non-deterministic drift."""
     archive_root = workspace_env["archive_root"]
-    db_path = archive_root / "polylogue.db"
+    db_path = archive_root / "index.db"
 
     with open_connection(db_path):
         pass

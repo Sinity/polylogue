@@ -18,7 +18,7 @@ def test_process_ingest_batch_sync_records_wal_checkpoint_observation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     archive_root = tmp_path / "archive"
     blob_root = tmp_path / "blob"
     source_path = tmp_path / "raw.jsonl"
@@ -98,7 +98,7 @@ def test_maybe_checkpoint_wal_reports_blocking_processes_when_busy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
 
     class FakeConnection:
         def execute(self, sql: str) -> object:

@@ -800,7 +800,7 @@ def seeded_db(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
         shared_root = tmp_path_factory.getbasetemp() / "seeded-shared"
     shared_root.mkdir(parents=True, exist_ok=True)
 
-    db_path = shared_root / "polylogue.db"
+    db_path = shared_root / "index.db"
     lock_path = shared_root / ".build.lock"
 
     # ------------------------------------------------------------------

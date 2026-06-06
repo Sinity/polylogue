@@ -73,7 +73,7 @@ class TestConfig:
         """index.db is the active query store."""
         from polylogue.paths import resolve_active_index_db_path
 
-        db_anchor = tmp_path / "polylogue.db"
+        db_anchor = tmp_path / "custom.sqlite"
         index_db = tmp_path / "index.db"
         db_anchor.write_text("unrelated")
 
@@ -87,7 +87,7 @@ class TestConfig:
         archive_root = tmp_path / "archive"
         override_root.mkdir()
         archive_root.mkdir()
-        db_anchor = override_root / "polylogue.db"
+        db_anchor = override_root / "custom.sqlite"
         sibling_index_db = override_root / "index.db"
         canonical_index_db = archive_root / "index.db"
         db_anchor.write_text("unrelated")
@@ -96,10 +96,10 @@ class TestConfig:
         assert resolve_active_index_db_path(db_anchor=db_anchor, index_db=canonical_index_db) == canonical_index_db
 
     def test_active_index_resolver_does_not_fall_back_to_db_anchor(self, tmp_path: Path) -> None:
-        """Missing index.db remains the active target instead of polylogue.db."""
+        """Missing index.db remains the active target instead of a non-index anchor."""
         from polylogue.paths import resolve_active_index_db_path
 
-        db_anchor = tmp_path / "polylogue.db"
+        db_anchor = tmp_path / "custom.sqlite"
 
         assert (
             resolve_active_index_db_path(db_anchor=db_anchor, index_db=tmp_path / "index.db") == tmp_path / "index.db"
@@ -113,7 +113,7 @@ class TestConfig:
         override_root = tmp_path / "override"
         archive_root.mkdir()
         override_root.mkdir()
-        db_anchor = override_root / "polylogue.db"
+        db_anchor = override_root / "custom.sqlite"
 
         assert archive_file_set_index_available_for_paths(archive_root_path=archive_root, db_anchor=db_anchor)
         assert archive_file_set_root_for_paths(archive_root_path=archive_root, db_anchor=db_anchor) == archive_root
@@ -282,7 +282,7 @@ class TestXDGPaths:
         import polylogue.paths
 
         assert "polylogue" in str(polylogue.paths.db_path())
-        assert polylogue.paths.db_path().name == "polylogue.db"
+        assert polylogue.paths.db_path().name == "index.db"
 
 
 class TestConfiguredSources:

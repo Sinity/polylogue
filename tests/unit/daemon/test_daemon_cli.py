@@ -97,7 +97,7 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
-        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "polylogue.db"),
+        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status.index_db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status.default_sources", return_value=()),
     ):
@@ -130,7 +130,7 @@ def test_polylogued_status_plain_reports_archive_storage(tmp_path: Path) -> None
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
-        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "polylogue.db"),
+        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status.index_db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status.default_sources", return_value=()),
     ):
@@ -186,7 +186,7 @@ def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     cursor = CursorStore(db)
     cursor.record_convergence_debt(
         stage="insights",
@@ -218,7 +218,7 @@ def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
 def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     db.touch()
     sleep_calls = 0
 
@@ -249,7 +249,7 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
 def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     db.touch()
     sleep_calls = 0
 
@@ -395,7 +395,7 @@ def test_ensure_fts_startup_readiness_runs_bounded_repair(
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     db.write_bytes(b"sqlite placeholder")
 
     class FakeCursor:
@@ -460,7 +460,7 @@ def test_ensure_fts_startup_readiness_runs_bounded_repair(
 
     repairs: list[FakeConnection] = []
 
-    monkeypatch.setattr("polylogue.paths.index_db_path", lambda: db)
+    monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", ensure)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", rebuild)
@@ -556,7 +556,7 @@ def test_ensure_fts_startup_readiness_rebuilds_when_bounded_repair_fails(
     def rebuild(fake_conn: FakeConnection) -> None:
         rebuilds.append(fake_conn)
 
-    monkeypatch.setattr("polylogue.paths.index_db_path", lambda: db)
+    monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", lambda _conn: None)
     monkeypatch.setattr(
@@ -628,7 +628,7 @@ def test_ensure_fts_startup_readiness_skips_when_messages_table_absent(
             self.closed = True
 
     conn = FakeConnection()
-    monkeypatch.setattr("polylogue.paths.index_db_path", lambda: db)
+    monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr(
         "polylogue.storage.fts.dangling_repair.repair_stale_fts_rows",
@@ -714,7 +714,7 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
     restored: list[FakeConnection] = []
     rebuilds: list[FakeConnection] = []
 
-    monkeypatch.setattr("polylogue.paths.index_db_path", lambda: db)
+    monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", lambda fake_conn: None)
     monkeypatch.setattr(
@@ -767,7 +767,7 @@ def test_periodic_db_optimize_does_not_run_on_startup(monkeypatch: pytest.Monkey
         opened.append(path)
         raise AssertionError("PRAGMA optimize must not run at daemon startup")
 
-    monkeypatch.setattr("polylogue.paths.db_path", lambda: tmp_path / "polylogue.db")
+    monkeypatch.setattr("polylogue.paths.db_path", lambda: tmp_path / "index.db")
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", fake_open_connection)
 
@@ -777,7 +777,7 @@ def test_periodic_db_optimize_does_not_run_on_startup(monkeypatch: pytest.Monkey
     assert opened == []
 
 
-def test_daemon_cli_active_archive_uses_archive_file_set_without_polylogue_db(
+def test_daemon_cli_active_archive_uses_archive_file_set_from_archive_tiers(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
@@ -799,7 +799,7 @@ def test_daemon_cli_active_archive_uses_index_when_db_anchor_exists(
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
-    db_anchor = tmp_path / "polylogue.db"
+    db_anchor = tmp_path / "index.db"
     db_anchor.touch()
     index_db = tmp_path / "index.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)

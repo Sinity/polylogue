@@ -195,7 +195,7 @@ class TestPreflightCommand:
 
         assert read_pending_message_count(db_path) == (1, 1, 1)
 
-    def test_preflight_count_uses_active_archive_when_polylogue_db_exists(
+    def test_preflight_count_uses_active_archive_with_index_anchor(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -224,7 +224,7 @@ class TestPreflightCommand:
                 )
             )
 
-        db_anchor = tmp_path / "data" / "polylogue" / "polylogue.db"
+        db_anchor = tmp_path / "data" / "polylogue" / "custom.sqlite"
         db_anchor.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(db_anchor) as conn:
             conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
@@ -269,7 +269,7 @@ class TestPreflightCommand:
                     )
                 )
 
-        db_anchor = tmp_path / "data" / "polylogue" / "polylogue.db"
+        db_anchor = tmp_path / "data" / "polylogue" / "custom.sqlite"
         assert read_pending_message_count(db_anchor, max_sessions=2) == (3, 2, 2)
         assert read_pending_message_count(db_anchor, max_messages=1) == (3, 1, 1)
 

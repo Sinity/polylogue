@@ -70,7 +70,7 @@ def _minimal_compare_payload() -> dict[str, Any]:
         "ok": True,
         "report_version": REPORT_VERSION,
         "captured_at": "2026-06-01T00:00:00+00:00",
-        "db_path": "/tmp/polylogue.db",
+        "db_path": "/tmp/index.db",
         "attempt_counts": {},
         "storage_route_counts": {},
         "boundary_table_counts": {},
@@ -111,7 +111,7 @@ def test_daemon_workload_probe_reports_missing_database(tmp_path: Path) -> None:
 
 
 def test_daemon_workload_probe_reports_ops_tier_from_db_anchor(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     ops_db = tmp_path / "ops.db"
     initialize_archive_database(ops_db, ArchiveTier.OPS)
     with sqlite3.connect(ops_db) as conn:
@@ -186,7 +186,7 @@ def test_daemon_workload_probe_reports_ops_tier_from_db_anchor(tmp_path: Path) -
 
 
 def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     for tier in (
         ArchiveTier.SOURCE,
         ArchiveTier.INDEX,
@@ -348,7 +348,7 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
 
 
 def test_daemon_workload_probe_reports_layout_ready_for_clean_five_tier_archive(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     for tier in ArchiveTier:
         initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
 
@@ -375,7 +375,7 @@ def test_daemon_workload_probe_reports_layout_ready_for_clean_five_tier_archive(
 
 
 def test_daemon_workload_probe_reports_archive_source_path_churn(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     source_path = "/tmp/live-session.jsonl"
     for tier in (
         ArchiveTier.SOURCE,
@@ -670,7 +670,7 @@ def test_compare_computes_structured_delta(tmp_path: Path) -> None:
 
 
 def test_compare_reports_archive_derived_readiness_deltas(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
 
     before_payload = probe(db)

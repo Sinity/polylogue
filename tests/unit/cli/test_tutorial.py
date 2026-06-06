@@ -117,7 +117,7 @@ def test_stage_first_search_ignores_retired_single_file_db(monkeypatch: pytest.M
     _set_xdg(monkeypatch, tmp_path)
     data_dir = tmp_path / "xdg-data" / "polylogue"
     data_dir.mkdir(parents=True, exist_ok=True)
-    retired = sqlite3.connect(data_dir / "polylogue.db")
+    retired = sqlite3.connect(data_dir / "retired.sqlite")
     retired.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY)")
     retired.commit()
     retired.close()

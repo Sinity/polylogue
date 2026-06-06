@@ -31,7 +31,7 @@ def _seed_db(path: Path) -> None:
 
 
 def test_build_space_report_groups_dbstat_objects(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     _seed_db(db)
 
     report = build_space_report(db, limit=10, include_objects=True)
@@ -61,7 +61,7 @@ def test_missing_database_reports_error(tmp_path: Path) -> None:
 
 
 def test_build_space_report_skips_object_scan_by_default(tmp_path: Path) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     _seed_db(db)
 
     report = build_space_report(db)
@@ -73,7 +73,7 @@ def test_build_space_report_skips_object_scan_by_default(tmp_path: Path) -> None
 
 
 def test_main_json_returns_success_for_existing_database(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     _seed_db(db)
 
     assert main(["--db", str(db), "--json", "--objects", "--limit", "3"]) == 0

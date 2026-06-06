@@ -335,7 +335,7 @@ class CLISurface:
             raise AssertionError(f"CLI list output is not JSON ({query_case.name!r}): {output!r}") from exc
         # Three shapes can land here:
         #   * list mode envelope (#1618): ``{"items": [...], "total": ..., ...}``
-        #   * search-hit mode (legacy bare array): ``[{"session": {"id": ...}, ...}, ...]``
+        #   * search-hit mode (historical bare array): ``[{"session": {"id": ...}, ...}, ...]``
         #   * typed ranked-result envelope (PR #1370):
         #     ``{"hits": [{"session": {"id": ...}, "match": {...}}, ...], "limit": ..., ...}``
         # All three project to the same id tuple for parity comparison.

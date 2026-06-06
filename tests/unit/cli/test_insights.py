@@ -47,7 +47,7 @@ NID_HEAVY = native_session_id_for("codex", "conv-heavy")
 def _rebuild_insights(db_path: Path, **kwargs: Any) -> SessionInsightCounts:
     """Materialize session insights for a seeded ``index.db``.
 
-    This is the archive equivalent of the legacy ``rebuild_session_insights_sync``
+    This is the archive equivalent of ``rebuild_session_insights_sync``
     over a v22 connection: it opens the archive at ``db_path``'s root
     and runs the archive session-insight materializer, populating ``session_profiles``,
     ``session_work_events``, ``session_phases``, and ``threads``.

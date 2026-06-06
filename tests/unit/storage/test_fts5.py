@@ -3,7 +3,7 @@
 Tests cover FTS5 index creation, incremental updates, search functionality,
 ranking, special characters, edge cases, and escaping.
 
-Extracted from monolithic test_search_index.py.
+Extracted from test_search_index.py.
 """
 
 from __future__ import annotations
@@ -833,7 +833,7 @@ class TestFTS5Provider:
     @pytest.fixture
     def fts_provider(self: object, workspace_env: dict[str, Path]) -> FTS5Provider:
         """Create FTS5Provider with test database."""
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["archive_root"] / "index.db"
         return FTS5Provider(db_path=db_path)
 
     @pytest.fixture
@@ -876,7 +876,7 @@ class TestFTS5Provider:
         """Ensure index creates FTS5 virtual table."""
         from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["archive_root"] / "index.db"
 
         # Index empty list to trigger table creation
         fts_provider.index([])

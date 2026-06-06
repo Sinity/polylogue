@@ -61,7 +61,7 @@ def test_daemon_embedding_backlog_drain_processes_archive(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    db_anchor_path = tmp_path / "polylogue.db"
+    db_anchor_path = tmp_path / "index.db"
     db_anchor_path.touch()
     archive_db = tmp_path / "index.db"
     with sqlite3.connect(archive_db) as conn:
@@ -157,7 +157,7 @@ def test_daemon_embedding_backlog_drain_is_noop_when_disabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     _seed_embedding_db(db_path)
 
     class DisabledConfig(_EmbeddingConfig):
@@ -173,7 +173,7 @@ def test_daemon_embedding_backlog_drain_pauses_when_monthly_cap_spent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     _seed_embedding_db(db_path)
     with sqlite3.connect(db_path) as conn:
         conn.execute(

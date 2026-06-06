@@ -90,7 +90,7 @@ def processor(tmp_path: Path) -> Iterator[tuple[LiveBatchProcessor, Path, Path]]
     """
     root = tmp_path / "projects"
     root.mkdir()
-    db_path = tmp_path / "polylogue.db"
+    db_path = tmp_path / "index.db"
     cursor = CursorStore(db_path)
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path), config=None)
     proc = LiveBatchProcessor(
@@ -267,7 +267,7 @@ class TestMtimeDriftCatchUp:
 
         root = tmp_path / "projects"
         root.mkdir()
-        db_path = tmp_path / "polylogue.db"
+        db_path = tmp_path / "index.db"
         cursor = CursorStore(db_path)
         polylogue = SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path), config=None)
 
@@ -379,7 +379,7 @@ class TestCatchUpReadsEachFileAtMostOnce:
 
         root = tmp_path / "projects"
         root.mkdir()
-        db_path = tmp_path / "polylogue.db"
+        db_path = tmp_path / "index.db"
         cursor = CursorStore(db_path)
         polylogue = SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path), config=None)
         sources = (WatchSource(name="claude-code", root=root),)

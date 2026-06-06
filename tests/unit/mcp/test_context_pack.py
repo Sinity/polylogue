@@ -143,7 +143,7 @@ class TestBuildContextPackRegistration:
         mock_services = MagicMock()
         mock_services.get_config.return_value = SimpleNamespace(
             archive_root=archive_root,
-            db_path=archive_root / "polylogue.db",
+            db_path=archive_root / "index.db",
         )
         _set_runtime_services(mock_services)
 
@@ -167,7 +167,7 @@ class TestBuildContextPackRegistration:
         mock_services = MagicMock()
         mock_services.get_config.return_value = SimpleNamespace(
             archive_root=archive_root,
-            db_path=archive_root / "polylogue.db",
+            db_path=archive_root / "index.db",
         )
         _set_runtime_services(mock_services)
 
@@ -178,7 +178,7 @@ class TestBuildContextPackRegistration:
         finally:
             _set_runtime_services(None)
 
-    def test_tool_reads_archive_file_set_without_polylogue_db(
+    def test_tool_reads_archive_file_set_from_archive_tiers(
         self, mcp_server: MCPServerUnderTest, tmp_path: Path
     ) -> None:
         from polylogue.mcp.server_support import _set_runtime_services
@@ -208,10 +208,10 @@ class TestBuildContextPackRegistration:
         mock_services = MagicMock()
         mock_services.get_config.return_value = SimpleNamespace(
             archive_root=archive_root,
-            db_path=archive_root / "polylogue.db",
+            db_path=archive_root / "index.db",
         )
-        mock_services.get_repository.side_effect = AssertionError("context pack must not open monolithic storage")
-        mock_services.get_archive_ops.side_effect = AssertionError("context pack must not open monolithic ops")
+        mock_services.get_repository.side_effect = AssertionError("context pack must not open archive query store")
+        mock_services.get_archive_ops.side_effect = AssertionError("context pack must not open archive operations")
         _set_runtime_services(mock_services)
 
         try:
@@ -228,7 +228,7 @@ class TestBuildContextPackRegistration:
         finally:
             _set_runtime_services(None)
 
-    def test_tool_reads_archive_file_set_when_polylogue_db_exists(
+    def test_tool_reads_archive_file_set_with_index_anchor(
         self, mcp_server: MCPServerUnderTest, tmp_path: Path
     ) -> None:
         from polylogue.mcp.server_support import _set_runtime_services
@@ -252,8 +252,7 @@ class TestBuildContextPackRegistration:
                     ],
                 )
             )
-        db_anchor = archive_root / "polylogue.db"
-        db_anchor.touch()
+        db_anchor = archive_root / "index.db"
 
         tools = mcp_server._tool_manager._tools
         fn = tools["build_context_pack"].fn
@@ -262,8 +261,8 @@ class TestBuildContextPackRegistration:
             archive_root=archive_root,
             db_path=db_anchor,
         )
-        mock_services.get_repository.side_effect = AssertionError("context pack must not open monolithic storage")
-        mock_services.get_archive_ops.side_effect = AssertionError("context pack must not open monolithic ops")
+        mock_services.get_repository.side_effect = AssertionError("context pack must not open archive query store")
+        mock_services.get_archive_ops.side_effect = AssertionError("context pack must not open archive operations")
         _set_runtime_services(mock_services)
 
         try:

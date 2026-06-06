@@ -542,8 +542,6 @@ def _cursor_db_path(polylogue: Polylogue) -> Path:
     backend = getattr(polylogue, "backend", None)
     db_path = getattr(backend, "db_path", None)
     if isinstance(db_path, Path):
-        if db_path.name == "polylogue.db":
-            return db_path.with_name("ops.db")
         return db_path
     return Path(polylogue.archive_root) / "ops.db"
 
