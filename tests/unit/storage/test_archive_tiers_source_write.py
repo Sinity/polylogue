@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 from polylogue.core.enums import ArtifactSupportStatus, Origin, ValidationStatus
@@ -154,6 +155,45 @@ def test_archive_tiers_source_writer_materializes_raw_session_with_blob_ref(tmp_
         session_native_id="session-1",
     )
     assert list_hook_events(conn, origin=Origin.CLAUDE_CODE_SESSION, session_native_id="session-1") == (hook_event,)
+
+
+def test_archive_tiers_source_writer_replays_hook_events_idempotently(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "source.db")
+    payload = b'{"kind":"session","messages":["hello"]}'
+    hook_event = ArchiveHookEvent(
+        hook_event_id="hook-1",
+        origin=Origin.CLAUDE_CODE_SESSION,
+        source_path="/tmp/record.jsonl",
+        event_type="source_opened",
+        payload={"path": "/tmp/record.jsonl"},
+        observed_at_ms=1_767_000_000_120,
+        session_native_id="session-1",
+    )
+
+    write_source_raw_session(
+        conn,
+        origin=Origin.CLAUDE_CODE_SESSION,
+        source_path="/tmp/record.jsonl",
+        source_index=0,
+        native_id="session-1",
+        payload=payload,
+        acquired_at_ms=1_767_000_000_000,
+        hook_event=hook_event,
+    )
+    write_source_raw_session(
+        conn,
+        origin=Origin.CLAUDE_CODE_SESSION,
+        source_path="/tmp/record.jsonl",
+        source_index=0,
+        native_id="session-1",
+        payload=payload,
+        acquired_at_ms=1_767_000_000_000,
+        hook_event=replace(hook_event, payload={"path": "/tmp/record.jsonl", "replayed": True}),
+    )
+
+    assert list_hook_events(conn, origin=Origin.CLAUDE_CODE_SESSION, session_native_id="session-1") == (
+        replace(hook_event, payload={"path": "/tmp/record.jsonl", "replayed": True}),
+    )
 
 
 def test_archive_tiers_source_writer_deterministic_ids() -> None:

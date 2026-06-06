@@ -180,9 +180,9 @@ def write_parsed_session_to_archive(
                 active_leaf_message_id = excluded.active_leaf_message_id,
                 title = COALESCE(excluded.title, sessions.title),
                 origin_meta = excluded.origin_meta,
-                git_branch = COALESCE(excluded.git_branch, sessions.git_branch),
-                git_repository_url = COALESCE(excluded.git_repository_url, sessions.git_repository_url),
-                commit_hash = COALESCE(excluded.commit_hash, sessions.commit_hash),
+                git_branch = excluded.git_branch,
+                git_repository_url = excluded.git_repository_url,
+                commit_hash = excluded.commit_hash,
                 content_hash = excluded.content_hash,
                 created_at_ms = COALESCE(sessions.created_at_ms, excluded.created_at_ms),
                 updated_at_ms = MAX(COALESCE(sessions.updated_at_ms, 0), COALESCE(excluded.updated_at_ms, 0))
@@ -233,6 +233,7 @@ def write_parsed_session_to_archive(
                 (active_leaf_message_id, session_id),
             )
         else:
+            _clear_session_projection_rows(conn, session_id)
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
         _write_messages(conn, session_id, messages, position_offset=position_offset)
         _write_blocks(conn, session_id, messages, position_offset=position_offset)
@@ -246,6 +247,19 @@ def write_parsed_session_to_archive(
         _refresh_session_counts(conn, session_id)
         _resolve_session_graph(conn, session_id, native_id, origin.value)
     return session_id
+
+
+def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) -> None:
+    """Clear rows owned by parsed-session replacement before rewriting it."""
+    for table in (
+        "attachment_refs",
+        "session_events",
+        "session_working_dirs",
+        "session_repos",
+        "session_commits",
+    ):
+        conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
+    conn.execute("DELETE FROM session_links WHERE src_session_id = ?", (session_id,))
 
 
 def upsert_session_profile_costs(

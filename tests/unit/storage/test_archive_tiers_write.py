@@ -858,6 +858,87 @@ def test_archive_tiers_writer_materializes_repo_and_commit_edges(tmp_path: Path)
     }
 
 
+def test_archive_tiers_writer_replacement_clears_old_projection_rows(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    first = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="replace-session",
+        git_branch="feature/archive",
+        git_repository_url="https://github.com/Sinity/polylogue.git",
+        git_commit_hash="0123456789abcdef0123456789abcdef01234567",
+        working_directories=["/realm/project/polylogue"],
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="with old projections")],
+            )
+        ],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id="att-1",
+                message_provider_id="m1",
+                name="report.pdf",
+                mime_type="application/pdf",
+                path="report.pdf",
+            )
+        ],
+        provider_events=[
+            ParsedProviderEvent(
+                event_type="compaction",
+                source_message_provider_id="m1",
+                payload={"summary": "old event"},
+                timestamp="2026-01-01T00:00:00+00:00",
+            )
+        ],
+    )
+    second = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="replace-session",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="replacement")],
+            )
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, first)
+    write_parsed_session_to_archive(conn, second)
+
+    envelope = read_archive_session_envelope(conn, session_id)
+    stale_counts = {
+        table: conn.execute(f"SELECT COUNT(*) FROM {table} WHERE session_id = ?", (session_id,)).fetchone()[0]
+        for table in (
+            "attachment_refs",
+            "session_events",
+            "session_working_dirs",
+            "session_repos",
+            "session_commits",
+        )
+    }
+    session_row = conn.execute(
+        """
+        SELECT git_branch, git_repository_url, commit_hash
+        FROM sessions
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+
+    assert envelope.orphan_attachments == ()
+    assert envelope.messages[0].attachments == ()
+    assert stale_counts == {
+        "attachment_refs": 0,
+        "session_events": 0,
+        "session_working_dirs": 0,
+        "session_repos": 0,
+        "session_commits": 0,
+    }
+    assert dict(session_row) == {"git_branch": None, "git_repository_url": None, "commit_hash": None}
+
+
 def test_archive_tiers_writer_materializes_attachments_and_refs(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(

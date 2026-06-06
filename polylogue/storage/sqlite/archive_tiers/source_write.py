@@ -621,6 +621,14 @@ def _insert_hook_event(conn: sqlite3.Connection, raw_id: str, hook_event: Archiv
             hook_event_id, origin, native_id, session_native_id, source_path, event_type,
             payload_json, observed_at_ms
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(hook_event_id) DO UPDATE SET
+            origin = excluded.origin,
+            native_id = excluded.native_id,
+            session_native_id = excluded.session_native_id,
+            source_path = excluded.source_path,
+            event_type = excluded.event_type,
+            payload_json = excluded.payload_json,
+            observed_at_ms = excluded.observed_at_ms
         """,
         (
             hook_event.hook_event_id,
