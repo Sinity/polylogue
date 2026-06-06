@@ -107,11 +107,10 @@ schema shape:
 
 This design intentionally rejects in-place upgrade-chain complexity (no
 Alembic, no forward/reverse upgrade scripts, no partially-applied upgrade
-states, no `_apply_version_upgrade_plan` rollback windows) at the cost
-of requiring users with out-of-band archives to re-ingest. The recent
-session-loss audit (`MEMORY.md` § Claude Session Loss Incident
-2026-03-21) confirmed that no relevant retired single-file DB instances exist in
-practice, so the trade is decisively in favour of the simpler runtime.
+states, no `_apply_version_upgrade_plan` rollback windows). If the configured
+archive path is not the current schema, the operator moves it aside and
+re-ingests from source. Files that are not configured archive paths are not
+classified or handled by the archive runtime.
 
 ## Archive Activation
 
@@ -141,9 +140,7 @@ polylogue maintenance archive-read --limit 20
 
 `archive-init` bootstraps the archive file set. The daemon and explicit
 ingest paths populate `source.db` and `index.db` directly from source
-artifacts; they do not copy rows out of a retired `polylogue.db`. Root
-query commands route through the archive adapter by default when the
-active `index.db` exists.
+artifacts. Root query commands use the active `index.db`.
 
 ## Topology Edges (#1258)
 
