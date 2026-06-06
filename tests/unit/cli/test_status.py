@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
+import sqlite3
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -11,14 +13,20 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
+from polylogue.api import Polylogue
 from polylogue.cli.commands.status import (
     _FULL_TIMEOUT_S,
+    _archive_cli_route_status,
+    _archive_facade_route_status,
     _show_daemon_status,
     _show_direct_json,
     _show_direct_status,
     status_command,
 )
 from polylogue.cli.shared.types import AppEnv
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 class _CapturingConsole:
@@ -43,6 +51,45 @@ def _combined_calls(env: AppEnv) -> str:
     """Get combined output from the capturing console."""
     console: Any = env.ui.console
     return " ".join(console.calls)
+
+
+def test_archive_facade_route_catalog_covers_public_async_facade() -> None:
+    discovered = {
+        name
+        for name in dir(Polylogue)
+        if not name.startswith("_") and inspect.iscoroutinefunction(inspect.getattr_static(Polylogue, name))
+    }
+    routing = _archive_facade_route_status()
+
+    assert set(routing["routes"]) == discovered
+    assert routing["routes"]["query_sessions"]["route"] == "archive_routed"
+    assert routing["routes"]["parse_file"]["route"] == "archive_routed"
+    assert routing["routes"]["parse_sources"]["route"] == "archive_routed"
+    assert routing["routes"]["count_sessions"]["route"] == "archive_routed"
+    assert routing["routes"]["facets"]["route"] == "archive_routed"
+    assert routing["routes"]["get_session_topology"]["route"] == "archive_routed"
+    assert routing["routes"]["get_logical_session"]["route"] == "archive_routed"
+    assert routing["routes"]["health_check"]["route"] == "archive_routed"
+    assert routing["routes"]["get_session"]["route"] == "archive_routed"
+    assert routing["routes"]["archive_search_sessions"]["route"] == "archive_direct"
+    assert routing["unsupported_methods"] == []
+
+
+def test_archive_cli_route_catalog_reports_user_tier_surfaces() -> None:
+    routing = _archive_cli_route_status()
+
+    assert routing["checked"] is True
+    assert routing["unsupported_command_count"] == 0
+    assert routing["unsupported_commands"] == []
+    assert routing["tier_counts"]["user"] == 3
+    assert routing["tier_counts"]["source"] == 2
+    assert routing["routes"]["blackboard.post"]["route"] == "archive_direct"
+    assert routing["routes"]["blackboard.post"]["tier"] == "user"
+    assert routing["routes"]["blackboard.list"]["route"] == "archive_direct"
+    assert routing["routes"]["blackboard.list"]["tier"] == "user"
+    assert routing["routes"]["reset.session"]["tier"] == "user"
+    assert routing["routes"]["reset.database"]["tier"] == "source"
+    assert routing["routes"]["reset.source"]["tier"] == "source"
 
 
 class TestNoArchiveStatus:
@@ -81,10 +128,323 @@ class TestNoArchiveStatus:
                     _show_direct_status(env)
 
         combined = _combined_calls(env)
-        # Empty-archive guidance now mentions "Conversations: 0" rather than the
+        # Empty-archive guidance now mentions "Sessions: 0" rather than the
         # earlier hand-written sentence.
-        assert "Conversations: 0" in combined
+        assert "Sessions: 0" in combined
         assert "polylogued run" in combined
+
+    def test_direct_status_reads_archive_file_set_without_polylogue_db(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "polylogue.db"
+        index_db = tmp_path / "index.db"
+        source_db = tmp_path / "source.db"
+        with sqlite3.connect(index_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    message_count INTEGER NOT NULL
+                );
+                INSERT INTO sessions VALUES ('codex-session:one', 2);
+                """
+            )
+        with sqlite3.connect(source_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY);
+                INSERT INTO raw_sessions VALUES ('raw-1');
+                """
+            )
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch("polylogue.cli.commands.status_diagnostics.diagnose_first_run") as diagnose,
+        ):
+            _show_direct_status(env)
+
+        diagnose.assert_not_called()
+        combined = _combined_calls(env)
+        assert "Database: index.db" in combined
+        assert "Schema tiers: present=source, index; missing=embeddings, user, ops" in combined
+        assert "Archive tier detail: source v0/" in combined
+        assert "raw_sessions=1" in combined
+        assert "index v0/" in combined
+        assert "sessions=1" in combined
+        assert "Facade routes:" in combined
+        assert "0 unsupported" in combined
+        assert "parse_file:" not in combined
+        assert "Sessions: 1" in combined
+        assert "Messages: 2" in combined
+        assert "Raw records: 1" in combined
+
+    def test_direct_status_json_reads_archive_file_set_without_polylogue_db(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "polylogue.db"
+        index_db = tmp_path / "index.db"
+        source_db = tmp_path / "source.db"
+        with sqlite3.connect(index_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    message_count INTEGER NOT NULL
+                );
+                INSERT INTO sessions VALUES ('codex-session:one', 3);
+                """
+            )
+        with sqlite3.connect(source_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY);
+                INSERT INTO raw_sessions VALUES ('raw-1'), ('raw-2');
+                """
+            )
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+        ):
+            _show_direct_json(env)
+
+        payload = json.loads(_combined_calls(env))
+        assert payload["db_exists"] is True
+        assert payload["active_db_path"] == str(index_db)
+        assert payload["archive_tiers"]["source"]["exists"] is True
+        assert payload["archive_tiers"]["index"]["exists"] is True
+        assert payload["archive_tiers"]["embeddings"]["exists"] is False
+        assert payload["archive_tiers"]["user"]["exists"] is False
+        assert payload["archive_tiers"]["ops"]["exists"] is False
+        assert payload["archive_tiers"]["source"]["user_version"] == 0
+        assert (
+            payload["archive_tiers"]["source"]["expected_user_version"] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
+        )
+        assert payload["archive_tiers"]["source"]["version_status"] == "mismatch"
+        assert payload["archive_tiers"]["source"]["table_counts"]["raw_sessions"] == 2
+        assert payload["archive_tiers"]["index"]["user_version"] == 0
+        assert payload["archive_tiers"]["index"]["expected_user_version"] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]
+        assert payload["archive_tiers"]["index"]["version_status"] == "mismatch"
+        assert payload["archive_tiers"]["index"]["table_counts"]["sessions"] == 1
+        assert payload["archive_facade_routes"]["checked"] is True
+        assert payload["archive_facade_routes"]["unsupported_method_count"] == 0
+        assert payload["archive_facade_routes"]["unsupported_methods"] == []
+        assert payload["archive_facade_routes"]["routes"]["query_sessions"]["route"] == "archive_routed"
+        assert payload["archive_facade_routes"]["routes"]["count_sessions"]["route"] == "archive_routed"
+        assert payload["archive_facade_routes"]["routes"]["get_session"]["route"] == "archive_routed"
+        assert payload["archive_cli_routes"]["checked"] is True
+        assert payload["archive_cli_routes"]["unsupported_command_count"] == 0
+        assert payload["archive_cli_routes"]["routes"]["blackboard.post"]["tier"] == "user"
+        assert payload["archive_cli_routes"]["routes"]["reset.database"]["route"] == "archive_direct"
+        assert payload["archive_runtime_paths"]["archive_runtime_ready"] is True
+        assert payload["archive_runtime_paths"]["primary_ingest_store"] == "archive_file_set"
+        assert payload["archive_runtime_paths"]["ingest_write_mode"] == "archive"
+        assert payload["archive_runtime_paths"]["archive_ingest_write_targets"] == ["source.db", "index.db"]
+        assert payload["archive_runtime_paths"]["archive_tier_targets"] == [
+            "source.db",
+            "index.db",
+            "embeddings.db",
+            "user.db",
+            "ops.db",
+        ]
+        assert payload["archive_runtime_paths"]["facade_tier_route_counts"]["source"] >= 1
+        assert payload["archive_runtime_paths"]["facade_tier_route_counts"]["index"] >= 1
+        assert payload["archive_runtime_paths"]["facade_tier_route_counts"]["user"] >= 1
+        assert payload["archive_runtime_paths"]["cli_tier_route_counts"] == {"source": 2, "user": 3}
+        assert payload["archive_runtime_paths"]["index_rebuild_store"] == "index_db"
+        assert payload["archive_runtime_paths"]["unsupported_primary_methods"] == []
+        assert payload["sessions"] == 1
+        assert payload["messages"] == 3
+        assert payload["raw_records"] == 2
+
+    def test_direct_status_json_reports_active_archive_root_for_sibling_index(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        configured_root = tmp_path / "archive"
+        active_root = tmp_path / "active"
+        configured_root.mkdir()
+        active_root.mkdir()
+        db_anchor = active_root / "polylogue.db"
+        initialize_archive_database(active_root / "source.db", ArchiveTier.SOURCE)
+        initialize_archive_database(active_root / "index.db", ArchiveTier.INDEX)
+        (configured_root / "user.db").write_text("configured decoy", encoding="utf-8")
+        with sqlite3.connect(active_root / "source.db") as conn:
+            conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms
+                ) VALUES ('raw-active', 'codex-session', 'active', '/tmp/active.jsonl', ?, 10, 1)
+                """,
+                (b"x" * 32,),
+            )
+        with sqlite3.connect(active_root / "index.db") as conn:
+            conn.execute(
+                """
+                INSERT INTO sessions (
+                    native_id, origin, raw_id, content_hash, message_count
+                ) VALUES ('active', 'codex-session', 'raw-active', ?, 2)
+                """,
+                (b"y" * 32,),
+            )
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=configured_root),
+        ):
+            _show_direct_json(env)
+
+        payload = json.loads(_combined_calls(env))
+        assert payload["archive_root"] == str(configured_root)
+        assert payload["active_archive_root"] == str(active_root)
+        assert payload["active_archive_root_matches_configured"] is False
+        assert payload["active_db_path"] == str(active_root / "index.db")
+        assert payload["archive_tiers"]["source"]["exists"] is True
+        assert payload["archive_tiers"]["source"]["table_counts"]["raw_sessions"] == 1
+        assert payload["archive_tiers"]["index"]["exists"] is True
+        assert payload["archive_tiers"]["index"]["table_counts"]["sessions"] == 1
+        assert payload["archive_tiers"]["user"]["exists"] is False
+        assert payload["raw_records"] == 1
+
+    def test_direct_status_reports_archive_surface_blockers(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "polylogue.db"
+        initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+        initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                    acquired_at_ms
+                ) VALUES ('raw-1', 'codex-session', 'native-1', '/tmp/a.jsonl', ?, 10, 1)
+                """,
+                (b"x" * 32,),
+            )
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            conn.execute(
+                """
+                INSERT INTO sessions (
+                    native_id, origin, raw_id, content_hash
+                ) VALUES ('native-1', 'codex-session', 'raw-1', ?)
+                """,
+                (b"y" * 32,),
+            )
+            conn.execute(
+                """
+                INSERT INTO messages (
+                    session_id, native_id, position, role, content_hash
+                ) VALUES ('codex-session:native-1', 'm1', 0, 'user', ?)
+                """,
+                (b"m" * 32,),
+            )
+            conn.execute(
+                """
+                INSERT INTO blocks (
+                    message_id, session_id, position, block_type, text
+                ) VALUES ('codex-session:native-1:m1', 'codex-session:native-1', 0, 'text', 'hello')
+                """
+            )
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch("polylogue.cli.commands.status_diagnostics.diagnose_first_run") as diagnose,
+        ):
+            _show_direct_status(env)
+
+        diagnose.assert_not_called()
+        combined = _combined_calls(env)
+        assert "Archive surfaces:" in combined
+        assert "Archive runtime paths:" in combined
+        assert "ingest=archive -> source.db,index.db" in combined
+        assert "tiers=source.db,index.db,embeddings.db,user.db,ops.db" in combined
+        assert "Archive route ownership:" in combined
+        assert "cli=source:2,user:3" in combined
+        assert "0 blockers" in combined
+        assert "blocked" in combined
+        assert "session_profiles: missing_profile_rows, missing_session_profile_materialization" in combined
+        assert "timeline_work_events: missing_work_events_materialization" in combined
+
+    def test_direct_status_json_reports_archive_surface_blockers(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "polylogue.db"
+        initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+        initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            conn.execute(
+                """
+                INSERT INTO sessions (
+                    native_id, origin, raw_id, content_hash
+                ) VALUES ('native-1', 'codex-session', 'raw-missing', ?)
+                """,
+                (b"y" * 32,),
+            )
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+        ):
+            _show_direct_json(env)
+
+        payload = json.loads(_combined_calls(env))
+        readiness = payload["archive_readiness"]
+        assert payload["archive_tiers"]["source"]["version_status"] == "ok"
+        assert payload["archive_tiers"]["index"]["version_status"] == "ok"
+        assert payload["archive_tiers"]["index"]["table_counts"]["sessions"] == 1
+        assert readiness["checked"] is True
+        assert readiness["blocked_surface_count"] > 0
+        assert readiness["surfaces"]["raw_artifacts"]["ready"] is False
+        assert readiness["surfaces"]["raw_artifacts"]["blockers"] == ["missing_source_raw_sessions"]
+        runtime_paths = payload["archive_runtime_paths"]
+        assert runtime_paths["archive_runtime_ready"] is True
+        assert runtime_paths["unsupported_primary_method_count"] == 0
+        assert runtime_paths["final_shape_blockers"] == []
+        assert runtime_paths["archive_tier_targets"] == [
+            "source.db",
+            "index.db",
+            "embeddings.db",
+            "user.db",
+            "ops.db",
+        ]
+
+    def test_direct_status_uses_active_archive_root(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "polylogue.db"
+        index_db = tmp_path / "index.db"
+        with sqlite3.connect(db_anchor) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (session_id TEXT PRIMARY KEY);
+                CREATE TABLE messages (message_id TEXT PRIMARY KEY);
+                CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY);
+                INSERT INTO sessions VALUES ('unsupported');
+                INSERT INTO messages VALUES ('unsupported-message');
+                INSERT INTO raw_sessions VALUES ('unsupported-raw');
+                """
+            )
+        with sqlite3.connect(index_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    message_count INTEGER NOT NULL
+                );
+                CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY);
+                INSERT INTO sessions VALUES ('codex-session:v1', 4);
+                INSERT INTO raw_sessions VALUES ('raw-v1'), ('raw-v1b');
+                """
+            )
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch("polylogue.cli.commands.status_diagnostics.diagnose_first_run") as diagnose,
+        ):
+            _show_direct_status(env)
+
+        diagnose.assert_not_called()
+        combined = _combined_calls(env)
+        assert "Sessions: 1" in combined
+        assert "Messages: 4" in combined
+        assert "Raw records: 2" in combined
 
     def test_direct_status_does_not_count_fts_shadow_tables(self) -> None:
         """Large archive fallback status must not count FTS shadow tables."""
@@ -95,24 +455,32 @@ class TestNoArchiveStatus:
         queries: list[str] = []
 
         class FakeCursor:
-            def __init__(self, value: int) -> None:
+            def __init__(self, value: int, rows: list[tuple[object, ...]] | None = None) -> None:
                 self._value = value
+                self._rows = rows if rows is not None else []
 
             def fetchone(self) -> list[int]:
                 return [self._value]
 
+            def fetchall(self) -> list[tuple[object, ...]]:
+                return self._rows
+
         class FakeConn:
             def execute(self, sql: str, params: tuple[object, ...] | None = None) -> FakeCursor:
                 queries.append(sql)
-                if "sqlite_master" in sql and params == ("conversation_stats",):
+                if "sqlite_master" in sql and params == ("session_stats",):
                     return FakeCursor(1)
+                if "PRAGMA table_info" in sql:
+                    # sessions carries the message_count rollup column, so status
+                    # uses SUM(message_count) and never scans the messages table.
+                    return FakeCursor(0, rows=[(0, "message_count", "INTEGER", 0, None, 0)])
                 assert "COUNT(*) FROM messages_fts" not in sql
                 assert "COUNT(*) FROM messages" not in sql
                 if "SUM(message_count)" in sql:
                     return FakeCursor(11)
-                if "conversations" in sql:
+                if "sessions" in sql:
                     return FakeCursor(7)
-                if "raw_conversations" in sql:
+                if "raw_sessions" in sql:
                     return FakeCursor(9)
                 assert "messages_fts_docsize" not in sql
                 return FakeCursor(0)
@@ -140,21 +508,25 @@ class TestNoArchiveStatus:
         fake_db.exists.return_value = True
 
         class FakeCursor:
-            def __init__(self, value: int) -> None:
+            def __init__(self, value: int, rows: list[tuple[object, ...]] | None = None) -> None:
                 self._value = value
+                self._rows = rows if rows is not None else []
 
             def fetchone(self) -> list[int]:
                 return [self._value]
 
+            def fetchall(self) -> list[tuple[object, ...]]:
+                return self._rows
+
         class FakeConn:
             def execute(self, sql: str, params: tuple[object, ...] | None = None) -> FakeCursor:
-                if "sqlite_master" in sql and params == ("conversation_stats",):
+                if "sqlite_master" in sql and params == ("session_stats",):
                     return FakeCursor(1)
                 if "SUM(message_count)" in sql:
                     return FakeCursor(30)
-                if "conversations" in sql:
+                if "sessions" in sql:
                     return FakeCursor(3)
-                if "raw_conversations" in sql:
+                if "raw_sessions" in sql:
                     return FakeCursor(4)
                 return FakeCursor(0)
 
@@ -162,10 +534,10 @@ class TestNoArchiveStatus:
                 pass
 
         embedding_payload = {
-            "total_conversations": 3,
-            "embedded_conversations": 1,
+            "total_sessions": 3,
+            "embedded_sessions": 1,
             "embedded_messages": 10,
-            "pending_conversations": 2,
+            "pending_sessions": 2,
             "embedding_coverage_percent": 33.3,
             "retrieval_ready": False,
             "status": "partial",
@@ -174,8 +546,8 @@ class TestNoArchiveStatus:
             "failure_count": 1,
             "latest_catchup_run": {
                 "status": "stopped",
-                "processed_conversations": 2,
-                "planned_conversations": 3,
+                "processed_sessions": 2,
+                "planned_sessions": 3,
                 "embedded_messages": 10,
                 "error_count": 1,
             },
@@ -230,6 +602,25 @@ class TestNoArchiveStatus:
         )
 
         assert "87.5% indexed" in _combined_calls(env)
+
+    def test_daemon_status_archive_fts_does_not_require_materialized_action_events(self) -> None:
+        env = _make_app_env()
+
+        _show_daemon_status(
+            env,
+            {
+                "daemon_liveness": True,
+                "fts_readiness": {
+                    "indexed_surface": "blocks_fts",
+                    "action_events_required": False,
+                    "messages_ready": True,
+                    "action_events_ready": False,
+                    "coverage_pct": 100.0,
+                },
+            },
+        )
+
+        assert "FTS: [green]100.0% indexed[/green]" in _combined_calls(env)
 
     def test_direct_json_no_archive(self) -> None:
         """_show_direct_json when DB does not exist produces valid JSON."""
@@ -305,7 +696,7 @@ class TestStatusDiagnosticIntegration:
         output_lower = result.output.lower()
         assert result.exit_code == 0
         assert "traceback" not in output_lower
-        assert "schema" in output_lower or "polylogue reset" in output_lower
+        assert "daemon not running" in output_lower or "polylogued" in output_lower
 
     @pytest.mark.integration
     def test_status_subprocess_stale_pidfile(self, tmp_path: Path) -> None:
@@ -463,7 +854,7 @@ class TestDaemonStatus:
         }
         _show_daemon_status(env, status_payload)
         combined = _combined_calls(env)
-        assert "no conversations" not in combined.lower()
+        assert "no sessions" not in combined.lower()
         assert "running" in combined.lower()
 
 

@@ -170,7 +170,7 @@ Do not implement in slice 1 unless trivial after core work:
 
 - annotations/stars/pins/saved views;
 - recall pack builder;
-- browser receiver migration into daemon;
+- browser receiver move into daemon;
 - removing `polylogue watch`;
 - removing `polylogue browser-capture serve`;
 - splitting `polylogue-mcp`;

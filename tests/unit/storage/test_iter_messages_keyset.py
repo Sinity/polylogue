@@ -70,15 +70,15 @@ _SCENARIOS: dict[str, list[tuple[str, float | None, str]]] = {
 def _seed(conn: sqlite3.Connection, rows: list[tuple[str, float | None, str]]) -> None:
     conn.execute(
         """
-        INSERT INTO conversations (
-            conversation_id, provider_conversation_id, source_name, title, version
+        INSERT INTO sessions (
+            session_id, provider_session_id, source_name, title, version
         ) VALUES (?, 'p1', 'codex', 'Keyset', 1)
         """,
         (CONV,),
     )
     conn.executemany(
         """
-        INSERT INTO messages (message_id, conversation_id, role, sort_key, version, content_hash)
+        INSERT INTO messages (message_id, session_id, role, sort_key, version, content_hash)
         VALUES (?, ?, ?, ?, 1, ?)
         """,
         [(mid, CONV, role, sort_key, mid) for mid, sort_key, role in rows],
@@ -98,7 +98,7 @@ def _make_db(tmp_path: object, rows: list[tuple[str, float | None, str]]) -> str
 
 async def _reference_offset_walk(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
     chunk_size: int,
     role_values: tuple[str, ...] | list[str],
     limit: int | None,
@@ -108,8 +108,8 @@ async def _reference_offset_walk(
     offset = 0
     yielded = 0
     while True:
-        query = "SELECT * FROM messages WHERE conversation_id = ?"
-        params: list[str | int] = [conversation_id]
+        query = "SELECT * FROM messages WHERE session_id = ?"
+        params: list[str | int] = [session_id]
         if role_values:
             placeholders = ",".join("?" for _ in role_values)
             query += f" AND role IN ({placeholders})"
@@ -185,15 +185,15 @@ async def test_keyset_with_limit(tmp_path: object, scenario: str, chunk_size: in
     assert len(keyset) <= limit
 
 
-async def test_keyset_empty_conversation(tmp_path: object) -> None:
+async def test_keyset_empty_session(tmp_path: object) -> None:
     db_path = _make_db(tmp_path, _SCENARIOS["single"])
     async with aiosqlite.connect(db_path) as conn:
         conn.row_factory = aiosqlite.Row
         assert [m.message_id async for m in iter_messages(conn, "missing", chunk_size=2)] == []
 
 
-async def test_keyset_isolates_conversations(tmp_path: object) -> None:
-    """The keyset cursor must not bleed rows from a sibling conversation."""
+async def test_keyset_isolates_sessions(tmp_path: object) -> None:
+    """The keyset cursor must not bleed rows from a sibling session."""
     db_path = str(tmp_path) + "/iso.db"
     sync_conn = sqlite3.connect(db_path)
     sync_conn.row_factory = sqlite3.Row
@@ -204,14 +204,14 @@ async def test_keyset_isolates_conversations(tmp_path: object) -> None:
     ):
         sync_conn.execute(
             """
-            INSERT INTO conversations (
-                conversation_id, provider_conversation_id, source_name, title, version
+            INSERT INTO sessions (
+                session_id, provider_session_id, source_name, title, version
             ) VALUES (?, 'p', 'codex', 't', 1)
             """,
             (cid,),
         )
         sync_conn.executemany(
-            "INSERT INTO messages (message_id, conversation_id, role, sort_key, version, content_hash) VALUES (?, ?, ?, ?, 1, ?)",
+            "INSERT INTO messages (message_id, session_id, role, sort_key, version, content_hash) VALUES (?, ?, ?, ?, 1, ?)",
             [(mid, cid, role, sk, mid) for mid, sk, role in rows],
         )
     sync_conn.commit()

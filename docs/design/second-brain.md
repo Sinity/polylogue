@@ -101,7 +101,7 @@ ingestion), it completes in <100ms.
 
 ## Non-Goals
 
-- Not a full conversational search. The agent can use MCP search tools for
+- Not a full sessional search. The agent can use MCP search tools for
   deeper queries — this is just the "while you were away" summary.
 - Not a replacement for CLAUDE.md. Static conventions belong in CLAUDE.md;
   dynamic context belongs here.

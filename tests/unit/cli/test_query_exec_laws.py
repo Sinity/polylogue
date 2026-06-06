@@ -1,84 +1,105 @@
-"""Generalized contracts for CLI query execution helpers."""
+"""Archive query executor contracts and CLI search behavior.
+
+After the archive-route cleanup (#1743) the root query dispatch routes
+unconditionally to ``execute_archive_query``. These tests exercise that
+archive executor directly (``async_execute_query`` over a seeded/mocked archive
+``index.db``) and the user-facing CLI search surface via ``CliRunner``. The
+legacy ``_execute_query_plan`` / ``_handle_*`` route-handler algebra and its
+mock-based contract tests were retired with the executor itself.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import csv
-import io
 import json
-import tempfile
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import click
 import pytest
-import yaml
 from click.testing import CliRunner
-from hypothesis import HealthCheck, given, settings
-from rich.console import Console
 
 from polylogue.archive.message.roles import MessageRoleFilter, Role
-from polylogue.archive.models import Conversation
-from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics, QueryMissReason
-from polylogue.archive.query.search_hits import ConversationSearchHit
-from polylogue.archive.query.spec import ConversationQuerySpec, QuerySpecError
-from polylogue.cli.query import (
+from polylogue.archive.models import Session
+from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.archive.stats import ArchiveStats
+from polylogue.cli.query import async_execute_query, project_query_results
+from polylogue.cli.query_actions import apply_transform
+from polylogue.cli.query_contracts import (
     QueryAction,
+    QueryDeliveryTarget,
     QueryExecutionPlan,
     QueryMutationSpec,
     QueryOutputSpec,
-    QueryRoute,
-    async_execute_query,
-    no_results,
-    project_query_results,
-    resolve_query_route,
-    summary_to_dict,
-)
-from polylogue.cli.query_actions import apply_modifiers, apply_transform, delete_conversations
-from polylogue.cli.query_contracts import QueryDeliveryTarget
-from polylogue.cli.query_output import (
-    _output_summary_list,
-    _render_conversation_rich,
-    _send_output,
-    output_results,
-    output_stats_by_conversations,
-    output_stats_by_profile_ids,
-    output_stats_by_semantic_summaries,
-    output_stats_by_summaries,
-    output_stats_sql,
 )
 from polylogue.cli.shared.types import AppEnv
-from polylogue.core.json import JSONDocument
 from polylogue.services import build_runtime_services
 from polylogue.storage.action_events.artifacts import ActionEventArtifactState
-from polylogue.storage.runtime import ContentBlockRecord, ConversationRecord, MessageRecord
-from polylogue.types import ContentBlockType, ContentHash, ConversationId, MessageId, Provider, SemanticBlockType
-from polylogue.ui.facade_console import ConsoleLike
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
+from polylogue.surfaces.payloads import decode_search_cursor
+from polylogue.types import Provider
 from tests.infra.builders import make_conv, make_msg
-from tests.infra.strategies import (
-    ConversationSummarySpec,
-    QueryDeleteCase,
-    QueryMutationCase,
-    SendOutputCase,
-    SummaryOutputCase,
-    SummaryStatsCase,
-    build_conversation_summary,
-    build_message_counts,
-    query_delete_case_strategy,
-    query_mutation_case_strategy,
-    send_output_case_strategy,
-    summary_output_case_strategy,
-    summary_stats_case_strategy,
-)
 
 pytestmark = pytest.mark.query_routing
 SearchWorkspace = dict[str, Path]
 
 
+@pytest.fixture
+def search_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
+    """CLI workspace seeded with searchable sessions in the archive store.
+
+    The query path the root CLI reads resolves to
+    ``archive_root/index.db``, so the builders target that store directly.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from tests.infra.storage_records import SessionBuilder
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_dir"]))
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(cli_workspace["archive_root"]))
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+    index_db = cli_workspace["archive_root"] / "index.db"
+    now = datetime.now(timezone.utc)
+
+    (
+        SessionBuilder(index_db, "conv1")
+        .provider("chatgpt")
+        .title("Python Error Handling")
+        .created_at((now - timedelta(days=1)).isoformat())
+        .updated_at((now - timedelta(days=1)).isoformat())
+        .add_message("m1", role="user", text="How to handle exceptions in Python?")
+        .add_message("m2", role="assistant", text="Use try-except blocks for Python exception handling.")
+        .save()
+    )
+    (
+        SessionBuilder(index_db, "conv2")
+        .provider("claude-ai")
+        .title("JavaScript Async Patterns")
+        .created_at((now - timedelta(days=10)).isoformat())
+        .updated_at((now - timedelta(days=10)).isoformat())
+        .add_message("m3", role="user", text="Explain async/await in JavaScript")
+        .add_message("m4", role="assistant", text="Async/await is JavaScript syntax for promises.")
+        .save()
+    )
+    (
+        SessionBuilder(index_db, "conv3")
+        .provider("claude-code")
+        .title("Rust Ownership")
+        .created_at((now - timedelta(hours=6)).isoformat())
+        .updated_at((now - timedelta(hours=6)).isoformat())
+        .add_message("m5", role="user", text="What is ownership in Rust?")
+        .add_message("m6", role="assistant", text="Rust ownership ensures memory safety without garbage collection.")
+        .save()
+    )
+
+    return cli_workspace
+
+
 def _ready_action_event_state() -> ActionEventArtifactState:
     return ActionEventArtifactState(
-        source_conversations=1,
-        materialized_conversations=1,
+        source_sessions=1,
+        materialized_sessions=1,
         materialized_rows=1,
         fts_rows=1,
     )
@@ -92,14 +113,14 @@ def _make_env(*, repo: MagicMock | None = None, config: MagicMock | None = None)
     if repo is not None:
         if not isinstance(repo.get_render_projection, AsyncMock):
             repo.get_render_projection = AsyncMock(return_value=None)
-        if not isinstance(repo.get_conversation_stats, AsyncMock):
-            repo.get_conversation_stats = AsyncMock(return_value={})
+        if not isinstance(repo.get_session_stats, AsyncMock):
+            repo.get_session_stats = AsyncMock(return_value={})
         if not isinstance(repo.get_message_counts_batch, AsyncMock):
             repo.get_message_counts_batch = AsyncMock(return_value={})
         if not isinstance(repo.aggregate_message_stats, AsyncMock):
             repo.aggregate_message_stats = AsyncMock(return_value={})
-        if not isinstance(repo.get_conversations_batch, AsyncMock):
-            repo.get_conversations_batch = AsyncMock(return_value=[])
+        if not isinstance(repo.get_sessions_batch, AsyncMock):
+            repo.get_sessions_batch = AsyncMock(return_value=[])
         if not isinstance(repo.get_messages_batch, AsyncMock):
             repo.get_messages_batch = AsyncMock(return_value={})
         if not isinstance(repo.get_attachments_batch, AsyncMock):
@@ -115,55 +136,6 @@ def _as_mock(value: object) -> MagicMock:
     if not isinstance(value, MagicMock):
         raise TypeError(f"expected MagicMock, got {type(value).__name__}")
     return value
-
-
-def _as_console_like(value: object) -> ConsoleLike:
-    if not isinstance(value, ConsoleLike):
-        raise TypeError(f"expected ConsoleLike, got {type(value).__name__}")
-    return value
-
-
-def _fields_arg(fields: tuple[str, ...] | None) -> str | None:
-    return None if not fields else ",".join(fields)
-
-
-def _structured_rows(case: SummaryOutputCase) -> list[JSONDocument]:
-    rows = [summary_to_dict(build_conversation_summary(spec), spec.message_count) for spec in case.summaries]
-    if case.selected_fields:
-        selected = set(case.selected_fields)
-        rows = [{key: value for key, value in row.items() if key in selected} for row in rows]
-    return rows
-
-
-def _csv_rows(case: SummaryOutputCase) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
-    for spec in case.summaries:
-        summary = build_conversation_summary(spec)
-        rows.append(
-            {
-                "id": spec.conversation_id,
-                "date": summary.display_date.strftime("%Y-%m-%d") if summary.display_date else "",
-                "provider": spec.provider,
-                "title": summary.display_title or "",
-                "messages": str(spec.message_count),
-                "tags": ",".join(spec.tags),
-                "summary": spec.summary or "",
-            }
-        )
-    return rows
-
-
-def _sample_summary_spec() -> ConversationSummarySpec:
-    return ConversationSummarySpec(
-        conversation_id="conv-law-1",
-        provider="claude-ai",
-        title="Lawful Conversation",
-        summary="summary",
-        tags=("law",),
-        created_at=None,
-        updated_at=None,
-        message_count=2,
-    )
 
 
 def _delivery_targets(*destinations: str) -> tuple[QueryDeliveryTarget, ...]:
@@ -210,58 +182,7 @@ def _mutation_spec(
     )
 
 
-def _build_plan(case: str) -> QueryExecutionPlan:
-    selection = MagicMock()
-    selection.similar_text = None
-    selection.cursor = None
-    selection.to_plan.return_value = ConversationQuerySpec().to_plan()
-    action = QueryAction.SHOW
-    output = _output_spec()
-    mutation = _mutation_spec()
-    stats_dimension = None
-
-    if case == "count":
-        action = QueryAction.COUNT
-    elif case == "stats_sql":
-        action = QueryAction.STATS
-    elif case == "stats_by_summaries":
-        action = QueryAction.STATS_BY
-        stats_dimension = "provider"
-    elif case == "stats_by_semantic_summaries":
-        action = QueryAction.STATS_BY
-        stats_dimension = "action"
-    elif case == "stats_by_profile_summaries":
-        action = QueryAction.STATS_BY
-        stats_dimension = "repo"
-    elif case == "stream":
-        action = QueryAction.STREAM
-        output = _output_spec(
-            output_format="json",
-            destinations=("stdout", "browser"),
-            dialogue_only=True,
-            transform="strip-tools",
-        )
-    elif case == "modify":
-        action = QueryAction.MODIFY
-        mutation = _mutation_spec(set_meta=(("priority", "1"),), force=True)
-    elif case == "delete":
-        action = QueryAction.DELETE
-        mutation = _mutation_spec(delete_matched=True, force=True)
-    elif case == "open":
-        action = QueryAction.OPEN
-    elif case == "summary_list":
-        output = _output_spec(list_mode=True)
-
-    return QueryExecutionPlan(
-        selection=selection,
-        action=action,
-        output=output,
-        mutation=mutation,
-        stats_dimension=stats_dimension,
-    )
-
-
-def _sample_conversation() -> Conversation:
+def _sample_session() -> Session:
     return make_conv(
         id="conv-transform",
         provider=Provider.CLAUDE_AI,
@@ -280,859 +201,24 @@ def _sample_conversation() -> Conversation:
     )
 
 
-def _sample_output_conversation(conversation_id: str = "conv-output") -> Conversation:
-    return make_conv(
-        id=conversation_id,
-        provider=Provider.CLAUDE_AI,
-        title="Output Contract",
-        messages=[
-            make_msg(id=f"{conversation_id}-user", role=Role.USER, text="hello"),
-            make_msg(id=f"{conversation_id}-assistant", role=Role.ASSISTANT, text="world"),
-        ],
-    )
-
-
-def _sample_semantic_conversation() -> Conversation:
-    return make_conv(
-        id="conv-semantic",
-        provider=Provider.CLAUDE_CODE,
-        title="Semantic Slice Contract",
-        messages=[
-            make_msg(id="m-user", role=Role.USER, text="inspect the repo"),
-            make_msg(
-                id="m-other",
-                role=Role.ASSISTANT,
-                text="mystery tool",
-                content_blocks=[
-                    {
-                        "type": "tool_use",
-                        "tool_name": "Mystery",
-                        "tool_id": "tool-other",
-                        "tool_input": {"path": "/workspace/polylogue/README.md"},
-                    }
-                ],
-            ),
-            make_msg(
-                id="m-edit",
-                role=Role.ASSISTANT,
-                text="edit models",
-                content_blocks=[
-                    {
-                        "type": "tool_use",
-                        "tool_name": "Edit",
-                        "tool_id": "tool-edit",
-                        "tool_input": {"file_path": "/workspace/polylogue/polylogue/archive/models.py"},
-                    }
-                ],
-            ),
-            make_msg(
-                id="m-search",
-                role=Role.ASSISTANT,
-                text="search docs",
-                content_blocks=[
-                    {
-                        "type": "tool_use",
-                        "tool_name": "Grep",
-                        "tool_id": "tool-search",
-                        "tool_input": {"pattern": "polylogue"},
-                    }
-                ],
-            ),
-        ],
-    )
-
-
-def _make_recording_env() -> tuple[AppEnv, io.StringIO]:
-    buffer = io.StringIO()
-    env = _make_env()
-    env.ui.console = _as_console_like(Console(file=buffer, width=120, force_terminal=False, color_system=None))
-    return env, buffer
-
-
-def _conversation_record(
-    conversation_id: str,
-    *,
-    source_name: str,
-    provider_conversation_id: str,
-    title: str,
-    created_at: str,
-    updated_at: str,
-    sort_key: float,
-    content_hash: str,
-) -> ConversationRecord:
-    return ConversationRecord(
-        conversation_id=ConversationId(conversation_id),
-        source_name=source_name,
-        provider_conversation_id=provider_conversation_id,
-        title=title,
-        created_at=created_at,
-        updated_at=updated_at,
-        sort_key=sort_key,
-        content_hash=ContentHash(content_hash),
-    )
-
-
-def _content_block_record(
-    block_id: str,
-    *,
-    message_id: str,
-    conversation_id: str,
-    block_index: int,
-    block_type: str,
-    tool_name: str,
-    tool_input: dict[str, object],
-    semantic_type: str,
-) -> ContentBlockRecord:
-    return ContentBlockRecord(
-        block_id=block_id,
-        message_id=MessageId(message_id),
-        conversation_id=ConversationId(conversation_id),
-        block_index=block_index,
-        type=ContentBlockType.from_string(block_type),
-        text=None,
-        tool_name=tool_name,
-        tool_id=None,
-        tool_input=json.dumps(tool_input),
-        semantic_type=SemanticBlockType.from_string(semantic_type),
-    )
-
-
-def _message_record(
-    message_id: str,
-    *,
-    conversation_id: str,
-    text: str,
-    sort_key: float,
-    content_hash: str,
-    content_blocks: list[ContentBlockRecord],
-) -> MessageRecord:
-    return MessageRecord(
-        message_id=MessageId(message_id),
-        conversation_id=ConversationId(conversation_id),
-        role=Role.ASSISTANT,
-        text=text,
-        sort_key=sort_key,
-        content_hash=ContentHash(content_hash),
-        content_blocks=content_blocks,
-    )
-
-
-def _summary_group_key(spec: ConversationSummarySpec, dimension: str) -> str:
-    if dimension == "provider":
-        return spec.provider or "unknown"
-    if dimension == "month":
-        dt = spec.updated_at or spec.created_at
-        return dt.strftime("%Y-%m") if dt else "unknown"
-    if dimension == "year":
-        dt = spec.updated_at or spec.created_at
-        return dt.strftime("%Y") if dt else "unknown"
-    if dimension == "day":
-        dt = spec.updated_at or spec.created_at
-        return dt.strftime("%Y-%m-%d") if dt else "unknown"
-    return "all"
-
-
-@settings(max_examples=60, deadline=None)
-@given(case=query_mutation_case_strategy())
-def test_apply_modifiers_contract(case: QueryMutationCase) -> None:
-    repo = MagicMock()
-    repo.update_metadata = AsyncMock()
-    repo.add_tag = AsyncMock()
-    env = _make_env(repo=repo)
-    mock_confirm = _as_mock(env.ui.confirm)
-    mock_print = _as_mock(env.ui.console.print)
-    mock_confirm.return_value = case.confirm
-    results = [build_conversation_summary(spec) for spec in case.summaries]
-    mutation = _mutation_spec(
-        set_meta=tuple(case.set_meta),
-        add_tags=tuple(case.add_tags),
-        dry_run=case.dry_run,
-        force=case.force,
-    )
-
-    with patch("click.echo") as mock_echo:
-        mock_echo = _as_mock(mock_echo)
-        asyncio.run(apply_modifiers(env, results, mutation, repo))
-
-    should_confirm = len(results) > 10 and not case.force and not case.dry_run
-    if should_confirm:
-        mock_confirm.assert_called_once_with("Proceed?", default=False)
-    else:
-        mock_confirm.assert_not_called()
-
-    should_apply = not case.dry_run and (not should_confirm or case.confirm)
-    expected_meta_calls = len(results) * len(case.set_meta) if should_apply else 0
-    expected_tag_calls = len(results) * len(case.add_tags) if should_apply else 0
-
-    assert repo.update_metadata.await_count == expected_meta_calls
-    assert repo.add_tag.await_count == expected_tag_calls
-
-    if case.dry_run:
-        printed = " ".join(call.args[0] for call in mock_print.call_args_list if call.args)
-        assert "Sample of affected conversations" in printed
-        assert any(spec.conversation_id[:24] in printed for spec in case.summaries[:5])
-    elif should_apply:
-        messages = [call.args[0] for call in mock_echo.call_args_list if call.args]
-        if case.add_tags:
-            assert f"Added tags to {len(results)} conversations" in messages
-        if case.set_meta:
-            assert f"Set {len(results) * len(case.set_meta)} metadata field(s)" in messages
-
-
-@settings(max_examples=60, deadline=None)
-@given(case=query_delete_case_strategy())
-def test_delete_conversations_contract(case: QueryDeleteCase) -> None:
-    repo = MagicMock()
-    repo.delete_conversation = AsyncMock(side_effect=list(case.delete_results))
-    env = _make_env(repo=repo)
-    mock_confirm = _as_mock(env.ui.confirm)
-    mock_confirm.return_value = case.confirm
-    results = [build_conversation_summary(spec) for spec in case.summaries]
-    mutation = _mutation_spec(dry_run=case.dry_run, force=case.force, delete_matched=True)
-
-    with patch("click.echo") as mock_echo:
-        mock_echo = _as_mock(mock_echo)
-        asyncio.run(delete_conversations(env, results, mutation, repo))
-
-    should_confirm = not case.force and not case.dry_run
-    if should_confirm:
-        mock_confirm.assert_called_once_with("Proceed?", default=False)
-    else:
-        mock_confirm.assert_not_called()
-
-    should_delete = not case.dry_run and (case.force or case.confirm)
-    assert repo.delete_conversation.await_count == (len(results) if should_delete else 0)
-
-    echoed = [call.args[0] for call in mock_echo.call_args_list if call.args]
-    provider_counts: dict[str, int] = {}
-    display_dates: list[str] = []
-    arrow = "\u2192"
-    for spec in case.summaries:
-        provider_counts[spec.provider] = provider_counts.get(spec.provider, 0) + 1
-        display_date = build_conversation_summary(spec).display_date
-        if display_date is not None:
-            display_dates.append(display_date.strftime("%Y-%m-%d"))
-
-    if case.dry_run or not case.force:
-        echoed_text = "\n".join(echoed)
-        for provider, count in provider_counts.items():
-            assert f"{provider}: {count}" in echoed_text
-        if display_dates:
-            if min(display_dates) == max(display_dates):
-                assert f"Date: {display_dates[0]}" in echoed_text
-            else:
-                assert f"Date range: {min(display_dates)} {arrow} {max(display_dates)}" in echoed_text
-
-    if should_delete:
-        assert f"Deleted {sum(case.delete_results)} conversation(s)" in echoed
-
-
-@settings(max_examples=40, deadline=None)
-@given(case=summary_output_case_strategy())
-@pytest.mark.parametrize("output_format", ["json", "yaml", "csv", "text"])
-def test_output_summary_list_contract(case: SummaryOutputCase, output_format: str) -> None:
-    repo = MagicMock()
-    repo.get_message_counts_batch = AsyncMock(return_value=build_message_counts(case.summaries))
-    env = _make_env(repo=repo)
-    summaries = [build_conversation_summary(spec) for spec in case.summaries]
-    output = _output_spec(output_format=output_format)
-    if output_format in {"json", "yaml"}:
-        output = _output_spec(output_format=output_format, fields=_fields_arg(case.selected_fields))
-    _as_mock(env.ui).plain = output_format == "text"
-
-    with patch("click.echo") as mock_echo:
-        mock_echo = _as_mock(mock_echo)
-        asyncio.run(_output_summary_list(env, summaries, output, repo))
-
-    if output_format == "json":
-        # #1618: envelope shape carries items/total/limit/offset.
-        payload = json.loads(mock_echo.call_args[0][0])
-        assert payload["items"] == _structured_rows(case)
-        assert payload["total"] == len(case.summaries)
-    elif output_format == "yaml":
-        payload = yaml.safe_load(mock_echo.call_args[0][0])
-        assert payload["items"] == _structured_rows(case)
-        assert payload["total"] == len(case.summaries)
-    elif output_format == "csv":
-        assert list(csv.DictReader(io.StringIO(mock_echo.call_args[0][0]))) == _csv_rows(case)
-    else:
-        assert mock_echo.call_count == 1
-        rendered = mock_echo.call_args[0][0]
-        for spec in case.summaries:
-            assert spec.conversation_id[:24] in rendered
-
-
-@settings(
-    max_examples=50,
-    deadline=None,
-    suppress_health_check=[HealthCheck.function_scoped_fixture],
-)
-@given(case=send_output_case_strategy())
-def test_send_output_routes_destination_contract(case: SendOutputCase) -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        env = _make_env()
-        content = "test output"
-        output_file = tmp_path / "output.txt"
-        destinations: list[str] = []
-        if case.to_stdout:
-            destinations.append("stdout")
-        if case.to_file:
-            destinations.append(str(output_file))
-        if case.to_browser:
-            destinations.append("browser")
-        if case.to_clipboard:
-            destinations.append("clipboard")
-
-        with (
-            patch("click.echo") as mock_echo,
-            patch("polylogue.cli.query_output._open_in_browser") as mock_browser,
-            patch("polylogue.cli.query_output._copy_to_clipboard") as mock_clipboard,
-        ):
-            mock_echo = _as_mock(mock_echo)
-            mock_browser = _as_mock(mock_browser)
-            mock_clipboard = _as_mock(mock_clipboard)
-            _send_output(env, content, _delivery_targets(*destinations), case.output_format, None)
-
-        assert mock_echo.call_count == (1 if case.to_stdout else 0)
-        assert mock_browser.call_count == (1 if case.to_browser else 0)
-        assert mock_clipboard.call_count == (1 if case.to_clipboard else 0)
-        if case.to_file:
-            assert output_file.read_text(encoding="utf-8") == content
-        else:
-            assert not output_file.exists()
-
-
-@pytest.mark.parametrize(
-    ("case", "can_use_summaries", "expected_route"),
-    [
-        ("count", False, QueryRoute.COUNT),
-        ("stats_sql", True, QueryRoute.STATS_SQL),
-        ("stats_by_summaries", True, QueryRoute.SUMMARY_STATS),
-        ("stats_by_summaries", False, QueryRoute.STATS_BY),
-        ("modify", True, QueryRoute.SUMMARY_MODIFY),
-        ("modify", False, QueryRoute.MODIFY),
-        ("delete", True, QueryRoute.SUMMARY_DELETE),
-        ("delete", False, QueryRoute.DELETE),
-        ("open", False, QueryRoute.OPEN),
-        ("summary_list", True, QueryRoute.SUMMARY_LIST),
-        ("summary_list", False, QueryRoute.SHOW),
-        ("show", False, QueryRoute.SHOW),
-    ],
-)
-def test_resolve_query_route_contract(case: str, can_use_summaries: bool, expected_route: QueryRoute) -> None:
-    plan = _build_plan(case)
-    assert resolve_query_route(plan, can_use_summaries=can_use_summaries) == expected_route
-
-
-def test_resolve_query_route_uses_full_stats_for_action_dimension() -> None:
-    plan = QueryExecutionPlan(
-        selection=ConversationQuerySpec(),
-        action=QueryAction.STATS_BY,
-        output=_output_spec(),
-        mutation=_mutation_spec(),
-        stats_dimension="action",
-    )
-
-    assert resolve_query_route(plan, can_use_summaries=True) == QueryRoute.STATS_BY
-
-
-def test_resolve_query_route_uses_full_stats_for_tool_dimension() -> None:
-    plan = QueryExecutionPlan(
-        selection=ConversationQuerySpec(),
-        action=QueryAction.STATS_BY,
-        output=_output_spec(),
-        mutation=_mutation_spec(),
-        stats_dimension="tool",
-    )
-
-    assert resolve_query_route(plan, can_use_summaries=True) == QueryRoute.STATS_BY
-
-
-@settings(max_examples=40, deadline=None)
-@given(case=summary_stats_case_strategy())
-def test_output_stats_by_summaries_contract(case: SummaryStatsCase) -> None:
-    env, buffer = _make_recording_env()
-    summaries = [build_conversation_summary(spec) for spec in case.summaries]
-    msg_counts = build_message_counts(case.summaries)
-
-    output_stats_by_summaries(env, summaries, msg_counts, case.dimension)
-
-    rendered = buffer.getvalue()
-    assert f"Matched: {len(case.summaries)} conversations (by {case.dimension})" in rendered
-
-    grouped_counts: dict[str, tuple[int, int]] = {}
-    for spec in case.summaries:
-        key = _summary_group_key(spec, case.dimension)
-        convs, messages = grouped_counts.get(key, (0, 0))
-        grouped_counts[key] = (convs + 1, messages + spec.message_count)
-
-    for key, (convs, messages) in grouped_counts.items():
-        assert key in rendered
-        assert f"{convs:,}" in rendered
-        assert f"{messages:,}" in rendered
-
-    assert "TOTAL" in rendered
-    assert f"{len(case.summaries):,}" in rendered
-    assert f"{sum(spec.message_count for spec in case.summaries):,}" in rendered
-
-
-def test_output_stats_by_summaries_json_contract() -> None:
-    env = _make_env()
-    summaries = [
-        build_conversation_summary(
-            ConversationSummarySpec(
-                conversation_id="conv-a",
-                provider="claude-ai",
-                title="A",
-                summary="sa",
-                tags=("x",),
-                created_at=None,
-                updated_at=None,
-                message_count=3,
-            )
-        ),
-        build_conversation_summary(
-            ConversationSummarySpec(
-                conversation_id="conv-b",
-                provider="chatgpt",
-                title="B",
-                summary="sb",
-                tags=("y",),
-                created_at=None,
-                updated_at=None,
-                message_count=4,
-            )
-        ),
-    ]
-    msg_counts = {"conv-a": 3, "conv-b": 4}
-
-    with patch("click.echo") as mock_echo:
-        mock_echo = _as_mock(mock_echo)
-        output_stats_by_summaries(env, summaries, msg_counts, "provider", output_format="json")
-
-    payload = json.loads(mock_echo.call_args.args[0])
-    _as_mock(env.ui.console.print).assert_not_called()
-    assert payload == {
-        "dimension": "provider",
-        "multi_membership": False,
-        "rows": [
-            {"group": "chatgpt", "conversations": 1, "messages": 4},
-            {"group": "claude-ai", "conversations": 1, "messages": 3},
-        ],
-        "summary": {"group": "TOTAL", "conversations": 2, "messages": 7},
-    }
-
-
-def test_output_stats_by_summaries_empty_json_contract(capsys: pytest.CaptureFixture[str]) -> None:
-    env = _make_env()
-    selection = ConversationQuerySpec.from_params({"provider": "claude-ai"})
-
-    with pytest.raises(SystemExit) as exc_info:
-        output_stats_by_summaries(
-            env,
-            [],
-            {},
-            "provider",
-            selection=selection,
-            output_format="json",
-        )
-
-    assert exc_info.value.code == 2
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "error"
-    assert payload["code"] == "no_results"
-    assert payload["message"] == "No conversations matched filters."
-    assert payload["details"]["filters"] == ["provider: claude-ai"]
-
-
-@pytest.mark.asyncio
-async def test_output_stats_by_semantic_summaries_json_contract() -> None:
-    env = _make_env()
-    repo = MagicMock()
-    repo.get_action_event_artifact_state = AsyncMock(
-        return_value=ActionEventArtifactState(
-            source_conversations=1,
-            materialized_conversations=0,
-            materialized_rows=0,
-            fts_rows=0,
-        )
-    )
-    repo.get_conversations_batch = AsyncMock(
-        side_effect=[
-            [
-                ConversationRecord(
-                    conversation_id=ConversationId("conv-law-1"),
-                    source_name="claude-code",
-                    provider_conversation_id="ext-conv-law-1",
-                    title="Read contract",
-                    created_at="2025-01-01T00:00:00Z",
-                    updated_at="2025-01-01T00:00:00Z",
-                    sort_key=1735689600,
-                    content_hash=ContentHash("hash-read"),
-                )
-            ],
-            [
-                ConversationRecord(
-                    conversation_id=ConversationId("conv-b"),
-                    source_name="claude-code",
-                    provider_conversation_id="ext-conv-b",
-                    title="Shell contract",
-                    created_at="2025-01-01T00:00:00Z",
-                    updated_at="2025-01-01T00:00:00Z",
-                    sort_key=1735689600,
-                    content_hash=ContentHash("hash-shell"),
-                )
-            ],
-        ]
-    )
-    repo.get_messages_batch = AsyncMock(
-        side_effect=[
-            {
-                "conv-law-1": [
-                    _message_record(
-                        "m-read",
-                        conversation_id="conv-law-1",
-                        text="read file",
-                        sort_key=1735689600,
-                        content_hash="msg-hash-read",
-                        content_blocks=[
-                            _content_block_record(
-                                "blk-read",
-                                message_id="m-read",
-                                conversation_id="conv-law-1",
-                                block_index=0,
-                                block_type="tool_use",
-                                tool_name="Read",
-                                tool_input={"file_path": "/tmp/a.py"},
-                                semantic_type="file_read",
-                            )
-                        ],
-                    )
-                ]
-            },
-            {
-                "conv-b": [
-                    _message_record(
-                        "m-shell",
-                        conversation_id="conv-b",
-                        text="run tests",
-                        sort_key=1735689600,
-                        content_hash="msg-hash-shell",
-                        content_blocks=[
-                            _content_block_record(
-                                "blk-shell",
-                                message_id="m-shell",
-                                conversation_id="conv-b",
-                                block_index=0,
-                                block_type="tool_use",
-                                tool_name="Bash",
-                                tool_input={"command": "pytest -q"},
-                                semantic_type="shell",
-                            )
-                        ],
-                    )
-                ]
-            },
-        ]
-    )
-    summaries = [
-        build_conversation_summary(_sample_summary_spec()),
-        build_conversation_summary(
-            ConversationSummarySpec(
-                conversation_id="conv-b",
-                provider="claude-code",
-                title="Shell contract",
-                summary="summary",
-                tags=("law",),
-                created_at=None,
-                updated_at=None,
-                message_count=1,
-            )
-        ),
-    ]
-
-    with patch("click.echo") as mock_echo:
-        mock_echo = _as_mock(mock_echo)
-        await output_stats_by_semantic_summaries(
-            env,
-            summaries,
-            repo,
-            "action",
-            selection=ConversationQuerySpec(),
-            output_format="json",
-            batch_size=1,
-        )
-
-    payload = json.loads(mock_echo.call_args.args[0])
-    _as_mock(env.ui.console.print).assert_not_called()
-    assert payload == {
-        "dimension": "action",
-        "multi_membership": True,
-        "rows": [
-            {"group": "file_read", "conversations": 1, "facts": 1, "messages": 1},
-            {"group": "shell", "conversations": 1, "facts": 1, "messages": 1},
-        ],
-        "summary": {"group": "MATCHED", "conversations": 2, "facts": 2, "messages": 2},
-    }
-    assert repo.get_conversations_batch.await_count == 2
-    assert repo.get_messages_batch.await_count == 2
-
-
-@pytest.mark.asyncio
-async def test_output_stats_by_profile_ids_empty_json_contract(capsys: pytest.CaptureFixture[str]) -> None:
-    env = _make_env()
-    selection = ConversationQuerySpec.from_params({"provider": "claude-ai"})
-
-    with pytest.raises(SystemExit) as exc_info:
-        await output_stats_by_profile_ids(
-            env,
-            [],
-            MagicMock(),
-            "repo",
-            selection=selection,
-            output_format="json",
-        )
-
-    assert exc_info.value.code == 2
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "error"
-    assert payload["code"] == "no_results"
-    assert payload["message"] == "No conversations matched filters."
-    assert payload["details"]["filters"] == ["provider: claude-ai"]
-
-
-def test_output_stats_by_conversations_empty_json_contract(capsys: pytest.CaptureFixture[str]) -> None:
-    env = _make_env()
-    selection = ConversationQuerySpec.from_params({"provider": "claude-ai"})
-
-    with pytest.raises(SystemExit) as exc_info:
-        output_stats_by_conversations(
-            env,
-            [],
-            "provider",
-            selection=selection,
-            output_format="json",
-        )
-
-    assert exc_info.value.code == 2
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "error"
-    assert payload["code"] == "no_results"
-    assert payload["message"] == "No conversations matched filters."
-    assert payload["details"]["filters"] == ["provider: claude-ai"]
-
-
-def test_output_stats_by_conversations_action_slice_respects_selected_action() -> None:
-    env = _make_env()
-    conversation = _sample_semantic_conversation()
-    selection = ConversationQuerySpec(action_terms=("other",))
-
-    with patch("click.echo") as mock_echo:
-        output_stats_by_conversations(
-            env,
-            [conversation],
-            "tool",
-            selection=selection,
-            output_format="json",
-        )
-
-    payload = json.loads(mock_echo.call_args.args[0])
-    assert payload == {
-        "dimension": "tool",
-        "multi_membership": True,
-        "rows": [
-            {"group": "mystery", "conversations": 1, "facts": 1, "messages": 1},
-        ],
-        "summary": {"group": "MATCHED", "conversations": 1, "facts": 1, "messages": 1},
-    }
-
-
-def test_output_stats_by_conversations_action_slice_respects_selected_tool() -> None:
-    env = _make_env()
-    conversation = _sample_semantic_conversation()
-    selection = ConversationQuerySpec(tool_terms=("edit",))
-
-    with patch("click.echo") as mock_echo:
-        output_stats_by_conversations(
-            env,
-            [conversation],
-            "action",
-            selection=selection,
-            output_format="json",
-        )
-
-    payload = json.loads(mock_echo.call_args.args[0])
-    assert payload == {
-        "dimension": "action",
-        "multi_membership": True,
-        "rows": [
-            {"group": "file_edit", "conversations": 1, "facts": 1, "messages": 1},
-        ],
-        "summary": {"group": "MATCHED", "conversations": 1, "facts": 1, "messages": 1},
-    }
-
-
-def test_output_stats_by_conversations_action_slice_respects_selected_path() -> None:
-    env = _make_env()
-    conversation = _sample_semantic_conversation()
-    selection = ConversationQuerySpec(referenced_path=("/workspace/polylogue/README.md",))
-
-    with patch("click.echo") as mock_echo:
-        output_stats_by_conversations(
-            env,
-            [conversation],
-            "action",
-            selection=selection,
-            output_format="json",
-        )
-
-    payload = json.loads(mock_echo.call_args.args[0])
-    assert payload == {
-        "dimension": "action",
-        "multi_membership": True,
-        "rows": [
-            {"group": "other", "conversations": 1, "facts": 1, "messages": 1},
-        ],
-        "summary": {"group": "MATCHED", "conversations": 1, "facts": 1, "messages": 1},
-    }
-
-
-def test_output_results_no_results_contract() -> None:
-    env = _make_env()
-    output = _output_spec()
-
-    with (
-        patch("polylogue.cli.query_output.no_results", side_effect=SystemExit(2)) as mock_no_results,
-        patch("polylogue.cli.query_output._render_conversation_rich") as mock_render,
-        patch("polylogue.cli.query_output._send_output") as mock_send,
-        patch("polylogue.cli.query_output.format_conversation") as mock_format,
-        pytest.raises(SystemExit) as exc_info,
-    ):
-        mock_no_results = _as_mock(mock_no_results)
-        mock_render = _as_mock(mock_render)
-        mock_send = _as_mock(mock_send)
-        mock_format = _as_mock(mock_format)
-        output_results(env, [], output)
-
-    assert exc_info.value.code == 2
-    mock_no_results.assert_called_once_with(env, output, selection=None, diagnostics=None)
-    mock_render.assert_not_called()
-    mock_send.assert_not_called()
-    mock_format.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    ("label", "plain", "conversations", "params", "expected"),
-    [
-        (
-            "single-rich-markdown",
-            False,
-            [_sample_output_conversation()],
-            {"output_format": "markdown", "output": "stdout", "list_mode": False},
-            "render-rich",
-        ),
-        (
-            "single-nonrich",
-            True,
-            [_sample_output_conversation()],
-            {"output_format": "html", "output": "stdout,browser", "fields": "id,title"},
-            "format-single",
-        ),
-        (
-            "multi-list",
-            True,
-            [_sample_output_conversation("conv-output-1"), _sample_output_conversation("conv-output-2")],
-            {"output_format": "json", "output": "stdout", "fields": "id,provider"},
-            "format-list",
-        ),
-    ],
-)
-def test_output_results_projection_contract(
-    label: str, plain: bool, conversations: list[Conversation], params: dict[str, object], expected: str
-) -> None:
-    del label
-    env = _make_env()
-    _as_mock(env.ui).plain = plain
-    output = QueryOutputSpec.from_params(params)
-
-    with (
-        patch("polylogue.cli.query_output._render_conversation_rich") as mock_render,
-        patch("polylogue.cli.query_output._send_output") as mock_send,
-        patch("polylogue.cli.query_output.format_conversation", return_value="<html>ok</html>") as mock_format,
-        patch("polylogue.cli.query_output._format_list", return_value="formatted-list") as mock_format_list,
-    ):
-        mock_render = _as_mock(mock_render)
-        mock_send = _as_mock(mock_send)
-        mock_format = _as_mock(mock_format)
-        mock_format_list = _as_mock(mock_format_list)
-        output_results(env, conversations, output)
-
-    if expected == "render-rich":
-        mock_render.assert_called_once_with(env, conversations[0])
-        mock_send.assert_not_called()
-        mock_format.assert_not_called()
-        mock_format_list.assert_not_called()
-    elif expected == "format-single":
-        mock_format.assert_called_once_with(conversations[0], "html", "id,title")
-        mock_send.assert_called_once_with(
-            env,
-            "<html>ok</html>",
-            _delivery_targets("stdout", "browser"),
-            "html",
-            conversations[0],
-        )
-        mock_render.assert_not_called()
-        mock_format_list.assert_not_called()
-    else:
-        mock_format_list.assert_called_once_with(conversations, "json", "id,provider")
-        mock_send.assert_called_once_with(env, "formatted-list", _delivery_targets("stdout"), "json", None)
-        mock_render.assert_not_called()
-        mock_format.assert_not_called()
-
-
-def test_render_conversation_rich_contract() -> None:
-    env, buffer = _make_recording_env()
-    conversation = make_conv(
-        id="conv-rich",
-        provider=Provider.CLAUDE_AI,
-        title="Rich Contract",
-        messages=[
-            make_msg(id="m-user", role=Role.USER, text="**Hello** world"),
-            make_msg(
-                id="m-thinking",
-                role=Role.ASSISTANT,
-                text="x" * 620,
-                content_blocks=[{"type": "thinking"}],
-            ),
-            make_msg(id="m-empty", role=Role.ASSISTANT, text=""),
-        ],
-    )
-
-    _render_conversation_rich(env, conversation)
-
-    rendered = buffer.getvalue()
-    assert "Rich Contract" in rendered
-    assert "claude-ai" in rendered
-    assert "User" in rendered
-    assert "Hello" in rendered
-    assert "Thinking" in rendered
-    assert "... (620 chars)" in rendered
+# ---------------------------------------------------------------------------
+# project_query_results / apply_transform (still wired via query.py + bulk_export)
+# ---------------------------------------------------------------------------
 
 
 def test_project_query_results_contract() -> None:
     plan = QueryExecutionPlan(
-        selection=ConversationQuerySpec(),
+        selection=SessionQuerySpec(),
         action=QueryAction.SHOW,
         output=_output_spec(dialogue_only=True, transform="strip-all"),
         mutation=_mutation_spec(),
     )
-    conversation = _sample_conversation()
+    session = _sample_session()
 
-    projected = project_query_results([conversation], plan)
+    projected = project_query_results([session], plan)
 
     assert [message.id for message in projected[0].messages] == ["m-user", "m-assistant"]
-    assert [message.id for message in conversation.messages] == [
+    assert [message.id for message in session.messages] == [
         "m-user",
         "m-thinking",
         "m-tool",
@@ -1142,602 +228,30 @@ def test_project_query_results_contract() -> None:
 
 def test_project_query_results_message_role_contract() -> None:
     plan = QueryExecutionPlan(
-        selection=ConversationQuerySpec(),
+        selection=SessionQuerySpec(),
         action=QueryAction.SHOW,
         output=_output_spec(message_roles=(Role.USER,)),
         mutation=_mutation_spec(),
     )
-    conversation = _sample_conversation()
+    session = _sample_session()
 
-    projected = project_query_results([conversation], plan)
+    projected = project_query_results([session], plan)
 
     assert [message.id for message in projected[0].messages] == ["m-user"]
 
 
 def test_project_query_results_explicit_message_role_supersedes_dialogue_only() -> None:
     plan = QueryExecutionPlan(
-        selection=ConversationQuerySpec(),
+        selection=SessionQuerySpec(),
         action=QueryAction.SHOW,
         output=_output_spec(dialogue_only=True, message_roles=(Role.TOOL,)),
         mutation=_mutation_spec(),
     )
-    conversation = _sample_conversation()
+    session = _sample_session()
 
-    projected = project_query_results([conversation], plan)
+    projected = project_query_results([session], plan)
 
     assert [message.id for message in projected[0].messages] == ["m-tool"]
-
-
-@pytest.mark.parametrize(
-    ("case", "expected_helper"),
-    [
-        ("count", "count"),
-        ("stats_sql", "stats_sql"),
-        ("stats_by_summaries", "stats_by_summaries"),
-        ("stats_by_semantic_summaries", "stats_by_semantic_summaries"),
-        ("stats_by_profile_summaries", "stats_by_profile_summaries"),
-        ("stream", "stream"),
-        ("modify", "modify"),
-        ("delete", "delete"),
-        ("open", "open"),
-        ("summary_list", "summary_list"),
-        ("show", "show"),
-    ],
-)
-def test_async_execute_query_action_routing_contract(case: str, expected_helper: str) -> None:
-    env = _make_env(repo=MagicMock(), config=MagicMock())
-    repo = _as_mock(env.repository)
-    summary = build_conversation_summary(_sample_summary_spec())
-    plan = _build_plan(case)
-    filter_chain = MagicMock()
-    filter_chain.count = AsyncMock(return_value=3)
-    filter_chain.can_use_summaries.return_value = True
-    filter_chain.list_summaries = AsyncMock(return_value=[summary])
-    filter_chain.list = AsyncMock(return_value=[MagicMock()])
-    selection = _as_mock(plan.selection)
-    selection.build_filter.return_value = filter_chain
-
-    with (
-        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
-        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
-        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
-        patch("click.echo") as mock_echo,
-        patch("polylogue.cli.query_output._output_summary_list", new_callable=AsyncMock) as mock_output_summary_list,
-        patch("polylogue.cli.query_output.output_stats_sql", new_callable=AsyncMock) as mock_output_stats_sql,
-        patch("polylogue.cli.query_output.output_stats_by_summaries") as mock_output_stats_by_summaries,
-        patch(
-            "polylogue.cli.query_output.output_stats_by_semantic_summaries", new_callable=AsyncMock
-        ) as mock_output_stats_by_semantic_summaries,
-        patch(
-            "polylogue.cli.query_output.output_stats_by_profile_summaries", new_callable=AsyncMock
-        ) as mock_output_stats_by_profile_summaries,
-        patch("polylogue.cli.query_output._output_stats_by") as mock_output_stats_by,
-        patch("polylogue.cli.query_actions.apply_modifiers", new_callable=AsyncMock) as mock_apply_modifiers,
-        patch("polylogue.cli.query_actions.delete_conversations", new_callable=AsyncMock) as mock_delete_conversations,
-        patch("polylogue.cli.query_output._open_result") as mock_open_result,
-        patch("polylogue.cli.query_output.output_results") as mock_output_results,
-        patch(
-            "polylogue.cli.query_actions.resolve_stream_target", new_callable=AsyncMock, return_value="conv-stream"
-        ) as mock_stream_target,
-        patch("polylogue.cli.query_output.stream_conversation", new_callable=AsyncMock) as mock_stream_conversation,
-    ):
-        mock_echo = _as_mock(mock_echo)
-        mock_output_stats_by_summaries = _as_mock(mock_output_stats_by_summaries)
-        mock_output_stats_by = _as_mock(mock_output_stats_by)
-        mock_open_result = _as_mock(mock_open_result)
-        mock_output_results = _as_mock(mock_output_results)
-        repo.get_message_counts_batch = AsyncMock(return_value={str(summary.id): 2})
-        asyncio.run(async_execute_query(env, {"limit": 7}))
-
-    selection.build_filter.assert_called_once_with(repo, vector_provider=None)
-
-    if expected_helper == "count":
-        filter_chain.count.assert_awaited_once()
-        filter_chain.list.assert_not_called()
-        filter_chain.list_summaries.assert_not_called()
-        mock_echo.assert_called_with(3)
-    elif expected_helper == "stats_sql":
-        filter_chain.list.assert_not_called()
-        filter_chain.list_summaries.assert_not_called()
-        mock_output_stats_sql.assert_awaited_once()
-    elif expected_helper == "stats_by_summaries":
-        filter_chain.list.assert_not_called()
-        filter_chain.list_summaries.assert_awaited_once()
-        repo.get_message_counts_batch.assert_awaited_once_with([str(summary.id)])
-        mock_output_stats_by_summaries.assert_called_once()
-        mock_output_stats_by_semantic_summaries.assert_not_called()
-        mock_output_stats_by_profile_summaries.assert_not_called()
-        mock_output_stats_by.assert_not_called()
-    elif expected_helper == "stats_by_semantic_summaries":
-        filter_chain.list.assert_not_called()
-        filter_chain.list_summaries.assert_awaited_once()
-        mock_output_stats_by_semantic_summaries.assert_awaited_once()
-        mock_output_stats_by_profile_summaries.assert_not_called()
-        mock_output_stats_by.assert_not_called()
-    elif expected_helper == "stats_by_profile_summaries":
-        filter_chain.list.assert_not_called()
-        filter_chain.list_summaries.assert_awaited_once()
-        mock_output_stats_by_profile_summaries.assert_awaited_once()
-        mock_output_stats_by_semantic_summaries.assert_not_called()
-        mock_output_stats_by.assert_not_called()
-    elif expected_helper == "modify":
-        filter_chain.list.assert_not_called()
-        filter_chain.list_summaries.assert_awaited_once()
-        mock_apply_modifiers.assert_awaited_once()
-    elif expected_helper == "delete":
-        filter_chain.list.assert_not_called()
-        filter_chain.list_summaries.assert_awaited_once()
-        mock_delete_conversations.assert_awaited_once()
-    elif expected_helper == "open":
-        filter_chain.list.assert_not_called()
-        filter_chain.list_summaries.assert_awaited_once()
-        mock_open_result.assert_called_once()
-    elif expected_helper == "stream":
-        filter_chain.list.assert_not_called()
-        filter_chain.list_summaries.assert_not_called()
-        mock_stream_target.assert_awaited_once()
-        mock_stream_conversation.assert_awaited_once_with(
-            env,
-            repo,
-            "conv-stream",
-            output_format="json-lines",
-            dialogue_only=True,
-            message_roles=(Role.USER, Role.ASSISTANT),
-            content_projection=None,
-            message_limit=7,
-        )
-        warnings = [call.args[0] for call in mock_echo.call_args_list if call.args]
-        assert any("--transform is ignored in --stream mode" in line for line in warnings)
-        assert any("--output stdout,browser is ignored in --stream mode" in line for line in warnings)
-    elif expected_helper == "summary_list":
-        filter_chain.list.assert_not_called()
-        filter_chain.list_summaries.assert_awaited_once()
-        mock_output_summary_list.assert_awaited_once()
-    else:
-        filter_chain.list.assert_awaited_once()
-        filter_chain.list_summaries.assert_not_called()
-        mock_output_results.assert_called_once()
-
-
-def test_async_execute_query_summary_list_uses_evidence_hits_for_search_contract() -> None:
-    env = _make_env(repo=MagicMock(), config=MagicMock())
-    repo = _as_mock(env.repository)
-    summary = build_conversation_summary(_sample_summary_spec())
-    hit = ConversationSearchHit(
-        summary=summary,
-        rank=1,
-        retrieval_lane="dialogue",
-        match_surface="message",
-        message_id="msg-law-1",
-        snippet="[needle] evidence",
-    )
-    plan = _build_plan("summary_list")
-    selection = _as_mock(plan.selection)
-    selection.to_plan.return_value = ConversationQuerySpec(query_terms=("needle",), limit=5).to_plan()
-    filter_chain = MagicMock()
-    filter_chain.can_use_summaries.return_value = True
-    filter_chain.list_summaries = AsyncMock(return_value=[summary])
-    selection.build_filter.return_value = filter_chain
-    repo.search_summary_hits = AsyncMock(return_value=[hit])
-
-    with (
-        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
-        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
-        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
-        patch("polylogue.cli.query_output.output_search_hits", new_callable=AsyncMock) as mock_output_search_hits,
-        patch("polylogue.cli.query_output._output_summary_list", new_callable=AsyncMock) as mock_output_summary_list,
-    ):
-        asyncio.run(async_execute_query(env, {"query": ("needle",), "limit": 5}))
-
-    repo.search_summary_hits.assert_awaited_once_with("needle", limit=5, providers=None, since=None)
-    filter_chain.list_summaries.assert_not_called()
-    mock_output_search_hits.assert_awaited_once_with(env, [hit], plan.output, repo, total=None, cursor=None)
-    mock_output_summary_list.assert_not_called()
-
-
-def test_async_execute_query_open_falls_back_to_full_results_without_summaries_contract() -> None:
-    env = _make_env(repo=MagicMock(), config=MagicMock())
-    plan = _build_plan("open")
-    filter_chain = MagicMock()
-    filter_chain.can_use_summaries.return_value = False
-    filter_chain.list_summaries = AsyncMock(return_value=[])
-    filter_chain.list = AsyncMock(return_value=[MagicMock()])
-    selection = _as_mock(plan.selection)
-    selection.build_filter.return_value = filter_chain
-
-    with (
-        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
-        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
-        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
-        patch("polylogue.cli.query_output._open_result") as mock_open_result,
-    ):
-        asyncio.run(async_execute_query(env, {"limit": 1}))
-
-    filter_chain.list.assert_awaited_once()
-    filter_chain.list_summaries.assert_not_called()
-    mock_open_result.assert_called_once()
-
-
-def test_async_execute_query_stats_by_falls_back_to_full_results_without_summaries_contract() -> None:
-    env = _make_env(repo=MagicMock(), config=MagicMock())
-    plan = _build_plan("stats_by_summaries")
-    filter_chain = MagicMock()
-    filter_chain.can_use_summaries.return_value = False
-    filter_chain.list = AsyncMock(return_value=[_sample_conversation()])
-    filter_chain.list_summaries = AsyncMock(return_value=[build_conversation_summary(_sample_summary_spec())])
-    selection = _as_mock(plan.selection)
-    selection.build_filter.return_value = filter_chain
-
-    with (
-        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
-        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
-        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
-        patch("polylogue.cli.query_output._output_stats_by") as mock_output_stats_by,
-        patch("polylogue.cli.query_output.output_stats_by_summaries") as mock_output_stats_by_summaries,
-    ):
-        asyncio.run(async_execute_query(env, {}))
-
-    filter_chain.list.assert_awaited_once()
-    filter_chain.list_summaries.assert_not_called()
-    mock_output_stats_by.assert_called_once()
-    mock_output_stats_by_summaries.assert_not_called()
-    assert mock_output_stats_by.call_args.kwargs["selection"] is plan.selection
-
-
-def test_async_execute_query_semantic_stats_by_uses_summary_batches_contract() -> None:
-    env = _make_env(repo=MagicMock(), config=MagicMock())
-    plan = _build_plan("stats_by_semantic_summaries")
-    filter_chain = MagicMock()
-    filter_chain.can_use_summaries.return_value = True
-    filter_chain.list = AsyncMock(return_value=[_sample_conversation()])
-    filter_chain.list_summaries = AsyncMock(return_value=[build_conversation_summary(_sample_summary_spec())])
-    selection = _as_mock(plan.selection)
-    selection.build_filter.return_value = filter_chain
-
-    with (
-        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
-        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
-        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
-        patch(
-            "polylogue.cli.query_output.output_stats_by_semantic_summaries", new_callable=AsyncMock
-        ) as mock_output_stats_by_semantic_summaries,
-        patch("polylogue.cli.query_output._output_stats_by") as mock_output_stats_by,
-    ):
-        asyncio.run(async_execute_query(env, {}))
-
-    filter_chain.list.assert_not_called()
-    filter_chain.list_summaries.assert_awaited_once()
-    mock_output_stats_by_semantic_summaries.assert_awaited_once()
-    mock_output_stats_by.assert_not_called()
-
-
-def test_async_execute_query_semantic_stats_by_falls_back_without_summaries_contract() -> None:
-    env = _make_env(repo=MagicMock(), config=MagicMock())
-    plan = _build_plan("stats_by_semantic_summaries")
-    filter_chain = MagicMock()
-    filter_chain.can_use_summaries.return_value = False
-    filter_chain.list = AsyncMock(return_value=[_sample_conversation()])
-    filter_chain.list_summaries = AsyncMock(return_value=[build_conversation_summary(_sample_summary_spec())])
-    selection = _as_mock(plan.selection)
-    selection.build_filter.return_value = filter_chain
-
-    with (
-        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
-        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
-        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
-        patch(
-            "polylogue.cli.query_output.output_stats_by_semantic_summaries", new_callable=AsyncMock
-        ) as mock_output_stats_by_semantic_summaries,
-        patch("polylogue.cli.query_output._output_stats_by") as mock_output_stats_by,
-    ):
-        asyncio.run(async_execute_query(env, {}))
-
-    filter_chain.list.assert_awaited_once()
-    filter_chain.list_summaries.assert_not_called()
-    mock_output_stats_by_semantic_summaries.assert_not_called()
-    mock_output_stats_by.assert_called_once()
-
-
-def test_async_execute_query_profile_stats_by_uses_summary_batches_contract() -> None:
-    env = _make_env(repo=MagicMock(), config=MagicMock())
-    plan = _build_plan("stats_by_profile_summaries")
-    filter_chain = MagicMock()
-    filter_chain.can_use_summaries.return_value = True
-    filter_chain.list = AsyncMock(return_value=[_sample_conversation()])
-    filter_chain.list_summaries = AsyncMock(return_value=[build_conversation_summary(_sample_summary_spec())])
-    selection = _as_mock(plan.selection)
-    selection.build_filter.return_value = filter_chain
-
-    with (
-        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
-        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
-        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
-        patch(
-            "polylogue.cli.query_output.output_stats_by_profile_summaries", new_callable=AsyncMock
-        ) as mock_output_stats_by_profile_summaries,
-        patch("polylogue.cli.query_output._output_stats_by") as mock_output_stats_by,
-    ):
-        asyncio.run(async_execute_query(env, {}))
-
-    filter_chain.list.assert_not_called()
-    filter_chain.list_summaries.assert_awaited_once()
-    mock_output_stats_by_profile_summaries.assert_awaited_once()
-    mock_output_stats_by.assert_not_called()
-
-
-def test_async_execute_query_summary_list_no_results_contract() -> None:
-    env = _make_env(repo=MagicMock(), config=MagicMock())
-    plan = _build_plan("summary_list")
-    filter_chain = MagicMock()
-    filter_chain.can_use_summaries.return_value = True
-    filter_chain.list_summaries = AsyncMock(return_value=[])
-    selection = _as_mock(plan.selection)
-    selection.build_filter.return_value = filter_chain
-
-    with (
-        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
-        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
-        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
-        patch("polylogue.cli.query.no_results", side_effect=SystemExit(2)) as mock_no_results,
-        pytest.raises(SystemExit) as exc_info,
-    ):
-        asyncio.run(async_execute_query(env, {}))
-
-    assert exc_info.value.code == 2
-    mock_no_results.assert_called_once()
-    assert mock_no_results.call_args.args[1] == {"query": ()}
-
-
-def test_async_execute_query_query_spec_error_contract() -> None:
-    env = _make_env(repo=MagicMock(), config=MagicMock())
-    plan = _build_plan("show")
-    selection = _as_mock(plan.selection)
-    selection.build_filter.side_effect = QuerySpecError("since", "not-a-date")
-
-    with (
-        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
-        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
-        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
-        patch("click.echo") as mock_echo,
-        pytest.raises(SystemExit) as exc_info,
-    ):
-        mock_echo = _as_mock(mock_echo)
-        asyncio.run(async_execute_query(env, {}))
-
-    assert exc_info.value.code == 1
-    assert [call.args[0] for call in mock_echo.call_args_list if call.args] == [
-        "Error: Cannot parse date: 'not-a-date'",
-        "Hint: use ISO format (2025-01-15), relative ('yesterday', 'last week'), or month (2025-01)",
-    ]
-    assert all(call.kwargs.get("err") is True for call in mock_echo.call_args_list)
-
-
-def test_async_execute_query_show_projects_results_before_output_contract() -> None:
-    env = _make_env(repo=MagicMock(), config=MagicMock())
-    selection = MagicMock()
-    selection.similar_text = None
-    selection.cursor = None
-    plan = QueryExecutionPlan(
-        selection=selection,
-        action=QueryAction.SHOW,
-        output=_output_spec(dialogue_only=True, transform="strip-all"),
-        mutation=_mutation_spec(),
-    )
-    filter_chain = MagicMock()
-    filter_chain.can_use_summaries.return_value = False
-    filter_chain.list = AsyncMock(return_value=[_sample_conversation()])
-    selection.build_filter.return_value = filter_chain
-
-    with (
-        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
-        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
-        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
-        patch("polylogue.cli.query_output.output_results") as mock_output_results,
-    ):
-        asyncio.run(async_execute_query(env, {}))
-
-    projected_results = mock_output_results.call_args.args[1]
-    assert [message.id for message in projected_results[0].messages] == ["m-user", "m-assistant"]
-
-
-def test_async_execute_query_slow_human_query_emits_progress_note() -> None:
-    env = _make_env(repo=MagicMock(), config=MagicMock())
-    selection = MagicMock()
-    selection.similar_text = None
-    selection.cursor = None
-    plan = QueryExecutionPlan(
-        selection=selection,
-        action=QueryAction.SHOW,
-        output=_output_spec(),
-        mutation=_mutation_spec(),
-    )
-    filter_chain = MagicMock()
-    filter_chain.can_use_summaries.return_value = False
-
-    async def delayed_list() -> list[Conversation]:
-        await asyncio.sleep(0.01)
-        return [_sample_conversation()]
-
-    filter_chain.list = AsyncMock(side_effect=delayed_list)
-    selection.build_filter.return_value = filter_chain
-
-    with (
-        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
-        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
-        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
-        patch("polylogue.cli.query_progress.SLOW_QUERY_NOTICE_SECONDS", 0.001),
-        patch("polylogue.cli.query_output.output_results"),
-        patch("click.echo") as mock_echo,
-    ):
-        mock_echo = _as_mock(mock_echo)
-        asyncio.run(async_execute_query(env, {}))
-
-    filter_chain.list.assert_awaited_once()
-    progress_calls = [call for call in mock_echo.call_args_list if call.kwargs.get("err") is True]
-    assert len(progress_calls) == 1
-    assert "Query still running after 0.0s" in progress_calls[0].args[0]
-    assert "route: show" in progress_calls[0].args[0]
-
-
-def test_async_execute_query_slow_json_query_suppresses_progress_note() -> None:
-    env = _make_env(repo=MagicMock(), config=MagicMock())
-    selection = MagicMock()
-    selection.similar_text = None
-    selection.cursor = None
-    plan = QueryExecutionPlan(
-        selection=selection,
-        action=QueryAction.SHOW,
-        output=_output_spec("json"),
-        mutation=_mutation_spec(),
-    )
-    filter_chain = MagicMock()
-    filter_chain.can_use_summaries.return_value = False
-
-    async def delayed_list() -> list[Conversation]:
-        await asyncio.sleep(0.01)
-        return [_sample_conversation()]
-
-    filter_chain.list = AsyncMock(side_effect=delayed_list)
-    selection.build_filter.return_value = filter_chain
-
-    with (
-        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=MagicMock()),
-        patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
-        patch("polylogue.cli.query.build_query_execution_plan", return_value=plan),
-        patch("polylogue.cli.query_progress.SLOW_QUERY_NOTICE_SECONDS", 0.001),
-        patch("polylogue.cli.query_output.output_results"),
-        patch("click.echo") as mock_echo,
-    ):
-        mock_echo = _as_mock(mock_echo)
-        asyncio.run(async_execute_query(env, {}))
-
-    filter_chain.list.assert_awaited_once()
-    mock_echo.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_slow_query_notice_reports_degraded_action_read_model() -> None:
-    from polylogue.cli.query_progress import build_query_slow_notice
-
-    repo = MagicMock()
-    repo.get_action_event_artifact_state = AsyncMock(
-        return_value=ActionEventArtifactState(
-            source_conversations=4,
-            materialized_conversations=2,
-            materialized_rows=2,
-            fts_rows=0,
-        )
-    )
-
-    notice = await build_query_slow_notice(
-        repo,
-        ConversationQuerySpec(retrieval_lane="actions"),
-        route=QueryRoute.SHOW.value,
-    )
-
-    assert notice.retrieval_lane == "actions"
-    assert "Action-event read model pending" in notice.message(elapsed_seconds=2.0)
-
-
-@pytest.mark.parametrize(
-    ("params", "expected_lines"),
-    [
-        (
-            {"provider": "claude-ai", "limit": 5},
-            [
-                "No conversations matched filters:",
-                "  provider: claude-ai",
-                "Hint: try broadening your filters or use `list` to browse",
-            ],
-        ),
-        (
-            {},
-            ["No conversations matched."],
-        ),
-    ],
-)
-def test_no_results_contract(params: dict[str, object], expected_lines: list[str]) -> None:
-    env = _make_env()
-
-    with pytest.raises(SystemExit) as exc_info:
-        no_results(env, params)
-
-    assert exc_info.value.code == 2
-    observed_lines = [call.args[0] for call in _as_mock(env.ui.console.print).call_args_list if call.args]
-    assert observed_lines == expected_lines
-
-
-def test_no_results_contract_json_emits_machine_envelope(capsys: pytest.CaptureFixture[str]) -> None:
-    env = _make_env()
-
-    with pytest.raises(SystemExit) as exc_info:
-        no_results(env, {"output_format": "json", "provider": "claude-ai"})
-
-    assert exc_info.value.code == 2
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "error"
-    assert payload["code"] == "no_results"
-    assert payload["message"] == "No conversations matched filters."
-    assert payload["details"]["filters"] == ["provider: claude-ai"]
-
-
-def test_no_results_contract_prints_diagnostics() -> None:
-    env = _make_env()
-    diagnostics = QueryMissDiagnostics(
-        message="No conversations matched filters.",
-        filters=("provider: claude-ai",),
-        reasons=(
-            QueryMissReason(
-                code="raw_ingest_backlog",
-                severity="warning",
-                summary="Raw ingested conversations exist but are not materialized into searchable conversations.",
-                detail="2 raw records observed",
-                count=2,
-            ),
-        ),
-        archive_conversation_count=0,
-        raw_conversation_count=2,
-    )
-
-    with pytest.raises(SystemExit) as exc_info:
-        no_results(env, {"provider": "claude-ai"}, diagnostics=diagnostics)
-
-    assert exc_info.value.code == 2
-    observed_lines = [call.args[0] for call in _as_mock(env.ui.console.print).call_args_list if call.args]
-    assert observed_lines == [
-        "No conversations matched filters:",
-        "  provider: claude-ai",
-        "Hint: try broadening your filters or use `list` to browse",
-        "Why this may have missed:",
-        "  - Raw ingested conversations exist but are not materialized into searchable conversations.",
-        "    2 raw records observed",
-    ]
-
-
-def test_no_results_contract_json_includes_diagnostics(capsys: pytest.CaptureFixture[str]) -> None:
-    env = _make_env()
-    diagnostics = QueryMissDiagnostics(
-        message="No conversations matched filters.",
-        filters=("provider: claude-ai",),
-        reasons=(
-            QueryMissReason(
-                code="archive_empty",
-                severity="info",
-                summary="The selected archive scope has no materialized conversations.",
-                count=0,
-            ),
-        ),
-        archive_conversation_count=0,
-        raw_conversation_count=0,
-    )
-
-    with pytest.raises(SystemExit) as exc_info:
-        no_results(env, {"output_format": "json", "provider": "claude-ai"}, diagnostics=diagnostics)
-
-    assert exc_info.value.code == 2
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["details"]["diagnostics"]["archive_conversation_count"] == 0
-    assert payload["details"]["diagnostics"]["reasons"][0]["code"] == "archive_empty"
 
 
 @pytest.mark.parametrize(
@@ -1749,12 +263,12 @@ def test_no_results_contract_json_includes_diagnostics(capsys: pytest.CaptureFix
     ],
 )
 def test_apply_transform_contract(transform: str, expected_ids: list[str]) -> None:
-    conversation = _sample_conversation()
+    session = _sample_session()
 
-    transformed = apply_transform([conversation], transform)
+    transformed = apply_transform([session], transform)
 
     assert [message.id for message in transformed[0].messages] == expected_ids
-    assert [message.id for message in conversation.messages] == [
+    assert [message.id for message in session.messages] == [
         "m-user",
         "m-thinking",
         "m-tool",
@@ -1762,251 +276,2083 @@ def test_apply_transform_contract(transform: str, expected_ids: list[str]) -> No
     ]
 
 
-@pytest.mark.asyncio
-async def test_output_stats_sql_uses_summary_pushdown_contract() -> None:
-    env = _make_env()
-    repo = MagicMock()
-    repo.aggregate_message_stats = AsyncMock(
-        return_value={
-            "total": 9,
-            "user": 4,
-            "assistant": 5,
-            "words_approx": 42,
-            "attachment_refs": 2,
-            "distinct_attachments": 1,
-            "min_sort_key": 1704067200,
-            "max_sort_key": 1704153600,
-            "providers": {"claude-ai": 2, "chatgpt": 1},
-        }
+class TestBuildQueryExecutionPlan:
+    """``build_query_execution_plan`` is still wired through ``cli/select.py``."""
+
+    def test_delete_without_filters_raises(self) -> None:
+        from polylogue.cli.query_contracts import QueryPlanError, build_query_execution_plan
+
+        with pytest.raises(QueryPlanError, match="delete requires at least one filter"):
+            build_query_execution_plan({"delete_matched": True, "query": ()})
+
+    @pytest.mark.parametrize(
+        ("params", "expected_action"),
+        [
+            ({"count_only": True, "query": ()}, QueryAction.COUNT),
+            ({"stream": True, "query": ("abc",)}, QueryAction.STREAM),
+            ({"stats_only": True, "query": ()}, QueryAction.STATS),
+            ({"stats_by": "origin", "query": ()}, QueryAction.STATS_BY),
+            ({"stats_by": "action", "query": ()}, QueryAction.STATS_BY),
+            ({"stats_by": "tool", "query": ()}, QueryAction.STATS_BY),
+            ({"stats_by": "repo", "query": ()}, QueryAction.STATS_BY),
+            ({"stats_by": "work-kind", "query": ()}, QueryAction.STATS_BY),
+            ({"add_tag": ["x"], "query": ()}, QueryAction.MODIFY),
+            ({"delete_matched": True, "tag": ("review",), "query": ()}, QueryAction.DELETE),
+            ({"open_result": True, "query": ("abc",)}, QueryAction.OPEN),
+            ({"query": ("abc",)}, QueryAction.SHOW),
+        ],
     )
-    summary_specs = (
-        ConversationSummarySpec(
-            conversation_id="conv-a",
-            provider="claude-ai",
-            title="A",
-            summary="",
-            tags=(),
-            created_at=None,
-            updated_at=None,
-            message_count=3,
-        ),
-        ConversationSummarySpec(
-            conversation_id="conv-b",
-            provider="chatgpt",
-            title="B",
-            summary="",
-            tags=(),
-            created_at=None,
-            updated_at=None,
-            message_count=4,
-        ),
-    )
-    summaries = [build_conversation_summary(spec) for spec in summary_specs]
-    filter_chain = MagicMock()
-    filter_chain.describe.return_value = ["provider=claude-ai", "tag=law"]
-    filter_chain.can_use_summaries.return_value = True
-    filter_chain.list_summaries = AsyncMock(return_value=summaries)
+    def test_action_selection(self, params: dict[str, object], expected_action: QueryAction) -> None:
+        from polylogue.cli.query_contracts import build_query_execution_plan
 
-    await output_stats_sql(env, filter_chain, repo)
+        plan = build_query_execution_plan(params)
+        assert plan.action == expected_action
 
-    filter_chain.list_summaries.assert_awaited_once()
-    filter_chain.count.assert_not_called()
-    repo.aggregate_message_stats.assert_awaited_once_with(["conv-a", "conv-b"])
-    printed = [call.args[0] for call in _as_mock(env.ui.console.print).call_args_list if call.args]
-    assert printed == [
-        "\nConversations: 2\n",
-        "Messages: 9 total (4 user, 5 assistant)",
-        "Words: ~42",
-        "Providers: claude-ai (2), chatgpt (1)",
-        "Attachment refs: 2",
-        "Unique attachments: 1",
-        "Date range: 2024-01-01 to 2024-01-02",
-    ]
+    def test_stream_format_converts_json_to_json_lines(self) -> None:
+        from polylogue.cli.query_contracts import build_query_execution_plan
+
+        plan = build_query_execution_plan({"stream": True, "output_format": "json", "query": ("abc",)})
+        assert plan.output.stream_format() == "json-lines"
+
+    def test_summary_list_preference_requires_plain_listing_shape(self) -> None:
+        from polylogue.cli.query_contracts import build_query_execution_plan
+
+        plan = build_query_execution_plan({"list_mode": True, "query": ("abc",)})
+        assert plan.prefers_summary_list() is True
+
+        transformed = build_query_execution_plan({"list_mode": True, "transform": "strip-tools", "query": ("abc",)})
+        assert transformed.prefers_summary_list() is False
+
+        projected = build_query_execution_plan({"list_mode": True, "prose_only": True, "query": ("abc",)})
+        assert projected.prefers_summary_list() is False
+
+    def test_mutation_fields_are_normalized(self) -> None:
+        from polylogue.cli.query_contracts import build_query_execution_plan
+
+        plan = build_query_execution_plan(
+            {
+                "set_meta": [("priority", 3)],
+                "add_tag": ["todo", "review"],
+                "force": True,
+                "dry_run": True,
+                "provider": "claude-ai",
+                "query": (),
+            }
+        )
+        assert plan.mutation.set_meta == (("priority", "3"),)
+        assert plan.mutation.add_tags == ("todo", "review")
+        assert plan.mutation.force is True
+        assert plan.mutation.dry_run is True
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("described", "can_use_summaries", "expected_message"),
-    [
-        (["provider=claude-ai"], True, "No conversations matched."),
-        ([], False, "No conversations in archive."),
-    ],
-)
-async def test_output_stats_sql_empty_paths_contract(
-    described: list[str], can_use_summaries: bool, expected_message: str
-) -> None:
-    env = _make_env()
-    repo = MagicMock()
-    repo.aggregate_message_stats = AsyncMock()
-    repo.get_archive_stats = AsyncMock(return_value=SimpleNamespace(total_conversations=0))
-
-    filter_chain = MagicMock()
-    filter_chain.describe.return_value = described
-    filter_chain.can_use_summaries.return_value = can_use_summaries
-    filter_chain.list_summaries = AsyncMock(return_value=[])
-    filter_chain.count = AsyncMock(return_value=0)
-
-    await output_stats_sql(env, filter_chain, repo)
-
-    _as_mock(env.ui.console.print).assert_called_once_with(expected_message)
+# ---------------------------------------------------------------------------
+# Archive query executor contracts
+# ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("described", "can_use_summaries", "expected_message", "expected_filters"),
-    [
-        (["provider=claude-ai"], True, "No conversations matched.", None),
-        ([], False, "No conversations in archive.", None),
-    ],
-)
-async def test_output_stats_sql_empty_paths_json_contract(
-    described: list[str],
-    can_use_summaries: bool,
-    expected_message: str,
-    expected_filters: list[str] | None,
+def test_async_execute_query_archive_lists_archive(
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    env = _make_env()
-    repo = MagicMock()
-    repo.aggregate_message_stats = AsyncMock()
-    repo.get_archive_stats = AsyncMock(return_value=SimpleNamespace(total_conversations=0))
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
 
-    filter_chain = MagicMock()
-    filter_chain.describe.return_value = described
-    filter_chain.can_use_summaries.return_value = can_use_summaries
-    filter_chain.list_summaries = AsyncMock(return_value=[])
-    filter_chain.count = AsyncMock(return_value=0)
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
 
-    with pytest.raises(SystemExit) as exc_info:
-        await output_stats_sql(env, filter_chain, repo, output_format="json")
+        def __exit__(self, *args: object) -> None:
+            return None
 
-    assert exc_info.value.code == 2
+        def list_summaries(
+            self,
+            *,
+            limit: int,
+            offset: int,
+            sort: str | None,
+            reverse: bool,
+            origin: str | None,
+            origins: tuple[str, ...],
+            excluded_origins: tuple[str, ...],
+            tags: tuple[str, ...],
+            excluded_tags: tuple[str, ...],
+            repo_names: tuple[str, ...],
+            has_types: tuple[str, ...],
+            has_tool_use: bool,
+            has_thinking: bool,
+            has_paste: bool,
+            tool_terms: tuple[str, ...],
+            excluded_tool_terms: tuple[str, ...],
+            action_terms: tuple[str, ...],
+            excluded_action_terms: tuple[str, ...],
+            action_sequence: tuple[str, ...],
+            action_text_terms: tuple[str, ...],
+            referenced_paths: tuple[str, ...],
+            cwd_prefix: str | None,
+            typed_only: bool,
+            message_type: str | None,
+            title: str | None,
+            min_messages: int | None,
+            max_messages: int | None,
+            min_words: int | None,
+            since_ms: int | None,
+            until_ms: int | None,
+            since_session_id: str | None,
+            sample: bool,
+        ) -> list[ArchiveSessionSummary]:
+            assert limit == 3
+            assert offset == 0
+            assert sample is False
+            assert sort is None
+            assert reverse is False
+            assert origin is None
+            assert origins == ()
+            assert excluded_origins == ()
+            assert tags == ()
+            assert excluded_tags == ()
+            assert repo_names == ()
+            assert has_types == ()
+            assert has_tool_use is False
+            assert has_thinking is False
+            assert has_paste is False
+            assert tool_terms == ()
+            assert excluded_tool_terms == ()
+            assert action_terms == ()
+            assert excluded_action_terms == ()
+            assert action_sequence == ()
+            assert action_text_terms == ()
+            assert referenced_paths == ()
+            assert cwd_prefix is None
+            assert typed_only is False
+            assert message_type is None
+            assert title is None
+            assert min_messages is None
+            assert max_messages is None
+            assert min_words is None
+            assert since_ms is None
+            assert until_ms is None
+            assert since_session_id is None
+            return [
+                ArchiveSessionSummary(
+                    session_id="codex-session:native-1",
+                    native_id="native-1",
+                    origin="codex-session",
+                    provider=Provider.CODEX,
+                    title="Copied",
+                    created_at="2026-01-02T03:04:05Z",
+                    updated_at="2026-01-02T03:04:06Z",
+                    message_count=3,
+                    word_count=9,
+                    tags=("archive",),
+                )
+            ]
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(async_execute_query(env, {"archive": True, "limit": 2, "output_format": "json"}))
+
     payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "error"
-    assert payload["code"] == "no_results"
-    assert payload["message"] == expected_message
-    if expected_filters is None:
-        assert "details" not in payload
-    else:
-        assert payload.get("details", {}).get("filters") == expected_filters
+    assert payload["mode"] == "list"
+    assert payload["items"][0]["session_id"] == "codex-session:native-1"
+    assert payload["items"][0]["source"] == "codex-session"
+    assert payload["items"][0]["origin"] == "codex-session"
 
 
-@pytest.mark.asyncio
-async def test_output_stats_sql_archive_scope_includes_embedding_state() -> None:
-    env = _make_env()
-    repo = MagicMock()
-    repo.get_archive_stats = AsyncMock(
-        return_value=SimpleNamespace(
-            total_conversations=2,
-            embedded_conversations=1,
-            embedded_messages=5,
-            pending_embedding_conversations=1,
-            embedding_coverage=50.0,
+def test_async_execute_query_uses_archive_when_index_db_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+    calls: list[object] = []
+
+    def fake_execute_archive_query(env_arg: AppEnv, request: object) -> None:
+        assert env_arg is env
+        calls.append(request)
+
+    monkeypatch.setattr("polylogue.cli.archive_query.execute_archive_query", fake_execute_archive_query)
+
+    asyncio.run(async_execute_query(env, {"limit": 2}))
+
+    assert len(calls) == 1
+
+
+def test_async_execute_query_archive_projects_fields(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
+            assert kwargs["limit"] == 2
+            return [
+                ArchiveSessionSummary(
+                    session_id="codex-session:native-1",
+                    native_id="native-1",
+                    origin="codex-session",
+                    provider=Provider.CODEX,
+                    title="Projected",
+                    created_at="2026-01-02T03:04:05Z",
+                    updated_at="2026-01-02T03:04:06Z",
+                    message_count=3,
+                    word_count=9,
+                    tags=("archive",),
+                )
+            ]
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {"archive": True, "limit": 1, "fields": "id,title", "output_format": "json"},
         )
     )
 
-    filter_chain = MagicMock()
-    filter_chain.describe.return_value = []
-    filter_chain.can_use_summaries.return_value = False
-    filter_chain.count = AsyncMock(side_effect=AssertionError("archive-scope stats should reuse archive snapshot"))
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["items"] == [{"id": "codex-session:native-1", "title": "Projected"}]
 
-    repo.aggregate_message_stats = AsyncMock(
-        return_value={
-            "total": 9,
-            "user": 4,
-            "assistant": 5,
-            "words_approx": 42,
-            "providers": {"claude-ai": 2, "chatgpt": 1},
-            "attachment_refs": 2,
-            "distinct_attachments": 1,
-            "min_sort_key": 1704067200,
-            "max_sort_key": 1704153600,
-        }
+
+def test_async_execute_query_archive_sorts_lists(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
+            assert kwargs["sort"] == "messages"
+            assert kwargs["reverse"] is True
+            return []
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
     )
 
-    await output_stats_sql(env, filter_chain, repo)
+    asyncio.run(
+        async_execute_query(
+            env,
+            {"archive": True, "sort": "messages", "reverse": True, "output_format": "json"},
+        )
+    )
 
-    repo.get_archive_stats.assert_awaited_once_with()
-    repo.aggregate_message_stats.assert_awaited_once_with()
-    printed = [call.args[0] for call in _as_mock(env.ui.console.print).call_args_list if call.args]
-    assert printed == [
-        "\nConversations: 2\n",
-        "Messages: 9 total (4 user, 5 assistant)",
-        "Words: ~42",
-        "Providers: claude-ai (2), chatgpt (1)",
-        "Attachment refs: 2",
-        "Unique attachments: 1",
-        "Embeddings: 1/2 convs, 5 msgs (50.0%), pending 1",
-        "Date range: 2024-01-01 to 2024-01-02",
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["items"] == []
+
+
+def test_async_execute_query_archive_delivers_to_output_path(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    output_path = tmp_path / "out" / "sessions.json"
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
+            return [
+                ArchiveSessionSummary(
+                    session_id="codex-session:native-1",
+                    native_id="native-1",
+                    origin="codex-session",
+                    provider=Provider.CODEX,
+                    title="Delivered",
+                    created_at=None,
+                    updated_at=None,
+                    message_count=1,
+                    word_count=2,
+                    tags=(),
+                )
+            ]
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "output": str(output_path),
+                "output_format": "json",
+            },
+        )
+    )
+
+    assert json.loads(output_path.read_text())["items"][0]["title"] == "Delivered"
+    assert capsys.readouterr().out == ""
+    _as_mock(env.ui.console).print.assert_called_once_with(f"Wrote to {output_path}")
+
+
+def test_async_execute_query_archive_samples_copied_archive(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
+            assert kwargs["limit"] == 3
+            assert kwargs["offset"] == 0
+            assert kwargs["sample"] is True
+            return []
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(async_execute_query(env, {"archive": True, "sample": 3, "output_format": "json"}))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "list"
+    assert payload["limit"] == 3
+
+
+def test_async_execute_query_archive_outputs_stats(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def stats(self, **kwargs: object) -> ArchiveStats:
+            assert kwargs["origin"] == "codex-session"
+            assert kwargs["tags"] == ("archive",)
+            assert kwargs["session_ids"] == ()
+            return ArchiveStats(
+                total_sessions=1,
+                total_messages=3,
+                total_attachments=0,
+                origins={"codex-session": 1},
+                db_size_bytes=4096,
+            )
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "stats_only": True,
+                "provider": "codex",
+                "tag": "archive",
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "stats"
+    assert payload["total_sessions"] == 1
+    assert payload["origins"] == {"codex-session": 1}
+
+
+def test_async_execute_query_archive_outputs_grouped_search_stats(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def search_summaries(self, query: str, **kwargs: object) -> list[ArchiveSessionSearchHit]:
+            assert query == "needle"
+            assert kwargs["limit"] == 10
+            return [
+                ArchiveSessionSearchHit(
+                    rank=1,
+                    session_id="codex-session:native-1",
+                    block_id="codex-session:native-1:m1:0",
+                    message_id="codex-session:native-1:m1",
+                    origin="codex-session",
+                    provider=Provider.CODEX,
+                    title="Copied",
+                    snippet="[needle]",
+                )
+            ]
+
+        def stats_by(self, group_by: str, **kwargs: object) -> dict[str, int]:
+            assert group_by == "tool"
+            assert kwargs["session_ids"] == ("codex-session:native-1",)
+            return {"read": 1}
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "query": ("needle",),
+                "stats_by": "tool",
+                "limit": 10,
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "stats_by"
+    assert payload["group_by"] == "tool"
+    assert payload["items"] == [{"count": 1, "group": "read"}]
+
+
+def test_async_execute_query_archive_search_maps_provider_to_origin(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def search_summaries(
+            self,
+            query: str,
+            *,
+            limit: int,
+            offset: int,
+            sort: str | None,
+            reverse: bool,
+            session_id: str | None,
+            origin: str | None,
+            origins: tuple[str, ...],
+            excluded_origins: tuple[str, ...],
+            tags: tuple[str, ...],
+            excluded_tags: tuple[str, ...],
+            repo_names: tuple[str, ...],
+            has_types: tuple[str, ...],
+            has_tool_use: bool,
+            has_thinking: bool,
+            has_paste: bool,
+            tool_terms: tuple[str, ...],
+            excluded_tool_terms: tuple[str, ...],
+            action_terms: tuple[str, ...],
+            excluded_action_terms: tuple[str, ...],
+            action_sequence: tuple[str, ...],
+            action_text_terms: tuple[str, ...],
+            referenced_paths: tuple[str, ...],
+            cwd_prefix: str | None,
+            typed_only: bool,
+            message_type: str | None,
+            title: str | None,
+            min_messages: int | None,
+            max_messages: int | None,
+            min_words: int | None,
+            since_ms: int | None,
+            until_ms: int | None,
+            since_session_id: str | None,
+        ) -> list[ArchiveSessionSearchHit]:
+            assert query == "needle"
+            assert limit == 6
+            assert offset == 0
+            assert sort is None
+            assert reverse is False
+            assert session_id is None
+            assert origin == "codex-session"
+            assert origins == ("codex-session",)
+            assert excluded_origins == ("chatgpt-export",)
+            assert tags == ("review", "archive")
+            assert excluded_tags == ("archived",)
+            assert repo_names == ("polylogue",)
+            assert has_types == ("tool_use", "thinking")
+            assert has_tool_use is True
+            assert has_thinking is True
+            assert has_paste is False
+            assert tool_terms == ("read",)
+            assert excluded_tool_terms == ("write",)
+            assert action_terms == ("file_read",)
+            assert excluded_action_terms == ("file_write",)
+            assert action_sequence == ("file_read", "shell")
+            assert action_text_terms == ("README.md",)
+            assert referenced_paths == ("/workspace/polylogue/README.md", "pyproject.toml")
+            assert cwd_prefix == "/realm/project/polylogue"
+            assert typed_only is True
+            assert message_type == "tool_use"
+            assert title == "Copied"
+            assert min_messages == 1
+            assert max_messages is None
+            assert min_words == 3
+            assert since_ms == 1767312000000
+            assert until_ms is None
+            assert since_session_id is None
+            return [
+                ArchiveSessionSearchHit(
+                    rank=1,
+                    session_id="codex-session:native-1",
+                    block_id="codex-session:native-1:m1:0",
+                    message_id="codex-session:native-1:m1",
+                    origin="codex-session",
+                    provider=Provider.CODEX,
+                    title="Copied",
+                    snippet="[needle]",
+                )
+            ]
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "query": ("needle",),
+                "provider": "codex",
+                "exclude_provider": "chatgpt",
+                "tag": "review,archive",
+                "exclude_tag": "archived",
+                "repo": "polylogue",
+                "has_type": "tool_use,thinking",
+                "filter_has_tool_use": True,
+                "filter_has_thinking": True,
+                "tool": "Read",
+                "exclude_tool": "Write",
+                "action": "file_read",
+                "exclude_action": "file_write",
+                "action_sequence": "file_read,shell",
+                "action_text": "README.md",
+                "referenced_path": ("/workspace/polylogue/README.md", "pyproject.toml"),
+                "cwd_prefix": "/realm/project/polylogue",
+                "typed_only": True,
+                "message_type": "tool-use",
+                "title": "Copied",
+                "min_messages": 1,
+                "min_words": 3,
+                "since": "2026-01-02T00:00:00Z",
+                "limit": 5,
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "search"
+    assert payload["origin"] == "codex-session"
+    assert payload["items"][0]["block_id"] == "codex-session:native-1:m1:0"
+    assert payload["items"][0]["source"] == "codex-session"
+    assert payload["items"][0]["origin"] == "codex-session"
+    assert "provider" not in payload["items"][0]
+
+
+def test_async_execute_query_archive_filters_multiple_providers(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
+            assert kwargs["origin"] is None
+            assert kwargs["origins"] == ("codex-session", "chatgpt-export")
+            return []
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "provider": "codex,chatgpt",
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "list"
+    assert payload["items"] == []
+
+
+def test_async_execute_query_archive_searches_within_session_id(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def resolve_session_id(self, token: str) -> str:
+            assert token == "native-1"
+            return "codex-session:native-1"
+
+        def search_summaries(self, query: str, **kwargs: object) -> list[ArchiveSessionSearchHit]:
+            assert query == "needle"
+            assert kwargs["session_id"] == "codex-session:native-1"
+            return [
+                ArchiveSessionSearchHit(
+                    rank=1,
+                    session_id="codex-session:native-1",
+                    block_id="codex-session:native-1:m1:0",
+                    message_id="codex-session:native-1:m1",
+                    origin="codex-session",
+                    provider=Provider.CODEX,
+                    title="Copied",
+                    snippet="[needle]",
+                )
+            ]
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "conv_id": "native-1",
+                "query": ("needle",),
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "search"
+    assert payload["items"][0]["session_id"] == "codex-session:native-1"
+
+
+def test_async_execute_query_archive_filters_since_session_id(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
+            assert kwargs["since_session_id"] == "codex-session:anchor"
+            return []
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "since_session_id": "codex-session:anchor",
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "list"
+    assert payload["items"] == []
+
+
+def test_async_execute_query_archive_paginates_lists_with_cursor(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+    calls: list[tuple[int, int]] = []
+
+    def summary(native_id: str) -> ArchiveSessionSummary:
+        return ArchiveSessionSummary(
+            session_id=f"codex-session:{native_id}",
+            native_id=native_id,
+            origin="codex-session",
+            provider=Provider.CODEX,
+            title=native_id,
+            created_at=None,
+            updated_at=None,
+            message_count=1,
+            word_count=1,
+            tags=(),
+        )
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
+            limit_value = kwargs["limit"]
+            offset_value = kwargs["offset"]
+            assert isinstance(limit_value, int)
+            assert isinstance(offset_value, int)
+            limit = limit_value
+            offset = offset_value
+            calls.append((limit, offset))
+            rows = [summary("one"), summary("two"), summary("three"), summary("four")]
+            return rows[offset : offset + limit]
+
+    fake = FakeArchiveStore()
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: fake),
+    )
+
+    asyncio.run(async_execute_query(env, {"archive": True, "limit": 2, "output_format": "json"}))
+    first_page = json.loads(capsys.readouterr().out)
+    cursor = first_page["next_cursor"]
+
+    assert [item["session_id"] for item in first_page["items"]] == ["codex-session:one", "codex-session:two"]
+    assert decode_search_cursor(cursor).r == 2
+    assert first_page["next_offset"] == 2
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {"archive": True, "limit": 2, "cursor": cursor, "output_format": "json"},
+        )
+    )
+    second_page = json.loads(capsys.readouterr().out)
+
+    assert calls == [(3, 0), (3, 2)]
+    assert [item["session_id"] for item in second_page["items"]] == ["codex-session:three", "codex-session:four"]
+    assert second_page["next_cursor"] is None
+
+
+def test_async_execute_query_archive_open_prints_session_url(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def resolve_session_id(self, token: str) -> str:
+            assert token == "codex-session:native-1"
+            return token
+
+        def read_session(self, session_id: str) -> None:
+            raise AssertionError(f"open should not hydrate session {session_id}")
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "conv_id": "codex-session:native-1",
+                "open_result": True,
+                "print_url": True,
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {"url": "http://127.0.0.1:8766/?session=codex-session%3Anative-1"}
+
+
+def test_async_execute_query_archive_open_uses_first_list_result(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
+            assert kwargs["limit"] == 2
+            return [
+                ArchiveSessionSummary(
+                    session_id="codex-session:first",
+                    native_id="first",
+                    origin="codex-session",
+                    provider=Provider.CODEX,
+                    title="First",
+                    created_at=None,
+                    updated_at=None,
+                    message_count=1,
+                    word_count=1,
+                    tags=(),
+                )
+            ]
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    with patch("polylogue.cli.archive_query.webbrowser.open") as mock_open:
+        asyncio.run(
+            async_execute_query(
+                env,
+                {
+                    "archive": True,
+                    "open_result": True,
+                    "limit": 1,
+                    "output_format": "json",
+                },
+            )
+        )
+
+    assert capsys.readouterr().out == ""
+    mock_open.assert_called_once_with("http://127.0.0.1:8766/?session=codex-session%3Afirst")
+    _as_mock(env.ui.console).print.assert_called_once_with(
+        "Opened: http://127.0.0.1:8766/?session=codex-session%3Afirst"
+    )
+
+
+def test_async_execute_query_archive_streams_session_messages(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def resolve_session_id(self, token: str) -> str:
+            return token
+
+        def read_session(self, session_id: str) -> ArchiveSessionEnvelope:
+            return ArchiveSessionEnvelope(
+                session_id=session_id,
+                native_id="native-1",
+                origin="codex-session",
+                title="Streamed",
+                active_leaf_message_id="codex-session:native-1:m2",
+                messages=(
+                    ArchiveMessageRow(
+                        message_id="codex-session:native-1:m1",
+                        native_id="m1",
+                        role="user",
+                        position=0,
+                        variant_index=0,
+                        is_active_path=True,
+                        is_active_leaf=False,
+                        blocks=(
+                            ArchiveBlockRow(
+                                block_id="codex-session:native-1:m1:0",
+                                message_id="codex-session:native-1:m1",
+                                block_type="text",
+                                text="stream user",
+                            ),
+                        ),
+                    ),
+                    ArchiveMessageRow(
+                        message_id="codex-session:native-1:m2",
+                        native_id="m2",
+                        role="assistant",
+                        position=1,
+                        variant_index=0,
+                        is_active_path=True,
+                        is_active_leaf=True,
+                        blocks=(
+                            ArchiveBlockRow(
+                                block_id="codex-session:native-1:m2:0",
+                                message_id="codex-session:native-1:m2",
+                                block_type="text",
+                                text="stream assistant",
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "conv_id": "codex-session:native-1",
+                "stream": True,
+                "dialogue_only": True,
+                "limit": 1,
+                "output_format": "json",
+            },
+        )
+    )
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [line["role"] for line in lines] == ["user"]
+    assert lines[0]["blocks"][0]["text"] == "stream user"
+
+
+def test_async_execute_query_archive_accepts_lexical_retrieval_flags(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def search_summaries(self, query: str, **kwargs: object) -> list[ArchiveSessionSearchHit]:
+            assert query == "needle"
+            return []
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    # Empty search is the no-results contract: status 2 with the (empty) search
+    # envelope still emitted on stdout for machine consumers.
+    with pytest.raises(SystemExit) as exc_info:
+        asyncio.run(
+            async_execute_query(
+                env,
+                {
+                    "archive": True,
+                    "query": ("needle",),
+                    "lexical": True,
+                    "retrieval_lane": "dialogue",
+                    "output_format": "json",
+                },
+            )
+        )
+    assert exc_info.value.code == 2
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "search"
+    assert payload["items"] == []
+
+
+def test_async_execute_query_archive_sorts_search_terms(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def search_summaries(self, query: str, **kwargs: object) -> list[ArchiveSessionSearchHit]:
+            assert query == "needle"
+            assert kwargs["sort"] == "messages"
+            assert kwargs["reverse"] is True
+            return []
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    # Empty search is the no-results contract: status 2 with the (empty) search
+    # envelope still emitted on stdout for machine consumers.
+    with pytest.raises(SystemExit) as exc_info:
+        asyncio.run(
+            async_execute_query(
+                env,
+                {
+                    "archive": True,
+                    "query": ("needle",),
+                    "sort": "messages",
+                    "reverse": True,
+                    "output_format": "json",
+                },
+            )
+        )
+    assert exc_info.value.code == 2
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "search"
+    assert payload["items"] == []
+
+
+def test_async_execute_query_archive_uses_vector_provider_for_semantic_search(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeVectorProvider:
+        def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
+            assert text == "meaningful prompt"
+            assert limit == 6
+            return [("codex-session:native-1:m1", 0.2), ("codex-session:native-2:m1", 0.3)]
+
+    class FakeArchiveStore:
+        index_db_path = archive_root / "index.db"
+
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def semantic_summaries(
+            self,
+            scored_message_ids: list[tuple[str, float]],
+            **kwargs: object,
+        ) -> list[ArchiveSessionSearchHit]:
+            assert scored_message_ids == [("codex-session:native-1:m1", 0.2), ("codex-session:native-2:m1", 0.3)]
+            assert kwargs["limit"] == 6
+            assert kwargs["offset"] == 0
+            return [
+                ArchiveSessionSearchHit(
+                    rank=1,
+                    session_id="codex-session:native-1",
+                    block_id="codex-session:native-1:m1:0",
+                    message_id="codex-session:native-1:m1",
+                    origin="codex-session",
+                    provider=Provider.CODEX,
+                    title="Semantic",
+                    snippet="semantic hit",
+                ),
+                ArchiveSessionSearchHit(
+                    rank=2,
+                    session_id="codex-session:native-2",
+                    block_id="codex-session:native-2:m1:0",
+                    message_id="codex-session:native-2:m1",
+                    origin="codex-session",
+                    provider=Provider.CODEX,
+                    title="Semantic 2",
+                    snippet="semantic hit 2",
+                ),
+            ]
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.create_vector_provider", lambda *args, **kwargs: FakeVectorProvider()
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "similar_text": "meaningful prompt",
+                "limit": 1,
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["retrieval_lane"] == "semantic"
+    assert payload["items"][0]["session_id"] == "codex-session:native-1"
+    assert decode_search_cursor(payload["next_cursor"]).lane == "semantic"
+
+
+def test_async_execute_query_archive_accepts_explicit_semantic_lane(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeVectorProvider:
+        def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
+            assert text == "meaningful prompt"
+            return [("codex-session:native-1:m1", 0.2)]
+
+    class FakeArchiveStore:
+        index_db_path = archive_root / "index.db"
+
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def semantic_summaries(
+            self,
+            scored_message_ids: list[tuple[str, float]],
+            **kwargs: object,
+        ) -> list[ArchiveSessionSearchHit]:
+            assert scored_message_ids == [("codex-session:native-1:m1", 0.2)]
+            return [
+                ArchiveSessionSearchHit(
+                    rank=1,
+                    session_id="codex-session:native-1",
+                    block_id="codex-session:native-1:m1:0",
+                    message_id="codex-session:native-1:m1",
+                    origin="codex-session",
+                    provider=Provider.CODEX,
+                    title="Semantic",
+                    snippet="semantic hit",
+                )
+            ]
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.create_vector_provider", lambda *args, **kwargs: FakeVectorProvider()
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "query": ("meaningful prompt",),
+                "retrieval_lane": "semantic",
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["retrieval_lane"] == "semantic"
+    assert payload["items"][0]["session_id"] == "codex-session:native-1"
+
+
+def test_archive_tiers_semantic_query_uses_active_root_embeddings_db(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured_root = tmp_path / "archive"
+    active_root = tmp_path / "active"
+    configured_root.mkdir()
+    active_root.mkdir()
+    (active_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = configured_root
+    # db_path named index.db resolves the active archive root to its parent,
+    # overriding the configured (empty) archive_root — the supported override.
+    config.db_path = active_root / "index.db"
+    env = _make_env(repo=MagicMock(), config=config)
+    observed_vector_db_paths: list[Path] = []
+
+    class FakeVectorProvider:
+        def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
+            assert text == "meaningful prompt"
+            return [("codex-session:native-1:m1", 0.2)]
+
+    class FakeArchiveStore:
+        index_db_path = active_root / "index.db"
+
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def semantic_summaries(
+            self,
+            scored_message_ids: list[tuple[str, float]],
+            **kwargs: object,
+        ) -> list[ArchiveSessionSearchHit]:
+            assert scored_message_ids == [("codex-session:native-1:m1", 0.2)]
+            return [
+                ArchiveSessionSearchHit(
+                    rank=1,
+                    session_id="codex-session:native-1",
+                    block_id="codex-session:native-1:m1:0",
+                    message_id="codex-session:native-1:m1",
+                    origin="codex-session",
+                    provider=Provider.CODEX,
+                    title="Semantic",
+                    snippet="semantic hit",
+                )
+            ]
+
+    def fake_open_existing(cls: type[object], root: Path) -> FakeArchiveStore:
+        assert root == active_root
+        return FakeArchiveStore()
+
+    def fake_create_vector_provider(config_arg: object, *, db_path: Path) -> FakeVectorProvider:
+        assert config_arg is config
+        observed_vector_db_paths.append(db_path)
+        return FakeVectorProvider()
+
+    monkeypatch.setattr("polylogue.cli.archive_query.ArchiveStore.open_existing", classmethod(fake_open_existing))
+    monkeypatch.setattr("polylogue.cli.archive_query.create_vector_provider", fake_create_vector_provider)
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "query": ("meaningful prompt",),
+                "retrieval_lane": "semantic",
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["retrieval_lane"] == "semantic"
+    assert observed_vector_db_paths == [active_root / "embeddings.db"]
+
+
+def test_async_execute_query_archive_adds_tags_to_session(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def resolve_session_id(self, token: str) -> str:
+            return token
+
+        def add_user_tags(self, session_ids: tuple[str, ...], tags: tuple[str, ...]) -> int:
+            assert session_ids == ("codex-session:native-1",)
+            assert tags == ("review", "ready")
+            return 2
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "conv_id": "codex-session:native-1",
+                "add_tag": ("review", "ready"),
+                "output_format": "json",
+            },
+        )
+    )
+
+    assert json.loads(capsys.readouterr().out) == {
+        "mode": "mutation",
+        "operation": "add_tag",
+        "changed": 2,
+    }
+
+
+def test_async_execute_query_archive_deletes_session_by_id(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def resolve_session_id(self, token: str) -> str:
+            return token
+
+        def delete_sessions(self, session_ids: tuple[str, ...]) -> int:
+            assert session_ids == ("codex-session:native-1",)
+            return 1
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "conv_id": "codex-session:native-1",
+                "delete_matched": True,
+                "force": True,
+                "output_format": "json",
+            },
+        )
+    )
+
+    assert json.loads(capsys.readouterr().out) == {
+        "mode": "mutation",
+        "operation": "delete",
+        "matched": 1,
+        "deleted": 1,
+    }
+
+
+def test_async_execute_query_archive_sets_session_metadata(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def resolve_session_id(self, token: str) -> str:
+            return token
+
+        def set_user_metadata(self, session_ids: tuple[str, ...], pairs: tuple[tuple[str, str], ...]) -> int:
+            assert session_ids == ("codex-session:native-1",)
+            assert pairs == (("priority", "high"),)
+            return 1
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "conv_id": "codex-session:native-1",
+                "set_meta": (("priority", "high"),),
+                "output_format": "json",
+            },
+        )
+    )
+
+    assert json.loads(capsys.readouterr().out) == {
+        "mode": "mutation",
+        "operation": "set_meta",
+        "changed": 1,
+    }
+
+
+def test_async_execute_query_archive_delete_dry_run_does_not_delete(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def resolve_session_id(self, token: str) -> str:
+            return token
+
+        def delete_sessions(self, session_ids: tuple[str, ...]) -> int:
+            raise AssertionError("dry-run must not delete")
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "conv_id": "codex-session:native-1",
+                "delete_matched": True,
+                "dry_run": True,
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["dry_run"] is True
+    assert payload["matched"] == 1
+    assert payload["deleted"] == 0
+    assert payload["session_ids"] == ["codex-session:native-1"]
+
+
+def test_async_execute_query_archive_rejects_combined_delete_mutations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+    monkeypatch.setattr("polylogue.cli.archive_query.ArchiveStore.open_existing", MagicMock())
+
+    with pytest.raises(click.UsageError, match="cannot combine delete with --set"):
+        asyncio.run(
+            async_execute_query(
+                env,
+                {"archive": True, "delete_matched": True, "set_meta": (("priority", "1"),)},
+            )
+        )
+
+
+def test_async_execute_query_archive_reads_session_by_id(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def resolve_session_id(self, token: str) -> str:
+            assert token == "codex-session:native-1"
+            return token
+
+        def read_session(self, session_id: str) -> ArchiveSessionEnvelope:
+            assert session_id == "codex-session:native-1"
+            return ArchiveSessionEnvelope(
+                session_id=session_id,
+                native_id="native-1",
+                origin="codex-session",
+                title="Copied",
+                active_leaf_message_id="codex-session:native-1:m1",
+                messages=(
+                    ArchiveMessageRow(
+                        message_id="codex-session:native-1:m1",
+                        native_id="m1",
+                        role="user",
+                        position=0,
+                        variant_index=0,
+                        is_active_path=True,
+                        is_active_leaf=True,
+                        blocks=(
+                            ArchiveBlockRow(
+                                block_id="codex-session:native-1:m1:0",
+                                message_id="codex-session:native-1:m1",
+                                block_type="text",
+                                text="hello from v1",
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {"archive": True, "conv_id": "codex-session:native-1", "output_format": "json"},
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "session"
+    assert payload["session_id"] == "codex-session:native-1"
+    assert payload["source"] == "codex-session"
+    assert payload["origin"] == "codex-session"
+    assert "provider" not in payload
+    assert payload["messages"][0]["blocks"][0]["text"] == "hello from v1"
+
+
+def test_async_execute_query_archive_projects_session_messages(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def resolve_session_id(self, token: str) -> str:
+            return token
+
+        def read_session(self, session_id: str) -> ArchiveSessionEnvelope:
+            return ArchiveSessionEnvelope(
+                session_id=session_id,
+                native_id="native-1",
+                origin="codex-session",
+                title="Projected session",
+                active_leaf_message_id="codex-session:native-1:m2",
+                messages=(
+                    ArchiveMessageRow(
+                        message_id="codex-session:native-1:m1",
+                        native_id="m1",
+                        role="user",
+                        position=0,
+                        variant_index=0,
+                        is_active_path=True,
+                        is_active_leaf=False,
+                        blocks=(
+                            ArchiveBlockRow(
+                                block_id="codex-session:native-1:m1:0",
+                                message_id="codex-session:native-1:m1",
+                                block_type="text",
+                                text="keep user prose",
+                            ),
+                        ),
+                    ),
+                    ArchiveMessageRow(
+                        message_id="codex-session:native-1:m2",
+                        native_id="m2",
+                        role="assistant",
+                        position=1,
+                        variant_index=0,
+                        is_active_path=True,
+                        is_active_leaf=True,
+                        blocks=(
+                            ArchiveBlockRow(
+                                block_id="codex-session:native-1:m2:0",
+                                message_id="codex-session:native-1:m2",
+                                block_type="thinking",
+                                text="drop reasoning",
+                            ),
+                            ArchiveBlockRow(
+                                block_id="codex-session:native-1:m2:1",
+                                message_id="codex-session:native-1:m2",
+                                block_type="tool_use",
+                                text=None,
+                                tool_name="Read",
+                                tool_id="tool-1",
+                                semantic_type="file_read",
+                            ),
+                            ArchiveBlockRow(
+                                block_id="codex-session:native-1:m2:2",
+                                message_id="codex-session:native-1:m2",
+                                block_type="tool_result",
+                                text="drop file contents",
+                                tool_id="tool-1",
+                            ),
+                            ArchiveBlockRow(
+                                block_id="codex-session:native-1:m2:3",
+                                message_id="codex-session:native-1:m2",
+                                block_type="text",
+                                text="keep assistant prose",
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "conv_id": "codex-session:native-1",
+                "dialogue_only": True,
+                "prose_only": True,
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [message["role"] for message in payload["messages"]] == ["user", "assistant"]
+    assert payload["messages"][0]["blocks"] == [
+        {
+            "block_id": "codex-session:native-1:m1:0",
+            "block_type": "text",
+            "message_id": "codex-session:native-1:m1",
+            "semantic_type": None,
+            "text": "keep user prose",
+            "tool_id": None,
+            "tool_name": None,
+        }
     ]
+    assert [block["text"] for block in payload["messages"][1]["blocks"]] == ["keep assistant prose"]
 
 
-@pytest.mark.asyncio
-async def test_output_stats_sql_json_contract() -> None:
-    env = _make_env()
-    repo = MagicMock()
-    repo.get_archive_stats = AsyncMock(
-        return_value=SimpleNamespace(
-            total_conversations=2,
-            embedded_conversations=1,
-            embedded_messages=5,
-            pending_embedding_conversations=1,
-            stale_embedding_messages=0,
-            embedding_coverage=50.0,
+def test_async_execute_query_archive_transforms_session_messages(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def resolve_session_id(self, token: str) -> str:
+            return token
+
+        def read_session(self, session_id: str) -> ArchiveSessionEnvelope:
+            return ArchiveSessionEnvelope(
+                session_id=session_id,
+                native_id="native-1",
+                origin="codex-session",
+                title="Transformed session",
+                active_leaf_message_id="codex-session:native-1:m2",
+                messages=(
+                    ArchiveMessageRow(
+                        message_id="codex-session:native-1:m1",
+                        native_id="m1",
+                        role="user",
+                        position=0,
+                        variant_index=0,
+                        is_active_path=True,
+                        is_active_leaf=False,
+                        blocks=(
+                            ArchiveBlockRow(
+                                block_id="codex-session:native-1:m1:0",
+                                message_id="codex-session:native-1:m1",
+                                block_type="text",
+                                text="survives",
+                            ),
+                        ),
+                    ),
+                    ArchiveMessageRow(
+                        message_id="codex-session:native-1:m2",
+                        native_id="m2",
+                        role="assistant",
+                        position=1,
+                        variant_index=0,
+                        is_active_path=True,
+                        is_active_leaf=True,
+                        blocks=(
+                            ArchiveBlockRow(
+                                block_id="codex-session:native-1:m2:0",
+                                message_id="codex-session:native-1:m2",
+                                block_type="tool_use",
+                                text=None,
+                                tool_name="Bash",
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "conv_id": "codex-session:native-1",
+                "transform": "strip-tools",
+                "output_format": "json",
+            },
         )
     )
 
-    filter_chain = MagicMock()
-    filter_chain.describe.return_value = []
-    filter_chain.can_use_summaries.return_value = False
-    filter_chain.count = AsyncMock(side_effect=AssertionError("archive-scope stats should reuse archive snapshot"))
-    repo.aggregate_message_stats = AsyncMock(
-        return_value={
-            "total": 9,
-            "user": 4,
-            "assistant": 5,
-            "words_approx": 42,
-            "attachment_refs": 2,
-            "distinct_attachments": 1,
-            "min_sort_key": 1704067200,
-            "max_sort_key": 1704153600,
-            "providers": {"claude-ai": 2, "chatgpt": 1},
-        }
+    payload = json.loads(capsys.readouterr().out)
+    assert [message["message_id"] for message in payload["messages"]] == ["codex-session:native-1:m1"]
+
+
+def test_async_execute_query_archive_transforms_first_list_match(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
+            return [
+                ArchiveSessionSummary(
+                    session_id="codex-session:native-1",
+                    native_id="native-1",
+                    origin="codex-session",
+                    provider=Provider.CODEX,
+                    title="Transformed list match",
+                    created_at=None,
+                    updated_at=None,
+                    message_count=2,
+                    word_count=1,
+                    tags=(),
+                )
+            ]
+
+        def read_session(self, session_id: str) -> ArchiveSessionEnvelope:
+            assert session_id == "codex-session:native-1"
+            return ArchiveSessionEnvelope(
+                session_id=session_id,
+                native_id="native-1",
+                origin="codex-session",
+                title="Transformed list match",
+                active_leaf_message_id="codex-session:native-1:m2",
+                messages=(
+                    ArchiveMessageRow(
+                        message_id="codex-session:native-1:m1",
+                        native_id="m1",
+                        role="user",
+                        position=0,
+                        variant_index=0,
+                        is_active_path=True,
+                        is_active_leaf=False,
+                        blocks=(
+                            ArchiveBlockRow(
+                                block_id="codex-session:native-1:m1:0",
+                                message_id="codex-session:native-1:m1",
+                                block_type="text",
+                                text="survives",
+                            ),
+                        ),
+                    ),
+                    ArchiveMessageRow(
+                        message_id="codex-session:native-1:m2",
+                        native_id="m2",
+                        role="assistant",
+                        position=1,
+                        variant_index=0,
+                        is_active_path=True,
+                        is_active_leaf=True,
+                        blocks=(
+                            ArchiveBlockRow(
+                                block_id="codex-session:native-1:m2:0",
+                                message_id="codex-session:native-1:m2",
+                                block_type="tool_use",
+                                text=None,
+                                tool_name="Bash",
+                            ),
+                        ),
+                    ),
+                ),
+            )
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
     )
 
-    with patch("click.echo") as mock_echo:
-        mock_echo = _as_mock(mock_echo)
-        await output_stats_sql(env, filter_chain, repo, output_format="json")
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "transform": "strip-tools",
+                "output_format": "json",
+                "limit": 1,
+            },
+        )
+    )
 
-    _as_mock(env.ui.console.print).assert_not_called()
-    repo.get_archive_stats.assert_awaited_once_with()
-    repo.aggregate_message_stats.assert_awaited_once_with()
-    payload = json.loads(mock_echo.call_args.args[0])
-    assert payload["dimension"] == "archive"
-    assert payload["rows"] == []
-    assert payload["summary"]["conversations"] == 2
-    assert payload["summary"]["messages_total"] == 9
-    assert payload["summary"]["attachment_refs"] == 2
-    assert payload["summary"]["distinct_attachments"] == 1
-    assert payload["summary"]["providers"] == {"claude-ai": 2, "chatgpt": 1}
-    assert payload["summary"]["date_range"] == "2024-01-01 to 2024-01-02"
-    assert payload["summary"]["embeddings"]["embedded_conversations"] == 1
-    assert payload["summary"]["embeddings"]["embedding_coverage_percent"] == 50.0
-    assert "total_attachments" not in payload["summary"]["embeddings"]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "session"
+    assert [message["message_id"] for message in payload["messages"]] == ["codex-session:native-1:m1"]
+
+
+def test_async_execute_query_archive_rejects_unsupported_legacy_filters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+    monkeypatch.setattr("polylogue.cli.archive_query.ArchiveStore.open_existing", MagicMock())
+
+    with pytest.raises(click.UsageError, match="[Hh]ybrid retrieval requires lexical query"):
+        asyncio.run(async_execute_query(env, {"archive": True, "retrieval_lane": "hybrid"}))
 
 
 # ---------------------------------------------------------------------------
-# Merged from test_search.py (2026-03-15)
+# CLI search surface (native, driven through CliRunner)
 # ---------------------------------------------------------------------------
 
-# =============================================================================
-# TEST DATA TABLES (module-level constants)
-# =============================================================================
 
 SEARCH_FILTER_CASES = [
-    ("provider", ["Python", "-p", "chatgpt"], 0, None),
+    ("origin", ["Python", "--origin", "chatgpt-export"], 0, None),
     ("since_valid", ["Python", "--since", "__DYNAMIC_DATE__"], 0, None),
-    ("since_invalid", ["Python", "--since", "not-a-date"], 1, "date"),
+    # Archive input validation raises click.UsageError → status 2 (Click's
+    # usage-error convention), consistent across all archive filter validation.
+    ("since_invalid", ["Python", "--since", "not-a-date"], 2, "date"),
     ("limit_list", ["JavaScript", "--limit", "1", "list"], 0, None),
 ]
 
@@ -2096,19 +2442,25 @@ class TestSearchEdgeCases:
         result = runner.invoke(cli, ["--plain", "nonexistent_term_xyz"])
         # exit_code 2 = no results (valid outcome)
         assert result.exit_code == 2
-        assert "no conversation" in result.output.lower() or "matched" in result.output.lower()
+        assert "no session" in result.output.lower() or "matched" in result.output.lower()
 
-    def test_stats_mode_no_filters(self, cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
-        """Stats mode when no query terms or filters provided."""
+    def test_no_args_runs_archive_query_without_requiring_terms(
+        self, cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No args routes through the archive executor (no query term required).
+
+        After the archive-route cleanup (#1743) the legacy bare-invocation
+        stats branch is gone: a bare ``polylogue`` runs the query. On an
+        empty archive that matches nothing, so the documented no-results
+        contract (exit code 2) applies rather than a crash or usage error.
+        """
         from polylogue.cli import cli
 
         monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_dir"]))
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
         runner = CliRunner()
-        # No args = stats mode in query-first CLI
         result = runner.invoke(cli, ["--plain"])
-        assert result.exit_code == 0
-        # Should show stats, not require query
+        assert result.exit_code in (0, 2)
 
     def test_search_case_insensitive(self, search_workspace: SearchWorkspace) -> None:
         """Search is case-insensitive."""
@@ -2164,10 +2516,10 @@ class TestSearchIndexRebuild:
         monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_dir"]))
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
-        # Create conversation without building index
+        # Create session without building index
         db_path = cli_workspace["db_path"]
         factory = DbFactory(db_path)
-        factory.create_conversation(
+        factory.create_session(
             id="c1",
             provider="test",
             title="Test",
@@ -2182,4 +2534,4 @@ class TestSearchIndexRebuild:
         if result.exit_code == 0:
             assert "searchable" in result.output.lower() or "c1" in result.output
         else:
-            assert "no conversation" in result.output.lower() or "matched" in result.output.lower()
+            assert "no session" in result.output.lower() or "matched" in result.output.lower()

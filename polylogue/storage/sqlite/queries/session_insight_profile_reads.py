@@ -17,21 +17,21 @@ __all__ = [
 
 def _session_profile_order_by(sort: str) -> str:
     if sort == "first-message":
-        return "ORDER BY COALESCE(unixepoch(sp.first_message_at), unixepoch(sp.source_updated_at), unixepoch(sp.last_message_at)) DESC, sp.conversation_id"
+        return "ORDER BY COALESCE(unixepoch(sp.first_message_at), unixepoch(sp.source_updated_at), unixepoch(sp.last_message_at)) DESC, sp.session_id"
     if sort == "last-message":
-        return "ORDER BY COALESCE(unixepoch(sp.last_message_at), unixepoch(sp.source_updated_at), unixepoch(sp.first_message_at)) DESC, sp.conversation_id"
+        return "ORDER BY COALESCE(unixepoch(sp.last_message_at), unixepoch(sp.source_updated_at), unixepoch(sp.first_message_at)) DESC, sp.session_id"
     if sort == "wallclock":
-        return "ORDER BY sp.wall_duration_ms DESC, COALESCE(unixepoch(sp.last_message_at), unixepoch(sp.source_updated_at), unixepoch(sp.first_message_at)) DESC, sp.conversation_id"
-    return "ORDER BY COALESCE(sp.source_sort_key, 0) DESC, sp.conversation_id"
+        return "ORDER BY sp.wall_duration_ms DESC, COALESCE(unixepoch(sp.last_message_at), unixepoch(sp.source_updated_at), unixepoch(sp.first_message_at)) DESC, sp.session_id"
+    return "ORDER BY COALESCE(sp.source_sort_key, 0) DESC, sp.session_id"
 
 
 async def get_session_profile(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
 ) -> SessionProfileRecord | None:
     cursor = await conn.execute(
-        "SELECT * FROM session_profiles WHERE conversation_id = ?",
-        (conversation_id,),
+        "SELECT * FROM session_profiles WHERE session_id = ?",
+        (session_id,),
     )
     row = await cursor.fetchone()
     return _row_to_session_profile_record(row) if row else None
@@ -39,17 +39,17 @@ async def get_session_profile(
 
 async def get_session_profiles_batch(
     conn: aiosqlite.Connection,
-    conversation_ids: list[str],
+    session_ids: list[str],
 ) -> dict[str, SessionProfileRecord]:
-    if not conversation_ids:
+    if not session_ids:
         return {}
-    placeholders = ", ".join("?" for _ in conversation_ids)
+    placeholders = ", ".join("?" for _ in session_ids)
     cursor = await conn.execute(
-        f"SELECT * FROM session_profiles WHERE conversation_id IN ({placeholders})",
-        tuple(conversation_ids),
+        f"SELECT * FROM session_profiles WHERE session_id IN ({placeholders})",
+        tuple(session_ids),
     )
     rows = await cursor.fetchall()
-    return {str(row["conversation_id"]): _row_to_session_profile_record(row) for row in rows}
+    return {str(row["session_id"]): _row_to_session_profile_record(row) for row in rows}
 
 
 async def list_session_profiles(

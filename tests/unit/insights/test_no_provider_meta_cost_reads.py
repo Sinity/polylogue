@@ -43,7 +43,7 @@ COST_KEYS = frozenset(
 # here are the canonical single source of truth for those facts.
 EXTRACTOR_ALLOWLIST = frozenset(
     {
-        # Parsers: provider wire -> ParsedConversation.provider_meta writes
+        # Parsers: provider wire -> ParsedSession.provider_meta writes
         # and (for Message.cost_usd in model_runtime) the parser-only accessor.
         "polylogue/sources/parsers",
         "polylogue/sources/providers",

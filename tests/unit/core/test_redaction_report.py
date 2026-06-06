@@ -134,7 +134,7 @@ class TestToJson:
                         action="rejected",
                         reason="high_entropy",
                         count=2,
-                        conversation_count=1,
+                        session_count=1,
                         risk="medium",
                     )
                 ],
@@ -160,7 +160,7 @@ class TestToJson:
         rejected_decision = rejected[0]
         assert isinstance(rejected_decision, dict)
         assert rejected_decision["action"] == "rejected"
-        assert rejected_decision["conversation_count"] == 1
+        assert rejected_decision["session_count"] == 1
         assert rejected_decision["risk"] == "medium"
         # Should be JSON-serializable
         json.dumps(data)

@@ -1,5 +1,5 @@
 {
-  description = "Polylogue - AI conversation archive";
+  description = "Polylogue - AI session archive";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

@@ -97,8 +97,8 @@ def cli(
     retrieval_lane: str | None,
     lexical: bool,
     semantic: bool,
-    provider: str | None,
-    exclude_provider: str | None,
+    origin: str | None,
+    exclude_origin: str | None,
     repo: str | None,
     tag: str | None,
     exclude_tag: str | None,
@@ -153,7 +153,7 @@ def cli(
     verbose: bool,
     diagnose: bool,
 ) -> None:
-    """Polylogue - AI conversation archive.
+    """Polylogue - AI session archive.
 
     \b
     Dispatch model (query-first):
@@ -167,15 +167,15 @@ def cli(
     \b
     Query mode (default):
         polylogue "search terms"
-        polylogue -p claude-ai --since "last week"
+        polylogue --origin claude-ai-export --since "last week"
         polylogue --latest --output browser
 
     \b
-    Verbs (actions on matched conversations):
-        polylogue "error" -p claude-ai --since 2025-01 list
+    Verbs (actions on matched sessions):
+        polylogue "error" --origin claude-ai-export --since 2025-01 list
         polylogue --has thinking --sort tokens list --limit 10
-        polylogue -p chatgpt count
-        polylogue --provider codex stats --by provider
+        polylogue --origin chatgpt-export count
+        polylogue --origin codex-session stats --by origin
         polylogue --latest open
         polylogue "urgent" --tag review delete --dry-run
         polylogue list --format json
@@ -188,7 +188,7 @@ def cli(
         polylogue --action-text "pytest -q" list
         polylogue "pytest -q tests/unit/core/test_semantic_facts.py" --retrieval-lane actions --limit 5
         polylogue --action other stats --by tool --format json
-        polylogue --provider claude-code --since 2026-01-01 stats --by repo --format json
+        polylogue --origin claude-code-session --since 2026-01-01 stats --by repo --format json
         polylogue --tool bash --exclude-tool read list
         polylogue --similar "sqlite locking bug in parser" --limit 5
 
@@ -219,16 +219,16 @@ def cli(
 register_root_commands(cli)
 
 _QUERY_VERB_HELP: dict[str, str] = {
-    "bulk-export": "Bulk export every matched conversation in one process.",
-    "count": "Print count of matched conversations.",
-    "delete": "Delete matched conversations.",
-    "list": "List matched conversations.",
-    "messages": "List messages from matched conversations.",
-    "open": "Open matched conversation in the daemon web reader.",
-    "raw": "Show raw archive payloads for matched conversations.",
-    "select": "Select one matched conversation and print a field.",
-    "show": "Show matched conversations with default full-content output.",
-    "stats": "Show statistics for matched conversations.",
+    "bulk-export": "Bulk export every matched session in one process.",
+    "count": "Print count of matched sessions.",
+    "delete": "Delete matched sessions.",
+    "list": "List matched sessions.",
+    "messages": "List messages from matched sessions.",
+    "open": "Open matched session in the daemon web reader.",
+    "raw": "Show raw archive payloads for matched sessions.",
+    "select": "Select one matched session and print a field.",
+    "show": "Show matched sessions with default full-content output.",
+    "stats": "Show statistics for matched sessions.",
 }
 
 for _verb in sorted(QUERY_VERB_NAMES):

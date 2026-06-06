@@ -78,7 +78,7 @@ def _chat_message(
     created_at: str | None = None,
     attachments: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    # ``ClaudeAIConversation`` validation in ``parsers/claude/ai_parser.py``
+    # ``ClaudeAISession`` validation in ``parsers/claude/ai_parser.py``
     # is strict; payloads that don't fit the pydantic model fall through to
     # the loose extractor. We exercise the loose path here so the catalog
     # stays focused on parser behavior independent of validator drift.
@@ -127,7 +127,7 @@ _CLAUDE_AI_METADATA_CATALOG: list[CatalogCase] = [
     (
         "plain text exchange",
         lambda: _payload(
-            title="Plain Conversation",
+            title="Plain Session",
             conv_id="conv-plain",
             chat_messages=[
                 _chat_message("m1", "human", [_text_segment("Hi")], created_at="2024-05-01T10:00:00Z"),
@@ -135,7 +135,7 @@ _CLAUDE_AI_METADATA_CATALOG: list[CatalogCase] = [
             ],
         ),
         {
-            "title": "Plain Conversation",
+            "title": "Plain Session",
             "roles": ["user", "assistant"],
             "min_messages": 2,
             "block_types_any_of": [["text"]],
@@ -364,7 +364,7 @@ def _assert_roundtrip(
     contract expectations.
 
     Title, role normalization, and timestamp ordering are asserted at
-    the hydrated ``Conversation`` level. Content-block kinds are
+    the hydrated ``Session`` level. Content-block kinds are
     asserted at the materialization boundary
     (``roundtrip.transform.bundle.content_blocks``) because the shared
     sync ``store_records`` helper does not currently propagate
@@ -428,12 +428,12 @@ def _assert_roundtrip(
         assert timestamps == sorted(timestamps), f"[{label}] hydrated timestamps not ascending: {timestamps}"
 
     # Attachment counts (loose lower bound only — provider may bind some
-    # attachments at the conversation level).
+    # attachments at the session level).
     expected_min_attachments = expectations.get("min_attachments")
     if expected_min_attachments is not None:
         # The transform result exposes attachments at the bundle level;
         # use it directly to keep this assertion shape-independent of the
-        # public Conversation surface.
+        # public Session surface.
         attachments = list(roundtrip.transform.bundle.attachments)
         assert len(attachments) >= expected_min_attachments, (
             f"[{label}] expected at least {expected_min_attachments} attachments, got {len(attachments)}"

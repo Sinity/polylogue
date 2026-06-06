@@ -1,6 +1,6 @@
 """Cost-panel endpoint contracts for the reader (#1122).
 
-``GET /api/conversations/{id}/cost`` returns a typed cost panel payload
+``GET /api/sessions/{id}/cost`` returns a typed cost panel payload
 shaped by ``polylogue/daemon/http.py:_cost_panel_payload``. Tests cover
 the four confidence/availability states the panel must distinguish:
 
@@ -9,7 +9,7 @@ the four confidence/availability states the panel must distinguish:
 - partial (mixed) -> ``q-heuristic``
 - unavailable / unconfigured -> ``q-unavailable``
 
-The unknown-conversation case is a hard 404. The conversation-without-
+The unknown-session case is a hard 404. The session-without-
 session-cost-insight case is a 200 with an explicit unavailable shape
 (empty panel never blank — AC#1122).
 """
@@ -17,7 +17,6 @@ session-cost-insight case is a 200 with an explicit unavailable shape
 from __future__ import annotations
 
 import json
-import sqlite3
 from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
@@ -86,41 +85,22 @@ def _capture_responses(handler: DaemonAPIHandler) -> tuple[MagicMock, MagicMock]
     return send_error, send_json
 
 
-def _seed_minimum_archive(workspace_env: dict[str, Path]) -> None:
-    """Seed the minimum DB schema and one conversation with one message."""
-    from polylogue.paths import db_path
-    from polylogue.storage.sqlite.schema_ddl_archive import (
-        ARCHIVE_STORAGE_DDL,
-        MESSAGE_FTS_DDL,
-        RECALL_PACKS_DDL,
-        SAVED_VIEWS_DDL,
-        USER_ANNOTATIONS_DDL,
-        USER_MARKS_DDL,
-    )
+def _seed_minimum_archive(workspace_env: dict[str, Path]) -> str:
+    """Seed the archive with one session + one message.
 
-    dbp = db_path()
-    dbp.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(dbp))
-    try:
-        conn.executescript(ARCHIVE_STORAGE_DDL)
-        conn.executescript(MESSAGE_FTS_DDL)
-        conn.executescript(USER_MARKS_DDL)
-        conn.executescript(USER_ANNOTATIONS_DDL)
-        conn.executescript(SAVED_VIEWS_DDL)
-        conn.executescript(RECALL_PACKS_DDL)
-        conn.execute(
-            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id,"
-            " title, content_hash, version) VALUES(?,?,?,?,?,?)",
-            ("cost-1", "claude-code", "p-cost-1", "A conv", "hash-cost-1", 1),
-        )
-        conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, source_name,"
-            " content_hash, version) VALUES(?,?,?,?,?,?,?)",
-            ("m-cost-1", "cost-1", "user", "hello world", "claude-code", "mhash-cost-1", 1),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    Returns the archive session id (``origin:native_id``) the cost endpoint
+    resolves through ``poly.get_session``.
+    """
+    from tests.infra.storage_records import SessionBuilder, db_setup
+
+    builder = (
+        SessionBuilder(db_setup(workspace_env), "cost-1")
+        .provider("claude-code")
+        .title("A conv")
+        .add_message(message_id="m-cost-1", role="user", text="hello world")
+    )
+    builder.save()
+    return builder.native_session_id()
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +142,7 @@ class TestCostPayloadShape:
     ) -> SessionCostInsight:
         estimate = CostEstimatePayload(
             source_name="claude-code",
-            conversation_id="c1",
+            session_id="c1",
             model_name="claude-sonnet-4-6",
             normalized_model="claude-sonnet-4-6",
             status=status,  # type: ignore[arg-type]
@@ -172,7 +152,7 @@ class TestCostPayloadShape:
             usage=CostUsagePayload(input_tokens=10, output_tokens=20, total_tokens=30),
         )
         return SessionCostInsight(
-            conversation_id="c1",
+            session_id="c1",
             source_name="claude-code",
             estimate=estimate,
             provenance=ArchiveInsightProvenance(
@@ -184,6 +164,8 @@ class TestCostPayloadShape:
     def test_exact_payload_emits_q_canonical(self) -> None:
         insight = self._make_insight(status="exact", total_usd=1.23)
         payload = _cost_panel_payload(insight)
+        assert payload["origin"] == "claude-code-session"
+        assert "provider" not in payload
         assert payload["status"] == "exact"
         assert payload["confidence_tag"] == "q-canonical"
         assert payload["total_usd"] == pytest.approx(1.23)
@@ -251,9 +233,9 @@ class TestEmptyCostPayload:
         assert isinstance(payload["basis"], dict)
         assert payload["basis"]["provider_reported_usd"] == 0.0
 
-    def test_provider_passes_through(self) -> None:
-        payload = _empty_cost_payload("c-x", "codex")
-        assert payload["provider"] == "codex"
+    def test_origin_passes_through(self) -> None:
+        payload = _empty_cost_payload("c-x", "codex-session")
+        assert payload["origin"] == "codex-session"
 
     def test_helpers_round_trip_through_json(self) -> None:
         # Defensive: panel data ships over HTTP as JSON, so every field
@@ -268,11 +250,11 @@ class TestEmptyCostPayload:
 
 
 class TestCostEndpointDispatch:
-    """``GET /api/conversations/{id}/cost`` routes to the cost handler."""
+    """``GET /api/sessions/{id}/cost`` routes to the cost handler."""
 
-    def test_unknown_conversation_returns_404(self, workspace_env: dict[str, Path]) -> None:
+    def test_unknown_session_returns_404(self, workspace_env: dict[str, Path]) -> None:
         _seed_minimum_archive(workspace_env)
-        handler = _make_handler("GET", "/api/conversations/does-not-exist/cost")
+        handler = _make_handler("GET", "/api/sessions/does-not-exist/cost")
         send_error, send_json = _capture_responses(handler)
         handler.do_GET()
         send_json.assert_not_called()
@@ -281,16 +263,16 @@ class TestCostEndpointDispatch:
         assert status == HTTPStatus.NOT_FOUND
         assert code == "not_found"
 
-    def test_known_conversation_returns_typed_panel(self, workspace_env: dict[str, Path]) -> None:
-        _seed_minimum_archive(workspace_env)
-        handler = _make_handler("GET", "/api/conversations/cost-1/cost")
+    def test_known_session_returns_typed_panel(self, workspace_env: dict[str, Path]) -> None:
+        session_id = _seed_minimum_archive(workspace_env)
+        handler = _make_handler("GET", f"/api/sessions/{session_id}/cost")
         send_error, send_json = _capture_responses(handler)
         handler.do_GET()
         send_error.assert_not_called()
         send_json.assert_called_once()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.OK
-        assert payload["conversation_id"] == "cost-1"
+        assert payload["session_id"] == session_id
         # No tokens were materialised for the seed; the panel must still
         # surface the typed shape with an explicit confidence tag.
         assert payload["confidence_tag"] in {

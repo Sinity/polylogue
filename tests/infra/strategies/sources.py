@@ -51,10 +51,10 @@ def json_array_bytes_strategy(draw: st.DrawFn) -> tuple[list[JSONDocument], byte
 
 
 @st.composite
-def conversations_wrapper_bytes_strategy(draw: st.DrawFn) -> tuple[list[JSONDocument], bytes]:
-    """Generate a {"conversations": [...]} document and its encoded bytes."""
+def sessions_wrapper_bytes_strategy(draw: st.DrawFn) -> tuple[list[JSONDocument], bytes]:
+    """Generate a {"sessions": [...]} document and its encoded bytes."""
     documents = draw(st.lists(json_document_strategy(), min_size=1, max_size=6))
-    wrapper = {"conversations": documents}
+    wrapper = {"sessions": documents}
     return documents, json.dumps(wrapper).encode("utf-8")
 
 

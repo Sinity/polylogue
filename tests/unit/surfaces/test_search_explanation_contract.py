@@ -2,7 +2,7 @@
 
 The ranked-search envelope is the shared evidence carrier across CLI JSON,
 MCP, API, and daemon. These tests pin the field set of
-``ConversationSearchMatchPayload`` and the ``score_kind`` interpretation,
+``SessionSearchMatchPayload`` and the ``score_kind`` interpretation,
 and record bounded contract evidence so downstream consumers can see what
 the surface promises.
 """
@@ -11,30 +11,31 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from polylogue.archive.conversation.models import ConversationSummary
 from polylogue.archive.query.search_hits import (
-    ConversationSearchHit,
-    conversation_search_hit_from_summary,
+    SessionSearchHit,
     default_score_kind,
+    session_search_hit_from_summary,
 )
+from polylogue.archive.session.domain_models import SessionSummary
+from polylogue.core.enums import Origin
 from polylogue.surfaces.payloads import (
-    ConversationSearchHitPayload,
-    ConversationSearchMatchPayload,
+    SessionSearchHitPayload,
+    SessionSearchMatchPayload,
 )
-from polylogue.types import ConversationId, Provider
+from polylogue.types import SessionId
 
 
-def _summary() -> ConversationSummary:
-    return ConversationSummary(
-        id=ConversationId("chatgpt:explain"),
-        provider=Provider.CHATGPT,
+def _summary() -> SessionSummary:
+    return SessionSummary(
+        id=SessionId("chatgpt:explain"),
+        origin=Origin.CHATGPT_EXPORT,
         title="Explain me",
         created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
 
 
-def _dialogue_hit() -> ConversationSearchHit:
-    return conversation_search_hit_from_summary(
+def _dialogue_hit() -> SessionSearchHit:
+    return session_search_hit_from_summary(
         _summary(),
         rank=1,
         retrieval_lane="dialogue",
@@ -47,14 +48,14 @@ def _dialogue_hit() -> ConversationSearchHit:
     )
 
 
-def _hybrid_hit() -> ConversationSearchHit:
+def _hybrid_hit() -> SessionSearchHit:
     components = {
         "text_rank": 1.0,
         "text_rrf": 1.0 / 61,
         "vector_rank": 2.0,
         "vector_rrf": 1.0 / 62,
     }
-    return conversation_search_hit_from_summary(
+    return session_search_hit_from_summary(
         _summary(),
         rank=1,
         retrieval_lane="hybrid",
@@ -84,7 +85,7 @@ def test_default_score_kind_per_lane_is_documented() -> None:
 def test_dialogue_hit_carries_bm25_score_kind() -> None:
     hit = _dialogue_hit()
     assert hit.score_kind == "bm25"
-    payload = ConversationSearchHitPayload.from_search_hit(hit)
+    payload = SessionSearchHitPayload.from_search_hit(hit)
     assert payload.match.score_kind == "bm25"
     assert payload.match.score == -7.42
     assert payload.match.matched_terms == ("needle",)
@@ -94,7 +95,7 @@ def test_dialogue_hit_carries_bm25_score_kind() -> None:
 
 def test_hybrid_hit_carries_rrf_score_and_per_lane_components() -> None:
     hit = _hybrid_hit()
-    payload = ConversationSearchHitPayload.from_search_hit(hit)
+    payload = SessionSearchHitPayload.from_search_hit(hit)
     assert payload.match.score_kind == "rrf"
     assert payload.match.score is not None and payload.match.score > 0
     # Per-lane RRF explanation is preserved end-to-end.
@@ -113,7 +114,7 @@ def test_hybrid_hit_carries_rrf_score_and_per_lane_components() -> None:
 def test_match_payload_required_field_set_is_stable() -> None:
     """The ``match`` payload's declared fields must include the why-this-matched
     evidence required by #873 — drop a field and this test fails loudly."""
-    declared = set(ConversationSearchMatchPayload.model_fields)
+    declared = set(SessionSearchMatchPayload.model_fields)
     required = {
         "rank",
         "retrieval_lane",
@@ -129,7 +130,7 @@ def test_match_payload_required_field_set_is_stable() -> None:
         "raw_score",
     }
     missing = required - declared
-    assert not missing, f"ConversationSearchMatchPayload lost required fields: {missing}"
+    assert not missing, f"SessionSearchMatchPayload lost required fields: {missing}"
 
 
 def test_explanation_shape_contract_evidence() -> None:

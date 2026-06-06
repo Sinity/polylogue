@@ -4,7 +4,7 @@ The package root intentionally exposes the archive-facing contract:
 
 - the async facade
 - the sync facade
-- core conversation/message model types
+- core session/message model types
 - query/search result types tied to archive operations
 
 Higher-order semantic-analysis helpers remain public, but they live behind
@@ -20,8 +20,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from polylogue.api import ArchiveStats, Polylogue
     from polylogue.api.sync import SyncPolylogue
-    from polylogue.archive.conversation.models import Conversation
     from polylogue.archive.message.models import Message
+    from polylogue.archive.session.domain_models import Session
     from polylogue.errors import PolylogueError
     from polylogue.storage.search import SearchResult
 
@@ -50,7 +50,7 @@ def __getattr__(name: str) -> object:
 
     lazy_exports = {
         "ArchiveStats": ("polylogue.api", "ArchiveStats"),
-        "Conversation": ("polylogue.archive.conversation.models", "Conversation"),
+        "Session": ("polylogue.archive.session.domain_models", "Session"),
         "Message": ("polylogue.archive.message.models", "Message"),
         "Polylogue": ("polylogue.api", "Polylogue"),
         "PolylogueError": ("polylogue.errors", "PolylogueError"),
@@ -67,7 +67,7 @@ def __getattr__(name: str) -> object:
 
 __all__ = [
     "ArchiveStats",
-    "Conversation",
+    "Session",
     "Message",
     "Polylogue",
     "PolylogueError",

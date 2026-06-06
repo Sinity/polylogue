@@ -66,7 +66,7 @@ OPERATIONAL_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
         live_variants=(
             CliSurfaceVariant(
                 name="live-session-insight-repair",
-                description="Live archive evidence/inference session-insight rebuild and migration surface",
+                description="Live archive evidence/inference session-insight rebuild and repair surface",
                 suffix_args=(),
                 env="any",
             ),

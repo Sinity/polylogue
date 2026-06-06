@@ -4,21 +4,46 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, cast
 
 import aiosqlite
 from pydantic import Field
 
+from polylogue.archive.query.spec import parse_query_date
 from polylogue.insights.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION, ArchiveInsightModel
 from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
-from polylogue.storage.runtime.store_constants import (
-    SESSION_INFERENCE_VERSION,
-    SESSION_INSIGHT_MATERIALIZER_VERSION,
-)
 
-InsightReadinessVerdict = Literal["ready", "partial", "empty", "missing", "stale", "legacy", "degraded", "unknown"]
+InsightReadinessVerdict = Literal[
+    "ready", "partial", "empty", "missing", "stale", "incompatible", "degraded", "unknown"
+]
 _REPAIR_HINT = build_maintenance_target_catalog().repair_hint(("session_insights",), include_run_all=True)
+
+
+def _origin_for_provider_value(provider: str | None) -> str | None:
+    from polylogue.storage.sqlite.archive_tiers.archive import _origin_for_provider_value as _impl
+
+    return _impl(provider)
+
+
+def _provider_for_origin_value(origin: str) -> str:
+    from polylogue.storage.sqlite.archive_tiers.archive import _provider_for_origin
+
+    return _provider_for_origin(origin).value
+
+
+def _readiness_query_ms(field: str, value: str | None) -> int | None:
+    parsed = parse_query_date(field, value)
+    if parsed is None:
+        return None
+    return int(parsed.timestamp() * 1000)
+
+
+def _iso_from_ms(value: object) -> str | None:
+    if value is None:
+        return None
+    epoch_ms = int(cast("int | float | str", value))
+    return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).isoformat()
 
 
 class InsightReadinessQuery(ArchiveInsightModel):
@@ -38,7 +63,7 @@ class InsightVersionCoverage(ArchiveInsightModel):
     field: str
     current_version: int
     versions: dict[str, int] = Field(default_factory=dict)
-    legacy_count: int = 0
+    incompatible_count: int = 0
 
 
 class InsightProviderCoverage(ArchiveInsightModel):
@@ -58,7 +83,7 @@ class InsightReadinessEntry(ArchiveInsightModel):
     missing_count: int = 0
     stale_count: int = 0
     orphan_count: int = 0
-    legacy_incompatible_count: int = 0
+    incompatible_count: int = 0
     degraded_count: int = 0
     fallback_reason_counts: dict[str, int] = Field(default_factory=dict)
     storage_artifacts: tuple[InsightStorageArtifact, ...] = ()
@@ -75,7 +100,7 @@ class InsightReadinessEntry(ArchiveInsightModel):
 class InsightReadinessReport(ArchiveInsightModel):
     checked_at: str
     aggregate_verdict: InsightReadinessVerdict
-    total_conversations: int = 0
+    total_sessions: int = 0
     provider: str | None = None
     since: str | None = None
     until: str | None = None
@@ -94,9 +119,12 @@ class InsightReadinessSpec:
     orphan_count_attr: str | None = None
     ready_flags: tuple[str, ...] = ()
     artifacts: tuple[str, ...] = ()
-    provider_column: str | None = "source_name"
-    time_column: str | None = "source_updated_at"
-    version_fields: tuple[tuple[str, int], ...] = (("materializer_version", SESSION_INSIGHT_MATERIALIZER_VERSION),)
+    # insight tables are keyed by ``session_id`` and carry no
+    # ``source_name``/``source_updated_at``/``materializer_version`` columns of
+    # their own. Provider and time coverage derive from a join to ``sessions``;
+    # the join is enabled per spec because some specs (e.g. archive coverage
+    # over ``sessions`` itself) already expose those columns directly.
+    provider_via_session: bool = True
     fallback_payload_columns: tuple[str, ...] = ()
 
 
@@ -106,18 +134,13 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
         display_name="Session Profiles",
         table_name="session_profiles",
         row_count_attr="profile_row_count",
-        expected_count_attr="total_conversations",
+        expected_count_attr="total_sessions",
         missing_count_attr="missing_profile_row_count",
         stale_count_attr="stale_profile_row_count",
         orphan_count_attr="orphan_profile_row_count",
         ready_flags=("profile_rows_ready",),
         artifacts=("session_profiles",),
-        time_column="source_updated_at",
-        version_fields=(
-            ("materializer_version", SESSION_INSIGHT_MATERIALIZER_VERSION),
-            ("inference_version", SESSION_INFERENCE_VERSION),
-        ),
-        fallback_payload_columns=("inference_payload_json",),
+        fallback_payload_columns=("provenance_json",),
     ),
     InsightReadinessSpec(
         insight_name="session_work_events",
@@ -127,13 +150,9 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
         expected_count_attr="expected_work_event_inference_count",
         stale_count_attr="stale_work_event_inference_count",
         orphan_count_attr="orphan_work_event_inference_count",
-        ready_flags=("work_event_inference_rows_ready", "work_event_inference_fts_ready"),
-        artifacts=("session_work_events", "session_work_events_fts"),
-        time_column="start_time",
-        version_fields=(
-            ("materializer_version", SESSION_INSIGHT_MATERIALIZER_VERSION),
-            ("inference_version", SESSION_INFERENCE_VERSION),
-        ),
+        ready_flags=("work_event_inference_rows_ready",),
+        artifacts=("session_work_events",),
+        fallback_payload_columns=("inference_json",),
     ),
     InsightReadinessSpec(
         insight_name="session_phases",
@@ -145,46 +164,36 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
         orphan_count_attr="orphan_phase_inference_count",
         ready_flags=("phase_inference_rows_ready",),
         artifacts=("session_phases",),
-        time_column="start_time",
-        version_fields=(
-            ("materializer_version", SESSION_INSIGHT_MATERIALIZER_VERSION),
-            ("inference_version", SESSION_INFERENCE_VERSION),
-        ),
     ),
     InsightReadinessSpec(
         insight_name="work_threads",
         display_name="Work Threads",
-        table_name="work_threads",
+        table_name="threads",
         row_count_attr="thread_count",
         expected_count_attr="root_threads",
         stale_count_attr="stale_thread_count",
         orphan_count_attr="orphan_thread_count",
-        ready_flags=("threads_ready", "threads_fts_ready"),
-        artifacts=("work_threads", "work_threads_fts"),
-        provider_column=None,
-        time_column="end_time",
+        ready_flags=("threads_ready",),
+        artifacts=("threads",),
+        provider_via_session=False,
     ),
     InsightReadinessSpec(
         insight_name="session_tag_rollups",
         display_name="Session Tag Rollups",
-        table_name="session_tag_rollups",
+        table_name="session_tags",
         row_count_attr="tag_rollup_count",
         expected_count_attr="expected_tag_rollup_count",
         stale_count_attr="stale_tag_rollup_count",
         ready_flags=("tag_rollups_ready",),
-        artifacts=("session_tag_rollups",),
-        time_column="bucket_day",
+        artifacts=("session_tags",),
     ),
     InsightReadinessSpec(
         insight_name="archive_coverage",
         display_name="Archive Coverage",
-        table_name="conversations",
-        row_count_attr="total_conversations",
+        table_name="sessions",
+        row_count_attr="total_sessions",
         ready_flags=(),
-        artifacts=("conversations",),
-        provider_column="source_name",
-        time_column="updated_at",
-        version_fields=(),
+        artifacts=("sessions",),
     ),
 )
 
@@ -224,11 +233,9 @@ def _artifact_ready(status: SessionInsightStatusSnapshot, artifact_name: str) ->
     mapping = {
         "session_profiles": "profile_rows_ready",
         "session_work_events": "work_event_inference_rows_ready",
-        "session_work_events_fts": "work_event_inference_fts_ready",
         "session_phases": "phase_inference_rows_ready",
-        "work_threads": "threads_ready",
-        "work_threads_fts": "threads_fts_ready",
-        "session_tag_rollups": "tag_rollups_ready",
+        "threads": "threads_ready",
+        "session_tags": "tag_rollups_ready",
     }
     attr = mapping.get(artifact_name)
     return bool(getattr(status, attr)) if attr is not None else None
@@ -242,14 +249,14 @@ def _entry_verdict(
     missing_count: int,
     stale_count: int,
     orphan_count: int,
-    legacy_count: int,
+    incompatible_count: int,
     degraded_count: int,
     ready_flags: dict[str, bool],
 ) -> InsightReadinessVerdict:
     if not table_present:
         return "missing"
-    if legacy_count:
-        return "legacy"
+    if incompatible_count:
+        return "incompatible"
     if stale_count or orphan_count:
         return "stale"
     if missing_count or (expected_row_count is not None and row_count < expected_row_count):
@@ -268,7 +275,7 @@ def _entry_verdict(
 def _aggregate_verdict(entries: tuple[InsightReadinessEntry, ...]) -> InsightReadinessVerdict:
     verdicts = {entry.verdict for entry in entries}
     priority: tuple[InsightReadinessVerdict, ...] = (
-        "legacy",
+        "incompatible",
         "stale",
         "partial",
         "missing",
@@ -294,22 +301,38 @@ async def _table_columns(conn: aiosqlite.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in rows}
 
 
+def _provider_filter_origin(provider: str | None) -> str | None:
+    if not provider:
+        return None
+    return _origin_for_provider_value(provider)
+
+
 def _where_clause(
     spec: InsightReadinessSpec,
     query: InsightReadinessQuery,
-    columns: set[str],
 ) -> tuple[str, list[object]]:
+    """Build a provider/time filter expressed against the joined ``sessions``.
+
+    Archive insight tables key everything on ``session_id``; provider identity
+    lives on ``sessions.origin`` and recency on ``sessions.sort_key_ms``, so
+    every filter clause references the ``s.`` alias from the session join.
+    """
     clauses: list[str] = []
     params: list[object] = []
-    if query.provider and spec.provider_column and spec.provider_column in columns:
-        clauses.append(f"{spec.provider_column} = ?")
-        params.append(query.provider)
-    if query.since and spec.time_column and spec.time_column in columns:
-        clauses.append(f"{spec.time_column} >= ?")
-        params.append(query.since)
-    if query.until and spec.time_column and spec.time_column in columns:
-        clauses.append(f"{spec.time_column} <= ?")
-        params.append(query.until)
+    origin = _provider_filter_origin(query.provider)
+    if origin is not None:
+        clauses.append("s.origin = ?")
+        params.append(origin)
+    if query.since:
+        since_ms = _readiness_query_ms("since", query.since)
+        if since_ms is not None:
+            clauses.append("s.sort_key_ms >= ?")
+            params.append(since_ms)
+    if query.until:
+        until_ms = _readiness_query_ms("until", query.until)
+        if until_ms is not None:
+            clauses.append("s.sort_key_ms <= ?")
+            params.append(until_ms)
     return (" WHERE " + " AND ".join(clauses), params) if clauses else ("", params)
 
 
@@ -319,64 +342,27 @@ async def _provider_coverage(
     query: InsightReadinessQuery,
     *,
     table_present: bool,
-    columns: set[str],
 ) -> tuple[InsightProviderCoverage, ...]:
-    if (
-        not table_present
-        or spec.table_name is None
-        or spec.provider_column is None
-        or spec.provider_column not in columns
-    ):
+    if not table_present or spec.table_name is None or not spec.provider_via_session:
         return ()
-    where, params = _where_clause(spec, query, columns)
-    time_min = f"MIN({spec.time_column})" if spec.time_column and spec.time_column in columns else "NULL"
-    time_max = f"MAX({spec.time_column})" if spec.time_column and spec.time_column in columns else "NULL"
+    where, params = _where_clause(spec, query)
     sql = (
-        f"SELECT {spec.provider_column} AS source_name, COUNT(*) AS row_count, "
-        f"{time_min} AS min_time, {time_max} AS max_time "
-        f"FROM {spec.table_name}{where} GROUP BY {spec.provider_column} ORDER BY {spec.provider_column}"
+        "SELECT s.origin AS origin, COUNT(*) AS row_count, "
+        "MIN(s.sort_key_ms) AS min_time_ms, MAX(s.sort_key_ms) AS max_time_ms "
+        f"FROM {spec.table_name} AS t "
+        "JOIN sessions AS s ON s.session_id = t.session_id"
+        f"{where} GROUP BY s.origin ORDER BY s.origin"
     )
     rows = await (await conn.execute(sql, tuple(params))).fetchall()
     return tuple(
         InsightProviderCoverage(
-            source_name=str(row["source_name"] or "unknown"),
+            source_name=_provider_for_origin_value(str(row["origin"])) if row["origin"] is not None else "unknown",
             row_count=int(row["row_count"]),
-            min_time=str(row["min_time"]) if row["min_time"] is not None else None,
-            max_time=str(row["max_time"]) if row["max_time"] is not None else None,
+            min_time=_iso_from_ms(row["min_time_ms"]),
+            max_time=_iso_from_ms(row["max_time_ms"]),
         )
         for row in rows
     )
-
-
-async def _version_coverage(
-    conn: aiosqlite.Connection,
-    spec: InsightReadinessSpec,
-    *,
-    table_present: bool,
-    columns: set[str],
-) -> tuple[InsightVersionCoverage, ...]:
-    if not table_present or spec.table_name is None or not spec.version_fields:
-        return ()
-    coverage: list[InsightVersionCoverage] = []
-    for field, current_version in spec.version_fields:
-        if field not in columns:
-            continue
-        rows = await (
-            await conn.execute(
-                f"SELECT {field} AS version, COUNT(*) AS row_count FROM {spec.table_name} GROUP BY {field}"
-            )
-        ).fetchall()
-        versions = {str(row["version"]): int(row["row_count"]) for row in rows}
-        legacy_count = sum(count for version, count in versions.items() if version != str(current_version))
-        coverage.append(
-            InsightVersionCoverage(
-                field=field,
-                current_version=current_version,
-                versions=versions,
-                legacy_count=legacy_count,
-            )
-        )
-    return tuple(coverage)
 
 
 async def _fallback_coverage(
@@ -423,15 +409,17 @@ async def _fallback_coverage(
 
 
 def _schema_contract_issues(spec: InsightReadinessSpec, columns: set[str]) -> tuple[str, ...]:
-    issues: list[str] = []
-    if spec.provider_column is not None and spec.provider_column not in columns:
-        issues.append(f"missing provider column: {spec.provider_column}")
-    if spec.time_column is not None and spec.time_column not in columns:
-        issues.append(f"missing time column: {spec.time_column}")
-    for field, _current_version in spec.version_fields:
-        if field not in columns:
-            issues.append(f"missing version field: {field}")
-    return tuple(issues)
+    """Report structural schema drift for an archive insight table.
+
+    has no per-row version columns and derives provider/time
+    via the ``sessions`` join, so the only contract a present table can break
+    is its own primary ``session_id`` key (every archive insight table is keyed
+    on it). A missing ``session_id`` column means the table is not the expected
+    archive shape and its rows cannot be trusted.
+    """
+    if spec.provider_via_session and "session_id" not in columns:
+        return (f"missing session_id column: {spec.table_name}",)
+    return ()
 
 
 def _evidence(
@@ -441,7 +429,7 @@ def _evidence(
     missing_count: int,
     stale_count: int,
     orphan_count: int,
-    legacy_count: int,
+    incompatible_count: int,
     degraded_count: int,
     fallback_reason_counts: dict[str, int],
     schema_contract_issues: tuple[str, ...],
@@ -456,8 +444,8 @@ def _evidence(
         values.append(f"stale={stale_count}")
     if orphan_count:
         values.append(f"orphan={orphan_count}")
-    if legacy_count:
-        values.append(f"legacy={legacy_count}")
+    if incompatible_count:
+        values.append(f"incompatible={incompatible_count}")
     if degraded_count:
         values.append(f"degraded={degraded_count}")
     values.extend(f"fallback_reason={reason}={count}" for reason, count in fallback_reason_counts.items())
@@ -481,11 +469,9 @@ async def _entry(
     ready_flags = {flag: bool(getattr(status, flag)) for flag in spec.ready_flags}
     columns = await _table_columns(conn, spec.table_name) if table_present and spec.table_name is not None else set()
     schema_contract_issues = _schema_contract_issues(spec, columns) if table_present else ()
-    version_coverage = await _version_coverage(conn, spec, table_present=table_present, columns=columns)
-    version_legacy_count = sum(version.legacy_count for version in version_coverage)
-    schema_legacy_count = row_count if schema_contract_issues else 0
-    legacy_count = max(version_legacy_count, schema_legacy_count)
-    provider_coverage = await _provider_coverage(conn, spec, query, table_present=table_present, columns=columns)
+    version_coverage: tuple[InsightVersionCoverage, ...] = ()
+    incompatible_count = row_count if schema_contract_issues else 0
+    provider_coverage = await _provider_coverage(conn, spec, query, table_present=table_present)
     degraded_count, fallback_reason_counts = await _fallback_coverage(
         conn, spec, table_present=table_present, columns=columns
     )
@@ -507,7 +493,7 @@ async def _entry(
         missing_count=missing_count,
         stale_count=stale_count,
         orphan_count=orphan_count,
-        legacy_count=legacy_count,
+        incompatible_count=incompatible_count,
         degraded_count=degraded_count,
         ready_flags=ready_flags,
     )
@@ -520,7 +506,7 @@ async def _entry(
         missing_count=missing_count,
         stale_count=stale_count,
         orphan_count=orphan_count,
-        legacy_incompatible_count=legacy_count,
+        incompatible_count=incompatible_count,
         degraded_count=degraded_count,
         fallback_reason_counts=fallback_reason_counts,
         storage_artifacts=tuple(artifacts),
@@ -536,7 +522,7 @@ async def _entry(
             missing_count=missing_count,
             stale_count=stale_count,
             orphan_count=orphan_count,
-            legacy_count=legacy_count,
+            incompatible_count=incompatible_count,
             degraded_count=degraded_count,
             fallback_reason_counts=fallback_reason_counts,
             schema_contract_issues=schema_contract_issues,
@@ -560,7 +546,7 @@ async def build_insight_readiness_report(
     return InsightReadinessReport(
         checked_at=datetime.now(timezone.utc).isoformat(),
         aggregate_verdict=_aggregate_verdict(insights),
-        total_conversations=status.total_conversations,
+        total_sessions=status.total_sessions,
         provider=request.provider,
         since=request.since,
         until=request.until,

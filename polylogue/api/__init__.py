@@ -11,32 +11,32 @@ from polylogue.api.embeddings import PolylogueEmbeddingsMixin
 from polylogue.api.ingest import PolylogueIngestMixin
 from polylogue.api.insights import PolylogueInsightsMixin
 from polylogue.config import Config
-from polylogue.operations import ArchiveOperations, ArchiveStats
+from polylogue.operations import ArchiveStats
 from polylogue.services import build_runtime_services
-from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 if TYPE_CHECKING:
-    from polylogue.storage.embeddings.materialization import PendingConversation
+    from polylogue.storage.embeddings.materialization import PendingSession
 
 
-def select_pending_embedding_conversation_window(
+def select_pending_embedding_session_window(
     conn: sqlite3.Connection,
     *,
-    conversation_ids: list[str] | tuple[str, ...] | None = None,
+    session_ids: list[str] | tuple[str, ...] | None = None,
     rebuild: bool = False,
-    max_conversations: int | None = None,
+    max_sessions: int | None = None,
     max_messages: int | None = None,
-) -> list[PendingConversation]:
+) -> list[PendingSession]:
     """Return a bounded pending embedding window for public surface adapters."""
 
-    from polylogue.storage.embeddings.materialization import select_pending_conversation_window
+    from polylogue.storage.embeddings.materialization import select_pending_session_window
 
-    return select_pending_conversation_window(
+    return select_pending_session_window(
         conn,
-        conversation_ids=conversation_ids,
+        session_ids=session_ids,
         rebuild=rebuild,
-        max_conversations=max_conversations,
+        max_sessions=max_sessions,
         max_messages=max_messages,
     )
 
@@ -59,13 +59,20 @@ class Polylogue(PolylogueArchiveMixin, PolylogueEmbeddingsMixin, PolylogueInsigh
         if archive_root is None:
             archive_root = _archive_root()
 
-        self._config = Config(
-            archive_root=archive_root,
-            render_root=archive_root / "render",
-            sources=[],
-        )
+        if db_path is not None:
+            self._config = Config(
+                archive_root=archive_root,
+                render_root=archive_root / "render",
+                sources=[],
+                db_path=db_path,
+            )
+        else:
+            self._config = Config(
+                archive_root=archive_root,
+                render_root=archive_root / "render",
+                sources=[],
+            )
         self._services = build_runtime_services(config=self._config, db_path=db_path)
-        self._operations = ArchiveOperations.from_services(self._services)
 
     @classmethod
     def open(cls, *, config: Config | None = None, **kwargs: object) -> Polylogue:
@@ -95,15 +102,11 @@ class Polylogue(PolylogueArchiveMixin, PolylogueEmbeddingsMixin, PolylogueInsigh
         return self._services.get_backend()
 
     @property
-    def repository(self) -> ConversationRepository:
+    def repository(self) -> SessionRepository:
         return self._services.get_repository()
-
-    @property
-    def operations(self) -> ArchiveOperations:
-        return self._operations
 
     def __repr__(self) -> str:
         return f"Polylogue(archive_root={self._config.archive_root!r})"
 
 
-__all__ = ["ArchiveStats", "Polylogue", "select_pending_embedding_conversation_window"]
+__all__ = ["ArchiveStats", "Polylogue", "select_pending_embedding_session_window"]

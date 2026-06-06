@@ -6,9 +6,9 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
+from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.hashing import hash_text
 from polylogue.core.json import json_document
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
@@ -17,11 +17,11 @@ from polylogue.types import (
     AttachmentId,
     ContentBlockType,
     ContentHash,
-    ConversationId,
     MessageId,
     Provider,
     ProviderEventId,
     SemanticBlockType,
+    SessionId,
 )
 
 JSONObject = dict[str, object]
@@ -39,9 +39,9 @@ def _coerce_json_object(value: object) -> JSONObject | None:
     return result
 
 
-class ConversationRecord(BaseModel):
-    conversation_id: ConversationId
-    provider_conversation_id: str
+class SessionRecord(BaseModel):
+    session_id: SessionId
+    provider_session_id: str
     title: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -50,7 +50,7 @@ class ConversationRecord(BaseModel):
     provider_meta: JSONObject | None = None
     metadata: JSONObject | None = None
     version: int = 1
-    parent_conversation_id: ConversationId | None = None
+    parent_session_id: SessionId | None = None
     branch_type: BranchType | None = None
     raw_id: str | None = None
     source_name: str = ""
@@ -62,7 +62,7 @@ class ConversationRecord(BaseModel):
     def provider(self) -> Provider:
         return Provider.from_string(self.source_name)
 
-    @field_validator("conversation_id", "provider_conversation_id", "content_hash")
+    @field_validator("session_id", "provider_session_id", "content_hash")
     @classmethod
     def non_empty_string(cls, v: str) -> str:
         if not v or not v.strip():
@@ -92,7 +92,7 @@ class ConversationRecord(BaseModel):
 class ContentBlockRecord(BaseModel):
     block_id: str
     message_id: MessageId
-    conversation_id: ConversationId
+    session_id: SessionId
     block_index: int
     type: ContentBlockType
     text: str | None = None
@@ -123,7 +123,7 @@ class MessageRecord(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
     message_id: MessageId
-    conversation_id: ConversationId
+    session_id: SessionId
     provider_message_id: str | None = None
     role: Role | None = None
     text: str | None = None
@@ -166,7 +166,7 @@ class MessageRecord(BaseModel):
     def role_typed(self) -> Role:
         return self.role or Role.UNKNOWN
 
-    @field_validator("message_id", "conversation_id", "content_hash")
+    @field_validator("message_id", "session_id", "content_hash")
     @classmethod
     def non_empty_string(cls, v: str) -> str:
         if not v or not v.strip():
@@ -176,7 +176,7 @@ class MessageRecord(BaseModel):
 
 class AttachmentRecord(BaseModel):
     attachment_id: AttachmentId
-    conversation_id: ConversationId
+    session_id: SessionId
     message_id: MessageId | None = None
     mime_type: str | None = None
     size_bytes: int | None = None
@@ -187,7 +187,7 @@ class AttachmentRecord(BaseModel):
     provider_drive_id: str | None = None
     upload_origin: str | None = None
 
-    @field_validator("attachment_id", "conversation_id")
+    @field_validator("attachment_id", "session_id")
     @classmethod
     def non_empty_string(cls, v: str) -> str:
         if not v or not v.strip():
@@ -216,7 +216,7 @@ class AttachmentRecord(BaseModel):
 
 class ProviderEventRecord(BaseModel):
     event_id: ProviderEventId
-    conversation_id: ConversationId
+    session_id: SessionId
     source_name: str
     event_index: int
     event_type: str
@@ -227,7 +227,7 @@ class ProviderEventRecord(BaseModel):
     raw_id: str | None = None
     materializer_version: int = 1
 
-    @field_validator("event_id", "conversation_id", "source_name", "event_type")
+    @field_validator("event_id", "session_id", "source_name", "event_type")
     @classmethod
     def non_empty_string(cls, v: str) -> str:
         if not v or not v.strip():

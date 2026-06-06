@@ -23,10 +23,10 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.index import rebuild_index
-from polylogue.storage.runtime import ContentBlockRecord, ConversationRecord, MessageRecord
+from polylogue.storage.runtime import ContentBlockRecord, MessageRecord, SessionRecord
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
-from tests.infra.storage_records import make_content_block, make_conversation, make_message
+from tests.infra.storage_records import make_content_block, make_message, make_session
 
 # ---------------------------------------------------------------------------
 # Real archive distribution (from actual data analysis):
@@ -45,14 +45,14 @@ PROVIDERS = ["chatgpt", "claude-ai", "claude-code", "codex", "gemini"]
 PROVIDER_WEIGHTS = [0.02, 0.01, 0.80, 0.15, 0.02]
 
 # Message count ranges matching real distribution
-_CONVERSATION_PROFILES = [
+_SESSION_PROFILES = [
     # (message_range, proportion)
     (range(2, 11), 0.49),
     (range(11, 51), 0.32),
     (range(51, 201), 0.08),
     (range(201, 501), 0.05),  # cap at 500 for benchmarks (real goes to 1000)
     (range(501, 2001), 0.04),  # cap at 2000 (real goes to 5000)
-    (range(2001, 5001), 0.02),  # small fraction of large conversations
+    (range(2001, 5001), 0.02),  # small fraction of large sessions
 ]
 
 # Realistic tool names and content
@@ -90,7 +90,7 @@ def _pick_message_count(rng: random.Random) -> int:
     """Pick a message count matching the real archive distribution."""
     r = rng.random()
     cumulative = 0.0
-    for msg_range, proportion in _CONVERSATION_PROFILES:
+    for msg_range, proportion in _SESSION_PROFILES:
         cumulative += proportion
         if r <= cumulative:
             return rng.choice(msg_range)
@@ -182,7 +182,7 @@ def _make_content_block(rng: random.Random, msg_id: str, conv_id: str, block_ind
         if rng.random() < 0.15:
             return make_content_block(
                 message_id=msg_id,
-                conversation_id=conv_id,
+                session_id=conv_id,
                 block_index=block_index,
                 block_type="thinking",
                 text=_generate_realistic_text(rng, "assistant", block_index)[:200],
@@ -192,7 +192,7 @@ def _make_content_block(rng: random.Random, msg_id: str, conv_id: str, block_ind
     tool_name = rng.choice(_TOOL_NAMES)
     return make_content_block(
         message_id=msg_id,
-        conversation_id=conv_id,
+        session_id=conv_id,
         block_index=block_index,
         block_type="tool_use",
         tool_name=tool_name,
@@ -211,7 +211,7 @@ async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42
     rng = random.Random(seed)
     backend = SQLiteBackend(db_path=db_path)
 
-    conv_records: list[ConversationRecord] = []
+    conv_records: list[SessionRecord] = []
     all_msgs: list[MessageRecord] = []
     all_blocks: list[ContentBlockRecord] = []
     total_msgs = 0
@@ -226,10 +226,10 @@ async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42
 
         conv_id = f"bench-conv-{conv_index:05d}"
         conv_records.append(
-            make_conversation(
-                conversation_id=conv_id,
+            make_session(
+                session_id=conv_id,
                 source_name=provider,
-                provider_conversation_id=f"prov-{conv_index:05d}",
+                provider_session_id=f"prov-{conv_index:05d}",
                 title=f"Session {conv_index}: {_generate_realistic_text(rng, 'user', 0)[:60]}",
                 created_at=f"2025-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d}T{rng.randint(0, 23):02d}:00:00Z",
                 updated_at=f"2025-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d}T{rng.randint(0, 23):02d}:00:00Z",
@@ -259,7 +259,7 @@ async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42
             all_msgs.append(
                 make_message(
                     message_id=msg_id,
-                    conversation_id=conv_id,
+                    session_id=conv_id,
                     role=role,
                     text=text,
                     timestamp=f"2025-01-01T{(j * 3) % 24:02d}:{(j * 7) % 60:02d}:00Z",
@@ -277,13 +277,13 @@ async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42
     # Populate DB
     msgs_by_conv: dict[str, list[MessageRecord]] = defaultdict(list)
     for msg in all_msgs:
-        msgs_by_conv[msg.conversation_id].append(msg)
+        msgs_by_conv[msg.session_id].append(msg)
 
-    provider_by_cid = {str(r.conversation_id): r.source_name for r in conv_records}
+    provider_by_cid = {str(r.session_id): r.source_name for r in conv_records}
 
     async with backend.bulk_connection():
         for i, record in enumerate(conv_records, start=1):
-            await backend.save_conversation_record(record)
+            await backend.save_session_record(record)
             if i % 500 == 0:
                 await backend.bulk_flush()
 
@@ -291,7 +291,7 @@ async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42
         await backend.save_content_blocks(all_blocks)
 
         for i, (cid, msgs) in enumerate(msgs_by_conv.items(), start=1):
-            await backend.upsert_conversation_stats(cid, provider_by_cid[cid], msgs)
+            await backend.upsert_session_stats(cid, provider_by_cid[cid], msgs)
             if i % 500 == 0:
                 await backend.bulk_flush()
 
@@ -299,7 +299,7 @@ async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42
         rebuild_index(conn)
 
     return {
-        "conversations": len(conv_records),
+        "sessions": len(conv_records),
         "messages": total_msgs,
         "content_blocks": len(all_blocks),
     }

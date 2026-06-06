@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import sqlite3
@@ -22,6 +23,8 @@ from polylogue.daemon.fts_status import FTSReadiness, fts_readiness_info
 from polylogue.daemon.health import DaemonHealth, check_health
 from polylogue.daemon.live_ingest_attempt_models import LiveIngestAttemptState, LiveIngestAttemptSummary
 from polylogue.daemon.live_ingest_attempt_progress import (
+    SLOW_MIN_SAMPLES,
+    SLOW_P95_QUANTILE,
     STUCK_AFTER_S,
     classify_attempt_progress,
     compute_slow_threshold_s,
@@ -31,7 +34,7 @@ from polylogue.daemon.live_ingest_attempt_workload import (
     latest_stage_events,
     workload_fields,
 )
-from polylogue.paths import archive_root, db_path
+from polylogue.paths import archive_root, db_path, index_db_path, resolve_active_index_db_path
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -42,6 +45,11 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 # ``live_ingest_attempt_progress``.
 _LIVE_INGEST_ATTEMPT_STALE_AFTER_S = STUCK_AFTER_S
 _LIVE_CURSOR_FAILURE_SAMPLE_LIMIT = 50
+
+
+def _active_status_db_path() -> Path:
+    return resolve_active_index_db_path(db_anchor=db_path(), index_db=index_db_path())
+
 
 # ---------------------------------------------------------------------------
 # Typed sub-models
@@ -90,6 +98,29 @@ class EmbeddingReadiness(BaseModel):
     embedding_latest_catchup_run: dict[str, object] | None = None
 
 
+class ArchiveTierStatus(BaseModel):
+    name: Literal["source", "index", "embeddings", "user", "ops"]
+    path: str
+    exists: bool = False
+    size_bytes: int = 0
+    wal_size_bytes: int = 0
+    user_version: int | None = None
+    table_count: int = 0
+
+
+class ArchiveStorageStatus(BaseModel):
+    active_store: Literal["archive_file_set", "empty"] = "empty"
+    active_db_path: str = ""
+    archive_root: str = ""
+    configured_archive_root: str = ""
+    archive_root_matches_configured: bool = True
+    archive_ready: bool = False
+    final_shape_ready: bool = False
+    present_tiers: list[str] = Field(default_factory=list)
+    missing_tiers: list[str] = Field(default_factory=list)
+    tiers: list[ArchiveTierStatus] = Field(default_factory=list)
+
+
 class LiveCursorFileState(BaseModel):
     source_path: str
     failure_count: int = 0
@@ -112,7 +143,7 @@ class LiveCursorSummary(BaseModel):
 class RawFailureSample(BaseModel):
     """One bounded raw-ingest failure record surfaced in daemon status.
 
-    Constructed by ``_raw_failure_info()`` from the ``raw_conversations``
+    Constructed by ``_raw_failure_info()`` from the ``raw_sessions``
     table and consumed by the typed ``DaemonStatus`` model. Every surface
     (CLI, MCP, daemon HTTP) receives the same structured taxonomy.
 
@@ -120,7 +151,7 @@ class RawFailureSample(BaseModel):
 
     * ``source == "ingest"`` (default) — failures observed on
       :mod:`polylogue.pipeline` parse/validate paths; the ``raw_id``
-      and provider-specific signals come from ``raw_conversations``.
+      and provider-specific signals come from ``raw_sessions``.
     * ``source == "maintenance"`` — failures observed on
       :mod:`polylogue.maintenance.replay` per-record paths, routed via
       :func:`polylogue.maintenance.failure_routing.route_failure_sample`
@@ -201,6 +232,7 @@ class DaemonStatus(BaseModel):
     fts_readiness: FTSReadiness = Field(default_factory=FTSReadiness)
     insight_freshness: InsightFreshness = Field(default_factory=InsightFreshness)
     embedding_readiness: EmbeddingReadiness = Field(default_factory=EmbeddingReadiness)
+    archive_storage: ArchiveStorageStatus = Field(default_factory=ArchiveStorageStatus)
     browser_capture_active: bool = False
     raw_parse_failures: int = 0
     raw_validation_failures: int = 0
@@ -258,7 +290,7 @@ def browser_capture_status_payload(spool_path: Path | None = None) -> JSONDocume
 
 
 def _db_size_info() -> dict[str, object]:
-    dbf = db_path()
+    dbf = _active_status_db_path()
     info: dict[str, object] = {"db_path": str(dbf)}
     if dbf.exists():
         info["db_size_bytes"] = dbf.stat().st_size
@@ -280,15 +312,93 @@ def _blob_size_info() -> int:
     return 0
 
 
+def _archive_storage_info() -> ArchiveStorageStatus:
+    active_db = _active_status_db_path()
+    configured_root = archive_root()
+    root = _archive_storage_root(configured_root=configured_root, active_db=active_db)
+    tier_paths: dict[Literal["source", "index", "embeddings", "user", "ops"], Path] = {
+        "source": root / "source.db",
+        "index": root / "index.db",
+        "embeddings": root / "embeddings.db",
+        "user": root / "user.db",
+        "ops": root / "ops.db",
+    }
+    tiers = [_archive_tier_status(name, path) for name, path in tier_paths.items()]
+    present_tiers = [str(tier.name) for tier in tiers if tier.exists]
+    missing_tiers = [str(tier.name) for tier in tiers if not tier.exists]
+    index_exists = "index" in present_tiers
+    source_exists = "source" in present_tiers
+    final_shape_ready = not missing_tiers
+    if index_exists and source_exists:
+        active_store: Literal["archive_file_set", "empty"] = "archive_file_set"
+    else:
+        active_store = "empty"
+    return ArchiveStorageStatus(
+        active_store=active_store,
+        active_db_path=str(active_db),
+        archive_root=str(root),
+        configured_archive_root=str(configured_root),
+        archive_root_matches_configured=root == configured_root,
+        archive_ready=index_exists and source_exists,
+        final_shape_ready=final_shape_ready,
+        present_tiers=present_tiers,
+        missing_tiers=missing_tiers,
+        tiers=tiers,
+    )
+
+
+def _archive_storage_root(*, configured_root: Path, active_db: Path) -> Path:
+    if active_db.parent != configured_root and active_db.name == "index.db":
+        return active_db.parent
+    return configured_root
+
+
+def _archive_tier_status(
+    name: Literal["source", "index", "embeddings", "user", "ops"],
+    path: Path,
+) -> ArchiveTierStatus:
+    wal_path = Path(f"{path}-wal")
+    if not path.exists():
+        return ArchiveTierStatus(name=name, path=str(path))
+    user_version: int | None = None
+    table_count = 0
+    try:
+        conn = open_readonly_connection(path)
+        try:
+            user_version = _row_int(conn.execute("PRAGMA user_version").fetchone()[0])
+            table_count = _row_int(
+                conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'").fetchone()[0]
+            )
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        pass
+    return ArchiveTierStatus(
+        name=name,
+        path=str(path),
+        exists=True,
+        size_bytes=path.stat().st_size,
+        wal_size_bytes=wal_path.stat().st_size if wal_path.exists() else 0,
+        user_version=user_version,
+        table_count=table_count,
+    )
+
+
 def _fts_readiness_info() -> dict[str, object]:
-    return fts_readiness_info(db_path())
+    return fts_readiness_info(_active_status_db_path())
 
 
 def _insight_freshness_info() -> dict[str, object]:
     """Check insight materialization status through bounded SQL counts."""
-    dbf = db_path()
+    dbf = _active_status_db_path()
     if not dbf.exists():
+        archive_info = _archive_insight_freshness_info(dbf.with_name("index.db"))
+        if archive_info is not None:
+            return archive_info
         return {"sessions_with_profiles": 0, "total_sessions": 0}
+    archive_info = _archive_insight_freshness_info(dbf.with_name("index.db"))
+    if archive_info is not None:
+        return archive_info
     try:
         conn = open_readonly_connection(dbf)
         try:
@@ -299,14 +409,14 @@ def _insight_freshness_info() -> dict[str, object]:
                     SELECT name
                     FROM sqlite_master
                     WHERE type = 'table'
-                      AND name IN ('conversations', 'session_profiles')
+                      AND name IN ('sessions', 'session_profiles')
                     """
                 ).fetchall()
             }
             total_sessions = 0
             sessions_with_profiles = 0
-            if "conversations" in tables:
-                total_sessions = int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] or 0)
+            if "sessions" in tables:
+                total_sessions = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] or 0)
             if "session_profiles" in tables:
                 sessions_with_profiles = int(conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] or 0)
         finally:
@@ -319,13 +429,46 @@ def _insight_freshness_info() -> dict[str, object]:
         return {"sessions_with_profiles": 0, "total_sessions": 0}
 
 
+def _archive_insight_freshness_info(archive_db: Path) -> dict[str, object] | None:
+    if not archive_db.exists():
+        return None
+    try:
+        conn = open_readonly_connection(archive_db)
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    """
+                    SELECT name
+                    FROM sqlite_master
+                    WHERE type = 'table'
+                      AND name IN ('sessions', 'session_profiles')
+                    """
+                ).fetchall()
+            }
+            if "sessions" not in tables:
+                return None
+            total_sessions = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] or 0)
+            sessions_with_profiles = 0
+            if "session_profiles" in tables:
+                sessions_with_profiles = int(conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] or 0)
+        finally:
+            conn.close()
+        return {
+            "sessions_with_profiles": sessions_with_profiles,
+            "total_sessions": total_sessions,
+        }
+    except sqlite3.Error:
+        return None
+
+
 def _raw_failure_info() -> dict[str, object]:
-    """Query raw_conversations + maintenance routing for failure counts and samples.
+    """Query raw_sessions + maintenance routing for failure counts and samples.
 
     The payload merges two failure surfaces (#1198):
 
     * ``parse_failures`` / ``validation_failures`` / ``quarantined`` /
-      ``detection_warnings`` come from the ``raw_conversations`` table
+      ``detection_warnings`` come from the ``raw_sessions`` table
       (ingest path);
     * ``maintenance_failures`` comes from the JSONL file written by
       :func:`polylogue.maintenance.failure_routing.route_failure_sample`
@@ -336,9 +479,16 @@ def _raw_failure_info() -> dict[str, object]:
     distinguish ``"ingest"`` rows from ``"maintenance"`` rows without
     re-querying.
     """
-    dbf = db_path()
+    dbf = _active_status_db_path()
     maintenance_samples, maintenance_count = _maintenance_failure_info()
     if not dbf.exists():
+        archive_info = _archive_raw_failure_info(
+            dbf.with_name("source.db"),
+            maintenance_samples=maintenance_samples,
+            maintenance_count=maintenance_count,
+        )
+        if archive_info is not None:
+            return archive_info
         return {
             "parse_failures": 0,
             "validation_failures": 0,
@@ -346,6 +496,13 @@ def _raw_failure_info() -> dict[str, object]:
             "maintenance_failures": maintenance_count,
             "samples": maintenance_samples,
         }
+    archive_info = _archive_raw_failure_info(
+        dbf.with_name("source.db"),
+        maintenance_samples=maintenance_samples,
+        maintenance_count=maintenance_count,
+    )
+    if dbf.with_name("source.db").exists() and archive_info is not None:
+        return archive_info
 
     try:
         conn = open_readonly_connection(dbf)
@@ -353,10 +510,10 @@ def _raw_failure_info() -> dict[str, object]:
             tables = {
                 row[0]
                 for row in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='raw_conversations'"
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='raw_sessions'"
                 ).fetchall()
             }
-            if "raw_conversations" not in tables:
+            if "raw_sessions" not in tables:
                 return {
                     "parse_failures": 0,
                     "validation_failures": 0,
@@ -367,15 +524,14 @@ def _raw_failure_info() -> dict[str, object]:
                 }
 
             parse_fail = int(
-                conn.execute("SELECT COUNT(*) FROM raw_conversations WHERE parse_error IS NOT NULL").fetchone()[0] or 0
+                conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE parse_error IS NOT NULL").fetchone()[0] or 0
             )
             validation_fail = int(
-                conn.execute("SELECT COUNT(*) FROM raw_conversations WHERE validation_status = 'FAILED'").fetchone()[0]
-                or 0
+                conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE validation_status = 'FAILED'").fetchone()[0] or 0
             )
             quarantined = int(
                 conn.execute(
-                    "SELECT COUNT(*) FROM raw_conversations WHERE parsed_at IS NULL AND (parse_error IS NOT NULL OR validation_status = 'FAILED')"
+                    "SELECT COUNT(*) FROM raw_sessions WHERE parsed_at IS NULL AND (parse_error IS NOT NULL OR validation_status = 'FAILED')"
                 ).fetchone()[0]
                 or 0
             )
@@ -384,7 +540,7 @@ def _raw_failure_info() -> dict[str, object]:
                 with contextlib.suppress(sqlite3.OperationalError):
                     detection_warnings_count = int(
                         conn.execute(
-                            "SELECT COUNT(*) FROM raw_conversations WHERE detection_warnings IS NOT NULL"
+                            "SELECT COUNT(*) FROM raw_sessions WHERE detection_warnings IS NOT NULL"
                         ).fetchone()[0]
                         or 0
                     )
@@ -394,7 +550,7 @@ def _raw_failure_info() -> dict[str, object]:
             samples: list[RawFailureSample] = []
             for row in conn.execute(
                 "SELECT raw_id, source_name, parse_error, validation_status, validation_error "
-                "FROM raw_conversations "
+                "FROM raw_sessions "
                 "WHERE parse_error IS NOT NULL OR validation_status = 'FAILED' "
                 "ORDER BY acquired_at DESC LIMIT 50"
             ).fetchall():
@@ -446,6 +602,94 @@ def _raw_failure_info() -> dict[str, object]:
             "maintenance_failures": maintenance_count,
             "samples": maintenance_samples,
         }
+
+
+def _archive_raw_failure_info(
+    archive_db: Path,
+    *,
+    maintenance_samples: list[RawFailureSample],
+    maintenance_count: int,
+) -> dict[str, object] | None:
+    if not archive_db.exists():
+        return None
+    try:
+        conn = open_readonly_connection(archive_db)
+        try:
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_sessions'").fetchone():
+                return None
+            parse_fail = int(
+                conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE parse_error IS NOT NULL").fetchone()[0] or 0
+            )
+            validation_fail = int(
+                conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE validation_status = 'failed'").fetchone()[0] or 0
+            )
+            quarantined = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM raw_sessions
+                    WHERE parsed_at_ms IS NULL
+                      AND (parse_error IS NOT NULL OR validation_status = 'failed')
+                    """
+                ).fetchone()[0]
+                or 0
+            )
+            detection_warnings_count = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM raw_sessions
+                    WHERE detection_warnings_json IS NOT NULL
+                      AND detection_warnings_json != '[]'
+                    """
+                ).fetchone()[0]
+                or 0
+            )
+            samples: list[RawFailureSample] = []
+            for row in conn.execute(
+                """
+                SELECT raw_id, origin, parse_error, validation_status, validation_error
+                FROM raw_sessions
+                WHERE parse_error IS NOT NULL OR validation_status = 'failed'
+                ORDER BY acquired_at_ms DESC
+                LIMIT 50
+                """
+            ).fetchall():
+                parse_err = str(row[2] or "") if row[2] else ""
+                val_status = str(row[3] or "") if row[3] else ""
+                val_err = str(row[4] or "") if row[4] else ""
+                origin = str(row[1]) if row[1] else None
+                if "JSONDecodeError" in parse_err or "decode error" in parse_err.lower():
+                    kind: Literal["decode_error", "parse_error", "schema_violation", "unknown"] = "decode_error"
+                elif val_status == "failed":
+                    kind = "schema_violation"
+                elif parse_err:
+                    kind = "parse_error"
+                else:
+                    kind = "unknown"
+                samples.append(
+                    RawFailureSample(
+                        failure_kind=kind,
+                        provider_hint=origin,
+                        redacted_error=parse_err or val_err,
+                    )
+                )
+        finally:
+            conn.close()
+        combined: list[RawFailureSample] = list(samples)
+        combined.extend(maintenance_samples)
+        if len(combined) > 50:
+            combined = combined[:50]
+        return {
+            "parse_failures": parse_fail,
+            "validation_failures": validation_fail,
+            "quarantined": quarantined,
+            "detection_warnings": detection_warnings_count,
+            "maintenance_failures": maintenance_count,
+            "samples": combined,
+        }
+    except sqlite3.Error:
+        return None
 
 
 def _maintenance_failure_info() -> tuple[list[RawFailureSample], int]:
@@ -548,7 +792,10 @@ def _failing_files_info() -> list[str]:
 
 def _live_cursor_summary_info() -> LiveCursorSummary:
     """Return live cursor backlog/failure state without source-tree scans."""
-    dbf = db_path()
+    dbf = _active_status_db_path()
+    ops_summary = _archive_live_cursor_summary_info(dbf.with_name("ops.db"))
+    if ops_summary is not None:
+        return ops_summary
     if not dbf.exists():
         return LiveCursorSummary()
     try:
@@ -622,11 +869,87 @@ def _live_cursor_summary_info() -> LiveCursorSummary:
     )
 
 
+def _archive_live_cursor_summary_info(ops_db: Path) -> LiveCursorSummary | None:
+    """Return cursor backlog/failure state from archive OPS when populated."""
+    if not ops_db.exists():
+        return None
+    try:
+        conn = open_readonly_connection(ops_db)
+        try:
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ingest_cursor'"
+            ).fetchone()
+            if has_table is None:
+                return None
+            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(ingest_cursor)")}
+            if not {"failure_count", "next_retry_at", "excluded"}.issubset(columns):
+                return None
+            tracked_file_count = int(conn.execute("SELECT COUNT(*) FROM ingest_cursor").fetchone()[0])
+            if tracked_file_count == 0:
+                return None
+            failed_file_count = int(
+                conn.execute("SELECT COUNT(*) FROM ingest_cursor WHERE failure_count > 0").fetchone()[0]
+            )
+            excluded_file_count = int(
+                conn.execute("SELECT COUNT(*) FROM ingest_cursor WHERE excluded = 1").fetchone()[0]
+            )
+            attention_file_count = int(
+                conn.execute("SELECT COUNT(*) FROM ingest_cursor WHERE failure_count > 0 OR excluded = 1").fetchone()[0]
+            )
+            rows = conn.execute(
+                """
+                SELECT source_path, failure_count, next_retry_at, excluded
+                FROM ingest_cursor
+                WHERE failure_count > 0 OR excluded = 1
+                ORDER BY source_path
+                LIMIT ?
+                """,
+                (_LIVE_CURSOR_FAILURE_SAMPLE_LIMIT,),
+            ).fetchall()
+            retry_rows = conn.execute(
+                """
+                SELECT next_retry_at
+                FROM ingest_cursor
+                WHERE failure_count > 0
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+
+    now = datetime.now(UTC)
+    retry_due_file_count = sum(1 for row in retry_rows if _retry_due(_optional_str(row[0]), now=now))
+    failing_files = [
+        LiveCursorFileState(
+            source_path=str(row[0]),
+            failure_count=_row_int(row[1]),
+            next_retry_at=_optional_str(row[2]),
+            excluded=bool(row[3]),
+            retry_due=_row_int(row[1]) > 0 and _retry_due(_optional_str(row[2]), now=now),
+        )
+        for row in rows
+    ]
+    return LiveCursorSummary(
+        tracked_file_count=tracked_file_count,
+        failed_file_count=failed_file_count,
+        excluded_file_count=excluded_file_count,
+        retry_due_file_count=retry_due_file_count,
+        in_backoff_file_count=max(0, failed_file_count - retry_due_file_count),
+        sampled_file_count=len(failing_files),
+        omitted_file_count=max(0, attention_file_count - len(failing_files)),
+        failing_files=failing_files,
+    )
+
+
 def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
     """Return recent durable live-ingest attempt snapshots."""
-    dbf = db_path()
+    dbf = _active_status_db_path()
+    ops_summary = _archive_live_ingest_attempt_summary_info(dbf.with_name("ops.db"))
+    if (dbf.with_name("index.db").exists() or not dbf.exists()) and ops_summary is not None:
+        return ops_summary
     if not dbf.exists():
-        return LiveIngestAttemptSummary()
+        return ops_summary if ops_summary is not None else LiveIngestAttemptSummary()
     try:
         conn = open_readonly_connection(dbf)
         try:
@@ -763,6 +1086,306 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
     )
 
 
+def _archive_live_ingest_attempt_summary_info(ops_db: Path) -> LiveIngestAttemptSummary | None:
+    """Return live ingest-attempt status from archive OPS when populated."""
+    if not ops_db.exists():
+        return None
+    try:
+        conn = open_readonly_connection(ops_db)
+        try:
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ingest_attempts'"
+            ).fetchone()
+            if has_table is None:
+                return None
+            attempt_count = int(conn.execute("SELECT COUNT(*) FROM ingest_attempts").fetchone()[0])
+            if attempt_count == 0:
+                return None
+            rows = conn.execute(
+                """
+                SELECT
+                    attempt_id,
+                    source_path,
+                    origin,
+                    status,
+                    phase,
+                    started_at_ms,
+                    heartbeat_at_ms,
+                    finished_at_ms,
+                    parsed_raw_count,
+                    materialized_count,
+                    error_message
+                FROM ingest_attempts
+                ORDER BY COALESCE(heartbeat_at_ms, finished_at_ms, started_at_ms) DESC, started_at_ms DESC
+                LIMIT 5
+                """
+            ).fetchall()
+            stage_payloads = _archive_latest_stage_payloads(conn, [_required_str(row[0]) for row in rows])
+            running_rows = conn.execute(
+                """
+                SELECT started_at_ms, heartbeat_at_ms, finished_at_ms
+                FROM ingest_attempts
+                WHERE status = 'running'
+                """
+            ).fetchall()
+            slow_threshold_s = _archive_compute_slow_threshold_s(conn)
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+
+    now = datetime.now(UTC)
+    recent_attempts = [
+        _archive_live_ingest_attempt_state_from_row(
+            row,
+            now=now,
+            stage_payload=stage_payloads.get(_required_str(row[0])),
+            slow_threshold_s=slow_threshold_s,
+        )
+        for row in rows
+    ]
+    stale_running_count = 0
+    slow_running_count = 0
+    stuck_running_count = 0
+    for row in running_rows:
+        started_ms = _row_int(row[0])
+        updated_at = _epoch_ms_to_iso(_row_int(row[1]) or _row_int(row[2]) or _row_int(row[0]))
+        age_s = _attempt_updated_age_s(updated_at, now=now)
+        updated_ms = _row_int(row[1]) or _row_int(row[2]) or started_ms
+        total_time_s = max(0.0, (updated_ms - started_ms) / 1000.0)
+        if age_s is not None and age_s >= _LIVE_INGEST_ATTEMPT_STALE_AFTER_S:
+            stale_running_count += 1
+            stuck_running_count += 1
+            continue
+        if (
+            classify_attempt_progress(
+                status="running",
+                updated_age_s=age_s,
+                total_time_s=total_time_s,
+                slow_threshold_s=slow_threshold_s,
+            )
+            == "slow"
+        ):
+            slow_running_count += 1
+    return LiveIngestAttemptSummary(
+        running_count=len(running_rows),
+        stale_running_count=stale_running_count,
+        slow_running_count=slow_running_count,
+        stuck_running_count=stuck_running_count,
+        slow_threshold_s=slow_threshold_s,
+        recent=recent_attempts,
+    )
+
+
+def _archive_compute_slow_threshold_s(conn: sqlite3.Connection) -> float | None:
+    rows = conn.execute(
+        """
+        SELECT started_at_ms, finished_at_ms
+        FROM ingest_attempts
+        WHERE status = 'completed'
+          AND started_at_ms IS NOT NULL
+          AND finished_at_ms IS NOT NULL
+        """
+    ).fetchall()
+    samples: list[float] = []
+    for row in rows:
+        started_ms = _row_int(row[0])
+        finished_ms = _row_int(row[1])
+        duration = max(0.0, (finished_ms - started_ms) / 1000.0)
+        if duration > 0.0:
+            samples.append(duration)
+    if len(samples) < SLOW_MIN_SAMPLES:
+        return None
+    samples.sort()
+    return _percentile(samples, SLOW_P95_QUANTILE)
+
+
+def _percentile(sorted_values: list[float], q: float) -> float:
+    if not sorted_values:
+        return 0.0
+    if len(sorted_values) == 1:
+        return float(sorted_values[0])
+    if q <= 0:
+        return float(sorted_values[0])
+    if q >= 1:
+        return float(sorted_values[-1])
+    position = (len(sorted_values) - 1) * q
+    lower = int(position)
+    upper = min(lower + 1, len(sorted_values) - 1)
+    weight = position - lower
+    return float(sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight)
+
+
+def _archive_latest_stage_payloads(
+    conn: sqlite3.Connection,
+    attempt_ids: list[str],
+) -> dict[str, dict[str, object]]:
+    if not attempt_ids:
+        return {}
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'daemon_stage_events'"
+    ).fetchone()
+    if has_table is None:
+        return {}
+    placeholders = ", ".join("?" for _ in attempt_ids)
+    rows = conn.execute(
+        f"""
+        SELECT attempt_id, payload_json
+        FROM daemon_stage_events
+        WHERE attempt_id IN ({placeholders})
+        ORDER BY observed_at_ms DESC, rowid DESC
+        """,
+        tuple(attempt_ids),
+    ).fetchall()
+    payloads: dict[str, dict[str, object]] = {}
+    for row in rows:
+        attempt_id = _optional_str(row[0])
+        if attempt_id is None:
+            continue
+        merged = payloads.setdefault(attempt_id, {})
+        for key, value in _json_payload(row[1]).items():
+            merged.setdefault(key, value)
+    return payloads
+
+
+def _archive_live_ingest_attempt_state_from_row(
+    row: sqlite3.Row | tuple[object, ...],
+    *,
+    now: datetime,
+    stage_payload: dict[str, object] | None = None,
+    slow_threshold_s: float | None = None,
+) -> LiveIngestAttemptState:
+    payload = stage_payload or {}
+    started_ms = _row_int(row[5])
+    heartbeat_ms = _row_int(row[6])
+    finished_ms = _row_int(row[7])
+    updated_ms = heartbeat_ms or finished_ms or started_ms
+    started_at = _epoch_ms_to_iso(started_ms)
+    updated_at = _epoch_ms_to_iso(updated_ms)
+    completed_at = _epoch_ms_to_iso(finished_ms) if finished_ms else None
+    updated_age_s = _attempt_updated_age_s(updated_at, now=now)
+    status_value = _required_str(row[3])
+    stale = (
+        status_value == "running" and updated_age_s is not None and updated_age_s >= _LIVE_INGEST_ATTEMPT_STALE_AFTER_S
+    )
+    total_time_s = _payload_float(payload, "total_time_s", default=max(0.0, (updated_ms - started_ms) / 1000.0))
+    input_bytes = _payload_int(payload, "input_bytes")
+    source_payload_read_bytes = _payload_int(payload, "source_payload_read_bytes")
+    cursor_fingerprint_read_bytes = _payload_int(payload, "cursor_fingerprint_read_bytes")
+    total_read_bytes = source_payload_read_bytes + cursor_fingerprint_read_bytes
+    return LiveIngestAttemptState(
+        attempt_id=_required_str(row[0]),
+        started_at=started_at,
+        updated_at=updated_at,
+        completed_at=completed_at,
+        status=status_value,
+        phase=_optional_str(row[4]) or _payload_str(payload, "phase", default="") or "",
+        queued_file_count=_row_int(row[8]) or _payload_int(payload, "queued_file_count"),
+        needed_file_count=_row_int(row[8]) or _payload_int(payload, "needed_file_count"),
+        succeeded_file_count=_row_int(row[9]) or _payload_int(payload, "succeeded_file_count"),
+        failed_file_count=_payload_int(payload, "failed_file_count", default=1 if status_value == "failed" else 0),
+        input_bytes=input_bytes,
+        source_payload_read_bytes=source_payload_read_bytes,
+        cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
+        total_read_bytes=total_read_bytes,
+        read_amplification=round(total_read_bytes / input_bytes, 3) if input_bytes > 0 else 0.0,
+        files_per_second=(
+            round((_row_int(row[9]) or _payload_int(payload, "succeeded_file_count")) / total_time_s, 3)
+            if total_time_s > 0
+            else 0.0
+        ),
+        source_mb_per_second=(
+            round((source_payload_read_bytes / (1024 * 1024)) / total_time_s, 3) if total_time_s > 0 else 0.0
+        ),
+        archive_write_bytes_delta=_payload_int(payload, "archive_write_bytes_delta"),
+        parse_time_s=_payload_float(payload, "parse_time_s"),
+        convergence_time_s=_payload_float(payload, "convergence_time_s"),
+        total_time_s=total_time_s,
+        stage_timings_s=_stage_timings_from_payload(payload.get("stage_timings_json")),
+        current_source=_optional_str(row[2]) or _payload_str(payload, "current_source"),
+        current_path=_optional_str(row[1]) or _payload_str(payload, "current_path"),
+        storage_route=_payload_str(payload, "storage_route"),
+        storage_tiers=_payload_str(payload, "storage_tiers"),
+        payload_available_file_count=_payload_optional_int(payload, "payload_available_file_count"),
+        payload_unavailable_file_count=_payload_optional_int(payload, "payload_unavailable_file_count"),
+        payload_replayed_from_blob_file_count=_payload_optional_int(payload, "payload_replayed_from_blob_file_count"),
+        written_raw_count=_payload_optional_int(payload, "written_raw_count"),
+        error=_optional_str(row[10]) or _payload_str(payload, "error"),
+        rss_current_mb=_payload_optional_float(payload, "rss_current_mb"),
+        rss_peak_self_mb=_payload_optional_float(payload, "rss_peak_self_mb"),
+        rss_peak_children_mb=_payload_optional_float(payload, "rss_peak_children_mb"),
+        cgroup_path=_payload_str(payload, "cgroup_path"),
+        cgroup_memory_current_mb=_payload_optional_float(payload, "cgroup_memory_current_mb"),
+        cgroup_memory_peak_mb=_payload_optional_float(payload, "cgroup_memory_peak_mb"),
+        cgroup_memory_swap_current_mb=_payload_optional_float(payload, "cgroup_memory_swap_current_mb"),
+        cgroup_memory_anon_mb=_payload_optional_float(payload, "cgroup_memory_anon_mb"),
+        cgroup_memory_file_mb=_payload_optional_float(payload, "cgroup_memory_file_mb"),
+        cgroup_memory_inactive_file_mb=_payload_optional_float(payload, "cgroup_memory_inactive_file_mb"),
+        worker_in_flight_count=_payload_optional_int(payload, "worker_in_flight_count"),
+        worker_completed_count=_payload_optional_int(payload, "worker_completed_count"),
+        worker_total_count=_payload_optional_int(payload, "worker_total_count"),
+        updated_age_s=updated_age_s,
+        stale=stale,
+        progress_classification=classify_attempt_progress(
+            status=status_value,
+            updated_age_s=updated_age_s,
+            total_time_s=total_time_s,
+            slow_threshold_s=slow_threshold_s,
+        ),
+    )
+
+
+def _json_payload(value: object) -> dict[str, object]:
+    if not isinstance(value, str):
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(key): item for key, item in parsed.items() if _is_json_scalar_or_container(item)}
+
+
+def _is_json_scalar_or_container(value: object) -> bool:
+    return value is None or isinstance(value, str | int | float | bool | list | dict)
+
+
+def _payload_int(payload: dict[str, object], key: str, *, default: int = 0) -> int:
+    return _row_int(payload.get(key, default))
+
+
+def _payload_optional_int(payload: dict[str, object], key: str) -> int | None:
+    return None if payload.get(key) is None else _row_int(payload[key])
+
+
+def _payload_float(payload: dict[str, object], key: str, *, default: float = 0.0) -> float:
+    value = payload.get(key, default)
+    coerced = _row_float(value)
+    return default if coerced is None else coerced
+
+
+def _payload_optional_float(payload: dict[str, object], key: str) -> float | None:
+    return _row_float(payload[key]) if key in payload and payload[key] is not None else None
+
+
+def _payload_str(payload: dict[str, object], key: str, *, default: str | None = None) -> str | None:
+    value = payload.get(key)
+    return value if isinstance(value, str) else default
+
+
+def _stage_timings_from_payload(value: object) -> dict[str, float]:
+    if not isinstance(value, str):
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(key): float(item) for key, item in parsed.items() if isinstance(item, int | float)}
+
+
 def _live_ingest_attempt_state_from_row(
     row: sqlite3.Row | tuple[object, ...],
     *,
@@ -840,6 +1463,10 @@ def _attempt_updated_age_s(updated_at: str, *, now: datetime) -> float | None:
     return max(0.0, round((now - updated.astimezone(UTC)).total_seconds(), 3))
 
 
+def _epoch_ms_to_iso(value: int) -> str:
+    return datetime.fromtimestamp(value / 1000.0, UTC).isoformat()
+
+
 def _retry_due(next_retry_at: str | None, *, now: datetime) -> bool:
     if not next_retry_at:
         return True
@@ -876,19 +1503,21 @@ def build_daemon_status(
     """Build a typed DaemonStatus from durable component state."""
     watch_sources = sources if sources is not None else default_sources()
     db_info = _db_size_info()
+    storage_info = _archive_storage_info()
     fts = _fts_readiness_info()
     freshness = _insight_freshness_info()
     live_cursor = _live_cursor_summary_info()
     live_ingest_attempts = _live_ingest_attempt_summary_info()
-    convergence = convergence_debt_summary_info(db_path())
-    cursor_lag = cursor_lag_summary_info(db_path())
+    active_db = _active_status_db_path()
+    convergence = convergence_debt_summary_info(active_db)
+    cursor_lag = cursor_lag_summary_info(active_db)
     catchup = catchup_status_info(
-        db_path(),
+        active_db,
         latest_attempt=live_ingest_attempts.recent[0] if live_ingest_attempts.recent else None,
         convergence=convergence,
     )
     raw_failures = _raw_failure_info()
-    embedding_info = embedding_readiness_info(db_path())
+    embedding_info = embedding_readiness_info(active_db)
 
     # Build health status. Keep the default bounded; medium includes exact
     # FTS invariant scans and must be requested explicitly by operator paths.
@@ -945,6 +1574,8 @@ def build_daemon_status(
         blob_dir_size_bytes=_blob_size_info(),
         disk_free_bytes=_safe_int(db_info.get("disk_free_bytes", 0)),
         fts_readiness=FTSReadiness(
+            indexed_surface=str(fts.get("indexed_surface", "messages_fts")),
+            action_events_required=bool(fts.get("action_events_required", True)),
             messages_ready=bool(fts.get("messages_ready", False)),
             action_events_ready=bool(fts.get("action_events_ready", False)),
             message_indexed_count=_safe_int(fts.get("message_indexed_count", 0)),
@@ -980,6 +1611,7 @@ def build_daemon_status(
                 embedding_info.get("embedding_latest_catchup_run"),
             ),
         ),
+        archive_storage=storage_info,
         health=health,
         browser_capture_active=browser_capture_spool_path is not None,
         rss_current_mb=rss_current_mb,
@@ -1024,11 +1656,12 @@ def daemon_status_payload(
             "component_state": status.component_state.model_dump(),
             "live": live_source_status_payload(watch_sources),
             "browser_capture": browser_capture_status_payload(browser_capture_spool_path),
-            "db_path": str(db_path()),
+            "db_path": str(_active_status_db_path()),
             "db_size_bytes": status.db_size_bytes,
             "wal_size_bytes": status.wal_size_bytes,
             "blob_dir_size_bytes": status.blob_dir_size_bytes,
             "disk_free_bytes": status.disk_free_bytes,
+            "archive_storage": status.archive_storage.model_dump(),
             "quick_check_result": "unknown",
             "quick_check_age_s": None,
             "watcher_roots": [str(s.root) for s in watch_sources],
@@ -1068,6 +1701,22 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     lines = ["Polylogue daemon"]
     if payload.get("daemon_liveness"):
         lines.append("  Status: running")
+    storage = payload.get("archive_storage")
+    if isinstance(storage, dict):
+        present = storage.get("present_tiers", [])
+        missing = storage.get("missing_tiers", [])
+        present_text = ", ".join(str(item) for item in present) if isinstance(present, list) else str(present)
+        missing_text = ", ".join(str(item) for item in missing) if isinstance(missing, list) else str(missing)
+        line = f"Storage: {storage.get('active_store', 'unknown')}"
+        if present_text:
+            line += f" ({present_text})"
+        if missing_text:
+            line += f"; missing {missing_text}"
+        elif storage.get("final_shape_ready"):
+            line += "; final split complete"
+        if storage.get("archive_root_matches_configured") is False:
+            line += f"; active root {storage.get('archive_root', 'unknown')}"
+        lines.append(line)
     live = payload.get("live")
     if isinstance(live, dict):
         lines.append(f"Live sources: {live.get('existing_source_count', 0)}/{live.get('source_count', 0)} available")
@@ -1112,7 +1761,7 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
         # The slow/stuck split (#1246) distinguishes the operator-actionable
         # case (stuck = no progress at all) from the
         # informational-but-not-urgent case (slow = still ticking but
-        # exceeding p95 historical duration). The legacy ``stale`` label is
+        # exceeding p95 historical duration). The existing ``stale`` label is
         # kept as a synonym when a writer has not populated the typed
         # ``stuck_running_count``.
         summary_parts = [f"{running_count} running"]
@@ -1140,6 +1789,19 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                     f"{latest.get('status')}{progress_marker} {latest.get('phase')} "
                     f"{latest.get('succeeded_file_count', 0)}/{latest.get('needed_file_count', 0)} files"
                 )
+                storage_route = latest.get("storage_route")
+                if storage_route:
+                    storage_line = f"  storage route: {storage_route}"
+                    storage_tiers = latest.get("storage_tiers")
+                    if storage_tiers:
+                        storage_line += f" ({storage_tiers})"
+                    payload_unavailable = latest.get("payload_unavailable_file_count")
+                    if payload_unavailable is not None:
+                        storage_line += f", {payload_unavailable} payload-unavailable"
+                    payload_replayed = latest.get("payload_replayed_from_blob_file_count")
+                    if payload_replayed is not None:
+                        storage_line += f", {payload_replayed} blob-replayed"
+                    lines.append(storage_line)
                 read_amp = _safe_float(latest.get("read_amplification"))
                 source_rate = _safe_float(latest.get("source_mb_per_second"))
                 file_rate = _safe_float(latest.get("files_per_second"))
@@ -1291,8 +1953,8 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                 lines.append(
                     "  latest catch-up: "
                     f"{latest.get('status', 'unknown')}, "
-                    f"{_safe_int(latest.get('processed_conversations'))}/"
-                    f"{_safe_int(latest.get('planned_conversations'))} convs, "
+                    f"{_safe_int(latest.get('processed_sessions'))}/"
+                    f"{_safe_int(latest.get('planned_sessions'))} convs, "
                     f"{_safe_int(latest.get('embedded_messages')):,} msgs embedded"
                 )
         else:
@@ -1307,7 +1969,7 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                 lines.append(
                     "  latest catch-up: "
                     f"{latest.get('status', 'unknown')}, "
-                    f"{_safe_int(latest.get('processed_conversations'))}/"
-                    f"{_safe_int(latest.get('planned_conversations'))} convs"
+                    f"{_safe_int(latest.get('processed_sessions'))}/"
+                    f"{_safe_int(latest.get('planned_sessions'))} convs"
                 )
     return lines

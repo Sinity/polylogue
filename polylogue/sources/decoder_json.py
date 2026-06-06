@@ -208,7 +208,7 @@ def _stream_prefixed_items(
         if found_any:
             # Mid-stream corruption: the array/object was valid for the first
             # ``len(records)`` items then broke. Returning the partial set here
-            # silently truncates the conversation set, so surface a typed error
+            # silently truncates the session set, so surface a typed error
             # instead. A JSONError with zero items found is a normal
             # "wrong prefix, try the next strategy" signal and is swallowed.
             offset = _json_error_offset(exc)
@@ -281,8 +281,8 @@ def iter_json_stream_with(
             ijson_module,
             handle,
             path_name,
-            "conversations.item",
-            strategy_name="2 (ijson conversations.item)",
+            "sessions.item",
+            strategy_name="2 (ijson sessions.item)",
         )
         if found_any:
             yield from records

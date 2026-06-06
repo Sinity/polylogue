@@ -44,16 +44,16 @@ class FTS5Provider:
         self.db_path = db_path
 
     def index(self, messages: list[MessageRecord]) -> None:
-        """Repair index rows for the supplied conversations from persisted messages.
+        """Repair index rows for the supplied sessions from persisted messages.
 
         Args:
-            messages: Messages whose persisted conversations should be re-indexed.
+            messages: Messages whose persisted sessions should be re-indexed.
                 Messages must already exist in the SQLite archive.
 
         Raises:
             DatabaseError: If indexing fails
         """
-        rows = [(m.message_id, m.conversation_id, m.text) for m in messages]
+        rows = [(m.message_id, m.session_id, m.text) for m in messages]
         with connection_context(self.db_path) as conn:
             ensure_index(conn)
             replace_fts_rows_for_messages_sync(conn, rows)

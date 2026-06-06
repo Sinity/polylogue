@@ -7,6 +7,7 @@ comparison rather than relying on file size alone.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
 from collections.abc import Iterable, Iterator
@@ -16,133 +17,31 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-from polylogue.sources.live._lag_sample_ddl import _LAG_SAMPLE_DDL, _LAG_SAMPLE_INDEX_DDL
-from polylogue.sources.live.convergence_debt_store import (
-    clear_convergence_debt_except_sync,
-    record_convergence_debt_sync,
+from polylogue.core.sources import origin_from_provider
+from polylogue.sources.live.convergence_debt_retry import (
+    convergence_debt_retry_at,
+    retry_is_future,
+    same_pending_convergence_debt,
 )
 from polylogue.sources.live.sqlite_locking import best_effort_cursor_write
+from polylogue.storage.sqlite.archive_tiers.archive import _provider_for_origin
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.ops_write import (
+    add_convergence_debt as add_archive_convergence_debt,
+)
+from polylogue.storage.sqlite.archive_tiers.ops_write import (
+    record_daemon_stage_event as record_archive_daemon_stage_event,
+)
+from polylogue.storage.sqlite.archive_tiers.ops_write import (
+    record_ingest_attempt as record_archive_ingest_attempt,
+)
+from polylogue.storage.sqlite.archive_tiers.ops_write import (
+    upsert_ingest_cursor as upsert_archive_ingest_cursor,
+)
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_connection
 
-_DDL = """
-CREATE TABLE IF NOT EXISTS live_cursor (
-    source_path TEXT PRIMARY KEY,
-    byte_size INTEGER NOT NULL,
-    byte_offset INTEGER NOT NULL DEFAULT 0,
-    last_complete_newline INTEGER NOT NULL DEFAULT 0,
-    record_count INTEGER NOT NULL DEFAULT 0,
-    last_record_ts TEXT,
-    parser_fingerprint TEXT,
-    content_fingerprint TEXT,
-    tail_hash TEXT,
-    source_name TEXT,
-    -- Stat metadata for fast-path skip (Phase 2 K: #620)
-    st_dev INTEGER,
-    st_ino INTEGER,
-    mtime_ns INTEGER,
-    -- Quarantine fields (Phase 2 K: #620)
-    source_generation INTEGER NOT NULL DEFAULT 0,
-    failure_count INTEGER NOT NULL DEFAULT 0,
-    next_retry_at TEXT,
-    excluded INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL
-)
-"""
-
-_ATTEMPT_DDL = """
-CREATE TABLE IF NOT EXISTS live_ingest_attempt (
-    attempt_id TEXT PRIMARY KEY,
-    started_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    completed_at TEXT,
-    status TEXT NOT NULL,
-    phase TEXT NOT NULL,
-    queued_file_count INTEGER NOT NULL DEFAULT 0,
-    needed_file_count INTEGER NOT NULL DEFAULT 0,
-    succeeded_file_count INTEGER NOT NULL DEFAULT 0,
-    failed_file_count INTEGER NOT NULL DEFAULT 0,
-    input_bytes INTEGER NOT NULL DEFAULT 0,
-    source_payload_read_bytes INTEGER NOT NULL DEFAULT 0,
-    cursor_fingerprint_read_bytes INTEGER NOT NULL DEFAULT 0,
-    parse_time_s REAL NOT NULL DEFAULT 0,
-    convergence_time_s REAL NOT NULL DEFAULT 0,
-    current_source TEXT,
-    current_path TEXT,
-    error TEXT,
-    rss_current_mb REAL,
-    rss_peak_self_mb REAL,
-    rss_peak_children_mb REAL,
-    cgroup_path TEXT,
-    cgroup_memory_current_mb REAL,
-    cgroup_memory_peak_mb REAL,
-    cgroup_memory_swap_current_mb REAL,
-    cgroup_memory_anon_mb REAL,
-    cgroup_memory_file_mb REAL,
-    cgroup_memory_inactive_file_mb REAL,
-    worker_in_flight_count INTEGER,
-    worker_completed_count INTEGER,
-    worker_total_count INTEGER,
-    stale_cursor_write_count INTEGER NOT NULL DEFAULT 0,
-    source_paths_json TEXT NOT NULL DEFAULT '[]'
-)
-"""
-
-_STAGE_EVENT_DDL = """
-CREATE TABLE IF NOT EXISTS live_ingest_stage_event (
-    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    attempt_id TEXT NOT NULL,
-    sequence INTEGER NOT NULL,
-    observed_at TEXT NOT NULL,
-    phase TEXT NOT NULL,
-    status TEXT NOT NULL,
-    queued_file_count INTEGER,
-    needed_file_count INTEGER,
-    skipped_file_count INTEGER,
-    succeeded_file_count INTEGER,
-    failed_file_count INTEGER,
-    input_bytes INTEGER,
-    source_payload_read_bytes INTEGER,
-    cursor_fingerprint_read_bytes INTEGER,
-    archive_write_bytes_delta INTEGER,
-    parse_time_s REAL,
-    convergence_time_s REAL,
-    total_time_s REAL,
-    current_source TEXT,
-    current_path TEXT,
-    error TEXT,
-    rss_current_mb REAL,
-    rss_peak_self_mb REAL,
-    rss_peak_children_mb REAL,
-    cgroup_path TEXT,
-    cgroup_memory_current_mb REAL,
-    cgroup_memory_peak_mb REAL,
-    cgroup_memory_swap_current_mb REAL,
-    cgroup_memory_anon_mb REAL,
-    cgroup_memory_file_mb REAL,
-    cgroup_memory_inactive_file_mb REAL,
-    worker_in_flight_count INTEGER,
-    worker_completed_count INTEGER,
-    worker_total_count INTEGER,
-    stage_timings_json TEXT,
-    UNIQUE(attempt_id, sequence)
-)
-"""
-
-_CONVERGENCE_DEBT_DDL = """
-CREATE TABLE IF NOT EXISTS live_convergence_debt (
-    stage TEXT NOT NULL,
-    subject_type TEXT NOT NULL,
-    subject_id TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'failed',
-    failure_count INTEGER NOT NULL DEFAULT 0,
-    first_failed_at TEXT NOT NULL,
-    last_failed_at TEXT NOT NULL,
-    next_retry_at TEXT,
-    materializer_version TEXT,
-    last_error TEXT,
-    PRIMARY KEY (stage, subject_type, subject_id)
-)
-"""
+_INSIGHT_DEFERRED_UNTIL_QUIET = "insights deferred until source quiet"
 
 # Per-source-family cursor-lag sample history (#1349). Daemon-runtime state,
 # not part of SCHEMA_VERSION — same lifecycle as live_cursor / live_convergence_debt.
@@ -246,26 +145,71 @@ def _optional_str(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _cursor_record_from_row(row: sqlite3.Row | tuple[object, ...]) -> CursorRecord:
+def _epoch_ms(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return int(parsed.timestamp() * 1000)
+
+
+def _required_epoch_ms(value: str | None) -> int:
+    parsed = _epoch_ms(value)
+    if parsed is None:
+        return int(datetime.now(UTC).timestamp() * 1000)
+    return parsed
+
+
+def _archive_attempt_status(status: str) -> str:
+    if status == "abandoned":
+        return "interrupted"
+    if status in {"running", "completed", "failed", "interrupted"}:
+        return status
+    return "failed"
+
+
+def _convergence_debt_status(*, stage: str, error: str | None) -> str:
+    if stage == "insights" and error == _INSIGHT_DEFERRED_UNTIL_QUIET:
+        return "deferred"
+    return "failed"
+
+
+def _origin_value_for_source_name(source_name: str | None) -> str | None:
+    if source_name is None:
+        return None
+    from polylogue.core.enums import Provider
+
+    return origin_from_provider(Provider.from_string(source_name)).value
+
+
+def _iso_from_epoch_ms(value: object) -> str:
+    return datetime.fromtimestamp(_required_int(value) / 1000, tz=UTC).isoformat()
+
+
+def _cursor_record_from_ops_row(row: sqlite3.Row | tuple[object, ...]) -> CursorRecord:
+    origin = _optional_str(row[14])
     return CursorRecord(
         source_path=str(row[0]),
-        byte_size=_required_int(row[1]),
-        byte_offset=_required_int(row[2]),
-        last_complete_newline=_required_int(row[3]),
-        record_count=_required_int(row[4]),
-        updated_at=str(row[5]),
-        last_record_ts=_optional_str(row[6]),
-        parser_fingerprint=_optional_str(row[7]),
-        content_fingerprint=_optional_str(row[8]),
-        tail_hash=_optional_str(row[9]),
-        source_name=_optional_str(row[10]),
-        st_dev=_optional_int(row[11]),
-        st_ino=_optional_int(row[12]),
-        mtime_ns=_optional_int(row[13]),
-        source_generation=_required_int(row[14]) if row[14] is not None else 0,
-        failure_count=_required_int(row[15]) if row[15] is not None else 0,
-        next_retry_at=_optional_str(row[16]),
-        excluded=bool(row[17]) if row[17] is not None else False,
+        byte_size=_required_int(row[1] or 0),
+        byte_offset=_required_int(row[2] or 0),
+        last_complete_newline=_required_int(row[3] or 0),
+        record_count=_required_int(row[4] or 0),
+        updated_at=_iso_from_epoch_ms(row[15]),
+        last_record_ts=_iso_from_epoch_ms(row[5]) if row[5] is not None else None,
+        parser_fingerprint=_optional_str(row[6]),
+        content_fingerprint=_optional_str(row[7]),
+        tail_hash=_optional_str(row[8]),
+        source_name=_provider_for_origin(origin).value if origin else None,
+        st_dev=_optional_int(row[9]),
+        st_ino=_optional_int(row[10]),
+        mtime_ns=_optional_int(row[11]),
+        failure_count=_required_int(row[12] or 0),
+        next_retry_at=_optional_str(row[13]),
+        excluded=bool(row[16]) if row[16] is not None else False,
     )
 
 
@@ -274,15 +218,9 @@ class CursorStore:
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
-        with self._connect() as conn:
-            conn.execute(_DDL)
-            conn.execute(_ATTEMPT_DDL)
-            conn.execute(_STAGE_EVENT_DDL)
-            conn.execute(_CONVERGENCE_DEBT_DDL)
-            conn.execute(_LAG_SAMPLE_DDL)
-            conn.execute(_LAG_SAMPLE_INDEX_DDL)
-            self._ensure_columns(conn)
-            self._mark_interrupted_attempts(conn)
+        self._ops_db_path = db_path.with_name("ops.db")
+        initialize_archive_database(self._ops_db_path, ArchiveTier.OPS)
+        self._mark_interrupted_ops_attempts()
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -300,124 +238,185 @@ class CursorStore:
         finally:
             conn.close()
 
-    def _ensure_columns(self, conn: sqlite3.Connection) -> None:
-        existing = {row[1] for row in conn.execute("PRAGMA table_info(live_cursor)")}
-        columns = {
-            "byte_offset": "INTEGER NOT NULL DEFAULT 0",
-            "last_complete_newline": "INTEGER NOT NULL DEFAULT 0",
-            "last_record_ts": "TEXT",
-            "parser_fingerprint": "TEXT",
-            "content_fingerprint": "TEXT",
-            "tail_hash": "TEXT",
-            "source_name": "TEXT",
-            "st_dev": "INTEGER",
-            "st_ino": "INTEGER",
-            "mtime_ns": "INTEGER",
-            "source_generation": "INTEGER NOT NULL DEFAULT 0",
-            "failure_count": "INTEGER NOT NULL DEFAULT 0",
-            "next_retry_at": "TEXT",
-            "excluded": "INTEGER NOT NULL DEFAULT 0",
-        }
-        for name, definition in columns.items():
-            if name not in existing:
-                conn.execute(f"ALTER TABLE live_cursor ADD COLUMN {name} {definition}")
-        conn.execute(_ATTEMPT_DDL)
-        existing_attempt = {row[1] for row in conn.execute("PRAGMA table_info(live_ingest_attempt)")}
-        attempt_columns = {
-            "cgroup_path": "TEXT",
-            "cgroup_memory_current_mb": "REAL",
-            "cgroup_memory_peak_mb": "REAL",
-            "cgroup_memory_swap_current_mb": "REAL",
-            "cgroup_memory_anon_mb": "REAL",
-            "cgroup_memory_file_mb": "REAL",
-            "cgroup_memory_inactive_file_mb": "REAL",
-            "worker_in_flight_count": "INTEGER",
-            "worker_completed_count": "INTEGER",
-            "worker_total_count": "INTEGER",
-            "stale_cursor_write_count": "INTEGER NOT NULL DEFAULT 0",
-        }
-        for name, definition in attempt_columns.items():
-            if name not in existing_attempt:
-                conn.execute(f"ALTER TABLE live_ingest_attempt ADD COLUMN {name} {definition}")
-        conn.execute(_STAGE_EVENT_DDL)
-        existing_stage_event = {row[1] for row in conn.execute("PRAGMA table_info(live_ingest_stage_event)")}
-        stage_event_columns = {
-            "cgroup_memory_anon_mb": "REAL",
-            "cgroup_memory_file_mb": "REAL",
-            "cgroup_memory_inactive_file_mb": "REAL",
-        }
-        for name, definition in stage_event_columns.items():
-            if name not in existing_stage_event:
-                conn.execute(f"ALTER TABLE live_ingest_stage_event ADD COLUMN {name} {definition}")
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_live_ingest_stage_event_attempt
-            ON live_ingest_stage_event(attempt_id, sequence)
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_live_ingest_stage_event_observed
-            ON live_ingest_stage_event(observed_at DESC)
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_live_cursor_failed_retry
-            ON live_cursor(failure_count, next_retry_at)
-            WHERE failure_count > 0
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_live_cursor_excluded
-            ON live_cursor(excluded)
-            WHERE excluded = 1
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_live_ingest_attempt_status_updated
-            ON live_ingest_attempt(status, updated_at DESC, started_at DESC)
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_live_ingest_attempt_updated
-            ON live_ingest_attempt(updated_at DESC, started_at DESC)
-            """
-        )
-        conn.execute(_CONVERGENCE_DEBT_DDL)
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_live_convergence_debt_status_retry
-            ON live_convergence_debt(status, next_retry_at)
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_live_convergence_debt_subject
-            ON live_convergence_debt(subject_type, subject_id)
-            """
-        )
-        conn.commit()
+    @contextmanager
+    def _connect_ops(self) -> Iterator[sqlite3.Connection]:
+        conn = open_connection(self._ops_db_path, timeout=10.0)
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
-    def _mark_interrupted_attempts(self, conn: sqlite3.Connection) -> None:
-        """Close attempts left running by a killed daemon process."""
-        now = datetime.now(UTC).isoformat()
-        conn.execute(
-            """
-            UPDATE live_ingest_attempt
-            SET updated_at = ?,
-                completed_at = ?,
-                status = 'abandoned',
-                phase = 'interrupted',
-                error = COALESCE(error, 'daemon stopped before completing this ingest attempt')
-            WHERE status = 'running'
-            """,
-            (now, now),
-        )
-        conn.commit()
+    def _mark_interrupted_ops_attempts(self) -> None:
+        now_ms = _epoch_ms(datetime.now(UTC).isoformat())
+
+        def write() -> None:
+            with self._connect_ops() as conn:
+                conn.execute(
+                    """
+                    UPDATE ingest_attempts
+                    SET heartbeat_at_ms = ?,
+                        finished_at_ms = ?,
+                        status = 'interrupted',
+                        phase = 'interrupted',
+                        error_message = COALESCE(error_message, 'daemon stopped before completing this ingest attempt')
+                    WHERE status = 'running'
+                    """,
+                    (now_ms, now_ms),
+                )
+                conn.commit()
+
+        best_effort_cursor_write("archive ops interrupted attempt recovery", write)
+
+    def _write_cursor_record_to_ops(self, record: CursorRecord) -> None:
+        origin = _origin_value_for_source_name(record.source_name)
+        with self._connect_ops() as conn:
+            upsert_archive_ingest_cursor(
+                conn,
+                source_path=record.source_path,
+                updated_at_ms=_required_epoch_ms(record.updated_at),
+                origin=origin,
+                stat_size=record.byte_size,
+                byte_offset=record.byte_offset,
+                last_complete_newline=record.last_complete_newline,
+                record_count=record.record_count,
+                last_record_ts_ms=_epoch_ms(record.last_record_ts),
+                parser_fingerprint=record.parser_fingerprint,
+                content_fingerprint=record.content_fingerprint,
+                tail_hash=record.tail_hash,
+                st_dev=record.st_dev,
+                st_ino=record.st_ino,
+                mtime_ns=record.mtime_ns,
+                failure_count=record.failure_count,
+                next_retry_at=record.next_retry_at,
+                excluded=bool(record.excluded),
+            )
+
+    def _sync_cursor_record_to_ops(self, record: CursorRecord) -> None:
+        def write() -> None:
+            self._write_cursor_record_to_ops(record)
+
+        best_effort_cursor_write("archive ops cursor sync", write)
+
+    def _sync_convergence_debt_to_ops(
+        self,
+        *,
+        stage: str,
+        subject_type: str,
+        subject_id: str,
+        error: str | None,
+        materializer_version: str | None,
+        now: str,
+    ) -> None:
+        now_ms = _required_epoch_ms(now)
+        with self._connect_ops() as conn:
+            row = conn.execute(
+                """
+                SELECT attempts, next_retry_at, last_error
+                FROM convergence_debt
+                WHERE stage = ? AND target_type = ? AND target_id = ?
+                """,
+                (stage, subject_type, subject_id),
+            ).fetchone()
+            existing_attempts = int(row[0]) if row is not None else 0
+            retry_at = convergence_debt_retry_at(
+                conn,
+                failure_count=max(existing_attempts, 1),
+                error=error,
+                subject_type=subject_type,
+                subject_id=subject_id,
+                archive_root=self._db_path.parent,
+            )
+            if row is not None and same_pending_convergence_debt(
+                row[1], row[2], error=error, now=now, retry_at=retry_at
+            ):
+                return
+            attempts_delta = 0 if row is not None and retry_is_future(row[1], now=now) and row[2] == error else 1
+            failure_count = existing_attempts + attempts_delta
+            retry_at = convergence_debt_retry_at(
+                conn,
+                failure_count=max(failure_count, 1),
+                error=error,
+                subject_type=subject_type,
+                subject_id=subject_id,
+                archive_root=self._db_path.parent,
+            )
+
+        def write() -> None:
+            with self._connect_ops() as conn:
+                add_archive_convergence_debt(
+                    conn,
+                    stage=stage,
+                    target_type=subject_type,
+                    target_id=subject_id,
+                    status=_convergence_debt_status(stage=stage, error=error),
+                    priority=0,
+                    attempts=attempts_delta,
+                    last_error=error,
+                    next_retry_at=retry_at.isoformat(),
+                    materializer_version=materializer_version,
+                    created_at_ms=now_ms,
+                    updated_at_ms=now_ms,
+                )
+
+        best_effort_cursor_write("archive ops convergence debt sync", write)
+
+    def _clear_convergence_debt_from_ops(
+        self,
+        *,
+        subject_type: str,
+        subject_id: str,
+        stage: str | None = None,
+    ) -> None:
+        def write() -> None:
+            with self._connect_ops() as conn:
+                if stage is None:
+                    conn.execute(
+                        "DELETE FROM convergence_debt WHERE target_type = ? AND target_id = ?",
+                        (subject_type, subject_id),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        DELETE FROM convergence_debt
+                        WHERE stage = ? AND target_type = ? AND target_id = ?
+                        """,
+                        (stage, subject_type, subject_id),
+                    )
+                conn.commit()
+
+        best_effort_cursor_write("archive ops convergence debt clear", write)
+
+    def _clear_convergence_debt_except_from_ops(
+        self,
+        *,
+        subject_type: str,
+        subject_id: str,
+        stages: Iterable[str],
+    ) -> None:
+        preserved = tuple(stages)
+
+        def write() -> None:
+            with self._connect_ops() as conn:
+                if preserved:
+                    placeholders = ",".join("?" for _ in preserved)
+                    conn.execute(
+                        f"""
+                        DELETE FROM convergence_debt
+                        WHERE target_type = ?
+                          AND target_id = ?
+                          AND stage NOT IN ({placeholders})
+                        """,
+                        (subject_type, subject_id, *preserved),
+                    )
+                else:
+                    conn.execute(
+                        "DELETE FROM convergence_debt WHERE target_type = ? AND target_id = ?",
+                        (subject_type, subject_id),
+                    )
+                conn.commit()
+
+        best_effort_cursor_write("archive ops convergence debt clear-except", write)
 
     def begin_ingest_attempt(
         self,
@@ -427,38 +426,33 @@ class CursorStore:
         queued_file_count: int,
     ) -> str:
         """Record a durable in-flight live-ingest attempt."""
-        import json
-
         now = datetime.now(UTC).isoformat()
+        now_ms = _required_epoch_ms(now)
         attempt_id = str(uuid.uuid4())
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO live_ingest_attempt (
-                    attempt_id,
-                    started_at,
-                    updated_at,
-                    status,
-                    phase,
-                    queued_file_count,
-                    needed_file_count,
-                    input_bytes,
-                    source_paths_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    attempt_id,
-                    now,
-                    now,
-                    "running",
-                    "planning",
-                    queued_file_count,
-                    len(paths),
-                    input_bytes,
-                    json.dumps([str(path) for path in paths], separators=(",", ":")),
-                ),
+        with self._connect_ops() as conn:
+            record_archive_ingest_attempt(
+                conn,
+                attempt_id=attempt_id,
+                status="running",
+                phase="planning",
+                started_at_ms=now_ms,
+                heartbeat_at_ms=now_ms,
+                source_paths_json=json.dumps([str(path) for path in paths], separators=(",", ":")),
             )
-            conn.commit()
+            record_archive_daemon_stage_event(
+                conn,
+                attempt_id=attempt_id,
+                stage="planning",
+                status="running",
+                observed_at_ms=now_ms,
+                payload={
+                    "phase": "planning",
+                    "status": "running",
+                    "queued_file_count": queued_file_count,
+                    "needed_file_count": queued_file_count,
+                    "input_bytes": input_bytes,
+                },
+            )
         return attempt_id
 
     def update_ingest_attempt(
@@ -476,6 +470,7 @@ class CursorStore:
         current_source: str | None = None,
         current_path: Path | str | None = None,
         error: str | None = None,
+        stage_payload: dict[str, object] | None = None,
         rss_current_mb: float | None = None,
         rss_peak_self_mb: float | None = None,
         rss_peak_children_mb: float | None = None,
@@ -492,46 +487,76 @@ class CursorStore:
         stale_cursor_write_count: int | None = None,
     ) -> bool:
         """Update an in-flight attempt without waiting for batch completion."""
-        now = datetime.now(UTC).isoformat()
-        assignments: list[str] = ["updated_at = ?", "status = ?", "phase = ?"]
-        values: list[object] = [now, status, phase]
-        optional_fields = {
-            "succeeded_file_count": succeeded_file_count,
-            "failed_file_count": failed_file_count,
-            "source_payload_read_bytes": source_payload_read_bytes,
-            "cursor_fingerprint_read_bytes": cursor_fingerprint_read_bytes,
-            "parse_time_s": parse_time_s,
-            "convergence_time_s": convergence_time_s,
-            "current_source": current_source,
-            "current_path": str(current_path) if current_path is not None else None,
-            "error": error,
-            "rss_current_mb": rss_current_mb,
-            "rss_peak_self_mb": rss_peak_self_mb,
-            "rss_peak_children_mb": rss_peak_children_mb,
-            "cgroup_path": cgroup_path,
-            "cgroup_memory_current_mb": cgroup_memory_current_mb,
-            "cgroup_memory_peak_mb": cgroup_memory_peak_mb,
-            "cgroup_memory_swap_current_mb": cgroup_memory_swap_current_mb,
-            "cgroup_memory_anon_mb": cgroup_memory_anon_mb,
-            "cgroup_memory_file_mb": cgroup_memory_file_mb,
-            "cgroup_memory_inactive_file_mb": cgroup_memory_inactive_file_mb,
-            "worker_in_flight_count": worker_in_flight_count,
-            "worker_completed_count": worker_completed_count,
-            "worker_total_count": worker_total_count,
-            "stale_cursor_write_count": stale_cursor_write_count,
-        }
-        for field, value in optional_fields.items():
-            if value is None:
-                continue
-            assignments.append(f"{field} = ?")
-            values.append(value)
-        values.append(attempt_id)
+        now_ms = _required_epoch_ms(datetime.now(UTC).isoformat())
+        parsed_raw_count = succeeded_file_count if succeeded_file_count is not None else None
+        if parsed_raw_count is None and failed_file_count is not None:
+            parsed_raw_count = failed_file_count
 
         def write() -> None:
-            with self._connect() as conn:
+            with self._connect_ops() as conn:
                 conn.execute(
-                    f"UPDATE live_ingest_attempt SET {', '.join(assignments)} WHERE attempt_id = ?",
-                    tuple(values),
+                    """
+                    UPDATE ingest_attempts
+                    SET heartbeat_at_ms = ?,
+                        status = ?,
+                        phase = ?,
+                        source_path = COALESCE(?, source_path),
+                        origin = COALESCE(?, origin),
+                        parsed_raw_count = COALESCE(?, parsed_raw_count),
+                        materialized_count = COALESCE(?, materialized_count),
+                        error_message = COALESCE(?, error_message)
+                    WHERE attempt_id = ?
+                    """,
+                    (
+                        now_ms,
+                        _archive_attempt_status(status),
+                        phase,
+                        str(current_path) if current_path is not None else None,
+                        _origin_value_for_source_name(current_source),
+                        parsed_raw_count,
+                        succeeded_file_count,
+                        error,
+                        attempt_id,
+                    ),
+                )
+                payload: dict[str, object] = {
+                    key: value
+                    for key, value in {
+                        "phase": phase,
+                        "status": status,
+                        "succeeded_file_count": succeeded_file_count,
+                        "failed_file_count": failed_file_count,
+                        "source_payload_read_bytes": source_payload_read_bytes,
+                        "cursor_fingerprint_read_bytes": cursor_fingerprint_read_bytes,
+                        "parse_time_s": parse_time_s,
+                        "convergence_time_s": convergence_time_s,
+                        "current_source": current_source,
+                        "current_path": str(current_path) if current_path is not None else None,
+                        "error": error,
+                        "rss_current_mb": rss_current_mb,
+                        "rss_peak_self_mb": rss_peak_self_mb,
+                        "rss_peak_children_mb": rss_peak_children_mb,
+                        "cgroup_path": cgroup_path,
+                        "cgroup_memory_current_mb": cgroup_memory_current_mb,
+                        "cgroup_memory_peak_mb": cgroup_memory_peak_mb,
+                        "cgroup_memory_swap_current_mb": cgroup_memory_swap_current_mb,
+                        "cgroup_memory_anon_mb": cgroup_memory_anon_mb,
+                        "cgroup_memory_file_mb": cgroup_memory_file_mb,
+                        "cgroup_memory_inactive_file_mb": cgroup_memory_inactive_file_mb,
+                        "worker_in_flight_count": worker_in_flight_count,
+                        "worker_completed_count": worker_completed_count,
+                        "worker_total_count": worker_total_count,
+                        "stale_cursor_write_count": stale_cursor_write_count,
+                    }.items()
+                    if value is not None
+                }
+                record_archive_daemon_stage_event(
+                    conn,
+                    attempt_id=attempt_id,
+                    stage=phase,
+                    status=_archive_attempt_status(status),
+                    observed_at_ms=now_ms,
+                    payload=payload,
                 )
                 conn.commit()
 
@@ -571,95 +596,60 @@ class CursorStore:
         worker_in_flight_count: int | None = None,
         worker_completed_count: int | None = None,
         worker_total_count: int | None = None,
+        stage_payload: dict[str, object] | None = None,
         stage_timings_json: str | None = None,
     ) -> bool:
         """Append one durable progress event for a live-ingest attempt."""
-        now = datetime.now(UTC).isoformat()
+        observed_at_ms = _required_epoch_ms(datetime.now(UTC).isoformat())
 
         def write() -> None:
-            with self._connect() as conn:
-                row = conn.execute(
-                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM live_ingest_stage_event WHERE attempt_id = ?",
-                    (attempt_id,),
-                ).fetchone()
-                sequence = int(row[0] or 1)
-                conn.execute(
-                    """
-                    INSERT INTO live_ingest_stage_event (
-                    attempt_id,
-                    sequence,
-                    observed_at,
-                    phase,
-                    status,
-                    queued_file_count,
-                    needed_file_count,
-                    skipped_file_count,
-                    succeeded_file_count,
-                    failed_file_count,
-                    input_bytes,
-                    source_payload_read_bytes,
-                    cursor_fingerprint_read_bytes,
-                    archive_write_bytes_delta,
-                    parse_time_s,
-                    convergence_time_s,
-                    total_time_s,
-                    current_source,
-                    current_path,
-                    error,
-                    rss_current_mb,
-                    rss_peak_self_mb,
-                    rss_peak_children_mb,
-                    cgroup_path,
-                    cgroup_memory_current_mb,
-                    cgroup_memory_peak_mb,
-                    cgroup_memory_swap_current_mb,
-                    cgroup_memory_anon_mb,
-                    cgroup_memory_file_mb,
-                    cgroup_memory_inactive_file_mb,
-                    worker_in_flight_count,
-                    worker_completed_count,
-                    worker_total_count,
-                    stage_timings_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        attempt_id,
-                        sequence,
-                        now,
-                        phase,
-                        status,
-                        queued_file_count,
-                        needed_file_count,
-                        skipped_file_count,
-                        succeeded_file_count,
-                        failed_file_count,
-                        input_bytes,
-                        source_payload_read_bytes,
-                        cursor_fingerprint_read_bytes,
-                        archive_write_bytes_delta,
-                        parse_time_s,
-                        convergence_time_s,
-                        total_time_s,
-                        current_source,
-                        str(current_path) if current_path is not None else None,
-                        error,
-                        rss_current_mb,
-                        rss_peak_self_mb,
-                        rss_peak_children_mb,
-                        cgroup_path,
-                        cgroup_memory_current_mb,
-                        cgroup_memory_peak_mb,
-                        cgroup_memory_swap_current_mb,
-                        cgroup_memory_anon_mb,
-                        cgroup_memory_file_mb,
-                        cgroup_memory_inactive_file_mb,
-                        worker_in_flight_count,
-                        worker_completed_count,
-                        worker_total_count,
-                        stage_timings_json,
-                    ),
+            payload: dict[str, object] = {
+                key: value
+                for key, value in {
+                    "queued_file_count": queued_file_count,
+                    "needed_file_count": needed_file_count,
+                    "skipped_file_count": skipped_file_count,
+                    "succeeded_file_count": succeeded_file_count,
+                    "failed_file_count": failed_file_count,
+                    "input_bytes": input_bytes,
+                    "source_payload_read_bytes": source_payload_read_bytes,
+                    "cursor_fingerprint_read_bytes": cursor_fingerprint_read_bytes,
+                    "archive_write_bytes_delta": archive_write_bytes_delta,
+                    "parse_time_s": parse_time_s,
+                    "convergence_time_s": convergence_time_s,
+                    "total_time_s": total_time_s,
+                    "current_source": current_source,
+                    "current_path": str(current_path) if current_path is not None else None,
+                    "error": error,
+                    "rss_current_mb": rss_current_mb,
+                    "rss_peak_self_mb": rss_peak_self_mb,
+                    "rss_peak_children_mb": rss_peak_children_mb,
+                    "cgroup_path": cgroup_path,
+                    "cgroup_memory_current_mb": cgroup_memory_current_mb,
+                    "cgroup_memory_peak_mb": cgroup_memory_peak_mb,
+                    "cgroup_memory_swap_current_mb": cgroup_memory_swap_current_mb,
+                    "cgroup_memory_anon_mb": cgroup_memory_anon_mb,
+                    "cgroup_memory_file_mb": cgroup_memory_file_mb,
+                    "cgroup_memory_inactive_file_mb": cgroup_memory_inactive_file_mb,
+                    "worker_in_flight_count": worker_in_flight_count,
+                    "worker_completed_count": worker_completed_count,
+                    "worker_total_count": worker_total_count,
+                    "stage_timings_json": stage_timings_json,
+                }.items()
+                if value is not None
+            }
+            payload.update({"phase": phase, "status": status})
+            if stage_payload:
+                payload.update(stage_payload)
+            with self._connect_ops() as conn:
+                record_archive_daemon_stage_event(
+                    conn,
+                    attempt_id=attempt_id,
+                    stage=phase,
+                    status=_archive_attempt_status(status),
+                    observed_at_ms=observed_at_ms,
+                    payload=payload,
                 )
-                conn.commit()
 
         return best_effort_cursor_write("live ingest stage event", write)
 
@@ -672,21 +662,21 @@ class CursorStore:
         error: str | None = None,
     ) -> bool:
         """Mark an ingest attempt complete or failed."""
-        now = datetime.now(UTC).isoformat()
+        now_ms = _required_epoch_ms(datetime.now(UTC).isoformat())
 
         def write() -> None:
-            with self._connect() as conn:
+            with self._connect_ops() as conn:
                 conn.execute(
                     """
-                    UPDATE live_ingest_attempt
-                    SET updated_at = ?,
-                        completed_at = ?,
+                    UPDATE ingest_attempts
+                    SET heartbeat_at_ms = ?,
+                        finished_at_ms = ?,
                         status = ?,
                         phase = ?,
-                        error = ?
+                        error_message = ?
                     WHERE attempt_id = ?
                     """,
-                    (now, now, status, phase, error, attempt_id),
+                    (now_ms, now_ms, _archive_attempt_status(status), phase, error, attempt_id),
                 )
                 conn.commit()
 
@@ -694,78 +684,113 @@ class CursorStore:
 
     def recent_ingest_attempts(self, *, limit: int = 5) -> list[LiveIngestAttempt]:
         """Return recent live-ingest attempts for status/debug surfaces."""
-        with self._connect() as conn:
+        with self._connect_ops() as conn:
             rows = conn.execute(
                 """
                 SELECT
                     attempt_id,
-                    started_at,
-                    updated_at,
-                    completed_at,
+                    started_at_ms,
+                    heartbeat_at_ms,
+                    finished_at_ms,
                     status,
                     phase,
-                    queued_file_count,
-                    needed_file_count,
-                    succeeded_file_count,
-                    failed_file_count,
-                    input_bytes,
-                    source_payload_read_bytes,
-                    cursor_fingerprint_read_bytes,
-                    parse_time_s,
-                    convergence_time_s,
-                    current_source,
-                    current_path,
-                    error,
-                    rss_current_mb,
-                    rss_peak_self_mb,
-                    rss_peak_children_mb,
-                    cgroup_path,
-                    cgroup_memory_current_mb,
-                    cgroup_memory_peak_mb,
-                    cgroup_memory_swap_current_mb,
-                    worker_in_flight_count,
-                    worker_completed_count,
-                    worker_total_count,
-                    stale_cursor_write_count,
+                    source_path,
+                    origin,
+                    parsed_raw_count,
+                    materialized_count,
+                    error_message,
                     source_paths_json
-                FROM live_ingest_attempt
-                ORDER BY updated_at DESC, started_at DESC
+                FROM ingest_attempts
+                ORDER BY COALESCE(heartbeat_at_ms, started_at_ms) DESC, started_at_ms DESC
                 LIMIT ?
                 """,
                 (limit,),
             ).fetchall()
+            attempt_ids = [str(row[0]) for row in rows]
+            events_by_attempt: dict[str, list[dict[str, object]]] = {attempt_id: [] for attempt_id in attempt_ids}
+            if attempt_ids:
+                placeholders = ",".join("?" for _attempt_id in attempt_ids)
+                event_rows = conn.execute(
+                    f"""
+                    SELECT attempt_id, payload_json
+                    FROM daemon_stage_events
+                    WHERE attempt_id IN ({placeholders})
+                    ORDER BY observed_at_ms ASC, event_id ASC
+                    """,
+                    tuple(attempt_ids),
+                ).fetchall()
+                for attempt_id, payload_json in event_rows:
+                    if attempt_id is None:
+                        continue
+                    try:
+                        payload = json.loads(str(payload_json or "{}"))
+                    except json.JSONDecodeError:
+                        payload = {}
+                    if isinstance(payload, dict):
+                        events_by_attempt.setdefault(str(attempt_id), []).append(payload)
+
+        def metric(attempt_id: str, key: str, default: object) -> object:
+            value: object = default
+            for payload in events_by_attempt.get(attempt_id, []):
+                if key in payload:
+                    value = payload[key]
+            return value
+
+        def int_metric(attempt_id: str, key: str) -> int:
+            value = metric(attempt_id, key, 0)
+            return value if isinstance(value, int) else 0
+
+        def float_metric(attempt_id: str, key: str) -> float:
+            value = metric(attempt_id, key, 0.0)
+            return float(value) if isinstance(value, int | float) else 0.0
+
+        def optional_float_metric(attempt_id: str, key: str) -> float | None:
+            value = metric(attempt_id, key, None)
+            return float(value) if isinstance(value, int | float) else None
+
+        def optional_int_metric(attempt_id: str, key: str) -> int | None:
+            value = metric(attempt_id, key, None)
+            return value if isinstance(value, int) else None
+
+        def optional_str_metric(attempt_id: str, key: str, fallback: object = None) -> str | None:
+            value = metric(attempt_id, key, fallback)
+            return value if isinstance(value, str) else None
+
         return [
             LiveIngestAttempt(
                 attempt_id=str(row[0]),
-                started_at=str(row[1]),
-                updated_at=str(row[2]),
-                completed_at=row[3],
+                started_at=_iso_from_epoch_ms(row[1]),
+                updated_at=_iso_from_epoch_ms(row[2] if row[2] is not None else row[1]),
+                completed_at=_iso_from_epoch_ms(row[3]) if row[3] is not None else None,
                 status=str(row[4]),
                 phase=str(row[5]),
-                queued_file_count=int(row[6] or 0),
-                needed_file_count=int(row[7] or 0),
+                queued_file_count=int_metric(str(row[0]), "queued_file_count"),
+                needed_file_count=int_metric(str(row[0]), "needed_file_count"),
                 succeeded_file_count=int(row[8] or 0),
-                failed_file_count=int(row[9] or 0),
-                input_bytes=int(row[10] or 0),
-                source_payload_read_bytes=int(row[11] or 0),
-                cursor_fingerprint_read_bytes=int(row[12] or 0),
-                parse_time_s=float(row[13] or 0),
-                convergence_time_s=float(row[14] or 0),
-                current_source=row[15],
-                current_path=row[16],
-                error=row[17],
-                rss_current_mb=float(row[18]) if row[18] is not None else None,
-                rss_peak_self_mb=float(row[19]) if row[19] is not None else None,
-                rss_peak_children_mb=float(row[20]) if row[20] is not None else None,
-                cgroup_path=row[21],
-                cgroup_memory_current_mb=float(row[22]) if row[22] is not None else None,
-                cgroup_memory_peak_mb=float(row[23]) if row[23] is not None else None,
-                cgroup_memory_swap_current_mb=float(row[24]) if row[24] is not None else None,
-                worker_in_flight_count=int(row[25]) if row[25] is not None else None,
-                worker_completed_count=int(row[26]) if row[26] is not None else None,
-                worker_total_count=int(row[27]) if row[27] is not None else None,
-                stale_cursor_write_count=int(row[28] or 0),
-                source_paths_json=str(row[29] or "[]"),
+                failed_file_count=int_metric(str(row[0]), "failed_file_count"),
+                input_bytes=int_metric(str(row[0]), "input_bytes"),
+                source_payload_read_bytes=int_metric(str(row[0]), "source_payload_read_bytes"),
+                cursor_fingerprint_read_bytes=int_metric(str(row[0]), "cursor_fingerprint_read_bytes"),
+                parse_time_s=float_metric(str(row[0]), "parse_time_s"),
+                convergence_time_s=float_metric(str(row[0]), "convergence_time_s"),
+                current_source=row[7],
+                current_path=row[6],
+                error=row[10],
+                rss_current_mb=optional_float_metric(str(row[0]), "rss_current_mb"),
+                rss_peak_self_mb=optional_float_metric(str(row[0]), "rss_peak_self_mb"),
+                rss_peak_children_mb=optional_float_metric(str(row[0]), "rss_peak_children_mb"),
+                cgroup_path=optional_str_metric(str(row[0]), "cgroup_path"),
+                cgroup_memory_current_mb=optional_float_metric(str(row[0]), "cgroup_memory_current_mb"),
+                cgroup_memory_peak_mb=optional_float_metric(str(row[0]), "cgroup_memory_peak_mb"),
+                cgroup_memory_swap_current_mb=optional_float_metric(str(row[0]), "cgroup_memory_swap_current_mb"),
+                cgroup_memory_anon_mb=optional_float_metric(str(row[0]), "cgroup_memory_anon_mb"),
+                cgroup_memory_file_mb=optional_float_metric(str(row[0]), "cgroup_memory_file_mb"),
+                cgroup_memory_inactive_file_mb=optional_float_metric(str(row[0]), "cgroup_memory_inactive_file_mb"),
+                worker_in_flight_count=optional_int_metric(str(row[0]), "worker_in_flight_count"),
+                worker_completed_count=optional_int_metric(str(row[0]), "worker_completed_count"),
+                worker_total_count=optional_int_metric(str(row[0]), "worker_total_count"),
+                stale_cursor_write_count=int_metric(str(row[0]), "stale_cursor_write_count"),
+                source_paths_json=str(row[11] or "[]"),
             )
             for row in rows
         ]
@@ -775,36 +800,35 @@ class CursorStore:
         return record.byte_offset if record is not None else 0
 
     def get_record(self, path: Path) -> CursorRecord | None:
-        with self._connect() as conn:
+        with self._connect_ops() as conn:
             row = conn.execute(
                 """
                 SELECT
                     source_path,
-                    byte_size,
+                    stat_size,
                     byte_offset,
                     last_complete_newline,
                     record_count,
-                    updated_at,
-                    last_record_ts,
+                    last_record_ts_ms,
                     parser_fingerprint,
                     content_fingerprint,
                     tail_hash,
-                    source_name,
                     st_dev,
                     st_ino,
                     mtime_ns,
-                    source_generation,
                     failure_count,
                     next_retry_at,
+                    origin,
+                    updated_at_ms,
                     excluded
-                FROM live_cursor
+                FROM ingest_cursor
                 WHERE source_path = ?
                 """,
                 (str(path),),
             ).fetchone()
         if row is None:
             return None
-        return _cursor_record_from_row(row)
+        return _cursor_record_from_ops_row(row)
 
     def get_records(self, paths: Iterable[Path]) -> dict[Path, CursorRecord]:
         """Return cursor records for many paths using batched SQLite reads."""
@@ -812,7 +836,7 @@ class CursorStore:
         if not unique_paths:
             return {}
         records_by_source_path: dict[str, CursorRecord] = {}
-        with self._connect() as conn:
+        with self._connect_ops() as conn:
             for offset in range(0, len(unique_paths), 500):
                 chunk = unique_paths[offset : offset + 500]
                 placeholders = ",".join("?" for _path in chunk)
@@ -820,30 +844,29 @@ class CursorStore:
                     f"""
                     SELECT
                         source_path,
-                        byte_size,
+                        stat_size,
                         byte_offset,
                         last_complete_newline,
                         record_count,
-                        updated_at,
-                        last_record_ts,
+                        last_record_ts_ms,
                         parser_fingerprint,
                         content_fingerprint,
                         tail_hash,
-                        source_name,
                         st_dev,
                         st_ino,
                         mtime_ns,
-                        source_generation,
                         failure_count,
                         next_retry_at,
+                        origin,
+                        updated_at_ms,
                         excluded
-                    FROM live_cursor
+                    FROM ingest_cursor
                     WHERE source_path IN ({placeholders})
                     """,
                     tuple(str(path) for path in chunk),
                 ).fetchall()
                 for row in rows:
-                    record = _cursor_record_from_row(row)
+                    record = _cursor_record_from_ops_row(row)
                     records_by_source_path[record.source_path] = record
         return {path: records_by_source_path[str(path)] for path in unique_paths if str(path) in records_by_source_path}
 
@@ -872,88 +895,37 @@ class CursorStore:
         now = datetime.now(UTC).isoformat()
         offset = byte_size if byte_offset is None else byte_offset
         newline_offset = offset if last_complete_newline is None else last_complete_newline
-        excluded_int = 1 if excluded else 0
-        with self._connect() as conn:
-            if not allow_backward:
-                existing = conn.execute(
-                    """
-                    SELECT byte_size, byte_offset, parser_fingerprint
-                    FROM live_cursor
-                    WHERE source_path = ?
-                    """,
-                    (str(path),),
-                ).fetchone()
-                if (
-                    existing is not None
-                    and existing[2] == parser_fingerprint
-                    and int(existing[0] or 0) > byte_size
-                    and int(existing[1] or 0) > offset
-                ):
-                    return False
-            conn.execute(
-                """
-                INSERT INTO live_cursor (
-                    source_path,
-                    byte_size,
-                    byte_offset,
-                    last_complete_newline,
-                    record_count,
-                    last_record_ts,
-                    parser_fingerprint,
-                    content_fingerprint,
-                    tail_hash,
-                    source_name,
-                    st_dev,
-                    st_ino,
-                    mtime_ns,
-                    source_generation,
-                    failure_count,
-                    next_retry_at,
-                    excluded,
-                    updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (source_path) DO UPDATE SET
-                    byte_size = excluded.byte_size,
-                    byte_offset = excluded.byte_offset,
-                    last_complete_newline = excluded.last_complete_newline,
-                    record_count = excluded.record_count,
-                    last_record_ts = excluded.last_record_ts,
-                    parser_fingerprint = excluded.parser_fingerprint,
-                    content_fingerprint = excluded.content_fingerprint,
-                    tail_hash = excluded.tail_hash,
-                    source_name = excluded.source_name,
-                    st_dev = excluded.st_dev,
-                    st_ino = excluded.st_ino,
-                    mtime_ns = excluded.mtime_ns,
-                    source_generation = excluded.source_generation,
-                    failure_count = excluded.failure_count,
-                    next_retry_at = excluded.next_retry_at,
-                    excluded = excluded.excluded,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    str(path),
-                    byte_size,
-                    offset,
-                    newline_offset,
-                    record_count,
-                    last_record_ts,
-                    parser_fingerprint,
-                    content_fingerprint,
-                    tail_hash,
-                    source_name,
-                    st_dev,
-                    st_ino,
-                    mtime_ns,
-                    source_generation or 0,
-                    failure_count or 0,
-                    next_retry_at,
-                    excluded_int,
-                    now,
-                ),
+        del source_generation
+        if not allow_backward:
+            existing = self.get_record(path)
+            if (
+                existing is not None
+                and existing.parser_fingerprint == parser_fingerprint
+                and existing.byte_size > byte_size
+                and existing.byte_offset > offset
+            ):
+                return False
+        self._sync_cursor_record_to_ops(
+            CursorRecord(
+                source_path=str(path),
+                byte_size=byte_size,
+                byte_offset=offset,
+                last_complete_newline=newline_offset,
+                record_count=record_count,
+                updated_at=now,
+                last_record_ts=last_record_ts,
+                parser_fingerprint=parser_fingerprint,
+                content_fingerprint=content_fingerprint,
+                tail_hash=tail_hash,
+                source_name=source_name,
+                st_dev=st_dev,
+                st_ino=st_ino,
+                mtime_ns=mtime_ns,
+                failure_count=failure_count or 0,
+                next_retry_at=next_retry_at,
+                excluded=bool(excluded),
             )
-            conn.commit()
+        )
         return True
 
     def mark_failed(self, path: Path) -> None:
@@ -984,77 +956,119 @@ class CursorStore:
         failures = record.failure_count + 1
         delay_s = min(60 * (2 ** (failures - 1)), 3600)  # cap at 1 hour
         retry_at = datetime.now(UTC).timestamp() + delay_s
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE live_cursor SET failure_count = ?, next_retry_at = ? WHERE source_path = ?",
-                (failures, datetime.fromtimestamp(retry_at, tz=UTC).isoformat(), str(path)),
-            )
-            conn.commit()
+        self.set(
+            path,
+            record.byte_size,
+            byte_offset=record.byte_offset,
+            last_complete_newline=record.last_complete_newline,
+            record_count=record.record_count,
+            last_record_ts=record.last_record_ts,
+            parser_fingerprint=record.parser_fingerprint,
+            content_fingerprint=record.content_fingerprint,
+            tail_hash=record.tail_hash,
+            source_name=record.source_name,
+            st_dev=record.st_dev,
+            st_ino=record.st_ino,
+            mtime_ns=record.mtime_ns,
+            failure_count=failures,
+            next_retry_at=datetime.fromtimestamp(retry_at, tz=UTC).isoformat(),
+            excluded=bool(record.excluded),
+            allow_backward=True,
+        )
 
     def mark_excluded(self, path: Path) -> None:
         """Quarantine a source file (poison pill)."""
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE live_cursor SET excluded = 1 WHERE source_path = ?",
-                (str(path),),
+        record = self.get_record(path)
+        if record is not None:
+            self.set(
+                path,
+                record.byte_size,
+                byte_offset=record.byte_offset,
+                last_complete_newline=record.last_complete_newline,
+                record_count=record.record_count,
+                last_record_ts=record.last_record_ts,
+                parser_fingerprint=record.parser_fingerprint,
+                content_fingerprint=record.content_fingerprint,
+                tail_hash=record.tail_hash,
+                source_name=record.source_name,
+                st_dev=record.st_dev,
+                st_ino=record.st_ino,
+                mtime_ns=record.mtime_ns,
+                failure_count=record.failure_count,
+                next_retry_at=record.next_retry_at,
+                excluded=True,
+                allow_backward=True,
             )
-            conn.commit()
 
     def reset_failures(self, path: Path) -> None:
         """Clear failure count and backoff after a successful parse."""
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE live_cursor SET failure_count = 0, next_retry_at = NULL WHERE source_path = ?",
-                (str(path),),
+        record = self.get_record(path)
+        if record is not None:
+            self.set(
+                path,
+                record.byte_size,
+                byte_offset=record.byte_offset,
+                last_complete_newline=record.last_complete_newline,
+                record_count=record.record_count,
+                last_record_ts=record.last_record_ts,
+                parser_fingerprint=record.parser_fingerprint,
+                content_fingerprint=record.content_fingerprint,
+                tail_hash=record.tail_hash,
+                source_name=record.source_name,
+                st_dev=record.st_dev,
+                st_ino=record.st_ino,
+                mtime_ns=record.mtime_ns,
+                failure_count=0,
+                next_retry_at=None,
+                excluded=bool(record.excluded),
+                allow_backward=True,
             )
-            conn.commit()
 
     def list_excluded(self) -> list[str]:
         """Return quarantined source paths."""
-        with self._connect() as conn:
-            rows = conn.execute("SELECT source_path FROM live_cursor WHERE excluded = 1").fetchall()
+        with self._connect_ops() as conn:
+            rows = conn.execute("SELECT source_path FROM ingest_cursor WHERE excluded = 1").fetchall()
         return [str(row[0]) for row in rows]
 
     def list_failed_with_retry(self) -> list[str]:
         """Return sources that have failed and are NOT currently in backoff."""
         now = datetime.now(UTC).isoformat()
-        with self._connect() as conn:
+        with self._connect_ops() as conn:
             rows = conn.execute(
-                "SELECT source_path FROM live_cursor WHERE failure_count > 0 AND excluded = 0 AND (next_retry_at IS NULL OR next_retry_at <= ?)",
+                "SELECT source_path FROM ingest_cursor WHERE failure_count > 0 AND excluded = 0 AND (next_retry_at IS NULL OR next_retry_at <= ?)",
                 (now,),
             ).fetchall()
         return [str(row[0]) for row in rows]
 
     def list_failed_records(self) -> list[CursorRecord]:
         """Return all failed, non-excluded cursor records."""
-        with self._connect() as conn:
+        with self._connect_ops() as conn:
             rows = conn.execute(
                 """
                 SELECT
                     source_path,
-                    byte_size,
-                    byte_offset,
-                    last_complete_newline,
-                    record_count,
-                    updated_at,
-                    last_record_ts,
-                    parser_fingerprint,
+                        stat_size,
+                        byte_offset,
+                        last_complete_newline,
+                        record_count,
+                        last_record_ts_ms,
+                        parser_fingerprint,
                     content_fingerprint,
                     tail_hash,
-                    source_name,
                     st_dev,
                     st_ino,
-                    mtime_ns,
-                    source_generation,
-                    failure_count,
-                    next_retry_at,
+                        mtime_ns,
+                        failure_count,
+                        next_retry_at,
+                        origin,
+                        updated_at_ms,
                     excluded
-                FROM live_cursor
+                FROM ingest_cursor
                 WHERE failure_count > 0 AND excluded = 0
                 ORDER BY next_retry_at IS NULL DESC, next_retry_at ASC, source_path ASC
                 """
             ).fetchall()
-        return [_cursor_record_from_row(row) for row in rows]
+        return [_cursor_record_from_ops_row(row) for row in rows]
 
     def record_convergence_debt(
         self,
@@ -1067,17 +1081,14 @@ class CursorStore:
     ) -> None:
         """Record derived convergence debt without marking source ingest failed."""
         now = datetime.now(UTC).isoformat()
-        with self._connect() as conn:
-            record_convergence_debt_sync(
-                conn,
-                stage=stage,
-                subject_type=subject_type,
-                subject_id=subject_id,
-                error=error,
-                materializer_version=materializer_version,
-                now=now,
-            )
-            conn.commit()
+        self._sync_convergence_debt_to_ops(
+            stage=stage,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            error=error,
+            materializer_version=materializer_version,
+            now=now,
+        )
 
     def clear_convergence_debt_except(
         self,
@@ -1087,14 +1098,12 @@ class CursorStore:
         stages: Iterable[str],
     ) -> None:
         """Clear convergence debt for a subject except currently failed stages."""
-        with self._connect() as conn:
-            clear_convergence_debt_except_sync(
-                conn,
-                subject_type=subject_type,
-                subject_id=subject_id,
-                stages=stages,
-            )
-            conn.commit()
+        preserved_stages = tuple(stages)
+        self._clear_convergence_debt_except_from_ops(
+            subject_type=subject_type,
+            subject_id=subject_id,
+            stages=preserved_stages,
+        )
 
     def clear_convergence_debt(
         self,
@@ -1104,40 +1113,26 @@ class CursorStore:
         stage: str | None = None,
     ) -> None:
         """Clear derived convergence debt after successful convergence."""
-        with self._connect() as conn:
-            if stage is None:
-                conn.execute(
-                    "DELETE FROM live_convergence_debt WHERE subject_type = ? AND subject_id = ?",
-                    (subject_type, subject_id),
-                )
-            else:
-                conn.execute(
-                    """
-                    DELETE FROM live_convergence_debt
-                    WHERE stage = ? AND subject_type = ? AND subject_id = ?
-                    """,
-                    (stage, subject_type, subject_id),
-                )
-            conn.commit()
+        self._clear_convergence_debt_from_ops(subject_type=subject_type, subject_id=subject_id, stage=stage)
 
     def list_convergence_debt(self, *, limit: int = 20) -> list[LiveConvergenceDebt]:
         """Return recent derived convergence debt records."""
-        with self._connect() as conn:
+        with self._connect_ops() as conn:
             rows = conn.execute(
                 """
                 SELECT
                     stage,
-                    subject_type,
-                    subject_id,
+                    target_type,
+                    target_id,
                     status,
-                    failure_count,
-                    first_failed_at,
-                    last_failed_at,
+                    attempts,
+                    created_at_ms,
+                    updated_at_ms,
+                    last_error,
                     next_retry_at,
-                    materializer_version,
-                    last_error
-                FROM live_convergence_debt
-                ORDER BY last_failed_at DESC
+                    materializer_version
+                FROM convergence_debt
+                ORDER BY updated_at_ms DESC, priority DESC, debt_id DESC
                 LIMIT ?
                 """,
                 (limit,),
@@ -1149,11 +1144,11 @@ class CursorStore:
                 subject_id=str(row[2]),
                 status=str(row[3]),
                 failure_count=int(row[4] or 0),
-                first_failed_at=str(row[5]),
-                last_failed_at=str(row[6]),
-                next_retry_at=_optional_str(row[7]),
-                materializer_version=_optional_str(row[8]),
-                last_error=_optional_str(row[9]),
+                first_failed_at=_iso_from_epoch_ms(row[5]),
+                last_failed_at=_iso_from_epoch_ms(row[6]),
+                next_retry_at=_optional_str(row[8]),
+                materializer_version=_optional_str(row[9]),
+                last_error=_optional_str(row[7]),
             )
             for row in rows
         ]

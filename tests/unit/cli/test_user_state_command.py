@@ -80,7 +80,7 @@ def test_user_state_annotations_list_returns_envelope(cli_runner: CliRunner) -> 
                 "annotation_id": "ann-1",
                 "target_type": "message",
                 "target_id": "msg-1",
-                "conversation_id": "conv-1",
+                "session_id": "conv-1",
                 "message_id": "msg-1",
                 "note_text": "Important",
                 "created_at": "2026-05-15T00:00:00+00:00",
@@ -91,7 +91,7 @@ def test_user_state_annotations_list_returns_envelope(cli_runner: CliRunner) -> 
 
     result = cli_runner.invoke(
         user_state_command,
-        ["annotations", "list", "--conversation-id", "conv-1", "--format", "json"],
+        ["annotations", "list", "--session-id", "conv-1", "--format", "json"],
         obj=env,
         catch_exceptions=False,
     )
@@ -103,7 +103,7 @@ def test_user_state_annotations_list_returns_envelope(cli_runner: CliRunner) -> 
     assert isinstance(items, list)
     assert items[0]["annotation_id"] == "ann-1"
     env.polylogue.list_annotations.assert_awaited_once_with(
-        conversation_id="conv-1",
+        session_id="conv-1",
         target_type=None,
         target_id=None,
         message_id=None,
@@ -119,7 +119,7 @@ def test_user_state_saved_view_save_validates_and_canonicalizes_query(cli_runner
             "saved-views",
             "save",
             "Claude Code",
-            '{"query":"auth","provider":"claude-code"}',
+            '{"query":"auth","origin":"claude-code-session"}',
             "--view-id",
             "view-auth",
             "--format",
@@ -135,7 +135,7 @@ def test_user_state_saved_view_save_validates_and_canonicalizes_query(cli_runner
     env.polylogue.save_view.assert_awaited_once_with(
         "view-auth",
         "Claude Code",
-        '{"provider":"claude-code","query":"auth"}',
+        '{"origin":"claude-code-session","query":"auth"}',
     )
 
 
@@ -150,7 +150,7 @@ def test_user_state_saved_view_rejects_unknown_query_param(cli_runner: CliRunner
     )
 
     assert result.exit_code != 0
-    assert "ConversationQuerySpec" in result.output
+    assert "SessionQuerySpec" in result.output
 
 
 def test_user_state_recall_pack_save_passes_typed_items(cli_runner: CliRunner) -> None:
@@ -164,7 +164,7 @@ def test_user_state_recall_pack_save_passes_typed_items(cli_runner: CliRunner) -
             "pack-1",
             "Handoff",
             "--item-json",
-            '{"target_type":"conversation","conversation_id":"conv-1"}',
+            '{"target_type":"session","session_id":"conv-1"}',
             "--item-json",
             '{"target_type":"annotation","annotation_id":"ann-1"}',
             "--payload-json",
@@ -182,7 +182,7 @@ def test_user_state_recall_pack_save_passes_typed_items(cli_runner: CliRunner) -
     env.polylogue.create_recall_pack.assert_awaited_once_with(
         "pack-1",
         "Handoff",
-        '{"items":[{"conversation_id":"conv-1","target_type":"conversation"},{"annotation_id":"ann-1","target_type":"annotation"}],"summary":"handoff"}',
+        '{"items":[{"session_id":"conv-1","target_type":"session"},{"annotation_id":"ann-1","target_type":"annotation"}],"summary":"handoff"}',
     )
 
 
@@ -199,11 +199,11 @@ def test_user_state_workspace_save_passes_canonical_layout_and_targets(cli_runne
             "--mode",
             "compare",
             "--open-targets-json",
-            '[{"conversation_id":"conv-1","target_type":"conversation"}]',
+            '[{"session_id":"conv-1","target_type":"session"}]',
             "--layout-json",
             '{"panes":[{"width":0.5},{"width":0.5}]}',
             "--active-target-json",
-            '{"conversation_id":"conv-1","target_type":"conversation"}',
+            '{"session_id":"conv-1","target_type":"session"}',
             "--format",
             "json",
         ],
@@ -218,7 +218,7 @@ def test_user_state_workspace_save_passes_canonical_layout_and_targets(cli_runne
         "workspace-1",
         "Investigation",
         "compare",
-        '[{"conversation_id":"conv-1","target_type":"conversation"}]',
+        '[{"session_id":"conv-1","target_type":"session"}]',
         '{"panes":[{"width":0.5},{"width":0.5}]}',
-        '{"conversation_id":"conv-1","target_type":"conversation"}',
+        '{"session_id":"conv-1","target_type":"session"}',
     )

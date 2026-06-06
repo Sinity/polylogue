@@ -20,7 +20,7 @@ from tests.unit.mcp.test_tool_contracts import _inference_provenance, _provenanc
 
 
 def _make_profile(
-    conversation_id: str,
+    session_id: str,
     source_name: str = "claude-code",
     workflow_shape: str = "agentic_loop",
     terminal_state: str = "resolved",
@@ -33,10 +33,10 @@ def _make_profile(
     tags: tuple[str, ...] = (),
 ) -> SessionProfileInsight:
     return SessionProfileInsight(
-        conversation_id=conversation_id,
-        logical_conversation_id=conversation_id,
+        session_id=session_id,
+        logical_session_id=session_id,
         source_name=source_name,
-        title=f"Session {conversation_id}",
+        title=f"Session {session_id}",
         provenance=_provenance(),
         semantic_tier="merged",
         evidence=SessionEvidencePayload(
@@ -81,6 +81,7 @@ async def test_compare_sessions_side_by_side(mcp_server: MCPServerUnderTest) -> 
     assert payload["total_found"] == 2
     assert payload["not_found"] == []
     assert len(payload["sessions"]) == 2
+    assert payload["sessions"][0]["origin"] == "claude-code-session"
     assert set(payload["differences"]["workflow_shape"]) == {"agentic_loop", "chat"}
     assert set(payload["differences"]["message_count"]) == {5, 20}
 
@@ -173,9 +174,9 @@ async def test_compare_sessions_no_differences_when_identical(
 
     payload = json.loads(raw)
     assert payload["total_found"] == 2
-    # source_name, workflow_shape, terminal_state all identical => no differences
+    # origin, workflow_shape, terminal_state all identical => no differences
     assert "workflow_shape" not in payload["differences"]
-    assert "source_name" not in payload["differences"]
+    assert "origin" not in payload["differences"]
 
 
 @pytest.mark.asyncio
@@ -202,6 +203,11 @@ async def test_compare_sessions_includes_all_found_sessions(
     assert payload["total_found"] == 3
     ids = [s["id"] for s in payload["sessions"]]
     assert ids == ["c1", "c2", "c3"]
+    assert [s["origin"] for s in payload["sessions"]] == [
+        "claude-code-session",
+        "chatgpt-export",
+        "codex-session",
+    ]
 
 
 # ── find_similar_sessions ────────────────────────────────────────────
@@ -251,8 +257,9 @@ async def test_find_similar_sessions_via_metadata(
     assert payload["source_session_id"] == "ref"
     assert len(payload["similar"]) >= 1
     # The most similar should be 'sim' (same source + same shape + close date)
-    top_id = payload["similar"][0]["conversation_id"]
+    top_id = payload["similar"][0]["session_id"]
     assert top_id == "sim"
+    assert payload["similar"][0]["origin"] == "claude-code-session"
 
 
 @pytest.mark.asyncio
@@ -438,8 +445,8 @@ async def test_correlate_skips_profiles_with_missing_metrics(
 ) -> None:
     # Profile with no inference (engaged_duration_ms won't be available)
     incomplete = SessionProfileInsight(
-        conversation_id="c-incomplete",
-        logical_conversation_id="c-incomplete",
+        session_id="c-incomplete",
+        logical_session_id="c-incomplete",
         source_name="codex",
         provenance=_provenance(),
         semantic_tier="merged",
@@ -497,7 +504,7 @@ async def test_correlate_weak_correlation(mcp_server: MCPServerUnderTest) -> Non
 
 
 @pytest.mark.asyncio
-async def test_correlate_with_provider_filter(mcp_server: MCPServerUnderTest) -> None:
+async def test_correlate_with_origin_filter(mcp_server: MCPServerUnderTest) -> None:
     with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
         mock_poly = make_polylogue_mock()
         mock_poly.list_session_profile_insights = AsyncMock(
@@ -513,12 +520,12 @@ async def test_correlate_with_provider_filter(mcp_server: MCPServerUnderTest) ->
             mcp_server._tool_manager._tools["correlate_sessions"].fn,
             metric_x="message_count",
             metric_y="word_count",
-            provider="claude-code",
+            origin="claude-code-session",
         )
 
     payload = json.loads(raw)
     assert payload["sample_count"] == 3
-    # Verify SessionProfileInsightQuery was called with the provider filter
+    # Verify the origin filter maps to the storage-facing provider query.
     assert mock_poly.list_session_profile_insights.called
     call_kwargs = mock_poly.list_session_profile_insights.call_args
     query = call_kwargs[0][0]

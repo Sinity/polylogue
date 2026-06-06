@@ -8,6 +8,7 @@ import functools
 import json
 import os
 from collections.abc import Callable, Mapping
+from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePath
@@ -15,6 +16,7 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, urlparse
 
 from polylogue.core.loopback import is_loopback_origin
+from polylogue.core.sources import origin_from_provider
 from polylogue.daemon import user_state_http, workspace_routes
 from polylogue.daemon.events import (
     emit_daemon_event,
@@ -36,24 +38,31 @@ from polylogue.daemon.web_shell_paste import (
 )
 from polylogue.errors import PolylogueError
 from polylogue.logging import get_logger
-from polylogue.paths import db_path
 from polylogue.surfaces.payloads import (
     MutationResultPayload,
     QueryErrorPayload,
     QueryMissDiagnosticsPayload,
     ReaderActionAvailabilityPayload,
     TargetRefPayload,
-    _build_flags_from_conversation,
+    _build_flags_from_session,
     _extract_cwd,
     _extract_repo,
     reader_anchor,
-    reader_conversation_actions,
     reader_message_actions,
+    reader_session_actions,
 )
+from polylogue.types import Provider
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
-    from polylogue.archive.query.spec import ConversationQuerySpec
+    from polylogue.archive.query.spec import SessionQuerySpec
+    from polylogue.storage.sqlite.archive_tiers.archive import (
+        ArchiveSessionSearchHit,
+        ArchiveSessionSummary,
+        ArchiveStore,
+    )
+    from polylogue.storage.sqlite.archive_tiers.write import ArchiveMessageRow
+    from polylogue.surfaces.payloads import FacetBucketsPayload
 
 logger = get_logger(__name__)
 
@@ -64,9 +73,42 @@ def _json_bytes(payload: object) -> bytes:
     return orjson.dumps(payload, option=orjson.OPT_APPEND_NEWLINE)
 
 
+def _web_reader_archive_root() -> Path | None:
+    """Return the archive root when index.db reader routes should use it."""
+    from polylogue.paths import archive_root
+
+    root = archive_root()
+    index_db = root / "index.db"
+    return root if index_db.exists() else None
+
+
+def _archive_origin_filter(params: dict[str, list[str]]) -> tuple[str | None, tuple[str, ...]]:
+    origin_values = params.get("origin") or []
+    if origin_values and origin_values[0]:
+        origins = tuple(
+            dict.fromkeys(token.strip() for value in origin_values for token in value.split(",") if token.strip())
+        )
+        return (origins[0] if len(origins) == 1 else None), origins
+    return None, ()
+
+
+def _archive_tag_filter(params: dict[str, list[str]]) -> tuple[str, ...]:
+    """Collect ``?tag=`` filters (repeated and/or comma-separated)."""
+    tags: list[str] = []
+    for value in params.get("tag") or []:
+        tags.extend(token.strip() for token in value.split(",") if token.strip())
+    return tuple(dict.fromkeys(tags))
+
+
+def _archive_datetime_to_ms(value: datetime | None) -> int | None:
+    if value is None:
+        return None
+    return int(value.timestamp() * 1000)
+
+
 _SCOPE_FILTER_KEYS = frozenset(
     {
-        "conversation_ids",
+        "session_ids",
         "provider",
         "source_family",
         "source_root",
@@ -82,7 +124,7 @@ def _parse_scope_filter_body(body: dict[str, Any]) -> dict[str, Any]:
     """Extract scope-filter fields from a maintenance POST body.
 
     Accepts both a nested ``{"scope": {"filter": {...}}}`` envelope and
-    a flat top-level shape (``conversation_ids`` etc. directly on the
+    a flat top-level shape (``session_ids`` etc. directly on the
     body). The flat form is the one the CLI's ``--output-format json``
     plan reuses when an operator pipes it back to the daemon, so
     parity with the CLI is what pins the daemon-side parser.
@@ -178,12 +220,20 @@ def _usage_dict(usage: Any) -> dict[str, int]:
     }
 
 
+def _source_name_origin(source_name: object) -> str:
+    """Project an insight source/provider token into a canonical origin token."""
+    value = str(source_name)
+    if value.endswith(("-session", "-export")) or value in {"drive-takeout", "unknown"}:
+        return value
+    return origin_from_provider(Provider.from_string(value)).value
+
+
 def _cost_panel_payload(insight: Any) -> dict[str, object]:
     """Render a typed ``SessionCostInsight`` as a cost-panel JSON payload (#1122)."""
     estimate = insight.estimate
     return {
-        "conversation_id": insight.conversation_id,
-        "provider": insight.source_name,
+        "session_id": insight.session_id,
+        "origin": _source_name_origin(insight.source_name),
         "model_name": estimate.model_name,
         "normalized_model": estimate.normalized_model,
         "status": estimate.status,
@@ -209,11 +259,11 @@ def _cost_panel_payload(insight: Any) -> dict[str, object]:
     }
 
 
-def _empty_cost_payload(conversation_id: str, provider: str | None) -> dict[str, object]:
+def _empty_cost_payload(session_id: str, origin: str | None) -> dict[str, object]:
     """Explicit ``unavailable`` payload when no cost insight is materialized (#1122)."""
     return {
-        "conversation_id": conversation_id,
-        "provider": provider,
+        "session_id": session_id,
+        "origin": origin,
         "model_name": None,
         "normalized_model": None,
         "status": "unavailable",
@@ -251,8 +301,8 @@ def _empty_cost_payload(conversation_id: str, provider: str | None) -> dict[str,
 # a readiness chip from the closed vocabulary ``q-ready`` / ``q-partial`` /
 # ``q-missing`` driven by:
 #
-# - ``q-ready``    — the insight is materialized for this conversation.
-# - ``q-missing``  — the insight has no materialized row for this conversation
+# - ``q-ready``    — the insight is materialized for this session.
+# - ``q-missing``  — the insight has no materialized row for this session
 #   (the substrate is empty for this scope, not the whole archive).
 # - ``q-partial``  — the insight is materialized but the row count is zero
 #   (e.g. a session profile exists but has no work events recorded).
@@ -304,8 +354,8 @@ def _provenance_dict(prov: Any) -> dict[str, object]:
     }
 
 
-def _profile_staleness(record: Any, conversation_updated_at: str | None) -> dict[str, object] | None:
-    """Compare a session-profile record's provenance against its conversation.
+def _profile_staleness(record: Any, session_updated_at: str | None) -> dict[str, object] | None:
+    """Compare a session-profile record's provenance against its session.
 
     Routes through :func:`polylogue.insights.provenance.is_stale` so the
     daemon insights browser (#1018/#1120) consumes the typed staleness
@@ -324,7 +374,7 @@ def _profile_staleness(record: Any, conversation_updated_at: str | None) -> dict
         return None
     verdict = is_stale(
         cast(HasProvenance, record),
-        source_high_water_mark=conversation_updated_at,
+        source_high_water_mark=session_updated_at,
     )
     return {
         "stale": verdict.stale,
@@ -363,8 +413,8 @@ def _work_event_panel_payload(events: list[Any]) -> dict[str, object]:
             {
                 "event_id": ev.event_id,
                 "event_index": int(ev.event_index),
-                "conversation_id": ev.conversation_id,
-                "provider": ev.source_name,
+                "session_id": ev.session_id,
+                "origin": _source_name_origin(ev.source_name),
                 "evidence": ev.evidence.model_dump(mode="json"),
                 "inference": ev.inference.model_dump(mode="json"),
                 "provenance": _provenance_dict(ev.provenance),
@@ -385,8 +435,8 @@ def _phase_panel_payload(phases: list[Any]) -> dict[str, object]:
             {
                 "phase_id": ph.phase_id,
                 "phase_index": int(ph.phase_index),
-                "conversation_id": ph.conversation_id,
-                "provider": ph.source_name,
+                "session_id": ph.session_id,
+                "origin": _source_name_origin(ph.source_name),
                 "evidence": ph.evidence.model_dump(mode="json"),
                 "inference": ph.inference.model_dump(mode="json"),
                 "provenance": _provenance_dict(ph.provenance),
@@ -469,7 +519,7 @@ def _build_query_spec_params(
     params: dict[str, list[str]],
     handler: DaemonAPIHandler,
 ) -> dict[str, object]:
-    """Build ConversationQuerySpec-compatible params from HTTP query string."""
+    """Build SessionQuerySpec-compatible params from HTTP query string."""
     spec_params: dict[str, object] = {}
 
     for key in (
@@ -754,8 +804,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # is exposed.
         if path == ["metrics"]:
             from polylogue.daemon.metrics import handle_metrics
+            from polylogue.paths import active_index_db_path
 
-            handle_metrics(self, db_path())
+            handle_metrics(self, active_index_db_path())
             return
 
         if not self._check_auth():
@@ -769,47 +820,46 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._handle_status(params)
         elif path == ["api", "events"]:
             self._handle_events(params)
-        elif path == ["api", "conversations"]:
-            self._handle_list_conversations(params)
+        elif path == ["api", "sessions"]:
+            self._handle_list_sessions(params)
         elif path == ["api", "facets"]:
             self._handle_facets(params)
         elif path == ["api", "paste-browser"]:
             self._handle_paste_browser(params)
         elif path == ["api", "attachments"]:
             self._handle_attachment_library(params)
+        elif path == ["api", "stack"]:
+            self._handle_stack(params)
+        elif path == ["api", "compare"]:
+            self._handle_compare(params)
         elif workspace_routes.dispatch_get(self, path, params) or (
             path[:2] == ["api", "user"] and user_state_http.dispatch_get(self, path[2:], params)
         ):
             return
         elif path == ["api", "sources"]:
             self._handle_sources()
-        elif len(path) == 3 and path[:2] == ["api", "conversations"] and path[2]:
-            self._handle_get_conversation(path[2])
-        elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "messages":
+        elif len(path) == 3 and path[:2] == ["api", "sessions"] and path[2]:
+            self._handle_get_session(path[2])
+        elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "messages":
             self._handle_get_messages(path[2], params)
-        elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "raw":
-            self._handle_get_conversation_raw(path[2])
-        elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "cost":
-            self._handle_get_conversation_cost(path[2])
-        elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "provenance":
-            self._handle_get_conversation_provenance(path[2], params)
-        elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "topology":
-            self._handle_get_conversation_topology(path[2], params)
-        elif (
-            len(path) == 5
-            and path[:2] == ["api", "conversations"]
-            and path[3] == "topology"
-            and path[4] == "parent-chain"
-        ):
-            self._handle_get_conversation_parent_chain(path[2], params)
+        elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "raw":
+            self._handle_get_session_raw(path[2])
+        elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "cost":
+            self._handle_get_session_cost(path[2])
+        elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "provenance":
+            self._handle_get_session_provenance(path[2], params)
+        elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "topology":
+            self._handle_get_session_topology(path[2], params)
+        elif len(path) == 5 and path[:2] == ["api", "sessions"] and path[3] == "topology" and path[4] == "parent-chain":
+            self._handle_get_session_parent_chain(path[2], params)
         elif path == ["api", "thread-continue-templates"]:
             self._handle_get_thread_continue_templates()
         elif len(path) == 4 and path[:3] == ["api", "insights", "sessions"]:
             self._handle_get_session_insights(path[3], params)
-        elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "similar":
-            self._handle_get_conversation_similar(path[2], params)
-        elif len(path) == 4 and path[:2] == ["api", "conversations"] and path[3] == "attachments":
-            self._handle_get_conversation_attachments(path[2])
+        elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "similar":
+            self._handle_get_session_similar(path[2], params)
+        elif len(path) == 4 and path[:2] == ["api", "sessions"] and path[3] == "attachments":
+            self._handle_get_session_attachments(path[2])
         elif len(path) == 4 and path[:3] == ["api", "raw_artifacts"]:
             self._handle_get_raw_artifact(path[3])
         elif path == ["api", "maintenance", "operations"]:
@@ -946,18 +996,18 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit: int,
         offset: int,
     ) -> object:
-        # Walk all conversation summaries and emit one entry per
+        # Walk all session summaries and emit one entry per
         # paste-flagged message. The message-level ``has_paste`` flag
         # is the load-bearing signal — we deliberately do not pre-
-        # filter on the conversation-level flag because that flag is
-        # populated from ``conversation_stats`` which can lag behind
+        # filter on the session-level flag because that flag is
+        # populated from ``session_stats`` which can lag behind
         # direct message writes (visible to operators staging fixtures
         # or replaying historical ingests).
         convs = await poly.filter().list_summaries()
         entries: list[PasteBrowserEntry] = []
         total_messages_seen = 0
         for summary in convs:
-            conv = await poly.get_conversation(str(summary.id))
+            conv = await poly.get_session(str(summary.id))
             if conv is None:
                 continue
             for msg in conv.messages:
@@ -974,9 +1024,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 anchor = reader_anchor("message", msg.id)
                 entries.append(
                     PasteBrowserEntry(
-                        conversation_id=str(summary.id),
-                        conversation_title=summary.display_title or str(summary.id),
-                        provider=str(summary.provider) if summary.provider else None,
+                        session_id=str(summary.id),
+                        session_title=summary.display_title or str(summary.id),
+                        origin=summary.origin,
                         message_id=str(msg.id),
                         message_anchor=anchor,
                         role=str(msg.role) if msg.role else "",
@@ -992,7 +1042,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         return build_paste_browser_payload(entries, total=total_messages_seen)
 
     # ------------------------------------------------------------------
-    # Handlers: attachment library + per-conversation attachments (#1199)
+    # Handlers: attachment library + per-session attachments (#1199)
     # ------------------------------------------------------------------
 
     @daemon_safe_handler
@@ -1001,7 +1051,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         offset = self._get_int(params, "offset", 0)
         mime_filter = (params.get("mime") or [""])[0]
         state_filter = (params.get("state") or [""])[0]
-        conversation_filter = (params.get("conversation") or [""])[0]
+        session_filter = (params.get("session") or [""])[0]
 
         async def _run(poly: Polylogue) -> object:
             return await self._do_attachment_library(
@@ -1010,7 +1060,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 offset=offset,
                 mime_filter=mime_filter,
                 state_filter=state_filter,
-                conversation_filter=conversation_filter,
+                session_filter=session_filter,
             )
 
         result = self._sync_run(_run)
@@ -1024,10 +1074,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         offset: int,
         mime_filter: str,
         state_filter: str,
-        conversation_filter: str,
+        session_filter: str,
     ) -> object:
-        # Walk all conversation summaries and emit one library entry per
-        # attachment. We pre-filter by conversation id when supplied so
+        # Walk all session summaries and emit one library entry per
+        # attachment. We pre-filter by session id when supplied so
         # the walk stops early; mime/state filters apply after
         # envelope construction (state is derived, not stored).
         summaries = await poly.filter().list_summaries()
@@ -1035,16 +1085,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         total_seen = 0
         for summary in summaries:
             sid = str(summary.id)
-            if conversation_filter and conversation_filter != sid:
+            if session_filter and session_filter != sid:
                 continue
-            conv = await poly.get_conversation(sid)
+            conv = await poly.get_session(sid)
             if conv is None:
                 continue
-            provider = str(summary.provider) if summary.provider else None
+            origin = summary.origin
             title = summary.display_title or sid
             for msg in conv.messages:
                 for att in msg.attachments or []:
-                    envelope = attachment_to_envelope(att, conversation_id=sid, message_id=msg.id)
+                    envelope = attachment_to_envelope(att, session_id=sid, message_id=msg.id)
                     mime_value = envelope.get("mime_type")
                     if mime_filter and mime_filter not in (mime_value if isinstance(mime_value, str) else ""):
                         continue
@@ -1058,8 +1108,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     entries.append(
                         LibraryEntry(
                             envelope=envelope,
-                            conversation_title=title,
-                            provider=provider,
+                            session_title=title,
+                            origin=origin,
                             message_anchor=reader_anchor("message", msg.id) if msg.id else None,
                         )
                     )
@@ -1070,9 +1120,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         return build_library_payload(entries, total=total_seen)
 
     @daemon_safe_handler
-    def _handle_get_conversation_attachments(self, conv_id: str) -> None:
+    def _handle_get_session_attachments(self, conv_id: str) -> None:
         async def _get(poly: Polylogue) -> object:
-            return await self._do_get_conversation_attachments(poly, conv_id)
+            return await self._do_get_session_attachments(poly, conv_id)
 
         result = self._sync_run(_get)
         if result is None:
@@ -1080,14 +1130,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         self._send_json(HTTPStatus.OK, result)
 
-    async def _do_get_conversation_attachments(self, poly: Polylogue, conv_id: str) -> object:
-        conv = await poly.get_conversation(conv_id)
+    async def _do_get_session_attachments(self, poly: Polylogue, conv_id: str) -> object:
+        conv = await poly.get_session(conv_id)
         if conv is None:
             return None
         items: list[dict[str, object]] = []
         for msg in conv.messages:
             for att in msg.attachments or []:
-                items.append(attachment_to_envelope(att, conversation_id=str(conv.id), message_id=msg.id))
+                items.append(attachment_to_envelope(att, session_id=str(conv.id), message_id=msg.id))
         return {"items": items, "total": len(items)}
 
     # ------------------------------------------------------------------
@@ -1120,7 +1170,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
 
     def _handle_health(self) -> None:
-        dbp = db_path()
+        from polylogue.paths import active_index_db_path
+
+        dbp = active_index_db_path()
         db_size = dbp.stat().st_size if dbp.exists() else 0
         wal_size = 0
         wal = dbp.with_suffix(".db-wal")
@@ -1193,11 +1245,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         handle_events(self, params)
 
     # ------------------------------------------------------------------
-    # Handlers: list conversations
+    # Handlers: list sessions
     # ------------------------------------------------------------------
 
     @daemon_safe_handler
-    def _handle_list_conversations(self, params: dict[str, list[str]]) -> None:
+    def _handle_list_sessions(self, params: dict[str, list[str]]) -> None:
         from polylogue.archive.query.spec import clamp_query_limit
 
         query_params = _build_query_spec_params(params, self)
@@ -1210,6 +1262,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         cursor = cursor_values[0] if cursor_values else None
         if cursor:
             query_params["cursor"] = cursor
+
+        archive_root = _web_reader_archive_root()
+        if archive_root is not None:
+            self._send_json(HTTPStatus.OK, self._do_archive_list_sessions(archive_root, params, limit, offset))
+            return
 
         async def _list(poly: Polylogue) -> object:
             return await self._do_list(poly, query_params, limit, offset)
@@ -1224,9 +1281,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit: int,
         offset: int,
     ) -> object:
-        from polylogue.archive.query.spec import ConversationQuerySpec
+        from polylogue.archive.query.spec import SessionQuerySpec
 
-        spec = ConversationQuerySpec.from_params(
+        spec = SessionQuerySpec.from_params(
             {**query_params, "limit": limit, "offset": offset},
         )
         query_text = query_params.get("query") or query_params.get("contains")
@@ -1245,9 +1302,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if query_params.get("similar_text"):
             return await self._do_search_list(poly, spec, limit, offset)
 
-        filter_obj = spec.build_filter(poly.repository)
+        filter_obj = spec.build_filter(poly.config)
         summaries = await filter_obj.list_summaries()
-        total = await spec.count(poly.repository)
+        total = await spec.count(poly.config)
 
         diagnostics = None
         if not summaries and spec.has_filters():
@@ -1255,23 +1312,23 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 from polylogue.config import ConfigError
 
                 try:
-                    raw_diag = await poly.operations.diagnose_query_miss(spec)
+                    raw_diag = await poly.diagnose_query_miss(spec)
                     diagnostics = QueryMissDiagnosticsPayload.from_diagnostics(raw_diag)
                 except ConfigError:
                     pass
 
         items: list[dict[str, object]] = []
         for summary in summaries:
-            flags = _build_flags_from_conversation(summary)
-            conversation_id = str(summary.id)
-            target_ref = TargetRefPayload.conversation(conversation_id)
+            flags = _build_flags_from_session(summary)
+            session_id = str(summary.id)
+            target_ref = TargetRefPayload.session(session_id)
             row: dict[str, object] = {
-                "id": conversation_id,
+                "id": session_id,
                 "title": summary.display_title,
-                "provider": str(summary.provider) if summary.provider else None,
+                "origin": summary.origin,
                 "target_ref": _dump_target_ref(target_ref),
-                "anchor": reader_anchor("conversation", conversation_id),
-                "actions": _dump_actions(reader_conversation_actions()),
+                "anchor": reader_anchor("session", session_id),
+                "actions": _dump_actions(reader_session_actions()),
                 "date": summary.display_date.isoformat() if summary.display_date else None,
                 "created_at": summary.created_at.isoformat() if summary.created_at else None,
                 "updated_at": summary.updated_at.isoformat() if summary.updated_at else None,
@@ -1298,7 +1355,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     async def _do_search_list(
         self,
         poly: Polylogue,
-        spec: ConversationQuerySpec,
+        spec: SessionQuerySpec,
         limit: int,
         offset: int,
     ) -> object:
@@ -1315,8 +1372,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         try:
             envelope = await build_search_envelope_for_spec(
-                poly.operations,
-                poly.repository,
+                poly,
                 spec,
                 limit=limit,
                 offset=offset,
@@ -1325,14 +1381,165 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return {"ok": False, "error": "invalid_cursor", "detail": str(exc)}
         return envelope.model_dump(mode="json")
 
+    def _do_archive_list_sessions(
+        self,
+        archive_root: Path,
+        params: dict[str, list[str]],
+        limit: int,
+        offset: int,
+    ) -> object:
+        from polylogue.archive.query.spec import parse_query_date
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        query = self._get_param(params, "query") or self._get_param(params, "contains") or ""
+        origin, origins = _archive_origin_filter(params)
+        tags = _archive_tag_filter(params)
+        # parse_query_date raises QuerySpecError (a PolylogueError carrying
+        # http_status_code=400) for unparseable dates; daemon_safe_handler maps
+        # it to the QueryErrorPayload-shaped 400 the other surfaces return.
+        since_dt = parse_query_date("since", self._get_param(params, "since"))
+        until_dt = parse_query_date("until", self._get_param(params, "until"))
+        since_ms = _archive_datetime_to_ms(since_dt)
+        until_ms = _archive_datetime_to_ms(until_dt)
+        with ArchiveStore.open_existing(archive_root) as archive:
+            if query:
+                hits = archive.search_summaries(
+                    query,
+                    limit=limit,
+                    offset=offset,
+                    origin=origin,
+                    origins=origins,
+                    tags=tags,
+                    since_ms=since_ms,
+                    until_ms=until_ms,
+                )
+                payload: dict[str, object] = {
+                    "query": query,
+                    "retrieval_lane": "dialogue",
+                    "ranking_policy": "mixed-bm25-rrf-vector",
+                    "ranking_policy_version": "1",
+                    "hits": [self._archive_search_hit_payload(hit) for hit in hits],
+                    "total": len(hits),
+                    "limit": limit,
+                    "offset": offset,
+                }
+                if not hits:
+                    # Zero-result query: attach a diagnostics envelope (matching
+                    # the archive reader contract) so the surface can explain the
+                    # miss instead of rendering a bare empty list.
+                    from polylogue.surfaces.payloads import QueryMissDiagnosticsPayload
+
+                    archive_count = archive.count_sessions(
+                        origin=origin,
+                        origins=origins,
+                        tags=tags,
+                        since_ms=since_ms,
+                        until_ms=until_ms,
+                    )
+                    filters = tuple(
+                        label
+                        for label in (
+                            f"query={query!r}",
+                            f"origin={origin}" if origin else None,
+                            f"tags={list(tags)}" if tags else None,
+                        )
+                        if label is not None
+                    )
+                    payload["diagnostics"] = QueryMissDiagnosticsPayload(
+                        message=f"No sessions matched {query!r}.",
+                        filters=filters,
+                        reasons=(),
+                        archive_session_count=archive_count,
+                    ).model_dump(mode="json", by_alias=True)
+                return payload
+            summaries = archive.list_summaries(
+                limit=limit,
+                offset=offset,
+                origin=origin,
+                origins=origins,
+                tags=tags,
+                since_ms=since_ms,
+                until_ms=until_ms,
+            )
+            total = archive.count_sessions(
+                origin=origin,
+                origins=origins,
+                tags=tags,
+                since_ms=since_ms,
+                until_ms=until_ms,
+            )
+            return {
+                "items": [self._archive_summary_payload(summary) for summary in summaries],
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
+
+    def _archive_summary_payload(self, summary: ArchiveSessionSummary) -> dict[str, object]:
+        session_id = str(summary.session_id)
+        target_ref = TargetRefPayload.session(session_id)
+        return {
+            "id": session_id,
+            "session_id": session_id,
+            "title": summary.title or session_id,
+            "origin": summary.origin,
+            "target_ref": _dump_target_ref(target_ref),
+            "anchor": reader_anchor("session", session_id),
+            "actions": _dump_actions(reader_session_actions()),
+            "date": summary.updated_at or summary.created_at,
+            "created_at": summary.created_at,
+            "updated_at": summary.updated_at,
+            "message_count": summary.message_count,
+            "word_count": summary.word_count,
+            "repo": None,
+            "cwd_display": None,
+            "tags": list(summary.tags),
+            "flags": None,
+            "summary": None,
+        }
+
+    def _archive_search_hit_payload(self, hit: ArchiveSessionSearchHit) -> dict[str, object]:
+        session_id = str(hit.session_id)
+        message_id = str(hit.message_id)
+        session_ref = TargetRefPayload.session(session_id)
+        message_ref = TargetRefPayload.message(session_id=session_id, message_id=message_id)
+        return {
+            "rank": hit.rank,
+            "session": {
+                "id": session_id,
+                "title": hit.title or session_id,
+                "origin": hit.origin,
+                "target_ref": _dump_target_ref(session_ref),
+                "anchor": reader_anchor("session", session_id),
+                "actions": _dump_actions(reader_session_actions()),
+            },
+            "match": {
+                "message_id": message_id,
+                "block_id": hit.block_id,
+                "snippet": hit.snippet,
+                "target_ref": _dump_target_ref(message_ref),
+                "anchor": reader_anchor("message", message_id),
+                "actions": _dump_actions(reader_message_actions()),
+            },
+        }
+
     # ------------------------------------------------------------------
-    # Handlers: get conversation
+    # Handlers: get session
     # ------------------------------------------------------------------
 
     @daemon_safe_handler
-    def _handle_get_conversation(self, conv_id: str) -> None:
+    def _handle_get_session(self, conv_id: str) -> None:
+        archive_root = _web_reader_archive_root()
+        if archive_root is not None:
+            result = self._do_archive_get_session(archive_root, conv_id)
+            if result is None:
+                self._send_error(HTTPStatus.NOT_FOUND, "not_found")
+                return
+            self._send_json(HTTPStatus.OK, result)
+            return
+
         async def _get(poly: Polylogue) -> object:
-            return await self._do_get_conversation(poly, conv_id)
+            return await self._do_get_session(poly, conv_id)
 
         result = self._sync_run(_get)
         if result is None:
@@ -1340,32 +1547,30 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         self._send_json(HTTPStatus.OK, result)
 
-    async def _do_get_conversation(self, poly: Polylogue, conv_id: str) -> object:
-        conv = await poly.get_conversation(conv_id)
+    async def _do_get_session(self, poly: Polylogue, conv_id: str) -> object:
+        conv = await poly.get_session(conv_id)
         if conv is None:
             return None
-        flags = _build_flags_from_conversation(conv)
-        conversation_id = str(conv.id)
-        target_ref = TargetRefPayload.conversation(conversation_id)
+        flags = _build_flags_from_session(conv)
+        session_id = str(conv.id)
+        target_ref = TargetRefPayload.session(session_id)
         # Flatten attachments across all messages so the inspector
-        # tab and the conversation envelope share one source of truth
+        # tab and the session envelope share one source of truth
         # (#1199). Per-message attachments stay embedded in each
         # message envelope so the inline card renderer doesn't need
-        # to cross-reference the conversation-level list.
-        conversation_attachments: list[dict[str, object]] = []
+        # to cross-reference the session-level list.
+        session_attachments: list[dict[str, object]] = []
         for msg in conv.messages:
             for att in msg.attachments or []:
-                conversation_attachments.append(
-                    attachment_to_envelope(att, conversation_id=conversation_id, message_id=msg.id)
-                )
+                session_attachments.append(attachment_to_envelope(att, session_id=session_id, message_id=msg.id))
         return {
-            "id": conversation_id,
+            "id": session_id,
             "title": conv.title,
             "display_title": conv.display_title,
-            "provider": str(conv.provider) if conv.provider else None,
+            "origin": conv.origin,
             "target_ref": _dump_target_ref(target_ref),
-            "anchor": reader_anchor("conversation", conversation_id),
-            "actions": _dump_actions(reader_conversation_actions()),
+            "anchor": reader_anchor("session", session_id),
+            "actions": _dump_actions(reader_session_actions()),
             "created_at": conv.created_at.isoformat() if conv.created_at else None,
             "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
             "message_count": len(conv.messages),
@@ -1375,9 +1580,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "id": str(msg.id),
                     "role": str(msg.role),
                     "text": msg.text,
-                    "target_ref": _dump_target_ref(
-                        TargetRefPayload.message(conversation_id=conversation_id, message_id=msg.id)
-                    ),
+                    "target_ref": _dump_target_ref(TargetRefPayload.message(session_id=session_id, message_id=msg.id)),
                     "anchor": reader_anchor("message", msg.id),
                     "actions": _dump_actions(reader_message_actions()),
                     "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
@@ -1391,13 +1594,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                         has_paste=bool(msg.has_paste) if hasattr(msg, "has_paste") else False,
                     ),
                     "attachments": [
-                        attachment_to_envelope(att, conversation_id=conversation_id, message_id=msg.id)
+                        attachment_to_envelope(att, session_id=session_id, message_id=msg.id)
                         for att in (msg.attachments or [])
                     ],
                 }
                 for msg in conv.messages
             ],
-            "attachments": conversation_attachments,
+            "attachments": session_attachments,
             "tags": conv.tags,
             "branch_type": str(conv.branch_type) if conv.branch_type else None,
             "parent_id": str(conv.parent_id) if conv.parent_id else None,
@@ -1410,14 +1613,107 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "total": len(conv.messages),
         }
 
+    def _do_archive_get_session(self, archive_root: Path, conv_id: str) -> object | None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        with ArchiveStore.open_existing(archive_root) as archive:
+            try:
+                session_id = archive.resolve_session_id(conv_id)
+                envelope = archive.read_session(session_id)
+                summary = archive.read_summary(session_id)
+            except KeyError:
+                return None
+
+        session_id = envelope.session_id
+        created_at = summary.created_at
+        updated_at = summary.updated_at
+        word_count = summary.word_count
+        target_ref = TargetRefPayload.session(session_id)
+        messages = [self._archive_message_payload(session_id, message) for message in envelope.messages]
+        # Flatten per-message attachments plus session-level orphan attachments
+        # into one session-level list, mirroring the archive detail handler
+        # so the inspector tab and the session envelope share one source of
+        # truth (#1199).
+        from polylogue.api.archive import _archive_attachment_to_domain
+
+        session_attachments: list[dict[str, object]] = []
+        for message_payload in messages:
+            session_attachments.extend(cast("list[dict[str, object]]", message_payload["attachments"]))
+        session_attachments.extend(
+            attachment_to_envelope(
+                _archive_attachment_to_domain(att),
+                session_id=session_id,
+                message_id=att.message_id,
+            )
+            for att in envelope.orphan_attachments
+        )
+        return {
+            "id": session_id,
+            "session_id": session_id,
+            "title": envelope.title,
+            "display_title": envelope.title or session_id,
+            "origin": envelope.origin,
+            "target_ref": _dump_target_ref(target_ref),
+            "anchor": reader_anchor("session", session_id),
+            "actions": _dump_actions(reader_session_actions()),
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "message_count": len(messages),
+            "word_count": word_count,
+            "messages": messages,
+            "attachments": session_attachments,
+            "tags": list(summary.tags),
+            "branch_type": None,
+            "parent_id": None,
+            "repo": None,
+            "cwd_display": None,
+            "model": None,
+            "flags": None,
+            "summary": None,
+            "total": len(messages),
+        }
+
+    def _archive_message_attachments(self, session_id: str, message: ArchiveMessageRow) -> list[dict[str, object]]:
+        from polylogue.api.archive import _archive_attachment_to_domain
+
+        return [
+            attachment_to_envelope(
+                _archive_attachment_to_domain(att),
+                session_id=session_id,
+                message_id=str(message.message_id),
+            )
+            for att in message.attachments
+        ]
+
+    def _archive_message_payload(self, session_id: str, message: ArchiveMessageRow) -> dict[str, object]:
+        message_id = str(message.message_id)
+        text = "\n\n".join(str(block.text) for block in message.blocks if block.text)
+        has_paste = bool(message.has_paste)
+        return {
+            "id": message_id,
+            "role": str(message.role),
+            "text": text,
+            "target_ref": _dump_target_ref(TargetRefPayload.message(session_id=session_id, message_id=message_id)),
+            "anchor": reader_anchor("message", message_id),
+            "actions": _dump_actions(reader_message_actions()),
+            "timestamp": message.occurred_at,
+            "message_type": message.message_type,
+            "word_count": message.word_count,
+            "has_tool_use": bool(message.has_tool_use),
+            "has_thinking": bool(message.has_thinking),
+            "has_paste": has_paste,
+            "paste_spans": envelope_paste_spans(text, has_paste=has_paste),
+            "attachments": self._archive_message_attachments(session_id, message),
+        }
+
     # ------------------------------------------------------------------
-    # Handlers: get conversation raw
+    # Handlers: get session raw
     # ------------------------------------------------------------------
 
     @daemon_safe_handler
-    def _handle_get_conversation_raw(self, conv_id: str) -> None:
+    def _handle_get_session_raw(self, conv_id: str) -> None:
         async def _get(poly: Polylogue) -> object:
-            return await self._do_get_conversation_raw(poly, conv_id)
+            return await self._do_get_session_raw(poly, conv_id)
 
         result = self._sync_run(_get)
         if result is None:
@@ -1425,11 +1721,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         self._send_json(HTTPStatus.OK, result)
 
-    async def _do_get_conversation_raw(self, poly: Polylogue, conv_id: str) -> object:
-        conv = await poly.get_conversation(conv_id)
+    async def _do_get_session_raw(self, poly: Polylogue, conv_id: str) -> object:
+        conv = await poly.get_session(conv_id)
         if conv is None:
             return None
-        raw_items = await poly.get_raw_artifacts_for_conversation(conv_id)
+        raw_items = await poly.get_raw_artifacts_for_session(conv_id)
         provider_meta_serializable: dict[str, object] = {}
         if conv.provider_meta:
             for k, v in conv.provider_meta.items():
@@ -1440,7 +1736,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     provider_meta_serializable[k] = str(v)
         return {
             "id": str(conv.id),
-            "provider": str(conv.provider) if conv.provider else None,
+            "origin": conv.origin,
             "title": conv.display_title,
             "provider_meta": provider_meta_serializable,
             "branch_type": str(conv.branch_type) if conv.branch_type else None,
@@ -1450,13 +1746,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         }
 
     # ------------------------------------------------------------------
-    # Handlers: get conversation cost (#1122)
+    # Handlers: get session cost (#1122)
     # ------------------------------------------------------------------
 
     @daemon_safe_handler
-    def _handle_get_conversation_cost(self, conv_id: str) -> None:
+    def _handle_get_session_cost(self, conv_id: str) -> None:
         async def _get(poly: Polylogue) -> object:
-            return await self._do_get_conversation_cost(poly, conv_id)
+            return await self._do_get_session_cost(poly, conv_id)
 
         result = self._sync_run(_get)
         if result is None:
@@ -1464,18 +1760,18 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         self._send_json(HTTPStatus.OK, result)
 
-    async def _do_get_conversation_cost(self, poly: Polylogue, conv_id: str) -> object:
+    async def _do_get_session_cost(self, poly: Polylogue, conv_id: str) -> object:
         from polylogue.insights.archive import SessionCostInsightQuery
 
-        insights = await poly.list_session_cost_insights(SessionCostInsightQuery(conversation_id=conv_id))
+        insights = await poly.list_session_cost_insights(SessionCostInsightQuery(session_id=conv_id))
         if not insights:
-            # No matching session-cost insight: confirm the conversation exists
-            # so we can distinguish "unknown conversation" (404) from "cost
+            # No matching session-cost insight: confirm the session exists
+            # so we can distinguish "unknown session" (404) from "cost
             # surface unavailable" (200 with explicit unavailable shape).
-            conv = await poly.get_conversation(conv_id)
+            conv = await poly.get_session(conv_id)
             if conv is None:
                 return None
-            return _empty_cost_payload(conv_id, str(conv.provider) if conv.provider else None)
+            return _empty_cost_payload(conv_id, conv.origin)
         return _cost_panel_payload(insights[0])
 
     # ------------------------------------------------------------------
@@ -1492,7 +1788,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         readiness chip drawn from the closed vocabulary
         (``q-ready`` / ``q-partial`` / ``q-missing``).
 
-        Unknown conversations return ``404 not_found``. Existing conversations
+        Unknown sessions return ``404 not_found``. Existing sessions
         without materialized insights return ``200`` with explicit ``q-missing``
         per-kind shapes so the panel is never blank (AC#1120).
         """
@@ -1521,16 +1817,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             WorkThreadInsightQuery,
         )
 
-        # Confirm the conversation exists first: distinguishes "unknown
-        # conversation" (404) from "insights surface unavailable" (200 with
+        # Confirm the session exists first: distinguishes "unknown
+        # session" (404) from "insights surface unavailable" (200 with
         # explicit q-missing shapes).
-        conv = await poly.get_conversation(conv_id)
+        conv = await poly.get_session(conv_id)
         if conv is None:
             return None
 
         envelope: dict[str, object] = {
-            "conversation_id": conv_id,
-            "provider": str(conv.provider) if conv.provider else None,
+            "session_id": conv_id,
+            "origin": conv.origin,
             "include": list(includes),
             "kinds": {},
         }
@@ -1538,23 +1834,26 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         assert isinstance(kinds, dict)
 
         if "profile" in includes:
+            from polylogue.storage.insights.session.profiles import hydrate_session_profile
+
             try:
-                profile = await poly.repository.get_session_profile(conv_id)
+                # Archive read returns the full record directly; hydrate it into
+                # the domain ``SessionProfile`` for the panel projection. Native
+                # returns ``None`` (rather than raising) when the profile is not
+                # materialized, so the except below is defensive only.
+                profile_record = await poly.get_session_profile_record(conv_id)
             except ArchiveInsightUnavailableError:
                 # The substrate hasn't materialized this insight kind yet;
                 # surface q-missing rather than 503 the whole envelope.
-                profile = None
+                profile_record = None
+            profile = hydrate_session_profile(profile_record) if profile_record is not None else None
             panel = _profile_panel_payload(profile) if profile is not None else _empty_profile_panel_payload()
             # Compare the materialized record's provenance against the
-            # conversation's current ``updated_at`` via the typed
+            # session's current ``updated_at`` via the typed
             # :func:`polylogue.insights.provenance.is_stale` helper so the
             # reader sees explicit staleness, not just q-ready/q-missing
             # presence chips.
             if profile is not None:
-                try:
-                    profile_record = await poly.repository.get_session_profile_record(conv_id)
-                except ArchiveInsightUnavailableError:
-                    profile_record = None
                 conv_updated_at = conv.updated_at.isoformat() if conv.updated_at else None
                 staleness = _profile_staleness(profile_record, conv_updated_at)
                 if staleness is not None:
@@ -1563,9 +1862,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         if "timeline" in includes:
             try:
-                # Per-conversation list adapter — same path as MCP `session_work_events`.
+                # Per-session list adapter — same path as MCP `session_work_events`.
                 events = await poly.list_session_work_event_insights(
-                    SessionWorkEventInsightQuery(conversation_id=conv_id, limit=None)
+                    SessionWorkEventInsightQuery(session_id=conv_id, limit=None)
                 )
             except ArchiveInsightUnavailableError:
                 events = []
@@ -1574,7 +1873,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if "phases" in includes:
             try:
                 phases = await poly.list_session_phase_insights(
-                    SessionPhaseInsightQuery(conversation_id=conv_id, limit=None)
+                    SessionPhaseInsightQuery(session_id=conv_id, limit=None)
                 )
             except ArchiveInsightUnavailableError:
                 phases = []
@@ -1582,7 +1881,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         if "threads" in includes:
             try:
-                # Work threads are not keyed per-conversation in the substrate;
+                # Work threads are not keyed per-session in the substrate;
                 # the reader filters the materialized rows by membership.
                 all_threads = await poly.list_work_thread_insights(WorkThreadInsightQuery(limit=None))
             except ArchiveInsightUnavailableError:
@@ -1593,16 +1892,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         return envelope
 
     # ------------------------------------------------------------------
-    # Handlers: per-conversation provenance (#1125)
+    # Handlers: per-session provenance (#1125)
     # ------------------------------------------------------------------
 
     @daemon_safe_handler
-    def _handle_get_conversation_provenance(
+    def _handle_get_session_provenance(
         self,
         conv_id: str,
         params: dict[str, list[str]],
     ) -> None:
-        """``GET /api/conversations/{id}/provenance[?include_raw=1[&bytes=N]]``.
+        """``GET /api/sessions/{id}/provenance[?include_raw=1[&bytes=N]]``.
 
         Returns the source artifact metadata that produced *conv_id*.
         The raw payload preview is opt-in (``include_raw=1``) and is
@@ -1633,16 +1932,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, payload)
 
     # ------------------------------------------------------------------
-    # Handlers: per-conversation topology (#1121)
+    # Handlers: per-session topology (#1121)
     # ------------------------------------------------------------------
 
     @daemon_safe_handler
-    def _handle_get_conversation_topology(
+    def _handle_get_session_topology(
         self,
         conv_id: str,
         params: dict[str, list[str]],
     ) -> None:
-        """``GET /api/conversations/{id}/topology[?limit=N]``.
+        """``GET /api/sessions/{id}/topology[?limit=N]``.
 
         Returns a bounded :class:`polylogue.insights.topology.SessionTopology`
         envelope rooted at *conv_id*'s lineage root. ``?limit=`` is the
@@ -1661,7 +1960,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
 
         async def _get(poly: Polylogue) -> object:
-            topology = await poly.repository.get_session_topology(conv_id)
+            topology = await poly.get_session_topology(conv_id)
             if topology is None:
                 return None
             return build_topology_envelope(topology, node_limit=node_limit)
@@ -1677,21 +1976,21 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------
 
     @daemon_safe_handler
-    def _handle_get_conversation_parent_chain(
+    def _handle_get_session_parent_chain(
         self,
         conv_id: str,
         params: dict[str, list[str]],
     ) -> None:
-        """``GET /api/conversations/{id}/topology/parent-chain``.
+        """``GET /api/sessions/{id}/topology/parent-chain``.
 
         Returns the stack-ready chain envelope shaped by
         :func:`polylogue.daemon.topology_http.build_parent_chain_envelope`.
         The envelope's ``chain_ids`` seed the stack workspace route
         (``/w/stack?ids=...``); ``focus_id`` keeps the operator anchored
-        at the conversation they invoked the action from.
+        at the session they invoked the action from.
 
         Query parameters:
-        - ``descendants=0`` — omit descendant conversations and return
+        - ``descendants=0`` — omit descendant sessions and return
           only the ancestor chain (root → target).
         """
         from polylogue.daemon.topology_http import build_parent_chain_envelope
@@ -1700,7 +1999,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         include_descendants = include_descendants_raw not in ("0", "false", "no")
 
         async def _get(poly: Polylogue) -> object:
-            topology = await poly.repository.get_session_topology(conv_id)
+            topology = await poly.get_session_topology(conv_id)
             if topology is None:
                 return None
             return build_parent_chain_envelope(topology, include_descendants=include_descendants)
@@ -1724,21 +2023,21 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, build_templates_envelope())
 
     # ------------------------------------------------------------------
-    # Handlers: per-conversation embedding similarity (#1123)
+    # Handlers: per-session embedding similarity (#1123)
     # ------------------------------------------------------------------
 
     @daemon_safe_handler
-    def _handle_get_conversation_similar(
+    def _handle_get_session_similar(
         self,
         conv_id: str,
         params: dict[str, list[str]],
     ) -> None:
-        """``GET /api/conversations/{id}/similar[?limit=N]``.
+        """``GET /api/sessions/{id}/similar[?limit=N]``.
 
-        Returns ranked similar conversations through the embedding read
+        Returns ranked similar sessions through the embedding read
         surface from #828. The endpoint is honest about the embedding
         pipeline's state: when embeddings are disabled, unavailable, or
-        the source conversation has not been embedded yet, the response
+        the source session has not been embedded yet, the response
         carries an explicit ``status`` rather than an empty success.
         ``limit`` is clamped server-side to
         :data:`polylogue.daemon.similarity.SIMILAR_RESULTS_MAX`.
@@ -1768,6 +2067,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit = self._get_int(params, "limit", 50)
         offset = self._get_int(params, "offset", 0)
 
+        archive_root = _web_reader_archive_root()
+        if archive_root is not None:
+            self._send_json(HTTPStatus.OK, self._do_archive_get_messages(archive_root, conv_id, limit, offset))
+            return
+
         async def _get(poly: Polylogue) -> object:
             return await self._do_get_messages(poly, conv_id, limit, offset)
 
@@ -1776,16 +2080,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     async def _do_get_messages(self, poly: Polylogue, conv_id: str, limit: int, offset: int) -> object:
         messages, total = await poly.get_messages_paginated(conv_id, limit=limit, offset=offset)
-        conversation_id = str(conv_id)
+        session_id = str(conv_id)
         return {
             "messages": [
                 {
                     "id": str(msg.id),
                     "role": str(msg.role),
                     "text": msg.text,
-                    "target_ref": _dump_target_ref(
-                        TargetRefPayload.message(conversation_id=conversation_id, message_id=msg.id)
-                    ),
+                    "target_ref": _dump_target_ref(TargetRefPayload.message(session_id=session_id, message_id=msg.id)),
                     "anchor": reader_anchor("message", msg.id),
                     "actions": _dump_actions(reader_message_actions()),
                     "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
@@ -1798,6 +2100,90 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "limit": limit,
             "offset": offset,
         }
+
+    def _do_archive_get_messages(self, archive_root: Path, conv_id: str, limit: int, offset: int) -> object:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        with ArchiveStore.open_existing(archive_root) as archive:
+            try:
+                session_id = archive.resolve_session_id(conv_id)
+                envelope = archive.read_session(session_id)
+            except KeyError:
+                return {"messages": [], "total": 0, "limit": limit, "offset": offset}
+        messages = list(envelope.messages)
+        page = messages[offset : offset + limit]
+        return {
+            "messages": [self._archive_message_payload(envelope.session_id, message) for message in page],
+            "total": len(messages),
+            "limit": limit,
+            "offset": offset,
+        }
+
+    # ------------------------------------------------------------------
+    # Handlers: workspace stack/compare
+    # ------------------------------------------------------------------
+
+    @daemon_safe_handler
+    def _handle_stack(self, params: dict[str, list[str]]) -> None:
+        ids = workspace_routes.parse_id_list(params)
+        focus = self._get_param(params, "focus")
+        if not ids:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        archive_root = _web_reader_archive_root()
+        if archive_root is not None:
+            self._send_json(HTTPStatus.OK, self._do_archive_stack(archive_root, ids, focus))
+            return
+        workspace_routes.handle_stack(self, params)
+
+    @daemon_safe_handler
+    def _handle_compare(self, params: dict[str, list[str]]) -> None:
+        left = self._get_param(params, "left")
+        right = self._get_param(params, "right")
+        align = self._get_param(params, "align", "prompt")
+        if not left or not right or align not in workspace_routes.COMPARE_ALIGN_MODES:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        archive_root = _web_reader_archive_root()
+        if archive_root is not None:
+            self._send_json(HTTPStatus.OK, self._do_archive_compare(archive_root, left, right, align or "prompt"))
+            return
+        workspace_routes.handle_compare(self, params)
+
+    def _do_archive_stack(self, archive_root: Path, ids: list[str], focus: str | None) -> dict[str, object]:
+        items: list[dict[str, object]] = []
+        for conv_id in ids:
+            payload = self._do_archive_get_session(archive_root, conv_id)
+            if not isinstance(payload, dict):
+                items.append(workspace_routes.missing_session_target(conv_id))
+                continue
+            items.append(
+                {
+                    "target_type": "session",
+                    "target_id": str(payload["id"]),
+                    "session_id": str(payload["id"]),
+                    "status": "resolved",
+                    "identity_key": f"session:{payload['id']}",
+                    "target_ref": workspace_routes.target_ref_from_session_payload(payload),
+                    "session": payload,
+                }
+            )
+        return {
+            "mode": "stack",
+            "ids": ids,
+            "focus": focus,
+            "items": items,
+            "total": len(items),
+            "resolved_count": sum(1 for item in items if item["status"] == "resolved"),
+            "degraded_count": sum(1 for item in items if item["status"] != "resolved"),
+        }
+
+    def _do_archive_compare(self, archive_root: Path, left: str, right: str, align: str) -> object:
+        from polylogue.daemon.compare import build_compare_envelope
+
+        left_payload = self._do_archive_get_session(archive_root, left)
+        right_payload = self._do_archive_get_session(archive_root, right)
+        return build_compare_envelope(left_payload, right_payload, left, right, align)
 
     # ------------------------------------------------------------------
     # Handlers: get raw artifact
@@ -1812,7 +2198,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, result)
 
     async def _do_get_raw_artifacts(self, poly: Polylogue, artifact_id: str) -> object:
-        raw_items = await poly.get_raw_artifacts_for_conversation(artifact_id)
+        raw_items = await poly.get_raw_artifacts_for_session(artifact_id)
         return {"raw_artifacts": raw_items}
 
     # ------------------------------------------------------------------
@@ -1822,6 +2208,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     @daemon_safe_handler
     def _handle_facets(self, params: dict[str, list[str]]) -> None:
         query_params = _build_query_spec_params(params, self)
+
+        archive_root = _web_reader_archive_root()
+        if archive_root is not None:
+            self._send_json(HTTPStatus.OK, self._do_archive_facets(archive_root, params))
+            return
 
         async def _get(poly: Polylogue) -> object:
             return await self._do_facets(poly, query_params)
@@ -1840,11 +2231,75 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         so daemon HTTP, MCP, CLI, and the Python API all share one
         scope vocabulary (#1269 / slice D of #873).
         """
-        from polylogue.archive.query.spec import ConversationQuerySpec
+        from polylogue.archive.query.spec import SessionQuerySpec
 
-        spec = ConversationQuerySpec.from_params(query_params) if query_params else None
+        spec = SessionQuerySpec.from_params(query_params) if query_params else None
         response = await poly.facets(spec)
         return response.model_dump(mode="json", by_alias=True)
+
+    def _do_archive_facets(self, archive_root: Path, params: dict[str, list[str]]) -> object:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.surfaces.payloads import FacetBucketsPayload, FacetsResponse
+
+        query = self._get_param(params, "query") or self._get_param(params, "contains") or ""
+        origin, origins = _archive_origin_filter(params)
+        scoped_to_query = bool(query or origin or origins)
+        with ArchiveStore.open_existing(archive_root) as archive:
+            global_payload = self._archive_facet_bucket(archive)
+            if scoped_to_query:
+                session_ids: tuple[str, ...] = ()
+                if query:
+                    hits = archive.search_summaries(query, limit=10_000, origin=origin, origins=origins)
+                    session_ids = tuple(dict.fromkeys(hit.session_id for hit in hits))
+                    if not session_ids:
+                        scoped_payload = FacetBucketsPayload()
+                    else:
+                        scoped_payload = self._archive_facet_bucket(
+                            archive,
+                            origin=origin,
+                            origins=origins,
+                            session_ids=session_ids,
+                        )
+                else:
+                    scoped_payload = self._archive_facet_bucket(archive, origin=origin, origins=origins)
+            else:
+                scoped_payload = global_payload
+        active = scoped_payload if scoped_to_query else global_payload
+        return FacetsResponse.model_validate(
+            {
+                "scoped_to_query": scoped_to_query,
+                "origins": active.origins,
+                "tags": active.tags,
+                "repos": active.repos,
+                "message_types": active.message_types,
+                "action_types": active.action_types,
+                "has_flags": active.has_flags,
+                "total_sessions": active.total_sessions,
+                "total_messages": active.total_messages,
+                "scoped": scoped_payload,
+                "global": global_payload,
+            }
+        ).model_dump(mode="json", by_alias=True)
+
+    def _archive_facet_bucket(
+        self,
+        archive: ArchiveStore,
+        *,
+        origin: str | None = None,
+        origins: tuple[str, ...] = (),
+        session_ids: tuple[str, ...] = (),
+    ) -> FacetBucketsPayload:
+        from polylogue.surfaces.payloads import FacetBucketsPayload
+
+        stats = archive.stats(origin=origin, origins=origins, session_ids=session_ids)
+        return FacetBucketsPayload(
+            origins=archive.stats_by("origin", origin=origin, origins=origins, session_ids=session_ids),
+            tags=archive.stats_by("tag", origin=origin, origins=origins, session_ids=session_ids),
+            repos=archive.stats_by("repo", origin=origin, origins=origins, session_ids=session_ids),
+            action_types=archive.stats_by("action", origin=origin, origins=origins, session_ids=session_ids),
+            total_sessions=stats.total_sessions,
+            total_messages=stats.total_messages,
+        )
 
     @daemon_safe_handler
     def _handle_user_state(self, handler: Callable[..., None], *args: object) -> None:
@@ -1880,23 +2335,23 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
 
         scope = body.get("scope", "all")
-        conv_id = body.get("conversation_id")
+        conv_id = body.get("session_id")
 
-        if scope == "conversation" and not conv_id:
+        if scope == "session" and not conv_id:
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
 
         op_id = f"reset-{scope}-{conv_id[:16] if conv_id else 'all'}"
 
         async def _do_reset(poly: Polylogue) -> dict[str, object]:
-            if scope == "conversation" and conv_id:
+            if scope == "session" and conv_id:
                 # Route through the typed delete contract so resolution and
                 # idempotency live in ArchiveMutationsMixin (#862). The prior
-                # implementation invoked the async ``delete_conversation`` from
+                # implementation invoked the async ``delete_session`` from
                 # a sync callback, sending the resulting coroutine into the
                 # JSON encoder unchanged.
-                result = await poly.delete_conversation_safe(conv_id)
-                return {"deleted": result.outcome == "deleted", "conversation_id": conv_id}
+                result = await poly.delete_session_safe(conv_id)
+                return {"deleted": result.outcome == "deleted", "session_id": conv_id}
             return {"ok": True}
 
         result = self._sync_run(_do_reset)
@@ -1906,7 +2361,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         deleted = result.get("deleted", False) if isinstance(result, dict) else False
         response = MutationResultPayload(
             status="deleted" if deleted else "ok",
-            detail=f"reset {scope}" if deleted else f"reset {scope} — no conversations matched",
+            detail=f"reset {scope}" if deleted else f"reset {scope} — no sessions matched",
         )
         self._send_json(HTTPStatus.OK, response.model_dump())
 
@@ -1932,13 +2387,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "payload_too_large")
             return
         body = self.rfile.read(content_length) if content_length > 0 else b""
+        from polylogue.paths import active_index_db_path
+
+        ops_db = active_index_db_path().with_name("ops.db")
 
         if signal == "traces":
-            result = handle_traces(body, content_type, db_path=str(db_path()))
+            result = handle_traces(body, content_type, db_path=str(ops_db))
         elif signal == "metrics":
-            result = handle_metrics(body, content_type, db_path=str(db_path()))
+            result = handle_metrics(body, content_type, db_path=str(ops_db))
         else:
-            result = handle_logs(body, content_type, db_path=str(db_path()))
+            result = handle_logs(body, content_type, db_path=str(ops_db))
 
         self.send_response(result.status)
         self.send_header("Content-Type", result.content_type)
@@ -1969,7 +2427,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         # Typed Operation scheduling contract (#1247/#1248): the daemon
         # accepts an ``ImportRequest`` and emits an ``ImportAck`` carrying
-        # the shared ``OperationFollowUp`` envelope. The legacy wire keys
+        # the shared ``OperationFollowUp`` envelope. The existing wire keys
         # (``path``, ``status``, ``ok``) are preserved for the CLI ingest
         # adapter and HTTP clients that pre-date the typed contract.
         from pydantic import ValidationError

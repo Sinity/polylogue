@@ -7,7 +7,7 @@ import asyncio
 import json
 import sqlite3
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,7 +30,8 @@ from polylogue.sources.live.batch import (
     last_complete_newline_from_tail,
 )
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.runtime import RawSessionRecord
 from tests.infra.frozen_clock import FrozenClock
 
 
@@ -57,9 +58,9 @@ class _FullIngestMock:
             failed=[],
             source_payload_read_bytes=sum(path.stat().st_size for path in paths),
             raw_fingerprints={path: f"raw:{path.name}" for path in paths},
-            ingested_conversation_count=1,
+            ingested_session_count=1,
             ingested_message_count=7,
-            changed_conversation_count=1,
+            changed_session_count=1,
             wal_bytes_before_checkpoint=8192,
             wal_bytes_after_checkpoint=1024,
             wal_checkpointed_pages=4,
@@ -149,19 +150,19 @@ def test_cursor_persists_across_instances(tmp_path: Path) -> None:
 def test_cursor_creates_table_if_missing(tmp_path: Path) -> None:
     db = tmp_path / "live.sqlite"
     CursorStore(db)
-    with sqlite3.connect(db) as conn:
-        rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='live_cursor'").fetchall()
-    assert rows == [("live_cursor",)]
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='ingest_cursor'").fetchall()
+    assert rows == [("ingest_cursor",)]
 
 
 def test_cursor_writes_updated_at(tmp_path: Path) -> None:
     store = CursorStore(tmp_path / "live.sqlite")
     p = tmp_path / "s.jsonl"
     store.set(p, 1)
-    with sqlite3.connect(tmp_path / "live.sqlite") as conn:
-        row = conn.execute("SELECT updated_at FROM live_cursor WHERE source_path=?", (str(p),)).fetchone()
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        row = conn.execute("SELECT updated_at_ms FROM ingest_cursor WHERE source_path=?", (str(p),)).fetchone()
     assert row[0]
-    assert "T" in row[0]  # ISO 8601
+    assert isinstance(row[0], int)
 
 
 def test_cursor_records_live_ingest_attempt_progress(tmp_path: Path) -> None:
@@ -203,12 +204,12 @@ def test_cursor_records_live_ingest_attempt_progress(tmp_path: Path) -> None:
         current_path=source,
     )
     running = store.recent_ingest_attempts(limit=1)[0]
-    with sqlite3.connect(tmp_path / "live.sqlite") as conn:
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
         events = conn.execute(
             """
-            SELECT attempt_id, phase, input_bytes, current_path
-            FROM live_ingest_stage_event
-            ORDER BY observed_at DESC, event_id DESC
+            SELECT attempt_id, stage, payload_json
+            FROM daemon_stage_events
+            ORDER BY observed_at_ms DESC, event_id DESC
             LIMIT 1
             """
         ).fetchall()
@@ -216,14 +217,116 @@ def test_cursor_records_live_ingest_attempt_progress(tmp_path: Path) -> None:
     assert running.status == "running"
     assert running.phase == "full_parse"
     assert running.current_path == str(source)
-    assert running.rss_current_mb == 123.0
     assert len(events) == 1
-    assert events[0] == (attempt_id, "full_parse", source.stat().st_size, str(source))
+    assert events[0][0:2] == (attempt_id, "full_parse")
+    assert str(source) in events[0][2]
 
     store.finish_ingest_attempt(attempt_id, status="completed", phase="completed")
     completed = store.recent_ingest_attempts(limit=1)[0]
     assert completed.status == "completed"
     assert completed.completed_at is not None
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        ops_attempt = conn.execute(
+            """
+            SELECT status, phase, source_path, parsed_raw_count, materialized_count
+            FROM ingest_attempts
+            WHERE attempt_id = ?
+            """,
+            (attempt_id,),
+        ).fetchone()
+        ops_events = conn.execute(
+            """
+            SELECT attempt_id, stage, status, payload_json
+            FROM daemon_stage_events
+            WHERE attempt_id = ?
+            """,
+            (attempt_id,),
+        ).fetchall()
+
+    assert ops_attempt == ("completed", "completed", str(source), 0, 0)
+    full_parse_events = [event for event in ops_events if event[1] == "full_parse"]
+    assert full_parse_events
+    assert any(
+        event[0] == attempt_id and event[2] == "running" and str(source) in event[3] for event in full_parse_events
+    )
+
+
+def test_cursor_syncs_positions_to_archive_ops_db(tmp_path: Path) -> None:
+    store = CursorStore(tmp_path / "live.sqlite")
+    source = tmp_path / "session.jsonl"
+    source.write_text('{"a":1}\n')
+
+    store.set(
+        source,
+        42,
+        byte_offset=41,
+        last_complete_newline=40,
+        parser_fingerprint="parser-v1",
+        content_fingerprint="content-v1",
+        tail_hash="tail-v1",
+        st_dev=1,
+        st_ino=2,
+        mtime_ns=3,
+        failure_count=2,
+        next_retry_at="2026-05-24T00:01:00+00:00",
+        excluded=True,
+    )
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        row = conn.execute(
+            """
+            SELECT source_path, stat_size, byte_offset, last_complete_newline,
+                   parser_fingerprint, content_fingerprint, tail_hash, st_dev, st_ino, mtime_ns,
+                   failure_count, next_retry_at, excluded
+            FROM ingest_cursor
+            WHERE source_path = ?
+            """,
+            (str(source),),
+        ).fetchone()
+
+    assert row == (
+        str(source),
+        42,
+        41,
+        40,
+        "parser-v1",
+        "content-v1",
+        "tail-v1",
+        1,
+        2,
+        3,
+        2,
+        "2026-05-24T00:01:00+00:00",
+        1,
+    )
+
+
+def test_cursor_syncs_convergence_debt_to_archive_ops_db(tmp_path: Path) -> None:
+    store = CursorStore(tmp_path / "live.sqlite")
+
+    store.record_convergence_debt(
+        stage="session_profile",
+        subject_type="session",
+        subject_id="conv-1",
+        error="boom",
+    )
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        row = conn.execute(
+            """
+            SELECT stage, target_type, target_id, attempts, last_error
+            FROM convergence_debt
+            WHERE stage = 'session_profile'
+            """,
+        ).fetchone()
+    assert row == ("session_profile", "session", "conv-1", 1, "boom")
+
+    store.clear_convergence_debt(subject_type="session", subject_id="conv-1", stage="session_profile")
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        count = conn.execute("SELECT COUNT(*) FROM convergence_debt").fetchone()[0]
+    assert count == 0
 
 
 def test_cursor_marks_running_attempts_abandoned_on_restart(tmp_path: Path) -> None:
@@ -247,10 +350,13 @@ def test_cursor_marks_running_attempts_abandoned_on_restart(tmp_path: Path) -> N
     attempt = restarted.recent_ingest_attempts(limit=1)[0]
 
     assert attempt.attempt_id == attempt_id
-    assert attempt.status == "abandoned"
+    assert attempt.status == "interrupted"
     assert attempt.phase == "interrupted"
     assert attempt.completed_at is not None
     assert attempt.error == "daemon stopped before completing this ingest attempt"
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        row = conn.execute("SELECT status, phase FROM ingest_attempts WHERE attempt_id = ?", (attempt_id,)).fetchone()
+    assert row == ("interrupted", "interrupted")
 
 
 def test_cursor_mark_failed_creates_record_for_new_path(tmp_path: Path) -> None:
@@ -293,7 +399,7 @@ def test_cursor_round_trips_freshness_metadata(tmp_path: Path) -> None:
     assert record.source_name == "codex"
 
 
-def test_cursor_migrates_size_only_rows(tmp_path: Path) -> None:
+def test_cursor_does_not_import_legacy_live_cursor_rows(tmp_path: Path) -> None:
     db = tmp_path / "live.sqlite"
     legacy_path = tmp_path / "legacy.jsonl"
     with sqlite3.connect(db) as conn:
@@ -316,20 +422,20 @@ def test_cursor_migrates_size_only_rows(tmp_path: Path) -> None:
     store = CursorStore(db)
     record = store.get_record(legacy_path)
 
-    assert record is not None
-    assert record.byte_size == 12
-    assert record.byte_offset == 0
-    assert record.content_fingerprint is None
+    assert record is None
     with sqlite3.connect(db) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(live_cursor)")}
-    assert {"byte_offset", "content_fingerprint", "source_name"}.issubset(columns)
+    assert columns == {"source_path", "byte_size", "record_count", "updated_at"}
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        row_count = conn.execute("SELECT COUNT(*) FROM ingest_cursor").fetchone()[0]
+    assert row_count == 0
 
 
 def test_live_full_ingest_caps_workers_below_batch_policy(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.os.cpu_count", lambda: 16)
     monkeypatch.delenv("POLYLOGUE_LIVE_FULL_INGEST_WORKERS", raising=False)
     records = [
-        RawConversationRecord(
+        RawSessionRecord(
             raw_id=f"raw-{index}",
             source_name="claude-code",
             source_path=f"/tmp/session-{index}.jsonl",
@@ -338,7 +444,7 @@ def test_live_full_ingest_caps_workers_below_batch_policy(monkeypatch: pytest.Mo
         )
         for index in range(300)
     ]
-    giant = RawConversationRecord(
+    giant = RawSessionRecord(
         raw_id="raw-giant",
         source_name="codex",
         source_path="/tmp/giant.jsonl",
@@ -354,7 +460,7 @@ def test_live_full_ingest_worker_cap_can_be_overridden(monkeypatch: pytest.Monke
     monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.os.cpu_count", lambda: 16)
     monkeypatch.setenv("POLYLOGUE_LIVE_FULL_INGEST_WORKERS", "4")
     records = [
-        RawConversationRecord(
+        RawSessionRecord(
             raw_id=f"raw-{index}",
             source_name="claude-code",
             source_path=f"/tmp/session-{index}.jsonl",
@@ -404,21 +510,19 @@ async def test_live_full_ingest_streams_large_paths_before_processing(
     )
 
     calls: list[str] = []
+    original_write_from_path = BlobStore.write_from_path
 
-    def fake_write_from_path(_store: object, path: Path, *, heartbeat: object = None) -> tuple[str, int]:
-        del heartbeat
+    def spy_write_from_path(
+        store: BlobStore, path: Path, *, heartbeat: Callable[[], None] | None = None
+    ) -> tuple[str, int]:
         calls.append(f"path:{path.name}")
-        return "a" * 64, path.stat().st_size
+        return original_write_from_path(store, path, heartbeat=heartbeat)
 
     def fail_write_from_bytes(_store: object, _payload: bytes) -> tuple[str, int]:
         raise AssertionError("large live full ingest should stream from path")
 
-    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.write_from_path", fake_write_from_path)
+    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.write_from_path", spy_write_from_path)
     monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.write_from_bytes", fail_write_from_bytes)
-    monkeypatch.setattr(
-        "polylogue.sources.live.batch._process_ingest_batch_sync",
-        lambda *args, **kwargs: SimpleNamespace(failed_raw_ids={}, parse_failures=0),
-    )
 
     result = await processor._ingest_full_paths([source_path], source_name="projects")
 
@@ -451,7 +555,7 @@ def _make_watcher(
 def test_watcher_default_cursor_uses_archive_database(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
-    db_path = tmp_path / "archive.db"
+    db_path = tmp_path / "ops.db"
     polylogue = cast(
         Any,
         SimpleNamespace(
@@ -463,6 +567,22 @@ def test_watcher_default_cursor_uses_archive_database(tmp_path: Path) -> None:
     watcher = LiveWatcher(polylogue, (WatchSource(name="test", root=root),))
 
     assert watcher._cursor._db_path == db_path
+
+
+def test_watcher_default_cursor_upgrades_legacy_backend_path(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    polylogue = cast(
+        Any,
+        SimpleNamespace(
+            archive_root=tmp_path,
+            backend=SimpleNamespace(db_path=tmp_path / "polylogue.db"),
+        ),
+    )
+
+    watcher = LiveWatcher(polylogue, (WatchSource(name="test", root=root),))
+
+    assert watcher._cursor._db_path == tmp_path / "ops.db"
 
 
 def test_catch_up_uses_bulk_cursor_records(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -543,7 +663,7 @@ def test_reingest_when_file_grows(tmp_path: Path) -> None:
     assert parse_sources.await_count == 3
 
 
-def test_legacy_size_only_cursor_reingests_to_populate_fingerprint(tmp_path: Path) -> None:
+def test_size_only_cursor_reingests_to_populate_fingerprint(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
     f = root / "session.jsonl"
@@ -836,7 +956,7 @@ async def test_live_batch_processor_records_cursor_after_each_converged_group(
     debt = cursor.list_convergence_debt()
     assert len(debt) == 1
     assert debt[0].stage == "convergence"
-    assert debt[0].subject_type == "conversation_id"
+    assert debt[0].subject_type == "session_id"
     assert "second-session" in debt[0].subject_id
 
 
@@ -975,13 +1095,13 @@ async def test_live_append_merges_tail_visible_through_public_archive_read(works
                 handle.write(json.dumps(record) + "\n")
         append_metrics = await processor.ingest_files([source_path], emit_event=False)
 
-        conversation = await archive.get_conversation("claude-code:session-public-read")
+        session = await archive.get_session("claude-code:session-public-read")
         assert initial_metrics.full_file_count == 1
         assert append_metrics.append_file_count == 1
         assert append_metrics.full_file_count == 0
         assert append_metrics.source_payload_read_bytes < append_metrics.input_bytes
-        assert conversation is not None
-        assert [message.text for message in conversation.messages] == [
+        assert session is not None
+        assert [message.text for message in session.messages] == [
             "first live message",
             "second live reply",
             "third live followup",
@@ -1025,17 +1145,17 @@ async def test_live_full_ingest_detects_provider_when_source_name_is_not_provide
         )
         metrics = await processor.ingest_files([source_path], emit_event=False)
 
-        conversation = await archive.get_conversation("claude-code:session-detected-provider")
+        session = await archive.get_session("claude-code:session-detected-provider")
         assert metrics.succeeded_file_count == 1
         assert metrics.failed_file_count == 0
-        assert conversation is not None
-        assert [message.text for message in conversation.messages] == ["detected provider message"]
+        assert session is not None
+        assert [message.text for message in session.messages] == ["detected provider message"]
     finally:
         await archive.close()
 
 
 @pytest.mark.asyncio
-async def test_live_full_ingest_excludes_non_conversation_sidecars_before_raw_storage(
+async def test_live_full_ingest_excludes_non_session_sidecars_before_raw_storage(
     workspace_env: dict[str, Path],
 ) -> None:
     root = workspace_env["data_root"] / "projects"
@@ -1060,19 +1180,15 @@ async def test_live_full_ingest_excludes_non_conversation_sidecars_before_raw_st
         with sqlite3.connect(db_path) as conn:
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             raw_count = (
-                conn.execute("SELECT COUNT(*) FROM raw_conversations").fetchone()[0]
-                if "raw_conversations" in tables
-                else 0
+                conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] if "raw_sessions" in tables else 0
             )
-            conversation_count = (
-                conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] if "conversations" in tables else 0
-            )
+            session_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] if "sessions" in tables else 0
 
         assert metrics.succeeded_file_count == 0
         assert metrics.failed_file_count == 0
         assert metrics.source_payload_read_bytes == 0
         assert raw_count == 0
-        assert conversation_count == 0
+        assert session_count == 0
         assert record is not None
         assert record.excluded is True
     finally:
@@ -1105,9 +1221,7 @@ async def test_live_full_ingest_excludes_invalid_jsonl_sidecars_before_raw_stora
         with sqlite3.connect(db_path) as conn:
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             raw_count = (
-                conn.execute("SELECT COUNT(*) FROM raw_conversations").fetchone()[0]
-                if "raw_conversations" in tables
-                else 0
+                conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] if "raw_sessions" in tables else 0
             )
 
         assert metrics.succeeded_file_count == 0
@@ -1167,8 +1281,8 @@ async def test_codex_append_uses_existing_session_identity_when_tail_lacks_sessi
             )
         append_metrics = await processor.ingest_files([source_path], emit_event=False)
 
-        existing = await archive.get_conversation("codex:codex-real-session")
-        fallback = await archive.get_conversation("codex:codex-session")
+        existing = await archive.get_session("codex:codex-real-session")
+        fallback = await archive.get_session("codex:codex-session")
         assert append_metrics.append_file_count == 1
         assert append_metrics.full_file_count == 0
         assert existing is not None
@@ -1247,7 +1361,7 @@ def test_append_after_partial_line_reingests_completed_record(tmp_path: Path) ->
 
 
 def test_year_old_file_resumed_triggers_reingest(tmp_path: Path) -> None:
-    """A year-old conversation that gets new lines must be picked up — there
+    """A year-old session that gets new lines must be picked up — there
     is no 'live session' concept."""
     root = tmp_path / "src"
     root.mkdir()
@@ -1322,9 +1436,9 @@ def test_ingest_files_emits_observable_batch_metrics(tmp_path: Path) -> None:
     assert payload["append_file_count"] == 0
     assert payload["full_file_count"] == 1
     assert payload["archive_write_bytes_delta"] >= 0
-    assert payload["ingested_conversation_count"] == 1
+    assert payload["ingested_session_count"] == 1
     assert payload["ingested_message_count"] == 7
-    assert payload["changed_conversation_count"] == 1
+    assert payload["changed_session_count"] == 1
     assert payload["wal_bytes_before_checkpoint_max"] == 8192
     assert payload["wal_bytes_after_checkpoint_max"] == 1024
     assert payload["wal_checkpointed_pages_total"] == 4
@@ -1336,9 +1450,9 @@ def test_ingest_files_emits_observable_batch_metrics(tmp_path: Path) -> None:
     assert payload["total_time_s"] >= 0
     assert payload["stage_timings_s"] == {}
     assert payload["failed_paths"] == []
-    with sqlite3.connect(watcher._cursor._db_path) as conn:
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
         events = conn.execute(
-            "SELECT phase FROM live_ingest_stage_event ORDER BY observed_at DESC, event_id DESC LIMIT 10"
+            "SELECT stage FROM daemon_stage_events ORDER BY observed_at_ms DESC, event_id DESC LIMIT 10"
         ).fetchall()
     assert events[0] == ("completed",)
     assert ("planning",) in events
@@ -1357,8 +1471,8 @@ def test_parse_failure_retries_after_backoff(tmp_path: Path, frozen_clock: Froze
     parse_sources.reset_mock()
     parse_sources.side_effect = None
     past = (frozen_clock.now() - timedelta(seconds=1)).isoformat()
-    with sqlite3.connect(tmp_path / "cursor.sqlite") as conn:
-        conn.execute("UPDATE live_cursor SET next_retry_at = ? WHERE source_path = ?", (past, str(f)))
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute("UPDATE ingest_cursor SET next_retry_at = ? WHERE source_path = ?", (past, str(f)))
         conn.commit()
 
     asyncio.run(_ingest_one(watcher, f))

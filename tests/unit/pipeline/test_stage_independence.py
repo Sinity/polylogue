@@ -13,7 +13,7 @@ import pytest
 
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
-from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
 
@@ -133,7 +133,7 @@ class TestValidationStageIndependence:
 
 
 class TestParseStageIndependence:
-    """The parse stage converts raw records to conversations."""
+    """The parse stage converts raw records to sessions."""
 
     @pytest.mark.asyncio
     async def test_parse_empty(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
@@ -144,7 +144,7 @@ class TestParseStageIndependence:
         backend, _ = _make_backend(tmp_path)
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
-        repo = ConversationRepository(backend=backend)
+        repo = SessionRepository(backend=backend)
 
         render_root = tmp_path / "render"
         render_root.mkdir()
@@ -159,9 +159,9 @@ class TestParseStageIndependence:
             config=config,
         )
 
-        # parse_sources with empty sources → zero conversations
+        # parse_sources with empty sources → zero sessions
         result = await service.parse_sources(sources=[])
-        assert result.counts["conversations"] == 0
+        assert result.counts["sessions"] == 0
         await backend.close()
 
     @pytest.mark.asyncio
@@ -175,7 +175,7 @@ class TestParseStageIndependence:
         archive_root.mkdir()
         render_root = tmp_path / "render"
         render_root.mkdir()
-        repo = ConversationRepository(backend=backend)
+        repo = SessionRepository(backend=backend)
 
         config = Config(
             sources=[],
@@ -189,7 +189,7 @@ class TestParseStageIndependence:
         )
 
         result = await service.parse_from_raw(raw_ids=[])
-        assert result.counts["conversations"] == 0
+        assert result.counts["sessions"] == 0
         await backend.close()
 
 
@@ -241,7 +241,7 @@ class TestIndexStageIndependence:
 
     @pytest.mark.asyncio
     async def test_update_index_empty_ids(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
-        """Updating index with no conversation IDs succeeds."""
+        """Updating index with no session IDs succeeds."""
         from polylogue.config import Config
         from polylogue.pipeline.services.indexing import IndexService
 
@@ -253,6 +253,6 @@ class TestIndexStageIndependence:
         config = Config(sources=[], archive_root=archive_root, render_root=render_root)
         service = IndexService(config=config, backend=backend)
 
-        success = await service.update_index(conversation_ids=[])
+        success = await service.update_index(session_ids=[])
         assert success is True
         await backend.close()

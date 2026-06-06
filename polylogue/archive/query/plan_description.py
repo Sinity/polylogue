@@ -1,4 +1,4 @@
-"""Description and sizing helpers for immutable conversation query plans."""
+"""Description and sizing helpers for immutable session query plans."""
 
 from __future__ import annotations
 
@@ -7,18 +7,18 @@ from typing import TYPE_CHECKING
 from polylogue.archive.query.fields import describe_plan_fields, plan_has_selection_filters
 
 if TYPE_CHECKING:
-    from polylogue.archive.query.plan import ConversationQueryPlan
+    from polylogue.archive.query.plan import SessionQueryPlan
 
 
-def describe_plan(plan: ConversationQueryPlan) -> list[str]:
+def describe_plan(plan: SessionQueryPlan) -> list[str]:
     return describe_plan_fields(plan)
 
 
-def plan_has_filters(plan: ConversationQueryPlan) -> bool:
+def plan_has_filters(plan: SessionQueryPlan) -> bool:
     return plan_has_selection_filters(plan)
 
 
-def effective_fetch_limit(plan: ConversationQueryPlan) -> int | None:
+def effective_fetch_limit(plan: SessionQueryPlan) -> int | None:
     if plan.limit is None:
         return None
     if plan.has_post_filters():

@@ -1,0 +1,15 @@
+Usage: polylogue blackboard post [OPTIONS]
+
+  Post a note to the blackboard.
+
+Options:
+  -k, --kind [finding|blocker|decision|handoff|question|observation]
+                                  [required]
+  -t, --title TEXT                [required]
+  -c, --content TEXT              [required]
+  --scope-repo TEXT
+  --scope-session TEXT
+  --scope-issue INTEGER
+  --scope-path TEXT
+  -r, --related-sessions TEXT
+  -h, --help                      Show this message and exit.

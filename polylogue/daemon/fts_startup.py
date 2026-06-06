@@ -17,11 +17,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import sqlite3
+from pathlib import Path
 
 from polylogue.logging import get_logger
 from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES as _EXPECTED_FTS_TRIGGERS
 
 logger = get_logger(__name__)
+_ARCHIVE_BLOCKS_FTS_TRIGGERS = ("blocks_fts_ai", "blocks_fts_ad", "blocks_fts_au")
 
 
 def missing_fts_triggers_sync(conn: sqlite3.Connection) -> list[str]:
@@ -69,6 +71,8 @@ def record_fts_freshness_snapshot_sync(conn: sqlite3.Connection) -> None:
 def active_fts_triggers_sync(conn: sqlite3.Connection) -> tuple[str, ...]:
     """Return the FTS triggers that should exist given the schema present."""
     expected: list[str] = []
+    if table_exists_sync(conn, "blocks") and table_exists_sync(conn, "blocks_fts"):
+        expected.extend(_ARCHIVE_BLOCKS_FTS_TRIGGERS)
     if table_exists_sync(conn, "messages") and table_exists_sync(conn, "messages_fts"):
         expected.extend(_EXPECTED_FTS_TRIGGERS[: 6 if table_exists_sync(conn, "content_blocks") else 3])
     for table_names, trigger_names in (
@@ -79,6 +83,68 @@ def active_fts_triggers_sync(conn: sqlite3.Connection) -> tuple[str, ...]:
         if all(table_exists_sync(conn, table_name) for table_name in table_names):
             expected.extend(trigger_names)
     return tuple(expected)
+
+
+def _count_or_zero(conn: sqlite3.Connection, sql: str) -> int:
+    try:
+        return int(conn.execute(sql).fetchone()[0] or 0)
+    except sqlite3.Error:
+        return 0
+
+
+def _missing_named_triggers_sync(conn: sqlite3.Connection, trigger_names: tuple[str, ...]) -> list[str]:
+    placeholders = ",".join("?" for _ in trigger_names)
+    rows = conn.execute(
+        f"SELECT name FROM sqlite_master WHERE type='trigger' AND name IN ({placeholders})",
+        trigger_names,
+    ).fetchall()
+    present = {row[0] for row in rows}
+    return [name for name in trigger_names if name not in present]
+
+
+def _active_fts_startup_db_path() -> Path:
+    from polylogue import paths
+
+    return paths.resolve_active_index_db_path(db_anchor=paths.db_path(), index_db=paths.index_db_path())
+
+
+def _ensure_archive_blocks_fts_startup_readiness_sync(conn: sqlite3.Connection) -> bool:
+    """Run blocks FTS startup maintenance when applicable."""
+    try:
+        has_blocks_table = table_exists_sync(conn, "blocks")
+    except Exception:
+        return False
+    if not has_blocks_table:
+        return False
+
+    from polylogue.storage.fts.freshness import READY, STALE, record_fts_surface_state_sync
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_tier(conn, ArchiveTier.INDEX)
+    source_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM blocks WHERE text IS NOT NULL")
+    fts_exists = table_exists_sync(conn, "blocks_fts")
+    docsize_exists = table_exists_sync(conn, "blocks_fts_docsize")
+    triggers_present = not _missing_named_triggers_sync(conn, _ARCHIVE_BLOCKS_FTS_TRIGGERS)
+    indexed_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM blocks_fts_docsize") if docsize_exists else 0
+    if fts_exists and (not triggers_present or indexed_rows != source_rows):
+        logger.warning("daemon: archive blocks FTS drift detected on startup. Rebuilding once.")
+        conn.execute("INSERT INTO blocks_fts(blocks_fts) VALUES('rebuild')")
+        indexed_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM blocks_fts_docsize")
+        triggers_present = not _missing_named_triggers_sync(conn, _ARCHIVE_BLOCKS_FTS_TRIGGERS)
+
+    ready = fts_exists and triggers_present and indexed_rows == source_rows
+    record_fts_surface_state_sync(
+        conn,
+        surface="blocks_fts",
+        state=READY if ready else STALE,
+        source_rows=source_rows,
+        indexed_rows=indexed_rows,
+        missing_rows=max(source_rows - indexed_rows, 0),
+        excess_rows=max(indexed_rows - source_rows, 0),
+        detail=None if ready else "archive startup FTS readiness failed",
+    )
+    return True
 
 
 async def ensure_fts_startup_readiness() -> None:
@@ -107,16 +173,18 @@ def ensure_fts_startup_readiness_sync() -> None:
     full-archive invariant scans during ordinary startup; bounded missing-row
     repair is enough for the normal SIGKILL-after-trigger-suspend failure mode.
     """
-    from polylogue.paths import db_path
     from polylogue.storage.sqlite.connection_profile import open_connection
 
-    db = db_path()
+    db = _active_fts_startup_db_path()
     if not db.exists():
         return
 
     conn: sqlite3.Connection | None = None
     try:
         conn = open_connection(db, timeout=10.0)
+        if _ensure_archive_blocks_fts_startup_readiness_sync(conn):
+            conn.commit()
+            return
         row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
         has_fts_table = row is not None
         # Fresh-init race guard (#1603): bootstrap may have committed

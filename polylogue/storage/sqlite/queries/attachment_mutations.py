@@ -44,9 +44,9 @@ async def save_attachments(
     for record in records:
         ref_data.append(
             (
-                _make_ref_id(record.attachment_id, record.conversation_id, record.message_id),
+                _make_ref_id(record.attachment_id, record.session_id, record.message_id),
                 record.attachment_id,
-                record.conversation_id,
+                record.session_id,
                 record.message_id,
                 _json_or_none(record.provider_meta),
                 record.provider_attachment_id,
@@ -80,7 +80,7 @@ async def save_attachments(
 
 async def prune_attachments(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
     keep_attachment_ids: set[str],
     transaction_depth: int,
 ) -> None:
@@ -90,15 +90,15 @@ async def prune_attachments(
         cursor = await conn.execute(
             f"""
             SELECT attachment_id FROM attachment_refs
-            WHERE conversation_id = ? AND attachment_id NOT IN ({placeholders})
+            WHERE session_id = ? AND attachment_id NOT IN ({placeholders})
             """,
-            (conversation_id, *keep_attachment_ids),
+            (session_id, *keep_attachment_ids),
         )
         refs_to_remove = list(await cursor.fetchall())
     else:
         cursor = await conn.execute(
-            "SELECT attachment_id FROM attachment_refs WHERE conversation_id = ?",
-            (conversation_id,),
+            "SELECT attachment_id FROM attachment_refs WHERE session_id = ?",
+            (session_id,),
         )
         refs_to_remove = list(await cursor.fetchall())
 
@@ -109,13 +109,13 @@ async def prune_attachments(
     if keep_attachment_ids:
         placeholders = ",".join("?" * len(keep_attachment_ids))
         await conn.execute(
-            f"DELETE FROM attachment_refs WHERE conversation_id = ? AND attachment_id NOT IN ({placeholders})",
-            (conversation_id, *keep_attachment_ids),
+            f"DELETE FROM attachment_refs WHERE session_id = ? AND attachment_id NOT IN ({placeholders})",
+            (session_id, *keep_attachment_ids),
         )
     else:
         await conn.execute(
-            "DELETE FROM attachment_refs WHERE conversation_id = ?",
-            (conversation_id,),
+            "DELETE FROM attachment_refs WHERE session_id = ?",
+            (session_id,),
         )
 
     aids_list = list(attachment_ids_to_check)

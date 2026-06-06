@@ -1,4 +1,4 @@
-"""Runtime semantic filtering helpers for immutable conversation query plans."""
+"""Runtime semantic filtering helpers for immutable session query plans."""
 
 from __future__ import annotations
 

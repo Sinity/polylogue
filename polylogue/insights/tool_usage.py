@@ -3,11 +3,11 @@
 The contract has two halves that are surfaced together:
 
 * a per-tool aggregation entry (``ToolUsageEntry``) — call counts,
-  conversation counts, MCP-server identity when present, and which
+  session counts, MCP-server identity when present, and which
   optional substrate fields are populated;
 * a per-provider coverage entry (``ToolUsageCoverageEntry``) — for every
   provider that appears in the archive, whether the canonical
-  ``action_events`` substrate has any rows. A provider with conversations
+  ``action_events`` substrate has any rows. A provider with sessions
   but zero events is the explicit "data unavailable" signal the issue
   asks for, not a quiet zero.
 
@@ -67,7 +67,7 @@ class ToolUsageEntry(ArchiveInsightModel):
     normalized_tool_name: str
     action_kind: str
     call_count: int
-    conversation_count: int
+    session_count: int
     message_count: int
     distinct_tool_ids: int
     affected_path_calls: int
@@ -79,7 +79,7 @@ class ToolUsageCoverageEntry(ArchiveInsightModel):
     """Per-provider tool-data coverage signal."""
 
     source_name: str
-    conversation_count: int
+    session_count: int
     action_event_count: int
     distinct_tool_count: int
     distinct_action_kind_count: int
@@ -135,7 +135,7 @@ def _tool_usage_entry(row: ToolUsageRow) -> ToolUsageEntry:
         normalized_tool_name=tool_name,
         action_kind=row["action_kind"],
         call_count=row["call_count"],
-        conversation_count=row["conversation_count"],
+        session_count=row["session_count"],
         message_count=row["message_count"],
         distinct_tool_ids=row["distinct_tool_ids"],
         affected_path_calls=row["affected_path_calls"],
@@ -148,7 +148,7 @@ def _tool_usage_coverage(row: ToolUsageProviderCoverageRow) -> ToolUsageCoverage
     action_event_count = row["action_event_count"]
     return ToolUsageCoverageEntry(
         source_name=row["source_name"],
-        conversation_count=row["conversation_count"],
+        session_count=row["session_count"],
         action_event_count=action_event_count,
         distinct_tool_count=row["distinct_tool_count"],
         distinct_action_kind_count=row["distinct_action_kind_count"],
@@ -192,7 +192,7 @@ def build_tool_usage_insight(
 
     coverage = tuple(_tool_usage_coverage(row) for row in coverage_rows)
     providers_with_data = sum(1 for entry in coverage if entry.data_available)
-    providers_without_data = sum(1 for entry in coverage if not entry.data_available and entry.conversation_count > 0)
+    providers_without_data = sum(1 for entry in coverage if not entry.data_available and entry.session_count > 0)
     total_calls = sum(entry.call_count for entry in entries)
     distinct_tools = len({(entry.source_name, entry.normalized_tool_name) for entry in entries})
     return ToolUsageInsight(

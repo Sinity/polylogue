@@ -23,11 +23,11 @@ from polylogue.storage.fts.sql import (
     IndexedMessage,
     chunked,
     delete_action_rows_sql,
-    delete_conversation_rows_sql,
+    delete_session_rows_sql,
     insert_action_rows_sql,
     insert_all_message_rows_sql,
-    insert_conversation_rows_sql,
     insert_missing_action_rows_sql,
+    insert_session_rows_sql,
 )
 
 _chunked = chunked
@@ -37,7 +37,7 @@ IndexedMessageLike: TypeAlias = tuple[str, str, str | None] | IndexedMessage
 def _indexed_message_parts(message: IndexedMessageLike) -> tuple[str, str, str | None]:
     if isinstance(message, tuple):
         return message
-    return message.message_id, message.conversation_id, message.text
+    return message.message_id, message.session_id, message.text
 
 
 def _row_int(row: sqlite3.Row | None, key: int | str) -> int:
@@ -219,8 +219,8 @@ def _message_fts_trigger_ddl(*, include_content_blocks: bool) -> tuple[str, ...]
         """
         CREATE TRIGGER IF NOT EXISTS messages_fts_ai
         AFTER INSERT ON messages BEGIN
-            INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
-            SELECT new.rowid, new.message_id, new.conversation_id, new.text
+            INSERT INTO messages_fts(rowid, message_id, session_id, text)
+            SELECT new.rowid, new.message_id, new.session_id, new.text
             WHERE new.text IS NOT NULL AND new.text != '';
         END;
 
@@ -232,8 +232,8 @@ def _message_fts_trigger_ddl(*, include_content_blocks: bool) -> tuple[str, ...]
         CREATE TRIGGER IF NOT EXISTS messages_fts_au
         AFTER UPDATE ON messages BEGIN
             DELETE FROM messages_fts WHERE rowid = old.rowid;
-            INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
-            SELECT new.rowid, new.message_id, new.conversation_id, new.text
+            INSERT INTO messages_fts(rowid, message_id, session_id, text)
+            SELECT new.rowid, new.message_id, new.session_id, new.text
             WHERE new.text IS NOT NULL AND new.text != '';
         END;
         """,
@@ -243,28 +243,28 @@ def _message_fts_trigger_ddl(*, include_content_blocks: bool) -> tuple[str, ...]
 _ACTION_FTS_TRIGGER_DDL = [
     """CREATE TRIGGER IF NOT EXISTS action_events_fts_ai
        AFTER INSERT ON action_events BEGIN
-           INSERT INTO action_events_fts(rowid, event_id, message_id, conversation_id, action_kind, normalized_tool_name, search_text)
-           VALUES (new.rowid, new.event_id, new.message_id, new.conversation_id, new.action_kind, new.normalized_tool_name, new.search_text);
+           INSERT INTO action_events_fts(rowid, event_id, message_id, session_id, action_kind, normalized_tool_name, search_text)
+           VALUES (new.rowid, new.event_id, new.message_id, new.session_id, new.action_kind, new.normalized_tool_name, new.search_text);
        END""",
     """CREATE TRIGGER IF NOT EXISTS action_events_fts_ad
        AFTER DELETE ON action_events BEGIN
-           INSERT INTO action_events_fts(action_events_fts, rowid, event_id, message_id, conversation_id, action_kind, normalized_tool_name, search_text)
-           VALUES ('delete', old.rowid, old.event_id, old.message_id, old.conversation_id, old.action_kind, old.normalized_tool_name, old.search_text);
+           INSERT INTO action_events_fts(action_events_fts, rowid, event_id, message_id, session_id, action_kind, normalized_tool_name, search_text)
+           VALUES ('delete', old.rowid, old.event_id, old.message_id, old.session_id, old.action_kind, old.normalized_tool_name, old.search_text);
        END""",
     """CREATE TRIGGER IF NOT EXISTS action_events_fts_au
        AFTER UPDATE ON action_events BEGIN
-           INSERT INTO action_events_fts(action_events_fts, rowid, event_id, message_id, conversation_id, action_kind, normalized_tool_name, search_text)
-           VALUES ('delete', old.rowid, old.event_id, old.message_id, old.conversation_id, old.action_kind, old.normalized_tool_name, old.search_text);
-           INSERT INTO action_events_fts(rowid, event_id, message_id, conversation_id, action_kind, normalized_tool_name, search_text)
-           VALUES (new.rowid, new.event_id, new.message_id, new.conversation_id, new.action_kind, new.normalized_tool_name, new.search_text);
+           INSERT INTO action_events_fts(action_events_fts, rowid, event_id, message_id, session_id, action_kind, normalized_tool_name, search_text)
+           VALUES ('delete', old.rowid, old.event_id, old.message_id, old.session_id, old.action_kind, old.normalized_tool_name, old.search_text);
+           INSERT INTO action_events_fts(rowid, event_id, message_id, session_id, action_kind, normalized_tool_name, search_text)
+           VALUES (new.rowid, new.event_id, new.message_id, new.session_id, new.action_kind, new.normalized_tool_name, new.search_text);
        END""",
 ]
 
 _SESSION_WORK_EVENT_FTS_TRIGGER_DDL = [
     """CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ai
        AFTER INSERT ON session_work_events BEGIN
-           INSERT INTO session_work_events_fts (event_id, conversation_id, source_name, heuristic_label, text)
-           VALUES (new.event_id, new.conversation_id, new.source_name, new.heuristic_label, new.search_text);
+           INSERT INTO session_work_events_fts (event_id, session_id, source_name, heuristic_label, text)
+           VALUES (new.event_id, new.session_id, new.source_name, new.heuristic_label, new.search_text);
        END""",
     """CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ad
        AFTER DELETE ON session_work_events BEGIN
@@ -273,8 +273,8 @@ _SESSION_WORK_EVENT_FTS_TRIGGER_DDL = [
     """CREATE TRIGGER IF NOT EXISTS session_work_events_fts_au
        AFTER UPDATE ON session_work_events BEGIN
            DELETE FROM session_work_events_fts WHERE event_id = old.event_id;
-           INSERT INTO session_work_events_fts (event_id, conversation_id, source_name, heuristic_label, text)
-           VALUES (new.event_id, new.conversation_id, new.source_name, new.heuristic_label, new.search_text);
+           INSERT INTO session_work_events_fts (event_id, session_id, source_name, heuristic_label, text)
+           VALUES (new.event_id, new.session_id, new.source_name, new.heuristic_label, new.search_text);
        END""",
 ]
 
@@ -402,8 +402,8 @@ def rebuild_fts_index_sync(conn: sqlite3.Connection) -> None:
     else:
         conn.execute(
             """
-            INSERT INTO messages_fts (rowid, message_id, conversation_id, text)
-            SELECT rowid, message_id, conversation_id, text
+            INSERT INTO messages_fts (rowid, message_id, session_id, text)
+            SELECT rowid, message_id, session_id, text
             FROM messages
             WHERE NULLIF(text, '') IS NOT NULL
             """
@@ -432,8 +432,8 @@ def _rebuild_session_work_events_fts_sync(conn: sqlite3.Connection) -> None:
     conn.execute("DELETE FROM session_work_events_fts")
     conn.execute(
         """
-        INSERT INTO session_work_events_fts (event_id, conversation_id, source_name, heuristic_label, text)
-        SELECT event_id, conversation_id, source_name, heuristic_label, search_text
+        INSERT INTO session_work_events_fts (event_id, session_id, source_name, heuristic_label, text)
+        SELECT event_id, session_id, source_name, heuristic_label, search_text
         FROM session_work_events
         """
     )
@@ -455,16 +455,16 @@ def _rebuild_work_threads_fts_sync(conn: sqlite3.Connection) -> None:
 async def rebuild_fts_index_async(
     conn: aiosqlite.Connection,
     *,
-    conversation_ids: Sequence[str] | None = None,
+    session_ids: Sequence[str] | None = None,
     progress_callback: Callable[[int, str | None], None] | None = None,
     progress_desc: Callable[[int, int], str] | None = None,
 ) -> None:
     """Rebuild the full FTS index from persisted archive rows."""
     await ensure_fts_index_async(conn)
-    if conversation_ids is not None:
+    if session_ids is not None:
         await repair_fts_index_async(
             conn,
-            conversation_ids,
+            session_ids,
             progress_callback=progress_callback,
             progress_desc=progress_desc,
         )
@@ -475,8 +475,8 @@ async def rebuild_fts_index_async(
     else:
         await conn.execute(
             """
-            INSERT INTO messages_fts (rowid, message_id, conversation_id, text)
-            SELECT rowid, message_id, conversation_id, text
+            INSERT INTO messages_fts (rowid, message_id, session_id, text)
+            SELECT rowid, message_id, session_id, text
             FROM messages
             WHERE NULLIF(text, '') IS NOT NULL
             """
@@ -495,60 +495,60 @@ async def rebuild_fts_index_async(
     )
 
 
-def repair_message_fts_index_sync(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> None:
-    """Repair message FTS rows for the supplied conversations."""
-    if not conversation_ids:
+def repair_message_fts_index_sync(conn: sqlite3.Connection, session_ids: Sequence[str]) -> None:
+    """Repair message FTS rows for the supplied sessions."""
+    if not session_ids:
         return
-    for chunk in chunked(list(conversation_ids), size=500):
+    for chunk in chunked(list(session_ids), size=500):
         params = tuple(chunk)
-        conn.execute(delete_conversation_rows_sql(len(chunk)), params)
-        conn.execute(insert_conversation_rows_sql(len(chunk)), params)
+        conn.execute(delete_session_rows_sql(len(chunk)), params)
+        conn.execute(insert_session_rows_sql(len(chunk)), params)
 
 
-def repair_action_fts_index_sync(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> None:
-    """Repair action-event FTS rows for the supplied conversations."""
-    if not conversation_ids:
+def repair_action_fts_index_sync(conn: sqlite3.Connection, session_ids: Sequence[str]) -> None:
+    """Repair action-event FTS rows for the supplied sessions."""
+    if not session_ids:
         return
-    for chunk in chunked(list(conversation_ids), size=500):
+    for chunk in chunked(list(session_ids), size=500):
         params = tuple(chunk)
         conn.execute(delete_action_rows_sql(len(chunk)), params)
         conn.execute(insert_action_rows_sql(len(chunk)), params)
 
 
-def insert_missing_action_fts_index_sync(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> None:
+def insert_missing_action_fts_index_sync(conn: sqlite3.Connection, session_ids: Sequence[str]) -> None:
     """Insert action-event FTS rows that do not already exist."""
-    if not conversation_ids:
+    if not session_ids:
         return
     ensure_fts_index_sync(conn)
-    for chunk in chunked(list(conversation_ids), size=500):
+    for chunk in chunked(list(session_ids), size=500):
         params = tuple(chunk)
         conn.execute(insert_missing_action_rows_sql(len(chunk)), params)
 
 
-def repair_fts_index_sync(conn: sqlite3.Connection, conversation_ids: Sequence[str]) -> None:
-    """Repair FTS rows for the supplied conversations from persisted rows."""
+def repair_fts_index_sync(conn: sqlite3.Connection, session_ids: Sequence[str]) -> None:
+    """Repair FTS rows for the supplied sessions from persisted rows."""
     ensure_fts_index_sync(conn)
-    repair_message_fts_index_sync(conn, conversation_ids)
-    repair_action_fts_index_sync(conn, conversation_ids)
+    repair_message_fts_index_sync(conn, session_ids)
+    repair_action_fts_index_sync(conn, session_ids)
 
 
 async def repair_fts_index_async(
     conn: aiosqlite.Connection,
-    conversation_ids: Sequence[str],
+    session_ids: Sequence[str],
     *,
     progress_callback: Callable[[int, str | None], None] | None = None,
     progress_desc: Callable[[int, int], str] | None = None,
 ) -> None:
-    """Repair FTS rows for the supplied conversations from persisted rows."""
+    """Repair FTS rows for the supplied sessions from persisted rows."""
     await ensure_fts_index_async(conn)
-    if not conversation_ids:
+    if not session_ids:
         return
-    total = len(conversation_ids)
+    total = len(session_ids)
     processed = 0
-    for chunk in chunked(list(conversation_ids), size=500):
+    for chunk in chunked(list(session_ids), size=500):
         params = tuple(chunk)
-        await conn.execute(delete_conversation_rows_sql(len(chunk)), params)
-        await conn.execute(insert_conversation_rows_sql(len(chunk)), params)
+        await conn.execute(delete_session_rows_sql(len(chunk)), params)
+        await conn.execute(insert_session_rows_sql(len(chunk)), params)
         await conn.execute(delete_action_rows_sql(len(chunk)), params)
         await conn.execute(insert_action_rows_sql(len(chunk)), params)
         processed += len(chunk)
@@ -561,15 +561,15 @@ def replace_fts_rows_for_messages_sync(
     conn: sqlite3.Connection,
     messages: Sequence[IndexedMessageLike],
 ) -> None:
-    """Replace FTS rows for the supplied persisted message conversations."""
+    """Replace FTS rows for the supplied persisted message sessions."""
     ensure_fts_index_sync(conn)
     if not messages:
         return
 
-    conversation_ids = sorted({_indexed_message_parts(message)[1] for message in messages})
-    for chunk in chunked(conversation_ids, size=500):
-        conn.execute(delete_conversation_rows_sql(len(chunk)), tuple(chunk))
-        conn.execute(insert_conversation_rows_sql(len(chunk)), tuple(chunk))
+    session_ids = sorted({_indexed_message_parts(message)[1] for message in messages})
+    for chunk in chunked(session_ids, size=500):
+        conn.execute(delete_session_rows_sql(len(chunk)), tuple(chunk))
+        conn.execute(insert_session_rows_sql(len(chunk)), tuple(chunk))
 
 
 def fts_index_status_sync(conn: sqlite3.Connection) -> dict[str, object]:

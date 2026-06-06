@@ -17,6 +17,8 @@ from urllib.request import Request, urlopen
 
 import pytest
 
+from tests.infra.archive_scenarios import native_session_id_for
+
 POLYLOGUE_LOCAL_PATH_PREFIXES = ("/home/", "/Users/", "/realm/", "/var/", "/etc/")
 
 
@@ -121,252 +123,291 @@ def reader_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ReaderW
     return workspace
 
 
-def archive_db_path(workspace: ReaderWorkspace) -> Path:
-    return workspace.data_root / "polylogue" / "polylogue.db"
+def index_db_path(workspace: ReaderWorkspace) -> Path:
+    """index database the daemon reader resolves against."""
+    return workspace.archive_root / "index.db"
+
+
+# Archive ``<origin>:ext-<session>`` session ids for the seeded reader
+# fixtures. The daemon web reader routes through the archive adapter and
+# returns these canonical ids in every payload, target_ref, and anchor, so the
+# reader tests key their URLs and assertions on these rather than the raw
+# builder tokens.
+READER_C1 = native_session_id_for("claude-code", "reader-c1")
+READER_C2 = native_session_id_for("chatgpt", "reader-c2")
+READER_C3 = native_session_id_for("claude-ai", "reader-c3")
+READER_C1_M1 = f"{READER_C1}:reader-c1-m1"
+READER_C1_M2 = f"{READER_C1}:reader-c1-m2"
+READER_C1_M3 = f"{READER_C1}:reader-c1-m3"
+READER_C3_M1 = f"{READER_C3}:reader-c3-m1"
+READER_C3_DIFF = f"{READER_C3}:reader-c3-diff"
+
+
+def _attachment_native_id(message_id: str, attachment_id: str) -> str:
+    """Archive attachment id the reader emits: ``<session>:attachment:<id>``."""
+    session_id = message_id.rsplit(":", 1)[0]
+    return f"{session_id}:attachment:{attachment_id}"
+
+
+# Archive attachment ids for the six MK3-state attachments seeded on
+# ``reader-c1-m1`` by :func:`seed_reader_attachments`.
+ATT_OK = _attachment_native_id(READER_C1_M1, "att-ok")
+ATT_MISSING = _attachment_native_id(READER_C1_M1, "att-missing")
+ATT_UNSUPPORTED = _attachment_native_id(READER_C1_M1, "att-unsupported")
+ATT_TOOLARGE = _attachment_native_id(READER_C1_M1, "att-toolarge")
+ATT_QUARANTINED = _attachment_native_id(READER_C1_M1, "att-quarantined")
+ATT_RAWHTML = _attachment_native_id(READER_C1_M1, "att-rawhtml")
+
+
+def _build_reader_c1(workspace: ReaderWorkspace, *, attachments: bool = False) -> None:
+    """(Re)ingest the ``reader-c1`` session, optionally with the six
+    MK3-state attachments linked to its first message."""
+    from polylogue.daemon.web_shell_attachments import PREVIEW_SIZE_BUDGET
+    from polylogue.types import ContentBlockType
+    from tests.infra.storage_records import SessionBuilder
+
+    builder = (
+        SessionBuilder(index_db_path(workspace), "reader-c1")
+        .provider("claude-code")
+        .title("MK3 reader target contract")
+        .provider_meta({"repo": "polylogue", "cwd_display": "project/polylogue", "model": "claude-sonnet"})
+        .created_at("2026-05-15T00:00:00+00:00")
+        .updated_at("2026-05-15T00:02:00+00:00")
+        .add_message(
+            "reader-c1-m1",
+            role="user",
+            text="Hello reader, show the target reference contract.",
+            timestamp="2026-05-15T00:00:00+00:00",
+        )
+        .add_message(
+            "reader-c1-m2",
+            role="assistant",
+            text="The reader exposes stable anchors and action states.",
+            timestamp="2026-05-15T00:01:00+00:00",
+        )
+        .add_message(
+            "reader-c1-m3",
+            role="tool",
+            text="python -m pytest tests/visual\nstatus: passed",
+            timestamp="2026-05-15T00:02:00+00:00",
+            message_type="tool_result",
+            content_blocks=[
+                {
+                    "type": ContentBlockType.TOOL_RESULT.value,
+                    "text": "python -m pytest tests/visual\nstatus: passed",
+                }
+            ],
+        )
+    )
+    if attachments:
+        attachment_specs: tuple[tuple[str, str, int, str | None, dict[str, object]], ...] = (
+            ("att-ok", "text/plain", 1024, "blob/aa/aaaa-ok", {"name": "notes.txt"}),
+            ("att-missing", "image/png", 2048, None, {"name": "screenshot.png"}),
+            ("att-unsupported", "application/zip", 4096, "blob/bb/bbbb-zip", {"name": "bundle.zip"}),
+            ("att-toolarge", "video/mp4", PREVIEW_SIZE_BUDGET + 1, "blob/cc/cccc-video", {"name": "recording.mp4"}),
+            ("att-quarantined", "text/html", 512, "blob/dd/dddd-html", {"name": "suspect.html", "quarantined": True}),
+            ("att-rawhtml", "text/html", 2048, "blob/ee/eeee-html", {"name": "<script>alert('xss')</script>.html"}),
+        )
+        for attachment_id, mime_type, size_bytes, path, meta in attachment_specs:
+            builder = builder.add_attachment(
+                attachment_id,
+                message_id="reader-c1-m1",
+                mime_type=mime_type,
+                size_bytes=size_bytes,
+                path=path,
+                provider_meta=meta,
+            )
+    builder.save()
+
+
+def seed_reader_attachments(workspace: ReaderWorkspace) -> None:
+    """Re-ingest ``reader-c1`` with the six MK3-state attachments.
+
+    Called by attachment tests after the server is running; re-ingest is an
+    idempotent upsert that replaces the attachment-free ``reader-c1`` seeded by
+    :func:`seed_reader_archive`."""
+    _build_reader_c1(workspace, attachments=True)
+
+
+def seed_reader_diff_paste(workspace: ReaderWorkspace) -> None:
+    """Re-ingest ``reader-c3`` with an added unified-diff paste message so the
+    paste-spans surface has both a per-span diff fold and the whole-message
+    prose-paste fallback."""
+    from tests.infra.storage_records import SessionBuilder
+
+    diff_text = "Before the diff:\n@@ -1,3 +1,4 @@\n context\n-old\n+new\n+added\n"
+    (
+        SessionBuilder(index_db_path(workspace), "reader-c3")
+        .provider("claude-ai")
+        .title("Paste and privacy fixture")
+        .provider_meta({"repo": "polylogue", "cwd_display": "project/polylogue", "model": "claude"})
+        .created_at("2026-05-15T00:04:00+00:00")
+        .updated_at("2026-05-15T00:05:00+00:00")
+        .add_message(
+            "reader-c3-m1",
+            role="user",
+            text="A synthetic paste-like block with safe content.",
+            timestamp="2026-05-15T00:04:00+00:00",
+        )
+        .add_message(
+            "reader-c3-diff",
+            role="user",
+            text=diff_text,
+            timestamp="2026-05-15T00:05:00+00:00",
+        )
+        .save()
+    )
+    _force_has_paste(workspace, (READER_C3_M1, READER_C3_DIFF))
+
+
+def _build_reader_sessions(workspace: ReaderWorkspace) -> None:
+    """Seed the three reader sessions into the archive `index.db`."""
+    from tests.infra.storage_records import SessionBuilder
+
+    db = index_db_path(workspace)
+    _build_reader_c1(workspace)
+    (
+        SessionBuilder(db, "reader-c2")
+        .provider("chatgpt")
+        .title("No-results smoke seed")
+        .provider_meta({"repo": "polylogue", "cwd_display": "project/polylogue", "model": "gpt"})
+        .created_at("2026-05-15T00:03:00+00:00")
+        .updated_at("2026-05-15T00:03:00+00:00")
+        .add_message(
+            "reader-c2-m1",
+            role="user",
+            text="Facet query and empty state fixture.",
+            timestamp="2026-05-15T00:03:00+00:00",
+        )
+        .save()
+    )
+    (
+        SessionBuilder(db, "reader-c3")
+        .provider("claude-ai")
+        .title("Paste and privacy fixture")
+        .provider_meta({"repo": "polylogue", "cwd_display": "project/polylogue", "model": "claude"})
+        .created_at("2026-05-15T00:04:00+00:00")
+        .updated_at("2026-05-15T00:04:00+00:00")
+        .add_message(
+            "reader-c3-m1",
+            role="user",
+            text="A synthetic paste-like block with safe content.",
+            timestamp="2026-05-15T00:04:00+00:00",
+        )
+        .save()
+    )
+    # The reader paste surface keys on the ``has_paste`` column. The prose
+    # fixture carries no detectable paste marker, so flag it directly to mirror
+    # a whole-message paste with no per-span diff structure.
+    _force_has_paste(workspace, (READER_C3_M1,))
+
+
+def _force_has_paste(workspace: ReaderWorkspace, message_ids: tuple[str, ...]) -> None:
+    db = index_db_path(workspace)
+    conn = sqlite3.connect(str(db))
+    try:
+        for message_id in message_ids:
+            conn.execute("UPDATE messages SET has_paste = 1 WHERE message_id = ?", (message_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _seed_reader_user_state(workspace: ReaderWorkspace) -> None:
+    """Seed marks, annotation, and a saved view through archive write paths."""
+    import asyncio
+
+    from polylogue.api import Polylogue
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_saved_view
+
+    root = workspace.archive_root
+
+    async def _seed() -> None:
+        async with Polylogue(archive_root=root, db_path=root / "index.db") as poly:
+            await poly.add_mark(READER_C1, "star")
+            await poly.add_mark(READER_C1, "pin")
+            await poly.save_annotation(
+                "reader-ann-c1",
+                READER_C1,
+                "This session anchors the MK3 reader evidence.",
+            )
+
+    asyncio.run(_seed())
+
+    user_db = root / "user.db"
+    initialize_archive_database(user_db, ArchiveTier.USER)
+    user_conn = sqlite3.connect(user_db)
+    try:
+        upsert_saved_view(
+            user_conn,
+            "Claude Code reader fixtures",
+            {"provider": "claude-code", "query": "Hello", "limit": 100, "offset": 0},
+        )
+        user_conn.commit()
+    finally:
+        user_conn.close()
+
+
+def _degrade_block_fts(workspace: ReaderWorkspace) -> None:
+    """Drop the native block FTS virtual table and its sync triggers so a real
+    query degrades to a sanitized 503 "Search index" response, mirroring an
+    interrupted bulk import that never rebuilt the search index."""
+    db = index_db_path(workspace)
+    conn = sqlite3.connect(str(db))
+    try:
+        for trigger in ("blocks_fts_ai", "blocks_fts_ad", "blocks_fts_au"):
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        conn.execute("DROP TABLE IF EXISTS blocks_fts")
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def seed_reader_archive(
     workspace: ReaderWorkspace,
     *,
-    conversations: bool = True,
+    sessions: bool = True,
     message_fts: bool = True,
 ) -> None:
-    from polylogue.storage.sqlite.schema_ddl_archive import (
-        ARCHIVE_STORAGE_DDL,
-        MESSAGE_FTS_DDL,
-        READER_WORKSPACES_DDL,
-        RECALL_PACKS_DDL,
-        SAVED_VIEWS_DDL,
-        USER_ANNOTATIONS_DDL,
-        USER_MARKS_DDL,
-    )
+    workspace.archive_root.mkdir(parents=True, exist_ok=True)
+    if sessions:
+        _build_reader_sessions(workspace)
+        _rebuild_reader_insights(workspace)
+        _seed_reader_user_state(workspace)
+        if not message_fts:
+            _degrade_block_fts(workspace)
+    else:
+        # An empty archive still needs the index.db to exist (with its
+        # full schema, including blocks_fts) so the daemon routes through the
+        # archive reader.
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
-    db = archive_db_path(workspace)
-    db.parent.mkdir(parents=True, exist_ok=True)
-    if db.exists():
-        db.unlink()
-    conn = sqlite3.connect(str(db))
-    conn.executescript(ARCHIVE_STORAGE_DDL)
-    conn.executescript(USER_MARKS_DDL)
-    conn.executescript(USER_ANNOTATIONS_DDL)
-    conn.executescript(SAVED_VIEWS_DDL)
-    conn.executescript(RECALL_PACKS_DDL)
-    conn.executescript(READER_WORKSPACES_DDL)
-    if message_fts:
-        conn.executescript(MESSAGE_FTS_DDL)
-    if conversations:
-        records = [
-            (
-                "reader-c1",
-                "claude-code",
-                "MK3 reader target contract",
-                {"repo": "polylogue", "cwd_display": "project/polylogue", "model": "claude-sonnet"},
-                [
-                    ("reader-c1-m1", "user", "Hello reader, show the target reference contract.", "message", 0, 0, 0),
-                    (
-                        "reader-c1-m2",
-                        "assistant",
-                        "The reader exposes stable anchors and action states.",
-                        "message",
-                        0,
-                        0,
-                        0,
-                    ),
-                    (
-                        "reader-c1-m3",
-                        "tool",
-                        "python -m pytest tests/visual\nstatus: passed",
-                        "tool_result",
-                        1,
-                        0,
-                        0,
-                    ),
-                ],
-            ),
-            (
-                "reader-c2",
-                "chatgpt",
-                "No-results smoke seed",
-                {"repo": "polylogue", "cwd_display": "project/polylogue", "model": "gpt"},
-                [("reader-c2-m1", "user", "Facet query and empty state fixture.", "message", 0, 0, 0)],
-            ),
-            (
-                "reader-c3",
-                "claude-ai",
-                "Paste and privacy fixture",
-                {"repo": "polylogue", "cwd_display": "project/polylogue", "model": "claude"},
-                [("reader-c3-m1", "user", "A synthetic paste-like block with safe content.", "message", 0, 0, 1)],
-            ),
-        ]
-        for conv_id, provider, title, provider_meta, messages in records:
-            conn.execute(
-                """
-                INSERT INTO conversations(
-                    conversation_id, source_name, provider_conversation_id, title,
-                    content_hash, provider_meta, version
-                )
-                VALUES(?, ?, ?, ?, ?, ?, ?)
-                """,
-                (conv_id, provider, f"provider-{conv_id}", title, f"hash-{conv_id}", json.dumps(provider_meta), 1),
-            )
-            for index, (message_id, role, text, message_type, has_tool, has_thinking, has_paste) in enumerate(messages):
-                conn.execute(
-                    """
-                    INSERT INTO messages(
-                        message_id, conversation_id, role, text, sort_key, source_name,
-                        content_hash, version, word_count, has_tool_use, has_thinking,
-                        has_paste, message_type
-                    )
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        message_id,
-                        conv_id,
-                        role,
-                        text,
-                        float(index),
-                        provider,
-                        f"hash-{message_id}",
-                        1,
-                        len(text.split()),
-                        has_tool,
-                        has_thinking,
-                        has_paste,
-                        message_type,
-                    ),
-                )
-        conn.execute(
-            """
-            INSERT INTO user_marks(target_type, target_id, identity_key, conversation_id, message_id, mark_type, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "conversation",
-                "reader-c1",
-                "conversation:reader-c1",
-                "reader-c1",
-                None,
-                "star",
-                "2026-05-15T00:00:00+00:00",
-            ),
-        )
-        conn.execute(
-            """
-            INSERT INTO user_marks(target_type, target_id, identity_key, conversation_id, message_id, mark_type, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "conversation",
-                "reader-c1",
-                "conversation:reader-c1",
-                "reader-c1",
-                None,
-                "pin",
-                "2026-05-15T00:01:00+00:00",
-            ),
-        )
-        conn.execute(
-            "INSERT INTO saved_views(view_id, name, query_json, created_at) VALUES (?, ?, ?, ?)",
-            (
-                "reader-view-claude-code",
-                "Claude Code reader fixtures",
-                json.dumps({"provider": "claude-code", "query": "Hello", "limit": 100, "offset": 0}, sort_keys=True),
-                "2026-05-15T00:02:00+00:00",
-            ),
-        )
-        conn.execute(
-            """
-            INSERT INTO user_annotations(
-                annotation_id, target_type, target_id, identity_key,
-                conversation_id, message_id, note_text, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "reader-ann-c1",
-                "conversation",
-                "reader-c1",
-                "conversation:reader-c1",
-                "reader-c1",
-                None,
-                "This conversation anchors the MK3 reader evidence.",
-                "2026-05-15T00:03:00+00:00",
-                "2026-05-15T00:03:00+00:00",
-            ),
-        )
-        conn.execute(
-            """
-            INSERT INTO recall_packs(pack_id, label, conversation_ids_json, payload_json, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                "reader-pack-stack",
-                "Reader stack recall",
-                json.dumps(["reader-c1", "reader-c2"], sort_keys=True),
-                json.dumps(
-                    {
-                        "schema_version": 1,
-                        "summary": "Reader workspace handoff",
-                        "items": [
-                            {
-                                "target_type": "conversation",
-                                "target_id": "reader-c1",
-                                "conversation_id": "reader-c1",
-                                "status": "resolved",
-                            },
-                            {
-                                "target_type": "conversation",
-                                "target_id": "reader-c2",
-                                "conversation_id": "reader-c2",
-                                "status": "resolved",
-                            },
-                        ],
-                        "resolved_count": 2,
-                        "degraded_count": 0,
-                    },
-                    sort_keys=True,
-                ),
-                "2026-05-15T00:04:00+00:00",
-            ),
-        )
-        conn.execute(
-            """
-            INSERT INTO reader_workspaces(
-                workspace_id, name, mode, open_targets_json, layout_json, active_target_json, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "reader-workspace-stack",
-                "Reader stack workspace",
-                "stack",
-                json.dumps(
-                    [
-                        {"target_type": "conversation", "conversation_id": "reader-c1", "status": "resolved"},
-                        {"target_type": "conversation", "conversation_id": "reader-c2", "status": "resolved"},
-                    ],
-                    sort_keys=True,
-                ),
-                json.dumps({"mode": "stack"}, sort_keys=True),
-                json.dumps({"target_type": "conversation", "conversation_id": "reader-c1"}, sort_keys=True),
-                "2026-05-15T00:05:00+00:00",
-                "2026-05-15T00:05:00+00:00",
-            ),
-        )
-    conn.commit()
-    conn.close()
+        initialize_archive_database(index_db_path(workspace), ArchiveTier.INDEX)
+
+
+def _rebuild_reader_insights(workspace: ReaderWorkspace) -> None:
+    """Materialize archive session insights so cost/insights reader panels read
+    a populated profile/timeline/phases/threads set."""
+    from polylogue.api.archive import _rebuild_archive_session_insights
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with ArchiveStore.open_existing(workspace.archive_root, read_only=False) as archive:
+        _rebuild_archive_session_insights(archive)
 
 
 @contextmanager
 def running_reader_server(
     workspace: ReaderWorkspace,
     *,
-    conversations: bool = True,
+    sessions: bool = True,
     message_fts: bool = True,
 ) -> Iterator[tuple[HTTPServer, str]]:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
 
-    seed_reader_archive(workspace, conversations=conversations, message_fts=message_fts)
+    seed_reader_archive(workspace, sessions=sessions, message_fts=message_fts)
     server = DaemonAPIHTTPServer(("127.0.0.1", 0), DaemonAPIHandler)
     server.auth_token = ""
     server.api_host = "127.0.0.1"

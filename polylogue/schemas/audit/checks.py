@@ -65,7 +65,7 @@ def check_semantic_roles(schema: Mapping[str, object] | SchemaNode) -> CheckResu
     roles = _walk_semantic_roles(root)
 
     for path, role, _confidence in roles:
-        if role == "conversation_title":
+        if role == "session_title":
             current = _schema_node_at_path(root, path)
             fmt = current.get("x-polylogue-format")
 

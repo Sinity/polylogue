@@ -9,11 +9,11 @@ import aiosqlite
 ACTION_EVENT_RUNTIME_INDEX_DDL: tuple[str, ...] = (
     """
     CREATE INDEX IF NOT EXISTS idx_action_events_conv_kind
-    ON action_events(conversation_id, action_kind)
+    ON action_events(session_id, action_kind)
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_action_events_conv_tool
-    ON action_events(conversation_id, normalized_tool_name)
+    ON action_events(session_id, normalized_tool_name)
     """,
 )
 

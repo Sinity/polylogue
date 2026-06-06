@@ -9,7 +9,7 @@ Owns:
   ``copyPasteOnly``);
 - the ``/p`` paste-browser page HTML and bootstrap JS, which fetches
   ``/api/paste-browser`` and renders a grouped list of paste messages
-  with anchor links back to the source conversation.
+  with anchor links back to the source session.
 
 The substrate exposes ``has_paste`` per message (#1313) but does not yet
 expose per-character paste-span offsets (those land in #839/#864). This
@@ -17,7 +17,7 @@ slice ships **whole-message fallback** driven by ``has_paste`` plus
 **heuristic diff-span detection** (unified-diff format), so the visual
 acceptance criteria can be met today without waiting on substrate work.
 
-Per-message envelope contract (in ``daemon/http.py:_do_get_conversation``):
+Per-message envelope contract (in ``daemon/http.py:_do_get_session``):
 
 - ``has_paste`` — already present, bool.
 - ``paste_spans`` — new list of ``{kind, start, end, confidence}``
@@ -178,9 +178,9 @@ def envelope_paste_spans(text: str | None, *, has_paste: bool) -> list[dict[str,
 class PasteBrowserEntry:
     """One row in the paste-browser listing."""
 
-    conversation_id: str
-    conversation_title: str
-    provider: str | None
+    session_id: str
+    session_title: str
+    origin: str | None
     message_id: str
     message_anchor: str
     role: str
@@ -192,9 +192,9 @@ class PasteBrowserEntry:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "conversation_id": self.conversation_id,
-            "conversation_title": self.conversation_title,
-            "provider": self.provider,
+            "session_id": self.session_id,
+            "session_title": self.session_title,
+            "origin": self.origin,
             "message_id": self.message_id,
             "message_anchor": self.message_anchor,
             "role": self.role,
@@ -208,7 +208,7 @@ class PasteBrowserEntry:
 
 def build_paste_browser_payload(entries: Iterable[PasteBrowserEntry], *, total: int) -> dict[str, object]:
     """Wrap a sequence of paste-browser entries in the envelope shape
-    consumed by the client. Grouping by conversation happens
+    consumed by the client. Grouping by session happens
     client-side so the server contract stays a flat list."""
 
     items = [entry.to_dict() for entry in entries]
@@ -527,12 +527,12 @@ function _polyPasteBrowserRender(items) {
     return;
   }
   emptyEl.style.display = 'none';
-  // Group by conversation.
+  // Group by session.
   var groups = {};
   var order = [];
   items.forEach(function(item) {
-    var cid = item.conversation_id;
-    if (!groups[cid]) { groups[cid] = {title: item.conversation_title, provider: item.provider, items: []}; order.push(cid); }
+    var cid = item.session_id;
+    if (!groups[cid]) { groups[cid] = {title: item.session_title, origin: item.origin, items: []}; order.push(cid); }
     groups[cid].items.push(item);
   });
   var html = order.map(function(cid) {
@@ -556,7 +556,7 @@ function _polyPasteBrowserRender(items) {
       +     '<a href="/c/' + encodeURIComponent(cid) + '">'
       +     (g.title || cid).replace(/[<&]/g, function(c) { return c === '<' ? '&lt;' : '&amp;'; })
       +     '</a>'
-      +     '<span class="pb-provider">' + (g.provider || '') + '</span>'
+      +     '<span class="pb-origin">' + (g.origin || '') + '</span>'
       +   '</div>'
       +   rows
       + '</div>';
@@ -609,7 +609,7 @@ main { padding: 16px 24px; max-width: 1100px; }
 }
 .pb-group-title a { color: var(--text); text-decoration: none; }
 .pb-group-title a:hover { color: var(--accent); }
-.pb-provider { color: var(--text-dim); font-weight: 400; font-size: 11px; font-family: var(--font-mono); }
+.pb-origin { color: var(--text-dim); font-weight: 400; font-size: 11px; font-family: var(--font-mono); }
 .pb-row {
   display: grid; grid-template-columns: 80px 1fr 220px;
   gap: 12px; padding: 6px 8px; align-items: center;

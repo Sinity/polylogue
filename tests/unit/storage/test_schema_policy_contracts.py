@@ -8,8 +8,8 @@ These tests pin the **fresh-first** schema policy:
   constant.
 - Version match → normal operation.
 - Version mismatch → the database is *rejected*. There is no automatic
-  migration. The operator must explicitly run a reviewed in-place
-  upgrade script for that exact version transition.
+  in-place upgrade. The operator moves the mismatched tier aside and
+  re-ingests/rebuilds from source.
 
 The corresponding doc section is
 ``docs/internals.md`` § "Schema Versioning Model".
@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.errors import SchemaIncompatibleError
+from polylogue.errors import SchemaVersionMismatchError
 from polylogue.storage.sqlite.schema import (
     SCHEMA_VERSION,
     _ensure_schema,
@@ -74,19 +74,19 @@ def _planted_db(tmp_path: Path, *, planted_version: int) -> Path:
     conn = sqlite3.connect(db_path)
     conn.executescript(
         """
-        CREATE TABLE raw_conversations (
+        CREATE TABLE raw_sessions (
             raw_id TEXT PRIMARY KEY,
             source_name TEXT NOT NULL DEFAULT '',
             source_path TEXT NOT NULL DEFAULT '',
             blob_size INTEGER NOT NULL DEFAULT 0,
             acquired_at TEXT NOT NULL DEFAULT ''
         );
-        CREATE TABLE conversations (
-            conversation_id TEXT PRIMARY KEY
+        CREATE TABLE sessions (
+            session_id TEXT PRIMARY KEY
         );
         CREATE TABLE messages (
             message_id TEXT PRIMARY KEY,
-            conversation_id TEXT NOT NULL
+            session_id TEXT NOT NULL
         );
         """
     )
@@ -133,7 +133,7 @@ def test_future_schema_version_is_rejected(tmp_path: Path) -> None:
     db_path = _planted_db(tmp_path, planted_version=SCHEMA_VERSION + 1)
     conn = sqlite3.connect(db_path)
     try:
-        with pytest.raises(SchemaIncompatibleError) as excinfo:
+        with pytest.raises(SchemaVersionMismatchError) as excinfo:
             _ensure_schema(conn)
         assert excinfo.value.current_version == SCHEMA_VERSION + 1
         assert excinfo.value.expected_version == SCHEMA_VERSION
@@ -146,12 +146,12 @@ def test_unknown_older_schema_version_is_rejected(tmp_path: Path) -> None:
     is not the canonical version must be rejected. Polylogue has no
     in-place upgrade path — the operator re-ingests from source.
     """
-    # Use any non-canonical, non-zero version. v17 was the last legacy
-    # version before the canonical-schema collapse (#1212).
+    # Use any non-canonical, non-zero version. Version 17 is just an
+    # non-canonical shape for this policy check.
     db_path = _planted_db(tmp_path, planted_version=17)
     conn = sqlite3.connect(db_path)
     try:
-        with pytest.raises(SchemaIncompatibleError) as excinfo:
+        with pytest.raises(SchemaVersionMismatchError) as excinfo:
             _ensure_schema(conn)
         assert excinfo.value.current_version == 17
         assert excinfo.value.expected_version == SCHEMA_VERSION
@@ -163,7 +163,7 @@ def test_version_mismatch_message_distinguishes_newer_and_older() -> None:
     """docs/internals.md § Schema Versioning Model: the rejection
     diagnostic must be specific enough that the operator can act on
     it — a newer DB needs a runtime upgrade, an older one needs a
-    reviewed in-place upgrade script.
+    rebuild from source.
     """
     newer = schema_version_mismatch_message(SCHEMA_VERSION + 1)
     older = schema_version_mismatch_message(SCHEMA_VERSION - 1)
@@ -195,12 +195,12 @@ def test_decision_for_unknown_version_is_explicit_mismatch(tmp_path: Path) -> No
 def test_assert_readable_archive_layout_also_rejects_mismatch(tmp_path: Path) -> None:
     """docs/internals.md § Schema Versioning Model: the read-only
     open path applies the same fresh-first rejection. A read tool
-    must not silently operate against a foreign-version archive.
+    must not silently operate against a archive-version archive.
     """
     db_path = _planted_db(tmp_path, planted_version=SCHEMA_VERSION + 2)
     conn = sqlite3.connect(db_path)
     try:
-        with pytest.raises(SchemaIncompatibleError):
+        with pytest.raises(SchemaVersionMismatchError):
             assert_readable_archive_layout(conn)
     finally:
         conn.close()
@@ -218,7 +218,7 @@ def test_async_path_rejects_unknown_version(tmp_path: Path) -> None:
         import aiosqlite
 
         async with aiosqlite.connect(str(db_path)) as conn:
-            with pytest.raises(SchemaIncompatibleError):
+            with pytest.raises(SchemaVersionMismatchError):
                 await ensure_schema_async(conn)
 
     asyncio.run(_run())

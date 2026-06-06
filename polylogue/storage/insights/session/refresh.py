@@ -16,7 +16,7 @@ from polylogue.storage.insights.session.aggregates import (
 from polylogue.storage.insights.session.rebuild import (
     SessionInsightRecordBundle,
     build_session_insight_records,
-    hydrate_conversations,
+    hydrate_sessions,
     load_async_batch,
 )
 from polylogue.storage.insights.session.runtime import (
@@ -38,7 +38,7 @@ from polylogue.storage.runtime import (
 from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
 
 # Keep incremental refreshes on the same bounded chunk size as full rebuilds.
-# Hydrating 100 conversations at once inflates RSS badly on pathological archives.
+# Hydrating 100 sessions at once inflates RSS badly on pathological archives.
 _SESSION_INSIGHT_REFRESH_PAGE_SIZE = 10
 _SESSION_INSIGHT_REFRESH_MESSAGE_BUDGET = 5_000
 _SESSION_INSIGHT_RELEASE_MESSAGE_THRESHOLD = 1_000
@@ -61,16 +61,16 @@ class _SessionInsightBulkRefreshUpdate:
 
 @dataclass(slots=True, frozen=True)
 class _SessionInsightRefreshChunk:
-    conversation_ids: tuple[str, ...]
+    session_ids: tuple[str, ...]
     estimated_message_count: int
-    max_estimated_conversation_messages: int
+    max_estimated_session_messages: int
 
 
 @dataclass(slots=True, frozen=True)
 class SessionInsightRefreshChunkObservation:
-    conversation_count: int
+    session_count: int
     estimated_message_count: int
-    max_estimated_conversation_messages: int
+    max_estimated_session_messages: int
     hydrated_count: int
     profiles_written: int
     work_events_written: int
@@ -84,9 +84,9 @@ class SessionInsightRefreshChunkObservation:
 
     def to_observation(self) -> SessionInsightRefreshChunkPayload:
         observation: SessionInsightRefreshChunkPayload = {
-            "conversation_count": self.conversation_count,
+            "session_count": self.session_count,
             "estimated_message_count": self.estimated_message_count,
-            "max_estimated_conversation_messages": self.max_estimated_conversation_messages,
+            "max_estimated_session_messages": self.max_estimated_session_messages,
             "hydrated_count": self.hydrated_count,
             "profiles_written": self.profiles_written,
             "work_events_written": self.work_events_written,
@@ -142,7 +142,7 @@ async def _refresh_thread_roots_async(
     return refreshed
 
 
-async def refresh_thread_after_conversation_delete_async(
+async def refresh_thread_after_session_delete_async(
     conn: aiosqlite.Connection,
     root_id: str | None,
     *,
@@ -155,9 +155,9 @@ async def refresh_thread_after_conversation_delete_async(
     )
 
 
-async def delete_session_insights_for_conversation_async(
+async def delete_session_insights_for_session_async(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
     *,
     transaction_depth: int = 0,
 ) -> SessionInsightCounts:
@@ -167,15 +167,15 @@ async def delete_session_insights_for_conversation_async(
     )
 
     cursor = await conn.execute(
-        "SELECT * FROM session_profiles WHERE conversation_id = ?",
-        (conversation_id,),
+        "SELECT * FROM session_profiles WHERE session_id = ?",
+        (session_id,),
     )
     row = await cursor.fetchone()
     old_group = profile_provider_day(_row_to_session_profile_record(row)) if row else None
-    await conn.execute("DELETE FROM session_profiles WHERE conversation_id = ?", (conversation_id,))
-    await conn.execute("DELETE FROM session_latency_profiles WHERE conversation_id = ?", (conversation_id,))
-    await replace_session_work_events(conn, conversation_id, [], transaction_depth)
-    await replace_session_phases(conn, conversation_id, [], transaction_depth)
+    await conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (session_id,))
+    await conn.execute("DELETE FROM session_latency_profiles WHERE session_id = ?", (session_id,))
+    await replace_session_work_events(conn, session_id, [], transaction_depth)
+    await replace_session_phases(conn, session_id, [], transaction_depth)
     if old_group is not None:
         source_name, bucket_day = old_group
         await conn.execute(
@@ -195,15 +195,15 @@ async def delete_session_insights_for_conversation_async(
     return counts
 
 
-async def refresh_session_insights_for_conversation_async(
+async def refresh_session_insights_for_session_async(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
     *,
     transaction_depth: int = 0,
 ) -> SessionInsightCounts:
-    update = await _apply_session_insight_conversation_update_async(
+    update = await _apply_session_insight_session_update_async(
         conn,
-        conversation_id,
+        session_id,
         transaction_depth=transaction_depth,
     )
     thread_count = await _refresh_thread_root_async(
@@ -223,9 +223,9 @@ async def refresh_session_insights_for_conversation_async(
     return update.counts
 
 
-async def _apply_session_insight_conversation_update_async(
+async def _apply_session_insight_session_update_async(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
     *,
     transaction_depth: int,
 ) -> _SessionInsightRefreshUpdate:
@@ -240,21 +240,21 @@ async def _apply_session_insight_conversation_update_async(
 
     old_profile_record = await (
         await conn.execute(
-            "SELECT * FROM session_profiles WHERE conversation_id = ?",
-            (conversation_id,),
+            "SELECT * FROM session_profiles WHERE session_id = ?",
+            (session_id,),
         )
     ).fetchone()
-    batch = await load_async_batch(conn, [conversation_id])
-    hydrated = hydrate_conversations(batch)
+    batch = await load_async_batch(conn, [session_id])
+    hydrated = hydrate_sessions(batch)
     if not hydrated:
-        await conn.execute("DELETE FROM session_profiles WHERE conversation_id = ?", (conversation_id,))
-        await conn.execute("DELETE FROM session_latency_profiles WHERE conversation_id = ?", (conversation_id,))
+        await conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (session_id,))
+        await conn.execute("DELETE FROM session_latency_profiles WHERE session_id = ?", (session_id,))
         await conn.execute(
-            "DELETE FROM conversation_repo_observations WHERE conversation_id = ?",
-            (conversation_id,),
+            "DELETE FROM session_repo_observations WHERE session_id = ?",
+            (session_id,),
         )
-        await replace_session_work_events(conn, conversation_id, [], transaction_depth)
-        await replace_session_phases(conn, conversation_id, [], transaction_depth)
+        await replace_session_work_events(conn, session_id, [], transaction_depth)
+        await replace_session_phases(conn, session_id, [], transaction_depth)
         old_group = (
             profile_provider_day(_row_to_session_profile_record(old_profile_record)) if old_profile_record else None
         )
@@ -264,33 +264,33 @@ async def _apply_session_insight_conversation_update_async(
             affected_groups={old_group} if old_group is not None else set(),
         )
 
-    thread_root_id = await thread_root_id_async(conn, conversation_id)
+    thread_root_id = await thread_root_id_async(conn, session_id)
     record_bundle = build_session_insight_records(
         hydrated[0],
-        compaction_count=batch.compaction_counts_by_conversation.get(conversation_id),
-        logical_conversation_id=thread_root_id,
+        compaction_count=batch.compaction_counts_by_session.get(session_id),
+        logical_session_id=thread_root_id,
     )
     await replace_session_profile(conn, record_bundle.profile_record, transaction_depth)
     await replace_session_latency_profile(conn, record_bundle.latency_profile_record, transaction_depth)
     await replace_session_work_events(
         conn,
-        conversation_id,
+        session_id,
         record_bundle.work_event_records,
         transaction_depth,
     )
     await replace_session_phases(
         conn,
-        conversation_id,
+        session_id,
         record_bundle.phase_records,
         transaction_depth,
     )
     from polylogue.storage.insights.session.repo_identity import (
         RepoObservation,
-        refresh_conversation_repo_observations,
+        refresh_session_repo_observations,
     )
 
     repo_observations = tuple(obs for obs in record_bundle.repo_observations if isinstance(obs, RepoObservation))
-    await refresh_conversation_repo_observations(conn, conversation_id, repo_observations)
+    await refresh_session_repo_observations(conn, session_id, repo_observations)
 
     affected_groups = {
         group
@@ -313,42 +313,42 @@ async def _apply_session_insight_conversation_update_async(
 
 async def _load_existing_session_profile_records_async(
     conn: aiosqlite.Connection,
-    conversation_ids: Sequence[str],
+    session_ids: Sequence[str],
 ) -> dict[str, SessionProfileRecord]:
-    if not conversation_ids:
+    if not session_ids:
         return {}
-    placeholders = ", ".join("?" for _ in conversation_ids)
+    placeholders = ", ".join("?" for _ in session_ids)
     rows = await (
         await conn.execute(
-            f"SELECT * FROM session_profiles WHERE conversation_id IN ({placeholders})",
-            tuple(conversation_ids),
+            f"SELECT * FROM session_profiles WHERE session_id IN ({placeholders})",
+            tuple(session_ids),
         )
     ).fetchall()
-    return {str(row["conversation_id"]): _row_to_session_profile_record(row) for row in rows}
+    return {str(row["session_id"]): _row_to_session_profile_record(row) for row in rows}
 
 
 async def _load_message_counts_async(
     conn: aiosqlite.Connection,
-    conversation_ids: Sequence[str],
+    session_ids: Sequence[str],
 ) -> dict[str, int]:
-    if not conversation_ids:
+    if not session_ids:
         return {}
-    placeholders = ", ".join("?" for _ in conversation_ids)
+    placeholders = ", ".join("?" for _ in session_ids)
     rows = await (
         await conn.execute(
             f"""
-            SELECT conversation_id, message_count
-            FROM conversation_stats
-            WHERE conversation_id IN ({placeholders})
+            SELECT session_id, message_count
+            FROM session_stats
+            WHERE session_id IN ({placeholders})
             """,
-            tuple(conversation_ids),
+            tuple(session_ids),
         )
     ).fetchall()
-    return {str(row["conversation_id"]): int(row["message_count"] or 0) for row in rows}
+    return {str(row["session_id"]): int(row["message_count"] or 0) for row in rows}
 
 
-def _chunk_conversation_ids_by_message_budget(
-    conversation_ids: Sequence[str],
+def _chunk_session_ids_by_message_budget(
+    session_ids: Sequence[str],
     *,
     message_counts: dict[str, int],
     page_size: int,
@@ -359,31 +359,31 @@ def _chunk_conversation_ids_by_message_budget(
     current_messages = 0
     current_max_messages = 0
 
-    for conversation_id in conversation_ids:
-        estimated_messages = max(int(message_counts.get(conversation_id, 0) or 0), 1)
+    for session_id in session_ids:
+        estimated_messages = max(int(message_counts.get(session_id, 0) or 0), 1)
         if current_chunk and (
             len(current_chunk) >= page_size or current_messages + estimated_messages > message_budget
         ):
             chunks.append(
                 _SessionInsightRefreshChunk(
-                    conversation_ids=tuple(current_chunk),
+                    session_ids=tuple(current_chunk),
                     estimated_message_count=current_messages,
-                    max_estimated_conversation_messages=current_max_messages,
+                    max_estimated_session_messages=current_max_messages,
                 )
             )
             current_chunk = []
             current_messages = 0
             current_max_messages = 0
-        current_chunk.append(conversation_id)
+        current_chunk.append(session_id)
         current_messages += estimated_messages
         current_max_messages = max(current_max_messages, estimated_messages)
 
     if current_chunk:
         chunks.append(
             _SessionInsightRefreshChunk(
-                conversation_ids=tuple(current_chunk),
+                session_ids=tuple(current_chunk),
                 estimated_message_count=current_messages,
-                max_estimated_conversation_messages=current_max_messages,
+                max_estimated_session_messages=current_max_messages,
             )
         )
     return chunks
@@ -423,9 +423,9 @@ def _refresh_chunk_observation(
     total_ms: float,
 ) -> SessionInsightRefreshChunkObservation:
     return SessionInsightRefreshChunkObservation(
-        conversation_count=len(chunk.conversation_ids),
+        session_count=len(chunk.session_ids),
         estimated_message_count=chunk.estimated_message_count,
-        max_estimated_conversation_messages=chunk.max_estimated_conversation_messages,
+        max_estimated_session_messages=chunk.max_estimated_session_messages,
         hydrated_count=hydrated_count,
         profiles_written=profiles_written,
         work_events_written=work_events_written,
@@ -439,9 +439,9 @@ def _refresh_chunk_observation(
     )
 
 
-async def _apply_session_insight_conversation_updates_async(
+async def _apply_session_insight_session_updates_async(
     conn: aiosqlite.Connection,
-    conversation_ids: Sequence[str],
+    session_ids: Sequence[str],
     *,
     transaction_depth: int,
     page_size: int = _SESSION_INSIGHT_REFRESH_PAGE_SIZE,
@@ -459,41 +459,41 @@ async def _apply_session_insight_conversation_updates_async(
     thread_root_ids: set[str] = set()
     affected_groups: set[ProviderDayGroup] = set()
     chunk_observations: list[SessionInsightRefreshChunkObservation] = []
-    conversation_id_list = list(conversation_ids)
-    message_counts = await _load_message_counts_async(conn, conversation_id_list)
-    conversation_chunks = _chunk_conversation_ids_by_message_budget(
-        conversation_id_list,
+    session_id_list = list(session_ids)
+    message_counts = await _load_message_counts_async(conn, session_id_list)
+    session_chunks = _chunk_session_ids_by_message_budget(
+        session_id_list,
         message_counts=message_counts,
         page_size=page_size,
         message_budget=_SESSION_INSIGHT_REFRESH_MESSAGE_BUDGET,
     )
 
-    for chunk in conversation_chunks:
+    for chunk in session_chunks:
         chunk_started = time.perf_counter()
         load_started = time.perf_counter()
-        old_profile_records = await _load_existing_session_profile_records_async(conn, chunk.conversation_ids)
-        batch = await load_async_batch(conn, chunk.conversation_ids)
-        root_ids_by_conversation = await thread_root_ids_async(conn, chunk.conversation_ids)
+        old_profile_records = await _load_existing_session_profile_records_async(conn, chunk.session_ids)
+        batch = await load_async_batch(conn, chunk.session_ids)
+        root_ids_by_session = await thread_root_ids_async(conn, chunk.session_ids)
         load_elapsed_ms = round((time.perf_counter() - load_started) * 1000.0, 1)
         hydrate_started = time.perf_counter()
-        hydrated_by_id = {str(conversation.id): conversation for conversation in hydrate_conversations(batch)}
+        hydrated_by_id = {str(session.id): session for session in hydrate_sessions(batch)}
         hydrate_elapsed_ms = round((time.perf_counter() - hydrate_started) * 1000.0, 1)
 
         build_started = time.perf_counter()
         record_bundles: list[SessionInsightRecordBundle] = []
-        for conversation_id in chunk.conversation_ids:
-            old_profile_record = old_profile_records.get(conversation_id)
-            hydrated_conversation = hydrated_by_id.get(conversation_id)
-            if hydrated_conversation is None:
+        for session_id in chunk.session_ids:
+            old_profile_record = old_profile_records.get(session_id)
+            hydrated_session = hydrated_by_id.get(session_id)
+            if hydrated_session is None:
                 old_group = profile_provider_day(old_profile_record)
                 if old_group is not None:
                     affected_groups.add(old_group)
                 continue
 
             record_bundle = build_session_insight_records(
-                hydrated_conversation,
-                compaction_count=batch.compaction_counts_by_conversation.get(conversation_id),
-                logical_conversation_id=root_ids_by_conversation.get(conversation_id),
+                hydrated_session,
+                compaction_count=batch.compaction_counts_by_session.get(session_id),
+                logical_session_id=root_ids_by_session.get(session_id),
             )
             record_bundles.append(record_bundle)
 
@@ -510,7 +510,7 @@ async def _apply_session_insight_conversation_updates_async(
                 )
                 if group is not None
             )
-            root_id = root_ids_by_conversation.get(conversation_id)
+            root_id = root_ids_by_session.get(session_id)
             if root_id is not None:
                 thread_root_ids.add(root_id)
         build_elapsed_ms = round((time.perf_counter() - build_started) * 1000.0, 1)
@@ -524,46 +524,46 @@ async def _apply_session_insight_conversation_updates_async(
         ) = _flatten_record_bundles(record_bundles)
         await replace_session_profiles_bulk(
             conn,
-            chunk.conversation_ids,
+            chunk.session_ids,
             profile_records_to_write,
             transaction_depth,
         )
         await replace_session_latency_profiles_bulk(
             conn,
-            chunk.conversation_ids,
+            chunk.session_ids,
             latency_profile_records_to_write,
             transaction_depth,
         )
         await replace_session_work_events_bulk(
             conn,
-            chunk.conversation_ids,
+            chunk.session_ids,
             work_event_records_to_write,
             transaction_depth,
         )
         await replace_session_phases_bulk(
             conn,
-            chunk.conversation_ids,
+            chunk.session_ids,
             phase_records_to_write,
             transaction_depth,
         )
         from polylogue.storage.insights.session.repo_identity import (
             RepoObservation,
-            refresh_conversation_repo_observations,
+            refresh_session_repo_observations,
         )
 
         hydrated_ids: set[str] = set()
         for bundle in record_bundles:
-            bundle_conv_id = str(bundle.profile_record.conversation_id)
+            bundle_conv_id = str(bundle.profile_record.session_id)
             hydrated_ids.add(bundle_conv_id)
             bundle_observations = tuple(obs for obs in bundle.repo_observations if isinstance(obs, RepoObservation))
-            await refresh_conversation_repo_observations(conn, bundle_conv_id, bundle_observations)
-        # Conversations dropped from this chunk still need observation cleanup.
-        for conversation_id in chunk.conversation_ids:
-            if conversation_id in hydrated_ids:
+            await refresh_session_repo_observations(conn, bundle_conv_id, bundle_observations)
+        # Sessions dropped from this chunk still need observation cleanup.
+        for session_id in chunk.session_ids:
+            if session_id in hydrated_ids:
                 continue
             await conn.execute(
-                "DELETE FROM conversation_repo_observations WHERE conversation_id = ?",
-                (conversation_id,),
+                "DELETE FROM session_repo_observations WHERE session_id = ?",
+                (session_id,),
             )
         write_elapsed_ms = round((time.perf_counter() - write_started) * 1000.0, 1)
         chunk_total_ms = round((time.perf_counter() - chunk_started) * 1000.0, 1)
@@ -585,7 +585,7 @@ async def _apply_session_insight_conversation_updates_async(
             del (
                 old_profile_records,
                 batch,
-                root_ids_by_conversation,
+                root_ids_by_session,
                 hydrated_by_id,
                 record_bundles,
                 profile_records_to_write,
@@ -606,8 +606,8 @@ async def _apply_session_insight_conversation_updates_async(
 
 __all__ = [
     "SessionInsightRefreshChunkObservation",
-    "delete_session_insights_for_conversation_async",
+    "delete_session_insights_for_session_async",
     "refresh_async_provider_day_aggregates",
-    "refresh_session_insights_for_conversation_async",
-    "refresh_thread_after_conversation_delete_async",
+    "refresh_session_insights_for_session_async",
+    "refresh_thread_after_session_delete_async",
 ]

@@ -9,7 +9,7 @@ from polylogue.storage.sqlite.schema_ddl_insight_common import (
 SESSION_INSIGHT_LATENCY_DDL = (
     """
         CREATE TABLE IF NOT EXISTS session_latency_profiles (
-            conversation_id TEXT PRIMARY KEY REFERENCES conversations(conversation_id) ON DELETE CASCADE,"""
+            session_id TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,"""
     + MATERIALIZATION_COLUMNS_SQL
     + """
             source_name TEXT NOT NULL,

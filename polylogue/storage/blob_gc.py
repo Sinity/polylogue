@@ -49,6 +49,7 @@ class GCRunEvidence:
     dry_run: bool = False
     max_batch: int = 0
     previous_generation: int = 0
+    reference_surfaces: list[str] = field(default_factory=list)
     deleted_hashes: list[str] = field(default_factory=list)
 
     def to_json(self) -> str:
@@ -132,18 +133,90 @@ def _has_active_lease(conn: sqlite3.Connection, blob_hash: str) -> bool:
     return row is not None
 
 
-def _still_referenced(conn: sqlite3.Connection, blob_hash: str) -> bool:
-    """Return True if the blob hash is referenced by any archive row.
-
-    Blobs are stored under their ``raw_id`` (SHA-256 of source content).
-    A blob is referenced if any ``raw_conversations`` row carries that
-    ``raw_id`` — meaning the original source file is still in the archive.
-    """
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
-        "SELECT 1 FROM raw_conversations WHERE raw_id = ? LIMIT 1",
-        (blob_hash,),
+        "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ? LIMIT 1",
+        (table,),
     ).fetchone()
     return row is not None
+
+
+def _blob_hash_bytes(blob_hash: str) -> bytes | None:
+    if len(blob_hash) != 64:
+        return None
+    try:
+        return bytes.fromhex(blob_hash)
+    except ValueError:
+        return None
+
+
+def _archive_reference_surfaces(
+    conn: sqlite3.Connection,
+    blob_hash: str,
+    *,
+    surface_prefix: str,
+) -> list[str]:
+    blob_bytes = _blob_hash_bytes(blob_hash)
+    if blob_bytes is None:
+        return []
+
+    surfaces: list[str] = []
+    for table in ("raw_sessions", "blob_refs"):
+        if not _table_exists(conn, table):
+            continue
+        row = conn.execute(f"SELECT 1 FROM {table} WHERE blob_hash = ? LIMIT 1", (blob_bytes,)).fetchone()
+        if row is not None:
+            surfaces.append(f"{surface_prefix}.{table}")
+    return surfaces
+
+
+def _reference_surfaces(
+    conn: sqlite3.Connection,
+    blob_hash: str,
+    *,
+    source_db_path: Path | None = None,
+    source_conn: sqlite3.Connection | None = None,
+) -> list[str]:
+    surfaces = _archive_reference_surfaces(conn, blob_hash, surface_prefix="current")
+
+    if source_conn is not None:
+        source_prefix = source_db_path.name if source_db_path is not None else "source"
+        surfaces.extend(_archive_reference_surfaces(source_conn, blob_hash, surface_prefix=source_prefix))
+    elif source_db_path is not None and source_db_path.exists():
+        try:
+            source_conn = sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)
+            try:
+                surfaces.extend(_archive_reference_surfaces(source_conn, blob_hash, surface_prefix=source_db_path.name))
+            finally:
+                source_conn.close()
+        except sqlite3.Error as exc:
+            logger.warning("Could not inspect archive source blob references in %s: %s", source_db_path, exc)
+
+    if _table_exists(conn, "raw_sessions"):
+        row = conn.execute(
+            "SELECT 1 FROM raw_sessions WHERE raw_id = ? LIMIT 1",
+            (blob_hash,),
+        ).fetchone()
+        if row is not None:
+            surfaces.append("current.raw_sessions")
+
+    return surfaces
+
+
+def _still_referenced(
+    conn: sqlite3.Connection,
+    blob_hash: str,
+    *,
+    source_db_path: Path | None = None,
+) -> bool:
+    """Return True if the blob hash is referenced by any archive row.
+
+    stores source blob references in ``source.db`` tables
+    with BLOB-typed hashes. Legacy archives store the same hash as
+    ``raw_sessions.raw_id``. GC treats either representation as
+    load-bearing.
+    """
+    return bool(_reference_surfaces(conn, blob_hash, source_db_path=source_db_path))
 
 
 def _candidate_blobs(
@@ -247,9 +320,20 @@ def run_blob_gc(
         logger.debug("Blob directory %s does not exist, skipping GC", blob_dir)
         return 0
 
+    db_path_obj = Path(db_path)
+    source_db_path: Path | None = db_path_obj.with_name("source.db")
+    if source_db_path == db_path_obj:
+        source_db_path = None
     conn = open_connection(db_path)
     conn.row_factory = sqlite3.Row
+    source_conn: sqlite3.Connection | None = None
     try:
+        if source_db_path is not None and source_db_path.exists():
+            try:
+                source_conn = sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)
+            except sqlite3.Error as exc:
+                logger.warning("Could not inspect archive source blob references in %s: %s", source_db_path, exc)
+
         generation = _current_generation(conn)
         # Safety invariant #3: a candidate must be older than BOTH the static
         # MIN_AGE_S floor AND the previous completed GC generation. The
@@ -279,7 +363,16 @@ def run_blob_gc(
             evidence.inspected += 1
 
             # Safety check 1: still referenced in DB
-            if _still_referenced(conn, blob_hash):
+            reference_surfaces = _reference_surfaces(
+                conn,
+                blob_hash,
+                source_db_path=source_db_path,
+                source_conn=source_conn,
+            )
+            for surface in reference_surfaces:
+                if surface not in evidence.reference_surfaces:
+                    evidence.reference_surfaces.append(surface)
+            if reference_surfaces:
                 evidence.skipped_referenced += 1
                 continue
 
@@ -352,6 +445,8 @@ def run_blob_gc(
         conn.rollback()
         raise
     finally:
+        if source_conn is not None:
+            source_conn.close()
         conn.close()
 
 
@@ -416,7 +511,7 @@ def acquire_blob_leases(
     snapshot-based reference check in ``_still_referenced`` (audited in
     #1000). They bridge the acquire-blob → write-DB-row commit window:
     without leases, a GC pass running between blob materialization and
-    the corresponding ``raw_conversations`` write would misclassify the
+    the corresponding ``raw_sessions`` write would misclassify the
     blob as orphan.
 
     Uses a fresh connection that commits immediately so leases are

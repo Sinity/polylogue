@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from polylogue.archive.query.spec import QuerySpecError, parse_query_date, split_csv
+from polylogue.core.enums import Origin
+from polylogue.core.sources import provider_from_origin
 from polylogue.errors import PolylogueError
 from polylogue.insights.registry import InsightType
 
@@ -36,14 +38,14 @@ class InsightCommandInputError(PolylogueError):
     http_status_code = 400
 
 
-def _normalize_product_provider(value: object) -> str | None:
-    providers = split_csv(value)
-    if not providers:
+def _normalize_product_origin(value: object) -> str | None:
+    origins = split_csv(value)
+    if not origins:
         return None
-    if len(providers) > 1:
-        joined = ", ".join(providers)
-        raise InsightCommandInputError(f"insights commands accept one provider, got: {joined}")
-    return providers[0]
+    if len(origins) > 1:
+        joined = ", ".join(origins)
+        raise InsightCommandInputError(f"insights commands accept one origin, got: {joined}")
+    return provider_from_origin(Origin(origins[0])).value
 
 
 def _normalize_product_date(field: str, value: object) -> str | None:
@@ -59,8 +61,10 @@ def _normalize_product_date(field: str, value: object) -> str | None:
 def normalize_insight_query_kwargs(kwargs: Mapping[str, object]) -> dict[str, object]:
     """Normalize insight query filters shared by generic/status/export commands."""
     normalized = dict(kwargs)
-    if "provider" in normalized:
-        normalized["provider"] = _normalize_product_provider(normalized.get("provider"))
+    if "origin" in normalized:
+        normalized["provider"] = _normalize_product_origin(normalized.pop("origin"))
+    if normalized.get("group_by") == "origin":
+        normalized["group_by"] = "provider"
     for field in ("since", "until"):
         if field in normalized:
             normalized[field] = _normalize_product_date(field, normalized.get(field))
@@ -89,9 +93,10 @@ class InsightCommandRequest:
         normalized_kwargs = dict(kwargs)
 
         for key in inherited_root_keys:
-            if key not in accepted_root_keys:
+            query_key = "provider" if key == "origin" else key
+            if query_key not in accepted_root_keys:
                 continue
-            if normalized_kwargs.get(key) is not None:
+            if normalized_kwargs.get(key) is not None or normalized_kwargs.get(query_key) is not None:
                 continue
             inherited_value = root_params.get(key)
             if inherited_value is not None:

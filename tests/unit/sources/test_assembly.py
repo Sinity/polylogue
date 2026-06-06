@@ -1,4 +1,4 @@
-"""Tests for provider assembly layer — sidecar discovery and conversation enrichment."""
+"""Tests for provider assembly layer — sidecar discovery and session enrichment."""
 
 from __future__ import annotations
 
@@ -7,17 +7,17 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.roles import Role
+from polylogue.archive.session.branch_type import BranchType
 from polylogue.sources.assembly import SidecarData, get_assembly_spec
 from polylogue.sources.assembly_claude_code import ClaudeCodeAssemblySpec
 from polylogue.sources.assembly_codex import CodexAssemblySpec, _parse_codex_session_index
 from polylogue.sources.assembly_gemini import GeminiAssemblySpec
-from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation, ParsedMessage, ParsedProviderEvent
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedProviderEvent, ParsedSession
 from polylogue.sources.parsers.claude.index import (
     SessionIndexEntry,
     _looks_like_git_branch,
-    enrich_conversation_from_index,
+    enrich_session_from_index,
 )
 from polylogue.types import Provider
 
@@ -39,18 +39,18 @@ def _parsed_attachment(name: str | None = None) -> ParsedAttachment:
     )
 
 
-def _parsed_conversation(
+def _parsed_session(
     source_name: Provider,
-    provider_conversation_id: str,
+    provider_session_id: str,
     title: str,
     messages: list[ParsedMessage],
     *,
     attachments: list[ParsedAttachment] | None = None,
     provider_meta: dict[str, object] | None = None,
-) -> ParsedConversation:
-    return ParsedConversation(
+) -> ParsedSession:
+    return ParsedSession(
         source_name=source_name,
-        provider_conversation_id=provider_conversation_id,
+        provider_session_id=provider_session_id,
         title=title,
         created_at=None,
         updated_at=None,
@@ -60,9 +60,9 @@ def _parsed_conversation(
     )
 
 
-def _provider_meta(conversation: ParsedConversation) -> dict[str, object]:
-    assert conversation.provider_meta is not None
-    return conversation.provider_meta
+def _provider_meta(session: ParsedSession) -> dict[str, object]:
+    assert session.provider_meta is not None
+    return session.provider_meta
 
 
 def _thread_sidecars(thread_names: dict[str, str] | None = None) -> SidecarData:
@@ -113,7 +113,7 @@ class TestGeminiAssemblySpec:
         assert sidecar_data == {}
 
     def test_meaningful_imported_title_is_preserved(self) -> None:
-        conv = _parsed_conversation(
+        conv = _parsed_session(
             Provider.GEMINI,
             "gemini-id-1234",
             "Gemini Session",
@@ -121,13 +121,13 @@ class TestGeminiAssemblySpec:
             provider_meta={"title_source": "imported:displayName"},
         )
 
-        result = GeminiAssemblySpec().enrich_conversation(conv, {})
+        result = GeminiAssemblySpec().enrich_session(conv, {})
 
         assert result is conv
         assert _provider_meta(result)["title_source"] == "imported:displayName"
 
     def test_id_like_title_uses_first_user_message_display_label(self) -> None:
-        conv = _parsed_conversation(
+        conv = _parsed_session(
             Provider.GEMINI,
             "gemini-20250422-1234",
             "gemini-20250422-1234",
@@ -138,7 +138,7 @@ class TestGeminiAssemblySpec:
             provider_meta={"title_source": "fallback:id"},
         )
 
-        enriched = GeminiAssemblySpec().enrich_conversation(conv, {})
+        enriched = GeminiAssemblySpec().enrich_session(conv, {})
 
         assert enriched.title == "gemini-20250422-1234"
         metadata = _provider_meta(enriched)
@@ -147,7 +147,7 @@ class TestGeminiAssemblySpec:
         assert metadata["display_label_source"] == "first-user-message"
 
     def test_attachment_name_informs_display_label(self) -> None:
-        conv = _parsed_conversation(
+        conv = _parsed_session(
             Provider.GEMINI,
             "gemini-attachment-221",
             "gemini-attachment-221",
@@ -156,14 +156,14 @@ class TestGeminiAssemblySpec:
             provider_meta={"title_source": "fallback:id"},
         )
 
-        enriched = GeminiAssemblySpec().enrich_conversation(conv, {})
+        enriched = GeminiAssemblySpec().enrich_session(conv, {})
 
         metadata = _provider_meta(enriched)
         assert metadata["display_label"] == "Project Plan: Please review the attached project plan."
         assert metadata["display_label_source"] == "attachment-name:first-user-message"
 
     def test_empty_title_uses_attachment_name_when_no_prompt_exists(self) -> None:
-        conv = _parsed_conversation(
+        conv = _parsed_session(
             Provider.GEMINI,
             "gemini-empty-title",
             "",
@@ -172,14 +172,14 @@ class TestGeminiAssemblySpec:
             provider_meta={"title_source": "fallback:id"},
         )
 
-        enriched = GeminiAssemblySpec().enrich_conversation(conv, {})
+        enriched = GeminiAssemblySpec().enrich_session(conv, {})
 
         metadata = _provider_meta(enriched)
         assert metadata["display_label"] == "Attachment: Project Plan"
         assert metadata["display_label_source"] == "attachment-name"
 
     def test_minimal_payload_without_label_evidence_is_unchanged(self) -> None:
-        conv = _parsed_conversation(
+        conv = _parsed_session(
             Provider.GEMINI,
             "gemini-minimal-221",
             "gemini-minimal-221",
@@ -187,7 +187,7 @@ class TestGeminiAssemblySpec:
             provider_meta={"title_source": "fallback:id"},
         )
 
-        result = GeminiAssemblySpec().enrich_conversation(conv, {})
+        result = GeminiAssemblySpec().enrich_session(conv, {})
 
         assert result is conv
 
@@ -246,10 +246,10 @@ class TestClaudeCodeAssemblySpec:
 
         assert sidecar_data["session_index"] == {}
 
-    def test_enrich_conversation_updates_title_from_summary(self) -> None:
-        """Enriches conversation title from session index summary."""
+    def test_enrich_session_updates_title_from_summary(self) -> None:
+        """Enriches session title from session index summary."""
         spec = ClaudeCodeAssemblySpec()
-        conv = _parsed_conversation(
+        conv = _parsed_session(
             Provider.CLAUDE_CODE,
             "sess-1",
             "sess-1",
@@ -269,27 +269,27 @@ class TestClaudeCodeAssemblySpec:
         )
         sidecar_data = _session_sidecars({"sess-1": entry})
 
-        enriched = spec.enrich_conversation(conv, sidecar_data)
+        enriched = spec.enrich_session(conv, sidecar_data)
 
         assert enriched.title == "Build the parser"
         assert _provider_meta(enriched)["title_source"] == "session-index:summary"
 
-    def test_enrich_conversation_no_match_returns_original(self) -> None:
-        """Returns original conversation when no session index match."""
+    def test_enrich_session_no_match_returns_original(self) -> None:
+        """Returns original session when no session index match."""
         spec = ClaudeCodeAssemblySpec()
-        conv = _parsed_conversation(Provider.CLAUDE_CODE, "sess-99", "original", [])
+        conv = _parsed_session(Provider.CLAUDE_CODE, "sess-99", "original", [])
         sidecar_data = _session_sidecars()
 
-        result = spec.enrich_conversation(conv, sidecar_data)
+        result = spec.enrich_session(conv, sidecar_data)
 
         assert result is conv
         assert result.title == "original"
 
-    def test_enrich_conversation_from_index_preserves_semantic_fields(self, tmp_path: Path) -> None:
+    def test_enrich_session_from_index_preserves_semantic_fields(self, tmp_path: Path) -> None:
         session_file = tmp_path / "session-1.jsonl"
-        conversation = ParsedConversation(
+        session = ParsedSession(
             source_name=Provider.CLAUDE_CODE,
-            provider_conversation_id="session-1",
+            provider_session_id="session-1",
             title="session-1",
             created_at="2025-01-01T00:00:00Z",
             updated_at="2025-01-01T00:00:00Z",
@@ -301,7 +301,7 @@ class TestClaudeCodeAssemblySpec:
                     payload={"summary": "compact"},
                 )
             ],
-            parent_conversation_provider_id="parent-session",
+            parent_session_provider_id="parent-session",
             branch_type=BranchType.SIDECHAIN,
         )
         entry = SessionIndexEntry(
@@ -317,10 +317,10 @@ class TestClaudeCodeAssemblySpec:
             is_sidechain=True,
         )
 
-        enriched = enrich_conversation_from_index(conversation, entry)
+        enriched = enrich_session_from_index(session, entry)
 
-        assert enriched.provider_events == conversation.provider_events
-        assert enriched.parent_conversation_provider_id == "parent-session"
+        assert enriched.provider_events == session.provider_events
+        assert enriched.parent_session_provider_id == "parent-session"
         assert enriched.branch_type == BranchType.SIDECHAIN
 
 
@@ -367,25 +367,23 @@ class TestCodexAssemblySpec:
 
         assert sidecar_data["thread_names"] == {}
 
-    def test_enrich_conversation_uses_thread_name(self) -> None:
-        """Enriches conversation title from thread name in sidecar data."""
+    def test_enrich_session_uses_thread_name(self) -> None:
+        """Enriches session title from thread name in sidecar data."""
         spec = CodexAssemblySpec()
-        conv = _parsed_conversation(
-            Provider.CODEX, "thread-1", "thread-1", [_parsed_message("m1", "user", "build client")]
-        )
+        conv = _parsed_session(Provider.CODEX, "thread-1", "thread-1", [_parsed_message("m1", "user", "build client")])
         sidecar_data = _thread_sidecars({"thread-1": "Build API client"})
 
-        enriched = spec.enrich_conversation(conv, sidecar_data)
+        enriched = spec.enrich_session(conv, sidecar_data)
 
         assert enriched.title == "Build API client"
         metadata = _provider_meta(enriched)
         assert metadata["title_source"] == "session-index:thread-name"
         assert metadata["thread_name"] == "Build API client"
 
-    def test_enrich_conversation_falls_back_to_first_user_message(self) -> None:
+    def test_enrich_session_falls_back_to_first_user_message(self) -> None:
         """Falls back to first user message when no thread name available."""
         spec = CodexAssemblySpec()
-        conv = _parsed_conversation(
+        conv = _parsed_session(
             Provider.CODEX,
             "thread-1",
             "thread-1",
@@ -396,39 +394,37 @@ class TestCodexAssemblySpec:
         )
         sidecar_data = _thread_sidecars()
 
-        enriched = spec.enrich_conversation(conv, sidecar_data)
+        enriched = spec.enrich_session(conv, sidecar_data)
 
         assert enriched.title == "Implement the payment gateway"
         assert _provider_meta(enriched)["title_source"] == "first-user-message"
 
-    def test_enrich_conversation_truncates_long_first_message(self) -> None:
+    def test_enrich_session_truncates_long_first_message(self) -> None:
         """Truncates first user message to 80 chars + ellipsis."""
         spec = CodexAssemblySpec()
         long_text = "A" * 100
-        conv = _parsed_conversation(Provider.CODEX, "thread-1", "thread-1", [_parsed_message("m1", "user", long_text)])
+        conv = _parsed_session(Provider.CODEX, "thread-1", "thread-1", [_parsed_message("m1", "user", long_text)])
         sidecar_data = _thread_sidecars()
 
-        enriched = spec.enrich_conversation(conv, sidecar_data)
+        enriched = spec.enrich_session(conv, sidecar_data)
 
         assert enriched.title == "A" * 80 + "..."
         assert len(enriched.title) == 83
 
-    def test_enrich_conversation_no_match_no_user_messages(self) -> None:
-        """Returns original conversation when no enrichment possible."""
+    def test_enrich_session_no_match_no_user_messages(self) -> None:
+        """Returns original session when no enrichment possible."""
         spec = CodexAssemblySpec()
-        conv = _parsed_conversation(
-            Provider.CODEX, "thread-1", "thread-1", [_parsed_message("m1", "assistant", "response")]
-        )
+        conv = _parsed_session(Provider.CODEX, "thread-1", "thread-1", [_parsed_message("m1", "assistant", "response")])
         sidecar_data = _thread_sidecars()
 
-        result = spec.enrich_conversation(conv, sidecar_data)
+        result = spec.enrich_session(conv, sidecar_data)
 
         assert result is conv
 
-    def test_enrich_conversation_skips_empty_user_messages(self) -> None:
+    def test_enrich_session_skips_empty_user_messages(self) -> None:
         """Skips empty user messages when looking for first-user-message fallback."""
         spec = CodexAssemblySpec()
-        conv = _parsed_conversation(
+        conv = _parsed_session(
             Provider.CODEX,
             "thread-1",
             "thread-1",
@@ -440,14 +436,14 @@ class TestCodexAssemblySpec:
         )
         sidecar_data = _thread_sidecars()
 
-        enriched = spec.enrich_conversation(conv, sidecar_data)
+        enriched = spec.enrich_session(conv, sidecar_data)
 
         assert enriched.title == "Real message here"
 
-    def test_enrich_conversation_does_not_override_different_title(self) -> None:
+    def test_enrich_session_does_not_override_different_title(self) -> None:
         """Does not fall back to first-user-message when title differs from conv ID."""
         spec = CodexAssemblySpec()
-        conv = _parsed_conversation(
+        conv = _parsed_session(
             Provider.CODEX,
             "thread-1",
             "Already has a title",
@@ -455,7 +451,7 @@ class TestCodexAssemblySpec:
         )
         sidecar_data = _thread_sidecars()
 
-        result = spec.enrich_conversation(conv, sidecar_data)
+        result = spec.enrich_session(conv, sidecar_data)
 
         assert result is conv
         assert result.title == "Already has a title"
@@ -575,8 +571,8 @@ class TestLooksLikeGitBranch:
         assert _looks_like_git_branch(value) is False
 
     def test_git_branch_summary_skipped_in_enrichment(self) -> None:
-        """enrich_conversation_from_index skips summary that looks like a git branch."""
-        conv = _parsed_conversation(
+        """enrich_session_from_index skips summary that looks like a git branch."""
+        conv = _parsed_session(
             Provider.CLAUDE_CODE,
             "sess-1",
             "sess-1",
@@ -595,7 +591,7 @@ class TestLooksLikeGitBranch:
             is_sidechain=False,
         )
 
-        enriched = enrich_conversation_from_index(conv, entry)
+        enriched = enrich_session_from_index(conv, entry)
 
         # Should fall back to first_prompt since summary looks like a git branch
         assert enriched.title == "Fix the bug"
@@ -603,7 +599,7 @@ class TestLooksLikeGitBranch:
 
     def test_git_branch_exact_match_skipped(self) -> None:
         """Exact branch names like 'main' are rejected as summaries."""
-        conv = _parsed_conversation(
+        conv = _parsed_session(
             Provider.CLAUDE_CODE,
             "sess-1",
             "sess-1",
@@ -622,7 +618,7 @@ class TestLooksLikeGitBranch:
             is_sidechain=False,
         )
 
-        enriched = enrich_conversation_from_index(conv, entry)
+        enriched = enrich_session_from_index(conv, entry)
 
         assert enriched.title == "Hello world"
         assert _provider_meta(enriched)["title_source"] == "session-index:first-prompt"

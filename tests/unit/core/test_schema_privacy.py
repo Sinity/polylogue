@@ -2,7 +2,7 @@
 
 Covers all heuristics in _is_safe_enum_value and the field-level filters,
 plus the three new guards added in this session:
-  1. Cross-conversation threshold (value seen in <N distinct conversations excluded)
+  1. Cross-session threshold (value seen in <N distinct sessions excluded)
   2. Key denylist expansion (body, message, input, output never yield enums)
   3. Private TLD denylist (.local, .lan, .corp, .internal, .home rejected)
 
@@ -200,20 +200,20 @@ class TestSafeEnumValueExistingGuards:
 
 
 # =============================================================================
-# Guard 1: Cross-conversation threshold
+# Guard 1: Cross-session threshold
 # =============================================================================
 
 
-class TestCrossConversationThreshold:
-    """Values seen in fewer than N conversations are suppressed from schema enums."""
+class TestCrossSessionThreshold:
+    """Values seen in fewer than N sessions are suppressed from schema enums."""
 
     def _make_schema_with_samples(
         self,
         values_by_conv: dict[str, list[str]],
         *,
-        min_conversation_count: int = 3,
+        min_session_count: int = 3,
     ) -> Mapping[str, object]:
-        """Build schema annotations from samples grouped by conversation ID."""
+        """Build schema annotations from samples grouped by session ID."""
         samples = []
         conv_ids = []
         for conv_id, values in values_by_conv.items():
@@ -226,49 +226,49 @@ class TestCrossConversationThreshold:
         flat_samples = [{"status": v} for v in [v for vals in values_by_conv.values() for v in vals]]
         flat_conv_ids: list[str | None] = [cid for cid, vals in values_by_conv.items() for _ in vals]
 
-        stats = _collect_field_stats(flat_samples, conversation_ids=flat_conv_ids)
+        stats = _collect_field_stats(flat_samples, session_ids=flat_conv_ids)
         schema: dict[str, object] = {"type": "object", "properties": {"status": {"type": "string"}}}
-        annotated = _annotate_schema(schema, stats, min_conversation_count=min_conversation_count)
+        annotated = _annotate_schema(schema, stats, min_session_count=min_session_count)
         return schema_property(annotated, "status")
 
     def test_value_in_one_conv_excluded_at_threshold_3(self) -> None:
-        """A value seen in only 1 conversation is excluded when threshold=3."""
+        """A value seen in only 1 session is excluded when threshold=3."""
         values_by_conv = {
             "conv_A": ["rare_status"],
             "conv_B": ["common"],
             "conv_C": ["common"],
             "conv_D": ["common"],
         }
-        status_schema = self._make_schema_with_samples(values_by_conv, min_conversation_count=3)
+        status_schema = self._make_schema_with_samples(values_by_conv, min_session_count=3)
         enum_vals = schema_values(status_schema)
-        assert "rare_status" not in enum_vals, "Single-conversation value should be excluded"
+        assert "rare_status" not in enum_vals, "Single-session value should be excluded"
 
     def test_value_in_three_convs_included_at_threshold_3(self) -> None:
-        """A value seen in exactly 3 conversations passes the threshold."""
+        """A value seen in exactly 3 sessions passes the threshold."""
         values_by_conv = {
             "conv_A": ["stable_role"],
             "conv_B": ["stable_role"],
             "conv_C": ["stable_role"],
         }
-        status_schema = self._make_schema_with_samples(values_by_conv, min_conversation_count=3)
+        status_schema = self._make_schema_with_samples(values_by_conv, min_session_count=3)
         enum_vals = schema_values(status_schema)
-        assert "stable_role" in enum_vals, "Value in 3 conversations should pass threshold=3"
+        assert "stable_role" in enum_vals, "Value in 3 sessions should pass threshold=3"
 
     def test_threshold_1_includes_single_conv_values(self) -> None:
         """Default threshold=1 preserves existing behaviour (no cross-conv filtering)."""
         values_by_conv = {"conv_A": ["only_here", "only_here"]}
-        status_schema = self._make_schema_with_samples(values_by_conv, min_conversation_count=1)
+        status_schema = self._make_schema_with_samples(values_by_conv, min_session_count=1)
         enum_vals = schema_values(status_schema)
         assert "only_here" in enum_vals, "threshold=1 should not filter single-conv values"
 
-    def test_no_conversation_ids_skips_threshold(self) -> None:
-        """When conversation_ids is None, cross-conv check is skipped entirely."""
+    def test_no_session_ids_skips_threshold(self) -> None:
+        """When session_ids is None, cross-conv check is skipped entirely."""
         samples = [{"status": "solo_value"}] * 5
-        stats = _collect_field_stats(samples)  # no conversation_ids
+        stats = _collect_field_stats(samples)  # no session_ids
         schema = {"type": "object", "properties": {"status": {"type": "string"}}}
-        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+        annotated = _annotate_schema(schema, stats, min_session_count=3)
         enum_vals = schema_values(schema_property(annotated, "status"))
-        # No conversation tracking → no filtering
+        # No session tracking → no filtering
         assert "solo_value" in enum_vals
 
 
@@ -420,15 +420,15 @@ class TestStructuralConstantsInIdentifierFields:
 
 # =============================================================================
 # Guard 4: Structural role exemption -- message_role bypasses
-#          cross-conversation threshold
+#          cross-session threshold
 # =============================================================================
 
 
 class TestStructuralRoleExemption:
-    """message_role fields bypass cross-conversation privacy threshold."""
+    """message_role fields bypass cross-session privacy threshold."""
 
     def test_message_role_bypasses_threshold(self) -> None:
-        """A message_role field includes values from <3 conversations."""
+        """A message_role field includes values from <3 sessions."""
         values_by_conv = {
             "conv_A": ["attachment"],
             "conv_B": ["assistant"],
@@ -438,7 +438,7 @@ class TestStructuralRoleExemption:
         }
         flat_samples = [{"type": v} for vals in values_by_conv.values() for v in vals]
         flat_conv_ids: list[str | None] = [cid for cid, vals in values_by_conv.items() for _ in vals]
-        stats = _collect_field_stats(flat_samples, conversation_ids=flat_conv_ids)
+        stats = _collect_field_stats(flat_samples, session_ids=flat_conv_ids)
         schema: dict[str, object] = {
             "type": "object",
             "properties": {
@@ -448,10 +448,10 @@ class TestStructuralRoleExemption:
                 }
             },
         }
-        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+        annotated = _annotate_schema(schema, stats, min_session_count=3)
         type_schema = schema_property(annotated, "type")
         enum_vals = schema_values(type_schema)
-        assert "attachment" in enum_vals, "message_role field should preserve values even when min_conversation_count=3"
+        assert "attachment" in enum_vals, "message_role field should preserve values even when min_session_count=3"
         assert "assistant" in enum_vals
         assert "user" in enum_vals
 
@@ -465,15 +465,15 @@ class TestStructuralRoleExemption:
         }
         flat_samples = [{"status": v} for vals in values_by_conv.values() for v in vals]
         flat_conv_ids: list[str | None] = [cid for cid, vals in values_by_conv.items() for _ in vals]
-        stats = _collect_field_stats(flat_samples, conversation_ids=flat_conv_ids)
+        stats = _collect_field_stats(flat_samples, session_ids=flat_conv_ids)
         schema = {
             "type": "object",
             "properties": {"status": {"type": "string"}},
         }
-        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+        annotated = _annotate_schema(schema, stats, min_session_count=3)
         status_schema = schema_property(annotated, "status")
         enum_vals = schema_values(status_schema)
-        assert "rare_val" not in enum_vals, "Non-role field should respect min_conversation_count=3"
+        assert "rare_val" not in enum_vals, "Non-role field should respect min_session_count=3"
         assert "common" in enum_vals
 
 
@@ -543,7 +543,7 @@ class TestMultiGuardInteraction:
     """Values that trip multiple privacy guards simultaneously.
 
     The three independent guards are:
-      1. Cross-conversation threshold (min_conversation_count)
+      1. Cross-session threshold (min_session_count)
       2. Content-field key denylist (_CONTENT_FIELD_NAMES)
       3. Private TLD denylist (_is_safe_enum_value)
 
@@ -558,16 +558,16 @@ class TestMultiGuardInteraction:
         """Guard 2 (content field) suppresses regardless of Guard 1 (threshold).
 
         A value in a content field is blocked even when seen in enough
-        conversations to satisfy the cross-conv threshold.
+        sessions to satisfy the cross-conv threshold.
         """
         samples = [{"body": "active"} for _ in range(30)]
         conv_ids: list[str | None] = [f"conv_{i}" for i in range(30)]
-        stats = _collect_field_stats(samples, conversation_ids=conv_ids)
+        stats = _collect_field_stats(samples, session_ids=conv_ids)
         schema: dict[str, object] = {
             "type": "object",
             "properties": {"body": {"type": "string"}},
         }
-        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+        annotated = _annotate_schema(schema, stats, min_session_count=3)
         field_schema = schema_property(annotated, "body")
         assert "x-polylogue-values" not in field_schema, (
             "Content field should suppress enums even when value passes threshold"
@@ -583,9 +583,9 @@ class TestMultiGuardInteraction:
         }
         flat_samples = [{"body": v} for vals in values_by_conv.values() for v in vals]
         flat_conv_ids: list[str | None] = [cid for cid, vals in values_by_conv.items() for _ in vals]
-        stats = _collect_field_stats(flat_samples, conversation_ids=flat_conv_ids)
+        stats = _collect_field_stats(flat_samples, session_ids=flat_conv_ids)
         schema = {"type": "object", "properties": {"body": {"type": "string"}}}
-        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+        annotated = _annotate_schema(schema, stats, min_session_count=3)
         field_schema = schema_property(annotated, "body")
         assert "x-polylogue-values" not in field_schema, "Content field 'body' should never produce enums"
 
@@ -599,9 +599,9 @@ class TestMultiGuardInteraction:
         """
         samples = [{"input": "api.internal"} for _ in range(20)]
         conv_ids: list[str | None] = [f"conv_{i}" for i in range(20)]
-        stats = _collect_field_stats(samples, conversation_ids=conv_ids)
+        stats = _collect_field_stats(samples, session_ids=conv_ids)
         schema = {"type": "object", "properties": {"input": {"type": "string"}}}
-        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+        annotated = _annotate_schema(schema, stats, min_session_count=3)
         field_schema = schema_property(annotated, "input")
         assert "x-polylogue-values" not in field_schema, (
             "Content field 'input' should suppress enums regardless of private TLD status"
@@ -615,9 +615,9 @@ class TestMultiGuardInteraction:
         """
         samples = [{"status": "myhost.local"} for _ in range(20)]
         conv_ids: list[str | None] = [f"conv_{i}" for i in range(20)]
-        stats = _collect_field_stats(samples, conversation_ids=conv_ids)
+        stats = _collect_field_stats(samples, session_ids=conv_ids)
         schema = {"type": "object", "properties": {"status": {"type": "string"}}}
-        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+        annotated = _annotate_schema(schema, stats, min_session_count=3)
         field_schema = schema_property(annotated, "status")
         enum_vals = schema_values(field_schema)
         assert "myhost.local" not in enum_vals, "Private TLD value should be suppressed on structural field"
@@ -628,18 +628,16 @@ class TestMultiGuardInteraction:
         """Guard 3 (private TLD) suppresses even when Guard 1 (threshold) is satisfied.
 
         'printer.lan' is a private TLD — it should be absent from enums
-        even when seen in 30 different conversations.
+        even when seen in 30 different sessions.
         """
         samples = [{"status": "printer.lan"} for _ in range(30)]
         conv_ids: list[str | None] = [f"conv_{i}" for i in range(30)]
-        stats = _collect_field_stats(samples, conversation_ids=conv_ids)
+        stats = _collect_field_stats(samples, session_ids=conv_ids)
         schema = {"type": "object", "properties": {"status": {"type": "string"}}}
-        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+        annotated = _annotate_schema(schema, stats, min_session_count=3)
         field_schema = schema_property(annotated, "status")
         enum_vals = schema_values(field_schema)
-        assert "printer.lan" not in enum_vals, (
-            "Private TLD value should be suppressed even when seen in 30 conversations"
-        )
+        assert "printer.lan" not in enum_vals, "Private TLD value should be suppressed even when seen in 30 sessions"
 
     # ── triple overlap ─────────────────────────────────────────
 
@@ -647,7 +645,7 @@ class TestMultiGuardInteraction:
         """All three guards fire: content field + private TLD + rare conv count.
 
         'message' is a content field, 'dev-server.corp' is a private TLD,
-        and the value appears in only 1 conversation.
+        and the value appears in only 1 session.
         """
         values_by_conv = {
             "conv_A": ["dev-server.corp"],
@@ -657,9 +655,9 @@ class TestMultiGuardInteraction:
         }
         flat_samples = [{"message": v} for vals in values_by_conv.values() for v in vals]
         flat_conv_ids: list[str | None] = [cid for cid, vals in values_by_conv.items() for _ in vals]
-        stats = _collect_field_stats(flat_samples, conversation_ids=flat_conv_ids)
+        stats = _collect_field_stats(flat_samples, session_ids=flat_conv_ids)
         schema = {"type": "object", "properties": {"message": {"type": "string"}}}
-        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+        annotated = _annotate_schema(schema, stats, min_session_count=3)
         field_schema = schema_property(annotated, "message")
         assert "x-polylogue-values" not in field_schema, "Content field 'message' should never produce enums (Guard 2)"
 
@@ -681,7 +679,7 @@ class TestMultiGuardInteraction:
             {"status": "pending"},
         ]
         conv_ids: list[str | None] = ["conv_A", "conv_A", "conv_B", "conv_B", "conv_C"]
-        stats = _collect_field_stats(samples, conversation_ids=conv_ids)
+        stats = _collect_field_stats(samples, session_ids=conv_ids)
 
         schema: dict[str, object] = {
             "type": "object",
@@ -692,8 +690,8 @@ class TestMultiGuardInteraction:
             },
         }
 
-        run1 = _annotate_schema(schema, stats, min_conversation_count=3)
-        run2 = _annotate_schema(schema, stats, min_conversation_count=3)
+        run1 = _annotate_schema(schema, stats, min_session_count=3)
+        run2 = _annotate_schema(schema, stats, min_session_count=3)
 
         assert run1 == run2, "Identical inputs must produce identical outputs"
 
@@ -716,7 +714,7 @@ class TestMultiGuardInteraction:
         }
         flat_samples = [{field: val} for _cid, pairs in values_by_conv.items() for field, val in pairs]
         flat_conv_ids: list[str | None] = [cid for cid, pairs in values_by_conv.items() for _ in pairs]
-        stats = _collect_field_stats(flat_samples, conversation_ids=flat_conv_ids)
+        stats = _collect_field_stats(flat_samples, session_ids=flat_conv_ids)
 
         schema = {
             "type": "object",
@@ -725,7 +723,7 @@ class TestMultiGuardInteraction:
                 "body": {"type": "string"},
             },
         }
-        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+        annotated = _annotate_schema(schema, stats, min_session_count=3)
 
         status_schema = schema_property(annotated, "status")
         status_enums = schema_values(status_schema)
@@ -749,9 +747,9 @@ class TestMultiGuardInteraction:
             {"message": "active"},
         ]
         conv_ids: list[str | None] = [f"conv_{i}" for i in range(3)]
-        stats = _collect_field_stats(samples, conversation_ids=conv_ids)
+        stats = _collect_field_stats(samples, session_ids=conv_ids)
         schema = {"type": "object", "properties": {"message": {"type": "string"}}}
-        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+        annotated = _annotate_schema(schema, stats, min_session_count=3)
 
         # Content field 'message' suppresses ALL enums (Guard 2)
         field_schema = schema_property(annotated, "message")
@@ -768,14 +766,14 @@ class TestMultiGuardInteraction:
         }
         flat_samples = [{field: val} for _cid, pairs in values_by_conv.items() for field, val in pairs]
         flat_conv_ids: list[str | None] = [cid for cid, pairs in values_by_conv.items() for _ in pairs]
-        stats = _collect_field_stats(flat_samples, conversation_ids=flat_conv_ids)
+        stats = _collect_field_stats(flat_samples, session_ids=flat_conv_ids)
 
         # 'status' is a structural field — not a content field
         # 'nas.local' → suppressed by Guard 3 (private TLD)
         # 'active' → passes all guards (seen in 3 convs, not TLD)
         # 'pending' → suppressed by Guard 1 (seen in 1 conv, threshold=3)
         schema = {"type": "object", "properties": {"status": {"type": "string"}}}
-        annotated = _annotate_schema(schema, stats, min_conversation_count=3)
+        annotated = _annotate_schema(schema, stats, min_session_count=3)
         status_schema = schema_property(annotated, "status")
         enum_vals = schema_values(status_schema)
 

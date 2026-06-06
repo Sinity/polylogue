@@ -8,23 +8,24 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.action_event.action_events import ActionEvent
-from polylogue.archive.conversation.attribution import extract_attribution, extract_attribution_from_action_events
-from polylogue.archive.conversation.repo_identity import (
+from polylogue.archive.message.messages import MessageCollection
+from polylogue.archive.message.roles import Role
+from polylogue.archive.models import Message, Session
+from polylogue.archive.session.attribution import extract_attribution, extract_attribution_from_action_events
+from polylogue.archive.session.repo_identity import (
     normalize_repo_name,
     normalize_repo_names,
     normalize_repo_path,
     normalize_repo_paths,
 )
-from polylogue.archive.message.messages import MessageCollection
-from polylogue.archive.message.roles import Role
-from polylogue.archive.models import Conversation, Message
 from polylogue.archive.session.session_profile import SessionProfile, build_session_profile
 from polylogue.archive.session.session_summaries import summarize_day
 from polylogue.archive.viewport.viewports import ToolCategory
+from polylogue.core.enums import Origin
 from polylogue.insights.archive_models import DaySessionSummaryPayload
 from polylogue.insights.archive_summaries import aggregate_day_session_summary_insights
 from polylogue.storage.runtime import DaySessionSummaryRecord
-from polylogue.types import ConversationId, Provider
+from polylogue.types import Provider, SessionId
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 README_PATH = REPO_ROOT / "README.md"
@@ -153,8 +154,8 @@ def test_session_profile_from_dict_preserves_explicit_repo_names_and_normalizes_
 
     profile = SessionProfile.from_dict(
         {
-            "conversation_id": "conv-normalize-profile",
-            "provider": "claude-code",
+            "session_id": "conv-normalize-profile",
+            "origin": "claude-code-session",
             "repo_paths": [
                 f"{polylogue_repo}/README.md`\\n\\nPass",
                 f"{sinnix_repo}#switch",
@@ -176,9 +177,9 @@ def test_session_profile_from_dict_preserves_explicit_repo_names_and_normalizes_
 def test_build_session_profile_normalizes_repo_roots_from_workdirs_and_tool_paths(tmp_path: Path) -> None:
     sinnix_repo = _make_repo(tmp_path, "sinnix")
 
-    conversation = Conversation(
-        id=ConversationId("conv-normalize-build"),
-        provider=Provider.CLAUDE_CODE,
+    session = Session(
+        id=SessionId("conv-normalize-build"),
+        origin=Origin.CLAUDE_CODE_SESSION,
         title="Normalization",
         created_at=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
         updated_at=datetime(2026, 3, 24, 10, 5, tzinfo=timezone.utc),
@@ -210,16 +211,16 @@ def test_build_session_profile_normalizes_repo_roots_from_workdirs_and_tool_path
         ),
     )
 
-    profile = build_session_profile(conversation)
+    profile = build_session_profile(session)
 
     assert sorted(profile.repo_paths) == sorted([str(REPO_ROOT), str(sinnix_repo)])
     assert sorted(profile.repo_names) == sorted([REPO_ROOT.name, "sinnix"])
 
 
 def test_extract_attribution_preserves_repo_name_from_provider_git_remote() -> None:
-    conversation = Conversation(
-        id=ConversationId("conv-provider-git-remote"),
-        provider=Provider.CODEX,
+    session = Session(
+        id=SessionId("conv-provider-git-remote"),
+        origin=Origin.CODEX_SESSION,
         title="Provider Git Remote",
         created_at=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
         updated_at=datetime(2026, 3, 24, 10, 5, tzinfo=timezone.utc),
@@ -237,7 +238,7 @@ def test_extract_attribution_preserves_repo_name_from_provider_git_remote() -> N
         ),
     )
 
-    attribution = extract_attribution(conversation)
+    attribution = extract_attribution(session)
 
     assert attribution.repo_names == ("sinex",)
     assert attribution.branch_names == ("master",)
@@ -249,9 +250,9 @@ def test_extract_attribution_ignores_configured_claude_transcript_repo(tmp_path:
     (transcript_repo / ".git").mkdir(parents=True)
     work_repo = _make_repo(tmp_path, "sinnix")
 
-    conversation = Conversation(
-        id=ConversationId("conv-ignore-transcript-repo"),
-        provider=Provider.CLAUDE_CODE,
+    session = Session(
+        id=SessionId("conv-ignore-transcript-repo"),
+        origin=Origin.CLAUDE_CODE_SESSION,
         title="Transcript repo noise",
         created_at=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
         updated_at=datetime(2026, 3, 24, 10, 5, tzinfo=timezone.utc),
@@ -283,7 +284,7 @@ def test_extract_attribution_ignores_configured_claude_transcript_repo(tmp_path:
         ),
     )
 
-    attribution = extract_attribution(conversation)
+    attribution = extract_attribution(session)
 
     assert attribution.repo_paths == (str(work_repo),)
     assert attribution.repo_names == ("sinnix",)
@@ -337,9 +338,9 @@ def test_extract_attribution_filters_transcript_temp_and_snapshot_paths(tmp_path
 
 
 def test_extract_attribution_does_not_infer_r_from_dialogue_text() -> None:
-    conversation = Conversation(
-        id=ConversationId("conv-dialogue-r-noise"),
-        provider=Provider.CODEX,
+    session = Session(
+        id=SessionId("conv-dialogue-r-noise"),
+        origin=Origin.CODEX_SESSION,
         title="Dialogue R Noise",
         created_at=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
         updated_at=datetime(2026, 3, 24, 10, 5, tzinfo=timezone.utc),
@@ -356,7 +357,7 @@ def test_extract_attribution_does_not_infer_r_from_dialogue_text() -> None:
         ),
     )
 
-    attribution = extract_attribution(conversation)
+    attribution = extract_attribution(session)
 
     assert attribution.languages_detected == ()
 
@@ -364,8 +365,8 @@ def test_extract_attribution_does_not_infer_r_from_dialogue_text() -> None:
 def test_day_summary_and_aggregate_products_preserve_repo_names() -> None:
     profile = SessionProfile.from_dict(
         {
-            "conversation_id": "conv-day-normalize",
-            "provider": "claude-code",
+            "session_id": "conv-day-normalize",
+            "origin": "claude-code-session",
             "created_at": "2026-03-24T10:00:00+00:00",
             "updated_at": "2026-03-24T10:05:00+00:00",
             "canonical_session_date": "2026-03-24",

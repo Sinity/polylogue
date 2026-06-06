@@ -47,6 +47,7 @@ EXPECTED_SERIES: frozenset[str] = frozenset(
         "polylogue_daemon_build_info",
         "polylogue_live_ingest_attempts_total",
         "polylogue_live_ingest_attempts_in_flight",
+        "polylogue_live_ingest_storage_route_total",
         "polylogue_live_ingest_attempt_duration_seconds",
         "polylogue_convergence_debt_count",
         "polylogue_blob_lease_pending_count",
@@ -56,15 +57,26 @@ EXPECTED_SERIES: frozenset[str] = frozenset(
         "polylogue_fts_freshness_ready",
         "polylogue_live_ingest_memory_mebibytes",
         "polylogue_stale_cursor_writes_total",
-        "polylogue_embedding_conversations",
+        "polylogue_embedding_sessions",
         "polylogue_embedding_messages",
         "polylogue_embedding_coverage_percent",
         "polylogue_embedding_status_state",
         "polylogue_embedding_retrieval_ready",
         "polylogue_embedding_latest_catchup_run_info",
-        "polylogue_embedding_latest_catchup_conversations",
+        "polylogue_embedding_latest_catchup_sessions",
         "polylogue_embedding_latest_catchup_messages",
         "polylogue_embedding_latest_catchup_estimated_cost_usd",
+        "polylogue_archive_tier_present",
+        "polylogue_archive_tier_count",
+        "polylogue_archive_tier_file_size_bytes",
+        "polylogue_archive_tier_user_version",
+        "polylogue_archive_storage_layout",
+        "polylogue_archive_storage_ready",
+        "polylogue_archive_active_store",
+        "polylogue_archive_active_tier_role",
+        "polylogue_archive_ready",
+        "polylogue_archive_blocker_count",
+        "polylogue_archive_blocker",
     }
 )
 
@@ -123,6 +135,72 @@ class TestFormatMetricsExpositionShape:
         body = format_metrics(tmp_path / "missing.db")
         assert "polylogue_daemon_build_info{version=" in body
 
+    def test_archive_storage_metrics_report_archive_file_sets(self, tmp_path: Path) -> None:
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        for filename, tier in (
+            ("source.db", ArchiveTier.SOURCE),
+            ("index.db", ArchiveTier.INDEX),
+            ("user.db", ArchiveTier.USER),
+            ("ops.db", ArchiveTier.OPS),
+        ):
+            initialize_archive_database(tmp_path / filename, tier)
+        with sqlite3.connect(tmp_path / "embeddings.db") as conn:
+            conn.execute("PRAGMA user_version = 1")
+            conn.commit()
+
+        body = format_metrics(tmp_path / "index.db")
+
+        assert 'polylogue_archive_tier_present{tier="source"} 1' in body
+        assert 'polylogue_archive_tier_present{tier="index"} 1' in body
+        assert 'polylogue_archive_tier_present{tier="embeddings"} 1' in body
+        assert 'polylogue_archive_tier_count{state="present"} 5' in body
+        assert 'polylogue_archive_tier_count{state="missing"} 0' in body
+        assert 'polylogue_archive_tier_user_version{tier="source"} 1' in body
+        assert 'polylogue_archive_storage_layout{layout="archive_complete"} 1' in body
+        assert 'polylogue_archive_storage_layout{layout="archive_partial"} 0' in body
+        assert 'polylogue_archive_storage_ready{state="archive_runtime"} 1' in body
+        assert 'polylogue_archive_storage_ready{state="final_shape"} 1' in body
+        assert 'polylogue_archive_active_store{store="archive_file_set"} 1' in body
+        assert 'polylogue_archive_active_store{store="empty"} 0' in body
+        assert 'polylogue_archive_active_tier_role{role="index"} 1' in body
+        assert 'polylogue_archive_active_tier_role{role="unknown"} 0' in body
+        assert "polylogue_archive_ready 1" in body
+        assert "polylogue_archive_blocker_count 0" in body
+        assert 'polylogue_archive_blocker{blocker="missing_archive_tiers"} 0' in body
+        assert 'polylogue_fts_trigger_present{trigger="blocks_fts_ai"} 1' in body
+        assert 'polylogue_fts_trigger_present{trigger="blocks_fts_ad"} 1' in body
+        assert 'polylogue_fts_trigger_present{trigger="blocks_fts_au"} 1' in body
+        assert 'polylogue_fts_trigger_present{trigger="action_events_fts_ai"}' not in body
+
+    def test_archive_storage_metrics_report_layout_blockers(self, tmp_path: Path) -> None:
+        """Partial archive roots expose blockers without activating unrelated files."""
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+        with sqlite3.connect(tmp_path / "polylogue.db") as conn:
+            conn.execute("CREATE TABLE unsupported_marker (id INTEGER)")
+            conn.commit()
+
+        body = format_metrics(tmp_path / "index.db")
+
+        assert 'polylogue_archive_tier_present{tier="ops"} 1' in body
+        assert 'polylogue_archive_tier_count{state="present"} 1' in body
+        assert 'polylogue_archive_tier_count{state="missing"} 4' in body
+        assert 'polylogue_archive_storage_layout{layout="archive_partial"} 1' in body
+        assert 'polylogue_archive_storage_layout{layout="archive_missing"} 0' in body
+        assert 'polylogue_archive_storage_ready{state="archive_runtime"} 0' in body
+        assert 'polylogue_archive_storage_ready{state="final_shape"} 0' in body
+        assert 'polylogue_archive_active_store{store="archive_file_set"} 0' in body
+        assert 'polylogue_archive_active_store{store="empty"} 1' in body
+        assert 'polylogue_archive_active_tier_role{role="index"} 1' in body
+        assert "polylogue_archive_ready 0" in body
+        assert "polylogue_archive_blocker_count 4" in body
+        assert 'polylogue_archive_blocker{blocker="missing_archive_tiers"} 1' in body
+        assert 'polylogue_archive_blocker{blocker="missing_backup_required_tier:source"} 1' in body
+
     def test_no_unknown_label_escaping(self, tmp_path: Path) -> None:
         """Quotes/backslashes inside label values must be escaped."""
         from polylogue.daemon.metrics import _escape_label_value
@@ -176,9 +254,14 @@ class TestFormatMetricsReadsArchiveState:
                     acquired_at INTEGER
                 );
                 CREATE TABLE messages (message_id TEXT PRIMARY KEY);
-                CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY);
+                CREATE TABLE messages_fts (message_id TEXT PRIMARY KEY);
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    message_count INTEGER NOT NULL DEFAULT 0
+                );
                 CREATE TABLE embedding_status (
-                    conversation_id TEXT PRIMARY KEY,
+                    session_id TEXT PRIMARY KEY,
+                    message_count_embedded INTEGER NOT NULL DEFAULT 0,
                     needs_reindex INTEGER NOT NULL,
                     error_message TEXT
                 );
@@ -232,11 +315,11 @@ class TestFormatMetricsReadsArchiveState:
                 ],
             )
             conn.executemany(
-                "INSERT INTO conversations (conversation_id) VALUES (?)",
+                "INSERT INTO sessions (session_id) VALUES (?)",
                 [("conv-embedded",), ("conv-pending",), ("conv-missing-status",)],
             )
             conn.executemany(
-                "INSERT INTO embedding_status (conversation_id, needs_reindex, error_message) VALUES (?, ?, ?)",
+                "INSERT INTO embedding_status (session_id, needs_reindex, error_message) VALUES (?, ?, ?)",
                 [
                     ("conv-embedded", 0, None),
                     ("conv-pending", 1, "provider timeout"),
@@ -249,48 +332,33 @@ class TestFormatMetricsReadsArchiveState:
             conn.commit()
         finally:
             conn.close()
-        from polylogue.storage.embeddings.progress import (
-            CatchupRunDelta,
-            CatchupRunStart,
-            finish_embedding_catchup_run,
-            record_embedding_catchup_progress,
-            start_embedding_catchup_run,
-        )
+        return db
 
-        run_id = start_embedding_catchup_run(
-            db,
-            CatchupRunStart(
-                rebuild=True,
-                max_conversations=3,
-                max_messages=9,
-                stop_after_seconds=None,
-                max_errors=1,
-                planned_conversations=3,
-                planned_messages=9,
-            ),
-        )
-        record_embedding_catchup_progress(
-            db,
-            run_id,
-            CatchupRunDelta(
-                conversation_id="conv-embedded",
-                embedded=True,
+    @staticmethod
+    def _seed_catchup_run(ops_db: Path) -> None:
+        """Seed an embedding catch-up run into the archive ops tier.
+
+        Archive file-sets store catch-up runs in ops.db and tracks a reduced field set
+        (scanned_sessions / embedded_messages / cost / error), so the daemon
+        metrics read them from there rather than from the index db.
+        """
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.ops_write import upsert_embedding_catchup_run
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        initialize_archive_database(ops_db, ArchiveTier.OPS)
+        with sqlite3.connect(ops_db) as conn:
+            upsert_embedding_catchup_run(
+                conn,
+                started_at_ms=1,
+                finished_at_ms=2,
+                status="cancelled",
+                scanned_sessions=3,
                 embedded_messages=2,
                 estimated_cost_usd=0.003,
-            ),
-        )
-        record_embedding_catchup_progress(
-            db,
-            run_id,
-            CatchupRunDelta(conversation_id="conv-missing-status", skipped=True),
-        )
-        record_embedding_catchup_progress(
-            db,
-            run_id,
-            CatchupRunDelta(conversation_id="conv-pending", errored=True),
-        )
-        finish_embedding_catchup_run(db, run_id, status="stopped", stop_reason="max errors reached (1)")
-        return db
+                error_message="max errors reached (1)",
+            )
+            conn.commit()
 
     def test_attempt_counts_round_trip(self, tmp_path: Path) -> None:
         body = format_metrics(self._make_db(tmp_path))
@@ -312,6 +380,144 @@ class TestFormatMetricsReadsArchiveState:
         assert 'polylogue_convergence_debt_count{stage="convergence"} 1' in body
         assert 'polylogue_convergence_debt_count{stage="parse"} 2' in body
 
+    def test_convergence_debt_prefers_archive_ops(self, tmp_path: Path) -> None:
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.ops_write import add_convergence_debt
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        db = self._make_db(tmp_path)
+        ops_db = db.with_name("ops.db")
+        initialize_archive_database(ops_db, ArchiveTier.OPS)
+        with sqlite3.connect(ops_db) as conn:
+            add_convergence_debt(
+                conn,
+                stage="session_profile",
+                target_type="session_id",
+                target_id="conv-1",
+                attempts=1,
+                created_at_ms=1_770_000_000_000,
+            )
+            add_convergence_debt(
+                conn,
+                stage="session_profile",
+                target_type="session_id",
+                target_id="conv-2",
+                attempts=1,
+                created_at_ms=1_770_000_001_000,
+            )
+
+        body = format_metrics(db)
+
+        assert 'polylogue_convergence_debt_count{stage="session_profile"} 2' in body
+        assert 'polylogue_convergence_debt_count{stage="parse"}' not in body
+
+    def test_live_ingest_metrics_prefer_archive_ops_when_present(self, tmp_path: Path) -> None:
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.ops_write import record_daemon_stage_event, record_ingest_attempt
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        db = self._make_db(tmp_path)
+        ops_db = db.with_name("ops.db")
+        initialize_archive_database(ops_db, ArchiveTier.OPS)
+        with sqlite3.connect(ops_db) as conn:
+            record_ingest_attempt(
+                conn,
+                attempt_id="v1-running",
+                status="running",
+                started_at_ms=1_770_000_000_000,
+                heartbeat_at_ms=1_770_000_001_000,
+            )
+            record_ingest_attempt(
+                conn,
+                attempt_id="v1-completed",
+                status="completed",
+                started_at_ms=1_770_000_010_000,
+                finished_at_ms=1_770_000_013_000,
+                parsed_raw_count=9,
+                materialized_count=6,
+            )
+            record_daemon_stage_event(
+                conn,
+                attempt_id="v1-running",
+                stage="full_parse",
+                status="running",
+                observed_at_ms=1_770_000_001_000,
+                payload={
+                    "storage_route": "archive_full",
+                    "rss_current_mb": 88.0,
+                    "cgroup_memory_file_mb": 33.0,
+                },
+                event_id="stage-v1",
+            )
+
+        body = format_metrics(db)
+
+        assert 'polylogue_live_ingest_attempts_total{status="completed"} 1' in body
+        assert 'polylogue_live_ingest_attempts_total{status="failed"} 0' in body
+        assert 'polylogue_live_ingest_attempts_total{status="running"} 1' in body
+        assert 'polylogue_live_ingest_storage_route_total{route="archive_full"} 1' in body
+        assert 'polylogue_live_ingest_storage_route_total{route="unknown"} 1' in body
+        assert 'polylogue_live_ingest_attempt_duration_seconds{quantile="min"} 3.0' in body
+        assert "polylogue_ingest_throughput_sessions_per_second 3.0" in body
+        assert "polylogue_ingest_throughput_messages_per_second 2.0" in body
+        assert 'polylogue_live_ingest_memory_mebibytes{kind="rss_current"} 88.0' in body
+        assert 'polylogue_live_ingest_memory_mebibytes{kind="cgroup_file"} 33.0' in body
+
+    def test_throughput_metrics_read_ops_tier_without_polylogue_db(self, tmp_path: Path) -> None:
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        db = tmp_path / "polylogue.db"
+        ops_db = db.with_name("ops.db")
+        initialize_archive_database(ops_db, ArchiveTier.OPS)
+        with sqlite3.connect(ops_db) as conn:
+            record_ingest_attempt(
+                conn,
+                attempt_id="v1-completed",
+                status="completed",
+                started_at_ms=1_770_000_010_000,
+                finished_at_ms=1_770_000_015_000,
+                parsed_raw_count=20,
+                materialized_count=10,
+            )
+
+        body = format_metrics(db)
+
+        assert "polylogue_ingest_throughput_sessions_per_second 4.0" in body
+        assert "polylogue_ingest_throughput_messages_per_second 2.0" in body
+
+    def test_live_ingest_metrics_read_ops_tier_without_polylogue_db(self, tmp_path: Path) -> None:
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.ops_write import add_convergence_debt, record_ingest_attempt
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        db = tmp_path / "polylogue.db"
+        ops_db = db.with_name("ops.db")
+        initialize_archive_database(ops_db, ArchiveTier.OPS)
+        with sqlite3.connect(ops_db) as conn:
+            record_ingest_attempt(
+                conn,
+                attempt_id="v1-running",
+                status="running",
+                started_at_ms=1_770_000_000_000,
+                heartbeat_at_ms=1_770_000_001_000,
+            )
+            add_convergence_debt(
+                conn,
+                stage="session_profile",
+                target_type="session_id",
+                target_id="conv-1",
+                attempts=1,
+                created_at_ms=1_770_000_000_000,
+            )
+
+        body = format_metrics(db)
+
+        assert 'polylogue_live_ingest_attempts_total{status="running"} 1' in body
+        assert "polylogue_live_ingest_attempts_in_flight 1" in body
+        assert 'polylogue_convergence_debt_count{stage="session_profile"} 1' in body
+
     def test_blob_lease_state(self, tmp_path: Path) -> None:
         body = format_metrics(self._make_db(tmp_path))
         assert "polylogue_blob_lease_pending_count 3" in body
@@ -319,10 +525,11 @@ class TestFormatMetricsReadsArchiveState:
 
     def test_fts_trigger_presence_partial(self, tmp_path: Path) -> None:
         body = format_metrics(self._make_db(tmp_path))
-        # Three of six triggers present in the test DB.
+        # The fixture has only the existing message FTS surface, so only its
+        # active triggers are exported.
         assert 'polylogue_fts_trigger_present{trigger="messages_fts_ai"} 1' in body
-        assert 'polylogue_fts_trigger_present{trigger="action_events_fts_ai"} 0' in body
-        assert "polylogue_fts_triggers_all_present 0" in body
+        assert 'polylogue_fts_trigger_present{trigger="action_events_fts_ai"}' not in body
+        assert "polylogue_fts_triggers_all_present 1" in body
 
     def test_fts_freshness_and_memory_state(self, tmp_path: Path) -> None:
         body = format_metrics(self._make_db(tmp_path))
@@ -332,63 +539,201 @@ class TestFormatMetricsReadsArchiveState:
         assert 'polylogue_live_ingest_memory_mebibytes{kind="cgroup_file"} 23.0' in body
 
     def test_embedding_backlog_and_latest_catchup_state(self, tmp_path: Path) -> None:
-        body = format_metrics(self._make_db(tmp_path))
-        assert 'polylogue_embedding_conversations{state="total"} 3' in body
-        assert 'polylogue_embedding_conversations{state="embedded"} 1' in body
-        assert 'polylogue_embedding_conversations{state="pending"} 2' in body
-        assert 'polylogue_embedding_conversations{state="failed"} 1' in body
+        db = self._make_db(tmp_path)
+        self._seed_catchup_run(db.with_name("ops.db"))
+        body = format_metrics(db)
+        assert 'polylogue_embedding_sessions{state="total"} 3' in body
+        assert 'polylogue_embedding_sessions{state="embedded"} 1' in body
+        assert 'polylogue_embedding_sessions{state="pending"} 2' in body
+        assert 'polylogue_embedding_sessions{state="failed"} 1' in body
         assert 'polylogue_embedding_messages{state="embedded"} 2' in body
         assert "polylogue_embedding_coverage_percent 33.33333333333333" in body
         assert 'polylogue_embedding_status_state{status="partial"} 1' in body
         assert 'polylogue_embedding_status_state{status="complete"} 0' in body
         assert "polylogue_embedding_retrieval_ready 1" in body
-        assert 'polylogue_embedding_latest_catchup_run_info{rebuild="true",status="stopped"} 1' in body
-        assert 'polylogue_embedding_latest_catchup_conversations{state="planned"} 3' in body
-        assert 'polylogue_embedding_latest_catchup_conversations{state="processed"} 3' in body
-        assert 'polylogue_embedding_latest_catchup_conversations{state="embedded"} 1' in body
-        assert 'polylogue_embedding_latest_catchup_conversations{state="skipped"} 1' in body
-        assert 'polylogue_embedding_latest_catchup_conversations{state="failed"} 1' in body
-        assert 'polylogue_embedding_latest_catchup_messages{state="planned"} 9' in body
+        # Archive catch-up runs track a reduced field set (scanned/embedded
+        # messages/cost/error) and do not persist rebuild mode, planned/skipped
+        # session breakdowns, or planned message counts — the metric reflects
+        # exactly what the ops tier stores.
+        assert 'polylogue_embedding_latest_catchup_run_info{rebuild="false",status="cancelled"} 1' in body
+        assert 'polylogue_embedding_latest_catchup_sessions{state="planned"} 3' in body
+        assert 'polylogue_embedding_latest_catchup_sessions{state="processed"} 3' in body
+        assert 'polylogue_embedding_latest_catchup_sessions{state="embedded"} 0' in body
+        assert 'polylogue_embedding_latest_catchup_sessions{state="skipped"} 0' in body
+        assert 'polylogue_embedding_latest_catchup_sessions{state="failed"} 1' in body
+        assert 'polylogue_embedding_latest_catchup_messages{state="planned"} 0' in body
         assert 'polylogue_embedding_latest_catchup_messages{state="embedded"} 2' in body
         assert "polylogue_embedding_latest_catchup_estimated_cost_usd 0.003" in body
 
-    def test_archive_messages_total_uses_conversation_stats(self, tmp_path: Path) -> None:
-        """#1629: per-source message counts avoid the 3.7M-row GROUP BY scan.
+    def test_embedding_backlog_reads_archive_sessions_without_monolithic_tables(self, tmp_path: Path) -> None:
+        db = tmp_path / "archive.db"
+        ops_db = tmp_path / "ops.db"
+        with sqlite3.connect(db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
+                    message_count INTEGER NOT NULL
+                );
+                CREATE TABLE raw_sessions (
+                    raw_id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
+                    parsed_at_ms INTEGER,
+                    validated_at_ms INTEGER,
+                    parse_error TEXT,
+                    validation_status TEXT
+                );
+                CREATE TABLE embedding_status (
+                    session_id TEXT PRIMARY KEY,
+                    message_count_embedded INTEGER NOT NULL,
+                    needs_reindex INTEGER NOT NULL,
+                    error_message TEXT
+                );
+                CREATE TABLE message_embeddings (message_id TEXT PRIMARY KEY);
+                INSERT INTO sessions VALUES
+                    ('s-embedded', 'codex-session', 2),
+                    ('s-pending', 'codex-session', 3),
+                    ('s-missing-status', 'claude-code-session', 1);
+                INSERT INTO raw_sessions VALUES
+                    ('raw-1', 'codex-session', 1767225700000, 1767225700000, NULL, NULL),
+                    ('raw-2', 'claude-code-session', NULL, 1767225700000, 'bad json', 'failed');
+                INSERT INTO embedding_status VALUES
+                    ('s-embedded', 2, 0, NULL),
+                    ('s-pending', 1, 1, 'provider timeout');
+                INSERT INTO message_embeddings VALUES ('m-1'), ('m-2');
+                """
+            )
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.ops_write import upsert_embedding_catchup_run
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
-        Reading from ``conversation_stats`` (one row per conversation) is
-        two orders of magnitude cheaper than ``SELECT source_name, COUNT(*)
-        FROM messages GROUP BY source_name`` on a steady-state archive.
+        initialize_archive_database(ops_db, ArchiveTier.OPS)
+        with sqlite3.connect(ops_db) as conn:
+            upsert_embedding_catchup_run(
+                conn,
+                run_id="v1-run",
+                status="completed",
+                started_at_ms=1_767_225_700_000,
+                finished_at_ms=1_767_225_701_000,
+                scanned_sessions=2,
+                embedded_messages=4,
+                estimated_cost_usd=0.001,
+            )
+
+        body = format_metrics(db)
+
+        assert 'polylogue_embedding_sessions{state="total"} 3' in body
+        assert 'polylogue_embedding_sessions{state="embedded"} 1' in body
+        assert 'polylogue_embedding_sessions{state="pending"} 2' in body
+        assert 'polylogue_embedding_sessions{state="failed"} 1' in body
+        assert 'polylogue_embedding_messages{state="embedded"} 2' in body
+        assert "polylogue_embedding_coverage_percent 33.33333333333333" in body
+        assert 'polylogue_embedding_status_state{status="partial"} 1' in body
+        assert 'polylogue_embedding_latest_catchup_run_info{rebuild="false",status="completed"} 1' in body
+        assert 'polylogue_embedding_latest_catchup_sessions{state="processed"} 2' in body
+        assert 'polylogue_embedding_latest_catchup_messages{state="embedded"} 4' in body
+        assert "polylogue_embedding_latest_catchup_estimated_cost_usd 0.001" in body
+        assert 'polylogue_archive_sessions_total{source="codex-session"} 2' in body
+        assert 'polylogue_archive_messages_total{source="codex-session"} 5' in body
+        assert 'polylogue_raw_records_total{state="total"} 2' in body
+        assert 'polylogue_raw_records_total{state="errors"} 1' in body
+        assert 'polylogue_raw_records_by_source{source="claude-code-session"} 1' in body
+
+    def test_raw_record_metrics_read_archive_source_tier_from_index_db(self, tmp_path: Path) -> None:
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        index_db = tmp_path / "index.db"
+        source_db = tmp_path / "source.db"
+        initialize_archive_database(index_db, ArchiveTier.INDEX)
+        initialize_archive_database(source_db, ArchiveTier.SOURCE)
+        with sqlite3.connect(index_db) as conn:
+            conn.executemany(
+                """
+                INSERT INTO sessions (native_id, origin, raw_id, content_hash)
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    ("indexed", "codex-session", "raw-ok", b"c" * 32),
+                    ("orphan", "claude-code-session", "raw-missing", b"d" * 32),
+                ],
+            )
+        with sqlite3.connect(source_db) as conn:
+            conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, source_path, source_index, blob_hash, blob_size,
+                    acquired_at_ms, parsed_at_ms, validated_at_ms, validation_status, parse_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("raw-ok", "codex-session", "/tmp/ok.jsonl", 0, b"a" * 32, 10, 1, 2, 3, None, None),
+            )
+            conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, source_path, source_index, blob_hash, blob_size,
+                    acquired_at_ms, validated_at_ms, validation_status, parse_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("raw-bad", "claude-code-session", "/tmp/bad.jsonl", 0, b"b" * 32, 10, 1, 2, "failed", "bad"),
+            )
+
+        body = format_metrics(index_db)
+
+        assert 'polylogue_raw_records_total{state="total"} 2' in body
+        assert 'polylogue_raw_records_total{state="parsed"} 1' in body
+        assert 'polylogue_raw_records_total{state="validated"} 2' in body
+        assert 'polylogue_raw_records_total{state="errors"} 1' in body
+        assert 'polylogue_raw_records_by_source{source="codex-session"} 1' in body
+        assert 'polylogue_raw_records_by_source{source="claude-code-session"} 1' in body
+        assert 'polylogue_archive_source_index_links_total{source="codex-session",state="acquired_raw"} 1' in body
+        assert 'polylogue_archive_source_index_links_total{source="codex-session",state="indexed_raw"} 1' in body
+        assert 'polylogue_archive_source_index_links_total{source="codex-session",state="pending_index"} 0' in body
+        assert (
+            'polylogue_archive_source_index_links_total{source="claude-code-session",state="pending_index"} 1' in body
+        )
+        assert (
+            'polylogue_archive_source_index_links_total{source="claude-code-session",state="orphan_index_link"} 1'
+            in body
+        )
+
+    def test_archive_messages_total_by_origin(self, tmp_path: Path) -> None:
+        """#1629: per-origin message counts read the ``sessions.message_count``
+        rollup column instead of a full ``GROUP BY`` scan over ``messages``.
+
+        Archive file-sets store ``message_count`` on each ``sessions`` row and labels
+        the metric by the ``origin`` family token (``source=`` label).
         """
         db = tmp_path / "archive.db"
         with sqlite3.connect(db) as conn:
             conn.executescript(
                 """
-                CREATE TABLE conversations (
-                    conversation_id TEXT PRIMARY KEY,
-                    source_name TEXT NOT NULL
-                );
-                CREATE TABLE conversation_stats (
-                    conversation_id TEXT PRIMARY KEY,
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
                     message_count INTEGER NOT NULL
                 );
-                INSERT INTO conversations VALUES ('c1', 'claude-code'), ('c2', 'claude-code'), ('c3', 'codex');
-                INSERT INTO conversation_stats VALUES ('c1', 100), ('c2', 50), ('c3', 30);
+                INSERT INTO sessions VALUES
+                    ('c1', 'claude-code-session', 100),
+                    ('c2', 'claude-code-session', 50),
+                    ('c3', 'codex-session', 30);
                 """
             )
 
         body = format_metrics(db)
 
-        assert 'polylogue_archive_conversations_total{source="claude-code"} 2' in body
-        assert 'polylogue_archive_conversations_total{source="codex"} 1' in body
-        assert 'polylogue_archive_messages_total{source="claude-code"} 150' in body
-        assert 'polylogue_archive_messages_total{source="codex"} 30' in body
+        assert 'polylogue_archive_sessions_total{source="claude-code-session"} 2' in body
+        assert 'polylogue_archive_sessions_total{source="codex-session"} 1' in body
+        assert 'polylogue_archive_messages_total{source="claude-code-session"} 150' in body
+        assert 'polylogue_archive_messages_total{source="codex-session"} 30' in body
 
     def test_embedding_metrics_tolerate_partial_tables(self, tmp_path: Path) -> None:
         db = tmp_path / "archive.db"
         with sqlite3.connect(db) as conn:
             conn.executescript("""
                 CREATE TABLE embedding_status (
-                    conversation_id TEXT PRIMARY KEY,
+                    session_id TEXT PRIMARY KEY,
                     needs_reindex INTEGER NOT NULL,
                     error_message TEXT
                 );
@@ -397,7 +742,7 @@ class TestFormatMetricsReadsArchiveState:
 
         body = format_metrics(db)
 
-        assert 'polylogue_embedding_conversations{state="pending"} 1' in body
+        assert 'polylogue_embedding_sessions{state="pending"} 1' in body
         assert "polylogue_embedding_coverage_percent 0.0" in body
         assert 'polylogue_embedding_status_state{status="none"} 1' in body
         assert "polylogue_embedding_retrieval_ready 0" in body

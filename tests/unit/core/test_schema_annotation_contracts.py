@@ -324,7 +324,7 @@ class TestGenerateSchemaFromSamples:
                 "messages": [
                     {"role": "user", "text": "Query " + str(i), "timestamp": 1000000000 + i} for i in range(5)
                 ],
-                "title": f"Conversation {j}",
+                "title": f"Session {j}",
             }
             for j in range(3)
         ]
@@ -372,7 +372,7 @@ class TestGenerateSchemaFromSamples:
         """Complex nested structures handled correctly."""
         samples = [
             {
-                "conversation": {
+                "session": {
                     "messages": [
                         {
                             "role": "user",
@@ -428,12 +428,12 @@ class TestSemanticInferenceMisclassificationRegression:
     """Regression tests for known misclassification bugs.
 
     parentUuid and runSettings.model were both scoring 0.6 as
-    conversation_title due to generic positives (short string + high
+    session_title due to generic positives (short string + high
     cardinality). Fixed by adding negative signals in _score_title.
     """
 
     def test_uuid_field_not_scored_as_title(self) -> None:
-        """A UUID-format field should never be classified as conversation_title."""
+        """A UUID-format field should never be classified as session_title."""
         field_stats = {
             "$.parentUuid": FieldStats(
                 path="$.parentUuid",
@@ -454,11 +454,11 @@ class TestSemanticInferenceMisclassificationRegression:
             ),
         }
         candidates = infer_semantic_roles(field_stats)
-        title_candidates = [c for c in candidates if c.role == "conversation_title" and c.path == "$.parentUuid"]
+        title_candidates = [c for c in candidates if c.role == "session_title" and c.path == "$.parentUuid"]
         assert not title_candidates, "UUID field should not be a title candidate"
 
     def test_model_field_not_scored_as_title(self) -> None:
-        """A model-slug field should not be classified as conversation_title."""
+        """A model-slug field should not be classified as session_title."""
         field_stats = {
             "$.runSettings.model": FieldStats(
                 path="$.runSettings.model",
@@ -478,7 +478,7 @@ class TestSemanticInferenceMisclassificationRegression:
             ),
         }
         candidates = infer_semantic_roles(field_stats)
-        title_candidates = [c for c in candidates if c.role == "conversation_title" and c.path == "$.runSettings.model"]
+        title_candidates = [c for c in candidates if c.role == "session_title" and c.path == "$.runSettings.model"]
         # Should either not appear, or have very low confidence
         for c in title_candidates:
             assert c.confidence < 0.3, f"Model field scored {c.confidence} as title, expected <0.3"
@@ -498,7 +498,7 @@ class TestSemanticInferenceMisclassificationRegression:
             ),
         }
         candidates = infer_semantic_roles(field_stats)
-        title_candidates = [c for c in candidates if c.role == "conversation_title" and c.path == "$.parentId"]
+        title_candidates = [c for c in candidates if c.role == "session_title" and c.path == "$.parentId"]
         for c in title_candidates:
             assert c.confidence < 0.15, f"ID-suffix field scored {c.confidence} as title, expected <0.15"
 
@@ -524,7 +524,7 @@ class TestSemanticInferenceMisclassificationRegression:
             ),
         }
         candidates = infer_semantic_roles(field_stats)
-        title_candidates = [c for c in candidates if c.role == "conversation_title" and c.path == "$.model_name"]
+        title_candidates = [c for c in candidates if c.role == "session_title" and c.path == "$.model_name"]
         for c in title_candidates:
             assert c.confidence < 0.3, f"Path-heavy field scored {c.confidence} as title, expected <0.3"
 
@@ -561,20 +561,20 @@ class TestFieldStatsCollection:
         assert "$.messages[*].role" in stats
         assert len(stats["$.messages"].array_lengths) > 0
 
-    def test_collect_with_conversation_ids(self) -> None:
-        """When conversation_ids supplied, value→conversation mapping tracked."""
+    def test_collect_with_session_ids(self) -> None:
+        """When session_ids supplied, value→session mapping tracked."""
         samples = [
             {"role": "user"},
             {"role": "assistant"},
         ]
         conv_ids: list[str | None] = ["conv-1", "conv-1"]
-        stats = _collect_field_stats(samples, conversation_ids=conv_ids)
+        stats = _collect_field_stats(samples, session_ids=conv_ids)
         role_stats = stats["$.role"]
         # Both values should map to conv-1
-        assert "user" in role_stats.value_conversation_ids
-        assert "conv-1" in role_stats.value_conversation_ids["user"]
-        assert "assistant" in role_stats.value_conversation_ids
-        assert "conv-1" in role_stats.value_conversation_ids["assistant"]
+        assert "user" in role_stats.value_session_ids
+        assert "conv-1" in role_stats.value_session_ids["user"]
+        assert "assistant" in role_stats.value_session_ids
+        assert "conv-1" in role_stats.value_session_ids["assistant"]
 
     def test_collect_multiline_detection(self) -> None:
         """Newlines tracked per string value."""
@@ -694,7 +694,7 @@ class TestSchemaAnnotations:
         role_schema = _get_nested(schema, "mapping.additionalProperties.message.author.role")
         assert role_schema is not None
         # Role field is identified via semantic inference; enum values may or may
-        # not be populated depending on cross-conversation threshold filtering.
+        # not be populated depending on cross-session threshold filtering.
         assert role_schema.get("x-polylogue-semantic-role") == "message_role"
 
     def test_chatgpt_uuid_format(self) -> None:

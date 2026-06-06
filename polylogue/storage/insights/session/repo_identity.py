@@ -1,13 +1,13 @@
 """Repo-identity observation writers and readers (#1253).
 
-This module owns the per-conversation maintenance of the
-``repo_identities`` and ``conversation_repo_observations`` tables. It
+This module owns the per-session maintenance of the
+``repo_identities`` and ``session_repo_observations`` tables. It
 deduplicates repo identity by ``(origin_url, root_path)`` and records a
-many-to-many observation row per conversation.
+many-to-many observation row per session.
 
 Population is invoked from the session-insight refresh path so the
 canonical projection stays in lockstep with attribution rebuilds. The
-data lives outside the conversation content-hash boundary by
+data lives outside the session content-hash boundary by
 construction — re-deriving from action events is deterministic.
 """
 
@@ -20,22 +20,22 @@ from datetime import UTC, datetime
 
 import aiosqlite
 
-from polylogue.archive.conversation.attribution import ConversationAttribution
-from polylogue.archive.conversation.repo_identity import normalize_repo_name
+from polylogue.archive.session.attribution import SessionAttribution
+from polylogue.archive.session.repo_identity import normalize_repo_name
 
 __all__ = [
     "RepoObservation",
     "attribution_to_observations",
-    "list_conversations_for_repo",
+    "list_sessions_for_repo",
     "list_repo_identities",
-    "refresh_conversation_repo_observations",
-    "refresh_conversation_repo_observations_sync",
+    "refresh_session_repo_observations",
+    "refresh_session_repo_observations_sync",
 ]
 
 
 @dataclass(frozen=True, slots=True)
 class RepoObservation:
-    """One (conversation, repo) observation prepared for upsert."""
+    """One (session, repo) observation prepared for upsert."""
 
     origin_url: str
     root_path: str
@@ -48,14 +48,14 @@ def _utc_now_iso() -> str:
 
 
 def attribution_to_observations(
-    attribution: ConversationAttribution,
+    attribution: SessionAttribution,
     *,
     git_repository_url: str | None = None,
 ) -> tuple[RepoObservation, ...]:
     """Translate an attribution bundle into deduplicated repo observations.
 
-    A single conversation that touched multiple repo roots yields one
-    observation per root. ``git_repository_url`` (typed conversations
+    A single session that touched multiple repo roots yields one
+    observation per root. ``git_repository_url`` (typed sessions
     column) is associated with every root because the parsers cannot
     currently tell which root the origin URL points at — the join
     surface treats this as best-effort attribution.
@@ -82,7 +82,7 @@ def attribution_to_observations(
         )
     # Some sources (e.g. ChatGPT mentions of GitHub URLs) carry an
     # origin URL but no resolvable local root. Surface the origin
-    # anyway so the cross-source "all conversations touching repo X"
+    # anyway so the cross-source "all sessions touching repo X"
     # query can find them, keyed by an empty root_path.
     if origin_url and not observations:
         observations.append(
@@ -128,23 +128,23 @@ async def _upsert_repo_identity_async(
     return int(cursor.lastrowid or 0)
 
 
-async def refresh_conversation_repo_observations(
+async def refresh_session_repo_observations(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
     observations: Sequence[RepoObservation],
     *,
     now_iso: str | None = None,
 ) -> int:
-    """Replace the repo observations for ``conversation_id``.
+    """Replace the repo observations for ``session_id``.
 
     Returns the number of observation rows written. Existing rows for
-    this conversation are deleted before insertion so the projection
+    this session are deleted before insertion so the projection
     cannot drift on rebuild.
     """
     timestamp = now_iso or _utc_now_iso()
     await conn.execute(
-        "DELETE FROM conversation_repo_observations WHERE conversation_id = ?",
-        (conversation_id,),
+        "DELETE FROM session_repo_observations WHERE session_id = ?",
+        (session_id,),
     )
     if not observations:
         return 0
@@ -154,10 +154,10 @@ async def refresh_conversation_repo_observations(
         if identity_id <= 0:
             continue
         await conn.execute(
-            "INSERT OR REPLACE INTO conversation_repo_observations "
-            "(conversation_id, repo_identity_id, branch_name, observed_at) "
+            "INSERT OR REPLACE INTO session_repo_observations "
+            "(session_id, repo_identity_id, branch_name, observed_at) "
             "VALUES (?, ?, ?, ?)",
-            (conversation_id, identity_id, observation.branch_name, timestamp),
+            (session_id, identity_id, observation.branch_name, timestamp),
         )
         written += 1
     return written
@@ -194,18 +194,18 @@ def _upsert_repo_identity_sync(
     return int(cursor.lastrowid or 0)
 
 
-def refresh_conversation_repo_observations_sync(
+def refresh_session_repo_observations_sync(
     conn: sqlite3.Connection,
-    conversation_id: str,
+    session_id: str,
     observations: Sequence[RepoObservation],
     *,
     now_iso: str | None = None,
 ) -> int:
-    """Sync sibling of :func:`refresh_conversation_repo_observations`."""
+    """Sync sibling of :func:`refresh_session_repo_observations`."""
     timestamp = now_iso or _utc_now_iso()
     conn.execute(
-        "DELETE FROM conversation_repo_observations WHERE conversation_id = ?",
-        (conversation_id,),
+        "DELETE FROM session_repo_observations WHERE session_id = ?",
+        (session_id,),
     )
     if not observations:
         return 0
@@ -215,10 +215,10 @@ def refresh_conversation_repo_observations_sync(
         if identity_id <= 0:
             continue
         conn.execute(
-            "INSERT OR REPLACE INTO conversation_repo_observations "
-            "(conversation_id, repo_identity_id, branch_name, observed_at) "
+            "INSERT OR REPLACE INTO session_repo_observations "
+            "(session_id, repo_identity_id, branch_name, observed_at) "
             "VALUES (?, ?, ?, ?)",
-            (conversation_id, identity_id, observation.branch_name, timestamp),
+            (session_id, identity_id, observation.branch_name, timestamp),
         )
         written += 1
     return written
@@ -246,14 +246,14 @@ async def list_repo_identities(
     return tuple({key: row[key] for key in list(row.keys())} for row in rows)
 
 
-async def list_conversations_for_repo(
+async def list_sessions_for_repo(
     conn: aiosqlite.Connection,
     *,
     origin_url: str | None = None,
     root_path: str | None = None,
     repo_name: str | None = None,
 ) -> tuple[str, ...]:
-    """Return conversation IDs touching the matching repo identity.
+    """Return session IDs touching the matching repo identity.
 
     At least one of ``origin_url``, ``root_path``, or ``repo_name`` must
     be supplied; results are the union across all matching identities.
@@ -270,15 +270,15 @@ async def list_conversations_for_repo(
         conditions.append("ri.repo_name = ?")
         params.append(repo_name)
     if not conditions:
-        raise ValueError("list_conversations_for_repo requires at least one filter")
+        raise ValueError("list_sessions_for_repo requires at least one filter")
     where = " AND ".join(conditions)
     cursor = await conn.execute(
-        "SELECT DISTINCT cro.conversation_id "
-        "FROM conversation_repo_observations cro "
+        "SELECT DISTINCT cro.session_id "
+        "FROM session_repo_observations cro "
         "JOIN repo_identities ri ON ri.id = cro.repo_identity_id "
         f"WHERE {where} "
-        "ORDER BY cro.conversation_id",
+        "ORDER BY cro.session_id",
         params,
     )
     rows = await cursor.fetchall()
-    return tuple(str(row["conversation_id"]) for row in rows)
+    return tuple(str(row["session_id"]) for row in rows)

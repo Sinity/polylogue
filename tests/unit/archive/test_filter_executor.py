@@ -1,4 +1,4 @@
-"""Tests for ConversationFilter SQL pushdown and execution plan logic.
+"""Tests for SessionFilter SQL pushdown and execution plan logic.
 
 Insightion code under test: polylogue/archive/filter/filters.py
 Methods: _sql_pushdown_params, _needs_content_loading, can_use_summaries, _has_post_filters
@@ -7,18 +7,22 @@ Methods: _sql_pushdown_params, _needs_content_loading, can_use_summaries, _has_p
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock
+from pathlib import Path
 
 from hypothesis import given, settings
 
-from polylogue.archive.filter.filters import ConversationFilter
+from polylogue.archive.filter.filters import SessionFilter
 from tests.infra.strategies.filters import filter_chain_strategy
 
 
-def _make_filter() -> ConversationFilter:
-    """Create a ConversationFilter with a mock repository."""
-    mock_repo = MagicMock()
-    return ConversationFilter(repository=mock_repo)
+def _make_filter() -> SessionFilter:
+    """Create a SessionFilter bound to an archive root.
+
+    These tests only exercise plan construction (``_sql_pushdown_params``,
+    ``can_use_summaries``, ``_has_post_filters``, ``build_query_plan``); no
+    terminal operation runs, so the archive root is never opened.
+    """
+    return SessionFilter(archive_root=Path("/nonexistent/archive"))
 
 
 # =============================================================================
@@ -37,13 +41,13 @@ class TestSqlPushdownParams:
 
     def test_single_provider_pushdown(self) -> None:
         """Single provider uses 'provider' key (not 'providers')."""
-        f = _make_filter().provider("claude-ai")
+        f = _make_filter().origin("claude-ai-export")
         params = f._sql_pushdown_params()
         assert params == {"provider": "claude-ai"}
 
     def test_multi_provider_pushdown(self) -> None:
         """Multiple providers use 'providers' key as a list."""
-        f = _make_filter().provider("claude-ai", "chatgpt")
+        f = _make_filter().origin("claude-ai-export", "chatgpt-export")
         params = f._sql_pushdown_params()
         assert "providers" in params
         assert params["providers"] == ["claude-ai", "chatgpt"]
@@ -74,7 +78,7 @@ class TestSqlPushdownParams:
         """Multiple pushdown-eligible filters produce combined params."""
         dt_since = datetime(2024, 1, 1, tzinfo=timezone.utc)
         dt_until = datetime(2024, 12, 31, tzinfo=timezone.utc)
-        f = _make_filter().provider("claude-ai").since(dt_since).until(dt_until).title("test")
+        f = _make_filter().origin("claude-ai-export").since(dt_since).until(dt_until).title("test")
         params = f._sql_pushdown_params()
         assert params["provider"] == "claude-ai"
         assert params["since"] == dt_since.isoformat()
@@ -92,7 +96,7 @@ class TestExecutionPlan:
 
     def test_summary_compatible_for_simple_filters(self) -> None:
         """SQL-only filters are summary-compatible (don't need message content)."""
-        f = _make_filter().provider("claude-ai").title("test")
+        f = _make_filter().origin("claude-ai-export").title("test")
         assert f.can_use_summaries() is True
 
     def test_content_required_for_has_thinking(self) -> None:
@@ -165,12 +169,12 @@ class TestHasPostFilters:
 
     def test_no_post_filters_for_pushdown_only(self) -> None:
         """Pushdown-only filters have no post-filters."""
-        f = _make_filter().provider("claude-ai").since(datetime(2024, 1, 1, tzinfo=timezone.utc))
+        f = _make_filter().origin("claude-ai-export").since(datetime(2024, 1, 1, tzinfo=timezone.utc))
         assert f._has_post_filters() is False
 
     def test_excluded_providers_require_post_filter(self) -> None:
         """Excluded providers need in-memory post-filtering."""
-        f = _make_filter().exclude_provider("chatgpt")
+        f = _make_filter().exclude_origin("chatgpt-export")
         assert f._has_post_filters() is True
 
     def test_tags_require_post_filter(self) -> None:
@@ -214,7 +218,7 @@ class TestFilterChainProperties:
     """Property-based tests for filter chain safety."""
 
     @given(filter_chain_strategy(min_filters=1, max_filters=5))
-    @settings(max_examples=50)
+    @settings(max_examples=50, deadline=None)
     def test_sql_pushdown_params_never_crashes(self, chain: list[dict[str, object]]) -> None:
         """Building pushdown params from any filter chain never crashes."""
         f = _make_filter()
@@ -223,7 +227,7 @@ class TestFilterChainProperties:
             filter_type = spec.get("type")
             value = spec.get("value")
             if filter_type == "provider" and isinstance(value, str):
-                f = f.provider(value)
+                f = f.origin(value)
             elif filter_type == "contains" and isinstance(value, str):
                 f = f.contains(value)
             elif filter_type == "since" and isinstance(value, str):

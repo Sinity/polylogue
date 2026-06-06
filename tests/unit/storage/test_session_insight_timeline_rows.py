@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from polylogue.archive.models import Conversation
+from polylogue.archive.models import Session
 from polylogue.archive.session.session_profile import build_session_analysis, build_session_profile
 from polylogue.storage.insights.session.timeline_rows import (
     build_session_phase_records,
@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 APP_PATH = REPO_ROOT / "polylogue" / "facade.py"
 
 
-def _timeline_conversation() -> Conversation:
+def _timeline_session() -> Session:
     return make_conv(
         id="conv-timeline",
         provider=Provider.CLAUDE_CODE,
@@ -66,9 +66,9 @@ def _timeline_conversation() -> Conversation:
 
 
 def test_session_timeline_row_builders_roundtrip_work_events_and_phases() -> None:
-    conversation = _timeline_conversation()
-    analysis = build_session_analysis(conversation)
-    profile = build_session_profile(conversation, analysis=analysis)
+    session = _timeline_session()
+    analysis = build_session_analysis(session)
+    profile = build_session_profile(session, analysis=analysis)
 
     work_event_records = build_session_work_event_records(
         profile,

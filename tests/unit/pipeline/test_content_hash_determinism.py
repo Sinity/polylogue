@@ -13,11 +13,11 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.hashing import hash_payload, hash_text
 from polylogue.pipeline.ids import (
     _normalize_for_hash,
-    conversation_content_hash,
-    conversation_content_hashes,
     message_content_hash,
+    session_content_hash,
+    session_content_hashes,
 )
-from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedConversation, ParsedMessage
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.base_models import ParsedProviderEvent
 from polylogue.types import ContentBlockType, Provider
 
@@ -39,10 +39,10 @@ def _conv(
     created_at: str | None = "2024-01-01T00:00:00Z",
     updated_at: str | None = None,
     attachments: list[ParsedAttachment] | None = None,
-) -> ParsedConversation:
-    return ParsedConversation(
+) -> ParsedSession:
+    return ParsedSession(
         source_name=Provider.CHATGPT,
-        provider_conversation_id=provider_id,
+        provider_session_id=provider_id,
         title=title,
         created_at=created_at,
         updated_at=updated_at,
@@ -63,10 +63,10 @@ def test_hash_text_nfc_nfd_equivalence() -> None:
 
 
 def test_content_hash_nfc_nfd_title_equivalence() -> None:
-    """Conversations with NFC vs NFD titles should have identical content hashes."""
+    """Sessions with NFC vs NFD titles should have identical content hashes."""
     conv_nfc = _conv("c1", "café", [_msg("m1", "user", "hello")])
     conv_nfd = _conv("c1", "café", [_msg("m1", "user", "hello")])
-    assert conversation_content_hash(conv_nfc) == conversation_content_hash(conv_nfd)
+    assert session_content_hash(conv_nfc) == session_content_hash(conv_nfd)
 
 
 def test_content_hash_nfc_nfd_message_text_equivalence() -> None:
@@ -101,7 +101,7 @@ def test_sentinel_in_content_does_not_collide() -> None:
     # NFC normalization of ASCII doesn't change anything.
     assert result == "__POLYLOGUE_NULL__"
     # The sentinel value itself and None both normalize to the same value.
-    # This is acceptable because no real conversation will have this exact
+    # This is acceptable because no real session will have this exact
     # content — it's a 19-character ASCII string.
     assert _normalize_for_hash(None) == _normalize_for_hash("__POLYLOGUE_NULL__")
     # This documents the intentional collision between None and the sentinel
@@ -111,8 +111,8 @@ def test_sentinel_in_content_does_not_collide() -> None:
 # ── Message ordering ──────────────────────────────────────────────────
 
 
-def test_message_order_affects_conversation_hash() -> None:
-    """Different message orderings should produce different conversation hashes."""
+def test_message_order_affects_session_hash() -> None:
+    """Different message orderings should produce different session hashes."""
     conv_a = _conv(
         "c1",
         "Test",
@@ -129,7 +129,7 @@ def test_message_order_affects_conversation_hash() -> None:
             _msg("m1", "user", "first"),
         ],
     )
-    assert conversation_content_hash(conv_a) != conversation_content_hash(conv_b)
+    assert session_content_hash(conv_a) != session_content_hash(conv_b)
 
 
 # ── Content blocks affect hash ────────────────────────────────────────
@@ -209,8 +209,8 @@ def test_content_block_type_affects_hash() -> None:
 # ── Attachments ───────────────────────────────────────────────────────
 
 
-def test_attachments_affect_conversation_hash() -> None:
-    """Attachments should affect the conversation content hash."""
+def test_attachments_affect_session_hash() -> None:
+    """Attachments should affect the session content hash."""
     msg = _msg("m1", "user", "here is a file")
     conv_no_att = _conv("c1", "Test", [msg])
     conv_with_att = _conv(
@@ -228,7 +228,7 @@ def test_attachments_affect_conversation_hash() -> None:
             )
         ],
     )
-    assert conversation_content_hash(conv_no_att) != conversation_content_hash(conv_with_att)
+    assert session_content_hash(conv_no_att) != session_content_hash(conv_with_att)
 
 
 # ── hash_payload determinism ──────────────────────────────────────────
@@ -280,42 +280,42 @@ def test_hash_payload_json_encoding_stability() -> None:
 def test_provider_source_does_not_affect_content_hash() -> None:
     """Content hash depends on content, not on which provider parsed it.
 
-    Two ParsedConversations with identical content but different source_names
+    Two ParsedSessions with identical content but different source_names
     should produce identical content hashes. Source identity is part of the
-    conversation ID, not the content hash.
+    session ID, not the content hash.
     """
     msg = _msg("m1", "user", "hello")
-    conv_chatgpt = ParsedConversation(
+    conv_chatgpt = ParsedSession(
         source_name=Provider.CHATGPT,
-        provider_conversation_id="conv-1",
+        provider_session_id="conv-1",
         title="Same Content",
         created_at="2024-01-01T00:00:00Z",
         updated_at=None,
         messages=[msg],
         attachments=[],
     )
-    conv_claude = ParsedConversation(
+    conv_claude = ParsedSession(
         source_name=Provider.CLAUDE_CODE,
-        provider_conversation_id="conv-1",
+        provider_session_id="conv-1",
         title="Same Content",
         created_at="2024-01-01T00:00:00Z",
         updated_at=None,
         messages=[msg],
         attachments=[],
     )
-    assert conversation_content_hash(conv_chatgpt) == conversation_content_hash(conv_claude)
+    assert session_content_hash(conv_chatgpt) == session_content_hash(conv_claude)
 
 
 # ── Provider events affect hash ───────────────────────────────────────
 
 
-def test_provider_events_affect_conversation_hash() -> None:
-    """Provider events should affect the conversation content hash."""
+def test_provider_events_affect_session_hash() -> None:
+    """Provider events should affect the session content hash."""
     msg = _msg("m1", "user", "hello")
     conv_no_events = _conv("c1", "Test", [msg])
-    conv_with_events = ParsedConversation(
+    conv_with_events = ParsedSession(
         source_name=Provider.CHATGPT,
-        provider_conversation_id="c1",
+        provider_session_id="c1",
         title="Test",
         created_at="2024-01-01T00:00:00Z",
         updated_at=None,
@@ -330,16 +330,16 @@ def test_provider_events_affect_conversation_hash() -> None:
             )
         ],
     )
-    assert conversation_content_hash(conv_no_events) != conversation_content_hash(conv_with_events)
+    assert session_content_hash(conv_no_events) != session_content_hash(conv_with_events)
 
 
 # ── Edge cases ────────────────────────────────────────────────────────
 
 
-def test_content_hash_empty_conversation_is_valid() -> None:
-    """An empty conversation (no messages, no attachments) should hash."""
+def test_content_hash_empty_session_is_valid() -> None:
+    """An empty session (no messages, no attachments) should hash."""
     conv = _conv("empty", "Empty", [])
-    result = conversation_content_hash(conv)
+    result = session_content_hash(conv)
     assert len(result) == 64
 
 
@@ -365,21 +365,21 @@ def test_content_hash_unicode_surrogate_resistance() -> None:
         assert len(result) == 64
 
 
-def test_conversation_content_hashes_per_message_dict() -> None:
-    """conversation_content_hashes returns per-message hash dict with correct keys."""
+def test_session_content_hashes_per_message_dict() -> None:
+    """session_content_hashes returns per-message hash dict with correct keys."""
     messages = [
         _msg("m1", "user", "first"),
         _msg("", "assistant", "second"),  # empty provider ID → auto-generated
         _msg("m3", "user", "third"),
     ]
     conv = _conv("c1", "Test", messages)
-    conv_hash, msg_hashes = conversation_content_hashes(conv)
+    conv_hash, msg_hashes = session_content_hashes(conv)
     assert len(msg_hashes) == 3
     assert "m1" in msg_hashes
     assert "msg-2" in msg_hashes  # auto-generated for empty provider ID
     assert "m3" in msg_hashes
     assert all(len(h) == 64 for h in msg_hashes.values())
-    assert conv_hash == conversation_content_hash(conv)
+    assert conv_hash == session_content_hash(conv)
 
 
 def test_message_hash_role_affects_hash() -> None:

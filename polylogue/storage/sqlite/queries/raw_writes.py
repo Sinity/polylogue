@@ -1,20 +1,20 @@
-"""Raw conversation persistence helpers."""
+"""Raw session persistence helpers."""
 
 from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.runtime import RawSessionRecord
 
 
-async def save_raw_conversation(
+async def save_raw_session(
     conn: aiosqlite.Connection,
-    record: RawConversationRecord,
+    record: RawSessionRecord,
     transaction_depth: int,
 ) -> bool:
     cursor = await conn.execute(
         """
-        INSERT OR IGNORE INTO raw_conversations (
+        INSERT OR IGNORE INTO raw_sessions (
             raw_id,
             source_name,
             payload_provider,
@@ -60,7 +60,7 @@ async def save_raw_conversation(
 
     if not inserted and record.file_mtime is not None:
         await conn.execute(
-            "UPDATE raw_conversations SET file_mtime = ?, source_path = ? "
+            "UPDATE raw_sessions SET file_mtime = ?, source_path = ? "
             "WHERE raw_id = ? AND (file_mtime IS NOT ? OR source_path IS NOT ?)",
             (record.file_mtime, record.source_path, record.raw_id, record.file_mtime, record.source_path),
         )
@@ -70,4 +70,4 @@ async def save_raw_conversation(
     return inserted
 
 
-__all__ = ["save_raw_conversation"]
+__all__ = ["save_raw_session"]

@@ -19,7 +19,7 @@ from hypothesis import given, settings
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.runtime import RawSessionRecord
 from tests.infra.large_batches import (
     corrupt_line_bad_utf8,
     corrupt_line_malformed_json,
@@ -44,7 +44,7 @@ def _make_raw_record(
     provider: str,
     content: bytes,
     path: str = "/exports/test.jsonl",
-) -> RawConversationRecord:
+) -> RawSessionRecord:
     from polylogue.storage.blob_store import get_blob_store
 
     # Write content to blob store
@@ -52,7 +52,7 @@ def _make_raw_record(
     actual_raw_id, blob_size = blob_store.write_from_bytes(content)
     now = datetime.now(timezone.utc).isoformat()
 
-    return RawConversationRecord(
+    return RawSessionRecord(
         raw_id=actual_raw_id,  # Use the actual hash as raw_id
         source_name="test",
         source_path=path,
@@ -66,7 +66,7 @@ def _make_raw_record(
 def _make_parsing_service(tmp_path: Path) -> ParsingService:
     from polylogue.config import Config
     from polylogue.pipeline.services.parsing import ParsingService
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.repository import SessionRepository
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
     db = SQLiteBackend(db_path=tmp_path / "test.db")
@@ -76,7 +76,7 @@ def _make_parsing_service(tmp_path: Path) -> ParsingService:
         render_root=tmp_path / "render",
     )
     return ParsingService(
-        repository=ConversationRepository(backend=db),
+        repository=SessionRepository(backend=db),
         archive_root=tmp_path / "archive",
         config=config,
     )
@@ -311,8 +311,8 @@ class TestParsingServiceCorruption:
         record = _make_raw_record("codex-corrupt-1", "codex", content, "/exports/codex.jsonl")
         result = ingest_record(record, str(tmp_path / "archive"), "off")
         assert result.error is None
-        if result.conversations:
-            assert result.conversations[0].source_name in ("codex", "codex-cli")
+        if result.sessions:
+            assert result.sessions[0].source_name in ("codex", "codex-cli")
 
     def test_truncated_jsonl_line_in_codex_raw(self, tmp_path: Path) -> None:
         """Codex JSONL with 1 truncated line: parsing succeeds."""
@@ -716,9 +716,9 @@ class TestRerunIdempotency:
         result_1 = ingest_record(record, str(tmp_path / "archive"), "off")
         result_2 = ingest_record(record, str(tmp_path / "archive"), "off")
 
-        assert len(result_1.conversations) == len(result_2.conversations)
-        for conv1, conv2 in zip(result_1.conversations, result_2.conversations, strict=True):
-            assert conv1.conversation_id == conv2.conversation_id
+        assert len(result_1.sessions) == len(result_2.sessions)
+        for conv1, conv2 in zip(result_1.sessions, result_2.sessions, strict=True):
+            assert conv1.session_id == conv2.session_id
             assert conv1.source_name == conv2.source_name
             assert len(conv1.message_tuples) == len(conv2.message_tuples)
 
@@ -743,8 +743,8 @@ class TestRerunIdempotency:
 
         assert result_corrupt.error is None
         assert result_clean.error is None
-        # Clean parse should have all conversations
-        assert len(result_clean.conversations) >= len(result_corrupt.conversations)
+        # Clean parse should have all sessions
+        assert len(result_clean.sessions) >= len(result_corrupt.sessions)
 
     def test_iter_json_stream_idempotent(self) -> None:
         """_iter_json_stream produces identical output on repeated calls."""

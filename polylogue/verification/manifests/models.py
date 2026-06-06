@@ -615,7 +615,7 @@ class ProviderMetaField(BaseModel):
     VALID_CLASSIFICATIONS: ClassVar[frozenset[str]] = frozenset(
         {"provider-specific-retained", "raw-only", "promoted", "removed"}
     )
-    VALID_SCOPES: ClassVar[frozenset[str]] = frozenset({"conversation", "message", "attachment"})
+    VALID_SCOPES: ClassVar[frozenset[str]] = frozenset({"session", "message", "attachment"})
 
     @field_validator("classification")
     @classmethod

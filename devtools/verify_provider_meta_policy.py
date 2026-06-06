@@ -99,8 +99,8 @@ def load_manifest(path: Path) -> list[ManifestField]:
                 f"{path}: fields[{idx}].classification={classification!r} not in {sorted(ALLOWED_CLASSIFICATIONS)}"
             )
         scope = raw_row.get("scope")
-        if scope is not None and scope not in {"conversation", "message", "attachment"}:
-            raise SystemExit(f"{path}: fields[{idx}].scope={scope!r} must be conversation|message|attachment")
+        if scope is not None and scope not in {"session", "message", "attachment"}:
+            raise SystemExit(f"{path}: fields[{idx}].scope={scope!r} must be session|message|attachment")
         dedup_key = (key, scope)
         if dedup_key in seen_keys:
             raise SystemExit(f"{path}: duplicate manifest entry for key={key!r} scope={scope!r}")

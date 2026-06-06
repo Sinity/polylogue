@@ -6,7 +6,7 @@ import sqlite3
 
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.runtime import ArtifactObservationRecord
-from polylogue.storage.sqlite.queries.mappers import _row_to_raw_conversation
+from polylogue.storage.sqlite.queries.mappers import _row_to_raw_session
 
 
 def _upsert_artifact_observation(
@@ -31,7 +31,7 @@ def _upsert_artifact_observation(
             wire_format,
             artifact_kind,
             classification_reason,
-            parse_as_conversation,
+            parse_as_session,
             schema_eligible,
             support_status,
             malformed_jsonl_lines,
@@ -57,7 +57,7 @@ def _upsert_artifact_observation(
             wire_format = excluded.wire_format,
             artifact_kind = excluded.artifact_kind,
             classification_reason = excluded.classification_reason,
-            parse_as_conversation = excluded.parse_as_conversation,
+            parse_as_session = excluded.parse_as_session,
             schema_eligible = excluded.schema_eligible,
             support_status = excluded.support_status,
             malformed_jsonl_lines = excluded.malformed_jsonl_lines,
@@ -84,7 +84,7 @@ def _upsert_artifact_observation(
             record.wire_format,
             record.artifact_kind,
             record.classification_reason,
-            int(record.parse_as_conversation),
+            int(record.parse_as_session),
             int(record.schema_eligible),
             str(record.support_status),
             record.malformed_jsonl_lines,
@@ -118,7 +118,7 @@ def ensure_artifact_observations(
             state_clauses.append(
                 "("
                 "o.observation_id IS NOT NULL AND "
-                "o.parse_as_conversation = 1 AND "
+                "o.parse_as_session = 1 AND "
                 "o.schema_eligible = 1 AND "
                 "o.malformed_jsonl_lines = 0 AND "
                 "o.decode_error IS NULL"
@@ -133,7 +133,7 @@ def ensure_artifact_observations(
         rows = conn.execute(
             f"""
             SELECT r.rowid AS raw_rowid, r.*
-            FROM raw_conversations r
+            FROM raw_sessions r
             LEFT JOIN artifact_observations o
               ON COALESCE(o.source_name, '') = COALESCE(r.source_name, '')
              AND o.source_path = r.source_path
@@ -147,7 +147,7 @@ def ensure_artifact_observations(
         if not rows:
             break
         for row in rows:
-            record = _row_to_raw_conversation(row)
+            record = _row_to_raw_session(row)
             observation = inspect_raw_artifact(record)
             if _upsert_artifact_observation(conn, observation):
                 inserted += 1

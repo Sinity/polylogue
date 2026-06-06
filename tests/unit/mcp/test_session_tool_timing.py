@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from polylogue.archive.models import Conversation
+from polylogue.archive.models import Session
 from polylogue.insights.otlp_correlation import (
     SessionToolTiming,
     ToolTimingEntry,
@@ -16,8 +16,8 @@ from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async, make_polylogue_mock
 
 
-def _make_conversation() -> Conversation:
-    """Build a mock conversation for testing."""
+def _make_session() -> Session:
+    """Build a mock session for testing."""
     return make_conv(
         id="test-session-1",
         provider="claude-code",
@@ -84,7 +84,7 @@ async def test_session_tool_timing_not_found(
 ) -> None:
     with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
         mock_poly = make_polylogue_mock()
-        mock_poly.get_conversation = AsyncMock(return_value=None)
+        mock_poly.get_session = AsyncMock(return_value=None)
         mock_get_polylogue.return_value = mock_poly
 
         raw = await invoke_surface_async(
@@ -100,7 +100,7 @@ async def test_session_tool_timing_not_found(
 async def test_session_tool_timing_with_otlp_data(
     mcp_server: MCPServerUnderTest,
 ) -> None:
-    conv = _make_conversation()
+    conv = _make_session()
     timing = _make_tool_timing_otlp()
 
     with (
@@ -111,7 +111,7 @@ async def test_session_tool_timing_with_otlp_data(
         ),
     ):
         mock_poly = make_polylogue_mock()
-        mock_poly.get_conversation = AsyncMock(return_value=conv)
+        mock_poly.get_session = AsyncMock(return_value=conv)
         mock_poly.db_path = ":memory:"
         mock_get_polylogue.return_value = mock_poly
 
@@ -143,7 +143,7 @@ async def test_session_tool_timing_with_otlp_data(
 async def test_session_tool_timing_fallback_to_message_gaps(
     mcp_server: MCPServerUnderTest,
 ) -> None:
-    conv = _make_conversation()
+    conv = _make_session()
     timing = _make_tool_timing_fallback()
 
     with (
@@ -154,7 +154,7 @@ async def test_session_tool_timing_fallback_to_message_gaps(
         ),
     ):
         mock_poly = make_polylogue_mock()
-        mock_poly.get_conversation = AsyncMock(return_value=conv)
+        mock_poly.get_session = AsyncMock(return_value=conv)
         mock_poly.db_path = ":memory:"
         mock_get_polylogue.return_value = mock_poly
 

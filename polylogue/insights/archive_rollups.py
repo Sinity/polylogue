@@ -7,12 +7,12 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from polylogue.archive.conversation.repo_identity import normalize_repo_names
 from polylogue.archive.semantic.pricing import (
     CostBasisPayload,
     CostModelBreakdown,
     CostUsagePayload,
 )
+from polylogue.archive.session.repo_identity import normalize_repo_names
 from polylogue.archive.session.session_profile import SessionProfile
 from polylogue.insights.archive import (
     ArchiveInsightProvenance,
@@ -30,8 +30,8 @@ from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZ
 
 @dataclass(slots=True)
 class _TagRollupBucket:
-    conversation_count: int = 0
-    logical_conversation_ids: set[str] = field(default_factory=set)
+    session_count: int = 0
+    logical_session_ids: set[str] = field(default_factory=set)
     explicit_count: int = 0
     auto_count: int = 0
     repos: Counter[str] = field(default_factory=Counter)
@@ -41,8 +41,8 @@ class _TagRollupBucket:
 
 @dataclass(slots=True)
 class _TagAggregateBucket:
-    conversation_count: int = 0
-    logical_conversation_ids: set[str] = field(default_factory=set)
+    session_count: int = 0
+    logical_session_ids: set[str] = field(default_factory=set)
     explicit_count: int = 0
     auto_count: int = 0
     provider_breakdown: Counter[str] = field(default_factory=Counter)
@@ -71,10 +71,10 @@ def build_session_tag_rollup_records(
         repo_names = profile.repo_names or normalize_repo_names(repo_paths=profile.repo_paths)
         bucket_day_text = bucket_day.isoformat()
         for tag in all_tags:
-            key = (profile.provider, bucket_day_text, tag)
+            key = (profile.origin, bucket_day_text, tag)
             bucket = grouped.setdefault(key, _TagRollupBucket())
-            bucket.conversation_count += 1
-            bucket.logical_conversation_ids.add(profile.logical_conversation_id or profile.conversation_id)
+            bucket.session_count += 1
+            bucket.logical_session_ids.add(profile.logical_session_id or profile.session_id)
             if tag in explicit_tags:
                 bucket.explicit_count += 1
             if tag in auto_tags:
@@ -97,10 +97,10 @@ def build_session_tag_rollup_records(
                 source_sort_key=max(bucket.source_sort_key) if bucket.source_sort_key else None,
                 input_high_water_mark=hwm,
                 input_high_water_mark_source=classify_aggregate_hwm_source(bucket.source_updated_at),
-                input_row_count=bucket.conversation_count,
-                conversation_count=bucket.conversation_count,
-                logical_session_count=len(bucket.logical_conversation_ids),
-                logical_conversation_ids=tuple(sorted(bucket.logical_conversation_ids)),
+                input_row_count=bucket.session_count,
+                session_count=bucket.session_count,
+                logical_session_count=len(bucket.logical_session_ids),
+                logical_session_ids=tuple(sorted(bucket.logical_session_ids)),
                 explicit_count=bucket.explicit_count,
                 auto_count=bucket.auto_count,
                 repo_breakdown=dict(bucket.repos),
@@ -116,21 +116,21 @@ def aggregate_session_tag_rollup_insights(
     grouped: dict[str, _TagAggregateBucket] = {}
     for row in rows:
         bucket = grouped.setdefault(row.tag, _TagAggregateBucket())
-        bucket.conversation_count += row.conversation_count
-        bucket.logical_conversation_ids.update(row.logical_conversation_ids)
+        bucket.session_count += row.session_count
+        bucket.logical_session_ids.update(row.logical_session_ids)
         bucket.explicit_count += row.explicit_count
         bucket.auto_count += row.auto_count
-        bucket.provider_breakdown[row.source_name] += row.conversation_count
+        bucket.provider_breakdown[row.source_name] += row.session_count
         bucket.repo_breakdown.update(row.repo_breakdown)
         bucket.rows.append(row)
 
     insights: list[SessionTagRollupInsight] = []
-    for tag, bucket in sorted(grouped.items(), key=lambda item: (-item[1].conversation_count, item[0])):
+    for tag, bucket in sorted(grouped.items(), key=lambda item: (-item[1].session_count, item[0])):
         insights.append(
             SessionTagRollupInsight(
                 tag=tag,
-                conversation_count=bucket.conversation_count,
-                logical_session_count=len(bucket.logical_conversation_ids),
+                session_count=bucket.session_count,
+                logical_session_count=len(bucket.logical_session_ids),
                 explicit_count=bucket.explicit_count,
                 auto_count=bucket.auto_count,
                 provider_breakdown=dict(bucket.provider_breakdown),

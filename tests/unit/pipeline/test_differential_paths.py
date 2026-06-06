@@ -125,13 +125,21 @@ class TestHealthRepairConvergence:
 
     @pytest.fixture()
     def seeded_db(self: object, workspace_env: dict[str, Path]) -> Path:
-        """Create a DB with some conversations and introduce orphaned messages."""
-        from polylogue.storage.sqlite.connection import open_connection
-        from tests.infra.storage_records import ConversationBuilder, db_setup
+        """Native ``index.db`` with sessions plus a hand-fabricated orphan.
+
+        Orphan ``messages`` cannot arise under the native
+        ``messages.session_id REFERENCES sessions ON DELETE CASCADE`` while
+        foreign keys are enforced — they only appear after a corrupted or
+        foreign-key-disabled write. The fixture reproduces exactly that
+        corruption shape (FK off, insert a message under a missing
+        ``session_id``) so the repair detection path has something to find.
+        """
+        from tests.infra.archive_scenarios import open_index_db
+        from tests.infra.storage_records import SessionBuilder, db_setup
 
         db_path = db_setup(workspace_env)
         (
-            ConversationBuilder(db_path, "conv-1")
+            SessionBuilder(db_path, "conv-1")
             .provider("chatgpt")
             .title("First")
             .add_message(role="user", text="Hello")
@@ -139,18 +147,18 @@ class TestHealthRepairConvergence:
             .save()
         )
         (
-            ConversationBuilder(db_path, "conv-2")
+            SessionBuilder(db_path, "conv-2")
             .provider("claude-code")
             .title("Second")
             .add_message(role="user", text="Test")
             .save()
         )
 
-        with open_connection(db_path) as conn:
+        with open_index_db(db_path) as conn:
             conn.execute("PRAGMA foreign_keys = OFF")
             conn.execute(
-                "INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version, source_name, word_count, has_tool_use, has_thinking) "
-                "VALUES ('orphan-msg-1', 'nonexistent-conv', 'user', 'orphan', 'hash1', 1, 'test', 1, 0, 0)"
+                "INSERT INTO messages (session_id, native_id, position, role, word_count, content_hash) "
+                "VALUES ('chatgpt:ext-nonexistent', 'orphan-msg-1', 0, 'user', 1, X'0011223344556677889900112233445566778899001122334455667788990011')"
             )
             conn.commit()
             conn.execute("PRAGMA foreign_keys = ON")
@@ -159,28 +167,32 @@ class TestHealthRepairConvergence:
 
     def test_orphaned_message_count_agrees(self: object, seeded_db: Path) -> None:
         from polylogue.storage.repair import count_orphaned_messages_sync
-        from polylogue.storage.sqlite.connection import open_connection
+        from tests.infra.archive_scenarios import open_index_db
 
-        with open_connection(seeded_db) as conn:
+        with open_index_db(seeded_db) as conn:
             count = count_orphaned_messages_sync(conn)
 
         assert count >= 1, "Should detect at least 1 orphaned message"
 
-    def test_empty_conversation_count_agrees(self: object, workspace_env: dict[str, Path]) -> None:
-        from polylogue.storage.repair import count_empty_conversations_sync
-        from polylogue.storage.sqlite.connection import open_connection
-        from tests.infra.storage_records import db_setup
+    def test_empty_session_count_agrees(self: object, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.repair import count_empty_sessions_sync
+        from tests.infra.archive_scenarios import open_index_db
+        from tests.infra.storage_records import SessionBuilder, db_setup
 
         db_path = db_setup(workspace_env)
-        with open_connection(db_path) as conn:
+        # Seed one real session so the archive schema is bootstrapped.
+        SessionBuilder(db_path, "seed").provider("chatgpt").title("Seed").add_message(role="user", text="hi").save()
+        with open_index_db(db_path) as conn:
+            # A archive session row with no messages is the "empty session"
+            # shape; ``content_hash`` is a 32-byte BLOB by CHECK constraint.
             conn.execute(
-                "INSERT INTO conversations (conversation_id, source_name, provider_conversation_id, content_hash, version) "
-                "VALUES ('empty-conv', 'test', 'empty-prov-id', 'hash', 1)"
+                "INSERT INTO sessions (native_id, origin, title, content_hash) "
+                "VALUES ('ext-empty', 'chatgpt-export', 'Empty', X'0011223344556677889900112233445566778899001122334455667788990011')"
             )
             conn.commit()
-            count = count_empty_conversations_sync(conn)
+            count = count_empty_sessions_sync(conn)
 
-        assert count >= 1, "Should detect empty conversation"
+        assert count >= 1, "Should detect empty session"
 
 
 # ---------------------------------------------------------------------------
@@ -194,23 +206,25 @@ class TestRepairPreviewConvergence:
 
     @pytest.fixture()
     def db_with_orphans(self: object, workspace_env: dict[str, Path]) -> Config:
-        from polylogue.storage.sqlite.connection import open_connection
-        from tests.infra.storage_records import ConversationBuilder, db_setup
+        from tests.infra.archive_scenarios import open_index_db
+        from tests.infra.storage_records import SessionBuilder, db_setup
 
         db_path = db_setup(workspace_env)
-        ConversationBuilder(db_path, "real-conv").provider("chatgpt").title("Real").add_message(
+        SessionBuilder(db_path, "real-conv").provider("chatgpt").title("Real").add_message(
             role="user", text="Real message"
         ).save()
 
-        with open_connection(db_path) as conn:
+        # Fabricate two archive session-less messages (FK disabled) to model the
+        # post-corruption shape the repair path exists to clean up.
+        with open_index_db(db_path) as conn:
             conn.execute("PRAGMA foreign_keys = OFF")
             conn.execute(
-                "INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version, source_name, word_count, has_tool_use, has_thinking) "
-                "VALUES ('orphan-1', 'ghost-conv', 'user', 'orphan text', 'ohash', 1, 'test', 2, 0, 0)"
+                "INSERT INTO messages (session_id, native_id, position, role, word_count, content_hash) "
+                "VALUES ('chatgpt:ext-ghost', 'orphan-1', 0, 'user', 2, X'0011223344556677889900112233445566778899001122334455667788990011')"
             )
             conn.execute(
-                "INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version, source_name, word_count, has_tool_use, has_thinking) "
-                "VALUES ('orphan-2', 'ghost-conv', 'assistant', 'orphan reply', 'ohash2', 1, 'test', 2, 0, 0)"
+                "INSERT INTO messages (session_id, native_id, position, role, word_count, content_hash) "
+                "VALUES ('chatgpt:ext-ghost', 'orphan-2', 1, 'assistant', 2, X'ffeeddccbbaa9988776655443322110099887766554433221100ffeeddccbbaa')"
             )
             conn.commit()
             conn.execute("PRAGMA foreign_keys = ON")
@@ -219,9 +233,9 @@ class TestRepairPreviewConvergence:
     def test_preview_matches_live_orphan_count(self: object, db_with_orphans: Config) -> None:
         """The count from health/debt should match what repair would find."""
         from polylogue.storage.repair import count_orphaned_messages_sync
-        from polylogue.storage.sqlite.connection import open_connection
+        from tests.infra.archive_scenarios import open_index_db
 
-        with open_connection(db_with_orphans.db_path) as conn:
+        with open_index_db(db_with_orphans.db_path) as conn:
             count1 = count_orphaned_messages_sync(conn)
             count2 = count_orphaned_messages_sync(conn)
 
@@ -234,15 +248,15 @@ class TestRepairPreviewConvergence:
             count_orphaned_messages_sync,
             repair_orphaned_messages,
         )
-        from polylogue.storage.sqlite.connection import open_connection
+        from tests.infra.archive_scenarios import open_index_db
 
-        with open_connection(db_with_orphans.db_path) as conn:
+        with open_index_db(db_with_orphans.db_path) as conn:
             before = count_orphaned_messages_sync(conn)
             assert before == 2
 
         result = repair_orphaned_messages(db_with_orphans, dry_run=False)
 
-        with open_connection(db_with_orphans.db_path) as conn:
+        with open_index_db(db_with_orphans.db_path) as conn:
             after = count_orphaned_messages_sync(conn)
 
         assert after == 0, "Repair should remove all orphaned messages"

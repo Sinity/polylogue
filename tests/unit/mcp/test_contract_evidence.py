@@ -30,11 +30,10 @@ from __future__ import annotations
 
 import json
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
 from polylogue.core.json import JSONValue
 from polylogue.mcp.server_support import MCPRole, _safe_call
 from tests.infra.mcp import (
@@ -43,8 +42,6 @@ from tests.infra.mcp import (
     invoke_surface_async,
     make_mock_filter,
     make_polylogue_mock,
-    make_query_store_mock,
-    make_tag_store_mock,
 )
 
 pytestmark = pytest.mark.contract
@@ -142,67 +139,67 @@ class TestToolErrorEnvelopes:
         body = _structured_error(result)
         assert "requires id or query" in body["error"], f"unexpected error message: {body}"
 
-    def test_get_conversation_missing_returns_not_found_envelope(
+    def test_get_session_missing_returns_not_found_envelope(
         self,
         mcp_server: MCPServerUnderTest,
     ) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
-            mock_poly.get_conversation_summary = AsyncMock(return_value=None)
+            mock_poly.get_session_summary = AsyncMock(return_value=None)
             mock_get_polylogue.return_value = mock_poly
 
-            result = invoke_surface(mcp_server._tool_manager._tools["get_conversation"].fn, id="missing")
+            result = invoke_surface(mcp_server._tool_manager._tools["get_session"].fn, id="missing")
 
         body = _structured_error(result)
         assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
 
-    def test_get_messages_missing_conversation_returns_not_found_envelope(
+    def test_get_messages_missing_session_returns_not_found_envelope(
         self,
         mcp_server: MCPServerUnderTest,
     ) -> None:
-        from polylogue.api.archive import ConversationNotFoundError
+        from polylogue.api.archive import SessionNotFoundError
 
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
-            mock_poly.get_messages_paginated = AsyncMock(side_effect=ConversationNotFoundError("missing"))
+            mock_poly.get_messages_paginated = AsyncMock(side_effect=SessionNotFoundError("missing"))
             mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["get_messages"].fn,
-                conversation_id="missing",
+                session_id="missing",
             )
 
         body = _structured_error(result)
         assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
 
-    def test_raw_artifacts_missing_conversation_returns_not_found_envelope(
-        self,
-        mcp_server: MCPServerUnderTest,
-    ) -> None:
-        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
-            mock_ops = MagicMock()
-            mock_ops.get_conversation_summary = AsyncMock(return_value=None)
-            mock_get_archive_ops.return_value = mock_ops
-
-            result = invoke_surface(
-                mcp_server._tool_manager._tools["raw_artifacts"].fn,
-                conversation_id="missing",
-            )
-
-        body = _structured_error(result)
-        assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
-
-    def test_export_conversation_missing_returns_not_found_envelope(
+    def test_raw_artifacts_missing_session_returns_not_found_envelope(
         self,
         mcp_server: MCPServerUnderTest,
     ) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
-            mock_poly.get_conversation = AsyncMock(return_value=None)
+            mock_poly.get_raw_artifacts_for_session = AsyncMock(return_value=([], 0))
             mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
-                mcp_server._tool_manager._tools["export_conversation"].fn,
+                mcp_server._tool_manager._tools["raw_artifacts"].fn,
+                session_id="missing",
+            )
+
+        body = _structured_error(result)
+        assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
+
+    def test_export_session_missing_returns_not_found_envelope(
+        self,
+        mcp_server: MCPServerUnderTest,
+    ) -> None:
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.get_session = AsyncMock(return_value=None)
+            mock_get_polylogue.return_value = mock_poly
+
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["export_session"].fn,
                 id="missing",
                 format="markdown",
             )
@@ -210,17 +207,17 @@ class TestToolErrorEnvelopes:
         body = _structured_error(result)
         assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
 
-    def test_get_conversation_summary_missing_returns_not_found_envelope(
+    def test_get_session_summary_missing_returns_not_found_envelope(
         self,
         mcp_server: MCPServerUnderTest,
     ) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
-            mock_poly.get_conversation_summary = AsyncMock(return_value=None)
+            mock_poly.get_session_summary = AsyncMock(return_value=None)
             mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
-                mcp_server._tool_manager._tools["get_conversation_summary"].fn,
+                mcp_server._tool_manager._tools["get_session_summary"].fn,
                 id="missing",
             )
 
@@ -238,7 +235,7 @@ class TestToolErrorEnvelopes:
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["session_profile"].fn,
-                conversation_id="missing",
+                session_id="missing",
             )
 
         body = _structured_error(result)
@@ -255,7 +252,7 @@ class TestToolErrorEnvelopes:
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["get_resume_brief"].fn,
-                conversation_id="missing-session",
+                session_id="missing-session",
             )
 
         body = _structured_error(result)
@@ -275,7 +272,7 @@ class TestToolErrorEnvelopes:
 
         brief = ResumeBrief(
             session_id="conv-123",
-            facts=ResumeFacts(conversation_id="conv-123", source_name="claude-code", message_count=2),
+            facts=ResumeFacts(session_id="conv-123", source_name="claude-code", message_count=2),
             inferences=ResumeInferences(),
             provenance=ResumeProvenance(
                 materializer_version=RESUME_BRIEF_MATERIALIZER_VERSION,
@@ -291,7 +288,7 @@ class TestToolErrorEnvelopes:
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["get_resume_brief"].fn,
-                conversation_id="conv-123",
+                session_id="conv-123",
             )
 
         payload = json.loads(result)
@@ -306,7 +303,7 @@ class TestToolErrorEnvelopes:
         from polylogue.insights.resume import ResumeCandidate
 
         candidate = ResumeCandidate(
-            logical_conversation_id="root",
+            logical_session_id="root",
             canonical_session_date="2026-05-25",
             last_message_at="2026-05-25T10:00:00+00:00",
             title="Continue daemon work",
@@ -332,7 +329,7 @@ class TestToolErrorEnvelopes:
 
         payload = json.loads(result)
         assert payload["total"] == 1
-        assert payload["candidates"][0]["logical_conversation_id"] == "root"
+        assert payload["candidates"][0]["logical_session_id"] == "root"
         assert payload["candidates"][0]["score_breakdown"]["recency"] == 1.0
         mock_poly.find_resume_candidates.assert_awaited_once()
 
@@ -341,12 +338,12 @@ class TestToolErrorEnvelopes:
         mcp_server: MCPServerUnderTest,
     ) -> None:
         result = invoke_surface(
-            mcp_server._tool_manager._tools["bulk_tag_conversations"].fn,
-            conversation_ids=[],
+            mcp_server._tool_manager._tools["bulk_tag_sessions"].fn,
+            session_ids=[],
             tags=["x"],
         )
         body = _structured_error(result)
-        assert "at least one conversation_id" in body["error"], body
+        assert "at least one session_id" in body["error"], body
 
     def test_safe_call_sanitises_exception_into_typed_payload(
         self,
@@ -377,17 +374,11 @@ class TestToolErrorEnvelopes:
 
 def _patch_empty_query(monkeypatch: pytest.MonkeyPatch) -> None:
     """Patch the runtime query/archive seam to return zero results."""
+    mock_poly = make_polylogue_mock()
     monkeypatch.setattr(
-        "polylogue.mcp.server._get_query_store",
-        lambda: make_query_store_mock(),
+        "polylogue.mcp.server._get_polylogue",
+        lambda: mock_poly,
     )
-    ops = MagicMock()
-    ops.search_conversation_hits = AsyncMock(return_value=[])
-    ops.diagnose_query_miss = AsyncMock(
-        return_value=QueryMissDiagnostics(message="No conversations matched.", filters=(), reasons=())
-    )
-    ops.query_conversations = AsyncMock(return_value=[])
-    monkeypatch.setattr("polylogue.mcp.server._get_archive_ops", lambda: ops)
 
 
 class TestNoResultEnvelopes:
@@ -399,7 +390,7 @@ class TestNoResultEnvelopes:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _patch_empty_query(monkeypatch)
-        with patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls:
+        with patch("polylogue.archive.filter.filters.SessionFilter") as mock_filter_cls:
             mock_filter_cls.return_value = make_mock_filter(results=[])
             result = invoke_surface(
                 mcp_server._tool_manager._tools["search"].fn,
@@ -410,16 +401,16 @@ class TestNoResultEnvelopes:
         assert "hits" in body and isinstance(body["hits"], list) and body["hits"] == []
         assert body.get("total") == 0
 
-    def test_list_conversations_no_results_returns_items_envelope(
+    def test_list_sessions_no_results_returns_items_envelope(
         self,
         mcp_server: MCPServerUnderTest,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _patch_empty_query(monkeypatch)
-        with patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls:
+        with patch("polylogue.archive.filter.filters.SessionFilter") as mock_filter_cls:
             mock_filter_cls.return_value = make_mock_filter(results=[])
             result = invoke_surface(
-                mcp_server._tool_manager._tools["list_conversations"].fn,
+                mcp_server._tool_manager._tools["list_sessions"].fn,
                 limit=10,
             )
         body = _parse_object(result)
@@ -456,7 +447,7 @@ class TestNoResultEnvelopes:
 
             result = invoke_surface(
                 mcp_server._tool_manager._tools["get_session_tree"].fn,
-                conversation_id="x:y",
+                session_id="x:y",
             )
         body = _parse_object(result)
         assert body.get("items") == []
@@ -475,14 +466,14 @@ class TestErrorPrivacyEnvelopes:
         self,
     ) -> None:
         from polylogue.mcp.server import build_server
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         server = cast(MCPServerUnderTest, build_server(role="read"))
         secret = "postgresql://admin:hunter2@db.internal/path/to/secret"
 
-        with patch("polylogue.mcp.server._get_archive_ops") as mock_get:
-            mock_ops = MagicMock()
-            mock_ops.storage_stats = AsyncMock(side_effect=RuntimeError(secret))
-            mock_get.return_value = mock_ops
+        # The archive stats resource calls ``ArchiveStore.stats()``; raise the secret
+        # there to prove the resource never leaks the raw exception message.
+        with patch.object(ArchiveStore, "stats", side_effect=RuntimeError(secret)):
             result = invoke_surface(server._resource_manager._resources["polylogue://stats"].fn)
 
         body = _structured_error(result)
@@ -550,7 +541,7 @@ class TestRegistrationDriftEvidence:
     @pytest.mark.parametrize(
         ("role", "must_contain", "must_omit"),
         [
-            ("read", frozenset({"search", "list_conversations"}), frozenset({"add_tag", "rebuild_index"})),
+            ("read", frozenset({"search", "list_sessions"}), frozenset({"add_tag", "rebuild_index"})),
             (
                 "write",
                 frozenset({"search", "add_tag", "set_metadata"}),
@@ -594,23 +585,17 @@ class TestAsyncEnvelopeCoverage:
         mcp_server: MCPServerUnderTest,
     ) -> None:
         with (
-            patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops,
-            patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+            patch("polylogue.archive.filter.filters.SessionFilter") as mock_filter_cls,
         ):
-            mock_ops = AsyncMock()
-            mock_ops.search_conversation_hits = AsyncMock(return_value=[])
-            mock_ops.diagnose_query_miss = AsyncMock(
-                return_value=QueryMissDiagnostics(message="No conversations matched.", filters=(), reasons=())
-            )
-            mock_get_archive_ops.return_value = mock_ops
+            mock_poly = make_polylogue_mock()
+            mock_get_polylogue.return_value = mock_poly
             mock_filter_cls.return_value = make_mock_filter(results=[])
 
-            tag_store = make_tag_store_mock()
-            with patch("polylogue.mcp.server._get_tag_store", return_value=tag_store):
-                result = await invoke_surface_async(
-                    mcp_server._tool_manager._tools["search"].fn,
-                    query="",
-                    limit=5,
-                )
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["search"].fn,
+                query="",
+                limit=5,
+            )
         body = _parse_object(result)
         assert "hits" in body and body["hits"] == []

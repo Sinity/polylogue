@@ -8,15 +8,15 @@ from polylogue.scenarios import pytest_execution
 BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
     BenchmarkCampaignEntry(
         name="search-filters",
-        description="FTS and ConversationFilter benchmark domain",
+        description="FTS and SessionFilter benchmark domain",
         execution=pytest_execution("tests/benchmarks/test_search_filters.py"),
         notes=(
             "Canonical search/filter latency domain.",
             "Keep on session-seeded DB fixtures for comparability.",
         ),
         origin="authored.benchmark-domain",
-        artifact_targets=("conversation_query_results", "message_fts"),
-        operation_targets=("query-conversations", "benchmark.query.search-filters"),
+        artifact_targets=("session_query_results", "message_fts"),
+        operation_targets=("query-sessions", "benchmark.query.search-filters"),
         tags=("benchmark", "search", "filters"),
     ),
     BenchmarkCampaignEntry(
@@ -25,7 +25,7 @@ BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
         execution=pytest_execution("tests/benchmarks/test_storage.py"),
         notes=("Canonical storage CRUD and batch-write latency domain.",),
         origin="authored.benchmark-domain",
-        artifact_targets=("conversation_rows", "message_rows", "raw_rows"),
+        artifact_targets=("session_rows", "message_rows", "raw_rows"),
         operation_targets=("benchmark.storage.crud",),
         tags=("benchmark", "storage"),
     ),

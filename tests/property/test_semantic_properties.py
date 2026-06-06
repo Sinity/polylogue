@@ -4,7 +4,7 @@ Extends crashlessness testing with semantic invariants: valid roles,
 valid content block types, title stability, and timestamp parseability.
 
 These tests generate schema-conformant payloads and verify that parsed
-conversations produce semantically valid output.
+sessions produce semantically valid output.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from hypothesis import strategies as st
 
 from polylogue.archive.message.roles import Role
 from polylogue.sources.dispatch import detect_provider, parse_payload
-from polylogue.sources.parsers.base import ParsedConversation
+from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.base_models import ParsedProviderEvent
 from polylogue.types import ContentBlockType
 from tests.infra.strategies.schema_driven import schema_conformant_payload
@@ -25,8 +25,8 @@ VALID_ROLES = frozenset(Role)
 _HEALTH_SUPPRESS = [HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much]
 
 
-def _try_parse(provider: str, payload: object) -> list[ParsedConversation] | None:
-    """Attempt to parse, returning parsed conversations or None on expected failures."""
+def _try_parse(provider: str, payload: object) -> list[ParsedSession] | None:
+    """Attempt to parse, returning parsed sessions or None on expected failures."""
     try:
         detected = detect_provider(payload)
         if detected is None:
@@ -40,12 +40,12 @@ def _try_parse(provider: str, payload: object) -> list[ParsedConversation] | Non
 @given(data=st.data())
 @settings(max_examples=15, deadline=None, suppress_health_check=_HEALTH_SUPPRESS)
 def test_parse_produces_valid_roles(provider: str, data: st.DataObject) -> None:
-    """Successfully parsed conversations always have valid roles."""
+    """Successfully parsed sessions always have valid roles."""
     payload = data.draw(schema_conformant_payload(provider))
-    conversations = _try_parse(provider, payload)
-    if not conversations:
+    sessions = _try_parse(provider, payload)
+    if not sessions:
         return
-    for conv in conversations:
+    for conv in sessions:
         for msg in conv.messages:
             assert msg.role in VALID_ROLES, f"Invalid role {msg.role!r} from {provider}"
 
@@ -56,11 +56,11 @@ def test_parse_produces_valid_roles(provider: str, data: st.DataObject) -> None:
 def test_parse_produces_valid_content_block_types(provider: str, data: st.DataObject) -> None:
     """Content blocks always have valid ContentBlockType values."""
     payload = data.draw(schema_conformant_payload(provider))
-    conversations = _try_parse(provider, payload)
-    if not conversations:
+    sessions = _try_parse(provider, payload)
+    if not sessions:
         return
     valid_types = set(ContentBlockType)
-    for conv in conversations:
+    for conv in sessions:
         for msg in conv.messages:
             for block in msg.content_blocks:
                 assert block.type in valid_types, f"Invalid content block type {block.type!r} from {provider}"
@@ -72,12 +72,12 @@ def test_parse_produces_valid_content_block_types(provider: str, data: st.DataOb
 def test_parse_title_is_stable(provider: str, data: st.DataObject) -> None:
     """Parsing the same payload twice produces the same title."""
     payload = data.draw(schema_conformant_payload(provider))
-    conversations1 = _try_parse(provider, payload)
-    conversations2 = _try_parse(provider, payload)
-    if not conversations1 or not conversations2:
+    sessions1 = _try_parse(provider, payload)
+    sessions2 = _try_parse(provider, payload)
+    if not sessions1 or not sessions2:
         return
-    titles1 = [conv.title for conv in conversations1]
-    titles2 = [conv.title for conv in conversations2]
+    titles1 = [conv.title for conv in sessions1]
+    titles2 = [conv.title for conv in sessions2]
     assert titles1 == titles2, f"Title instability for {provider}: {titles1!r} vs {titles2!r}"
 
 

@@ -81,7 +81,7 @@ from polylogue.storage.sqlite.schema_ddl_repo_identity import (
     REPO_IDENTITY_DDL as _REPO_IDENTITY_DDL,
 )
 
-SCHEMA_VERSION = 22  # Canonical schema. No migration chain: mismatch → re-ingest from source. Added per-role message counts to conversation_stats (user/assistant/system/tool) to eliminate the messages-table scan from provider metrics.
+SCHEMA_VERSION = 22  # Canonical schema. No in-place upgrade chain: mismatch -> re-ingest from source. Added per-role message counts to session_stats (user/assistant/system/tool) to eliminate the messages-table scan from provider metrics.
 
 
 # Complete target schema applied to fresh databases.

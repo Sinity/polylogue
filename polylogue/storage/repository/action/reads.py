@@ -1,12 +1,15 @@
-"""Durable action-event read methods for the repository."""
+"""Action-event artifact-state read for the repository.
+
+The materialized action-event *rows* are no longer read through the
+repository — every surface derives action events directly from a session's
+content blocks (see ``Polylogue.get_action_events``). What remains here is the
+artifact-state readout: the materialization-readiness signal consumed by
+neighbor discovery, retrieval candidates, repair, and the slow-query notice.
+"""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-
-from polylogue.archive.action_event.action_events import ActionEvent
-from polylogue.storage.action_events.rows import hydrate_action_events
-from polylogue.storage.runtime import ActionEventRecord
 
 if TYPE_CHECKING:
     from polylogue.storage.action_events.artifacts import ActionEventArtifactState
@@ -19,28 +22,6 @@ class RepositoryActionReadMixin:
 
     async def get_action_event_artifact_state(self) -> ActionEventArtifactState:
         return await self.queries.get_action_event_artifact_state()
-
-    async def get_action_event_records(self, conversation_id: str) -> list[ActionEventRecord]:
-        return await self.queries.get_action_events(conversation_id)
-
-    async def get_action_event_records_batch(
-        self,
-        conversation_ids: list[str],
-    ) -> dict[str, list[ActionEventRecord]]:
-        return await self.queries.get_action_events_batch(conversation_ids)
-
-    async def get_action_events(self, conversation_id: str) -> tuple[ActionEvent, ...]:
-        return hydrate_action_events(await self.get_action_event_records(conversation_id))
-
-    async def get_action_events_batch(
-        self,
-        conversation_ids: list[str],
-    ) -> dict[str, tuple[ActionEvent, ...]]:
-        records_by_conversation = await self.get_action_event_records_batch(conversation_ids)
-        return {
-            conversation_id: hydrate_action_events(records)
-            for conversation_id, records in records_by_conversation.items()
-        }
 
 
 __all__ = ["RepositoryActionReadMixin"]

@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from pathlib import Path
-from typing import TypeAlias
 
-from polylogue.insights.archive import ArchiveCoverageInsight
-from polylogue.operations.archive import list_archive_coverage_insights
-from polylogue.storage.repository import ConversationRepository
-from tests.infra.storage_records import make_conversation, make_message
+import pytest
 
-ProviderMeta: TypeAlias = Mapping[str, object] | None
-AnalyticsRow: TypeAlias = tuple[str, str, str | None, ProviderMeta]
-AnalyticsRows: TypeAlias = list[AnalyticsRow]
+from polylogue import Polylogue
+from polylogue.insights.archive import ArchiveCoverageInsight, ArchiveCoverageInsightQuery
+from tests.infra.storage_records import SessionBuilder
+
+
+def _archive(tmp_path: Path) -> Polylogue:
+    return Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
+
+
+async def _coverage(archive: Polylogue) -> list[ArchiveCoverageInsight]:
+    return await archive.list_archive_coverage_insights(ArchiveCoverageInsightQuery(group_by="provider"))
 
 
 class TestArchiveCoverageInsight:
@@ -23,37 +26,37 @@ class TestArchiveCoverageInsight:
         """Tool use percentage is calculated correctly."""
         metrics = ArchiveCoverageInsight(
             source_name="test",
-            conversation_count=100,
+            session_count=100,
             message_count=500,
             user_message_count=200,
             assistant_message_count=300,
-            avg_messages_per_conversation=5.0,
+            avg_messages_per_session=5.0,
             avg_user_words=50.0,
             avg_assistant_words=150.0,
             tool_use_count=25,
             thinking_count=10,
-            total_conversations_with_tools=20,
-            total_conversations_with_thinking=8,
+            total_sessions_with_tools=20,
+            total_sessions_with_thinking=8,
             tool_use_percentage=20.0,
             thinking_percentage=8.0,
         )
         assert metrics.tool_use_percentage == 20.0
 
-    def test_tool_use_percentage_zero_conversations(self: object) -> None:
-        """Tool use percentage returns 0 when no conversations."""
+    def test_tool_use_percentage_zero_sessions(self: object) -> None:
+        """Tool use percentage returns 0 when no sessions."""
         metrics = ArchiveCoverageInsight(
             source_name="empty",
-            conversation_count=0,
+            session_count=0,
             message_count=0,
             user_message_count=0,
             assistant_message_count=0,
-            avg_messages_per_conversation=0.0,
+            avg_messages_per_session=0.0,
             avg_user_words=0.0,
             avg_assistant_words=0.0,
             tool_use_count=0,
             thinking_count=0,
-            total_conversations_with_tools=0,
-            total_conversations_with_thinking=0,
+            total_sessions_with_tools=0,
+            total_sessions_with_thinking=0,
             tool_use_percentage=0.0,
             thinking_percentage=0.0,
         )
@@ -63,37 +66,37 @@ class TestArchiveCoverageInsight:
         """Thinking percentage is calculated correctly."""
         metrics = ArchiveCoverageInsight(
             source_name="test",
-            conversation_count=50,
+            session_count=50,
             message_count=200,
             user_message_count=100,
             assistant_message_count=100,
-            avg_messages_per_conversation=4.0,
+            avg_messages_per_session=4.0,
             avg_user_words=40.0,
             avg_assistant_words=120.0,
             tool_use_count=5,
             thinking_count=15,
-            total_conversations_with_tools=3,
-            total_conversations_with_thinking=10,
+            total_sessions_with_tools=3,
+            total_sessions_with_thinking=10,
             tool_use_percentage=6.0,
             thinking_percentage=20.0,
         )
         assert metrics.thinking_percentage == 20.0
 
-    def test_thinking_percentage_zero_conversations(self: object) -> None:
-        """Thinking percentage returns 0 when no conversations."""
+    def test_thinking_percentage_zero_sessions(self: object) -> None:
+        """Thinking percentage returns 0 when no sessions."""
         metrics = ArchiveCoverageInsight(
             source_name="empty",
-            conversation_count=0,
+            session_count=0,
             message_count=0,
             user_message_count=0,
             assistant_message_count=0,
-            avg_messages_per_conversation=0.0,
+            avg_messages_per_session=0.0,
             avg_user_words=0.0,
             avg_assistant_words=0.0,
             tool_use_count=0,
             thinking_count=0,
-            total_conversations_with_tools=0,
-            total_conversations_with_thinking=0,
+            total_sessions_with_tools=0,
+            total_sessions_with_thinking=0,
             tool_use_percentage=0.0,
             thinking_percentage=0.0,
         )
@@ -101,221 +104,235 @@ class TestArchiveCoverageInsight:
 
 
 class TestListArchiveCoverageInsights:
-    """Test list_archive_coverage_insights function."""
+    """Test native ``list_archive_coverage_insights`` aggregation."""
 
-    async def test_empty_database(self: object, workspace_env: dict[str, Path]) -> None:
+    @pytest.mark.asyncio
+    async def test_empty_database(self: object, tmp_path: Path) -> None:
         """Empty database returns empty list."""
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
-        result = await list_archive_coverage_insights(db_path=db_path)
+        result = await _coverage(_archive(tmp_path))
         assert result == []
 
-    async def test_single_provider(
-        self: object, workspace_env: dict[str, Path], storage_repository: ConversationRepository
-    ) -> None:
+    @pytest.mark.asyncio
+    async def test_single_provider(self: object, tmp_path: Path) -> None:
         """Single provider aggregation."""
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+        archive = _archive(tmp_path)
+        db_path = archive.archive_root / "index.db"
 
-        conv = make_conversation("conv-1", source_name="claude-ai", provider_meta={"source": "inbox"})
-        msgs = [
-            make_message("msg-1", "conv-1", text="Hello world test"),
-            make_message(
-                "msg-2", "conv-1", role="assistant", text="Response with more words for testing average calculation"
-            ),
-        ]
-        await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+        (
+            SessionBuilder(db_path, "conv-1")
+            .provider("claude-ai")
+            .title("Test Session")
+            .add_message("msg-1", role="user", text="Hello world test")
+            .add_message(
+                "msg-2",
+                role="assistant",
+                text="Response with more words for testing average calculation",
+            )
+            .save()
+        )
 
-        result = await list_archive_coverage_insights(db_path=db_path)
+        result = await _coverage(archive)
 
         assert len(result) == 1
         assert result[0].source_name == "claude-ai"
-        assert result[0].conversation_count == 1
+        assert result[0].session_count == 1
         assert result[0].message_count == 2
         assert result[0].user_message_count == 1
         assert result[0].assistant_message_count == 1
 
-    async def test_multiple_providers_sorted(
-        self: object, workspace_env: dict[str, Path], storage_repository: ConversationRepository
-    ) -> None:
-        """Multiple providers sorted by conversation count descending."""
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+    @pytest.mark.asyncio
+    async def test_multiple_providers_sorted(self: object, tmp_path: Path) -> None:
+        """Multiple providers sorted by session count descending."""
+        archive = _archive(tmp_path)
+        db_path = archive.archive_root / "index.db"
 
-        # Create 2 claude conversations
+        # Create 2 claude sessions
         for i in range(2):
-            conv = make_conversation(
-                f"claude-{i}", source_name="claude-ai", title=f"Claude {i}", provider_meta={"source": "inbox"}
+            (
+                SessionBuilder(db_path, f"claude-{i}")
+                .provider("claude-ai")
+                .title(f"Claude {i}")
+                .add_message(f"cmsg-{i}", role="user", text="Hello")
+                .save()
             )
-            msgs = [make_message(f"cmsg-{i}", f"claude-{i}", text="Hello")]
-            await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        # Create 3 chatgpt conversations
+        # Create 3 chatgpt sessions
         for i in range(3):
-            conv = make_conversation(
-                f"chatgpt-{i}", source_name="chatgpt", title=f"ChatGPT {i}", provider_meta={"source": "inbox"}
+            (
+                SessionBuilder(db_path, f"chatgpt-{i}")
+                .provider("chatgpt")
+                .title(f"ChatGPT {i}")
+                .add_message(f"gmsg-{i}", role="user", text="Hi")
+                .save()
             )
-            msgs = [make_message(f"gmsg-{i}", f"chatgpt-{i}", text="Hi")]
-            await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = await list_archive_coverage_insights(db_path=db_path)
+        result = await _coverage(archive)
 
         assert len(result) == 2
-        # ChatGPT has more conversations, should be first
+        # ChatGPT has more sessions, should be first
         assert result[0].source_name == "chatgpt"
-        assert result[0].conversation_count == 3
+        assert result[0].session_count == 3
         assert result[1].source_name == "claude-ai"
-        assert result[1].conversation_count == 2
+        assert result[1].session_count == 2
 
-    async def test_user_assistant_segregation(
-        self: object, workspace_env: dict[str, Path], storage_repository: ConversationRepository
-    ) -> None:
+    @pytest.mark.asyncio
+    async def test_user_assistant_segregation(self: object, tmp_path: Path) -> None:
         """User and assistant messages are counted separately."""
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+        archive = _archive(tmp_path)
+        db_path = archive.archive_root / "index.db"
 
-        conv = make_conversation("conv-roles", title="Roles Test", provider_meta={"source": "inbox"})
-        msgs = [
-            make_message("rmsg-1", "conv-roles", text="User one"),
-            make_message("rmsg-2", "conv-roles", role="assistant", text="Assistant one"),
-            make_message("rmsg-3", "conv-roles", text="User two"),
-            make_message("rmsg-4", "conv-roles", role="assistant", text="Assistant two three four"),
-        ]
-        await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+        (
+            SessionBuilder(db_path, "conv-roles")
+            .provider("claude-ai")
+            .title("Roles Test")
+            .add_message("rmsg-1", role="user", text="User one")
+            .add_message("rmsg-2", role="assistant", text="Assistant one")
+            .add_message("rmsg-3", role="user", text="User two")
+            .add_message("rmsg-4", role="assistant", text="Assistant two three four")
+            .save()
+        )
 
-        result = await list_archive_coverage_insights(db_path=db_path)
+        result = await _coverage(archive)
 
         assert len(result) == 1
         assert result[0].user_message_count == 2
         assert result[0].assistant_message_count == 2
         assert result[0].message_count == 4
 
-    async def test_avg_messages_per_conversation(
-        self: object, workspace_env: dict[str, Path], storage_repository: ConversationRepository
-    ) -> None:
-        """Average messages per conversation is computed correctly."""
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+    @pytest.mark.asyncio
+    async def test_avg_messages_per_session(self: object, tmp_path: Path) -> None:
+        """Average messages per session is computed correctly."""
+        archive = _archive(tmp_path)
+        db_path = archive.archive_root / "index.db"
 
         # Conv 1: 2 messages
-        conv1 = make_conversation("avg-1", title="Avg 1", provider_meta={"source": "inbox"})
-        msgs1 = [
-            make_message("avg-msg-1a", "avg-1", text="Hi"),
-            make_message("avg-msg-1b", "avg-1", role="assistant", text="Hello"),
-        ]
-        await storage_repository.save_conversation(conversation=conv1, messages=msgs1, attachments=[])
+        (
+            SessionBuilder(db_path, "avg-1")
+            .provider("claude-ai")
+            .title("Avg 1")
+            .add_message("avg-msg-1a", role="user", text="Hi")
+            .add_message("avg-msg-1b", role="assistant", text="Hello")
+            .save()
+        )
 
         # Conv 2: 4 messages
-        conv2 = make_conversation("avg-2", title="Avg 2", provider_meta={"source": "inbox"})
-        msgs2 = [
-            make_message("avg-msg-2a", "avg-2", text="Q1"),
-            make_message("avg-msg-2b", "avg-2", role="assistant", text="A1"),
-            make_message("avg-msg-2c", "avg-2", text="Q2"),
-            make_message("avg-msg-2d", "avg-2", role="assistant", text="A2"),
-        ]
-        await storage_repository.save_conversation(conversation=conv2, messages=msgs2, attachments=[])
+        (
+            SessionBuilder(db_path, "avg-2")
+            .provider("claude-ai")
+            .title("Avg 2")
+            .add_message("avg-msg-2a", role="user", text="Q1")
+            .add_message("avg-msg-2b", role="assistant", text="A1")
+            .add_message("avg-msg-2c", role="user", text="Q2")
+            .add_message("avg-msg-2d", role="assistant", text="A2")
+            .save()
+        )
 
-        result = await list_archive_coverage_insights(db_path=db_path)
+        result = await _coverage(archive)
 
         assert len(result) == 1
-        # Total 6 messages across 2 conversations = 3.0 average
-        assert result[0].avg_messages_per_conversation == 3.0
+        # Total 6 messages across 2 sessions = 3.0 average
+        assert result[0].avg_messages_per_session == 3.0
 
-    async def test_tool_use_detection(
-        self: object, workspace_env: dict[str, Path], storage_repository: ConversationRepository
-    ) -> None:
+    @pytest.mark.asyncio
+    async def test_tool_use_detection(self: object, tmp_path: Path) -> None:
         """Tool use is detected from content_blocks."""
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+        archive = _archive(tmp_path)
+        db_path = archive.archive_root / "index.db"
 
-        conv = make_conversation(
-            "tool-conv", source_name="claude-ai", title="Tool Use Test", provider_meta={"source": "inbox"}
-        )
-        msgs = [
-            make_message(
+        (
+            SessionBuilder(db_path, "tool-conv")
+            .provider("claude-ai")
+            .title("Tool Use Test")
+            .add_message(
                 "tool-msg-1",
-                "tool-conv",
                 role="assistant",
                 text="Let me search for that",
                 provider_meta={"content_blocks": [{"type": "tool_use", "name": "search", "id": "toolu_123"}]},
-            ),
-        ]
-        await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+            )
+            .save()
+        )
 
-        result = await list_archive_coverage_insights(db_path=db_path)
+        result = await _coverage(archive)
 
         assert len(result) == 1
         assert result[0].tool_use_count == 1
-        assert result[0].total_conversations_with_tools == 1
+        assert result[0].total_sessions_with_tools == 1
         assert result[0].tool_use_percentage == 100.0
 
-    async def test_thinking_detection(
-        self: object, workspace_env: dict[str, Path], storage_repository: ConversationRepository
-    ) -> None:
+    @pytest.mark.asyncio
+    async def test_thinking_detection(self: object, tmp_path: Path) -> None:
         """Thinking is detected from content_blocks."""
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+        archive = _archive(tmp_path)
+        db_path = archive.archive_root / "index.db"
 
-        conv = make_conversation(
-            "think-conv", source_name="claude-ai", title="Thinking Test", provider_meta={"source": "inbox"}
-        )
-        msgs = [
-            make_message(
+        (
+            SessionBuilder(db_path, "think-conv")
+            .provider("claude-ai")
+            .title("Thinking Test")
+            .add_message(
                 "think-msg-1",
-                "think-conv",
                 role="assistant",
                 text="Let me think about this",
                 provider_meta={"content_blocks": [{"type": "thinking", "thinking": "Reasoning..."}]},
-            ),
-        ]
-        await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+            )
+            .save()
+        )
 
-        result = await list_archive_coverage_insights(db_path=db_path)
+        result = await _coverage(archive)
 
         assert len(result) == 1
         assert result[0].thinking_count == 1
-        assert result[0].total_conversations_with_thinking == 1
+        assert result[0].total_sessions_with_thinking == 1
         assert result[0].thinking_percentage == 100.0
 
-    async def test_conversations_with_tools_set_dedup(
-        self: object, workspace_env: dict[str, Path], storage_repository: ConversationRepository
-    ) -> None:
-        """Multiple tool uses in same conversation counted once."""
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+    @pytest.mark.asyncio
+    async def test_sessions_with_tools_set_dedup(self: object, tmp_path: Path) -> None:
+        """Multiple tool uses in same session counted once."""
+        archive = _archive(tmp_path)
+        db_path = archive.archive_root / "index.db"
 
-        conv = make_conversation(
-            "multi-tool", source_name="claude-ai", title="Multi Tool", provider_meta={"source": "inbox"}
-        )
-        msgs = [
-            make_message(
+        (
+            SessionBuilder(db_path, "multi-tool")
+            .provider("claude-ai")
+            .title("Multi Tool")
+            .add_message(
                 "mt-msg-1",
-                "multi-tool",
                 role="assistant",
                 text="Tool 1",
                 provider_meta={"content_blocks": [{"type": "tool_use", "name": "a"}]},
-            ),
-            make_message(
+            )
+            .add_message(
                 "mt-msg-2",
-                "multi-tool",
                 role="assistant",
                 text="Tool 2",
                 provider_meta={"content_blocks": [{"type": "tool_use", "name": "b"}]},
-            ),
-        ]
-        await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+            )
+            .save()
+        )
 
-        result = await list_archive_coverage_insights(db_path=db_path)
+        result = await _coverage(archive)
 
         assert len(result) == 1
         assert result[0].tool_use_count == 2  # Two tool use messages
-        assert result[0].total_conversations_with_tools == 1  # But one conversation
+        assert result[0].total_sessions_with_tools == 1  # But one session
         assert result[0].tool_use_percentage == 100.0
 
-    async def test_division_by_zero_protection(
-        self: object, workspace_env: dict[str, Path], storage_repository: ConversationRepository
-    ) -> None:
+    @pytest.mark.asyncio
+    async def test_division_by_zero_protection(self: object, tmp_path: Path) -> None:
         """Metrics handle zero counts gracefully."""
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
+        archive = _archive(tmp_path)
+        db_path = archive.archive_root / "index.db"
 
-        # Conversation with system-only messages (no user/assistant)
-        conv = make_conversation("zero-div", title="Zero Division", provider_meta={"source": "inbox"})
-        msgs = [make_message("zero-msg-1", "zero-div", role="system", text="System message")]
-        await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+        # Session with system-only messages (no user/assistant)
+        (
+            SessionBuilder(db_path, "zero-div")
+            .provider("claude-ai")
+            .title("Zero Division")
+            .add_message("zero-msg-1", role="system", text="System message")
+            .save()
+        )
 
-        result = await list_archive_coverage_insights(db_path=db_path)
+        result = await _coverage(archive)
 
         assert len(result) == 1
         # Should not raise division by zero
@@ -326,60 +343,42 @@ class TestListArchiveCoverageInsights:
 
 
 # ============================================================================
-# _seed_db helper: create test DB with custom row data
+# _seed_db helper: create a index.db with custom message rows
 # ============================================================================
 
 
-async def _seed_db(tmp_path: Path, rows: AnalyticsRows) -> Path:
-    """Seed database with raw rows: (provider, role, text, provider_meta_or_None).
+def _seed_db(
+    tmp_path: Path,
+    rows: list[tuple[str, str, str | None, dict[str, object] | None]],
+) -> Polylogue:
+    """Seed a index.db from raw rows and return the reading archive.
 
-    Returns: db_path (Path)
-
-    Args:
-        tmp_path: pytest tmp_path fixture
-        rows: list of tuples (provider, role, text, provider_meta_dict_or_None)
-
-    Creates conversations and messages from rows, returns db_path.
+    Each row is ``(provider, role, text, provider_meta_or_None)``. Rows are
+    grouped by provider into one session per provider, mirroring the legacy
+    helper, then written through the ``SessionBuilder``.
     """
-    from polylogue.storage.repository import ConversationRepository
-    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+    archive = _archive(tmp_path)
+    db_path = archive.archive_root / "index.db"
 
-    db_path = tmp_path / "test.db"
-    backend = SQLiteBackend(db_path=db_path)
-    repo = ConversationRepository(backend=backend)
-
-    # Group rows by provider and conversation
-    convos_by_provider: dict[str, list[tuple[str, str | None, ProviderMeta]]] = {}
+    convos_by_provider: dict[str, list[tuple[str, str | None, dict[str, object] | None]]] = {}
     for provider, role, text, provider_meta in rows:
-        if provider not in convos_by_provider:
-            convos_by_provider[provider] = []
-        convos_by_provider[provider].append((role, text, provider_meta))
+        convos_by_provider.setdefault(provider, []).append((role, text, provider_meta))
 
-    # Create conversations and save
     msg_counter = 0
     for provider, messages in convos_by_provider.items():
-        conv = make_conversation(
-            f"conv-{provider}",
-            source_name=provider,
-            title=f"{provider} Test Conversation",
-            provider_meta={"source": "test"},
-        )
-        msgs = []
+        builder = SessionBuilder(db_path, f"conv-{provider}").provider(provider).title(f"{provider} Test Session")
         for role, text, provider_meta in messages:
             msg_counter += 1
-            msg = make_message(
+            builder.add_message(
                 f"msg-{msg_counter}",
-                conv.conversation_id,
                 role=role,
-                text=text,
+                text="" if text is None else text,
+                timestamp=None,
                 provider_meta=provider_meta,
             )
-            msgs.append(msg)
+        builder.save()
 
-        await repo.save_conversation(conversation=conv, messages=msgs, attachments=[])
-
-    await backend.close()
-    return db_path
+    return archive
 
 
 # ============================================================================
@@ -388,171 +387,195 @@ async def _seed_db(tmp_path: Path, rows: AnalyticsRows) -> Path:
 
 
 class TestWordCountEdgeCases:
-    """Verify word count SQL handles edge cases correctly."""
+    """Verify word count handling for whitespace and empty-text edge cases."""
 
+    @pytest.mark.asyncio
     async def test_spaces_only_text_counts_zero_words(self: object, tmp_path: Path) -> None:
         """Space-only messages should count as 0 words."""
-        db = await _seed_db(
+        archive = _seed_db(
             tmp_path,
             [
-                ("test", "user", "   ", None),
-                ("test", "user", "     ", None),
+                ("claude-ai", "user", "   ", None),
+                ("claude-ai", "user", "     ", None),
             ],
         )
-        results = await list_archive_coverage_insights(db_path=db)
+        results = await _coverage(archive)
         assert len(results) == 1
         assert results[0].avg_user_words == 0.0
 
+    @pytest.mark.asyncio
     async def test_tabs_newlines_are_stripped(self: object, tmp_path: Path) -> None:
         """Python split() strips all whitespace including tabs/newlines.
 
-        word_count is precomputed at insert time via len(text.split()).
+        word_count is precomputed at write time via len(text.split()).
         Python's split() treats tabs/newlines as whitespace, so whitespace-only
         text yields 0 words.
         """
-        db = await _seed_db(
+        archive = _seed_db(
             tmp_path,
             [
-                ("test", "user", "\t\t", None),
+                ("claude-ai", "user", "\t\t", None),
             ],
         )
-        results = await list_archive_coverage_insights(db_path=db)
+        results = await _coverage(archive)
         assert results[0].avg_user_words == 0.0
 
+    @pytest.mark.asyncio
     async def test_single_word_counts_one(self: object, tmp_path: Path) -> None:
         """A single word with no spaces counts as 1."""
-        db = await _seed_db(
+        archive = _seed_db(
             tmp_path,
             [
-                ("test", "user", "Hello", None),
+                ("claude-ai", "user", "Hello", None),
             ],
         )
-        results = await list_archive_coverage_insights(db_path=db)
+        results = await _coverage(archive)
         assert results[0].avg_user_words == 1.0
 
+    @pytest.mark.asyncio
     async def test_multiple_spaces_between_words(self: object, tmp_path: Path) -> None:
         """Multiple spaces between words count as expected.
 
         word_count is precomputed via len(text.split()), which splits on any
         whitespace run, so 'hello  world' → 2 words (not 3).
         """
-        db = await _seed_db(
+        archive = _seed_db(
             tmp_path,
             [
-                ("test", "user", "hello  world", None),  # 2 spaces
+                ("claude-ai", "user", "hello  world", None),  # 2 spaces
             ],
         )
-        results = await list_archive_coverage_insights(db_path=db)
+        results = await _coverage(archive)
         assert results[0].avg_user_words == 2.0
 
+    @pytest.mark.asyncio
     async def test_empty_text_counts_zero(self: object, tmp_path: Path) -> None:
         """Empty string text counts as 0 words."""
-        db = await _seed_db(
+        archive = _seed_db(
             tmp_path,
             [
-                ("test", "user", "", None),
+                ("claude-ai", "user", "", None),
             ],
         )
-        results = await list_archive_coverage_insights(db_path=db)
+        results = await _coverage(archive)
         assert results[0].avg_user_words == 0.0
 
+    @pytest.mark.asyncio
     async def test_none_text_counts_zero(self: object, tmp_path: Path) -> None:
-        """NULL text counts as 0 words."""
-        db = await _seed_db(
+        """Missing text counts as 0 words."""
+        archive = _seed_db(
             tmp_path,
             [
-                ("test", "user", None, None),
+                ("claude-ai", "user", None, None),
             ],
         )
-        results = await list_archive_coverage_insights(db_path=db)
+        results = await _coverage(archive)
         assert results[0].avg_user_words == 0.0
 
 
 # ============================================================================
-# LIKE pattern resistance tests
+# Content-block detection resistance tests
 # ============================================================================
 
 
 class TestLikePatternResistance:
-    """Verify LIKE-based tool_use/thinking detection doesn't false-positive."""
+    """Verify tool_use/thinking detection keys on content blocks, not text."""
 
+    @pytest.mark.asyncio
     async def test_tool_use_in_message_text_not_detected(self: object, tmp_path: Path) -> None:
         """Text containing 'tool_use' string should NOT count as tool use."""
-        db = await _seed_db(
+        archive = _seed_db(
             tmp_path,
             [
-                ("test", "assistant", "The tool_use feature is great", None),
-                ("test", "assistant", 'I used "type":"tool_use" in my message', None),
+                ("claude-ai", "assistant", "The tool_use feature is great", None),
+                ("claude-ai", "assistant", 'I used "type":"tool_use" in my message', None),
             ],
         )
-        results = await list_archive_coverage_insights(db_path=db)
-        # tool_use_count should be 0 — the LIKE is on provider_meta, not text
+        results = await _coverage(archive)
+        # tool_use_count should be 0 — detection is on content blocks, not text
         assert results[0].tool_use_count == 0
 
+    @pytest.mark.asyncio
     async def test_thinking_in_message_text_not_detected(self: object, tmp_path: Path) -> None:
         """Text containing 'thinking' should NOT count as thinking."""
-        db = await _seed_db(
+        archive = _seed_db(
             tmp_path,
             [
-                ("test", "assistant", 'I was thinking about "type":"thinking" blocks', None),
+                ("claude-ai", "assistant", 'I was thinking about "type":"thinking" blocks', None),
             ],
         )
-        results = await list_archive_coverage_insights(db_path=db)
+        results = await _coverage(archive)
         assert results[0].thinking_count == 0
 
-    async def test_tool_role_fallback_detected(self: object, tmp_path: Path) -> None:
-        """Messages with role='tool' should be counted as tool use."""
-        db = await _seed_db(
+    @pytest.mark.asyncio
+    async def test_bare_tool_role_message_is_not_double_counted(self: object, tmp_path: Path) -> None:
+        """A bare role='tool' message (no tool_use block) does not count as a tool use.
+
+        Archive counts a tool use at its call site — the assistant message
+        carrying the ``tool_use`` content block — via
+        ``write.py:_has_block(message, ContentBlockType.TOOL_USE)`` at both the
+        per-message (``messages.has_tool_use``) and session
+        (``sessions.tool_use_count``) levels. The tool *result*, delivered as a
+        ``role='tool'`` message carrying a ``tool_result`` block, is therefore
+        not re-counted. This intentionally diverges from the single-file archive
+        precomputed ``messages.has_tool_use``, which also fired on ``role='tool'``
+        and so double-counted each tool interaction (call + result). See
+        ``.agent/scratch/storage-test-archive-gaps.md`` Gap 6.
+        """
+        archive = _seed_db(
             tmp_path,
             [
-                ("test", "tool", "Tool result here", None),
+                ("claude-ai", "tool", "Tool result here", None),
             ],
         )
-        results = await list_archive_coverage_insights(db_path=db)
-        assert results[0].tool_use_count == 1
+        results = await _coverage(archive)
+        assert results[0].tool_use_count == 0
 
+    @pytest.mark.asyncio
     async def test_tool_use_in_provider_meta_detected(self: object, tmp_path: Path) -> None:
         """Tool use in provider_meta content_blocks is detected."""
-        meta = {"content_blocks": [{"type": "tool_use", "name": "search", "id": "t1"}]}
-        db = await _seed_db(
+        meta: dict[str, object] = {"content_blocks": [{"type": "tool_use", "name": "search", "id": "t1"}]}
+        archive = _seed_db(
             tmp_path,
             [
-                ("test", "assistant", "Using a tool", meta),
+                ("claude-ai", "assistant", "Using a tool", meta),
             ],
         )
-        results = await list_archive_coverage_insights(db_path=db)
+        results = await _coverage(archive)
         assert results[0].tool_use_count == 1
-        assert results[0].total_conversations_with_tools == 1
+        assert results[0].total_sessions_with_tools == 1
 
+    @pytest.mark.asyncio
     async def test_thinking_in_provider_meta_detected(self: object, tmp_path: Path) -> None:
         """Thinking blocks in provider_meta are detected."""
-        meta = {"content_blocks": [{"type": "thinking", "thinking": "Let me consider..."}]}
-        db = await _seed_db(
+        meta: dict[str, object] = {"content_blocks": [{"type": "thinking", "thinking": "Let me consider..."}]}
+        archive = _seed_db(
             tmp_path,
             [
-                ("test", "assistant", "Here's my answer", meta),
+                ("claude-ai", "assistant", "Here's my answer", meta),
             ],
         )
-        results = await list_archive_coverage_insights(db_path=db)
+        results = await _coverage(archive)
         assert results[0].thinking_count == 1
-        assert results[0].total_conversations_with_thinking == 1
+        assert results[0].total_sessions_with_thinking == 1
 
+    @pytest.mark.asyncio
     async def test_mixed_content_blocks_counted_correctly(self: object, tmp_path: Path) -> None:
         """Message with both tool_use and thinking blocks counts both."""
-        meta = {
+        meta: dict[str, object] = {
             "content_blocks": [
                 {"type": "thinking", "thinking": "Planning..."},
                 {"type": "tool_use", "name": "search", "id": "t1"},
                 {"type": "text", "text": "Result"},
             ]
         }
-        db = await _seed_db(
+        archive = _seed_db(
             tmp_path,
             [
-                ("test", "assistant", "Result from tool", meta),
+                ("claude-ai", "assistant", "Result from tool", meta),
             ],
         )
-        results = await list_archive_coverage_insights(db_path=db)
+        results = await _coverage(archive)
         assert results[0].tool_use_count == 1
         assert results[0].thinking_count == 1
 
@@ -563,14 +586,15 @@ class TestLikePatternResistance:
 
 
 class TestCrossProviderConsistency:
-    """Verify SQL detection works across different provider data structures."""
+    """Verify detection works across different provider data structures."""
 
+    @pytest.mark.asyncio
     async def test_multiple_providers_with_tool_use(self: object, tmp_path: Path) -> None:
         """Tool use is detected correctly across ChatGPT and Claude providers."""
-        chatgpt_meta = {"content_blocks": [{"type": "tool_use", "name": "browser"}]}
-        claude_meta = {"content_blocks": [{"type": "tool_use", "name": "computer", "id": "toolu_1"}]}
+        chatgpt_meta: dict[str, object] = {"content_blocks": [{"type": "tool_use", "name": "browser"}]}
+        claude_meta: dict[str, object] = {"content_blocks": [{"type": "tool_use", "name": "computer", "id": "toolu_1"}]}
 
-        db = await _seed_db(
+        archive = _seed_db(
             tmp_path,
             [
                 ("chatgpt", "assistant", "ChatGPT used a tool", chatgpt_meta),
@@ -579,7 +603,7 @@ class TestCrossProviderConsistency:
                 ("claude-ai", "user", "Thanks", None),
             ],
         )
-        results = await list_archive_coverage_insights(db_path=db)
+        results = await _coverage(archive)
 
         by_provider = {r.source_name: r for r in results}
         assert by_provider["chatgpt"].tool_use_count == 1

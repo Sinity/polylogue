@@ -19,11 +19,11 @@ from polylogue.protocols import ProgressCallback
 from polylogue.sources.drive.types import DriveUILike
 from polylogue.sources.source_acquisition import iter_source_raw_data
 from polylogue.storage.cursor_state import CursorStatePayload
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.runtime import RawSessionRecord
 
 if TYPE_CHECKING:
     from polylogue.config import DriveConfig, Source
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.repository import SessionRepository
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
@@ -32,12 +32,12 @@ __all__ = ["AcquisitionService", "AcquireResult", "iter_source_raw_data"]
 
 
 class AcquisitionService:
-    """Service for acquiring raw conversation data from sources.
+    """Service for acquiring raw session data from sources.
 
     This service implements the ACQUIRE stage of the pipeline:
     - Reads source files (JSON, JSONL, ZIP)
     - Computes content hash (raw_id)
-    - Stores raw bytes in raw_conversations table
+    - Stores raw bytes in raw_sessions table
     - Does NOT parse or transform the data
 
     The stored raw data can then be processed by the parse stage.
@@ -50,13 +50,13 @@ class AcquisitionService:
             backend: Async SQLite backend for database operations
         """
         self.backend = backend
-        from polylogue.storage.repository import ConversationRepository
+        from polylogue.storage.repository import SessionRepository
 
-        self.repository: ConversationRepository = ConversationRepository(backend=backend)
+        self.repository: SessionRepository = SessionRepository(backend=backend)
 
     async def _persist_record(
         self,
-        record: RawConversationRecord,
+        record: RawSessionRecord,
         *,
         result: AcquireResult,
     ) -> None:
@@ -112,7 +112,7 @@ class AcquisitionService:
         ui: object | None = None,
         drive_config: DriveConfig | None = None,
         progress_label: str = "Scanning",
-        on_record: Callable[[RawConversationRecord], Awaitable[None]] | None = None,
+        on_record: Callable[[RawSessionRecord], Awaitable[None]] | None = None,
         observation_callback: Callable[[JSONDocument], None] | None = None,
         persist_cursors: bool = True,
     ) -> ScanResult:
@@ -132,7 +132,7 @@ class AcquisitionService:
             raise TypeError(f"Drive acquisition UI must satisfy DriveUILike, got {type(ui).__name__}")
         drive_ui = ui
 
-        async def _consume(record: RawConversationRecord) -> None:
+        async def _consume(record: RawSessionRecord) -> None:
             if on_record is not None:
                 await on_record(record)
             result.counts["scanned"] += 1
@@ -186,7 +186,7 @@ class AcquisitionService:
     ) -> AcquireResult:
         """Acquire raw data from multiple sources.
 
-        Reads source files and stores raw bytes in ``raw_conversations`` without
+        Reads source files and stores raw bytes in ``raw_sessions`` without
         materializing the full corpus in memory first.
 
         Args:
@@ -247,7 +247,7 @@ class AcquisitionService:
             if not isinstance(peak_value, int | float) or peak_rss_self_mb > peak_value:
                 peak_observation = dict(observation)
 
-        async def _store(record: RawConversationRecord) -> None:
+        async def _store(record: RawSessionRecord) -> None:
             nonlocal items_since_flush
             await self._persist_record(record, result=result)
             items_since_flush += 1

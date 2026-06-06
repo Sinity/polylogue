@@ -130,7 +130,7 @@
     {
       "name": "query-list",
       "group": "query-read",
-      "description": "List conversations",
+      "description": "List sessions",
       "execution": {
         "kind": "polylogue",
         "argv": [
@@ -146,7 +146,7 @@
     {
       "name": "query-list-json",
       "group": "query-read",
-      "description": "List conversations as JSON",
+      "description": "List sessions as JSON",
       "execution": {
         "kind": "polylogue",
         "argv": [
@@ -166,7 +166,7 @@
     {
       "name": "query-list-csv",
       "group": "query-read",
-      "description": "List conversations as CSV",
+      "description": "List sessions as CSV",
       "execution": {
         "kind": "polylogue",
         "argv": [
@@ -186,7 +186,7 @@
     {
       "name": "query-list-yaml",
       "group": "query-read",
-      "description": "List conversations as YAML",
+      "description": "List sessions as YAML",
       "execution": {
         "kind": "polylogue",
         "argv": [
@@ -205,7 +205,7 @@
     {
       "name": "query-count",
       "group": "query-read",
-      "description": "Count conversations",
+      "description": "Count sessions",
       "execution": {
         "kind": "polylogue",
         "argv": [
@@ -222,7 +222,7 @@
     {
       "name": "query-latest",
       "group": "query-read",
-      "description": "Show latest conversation",
+      "description": "Show latest session",
       "execution": {
         "kind": "polylogue",
         "argv": [
@@ -237,7 +237,7 @@
     {
       "name": "query-latest-json",
       "group": "query-read",
-      "description": "Latest conversation as JSON",
+      "description": "Latest session as JSON",
       "execution": {
         "kind": "polylogue",
         "argv": [
@@ -255,7 +255,7 @@
     {
       "name": "query-latest-md",
       "group": "query-read",
-      "description": "Latest conversation as Markdown",
+      "description": "Latest session as Markdown",
       "execution": {
         "kind": "polylogue",
         "argv": [
@@ -276,7 +276,7 @@
     {
       "name": "query-latest-html",
       "group": "query-read",
-      "description": "Latest conversation as HTML",
+      "description": "Latest session as HTML",
       "execution": {
         "kind": "polylogue",
         "argv": [
@@ -296,7 +296,7 @@
     {
       "name": "query-latest-plaintext",
       "group": "query-read",
-      "description": "Latest conversation as plaintext",
+      "description": "Latest session as plaintext",
       "execution": {
         "kind": "polylogue",
         "argv": [
@@ -313,7 +313,7 @@
     {
       "name": "query-latest-obsidian",
       "group": "query-read",
-      "description": "Latest conversation as Obsidian note",
+      "description": "Latest session as Obsidian note",
       "execution": {
         "kind": "polylogue",
         "argv": [
@@ -333,7 +333,7 @@
     {
       "name": "query-latest-org",
       "group": "query-read",
-      "description": "Latest conversation as Org-mode",
+      "description": "Latest session as Org-mode",
       "execution": {
         "kind": "polylogue",
         "argv": [
@@ -353,7 +353,7 @@
     {
       "name": "query-latest-csv",
       "group": "query-read",
-      "description": "Latest conversation as CSV",
+      "description": "Latest session as CSV",
       "execution": {
         "kind": "polylogue",
         "argv": [
@@ -364,7 +364,7 @@
       },
       "assertion": {
         "stdout_contains": [
-          "conversation_id"
+          "session_id"
         ]
       },
       "needs_data": true,
@@ -438,7 +438,7 @@
     {
       "name": "query-stats",
       "group": "query-read",
-      "description": "Conversation statistics",
+      "description": "Session statistics",
       "execution": {
         "kind": "polylogue",
         "argv": [
@@ -478,7 +478,7 @@
     {
       "name": "query-stream-latest",
       "group": "query-read",
-      "description": "Stream latest conversation",
+      "description": "Stream latest session",
       "execution": {
         "kind": "polylogue",
         "argv": [
@@ -548,7 +548,7 @@
     {
       "name": "tag-add",
       "group": "query-write",
-      "description": "Add tag to latest conversation",
+      "description": "Add tag to latest session",
       "execution": {
         "kind": "polylogue",
         "argv": [
@@ -605,7 +605,7 @@
     {
       "name": "set-meta",
       "group": "query-write",
-      "description": "Set metadata on conversation",
+      "description": "Set metadata on session",
       "execution": {
         "kind": "polylogue",
         "argv": [
@@ -644,7 +644,7 @@
     {
       "name": "delete-one",
       "group": "query-write",
-      "description": "Delete one conversation",
+      "description": "Delete one session",
       "execution": {
         "kind": "polylogue",
         "argv": [
@@ -915,7 +915,7 @@
     {
       "name": "sample-random",
       "group": "advanced",
-      "description": "Random sample of conversations",
+      "description": "Random sample of sessions",
       "execution": {
         "kind": "polylogue",
         "argv": [

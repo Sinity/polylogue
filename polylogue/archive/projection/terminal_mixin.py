@@ -1,4 +1,4 @@
-"""Terminal operations for conversation projections."""
+"""Terminal operations for session projections."""
 
 from __future__ import annotations
 
@@ -7,22 +7,22 @@ from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from polylogue.archive.conversation.models import Conversation
     from polylogue.archive.message.models import Message
+    from polylogue.archive.session.domain_models import Session
 
 MessagePredicate = Callable[["Message"], bool]
 MessageTransform = Callable[["Message"], "Message"]
 
 
 class ProjectionTerminalMixin:
-    _conv: Conversation
+    _conv: Session
     _filters: list[MessagePredicate]
     _transforms: list[MessageTransform]
     _limit: int | None
     _offset: int
     _reverse: bool
 
-    def execute(self) -> Conversation:
+    def execute(self) -> Session:
         messages = list(self.iter())
         return self._conv.model_copy(update={"messages": messages})
 

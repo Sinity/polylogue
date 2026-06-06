@@ -12,9 +12,9 @@ exemptions:
     reason: no dedicated test file (394 AST lines)
   - path: polylogue/api/insights.py
     reason: no dedicated test file (167 AST lines)
-  - path: polylogue/archive/conversation/extraction.py
+  - path: polylogue/archive/session/extraction.py
     reason: no dedicated test file (157 AST lines)
-  - path: polylogue/archive/conversation/neighbor_candidates.py
+  - path: polylogue/archive/session/neighbor_candidates.py
     reason: no dedicated test file (160 AST lines)
   - path: polylogue/archive/query/fields.py
     reason: no dedicated test file (158 AST lines)
@@ -106,7 +106,7 @@ exemptions:
     reason: no dedicated test file (153 AST lines)
   - path: polylogue/storage/sqlite/async_sqlite.py
     reason: no dedicated test file (207 AST lines)
-  - path: polylogue/storage/sqlite/queries/conversations_identity.py
+  - path: polylogue/storage/sqlite/queries/sessions_identity.py
     reason: no dedicated test file (200 AST lines)
   - path: polylogue/surfaces/payloads.py
     reason: no dedicated test file (505 AST lines)

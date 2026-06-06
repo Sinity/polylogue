@@ -14,11 +14,9 @@ from polylogue.storage.query_models import (
     WorkThreadListQuery,
 )
 from polylogue.storage.runtime import (
-    ActionEventRecord,
     SessionTagRollupRecord,
     WorkThreadRecord,
 )
-from polylogue.storage.sqlite.queries import action_events as action_events_q
 from polylogue.storage.sqlite.queries import (
     session_insight_summary_queries as session_insight_summaries_q,
 )
@@ -66,19 +64,6 @@ class SQLiteQueryStore(
 
         async with self._connection_factory() as conn:
             return await session_insight_status_async(conn, verify_freshness=verify_freshness)
-
-    # -- Action events (formerly query_store_insight_actions.py) ------------
-
-    async def get_action_events(self, conversation_id: str) -> list[ActionEventRecord]:
-        async with self._connection_factory() as conn:
-            return await action_events_q.get_action_events(conn, conversation_id)
-
-    async def get_action_events_batch(
-        self,
-        conversation_ids: list[str],
-    ) -> dict[str, list[ActionEventRecord]]:
-        async with self._connection_factory() as conn:
-            return await action_events_q.get_action_events_batch(conn, conversation_ids)
 
     # -- Work threads (formerly query_store_insight_threads.py) -------------
 

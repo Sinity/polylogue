@@ -7,10 +7,10 @@ from datetime import datetime
 import aiosqlite
 
 from polylogue.storage.runtime import AttachmentRecord
-from polylogue.storage.search.models import ConversationSearchEvidenceRow
+from polylogue.storage.search.models import SessionSearchEvidenceRow
 from polylogue.storage.sqlite.connection import _build_provider_scope_filter
 from polylogue.storage.sqlite.queries.mappers import _json_object, _parse_json
-from polylogue.types import ConversationId
+from polylogue.types import SessionId
 
 
 def _row_value(row: aiosqlite.Row, key: str) -> object | None:
@@ -22,10 +22,10 @@ def _row_value(row: aiosqlite.Row, key: str) -> object | None:
     return value
 
 
-def _build_attachment_record(row: aiosqlite.Row, *, conversation_id: str) -> AttachmentRecord:
+def _build_attachment_record(row: aiosqlite.Row, *, session_id: str) -> AttachmentRecord:
     return AttachmentRecord(
         attachment_id=row["attachment_id"],
-        conversation_id=ConversationId(conversation_id),
+        session_id=SessionId(session_id),
         message_id=row["message_id"],
         mime_type=row["mime_type"],
         size_bytes=row["size_bytes"],
@@ -48,45 +48,45 @@ def _build_attachment_record(row: aiosqlite.Row, *, conversation_id: str) -> Att
 
 async def get_attachments(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
 ) -> list[AttachmentRecord]:
-    """Get all attachments for a conversation."""
+    """Get all attachments for a session."""
     cursor = await conn.execute(
         """
         SELECT a.*, r.message_id
         FROM attachments a
         JOIN attachment_refs r ON a.attachment_id = r.attachment_id
-        WHERE r.conversation_id = ?
+        WHERE r.session_id = ?
         """,
-        (conversation_id,),
+        (session_id,),
     )
     rows = await cursor.fetchall()
-    return [_build_attachment_record(row, conversation_id=conversation_id) for row in rows]
+    return [_build_attachment_record(row, session_id=session_id) for row in rows]
 
 
 async def get_attachments_batch(
     conn: aiosqlite.Connection,
-    conversation_ids: list[str],
+    session_ids: list[str],
 ) -> dict[str, list[AttachmentRecord]]:
-    """Get attachments for multiple conversations in a single query."""
-    if not conversation_ids:
+    """Get attachments for multiple sessions in a single query."""
+    if not session_ids:
         return {}
-    result: dict[str, list[AttachmentRecord]] = {cid: [] for cid in conversation_ids}
-    placeholders = ",".join("?" for _ in conversation_ids)
+    result: dict[str, list[AttachmentRecord]] = {cid: [] for cid in session_ids}
+    placeholders = ",".join("?" for _ in session_ids)
     cursor = await conn.execute(
         f"""
-        SELECT a.*, r.message_id, r.conversation_id
+        SELECT a.*, r.message_id, r.session_id
         FROM attachments a
         JOIN attachment_refs r ON a.attachment_id = r.attachment_id
-        WHERE r.conversation_id IN ({placeholders})
+        WHERE r.session_id IN ({placeholders})
         """,
-        conversation_ids,
+        session_ids,
     )
     rows = await cursor.fetchall()
     for row in rows:
-        cid = row["conversation_id"]
+        cid = row["session_id"]
         if cid in result:
-            result[cid].append(_build_attachment_record(row, conversation_id=cid))
+            result[cid].append(_build_attachment_record(row, session_id=cid))
     return result
 
 
@@ -132,7 +132,7 @@ async def search_attachment_identity_evidence_hits(
     limit: int = 100,
     providers: list[str] | None = None,
     since: str | None = None,
-) -> list[ConversationSearchEvidenceRow]:
+) -> list[SessionSearchEvidenceRow]:
     """Search selected attachment identity fields and return evidence-bearing hits."""
     identity = query.strip()
     if not identity or limit <= 0:
@@ -147,7 +147,7 @@ async def search_attachment_identity_evidence_hits(
     sql = """
         WITH base_attachments AS (
             SELECT
-                r.conversation_id,
+                r.session_id,
                 r.message_id,
                 a.attachment_id,
                 a.mime_type,
@@ -170,7 +170,7 @@ async def search_attachment_identity_evidence_hits(
                 ) AS attachment_name
             FROM attachments a
             JOIN attachment_refs r ON r.attachment_id = a.attachment_id
-            JOIN conversations c ON c.conversation_id = r.conversation_id
+            JOIN sessions c ON c.session_id = r.session_id
             LEFT JOIN messages m ON m.message_id = r.message_id
             WHERE 1 = 1
     """
@@ -213,14 +213,14 @@ async def search_attachment_identity_evidence_hits(
             SELECT
                 *,
                 ROW_NUMBER() OVER (
-                    PARTITION BY conversation_id
+                    PARTITION BY session_id
                     ORDER BY identity_rank ASC, sort_key DESC, attachment_id ASC, COALESCE(message_id, '') ASC
-                ) AS conversation_rank
+                ) AS session_rank
             FROM identity_candidates
             WHERE identity_value = ?
         )
         SELECT
-            conversation_id,
+            session_id,
             message_id,
             attachment_id,
             mime_type,
@@ -229,7 +229,7 @@ async def search_attachment_identity_evidence_hits(
             identity_value,
             attachment_name
         FROM matched
-        WHERE conversation_rank = 1
+        WHERE session_rank = 1
         ORDER BY identity_rank ASC, sort_key DESC, attachment_id ASC, COALESCE(message_id, '') ASC
         LIMIT ?
     """
@@ -237,8 +237,8 @@ async def search_attachment_identity_evidence_hits(
     cursor = await conn.execute(sql, params)
     rows = await cursor.fetchall()
     return [
-        ConversationSearchEvidenceRow(
-            conversation_id=str(row["conversation_id"]),
+        SessionSearchEvidenceRow(
+            session_id=str(row["session_id"]),
             rank=rank,
             score=None,
             message_id=str(row["message_id"]) if row["message_id"] is not None else None,

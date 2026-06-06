@@ -11,34 +11,41 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, TypeAlias, cast
 from uuid import uuid4
 
-from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.roles import Role
+from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.json import dumps, loads, require_json_document, require_json_value
 from polylogue.pipeline.prepare import _timestamp_sort_key
+from polylogue.sources.parsers.base import (
+    ParsedAttachment,
+    ParsedContentBlock,
+    ParsedMessage,
+    ParsedSession,
+)
 from polylogue.storage.runtime import (
     AttachmentRecord,
     ContentBlockRecord,
-    ConversationRecord,
     MessageRecord,
-    RawConversationRecord,
+    RawSessionRecord,
+    SessionRecord,
     _json_or_none,
     _make_ref_id,
 )
-from polylogue.storage.sqlite.connection import connection_context, open_connection
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.connection import connection_context
 from polylogue.types import (
     AttachmentId,
     ContentBlockType,
     ContentHash,
-    ConversationId,
     MessageId,
     Provider,
     SemanticBlockType,
+    SessionId,
     ValidationMode,
     ValidationStatus,
 )
 
 if TYPE_CHECKING:
-    from polylogue.archive.conversation.models import Conversation
+    from polylogue.archive.session.domain_models import Session
 
 JSONRecord: TypeAlias = dict[str, object]
 MessageMapping: TypeAlias = Mapping[str, object]
@@ -59,8 +66,8 @@ _AUTO_TIMESTAMP: Final = _AutoTimestampSentinel()
 _AUTO_MESSAGE_ID: Final = _AutoMessageIdSentinel()
 
 
-def _conversation_id(value: str) -> ConversationId:
-    return ConversationId(value)
+def _session_id(value: str) -> SessionId:
+    return SessionId(value)
 
 
 def _message_id(value: str) -> MessageId:
@@ -165,7 +172,7 @@ def _merge_media_type_into_metadata(metadata: str | None, media_type: str | None
 def _content_block_record(
     *,
     message_id: str,
-    conversation_id: str,
+    session_id: str,
     block_index: int,
     block_type: str,
     text: str | None = None,
@@ -181,7 +188,7 @@ def _content_block_record(
     return ContentBlockRecord(
         block_id=ContentBlockRecord.make_id(message_id, block_index),
         message_id=_message_id(message_id),
-        conversation_id=_conversation_id(conversation_id),
+        session_id=_session_id(session_id),
         block_index=block_index,
         type=ContentBlockType.from_string(block_type),
         text=text,
@@ -197,14 +204,14 @@ def _content_block_from_mapping(
     *,
     block: MessageMapping,
     message_id: str,
-    conversation_id: str,
+    session_id: str,
     block_index: int,
 ) -> ContentBlockRecord:
     raw_tool_input = block.get("tool_input", block.get("input"))
     raw_metadata = block.get("metadata")
     return _content_block_record(
         message_id=message_id,
-        conversation_id=conversation_id,
+        session_id=session_id,
         block_index=block_index,
         block_type=_optional_str(block.get("type")) or "text",
         text=_optional_str(block.get("text")),
@@ -221,7 +228,7 @@ def _normalize_content_blocks(
     *,
     raw_blocks: object,
     message_id: str,
-    conversation_id: str,
+    session_id: str,
 ) -> list[ContentBlockRecord]:
     if not isinstance(raw_blocks, list):
         return []
@@ -237,7 +244,7 @@ def _normalize_content_blocks(
                 _content_block_from_mapping(
                     block=cast(MessageMapping, raw_block),
                     message_id=message_id,
-                    conversation_id=conversation_id,
+                    session_id=session_id,
                     block_index=idx,
                 )
             )
@@ -247,7 +254,7 @@ def _normalize_content_blocks(
 def make_content_block(
     *,
     message_id: str,
-    conversation_id: str,
+    session_id: str,
     block_index: int,
     block_type: str = "text",
     text: str | None = None,
@@ -260,7 +267,7 @@ def make_content_block(
 ) -> ContentBlockRecord:
     return _content_block_record(
         message_id=message_id,
-        conversation_id=conversation_id,
+        session_id=session_id,
         block_index=block_index,
         block_type=block_type,
         text=text,
@@ -278,10 +285,10 @@ def make_content_block(
 # =============================================================================
 
 
-def _prune_attachment_refs(conn: sqlite3.Connection, conversation_id: str, keep_ref_ids: set[str]) -> None:
-    """Prune old attachment references for a conversation."""
-    query = "SELECT ref_id, attachment_id FROM attachment_refs WHERE conversation_id = ?"
-    params: list[str] = [conversation_id]
+def _prune_attachment_refs(conn: sqlite3.Connection, session_id: str, keep_ref_ids: set[str]) -> None:
+    """Prune old attachment references for a session."""
+    query = "SELECT ref_id, attachment_id FROM attachment_refs WHERE session_id = ?"
+    params: list[str] = [session_id]
     if keep_ref_ids:
         placeholders = ", ".join("?" for _ in keep_ref_ids)
         query += f" AND ref_id NOT IN ({placeholders})"
@@ -328,14 +335,14 @@ def _prune_attachment_refs(conn: sqlite3.Connection, conversation_id: str, keep_
         raise
 
 
-def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) -> bool:
-    """Upsert a conversation record."""
+def upsert_session(conn: sqlite3.Connection, record: SessionRecord) -> bool:
+    """Upsert a session record."""
     res = conn.execute(
         """
-        INSERT INTO conversations (
-            conversation_id,
+        INSERT INTO sessions (
+            session_id,
             source_name,
-            provider_conversation_id,
+            provider_session_id,
             title,
             created_at,
             updated_at,
@@ -344,11 +351,11 @@ def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) ->
             provider_meta,
             metadata,
             version,
-            parent_conversation_id,
+            parent_session_id,
             branch_type,
             raw_id
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(conversation_id) DO UPDATE SET
+        ON CONFLICT(session_id) DO UPDATE SET
             title = excluded.title,
             created_at = excluded.created_at,
             updated_at = excluded.updated_at,
@@ -356,9 +363,9 @@ def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) ->
             content_hash = excluded.content_hash,
             provider_meta = excluded.provider_meta,
             metadata = excluded.metadata,
-            parent_conversation_id = excluded.parent_conversation_id,
+            parent_session_id = excluded.parent_session_id,
             branch_type = excluded.branch_type,
-            raw_id = COALESCE(excluded.raw_id, conversations.raw_id)
+            raw_id = COALESCE(excluded.raw_id, sessions.raw_id)
         WHERE
             content_hash != excluded.content_hash
             OR IFNULL(title, '') != IFNULL(excluded.title, '')
@@ -366,14 +373,14 @@ def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) ->
             OR IFNULL(updated_at, '') != IFNULL(excluded.updated_at, '')
             OR IFNULL(provider_meta, '') != IFNULL(excluded.provider_meta, '')
             OR IFNULL(metadata, '') != IFNULL(excluded.metadata, '')
-            OR IFNULL(parent_conversation_id, '') != IFNULL(excluded.parent_conversation_id, '')
+            OR IFNULL(parent_session_id, '') != IFNULL(excluded.parent_session_id, '')
             OR IFNULL(branch_type, '') != IFNULL(excluded.branch_type, '')
             OR IFNULL(raw_id, '') != IFNULL(excluded.raw_id, '')
         """,
         (
-            record.conversation_id,
+            record.session_id,
             record.source_name,
-            record.provider_conversation_id,
+            record.provider_session_id,
             record.title,
             record.created_at,
             record.updated_at,
@@ -382,7 +389,7 @@ def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) ->
             _json_or_none(record.provider_meta),
             _json_or_none(record.metadata),
             record.version,
-            record.parent_conversation_id,
+            record.parent_session_id,
             record.branch_type,
             record.raw_id,
         ),
@@ -396,7 +403,7 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
         """
         INSERT INTO messages (
             message_id,
-            conversation_id,
+            session_id,
             provider_message_id,
             role,
             text,
@@ -451,7 +458,7 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
         """,
         (
             record.message_id,
-            record.conversation_id,
+            record.session_id,
             record.provider_message_id,
             record.role,
             record.text,
@@ -480,7 +487,7 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
         conn.execute(
             """
             INSERT INTO content_blocks (
-                block_id, message_id, conversation_id, block_index,
+                block_id, message_id, session_id, block_index,
                 type, text, tool_name, tool_id, tool_input, metadata, semantic_type
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(message_id, block_index) DO UPDATE SET
@@ -494,7 +501,7 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             (
                 blk.block_id,
                 blk.message_id,
-                blk.conversation_id,
+                blk.session_id,
                 blk.block_index,
                 blk.type,
                 blk.text,
@@ -540,13 +547,13 @@ def upsert_attachment(conn: sqlite3.Connection, record: AttachmentRecord) -> boo
 
     # Atomically insert ref and increment count in a single statement
     # This prevents race conditions where multiple threads could increment simultaneously
-    ref_id = _make_ref_id(record.attachment_id, record.conversation_id, record.message_id)
+    ref_id = _make_ref_id(record.attachment_id, record.session_id, record.message_id)
     res = conn.execute(
         """
         INSERT INTO attachment_refs (
             ref_id,
             attachment_id,
-            conversation_id,
+            session_id,
             message_id,
             provider_meta
         ) VALUES (?, ?, ?, ?, ?)
@@ -555,7 +562,7 @@ def upsert_attachment(conn: sqlite3.Connection, record: AttachmentRecord) -> boo
         (
             ref_id,
             record.attachment_id,
-            record.conversation_id,
+            record.session_id,
             record.message_id,
             _json_or_none(record.provider_meta),
         ),
@@ -574,29 +581,29 @@ def upsert_attachment(conn: sqlite3.Connection, record: AttachmentRecord) -> boo
 
 def store_records(
     *,
-    conversation: ConversationRecord,
+    session: SessionRecord,
     messages: list[MessageRecord],
     attachments: list[AttachmentRecord],
     conn: sqlite3.Connection | None = None,
 ) -> dict[str, int]:
-    """Store conversation records (conversation, messages, attachments).
+    """Store session records (session, messages, attachments).
 
     Thread-safe with write lock. Returns count of inserted/updated records.
     """
     counts = {
-        "conversations": 0,
+        "sessions": 0,
         "messages": 0,
         "attachments": 0,
-        "skipped_conversations": 0,
+        "skipped_sessions": 0,
         "skipped_messages": 0,
         "skipped_attachments": 0,
     }
 
     with connection_context(conn) as db_conn, _WRITE_LOCK:
-        if upsert_conversation(db_conn, conversation):
-            counts["conversations"] += 1
+        if upsert_session(db_conn, session):
+            counts["sessions"] += 1
         else:
-            counts["skipped_conversations"] += 1
+            counts["skipped_sessions"] += 1
         for message in messages:
             if upsert_message(db_conn, message):
                 counts["messages"] += 1
@@ -604,81 +611,81 @@ def store_records(
                 counts["skipped_messages"] += 1
         seen_ref_ids: set[str] = set()
         for attachment in attachments:
-            ref_id = _make_ref_id(attachment.attachment_id, attachment.conversation_id, attachment.message_id)
+            ref_id = _make_ref_id(attachment.attachment_id, attachment.session_id, attachment.message_id)
             seen_ref_ids.add(ref_id)
             if upsert_attachment(db_conn, attachment):
                 counts["attachments"] += 1
             else:
                 counts["skipped_attachments"] += 1
-        _prune_attachment_refs(db_conn, conversation.conversation_id, seen_ref_ids)
+        _prune_attachment_refs(db_conn, session.session_id, seen_ref_ids)
         # Mirror the production write path's stats projection so that
-        # surfaces relying on conversation_stats (the stats-join pushdown
+        # surfaces relying on session_stats (the stats-join pushdown
         # filters: min_messages/max_messages/min_words/has_tool_use/…)
         # see the same precomputed values as production ingest.  Without
         # this, the test builders produced rows but no stats, and any
         # parity test exercising those filters would observe an empty
         # result set on every surface.
-        _upsert_conversation_stats_sync(db_conn, conversation=conversation, messages=messages)
+        _upsert_session_stats_sync(db_conn, session=session, messages=messages)
         # Mirror save_via_backend's identity-preserving repoint pass (#1114) so
         # tests that exercise reset/reimport via the sync builder see the same
         # rebinding behaviour as production async ingest.
-        _repoint_user_state_by_identity_sync(db_conn, conversation.conversation_id)
+        _repoint_user_state_by_identity_sync(db_conn, session.session_id)
         # Commit inside lock to ensure atomic transaction boundaries
         db_conn.commit()
 
     return counts
 
 
-def _repoint_user_state_by_identity_sync(conn: sqlite3.Connection, conversation_id: str) -> None:
+def _repoint_user_state_by_identity_sync(conn: sqlite3.Connection, session_id: str) -> None:
     """Sync mirror of ``repoint_user_state_by_identity`` for #1114 test parity."""
-    conv_key = f"conversation:{conversation_id}"
-    msg_key_prefix = f"message:{conversation_id}:"
+    conv_key = f"session:{session_id}"
+    msg_key_prefix = f"message:{session_id}:"
     conn.execute(
         """
-        UPDATE user_marks SET conversation_id = ?
-        WHERE identity_key = ? AND target_type = 'conversation'
-          AND (conversation_id IS NULL OR conversation_id != ?)
+        UPDATE user_marks SET session_id = ?
+        WHERE identity_key = ? AND target_type = 'session'
+          AND (session_id IS NULL OR session_id != ?)
         """,
-        (conversation_id, conv_key, conversation_id),
+        (session_id, conv_key, session_id),
     )
     conn.execute(
         """
-        UPDATE user_annotations SET conversation_id = ?
-        WHERE identity_key = ? AND target_type = 'conversation'
-          AND (conversation_id IS NULL OR conversation_id != ?)
+        UPDATE user_annotations SET session_id = ?
+        WHERE identity_key = ? AND target_type = 'session'
+          AND (session_id IS NULL OR session_id != ?)
         """,
-        (conversation_id, conv_key, conversation_id),
+        (session_id, conv_key, session_id),
     )
     conn.execute(
         """
-        UPDATE user_marks SET conversation_id = ?, message_id = target_id
+        UPDATE user_marks SET session_id = ?, message_id = target_id
         WHERE identity_key LIKE ? AND target_type = 'message'
-          AND EXISTS (SELECT 1 FROM messages m WHERE m.message_id = user_marks.target_id AND m.conversation_id = ?)
-          AND (conversation_id IS NULL OR message_id IS NULL)
+          AND EXISTS (SELECT 1 FROM messages m WHERE m.message_id = user_marks.target_id AND m.session_id = ?)
+          AND (session_id IS NULL OR message_id IS NULL)
         """,
-        (conversation_id, f"{msg_key_prefix}%", conversation_id),
+        (session_id, f"{msg_key_prefix}%", session_id),
     )
     conn.execute(
         """
-        UPDATE user_annotations SET conversation_id = ?, message_id = target_id
+        UPDATE user_annotations SET session_id = ?, message_id = target_id
         WHERE identity_key LIKE ? AND target_type = 'message'
-          AND EXISTS (SELECT 1 FROM messages m WHERE m.message_id = user_annotations.target_id AND m.conversation_id = ?)
-          AND (conversation_id IS NULL OR message_id IS NULL)
+          AND EXISTS (SELECT 1 FROM messages m WHERE m.message_id = user_annotations.target_id AND m.session_id = ?)
+          AND (session_id IS NULL OR message_id IS NULL)
         """,
-        (conversation_id, f"{msg_key_prefix}%", conversation_id),
+        (session_id, f"{msg_key_prefix}%", session_id),
     )
 
 
-def _upsert_conversation_stats_sync(
+def _upsert_session_stats_sync(
     conn: sqlite3.Connection,
     *,
-    conversation: ConversationRecord,
+    session: SessionRecord,
     messages: list[MessageRecord],
 ) -> None:
-    """Sync mirror of ``upsert_conversation_stats`` for test seeding.
+    """Sync mirror of ``upsert_session_stats`` for test seeding.
 
     Production routes stats through the async backend; the test
-    ``ConversationBuilder`` uses a sync sqlite3 connection, so we share
+    ``SessionBuilder`` uses a sync sqlite3 connection, so we share
     the same SQL statement constant but execute it synchronously here.
     """
     from polylogue.archive.message.roles import Role
@@ -698,8 +705,8 @@ def _upsert_conversation_stats_sync(
     conn.execute(
         SQL_STATS_UPSERT,
         (
-            conversation.conversation_id,
-            conversation.source_name,
+            session.session_id,
+            session.source_name,
             message_count,
             word_count,
             tool_use_count,
@@ -721,28 +728,124 @@ def _upsert_conversation_stats_sync(
 
 
 def db_setup(workspace_env: Mapping[str, Path]) -> Path:
-    """Initialize database path in workspace environment."""
-    db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    return db_path
+    """Return the archive's index database path inside the workspace.
+
+    Seeding and reads both resolve to the configured archive root, so the
+    builders write the same store the facade/CLI/MCP read.
+    """
+    root = workspace_env["archive_root"]
+    root.mkdir(parents=True, exist_ok=True)
+    return root / "index.db"
+
+
+def _archive_root_for(db_path: Path) -> Path:
+    """Resolve the archive root that contains ``db_path``.
+
+    ``db_path`` is the index database file (``.../index.db``); the archive
+    root is its parent directory, where the rest of the store lives.
+    """
+    return db_path.parent
+
+
+def _record_to_parsed_session(
+    session: SessionRecord,
+    messages: list[MessageRecord],
+    attachments: list[AttachmentRecord],
+) -> ParsedSession:
+    """Convert builder records into the parser envelope the archive ingests."""
+
+    def _maybe_json_object(value: object) -> dict[str, object] | None:
+        if value is None:
+            return None
+        if isinstance(value, Mapping):
+            return dict(value)
+        if isinstance(value, str) and value:
+            parsed = loads(value)
+            if isinstance(parsed, Mapping):
+                return dict(parsed)
+        return None
+
+    def _blocks(message: MessageRecord) -> list[ParsedContentBlock]:
+        return [
+            ParsedContentBlock(
+                type=block.type,
+                text=block.text,
+                tool_name=block.tool_name,
+                tool_id=block.tool_id,
+                tool_input=_maybe_json_object(block.tool_input),
+                metadata=_maybe_json_object(block.metadata),
+            )
+            for block in (message.content_blocks or [])
+        ]
+
+    parsed_messages = [
+        ParsedMessage(
+            provider_message_id=str(message.provider_message_id or message.message_id),
+            role=message.role if message.role is not None else Role.USER,
+            text=message.text,
+            content_blocks=_blocks(message),
+            message_type=message.message_type,
+            parent_message_provider_id=(
+                str(message.parent_message_id) if message.parent_message_id is not None else None
+            ),
+            position=position,
+            branch_index=message.branch_index,
+            variant_index=message.branch_index,
+            occurred_at_ms=(int(message.sort_key * 1000) if message.sort_key is not None else None),
+            input_tokens=message.input_tokens,
+            output_tokens=message.output_tokens,
+            cache_read_tokens=message.cache_read_tokens,
+            cache_write_tokens=message.cache_write_tokens,
+            model_name=message.model_name,
+        )
+        for position, message in enumerate(messages)
+    ]
+
+    parsed_attachments = [
+        ParsedAttachment(
+            provider_attachment_id=str(attachment.attachment_id),
+            message_provider_id=(str(attachment.message_id) if attachment.message_id is not None else None),
+            name=None,
+            mime_type=attachment.mime_type,
+            size_bytes=attachment.size_bytes,
+            path=attachment.path,
+            provider_meta=attachment.provider_meta,
+        )
+        for attachment in attachments
+    ]
+
+    return ParsedSession(
+        source_name=session.provider,
+        provider_session_id=session.provider_session_id,
+        title=session.title,
+        created_at=session.created_at,
+        updated_at=session.updated_at,
+        messages=parsed_messages,
+        attachments=parsed_attachments,
+        provider_meta=session.provider_meta,
+        parent_session_provider_id=(str(session.parent_session_id) if session.parent_session_id is not None else None),
+        branch_type=session.branch_type,
+        git_branch=session.git_branch,
+        git_repository_url=session.git_repository_url,
+    )
 
 
 # =============================================================================
-# MESSAGE/CONVERSATION BUILDERS (Fluent API)
+# MESSAGE/SESSION BUILDERS (Fluent API)
 # =============================================================================
 
 
-class ConversationBuilder:
-    """Fluent builder for creating conversations in test databases."""
+class SessionBuilder:
+    """Fluent builder for creating sessions in test databases."""
 
-    def __init__(self, db_path: Path, conversation_id: str) -> None:
+    def __init__(self, db_path: Path, session_id: str) -> None:
         self.db_path = db_path
         now = datetime.now(timezone.utc).isoformat()
-        self.conv = ConversationRecord(
-            conversation_id=_conversation_id(conversation_id),
+        self.conv = SessionRecord(
+            session_id=_session_id(session_id),
             source_name="test",
-            provider_conversation_id=f"ext-{conversation_id}",
-            title="Test Conversation",
+            provider_session_id=f"ext-{session_id}",
+            title="Test Session",
             created_at=now,
             updated_at=now,
             sort_key=_timestamp_sort_key(now),
@@ -751,35 +854,35 @@ class ConversationBuilder:
         self.messages: list[MessageRecord] = []
         self.attachments: list[AttachmentRecord] = []
 
-    def title(self, title: str | None) -> ConversationBuilder:
+    def title(self, title: str | None) -> SessionBuilder:
         self.conv = self.conv.model_copy(update={"title": title})
         return self
 
-    def provider(self, provider: str) -> ConversationBuilder:
+    def provider(self, provider: str) -> SessionBuilder:
         self.conv = self.conv.model_copy(update={"source_name": provider})
         return self
 
-    def created_at(self, created_at: str) -> ConversationBuilder:
+    def created_at(self, created_at: str) -> SessionBuilder:
         self.conv = self.conv.model_copy(update={"created_at": created_at})
         return self
 
-    def updated_at(self, updated_at: str) -> ConversationBuilder:
+    def updated_at(self, updated_at: str) -> SessionBuilder:
         self.conv = self.conv.model_copy(update={"updated_at": updated_at, "sort_key": _timestamp_sort_key(updated_at)})
         return self
 
-    def metadata(self, metadata: JSONRecord | None) -> ConversationBuilder:
+    def metadata(self, metadata: JSONRecord | None) -> SessionBuilder:
         self.conv = self.conv.model_copy(update={"metadata": metadata})
         return self
 
-    def provider_meta(self, provider_meta: JSONRecord | None) -> ConversationBuilder:
+    def provider_meta(self, provider_meta: JSONRecord | None) -> SessionBuilder:
         self.conv = self.conv.model_copy(update={"provider_meta": provider_meta})
         return self
 
-    def parent_conversation(self, parent_id: str) -> ConversationBuilder:
-        self.conv = self.conv.model_copy(update={"parent_conversation_id": _conversation_id(parent_id)})
+    def parent_session(self, parent_id: str) -> SessionBuilder:
+        self.conv = self.conv.model_copy(update={"parent_session_id": _session_id(parent_id)})
         return self
 
-    def branch_type(self, branch_type: str) -> ConversationBuilder:
+    def branch_type(self, branch_type: str) -> SessionBuilder:
         self.conv = self.conv.model_copy(update={"branch_type": BranchType(branch_type)})
         return self
 
@@ -790,7 +893,7 @@ class ConversationBuilder:
         text: str = "Test message",
         timestamp: str | None | _AutoTimestampSentinel = _AUTO_TIMESTAMP,
         **kwargs: object,
-    ) -> ConversationBuilder:
+    ) -> SessionBuilder:
         msg_id = f"m{len(self.messages) + 1}" if message_id is None else message_id
         ts = _resolve_timestamp(timestamp)
 
@@ -798,12 +901,12 @@ class ConversationBuilder:
         extra_blocks = _normalize_content_blocks(
             raw_blocks=provider_meta.get("content_blocks") if provider_meta is not None else None,
             message_id=msg_id,
-            conversation_id=str(self.conv.conversation_id),
+            session_id=str(self.conv.session_id),
         )
         existing_blocks = _normalize_content_blocks(
             raw_blocks=kwargs.pop("content_blocks", []),
             message_id=msg_id,
-            conversation_id=str(self.conv.conversation_id),
+            session_id=str(self.conv.session_id),
         )
         all_blocks = [*extra_blocks, *existing_blocks]
 
@@ -821,7 +924,7 @@ class ConversationBuilder:
 
         payload: RecordPayload = {
             "message_id": _message_id(msg_id),
-            "conversation_id": self.conv.conversation_id,
+            "session_id": self.conv.session_id,
             "role": role_value,
             "text": text,
             "sort_key": _coerce_sort_key(
@@ -849,12 +952,12 @@ class ConversationBuilder:
         size_bytes: int = 1024,
         path: str | None = None,
         provider_meta: JSONRecord | None = None,
-    ) -> ConversationBuilder:
+    ) -> SessionBuilder:
         att_id = f"att{len(self.attachments) + 1}" if attachment_id is None else attachment_id
         resolved_message_id = _resolve_attachment_message_id(value=message_id, messages=self.messages)
         att = AttachmentRecord(
             attachment_id=_attachment_id(att_id),
-            conversation_id=self.conv.conversation_id,
+            session_id=self.conv.session_id,
             message_id=None if resolved_message_id is None else _message_id(resolved_message_id),
             mime_type=mime_type,
             size_bytes=size_bytes,
@@ -864,23 +967,27 @@ class ConversationBuilder:
         self.attachments.append(att)
         return self
 
-    def save(self) -> ConversationRecord:
-        with open_connection(self.db_path) as conn:
-            store_records(
-                conversation=self.conv,
-                messages=self.messages,
-                attachments=self.attachments,
-                conn=conn,
-            )
+    def save(self) -> SessionRecord:
+        parsed = _record_to_parsed_session(self.conv, self.messages, self.attachments)
+        with _WRITE_LOCK, ArchiveStore(_archive_root_for(self.db_path)) as archive:
+            archive.write_parsed(parsed)
         return self.conv
 
-    async def build(self) -> Conversation | None:
-        from polylogue.storage.repository import ConversationRepository
-        from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+    def native_session_id(self) -> str:
+        """The archive's deterministic session id for the built session."""
+        from polylogue.core.identity_law import session_id as archive_session_id
+        from polylogue.core.sources import origin_from_provider
+
+        origin = origin_from_provider(self.conv.provider)
+        return archive_session_id(origin.value, self.conv.provider_session_id)
+
+    async def build(self) -> Session | None:
+        from polylogue.api import Polylogue
 
         self.save()
-        async with ConversationRepository(backend=SQLiteBackend(db_path=self.db_path)) as repo:
-            return await repo.get(self.conv.conversation_id)
+        root = _archive_root_for(self.db_path)
+        async with Polylogue(archive_root=root, db_path=root / "index.db") as plg:
+            return await plg.get_session(self.native_session_id())
 
 
 # =============================================================================
@@ -893,22 +1000,22 @@ def make_hash(s: str) -> str:
     return hashlib.sha256(s.encode()).hexdigest()[:16]
 
 
-def make_conversation(
-    conversation_id: str = "conv1",
+def make_session(
+    session_id: str = "conv1",
     source_name: str = "test",
-    title: str = "Test Conversation",
+    title: str = "Test Session",
     created_at: str | None = None,
     updated_at: str | None = None,
     **kwargs: object,
-) -> ConversationRecord:
+) -> SessionRecord:
     now = datetime.now(timezone.utc).isoformat()
     default_content_hash = uuid4().hex
     payload: RecordPayload = {
-        "conversation_id": _conversation_id(conversation_id),
+        "session_id": _session_id(session_id),
         "source_name": source_name,
-        "provider_conversation_id": _coerce_str(
-            kwargs.pop("provider_conversation_id", f"ext-{conversation_id}"),
-            f"ext-{conversation_id}",
+        "provider_session_id": _coerce_str(
+            kwargs.pop("provider_session_id", f"ext-{session_id}"),
+            f"ext-{session_id}",
         ),
         "title": title,
         "created_at": created_at or now,
@@ -916,12 +1023,12 @@ def make_conversation(
         "content_hash": _coerce_content_hash(kwargs.pop("content_hash", default_content_hash), default_content_hash),
     }
     payload.update(kwargs)
-    return ConversationRecord.model_validate(payload)
+    return SessionRecord.model_validate(payload)
 
 
 def make_message(
     message_id: str = "m1",
-    conversation_id: str = "conv1",
+    session_id: str = "conv1",
     role: str = "user",
     text: str | None = "Test message",
     timestamp: str | None = None,
@@ -932,12 +1039,12 @@ def make_message(
     extra_blocks = _normalize_content_blocks(
         raw_blocks=provider_meta.get("content_blocks") if provider_meta is not None else None,
         message_id=message_id,
-        conversation_id=conversation_id,
+        session_id=session_id,
     )
     existing_blocks = _normalize_content_blocks(
         raw_blocks=kwargs.pop("content_blocks", []),
         message_id=message_id,
-        conversation_id=conversation_id,
+        session_id=session_id,
     )
     all_blocks = [*extra_blocks, *existing_blocks]
 
@@ -953,7 +1060,7 @@ def make_message(
 
     payload: RecordPayload = {
         "message_id": _message_id(message_id),
-        "conversation_id": _conversation_id(conversation_id),
+        "session_id": _session_id(session_id),
         "role": role_value,
         "text": text,
         "sort_key": _coerce_sort_key(
@@ -972,7 +1079,7 @@ def make_message(
 
 def make_attachment(
     attachment_id: str = "att1",
-    conversation_id: str = "conv1",
+    session_id: str = "conv1",
     message_id: str | None = None,
     mime_type: str = "application/octet-stream",
     size_bytes: int = 1024,
@@ -985,7 +1092,7 @@ def make_attachment(
 
     payload: RecordPayload = {
         "attachment_id": _attachment_id(attachment_id),
-        "conversation_id": _conversation_id(conversation_id),
+        "session_id": _session_id(session_id),
         "message_id": None if message_id is None else _message_id(message_id),
         "mime_type": mime_type,
         "size_bytes": size_bytes,
@@ -995,7 +1102,7 @@ def make_attachment(
     return AttachmentRecord.model_validate(payload)
 
 
-def make_raw_conversation(
+def make_raw_session(
     raw_id: str = "raw1",
     source_name: str = "test",
     source_path: str = "/tmp/test.json",
@@ -1007,7 +1114,7 @@ def make_raw_conversation(
     validation_provider: str | Provider | None = None,
     validation_mode: str | ValidationMode | None = None,
     **kwargs: object,
-) -> RawConversationRecord:
+) -> RawSessionRecord:
     timestamp = acquired_at or datetime.now(timezone.utc).isoformat()
     payload: RecordPayload = {
         "raw_id": raw_id,
@@ -1037,21 +1144,21 @@ def make_raw_conversation(
         ),
     }
     payload.update(kwargs)
-    return RawConversationRecord.model_validate(payload)
+    return RawSessionRecord.model_validate(payload)
 
 
 class DbFactory:
-    """Low-ceremony DB seeder built on top of ConversationBuilder."""
+    """Low-ceremony DB seeder built on top of SessionBuilder."""
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def create_conversation(
+    def create_session(
         self,
         id: str | None = None,
         provider: str = "test",
-        title: str = "Test Conversation",
+        title: str = "Test Session",
         messages: list[JSONRecord] | None = None,
         created_at: datetime | None = None,
         updated_at: datetime | None = None,
@@ -1062,7 +1169,7 @@ class DbFactory:
         updated_iso = (updated_at or datetime.now(timezone.utc)).isoformat()
 
         builder = (
-            ConversationBuilder(self.db_path, cid)
+            SessionBuilder(self.db_path, cid)
             .provider(provider)
             .title(title)
             .created_at(created_iso)

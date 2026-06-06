@@ -50,7 +50,7 @@ def _inference_provenance() -> ArchiveInferenceProvenance:
 def _work_event(
     *,
     event_id: str = "evt-1",
-    conversation_id: str = "conv-1",
+    session_id: str = "conv-1",
     event_index: int = 0,
     kind: str = "implementation",
     summary: str = "editing files",
@@ -64,7 +64,7 @@ def _work_event(
 ) -> SessionWorkEventInsight:
     return SessionWorkEventInsight(
         event_id=event_id,
-        conversation_id=conversation_id,
+        session_id=session_id,
         source_name="claude-code",
         event_index=event_index,
         provenance=_provenance(),
@@ -90,7 +90,7 @@ def _work_event(
 def _phase(
     *,
     phase_id: str = "phase-1",
-    conversation_id: str = "conv-1",
+    session_id: str = "conv-1",
     phase_index: int = 0,
     start_time: str | None = "2026-03-24T10:06:00+00:00",
     end_time: str | None = "2026-03-24T10:09:00+00:00",
@@ -100,7 +100,7 @@ def _phase(
 ) -> SessionPhaseInsight:
     return SessionPhaseInsight(
         phase_id=phase_id,
-        conversation_id=conversation_id,
+        session_id=session_id,
         source_name="claude-code",
         phase_index=phase_index,
         provenance=_provenance(),
@@ -273,7 +273,7 @@ class TestJsonContract:
         payload = timeline.to_dict()
         # The contract surfaces both the user-visible tag and the raw
         # provenance value so downstream consumers can recover precision.
-        assert payload["conversation_id"] == "conv-json"
+        assert payload["session_id"] == "conv-json"
         assert payload["fidelity_counts"] == {"hook": 1, "sort_key": 1}
         raw_entries = payload["entries"]
         assert isinstance(raw_entries, list)
@@ -290,6 +290,6 @@ class TestJsonContract:
 
 class TestSessionTimelineDataclass:
     def test_frozen(self) -> None:
-        timeline = SessionTimeline(conversation_id="x", entries=())
+        timeline = SessionTimeline(session_id="x", entries=())
         with pytest.raises((AttributeError, TypeError)):
-            timeline.conversation_id = "y"  # type: ignore[misc]
+            timeline.session_id = "y"  # type: ignore[misc]

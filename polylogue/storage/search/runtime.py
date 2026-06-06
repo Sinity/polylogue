@@ -11,7 +11,7 @@ from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_sync
 from polylogue.storage.search.cache import SearchCacheKey
 from polylogue.storage.search.models import SearchHit, SearchResult
-from polylogue.storage.search.query_builders import build_ranked_conversation_search_query, conversation_web_url
+from polylogue.storage.search.query_builders import build_ranked_session_search_query, session_web_url
 from polylogue.storage.search.query_support import sort_key_to_iso
 from polylogue.storage.sqlite.connection import open_read_connection
 
@@ -40,7 +40,7 @@ def search_messages_impl(
     source: str | None,
     since: str | None,
 ) -> SearchResult:
-    query_spec = build_ranked_conversation_search_query(
+    query_spec = build_ranked_session_search_query(
         query=query,
         limit=limit,
         scope_names=[source] if source else None,
@@ -66,16 +66,16 @@ def search_messages_impl(
 
     hits: list[SearchHit] = []
     for row in rows:
-        conversation_id = row["conversation_id"]
+        session_id = row["session_id"]
         hits.append(
             SearchHit(
-                conversation_id=conversation_id,
+                session_id=session_id,
                 source_name=row["source_name"],
                 message_id=row["message_id"],
                 title=row["title"],
                 timestamp=sort_key_to_iso(row["sort_key"]),
                 snippet=str(row["snippet"] or fallback_snippets.get(row["message_id"]) or ""),
-                conversation_url=conversation_web_url(conversation_id),
+                session_url=session_web_url(session_id),
             )
         )
     return SearchResult(hits=hits)

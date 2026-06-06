@@ -63,13 +63,16 @@ def _build_parse_batch_observation(
     peak_rss_children_mb: float | None,
 ) -> ParseBatchObservation:
     observation: ParseBatchObservation = {
+        "primary_ingest_store": "archive_file_set",
+        "archive_primary_write": False,
+        "archive_write_mode": "unsupported",
         "records": batch_summary.raw_record_count,
         "blob_mb": round(batch_summary.total_blob_mb, 1),
         "result_mb": round(batch_summary.total_result_bytes / (1024 * 1024), 3),
         "max_result_mb": round(batch_summary.max_result_bytes / (1024 * 1024), 3),
-        "conversations": batch_summary.total_convos,
+        "sessions": batch_summary.total_convos,
         "messages": batch_summary.total_msgs,
-        "changed_conversations": len(batch_summary.changed_conversation_ids),
+        "changed_sessions": len(batch_summary.changed_session_ids),
         "workers": batch_summary.worker_count,
         "failed_raw_count": len(batch_summary.failed_raw_ids),
         "skipped_raw_count": len(batch_summary.skipped_raw_ids),

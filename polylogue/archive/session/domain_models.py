@@ -1,0 +1,82 @@
+"""Session and summary domain models."""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from polylogue.archive.attachment.models import Attachment
+from polylogue.archive.message.messages import MessageCollection
+from polylogue.archive.provider.events import ProviderEvent
+from polylogue.archive.session.branch_type import BranchType
+from polylogue.archive.session.domain_runtime import SessionRuntimeMixin
+from polylogue.archive.session.summary_runtime import SessionSummaryRuntimeMixin
+from polylogue.core.enums import Origin
+from polylogue.core.sources import origin_from_provider
+from polylogue.types import Provider, SessionId
+
+
+def _coerce_origin(v: object) -> Origin:
+    if isinstance(v, Origin):
+        return v
+    text = str(v) if v is not None else "unknown"
+    try:
+        return Origin(text)
+    except ValueError:
+        return origin_from_provider(Provider.from_string(text))
+
+
+class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):
+    """Lightweight session metadata without messages."""
+
+    id: SessionId
+    origin: Origin
+    title: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    provider_meta: dict[str, object] | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+    parent_id: SessionId | None = None
+    branch_type: BranchType | None = None
+    message_count: int | None = None
+    dialogue_count: int | None = None
+    # #1240: tags are sourced from the M2M session_tags table when
+    # hydrated through the repository. Empty by default so that legacy
+    # constructors keep working.
+    tags_m2m: tuple[str, ...] = ()
+
+    @field_validator("origin", mode="before")
+    @classmethod
+    def coerce_origin(cls, v: object) -> Origin:
+        return _coerce_origin(v)
+
+
+class Session(SessionRuntimeMixin, BaseModel):
+    """Session with eagerly or lazily materialized message collection."""
+
+    id: SessionId
+    origin: Origin
+    title: str | None = None
+    messages: MessageCollection
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    provider_meta: dict[str, object] | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+    provider_events: tuple[ProviderEvent, ...] = ()
+    parent_id: SessionId | None = None
+    branch_type: BranchType | None = None
+    # #1240: tags hydrated from session_tags M2M; see SessionSummary.
+    tags_m2m: tuple[str, ...] = ()
+    # Session-level attachments not linked to a specific message (orphans).
+    attachments: list[Attachment] = Field(default_factory=list)
+
+    @field_validator("origin", mode="before")
+    @classmethod
+    def coerce_origin(cls, v: object) -> Origin:
+        return _coerce_origin(v)
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+__all__ = ["Session", "SessionSummary"]

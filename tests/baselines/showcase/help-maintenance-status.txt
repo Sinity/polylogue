@@ -1,0 +1,22 @@
+Usage: polylogue maintenance status [OPTIONS]
+
+  Inspect persisted maintenance operations (#1197).
+
+  Without ``--operation-id``, lists every persisted operation under
+  ``<archive_root>/.maintenance-state/``. By default the listing hides
+  completed operations to surface only in-flight or failed work; pass
+  ``--all`` to include them.
+
+  With ``--operation-id``, tails one operation: emits the same shared
+  :class:`~polylogue.maintenance.envelope.MaintenanceOperationEnvelope` that
+  the CLI ``plan``/``run`` commands, daemon HTTP, and MCP tools return.
+
+Options:
+  --operation-id TEXT           Show one operation by id. Omit to list all in-
+                                flight and recent operations.
+  --all                         Include completed operations in the listing
+                                (default: only running / failed).
+  --output-format [plain|json]  Output format. ``json`` emits the shared
+                                MaintenanceOperationEnvelope per record.
+                                [default: plain]
+  -h, --help                    Show this message and exit.

@@ -7,7 +7,7 @@ Pins the daemon web shell's contract for the paste-spans slice:
 - copy menu gains ``copy-typed`` and ``copy-paste`` actions, disabled
   when no paste spans are present;
 - ``/p`` paste-browser route serves a standalone page that lists
-  paste-flagged messages grouped by conversation, with anchor links
+  paste-flagged messages grouped by session, with anchor links
   back to the source message;
 - ``/api/paste-browser`` returns the envelope shape the page consumes,
   including empty-state behaviour against a fresh archive.
@@ -19,70 +19,36 @@ the contract surface is browserless-verifiable.
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 from tests.visual.conftest import (
+    READER_C3,
+    READER_C3_DIFF,
+    READER_C3_M1,
     ReaderWorkspace,
-    archive_db_path,
     assert_no_private_paths,
     get_json,
     get_text,
     parse_dom,
     running_reader_server,
+    seed_reader_diff_paste,
     write_evidence_manifest,
 )
 
 
-def _seed_diff_paste_message(workspace: ReaderWorkspace) -> None:
-    """Add a synthetic message containing a unified-diff paste to the
-    archive seeded by ``running_reader_server``."""
-
-    db = archive_db_path(workspace)
-    conn = sqlite3.connect(str(db))
-    diff_text = "Before the diff:\n@@ -1,3 +1,4 @@\n context\n-old\n+new\n+added\n"
-    conn.execute(
-        """
-        INSERT INTO messages(
-            message_id, conversation_id, role, text, sort_key, source_name,
-            content_hash, version, word_count, has_tool_use, has_thinking,
-            has_paste, message_type
-        )
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            "reader-c3-diff",
-            "reader-c3",
-            "user",
-            diff_text,
-            1.0,
-            "claude-ai",
-            "hash-reader-c3-diff",
-            1,
-            len(diff_text.split()),
-            0,
-            0,
-            1,
-            "message",
-        ),
-    )
-    conn.commit()
-    conn.close()
-
-
 def test_reader_paste_spans_contract(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
     with running_reader_server(reader_workspace) as (_, base_url):
-        _seed_diff_paste_message(reader_workspace)
+        seed_reader_diff_paste(reader_workspace)
         status, content_type, body = get_text(base_url, "/")
-        # Conversation envelope must carry ``paste_spans``.
-        conv_payload = get_json(base_url, "/api/conversations/reader-c3")
+        # Session envelope must carry ``paste_spans``.
+        conv_payload = get_json(base_url, f"/api/sessions/{READER_C3}")
         assert isinstance(conv_payload, dict)
         messages = conv_payload["messages"]
         # The seeded diff-paste message is present with non-empty spans;
         # the original "synthetic paste-like block" message has has_paste
         # set but no detectable diff, so spans are empty (banner path).
-        diff_msg = next(m for m in messages if m["id"] == "reader-c3-diff")
-        plain_paste_msg = next(m for m in messages if m["id"] == "reader-c3-m1")
+        diff_msg = next(m for m in messages if m["id"] == READER_C3_DIFF)
+        plain_paste_msg = next(m for m in messages if m["id"] == READER_C3_M1)
         # Paste browser page + envelope.
         p_status, p_ctype, p_body = get_text(base_url, "/p")
         payload = get_json(base_url, "/api/paste-browser?limit=100")
@@ -155,11 +121,11 @@ def test_reader_paste_spans_contract(reader_workspace: ReaderWorkspace, tmp_path
     # Two paste-flagged messages in the seeded archive (one diff, one
     # whole-message prose paste).
     ids = {item["message_id"] for item in items}
-    assert "reader-c3-diff" in ids
-    assert "reader-c3-m1" in ids
-    diff_entry = next(item for item in items if item["message_id"] == "reader-c3-diff")
+    assert READER_C3_DIFF in ids
+    assert READER_C3_M1 in ids
+    diff_entry = next(item for item in items if item["message_id"] == READER_C3_DIFF)
     assert diff_entry["has_diff"] is True
-    assert diff_entry["conversation_id"] == "reader-c3"
+    assert diff_entry["session_id"] == READER_C3
     assert diff_entry["message_anchor"].startswith("message-")
     assert any(span["kind"] == "diff" for span in diff_entry["paste_spans"])
 
@@ -184,10 +150,10 @@ def test_reader_paste_spans_contract(reader_workspace: ReaderWorkspace, tmp_path
 
 def test_paste_browser_empty_state(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
     # Seed an archive without any has_paste rows by clearing the seeded
-    # paste flag before listing. We use ``conversations=False`` so the
+    # paste flag before listing. We use ``sessions=False`` so the
     # archive starts empty, then the paste-browser must return an empty
     # envelope and the page must still render its DOM targets.
-    with running_reader_server(reader_workspace, conversations=False) as (_, base_url):
+    with running_reader_server(reader_workspace, sessions=False) as (_, base_url):
         payload = get_json(base_url, "/api/paste-browser")
         p_status, _ctype, p_body = get_text(base_url, "/p")
 

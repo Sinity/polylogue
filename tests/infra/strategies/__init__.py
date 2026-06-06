@@ -5,7 +5,7 @@ that matches the structure of provider exports and internal models.
 
 Usage:
     from hypothesis import given
-    from tests.infra.strategies import chatgpt_message, conversation_strategy
+    from tests.infra.strategies import chatgpt_message, session_strategy
 
     @given(chatgpt_message())
     def test_message_parsing(msg):
@@ -17,12 +17,12 @@ Strategies are organized by domain:
 - filters: Filter composition strategies for query/algebra testing
 - adversarial: Malformed/attack data for security testing
 - search: FTS5 query and date-filter strategies
-- storage: Conversation graph, tag, and title-search strategies
+- storage: Session graph, tag, and title-search strategies
 - pipeline: Acquisition, parsing, and validation strategies
 - schema: Schema inference and JSONL tree strategies
 - sources: JSON wire-format container strategies
 - site: Static site generation strategies
-- summaries: Conversation summary strategies
+- summaries: Session summary strategies
 - cli: CLI output and query mutation strategies
 """
 
@@ -61,11 +61,11 @@ from tests.infra.strategies.filters import (
 from tests.infra.strategies.messages import (
     code_block_strategy,
     content_block_strategy,
-    conversation_model_strategy,
-    conversation_strategy,
     message_model_strategy,
     message_strategy,
     parsed_attachment_model_strategy,
+    session_model_strategy,
+    session_strategy,
     text_content_strategy,
     thinking_block_strategy,
     tool_use_block_strategy,
@@ -124,45 +124,45 @@ from tests.infra.strategies.search import (
     search_with_since_strategy,
 )
 from tests.infra.strategies.sources import (
-    conversations_wrapper_bytes_strategy,
     json_array_bytes_strategy,
     json_document_strategy,
     jsonl_bytes_strategy,
+    sessions_wrapper_bytes_strategy,
 )
 from tests.infra.strategies.storage import (
-    ConversationSpec,
     MessageSpec,
+    SessionSpec,
     TagAssignmentSpec,
     TitleSearchSpec,
-    conversation_graph_strategy,
     expected_sorted_ids,
     expected_tag_counts,
     expected_tree_ids,
     literal_title_search_strategy,
     root_index,
-    seed_conversation_graph,
+    seed_session_graph,
+    session_graph_strategy,
     shortest_unique_prefix,
     tag_assignment_strategy,
 )
 from tests.infra.strategies.summaries import (
-    ConversationSummarySpec,
-    build_conversation_summary,
+    SessionSummarySpec,
     build_message_counts,
-    conversation_summary_batch_strategy,
-    conversation_summary_spec_strategy,
+    build_session_summary,
+    session_summary_batch_strategy,
+    session_summary_spec_strategy,
 )
 
 __all__ = [
     # Messages (dict-based wire-format)
     "code_block_strategy",
     "content_block_strategy",
-    "conversation_strategy",
+    "session_strategy",
     "message_strategy",
     "text_content_strategy",
     "thinking_block_strategy",
     "tool_use_block_strategy",
     # Messages (typed model instances)
-    "conversation_model_strategy",
+    "session_model_strategy",
     "message_model_strategy",
     "parsed_attachment_model_strategy",
     # Providers
@@ -199,22 +199,22 @@ __all__ = [
     "schema_conformant_payload",
     "strip_schema_extensions",
     # Source/json wire contracts
-    "conversations_wrapper_bytes_strategy",
+    "sessions_wrapper_bytes_strategy",
     "json_array_bytes_strategy",
     "json_document_strategy",
     "jsonl_bytes_strategy",
     # Storage
-    "ConversationSpec",
+    "SessionSpec",
     "MessageSpec",
     "TagAssignmentSpec",
     "TitleSearchSpec",
-    "conversation_graph_strategy",
+    "session_graph_strategy",
     "expected_tag_counts",
     "expected_sorted_ids",
     "expected_tree_ids",
     "literal_title_search_strategy",
     "root_index",
-    "seed_conversation_graph",
+    "seed_session_graph",
     "shortest_unique_prefix",
     "tag_assignment_strategy",
     # Pipeline
@@ -247,11 +247,11 @@ __all__ = [
     "sql_injection_strategy",
     "symlink_path_strategy",
     # Summary/presentation
-    "ConversationSummarySpec",
-    "build_conversation_summary",
+    "SessionSummarySpec",
+    "build_session_summary",
     "build_message_counts",
-    "conversation_summary_batch_strategy",
-    "conversation_summary_spec_strategy",
+    "session_summary_batch_strategy",
+    "session_summary_spec_strategy",
     # CLI
     "QueryDeleteCase",
     "QueryMutationCase",

@@ -31,7 +31,7 @@ def rebuild_index(conn: sqlite3.Connection | None = None) -> None:
     def _do(db_conn: sqlite3.Connection) -> None:
         action_targets = action_event_repair_candidates_sync(db_conn)
         if action_targets:
-            rebuild_action_event_read_model_sync(db_conn, conversation_ids=action_targets)
+            rebuild_action_event_read_model_sync(db_conn, session_ids=action_targets)
         rebuild_fts_index_sync(db_conn)
         db_conn.commit()
         invalidate_search_cache()
@@ -40,14 +40,14 @@ def rebuild_index(conn: sqlite3.Connection | None = None) -> None:
         _do(db_conn)
 
 
-def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite3.Connection | None = None) -> None:
-    """Repair FTS rows for specific conversations from persisted message rows."""
-    changed = bool(conversation_ids)
+def update_index_for_sessions(session_ids: Sequence[str], conn: sqlite3.Connection | None = None) -> None:
+    """Repair FTS rows for specific sessions from persisted message rows."""
+    changed = bool(session_ids)
 
     def _do(db_conn: sqlite3.Connection) -> None:
-        if conversation_ids:
-            rebuild_action_event_read_model_sync(db_conn, conversation_ids=conversation_ids)
-        repair_fts_index_sync(db_conn, conversation_ids)
+        if session_ids:
+            rebuild_action_event_read_model_sync(db_conn, session_ids=session_ids)
+        repair_fts_index_sync(db_conn, session_ids)
         db_conn.commit()
         if changed:
             invalidate_search_cache()
@@ -66,7 +66,7 @@ def index_status(conn: sqlite3.Connection | None = None) -> dict[str, object]:
 __all__ = [
     "_chunked",
     "rebuild_index",
-    "update_index_for_conversations",
+    "update_index_for_sessions",
     "index_status",
     "ensure_index",
 ]

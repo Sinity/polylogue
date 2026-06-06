@@ -2,7 +2,7 @@
 
 # Insights
 
-Polylogue derives structured read models from raw conversation data. These are
+Polylogue derives structured read models from raw session data. These are
 materialized in the database and queried through the `polylogue insights`
 subcommand group.
 
@@ -15,7 +15,7 @@ subcommand group.
 | Work Phases | `insights phases` | Session segment classification: planning, implementation, verification, exploration |
 | Work Threads | `insights threads` | Multi-session groupings by repo and work continuity |
 | Session Latency Profiles | API / MCP | Per-session response/tool latency aggregates and stuck-tool counts |
-| Tag Rollups | `insights tags` | Tag usage across conversations |
+| Tag Rollups | `insights tags` | Tag usage across sessions |
 | Day Summaries | `insights day-summaries` | Per-day session and message counts |
 | Week Summaries | `insights week-summaries` | Per-week session and message counts |
 | Provider Analytics | `insights analytics` | Per-provider message, tool, and thinking stats |
@@ -40,16 +40,16 @@ polylogue insights profiles --tier merged --sort first-message
 polylogue --provider claude-code insights profiles --min-wallclock-seconds 300
 ```
 
-Fields: conversation ID, provider, raw title, inferred topic, session date,
+Fields: session ID, provider, raw title, inferred topic, session date,
 first/last session timestamp, timestamp source, wall clock duration, message
 count, engaged minutes, workflow shape, terminal state, and folded enrichment
 payloads for the merged tier.
 
 `first_message_at` and `last_message_at` prefer provider-supplied message
-timestamps. For sources that only preserve conversation-level timestamps,
-session profile materialization falls back to the conversation created/updated
+timestamps. For sources that only preserve session-level timestamps,
+session profile materialization falls back to the session created/updated
 timestamps and records `evidence.timestamp_source =
-conversation_timestamp_fallback`. That fallback makes time-bucketed analysis
+session_timestamp_fallback`. That fallback makes time-bucketed analysis
 complete without pretending the archive recovered per-message timing.
 
 Optional filters: `--first-message-since`, `--first-message-until`,
@@ -127,10 +127,10 @@ latency includes model output delay and any intervening tool execution visible
 in the archive. Provider tool latency requires timestamped start/output event
 pairs; unpaired starts contribute only to `stuck_tool_count` when the session
 end is far enough past the start. User response latency caps long idle gaps so
-calendar-scale pauses do not masquerade as conversational latency.
+calendar-scale pauses do not masquerade as sessional latency.
 
 MCP exposes three readers over these same rows:
-`session_latency_profile(conversation_id)`,
+`session_latency_profile(session_id)`,
 `tool_call_latency_distribution(since, until, provider, tool_category)`, and
 `find_stuck_sessions(since, limit)`.
 
@@ -148,7 +148,7 @@ session.
 ```bash
 polylogue insights work-events
 polylogue insights work-events --heuristic-label implementation
-polylogue insights work-events --conversation-id claude-ai:abc123
+polylogue insights work-events --session-id claude-ai:abc123
 ```
 
 Each event has: start/end time, duration, file paths, tools used, a short
@@ -248,7 +248,7 @@ polylogue insights tags
 polylogue insights tags --query polylogue
 ```
 
-Shows tag names with conversation counts, explicit count (user-assigned), and
+Shows tag names with session counts, explicit count (user-assigned), and
 auto count (derived from session content).
 
 ## Archive Debt
@@ -259,5 +259,5 @@ polylogue insights debt --category schema
 polylogue insights debt --only-actionable
 ```
 
-Tracks maintenance readiness: schema version gaps, migration debt, stale
+Tracks maintenance readiness: schema version gaps, rebuild debt, stale
 indexes, and unprocessed raw records.

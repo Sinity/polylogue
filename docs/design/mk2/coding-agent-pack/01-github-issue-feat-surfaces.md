@@ -113,7 +113,7 @@ Daemon responsibilities:
 - local loopback API;
 - local web reader static bundle;
 - live ingestion supervision/status;
-- browser-capture receiver/status, once migrated;
+- browser-capture receiver/status, once moved;
 - bounded maintenance/status checks;
 - event/status stream if useful.
 

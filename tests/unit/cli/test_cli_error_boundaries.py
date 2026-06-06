@@ -173,7 +173,7 @@ class TestFilterCombinations:
     """Filter combination tests use workspace_env + --plain --limit 0 to stay fast.
 
     Without workspace_env the root CLI resolves the real user DB (XDG_DATA_HOME),
-    which can contain thousands of conversations and make the test very slow.
+    which can contain thousands of sessions and make the test very slow.
     --limit 0 ensures we exit after filter resolution with zero results rendered.
     """
 

@@ -9,34 +9,34 @@ from unittest.mock import patch
 
 import pytest
 
-from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.mcp import invoke_surface, invoke_surface_async
-from tests.infra.storage_records import make_conversation, make_message
+from tests.infra.storage_records import make_message, make_session
 
 
-async def _insert_conversation(
-    repo: ConversationRepository,
+async def _insert_session(
+    repo: SessionRepository,
     *,
-    conversation_id: str,
+    session_id: str,
     provider: str,
-    provider_conversation_id: str,
+    provider_session_id: str,
     text: str,
 ) -> None:
-    conversation = make_conversation(
-        conversation_id=conversation_id,
+    session = make_session(
+        session_id=session_id,
         source_name=provider,
-        provider_conversation_id=provider_conversation_id,
-        title=f"{provider} conversation",
+        provider_session_id=provider_session_id,
+        title=f"{provider} session",
     )
     message = make_message(
-        message_id=f"{conversation_id}:m1",
-        conversation_id=conversation_id,
+        message_id=f"{session_id}:m1",
+        session_id=session_id,
         role="user",
         text=text,
         source_name=provider,
     )
-    await repo.save_conversation(conversation, [message], [])
+    await repo.save_session(session, [message], [])
 
 
 class TestMCPRealRepositoryPaths:
@@ -47,21 +47,21 @@ class TestMCPRealRepositoryPaths:
         from polylogue.mcp.server import build_server
 
         backend = SQLiteBackend(db_path=tmp_path / "mcp-search.db")
-        repo = ConversationRepository(backend=backend)
+        repo = SessionRepository(backend=backend)
 
         try:
-            await _insert_conversation(
+            await _insert_session(
                 repo,
-                conversation_id="chatgpt:needle",
+                session_id="chatgpt:needle",
                 provider="chatgpt",
-                provider_conversation_id="needle",
+                provider_session_id="needle",
                 text="finding a needle in a haystack",
             )
-            await _insert_conversation(
+            await _insert_session(
                 repo,
-                conversation_id="claude-ai:other",
+                session_id="claude-ai:other",
                 provider="claude-ai",
-                provider_conversation_id="other",
+                provider_session_id="other",
                 text="something unrelated",
             )
 
@@ -71,8 +71,8 @@ class TestMCPRealRepositoryPaths:
 
             parsed = json.loads(result)
             assert len(parsed) == 1
-            assert parsed[0]["conversation"]["id"] == "chatgpt:needle"
-            assert parsed[0]["conversation"]["provider"] == "chatgpt"
+            assert parsed[0]["session"]["id"] == "chatgpt:needle"
+            assert parsed[0]["session"]["provider"] == "chatgpt"
             assert parsed[0]["match"]["match_surface"] == "message"
         finally:
             await backend.close()
@@ -82,28 +82,28 @@ class TestMCPRealRepositoryPaths:
         from polylogue.mcp.server import build_server
 
         backend = SQLiteBackend(db_path=tmp_path / "mcp-list.db")
-        repo = ConversationRepository(backend=backend)
+        repo = SessionRepository(backend=backend)
 
         try:
-            await _insert_conversation(
+            await _insert_session(
                 repo,
-                conversation_id="chatgpt:one",
+                session_id="chatgpt:one",
                 provider="chatgpt",
-                provider_conversation_id="one",
+                provider_session_id="one",
                 text="chatgpt content",
             )
-            await _insert_conversation(
+            await _insert_session(
                 repo,
-                conversation_id="claude-ai:one",
+                session_id="claude-ai:one",
                 provider="claude-ai",
-                provider_conversation_id="one",
+                provider_session_id="one",
                 text="claude content",
             )
 
             with patch("polylogue.mcp.server._get_repo", return_value=repo):
                 server = build_server()
                 result = await invoke_surface_async(
-                    server._tool_manager._tools["list_conversations"].fn,
+                    server._tool_manager._tools["list_sessions"].fn,
                     provider="claude-ai",
                     limit=10,
                 )
@@ -120,27 +120,27 @@ class TestMCPRealRepositoryPaths:
         from polylogue.mcp.server import build_server
 
         backend = SQLiteBackend(db_path=tmp_path / "mcp-invalid-limit.db")
-        repo = ConversationRepository(backend=backend)
+        repo = SessionRepository(backend=backend)
 
         try:
-            await _insert_conversation(
+            await _insert_session(
                 repo,
-                conversation_id="chatgpt:one",
+                session_id="chatgpt:one",
                 provider="chatgpt",
-                provider_conversation_id="one",
+                provider_session_id="one",
                 text="first result",
             )
-            await _insert_conversation(
+            await _insert_session(
                 repo,
-                conversation_id="chatgpt:two",
+                session_id="chatgpt:two",
                 provider="chatgpt",
-                provider_conversation_id="two",
+                provider_session_id="two",
                 text="second result",
             )
 
             with patch("polylogue.mcp.server._get_repo", return_value=repo):
                 server = build_server()
-                result = await invoke_surface_async(server._tool_manager._tools["list_conversations"].fn, limit=-1)
+                result = await invoke_surface_async(server._tool_manager._tools["list_sessions"].fn, limit=-1)
 
             parsed = json.loads(result)
             assert isinstance(parsed, list)
@@ -152,16 +152,16 @@ class TestMCPRealRepositoryPaths:
         from polylogue.mcp.server import build_server
 
         backend = SQLiteBackend(db_path=tmp_path / "mcp-mutations-real.db")
-        repo = ConversationRepository(backend=backend)
+        repo = SessionRepository(backend=backend)
 
         try:
             conv_id = "chatgpt:real-tag"
             asyncio.run(
-                _insert_conversation(
+                _insert_session(
                     repo,
-                    conversation_id=conv_id,
+                    session_id=conv_id,
                     provider="chatgpt",
-                    provider_conversation_id="real-tag",
+                    provider_session_id="real-tag",
                     text="tag me",
                 )
             )
@@ -177,7 +177,7 @@ class TestMCPRealRepositoryPaths:
                 add_payload = json.loads(
                     invoke_surface(
                         server._tool_manager._tools["add_tag"].fn,
-                        conversation_id=conv_id,
+                        session_id=conv_id,
                         tag="important",
                     )
                 )
@@ -191,7 +191,7 @@ class TestMCPRealRepositoryPaths:
                 remove_payload = json.loads(
                     invoke_surface(
                         server._tool_manager._tools["remove_tag"].fn,
-                        conversation_id=conv_id,
+                        session_id=conv_id,
                         tag="important",
                     )
                 )

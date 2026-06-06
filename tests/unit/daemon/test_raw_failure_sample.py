@@ -15,6 +15,8 @@ from polylogue.daemon.status import (
     RawFailureSample,
     _raw_failure_info,
 )
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 class TestRawFailureSampleModel:
@@ -138,46 +140,137 @@ class TestRawFailureSampleInDaemonStatus:
             DaemonStatus(raw_failure_samples=["not a model"])  # type: ignore[list-item]
 
 
+def _seed_archive_raw_session(
+    tmp_path: Path,
+    *,
+    raw_id: str,
+    origin: str,
+    native_id: str,
+    source_path: str,
+    parse_error: str | None = None,
+    validation_status: str | None = None,
+    validation_error: str | None = None,
+    detection_warnings_json: str = "[]",
+    blob_size: int = 256,
+    acquired_at_ms: int = 1_770_000_000_000,
+) -> tuple[Path, Path]:
+    """Seed one archive `source.db` ``raw_sessions`` row.
+
+    Returns ``(legacy_db, index_db)`` paths to patch onto
+    ``polylogue.daemon.status`` so ``_active_status_db_path`` resolves to
+    ``tmp_path/index.db`` and reads ``tmp_path/source.db``.
+    """
+    legacy_db = tmp_path / "polylogue.db"
+    index_db = tmp_path / "index.db"
+    source_db = tmp_path / "source.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, parse_error, validation_status, validation_error,
+                detection_warnings_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                raw_id,
+                origin,
+                native_id,
+                source_path,
+                bytes(32),
+                blob_size,
+                acquired_at_ms,
+                parse_error,
+                validation_status,
+                validation_error,
+                detection_warnings_json,
+            ),
+        )
+        conn.commit()
+    return legacy_db, index_db
+
+
 class TestRawFailureInfoProducesTypedSamples:
     """_raw_failure_info() returns typed RawFailureSample instances."""
 
-    def test_raw_failure_info_samples_are_typed(self, tmp_path: Path) -> None:
-        db = tmp_path / "polylogue.db"
-        with sqlite3.connect(db) as conn:
-            conn.executescript(
+    def test_raw_failure_info_reads_archive_file_set_without_polylogue_db(self, tmp_path: Path) -> None:
+        legacy_db = tmp_path / "polylogue.db"
+        index_db = tmp_path / "index.db"
+        archive_db = tmp_path / "source.db"
+        initialize_archive_database(archive_db, ArchiveTier.SOURCE)
+        with sqlite3.connect(archive_db) as conn:
+            conn.execute(
                 """
-                CREATE TABLE raw_conversations (
-                    raw_id TEXT PRIMARY KEY,
-                    payload_provider TEXT,
-                    source_name TEXT,
-                    source_path TEXT NOT NULL,
-                    source_index INTEGER,
-                    blob_size INTEGER NOT NULL,
-                    acquired_at TEXT NOT NULL,
-                    file_mtime TEXT,
-                    parsed_at TEXT,
-                    parse_error TEXT,
-                    validated_at TEXT,
-                    validation_status TEXT,
-                    validation_error TEXT,
-                    validation_drift_count INTEGER DEFAULT 0,
-                    validation_provider TEXT,
-                    validation_mode TEXT,
-                    detection_warnings TEXT
-                );
-                INSERT INTO raw_conversations (
-                    raw_id, source_name, source_path, blob_size, acquired_at,
-                    parse_error, validation_status
-                ) VALUES (
-                    'raw-1', 'claude-code', '/data/session.jsonl', 1024,
-                    '2025-01-01T00:00:00Z',
-                    'JSONDecodeError: Unterminated string at /home/user/file.py:202',
-                    NULL
-                );
-                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                    acquired_at_ms, parse_error, detection_warnings_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "raw-1",
+                    "codex-session",
+                    "native-1",
+                    "/data/bad.jsonl",
+                    bytes(32),
+                    128,
+                    1_770_000_000_000,
+                    "JSONDecodeError: bad token at /home/user/private.py:1",
+                    '["unknown envelope"]',
+                ),
             )
+            conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                    acquired_at_ms, validation_status, validation_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "raw-2",
+                    "chatgpt-export",
+                    "native-2",
+                    "/data/chatgpt.json",
+                    bytes([1]) * 32,
+                    256,
+                    1_770_000_001_000,
+                    "failed",
+                    "Missing required field: mapping",
+                ),
+            )
+            conn.commit()
 
-        with patch("polylogue.daemon.status.db_path", return_value=db):
+        with (
+            patch("polylogue.daemon.status.db_path", return_value=legacy_db),
+            patch("polylogue.daemon.status.index_db_path", return_value=index_db),
+        ):
+            info = _raw_failure_info()
+
+        assert info["parse_failures"] == 1
+        assert info["validation_failures"] == 1
+        assert info["quarantined"] == 2
+        assert info["detection_warnings"] == 1
+        samples = cast(list[RawFailureSample], info["samples"])
+        assert [sample.failure_kind for sample in samples] == ["schema_violation", "decode_error"]
+        assert samples[0].provider_hint == "chatgpt-export"
+        assert samples[1].provider_hint == "codex-session"
+        assert "/home/user/private.py" not in samples[1].redacted_error
+
+    def test_raw_failure_info_samples_are_typed(self, tmp_path: Path) -> None:
+        legacy_db, index_db = _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-1",
+            origin="claude-code-session",
+            native_id="native-1",
+            source_path="/data/session.jsonl",
+            parse_error="JSONDecodeError: Unterminated string at /home/user/file.py:202",
+            blob_size=1024,
+        )
+
+        with (
+            patch("polylogue.daemon.status.db_path", return_value=legacy_db),
+            patch("polylogue.daemon.status.index_db_path", return_value=index_db),
+        ):
             info = _raw_failure_info()
 
         samples = info["samples"]
@@ -186,46 +279,26 @@ class TestRawFailureInfoProducesTypedSamples:
         sample = samples[0]
         assert isinstance(sample, RawFailureSample)
         assert sample.failure_kind == "decode_error"
-        assert sample.provider_hint == "claude-code"
+        assert sample.provider_hint == "claude-code-session"
         assert "/home/user/file.py" not in sample.redacted_error
         assert "JSONDecodeError" in sample.redacted_error
 
     def test_raw_failure_info_schema_violation_kind(self, tmp_path: Path) -> None:
-        db = tmp_path / "polylogue.db"
-        with sqlite3.connect(db) as conn:
-            conn.executescript(
-                """
-                CREATE TABLE raw_conversations (
-                    raw_id TEXT PRIMARY KEY,
-                    payload_provider TEXT,
-                    source_name TEXT,
-                    source_path TEXT NOT NULL,
-                    source_index INTEGER,
-                    blob_size INTEGER NOT NULL,
-                    acquired_at TEXT NOT NULL,
-                    file_mtime TEXT,
-                    parsed_at TEXT,
-                    parse_error TEXT,
-                    validated_at TEXT,
-                    validation_status TEXT,
-                    validation_error TEXT,
-                    validation_drift_count INTEGER DEFAULT 0,
-                    validation_provider TEXT,
-                    validation_mode TEXT,
-                    detection_warnings TEXT
-                );
-                INSERT INTO raw_conversations (
-                    raw_id, source_name, source_path, blob_size, acquired_at,
-                    parse_error, validation_status, validation_error
-                ) VALUES (
-                    'raw-2', 'chatgpt', '/data/conv.json', 512,
-                    '2025-02-01T00:00:00Z',
-                    NULL, 'FAILED', 'Missing required field: mapping'
-                );
-                """
-            )
+        legacy_db, index_db = _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-2",
+            origin="chatgpt-export",
+            native_id="native-2",
+            source_path="/data/conv.json",
+            validation_status="failed",
+            validation_error="Missing required field: mapping",
+            blob_size=512,
+        )
 
-        with patch("polylogue.daemon.status.db_path", return_value=db):
+        with (
+            patch("polylogue.daemon.status.db_path", return_value=legacy_db),
+            patch("polylogue.daemon.status.index_db_path", return_value=index_db),
+        ):
             info = _raw_failure_info()
 
         samples = cast(list[RawFailureSample], info["samples"])
@@ -233,44 +306,23 @@ class TestRawFailureInfoProducesTypedSamples:
         sample = samples[0]
         assert isinstance(sample, RawFailureSample)
         assert sample.failure_kind == "schema_violation"
-        assert sample.provider_hint == "chatgpt"
+        assert sample.provider_hint == "chatgpt-export"
 
     def test_raw_failure_info_generic_parse_error_kind(self, tmp_path: Path) -> None:
-        db = tmp_path / "polylogue.db"
-        with sqlite3.connect(db) as conn:
-            conn.executescript(
-                """
-                CREATE TABLE raw_conversations (
-                    raw_id TEXT PRIMARY KEY,
-                    payload_provider TEXT,
-                    source_name TEXT,
-                    source_path TEXT NOT NULL,
-                    source_index INTEGER,
-                    blob_size INTEGER NOT NULL,
-                    acquired_at TEXT NOT NULL,
-                    file_mtime TEXT,
-                    parsed_at TEXT,
-                    parse_error TEXT,
-                    validated_at TEXT,
-                    validation_status TEXT,
-                    validation_error TEXT,
-                    validation_drift_count INTEGER DEFAULT 0,
-                    validation_provider TEXT,
-                    validation_mode TEXT,
-                    detection_warnings TEXT
-                );
-                INSERT INTO raw_conversations (
-                    raw_id, source_name, source_path, blob_size, acquired_at,
-                    parse_error, validation_status
-                ) VALUES (
-                    'raw-3', 'unknown', '/data/bad.json', 256,
-                    '2025-03-01T00:00:00Z',
-                    'Some weird error', NULL
-                );
-                """
-            )
+        legacy_db, index_db = _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-3",
+            origin="unknown-export",
+            native_id="native-3",
+            source_path="/data/bad.json",
+            parse_error="Some weird error",
+            blob_size=256,
+        )
 
-        with patch("polylogue.daemon.status.db_path", return_value=db):
+        with (
+            patch("polylogue.daemon.status.db_path", return_value=legacy_db),
+            patch("polylogue.daemon.status.index_db_path", return_value=index_db),
+        ):
             info = _raw_failure_info()
 
         samples = cast(list[RawFailureSample], info["samples"])
@@ -285,7 +337,7 @@ class TestRawFailureInfoProducesTypedSamples:
         with sqlite3.connect(db) as conn:
             conn.executescript(
                 """
-                CREATE TABLE raw_conversations (
+                CREATE TABLE raw_sessions (
                     raw_id TEXT PRIMARY KEY,
                     payload_provider TEXT,
                     source_name TEXT,

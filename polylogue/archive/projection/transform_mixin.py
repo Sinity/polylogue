@@ -1,4 +1,4 @@
-"""Transform/order mixin for conversation projections."""
+"""Transform/order mixin for session projections."""
 
 from __future__ import annotations
 

@@ -5,12 +5,12 @@ from __future__ import annotations
 from pydantic import BaseModel, field_validator
 
 from polylogue.storage.runtime.store_constants import ACTION_EVENT_MATERIALIZER_VERSION
-from polylogue.types import ConversationId, MessageId
+from polylogue.types import MessageId, SessionId
 
 
 class ActionEventRecord(BaseModel):
     event_id: str
-    conversation_id: ConversationId
+    session_id: SessionId
     message_id: MessageId
     materializer_version: int = ACTION_EVENT_MATERIALIZER_VERSION
     source_block_id: str | None = None
@@ -33,7 +33,7 @@ class ActionEventRecord(BaseModel):
 
     @field_validator(
         "event_id",
-        "conversation_id",
+        "session_id",
         "message_id",
         "action_kind",
         "normalized_tool_name",

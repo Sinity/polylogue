@@ -89,7 +89,7 @@ def _get_cached_connection(path: Path) -> sqlite3.Connection:
 
     Creates a new connection on first access per (thread, path) pair.
     Connections are configured with WAL, foreign keys, busy_timeout,
-    sqlite-vec, and schema migrations — all exactly once per connection.
+    sqlite-vec, and connection-local runtime setup — all exactly once per connection.
     """
     cache: dict[str, sqlite3.Connection] = getattr(_connection_cache, "conns", {})
     if not hasattr(_connection_cache, "conns"):

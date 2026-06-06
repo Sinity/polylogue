@@ -32,7 +32,7 @@ class MessageRuntimeMixin:
     semantics in ``content_blocks`` and the typed columns on ``messages``.
     All runtime decisions therefore read content_blocks, the persisted
     ``message_type``, and the precomputed ``has_*`` flags. Provider-shaped
-    raw payloads remain available through ``raw_conversations`` / the blob
+    raw payloads remain available through ``raw_sessions`` / the blob
     store, never through the hydrated domain model.
     """
 

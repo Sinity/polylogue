@@ -9,7 +9,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.types import ContentBlockType, Provider
 
-from .base import ParsedContentBlock, ParsedConversation, ParsedMessage
+from .base import ParsedContentBlock, ParsedMessage, ParsedSession
 
 
 def looks_like_gemini_cli(payload: JSONDocument) -> bool:
@@ -28,30 +28,32 @@ def looks_like_hermes(payload: JSONDocument) -> bool:
     )
 
 
-def parse_gemini_cli(payload: JSONDocument, fallback_id: str) -> ParsedConversation:
+def parse_gemini_cli(payload: JSONDocument, fallback_id: str) -> ParsedSession:
     session_id = _string(payload.get("sessionId")) or fallback_id
-    messages = [
-        parsed
-        for index, item in enumerate(_list(payload.get("messages")), start=1)
-        if (parsed := _parse_gemini_message(item, index=index)) is not None
-    ]
-    provider_meta = _conversation_meta(
+    messages: list[ParsedMessage] = []
+    for index, item in enumerate(_list(payload.get("messages")), start=1):
+        parsed = _parse_gemini_message(item, index=index, position=len(messages))
+        if parsed is not None:
+            messages.append(parsed)
+    messages = _mark_active_leaf(messages)
+    provider_meta = _session_meta(
         payload,
         keys=("kind", "projectHash", "summary"),
         source_family="gemini-cli",
     )
-    return ParsedConversation(
+    return ParsedSession(
         source_name=Provider.GEMINI_CLI,
-        provider_conversation_id=session_id,
+        provider_session_id=session_id,
         title=_string(payload.get("summary")) or session_id,
         created_at=_string(payload.get("startTime")),
         updated_at=_string(payload.get("lastUpdated")),
         messages=messages,
+        active_leaf_message_provider_id=messages[-1].provider_message_id if messages else None,
         provider_meta=provider_meta,
     )
 
 
-def parse_hermes(payload: JSONDocument, fallback_id: str) -> ParsedConversation:
+def parse_hermes(payload: JSONDocument, fallback_id: str) -> ParsedSession:
     session_id = _string(payload.get("session_id")) or fallback_id
     messages: list[ParsedMessage] = []
     system_prompt = _string(payload.get("system_prompt"))
@@ -62,30 +64,40 @@ def parse_hermes(payload: JSONDocument, fallback_id: str) -> ParsedConversation:
                 role=Role.SYSTEM,
                 text=system_prompt,
                 content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=system_prompt)],
+                position=0,
+                variant_index=0,
+                is_active_path=True,
+                model_name=_string(payload.get("model")),
             )
         )
-    messages.extend(
-        parsed
-        for index, item in enumerate(_list(payload.get("messages")), start=1)
-        if (parsed := _parse_hermes_message(item, index=index)) is not None
-    )
-    provider_meta = _conversation_meta(
+    for index, item in enumerate(_list(payload.get("messages")), start=1):
+        parsed = _parse_hermes_message(
+            item,
+            index=index,
+            position=len(messages),
+            fallback_model=_string(payload.get("model")),
+        )
+        if parsed is not None:
+            messages.append(parsed)
+    messages = _mark_active_leaf(messages)
+    provider_meta = _session_meta(
         payload,
         keys=("model", "base_url", "platform", "tools"),
         source_family="hermes",
     )
-    return ParsedConversation(
+    return ParsedSession(
         source_name=Provider.HERMES,
-        provider_conversation_id=session_id,
+        provider_session_id=session_id,
         title=session_id,
         created_at=_string(payload.get("session_start")),
         updated_at=_string(payload.get("last_updated")),
         messages=messages,
+        active_leaf_message_provider_id=messages[-1].provider_message_id if messages else None,
         provider_meta=provider_meta,
     )
 
 
-def _parse_gemini_message(item: object, *, index: int) -> ParsedMessage | None:
+def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedMessage | None:
     record = json_document(item)
     if not record:
         return None
@@ -110,17 +122,35 @@ def _parse_gemini_message(item: object, *, index: int) -> ParsedMessage | None:
     if not text and not content_blocks:
         return None
     provider_meta = _message_meta(record, keys=("model", "tokens"))
+    token_usage = _token_usage_fields(record)
     return ParsedMessage(
         provider_message_id=_string(record.get("id")) or f"msg-{index}",
         role=_role(_string(record.get("type")) or "unknown", assistant_aliases={"gemini", "model"}),
         text=text,
         timestamp=_string(record.get("timestamp")),
         content_blocks=content_blocks or [ParsedContentBlock(type=ContentBlockType.TEXT, text=text)],
+        position=position,
+        variant_index=0,
+        is_active_path=True,
         provider_meta=provider_meta,
+        model_name=_string(record.get("model")),
+        input_tokens=token_usage["input_tokens"],
+        output_tokens=token_usage["output_tokens"],
+        cache_read_tokens=token_usage["cache_read_tokens"],
+        cache_write_tokens=token_usage["cache_write_tokens"],
+        duration_ms=_non_negative_int(
+            record.get("durationMs") or record.get("duration_ms") or record.get("elapsed_ms")
+        ),
     )
 
 
-def _parse_hermes_message(item: object, *, index: int) -> ParsedMessage | None:
+def _parse_hermes_message(
+    item: object,
+    *,
+    index: int,
+    position: int,
+    fallback_model: str | None = None,
+) -> ParsedMessage | None:
     record = json_document(item)
     if not record:
         return None
@@ -141,16 +171,29 @@ def _parse_hermes_message(item: object, *, index: int) -> ParsedMessage | None:
     if not text and not content_blocks:
         return None
     provider_meta = _message_meta(record, keys=("finish_reason",))
+    token_usage = _token_usage_fields(record)
     return ParsedMessage(
         provider_message_id=tool_call_id or f"msg-{index}",
         role=role,
         text=text,
+        timestamp=_string(record.get("timestamp")) or _string(record.get("created_at")),
         content_blocks=content_blocks or [ParsedContentBlock(type=ContentBlockType.TEXT, text=text)],
+        position=position,
+        variant_index=0,
+        is_active_path=True,
         provider_meta=provider_meta,
+        model_name=_string(record.get("model")) or fallback_model,
+        input_tokens=token_usage["input_tokens"],
+        output_tokens=token_usage["output_tokens"],
+        cache_read_tokens=token_usage["cache_read_tokens"],
+        cache_write_tokens=token_usage["cache_write_tokens"],
+        duration_ms=_non_negative_int(
+            record.get("durationMs") or record.get("duration_ms") or record.get("elapsed_ms")
+        ),
     )
 
 
-def _conversation_meta(payload: JSONDocument, *, keys: Sequence[str], source_family: str) -> dict[str, object]:
+def _session_meta(payload: JSONDocument, *, keys: Sequence[str], source_family: str) -> dict[str, object]:
     meta: dict[str, object] = {"source_family": source_family}
     for key in keys:
         value = payload.get(key)
@@ -166,6 +209,57 @@ def _message_meta(record: JSONDocument, *, keys: Sequence[str]) -> dict[str, obj
         if value is not None:
             meta[key] = value
     return meta or None
+
+
+def _mark_active_leaf(messages: list[ParsedMessage]) -> list[ParsedMessage]:
+    if not messages:
+        return messages
+    active_leaf_message_provider_id = messages[-1].provider_message_id
+    return [
+        message.model_copy(update={"is_active_leaf": message.provider_message_id == active_leaf_message_provider_id})
+        for message in messages
+    ]
+
+
+def _non_negative_int(value: object) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return int(value) if value >= 0 else None
+    if isinstance(value, str):
+        try:
+            parsed = int(float(value))
+        except ValueError:
+            return None
+        return parsed if parsed >= 0 else None
+    return None
+
+
+def _token_usage_fields(record: JSONDocument) -> dict[str, int]:
+    usage = json_document(record.get("usage")) or json_document(record.get("tokens")) or record
+    input_tokens = _non_negative_int(usage.get("input_tokens") or usage.get("prompt_tokens")) or 0
+    explicit_output = (
+        usage.get("output_tokens")
+        or usage.get("completion_tokens")
+        or usage.get("generated_tokens")
+        or usage.get("total_tokens")
+        or usage.get("total")
+    )
+    output_tokens = _non_negative_int(explicit_output) or 0
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_tokens": _non_negative_int(usage.get("cache_read_tokens") or usage.get("cache_read_input_tokens"))
+        or 0,
+        "cache_write_tokens": _non_negative_int(
+            usage.get("cache_write_tokens")
+            or usage.get("cache_creation_input_tokens")
+            or usage.get("cache_write_input_tokens")
+        )
+        or 0,
+    }
 
 
 def _content_blocks_from_content(content: object) -> list[ParsedContentBlock]:

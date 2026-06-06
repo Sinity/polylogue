@@ -1,6 +1,6 @@
 """Validate extraction logic against seeded synthetic database data.
 
-Loads content from blob store (keyed by raw_id in raw_conversations).
+Loads content from blob store (keyed by raw_id in raw_sessions).
 Extraction should work on 100% of seeded synthetic data with zero errors.
 
 Test modes:
@@ -53,7 +53,7 @@ def get_provider_message_count(conn: sqlite3.Connection, provider: str) -> int:
         """
         SELECT COUNT(*)
         FROM messages m
-        JOIN conversations c ON m.conversation_id = c.conversation_id
+        JOIN sessions c ON m.session_id = c.session_id
         WHERE c.source_name = ?
         """,
         (provider,),
@@ -79,9 +79,9 @@ def iter_provider_messages(
         List of (message_id, {"raw": provider_raw_message}) tuples.
     """
     results: list[tuple[str, ProviderMessageEnvelope]] = []
-    raw_conversations = iter_raw_conversations(conn, provider)
+    raw_sessions = iter_raw_sessions(conn, provider)
 
-    for raw_id, raw_content, _source_path in raw_conversations:
+    for raw_id, raw_content, _source_path in raw_sessions:
         payload = parse_raw_content(raw_content, provider)
         raw_messages = _extract_provider_raw_messages(provider, payload)
         for index, raw_message in enumerate(raw_messages):
@@ -94,12 +94,12 @@ def iter_provider_messages(
 def _extract_provider_raw_messages(provider: str, payload: ParsedPayload) -> list[JsonObject]:
     """Extract provider-native raw message records from a raw payload."""
     if provider == "chatgpt":
-        conversations = payload if isinstance(payload, list) else [payload]
+        sessions = payload if isinstance(payload, list) else [payload]
         messages: list[JsonObject] = []
-        for conversation in conversations:
-            if not isinstance(conversation, dict):
+        for session in sessions:
+            if not isinstance(session, dict):
                 continue
-            mapping = conversation.get("mapping")
+            mapping = session.get("mapping")
             if not isinstance(mapping, dict):
                 continue
             for node in mapping.values():
@@ -250,10 +250,10 @@ class TestViewportValidation:
 
 @pytest.mark.slow
 class TestDataIntegrity:
-    """Validate raw conversation integrity in seeded database."""
+    """Validate raw session integrity in seeded database."""
 
-    def test_raw_conversations_have_raw_content(self, seeded_db: Path) -> None:
-        """Seeded raw conversations should have blob_size > 0."""
+    def test_raw_sessions_have_raw_content(self, seeded_db: Path) -> None:
+        """Seeded raw sessions should have blob_size > 0."""
         conn = sqlite3.connect(seeded_db)
         cur = conn.cursor()
         cur.execute(
@@ -261,7 +261,7 @@ class TestDataIntegrity:
             SELECT source_name,
                    COUNT(*) as total,
                    SUM(CASE WHEN blob_size IS NULL OR blob_size = 0 THEN 1 ELSE 0 END) as missing_size
-            FROM raw_conversations
+            FROM raw_sessions
             GROUP BY source_name
             """
         )
@@ -283,10 +283,10 @@ class TestDataIntegrity:
         cur.execute(
             """
             SELECT c.source_name,
-                   COUNT(DISTINCT c.conversation_id) as convs,
+                   COUNT(DISTINCT c.session_id) as convs,
                    COUNT(m.message_id) as msgs
-            FROM conversations c
-            LEFT JOIN messages m ON c.conversation_id = m.conversation_id
+            FROM sessions c
+            LEFT JOIN messages m ON c.session_id = m.session_id
             GROUP BY c.source_name
             ORDER BY msgs DESC
             """
@@ -331,21 +331,21 @@ class TestRegeneration:
 
 
 # =============================================================================
-# Provider Parsing Validation (from raw_conversations table)
+# Provider Parsing Validation (from raw_sessions table)
 # =============================================================================
 
 
-def iter_raw_conversations(
+def iter_raw_sessions(
     conn: sqlite3.Connection,
     provider: str,
     limit: int | None = None,
 ) -> list[tuple[str, bytes, str | None]]:
-    """Iterate raw conversations for a provider.
+    """Iterate raw sessions for a provider.
 
     Args:
         conn: Database connection
         provider: Provider name
-        limit: Max conversations (None = all)
+        limit: Max sessions (None = all)
 
     Returns:
         List of (raw_id, raw_content, source_path) tuples.
@@ -361,7 +361,7 @@ def iter_raw_conversations(
     cur = conn.cursor()
     query = """
         SELECT raw_id, source_path
-        FROM raw_conversations
+        FROM raw_sessions
         WHERE source_name = ?
     """
     if limit:
@@ -376,10 +376,10 @@ def iter_raw_conversations(
     return results
 
 
-def get_raw_conversation_count(conn: sqlite3.Connection, provider: str) -> int:
-    """Get total raw conversation count for a provider."""
+def get_raw_session_count(conn: sqlite3.Connection, provider: str) -> int:
+    """Get total raw session count for a provider."""
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM raw_conversations WHERE source_name = ?", (provider,))
+    cur.execute("SELECT COUNT(*) FROM raw_sessions WHERE source_name = ?", (provider,))
     row = cur.fetchone()
     assert row is not None
     return int(row[0])
@@ -414,20 +414,20 @@ def parse_raw_content(raw_content: bytes, provider: str) -> ParsedPayload:
 
 
 @pytest.mark.slow
-class TestRawConversationParsing:
-    """Validate provider parsers against raw_conversations table.
+class TestRawSessionParsing:
+    """Validate provider parsers against raw_sessions table.
 
     This is the SYSTEMATIC test for parsers - instead of crafting test cases,
     we run parsers against seeded stored data to ensure 100% success rate.
     """
 
     @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "codex"])
-    def test_provider_parses_all_raw_conversations(self, seeded_db: Path, provider: str) -> None:
-        """Every raw_conversation for this provider parses without error.
+    def test_provider_parses_all_raw_sessions(self, seeded_db: Path, provider: str) -> None:
+        """Every raw_session for this provider parses without error.
 
         This test replaces many spot checks in test_parsers_unit.py by:
         1. Testing against seeded provider-format data through full storage paths
-        2. Testing ALL stored conversations (not cherry-picked examples)
+        2. Testing ALL stored sessions (not cherry-picked examples)
         3. Ensuring parsers work on naturally varied records from generated corpus
         """
         from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
@@ -436,13 +436,13 @@ class TestRawConversationParsing:
 
         conn = sqlite3.connect(seeded_db)
         limit = get_sample_limit()
-        raw_convos = iter_raw_conversations(conn, provider, limit=limit)
+        raw_convos = iter_raw_sessions(conn, provider, limit=limit)
 
         if not raw_convos:
             conn.close()
-            pytest.skip(f"No {provider} raw conversations in seeded database")
+            pytest.skip(f"No {provider} raw sessions in seeded database")
 
-        total = get_raw_conversation_count(conn, provider)
+        total = get_raw_session_count(conn, provider)
         conn.close()
 
         parsed_count = 0
@@ -465,7 +465,7 @@ class TestRawConversationParsing:
 
                 # Validate basic structure
                 assert result.source_name in [provider, "chatgpt", "claude-ai", "codex", "claude-code"]
-                assert result.provider_conversation_id is not None
+                assert result.provider_session_id is not None
                 assert isinstance(result.messages, list)
 
                 parsed_count += 1
@@ -476,7 +476,7 @@ class TestRawConversationParsing:
                 errors.append((raw_id, f"Parse error: {str(e)[:80]}"))
 
         if parsed_count == 0:
-            pytest.skip(f"No {provider} conversations could be parsed from seeded database")
+            pytest.skip(f"No {provider} sessions could be parsed from seeded database")
 
         # Report coverage
         coverage_pct = (parsed_count / total * 100) if total > 0 else 0
@@ -500,11 +500,11 @@ class TestRawConversationParsing:
 
         conn = sqlite3.connect(seeded_db)
         limit = get_sample_limit()
-        raw_convos = iter_raw_conversations(conn, provider, limit=limit)
+        raw_convos = iter_raw_sessions(conn, provider, limit=limit)
 
         if not raw_convos:
             conn.close()
-            pytest.skip(f"No {provider} raw conversations in seeded database")
+            pytest.skip(f"No {provider} raw sessions in seeded database")
 
         conn.close()
 
@@ -545,16 +545,16 @@ class TestRawConversationParsing:
 
 
 @pytest.mark.slow
-class TestRawConversationCoverage:
-    """Coverage and statistics for raw conversation parsing."""
+class TestRawSessionCoverage:
+    """Coverage and statistics for raw session parsing."""
 
-    def test_all_providers_have_raw_conversations(self, seeded_db: Path) -> None:
-        """Every known provider has at least some raw conversations."""
+    def test_all_providers_have_raw_sessions(self, seeded_db: Path) -> None:
+        """Every known provider has at least some raw sessions."""
         conn = sqlite3.connect(seeded_db)
         cur = conn.cursor()
         cur.execute("""
             SELECT source_name, COUNT(*) as count
-            FROM raw_conversations
+            FROM raw_sessions
             GROUP BY source_name
             ORDER BY count DESC
         """)
@@ -563,38 +563,38 @@ class TestRawConversationCoverage:
         conn.close()
 
         if not rows:
-            pytest.skip("No raw conversations in seeded database")
+            pytest.skip("No raw sessions in seeded database")
 
         # Report what's available
         providers = {row[0]: row[1] for row in rows}
 
         # At least one provider should have data
-        assert sum(providers.values()) > 0, "No raw conversations available for any provider"
+        assert sum(providers.values()) > 0, "No raw sessions available for any provider"
 
     def test_raw_to_parsed_link_integrity(self, seeded_db: Path) -> None:
-        """Conversations parsed from raw should link back to raw_id."""
+        """Sessions parsed from raw should link back to raw_id."""
         conn = sqlite3.connect(seeded_db)
         cur = conn.cursor()
 
-        # Count conversations with raw_id link
+        # Count sessions with raw_id link
         cur.execute("""
             SELECT
                 COUNT(*) as total,
                 SUM(CASE WHEN raw_id IS NOT NULL THEN 1 ELSE 0 END) as linked
-            FROM conversations
+            FROM sessions
         """)
 
         total, linked = cur.fetchone()
         conn.close()
 
         if total == 0:
-            pytest.skip("No conversations in seeded database")
+            pytest.skip("No sessions in seeded database")
 
-        # This is informational - not all conversations may have raw_id
+        # This is informational - not all sessions may have raw_id
         # (e.g., legacy imports before raw storage was added)
         link_pct = (linked / total * 100) if total > 0 else 0
 
         if link_pct < 50:
             import warnings
 
-            warnings.warn(f"Only {link_pct:.1f}% of conversations have raw_id links", stacklevel=2)
+            warnings.warn(f"Only {link_pct:.1f}% of sessions have raw_id links", stacklevel=2)

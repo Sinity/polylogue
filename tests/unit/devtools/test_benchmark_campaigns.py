@@ -47,7 +47,7 @@ def test_synthetic_benchmark_registry_is_compiled_from_authored_scenarios() -> N
     )
     assert (
         SYNTHETIC_BENCHMARK_REGISTRY["session-insight-materialization"].description
-        == "Benchmark durable session-insight rebuild over synthetic archive conversations"
+        == "Benchmark durable session-insight rebuild over synthetic archive sessions"
     )
     assert (
         SYNTHETIC_BENCHMARK_REGISTRY["daemon-live-convergence"].description
@@ -297,7 +297,7 @@ async def test_run_full_campaign_skips_scenarios_outside_scale_targets(
             wall_time_s=0.5,
             db_size_bytes=0,
             message_count=10,
-            conversation_count=2,
+            session_count=2,
         )
 
     async def fake_run_campaign(name: str, _db_path: Path) -> CampaignResult:

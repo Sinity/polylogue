@@ -6,7 +6,7 @@ Covers four shapes:
    filters, derives MCP servers, and reports coverage gaps.
 2. End-to-end through the SQLite backend: per-(provider, tool) rollups
    built from canonical action_events.
-3. Coverage-gap honesty: providers with conversations but zero
+3. Coverage-gap honesty: providers with sessions but zero
    action_events surface as ``data_available=False`` rather than silent
    zeros.
 4. MCP envelope shape: ``list_tool_usage_insights`` returns a single
@@ -21,6 +21,7 @@ from typing import cast
 
 import pytest
 
+from polylogue import Polylogue
 from polylogue.insights.tool_usage import (
     TOOL_USAGE_INSIGHT_VERSION,
     ToolUsageInsight,
@@ -28,16 +29,11 @@ from polylogue.insights.tool_usage import (
     build_tool_usage_insight,
     extract_mcp_server,
 )
-from polylogue.operations.archive import list_tool_usage_insights
-from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.runtime import ActionEventRecord
-from polylogue.storage.sqlite.queries import action_events as action_events_q
 from polylogue.storage.sqlite.queries.tool_usage import (
     ToolUsageProviderCoverageRow,
     ToolUsageRow,
 )
-from polylogue.types import ConversationId, MessageId
-from tests.infra.storage_records import make_conversation, make_message
+from tests.infra.storage_records import SessionBuilder
 
 
 class TestExtractMcpServer:
@@ -63,7 +59,7 @@ def _row(
     tool: str,
     action_kind: str = "tool_use",
     calls: int = 1,
-    conversations: int = 1,
+    sessions: int = 1,
     messages: int = 1,
     tool_ids: int = 0,
     paths: int = 0,
@@ -74,7 +70,7 @@ def _row(
         "normalized_tool_name": tool,
         "action_kind": action_kind,
         "call_count": calls,
-        "conversation_count": conversations,
+        "session_count": sessions,
         "message_count": messages,
         "distinct_tool_ids": tool_ids,
         "affected_path_calls": paths,
@@ -85,7 +81,7 @@ def _row(
 def _coverage(
     *,
     provider: str,
-    conversations: int,
+    sessions: int,
     events: int = 0,
     tools: int = 0,
     kinds: int = 0,
@@ -95,7 +91,7 @@ def _coverage(
 ) -> ToolUsageProviderCoverageRow:
     return {
         "source_name": provider,
-        "conversation_count": conversations,
+        "session_count": sessions,
         "action_event_count": events,
         "distinct_tool_count": tools,
         "distinct_action_kind_count": kinds,
@@ -110,11 +106,11 @@ class TestBuildToolUsageInsight:
 
     def test_basic_aggregation(self) -> None:
         rows = [
-            _row(provider="claude-code", tool="Read", calls=10, conversations=3, messages=8),
-            _row(provider="claude-code", tool="Bash", calls=4, conversations=2),
+            _row(provider="claude-code", tool="Read", calls=10, sessions=3, messages=8),
+            _row(provider="claude-code", tool="Bash", calls=4, sessions=2),
         ]
         coverage = [
-            _coverage(provider="claude-code", conversations=3, events=14, tools=2, kinds=1, paths=14),
+            _coverage(provider="claude-code", sessions=3, events=14, tools=2, kinds=1, paths=14),
         ]
         insight = build_tool_usage_insight(
             rows=rows,
@@ -139,11 +135,11 @@ class TestBuildToolUsageInsight:
             _row(provider="codex", tool="apply_patch", calls=2),
         ]
         coverage = [
-            _coverage(provider="claude-code", conversations=2, events=5, tools=1, kinds=1),
-            _coverage(provider="codex", conversations=1, events=2, tools=1, kinds=1),
-            # ChatGPT has conversations but no tool data — this MUST stay
+            _coverage(provider="claude-code", sessions=2, events=5, tools=1, kinds=1),
+            _coverage(provider="codex", sessions=1, events=2, tools=1, kinds=1),
+            # ChatGPT has sessions but no tool data — this MUST stay
             # visible even when the user narrows to a different provider.
-            _coverage(provider="chatgpt", conversations=4, events=0),
+            _coverage(provider="chatgpt", sessions=4, events=0),
         ]
         insight = build_tool_usage_insight(
             rows=rows,
@@ -171,7 +167,7 @@ class TestBuildToolUsageInsight:
             _row(provider="claude-code", tool="mcp__polylogue__search", calls=2),
             _row(provider="claude-code", tool="Read", calls=1),
         ]
-        coverage = [_coverage(provider="claude-code", conversations=1, events=6, tools=3, kinds=1)]
+        coverage = [_coverage(provider="claude-code", sessions=1, events=6, tools=3, kinds=1)]
         insight = build_tool_usage_insight(
             rows=rows,
             coverage_rows=coverage,
@@ -188,7 +184,7 @@ class TestBuildToolUsageInsight:
             _row(provider="claude-code", tool="mcp__github__create_pull_request", calls=3),
             _row(provider="claude-code", tool="mcp__polylogue__search", calls=2),
         ]
-        coverage = [_coverage(provider="claude-code", conversations=1, events=5)]
+        coverage = [_coverage(provider="claude-code", sessions=1, events=5)]
         insight = build_tool_usage_insight(
             rows=rows,
             coverage_rows=coverage,
@@ -198,14 +194,14 @@ class TestBuildToolUsageInsight:
         assert [entry.normalized_tool_name for entry in insight.entries] == ["mcp__github__create_pull_request"]
         assert insight.entries[0].mcp_server == "github"
 
-    def test_provider_without_conversations_not_counted_as_gap(self) -> None:
-        # A provider that has neither conversations nor action_events still
-        # appears in coverage with conversation_count=0, but it should not
+    def test_provider_without_sessions_not_counted_as_gap(self) -> None:
+        # A provider that has neither sessions nor action_events still
+        # appears in coverage with session_count=0, but it should not
         # contribute to ``providers_without_data`` because there is nothing
         # to be missing.
         coverage = [
-            _coverage(provider="claude-code", conversations=2, events=4),
-            _coverage(provider="legacy-empty", conversations=0, events=0),
+            _coverage(provider="claude-code", sessions=2, events=4),
+            _coverage(provider="legacy-empty", sessions=0, events=0),
         ]
         insight = build_tool_usage_insight(
             rows=[_row(provider="claude-code", tool="Read", calls=4)],
@@ -219,7 +215,7 @@ class TestBuildToolUsageInsight:
 
     def test_pagination_respects_offset_and_limit(self) -> None:
         rows = [_row(provider="claude-code", tool=f"tool_{i:02d}", calls=100 - i) for i in range(10)]
-        coverage = [_coverage(provider="claude-code", conversations=1, events=10)]
+        coverage = [_coverage(provider="claude-code", sessions=1, events=10)]
         insight = build_tool_usage_insight(
             rows=rows,
             coverage_rows=coverage,
@@ -233,135 +229,78 @@ class TestBuildToolUsageInsight:
         ]
 
 
-def _make_action_event(
-    event_id: str,
-    *,
-    conversation_id: str,
-    message_id: str,
-    provider: str,
-    tool: str,
-    action_kind: str = "tool_use",
-    tool_id: str | None = None,
-    affected_paths: tuple[str, ...] = (),
-    output_text: str | None = None,
-) -> ActionEventRecord:
-    return ActionEventRecord(
-        event_id=event_id,
-        conversation_id=ConversationId(conversation_id),
-        message_id=MessageId(message_id),
-        materializer_version=1,
-        source_block_id=None,
-        timestamp="2026-05-17T00:00:00+00:00",
-        sort_key=0.0,
-        sequence_index=0,
-        source_name=provider,
-        action_kind=action_kind,
-        tool_name=tool,
-        normalized_tool_name=tool,
-        tool_id=tool_id,
-        affected_paths=affected_paths,
-        cwd_path=None,
-        branch_names=(),
-        command=None,
-        query_text=None,
-        url=None,
-        output_text=output_text,
-        search_text=f"{tool} {action_kind}",
-    )
+def _archive(tmp_path: Path) -> Polylogue:
+    return Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
 
 
 @pytest.mark.asyncio
 class TestListToolUsageInsightsEndToEnd:
-    """Drive the real backend with seeded action_events."""
+    """Drive the archive with seeded tool-use content blocks.
 
-    async def _seed_conversation(
-        self,
-        repository: ConversationRepository,
-        *,
-        conv_id: str,
-        provider: str,
-    ) -> None:
-        conv = make_conversation(conv_id, source_name=provider, provider_meta={"source": "inbox"})
-        msgs = [make_message(f"{conv_id}-msg", conv_id, text="Hi")]
-        await repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+    The archive ``actions`` view derives tool calls from ``tool_use`` content
+    blocks (paired with ``tool_result`` blocks by ``tool_id``), so the
+    per-(provider, tool) rollups are seeded by writing those blocks through the
+    archive ``SessionBuilder``. The native ``_tool_usage_rows`` query
+    lower-cases ``tool_name``, so the normalized tool names asserted below are
+    lower-case (``read`` / ``bash`` / ``apply_patch``).
+    """
 
-    async def test_aggregates_per_provider_and_tool(
-        self,
-        workspace_env: dict[str, Path],
-        storage_repository: ConversationRepository,
-    ) -> None:
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
-        await self._seed_conversation(storage_repository, conv_id="cc-1", provider="claude-code")
-        await self._seed_conversation(storage_repository, conv_id="cx-1", provider="codex")
-
-        backend = storage_repository.backend
-        async with backend.connection() as conn:
-            await action_events_q.replace_action_events(
-                conn,
-                "cc-1",
-                [
-                    _make_action_event(
-                        "ev-1",
-                        conversation_id="cc-1",
-                        message_id="cc-1-msg",
-                        provider="claude-code",
-                        tool="Read",
-                        affected_paths=("a.py",),
-                        tool_id="toolu_1",
-                    ),
-                    _make_action_event(
-                        "ev-2",
-                        conversation_id="cc-1",
-                        message_id="cc-1-msg",
-                        provider="claude-code",
-                        tool="Read",
-                        affected_paths=("b.py",),
-                        tool_id="toolu_2",
-                    ),
-                    _make_action_event(
-                        "ev-3",
-                        conversation_id="cc-1",
-                        message_id="cc-1-msg",
-                        provider="claude-code",
-                        tool="Bash",
-                        output_text="hello",
-                    ),
-                ],
-                transaction_depth=0,
+    async def test_aggregates_per_provider_and_tool(self, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
+        db_path = archive.archive_root / "index.db"
+        # claude-code: two `read` tool_use blocks with distinct tool_ids and
+        # distinct affected paths, plus one `bash` tool_use whose paired
+        # tool_result carries output text.
+        (
+            SessionBuilder(db_path, "cc-1")
+            .provider("claude-code")
+            .title("CC")
+            .add_message(
+                "cc-1-msg",
+                role="assistant",
+                text="Working",
+                provider_meta={
+                    "content_blocks": [
+                        {"type": "tool_use", "name": "Read", "id": "toolu_1", "tool_input": {"file_path": "a.py"}},
+                        {"type": "tool_use", "name": "Read", "id": "toolu_2", "tool_input": {"file_path": "b.py"}},
+                        {"type": "tool_use", "name": "Bash", "id": "toolu_3"},
+                        {"type": "tool_result", "tool_id": "toolu_3", "text": "hello"},
+                    ]
+                },
             )
-            await action_events_q.replace_action_events(
-                conn,
-                "cx-1",
-                [
-                    _make_action_event(
-                        "ev-4",
-                        conversation_id="cx-1",
-                        message_id="cx-1-msg",
-                        provider="codex",
-                        tool="apply_patch",
-                    ),
-                ],
-                transaction_depth=0,
+            .save()
+        )
+        (
+            SessionBuilder(db_path, "cx-1")
+            .provider("codex")
+            .title("CX")
+            .add_message(
+                "cx-1-msg",
+                role="assistant",
+                text="Patching",
+                provider_meta={"content_blocks": [{"type": "tool_use", "name": "apply_patch", "id": "p1"}]},
             )
+            .save()
+        )
 
-        result = await list_tool_usage_insights(db_path=db_path)
+        result = await archive.list_tool_usage_insights(ToolUsageInsightQuery())
         assert len(result) == 1
         insight = result[0]
         assert isinstance(insight, ToolUsageInsight)
-        # Aggregate counts honor the substrate
+        # Aggregate counts honor the substrate (archive lower-cases tool names).
         read = next(
             entry
             for entry in insight.entries
-            if entry.source_name == "claude-code" and entry.normalized_tool_name == "Read"
+            if entry.source_name == "claude-code" and entry.normalized_tool_name == "read"
         )
         assert read.call_count == 2
-        assert read.conversation_count == 1
+        assert read.session_count == 1
         assert read.distinct_tool_ids == 2
         assert read.affected_path_calls == 2
         bash = next(
             entry
             for entry in insight.entries
-            if entry.source_name == "claude-code" and entry.normalized_tool_name == "Bash"
+            if entry.source_name == "claude-code" and entry.normalized_tool_name == "bash"
         )
         assert bash.output_text_calls == 1
         assert bash.affected_path_calls == 0
@@ -369,36 +308,35 @@ class TestListToolUsageInsightsEndToEnd:
         providers = {entry.source_name for entry in insight.provider_coverage}
         assert providers == {"claude-code", "codex"}
 
-    async def test_coverage_reports_provider_without_action_events(
-        self,
-        workspace_env: dict[str, Path],
-        storage_repository: ConversationRepository,
-    ) -> None:
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
-        # ChatGPT conversation exists but contributes no action_events —
-        # the substrate genuinely has no tool data for this provider.
-        await self._seed_conversation(storage_repository, conv_id="gpt-1", provider="chatgpt")
-        await self._seed_conversation(storage_repository, conv_id="cc-1", provider="claude-code")
-        async with storage_repository.backend.connection() as conn:
-            await action_events_q.replace_action_events(
-                conn,
-                "cc-1",
-                [
-                    _make_action_event(
-                        "ev-only",
-                        conversation_id="cc-1",
-                        message_id="cc-1-msg",
-                        provider="claude-code",
-                        tool="Read",
-                    ),
-                ],
-                transaction_depth=0,
+    async def test_coverage_reports_provider_without_action_events(self, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
+        db_path = archive.archive_root / "index.db"
+        # ChatGPT session exists but carries no tool_use blocks — the
+        # substrate genuinely has no tool data for this provider.
+        (
+            SessionBuilder(db_path, "gpt-1")
+            .provider("chatgpt")
+            .title("GPT")
+            .add_message("gpt-1-msg", role="user", text="Hi")
+            .save()
+        )
+        (
+            SessionBuilder(db_path, "cc-1")
+            .provider("claude-code")
+            .title("CC")
+            .add_message(
+                "cc-1-msg",
+                role="assistant",
+                text="Reading",
+                provider_meta={"content_blocks": [{"type": "tool_use", "name": "Read", "id": "toolu_only"}]},
             )
+            .save()
+        )
 
-        result = await list_tool_usage_insights(db_path=db_path)
+        result = await archive.list_tool_usage_insights(ToolUsageInsightQuery())
         insight = result[0]
         chatgpt = next(entry for entry in insight.provider_coverage if entry.source_name == "chatgpt")
-        assert chatgpt.conversation_count == 1
+        assert chatgpt.session_count == 1
         assert chatgpt.action_event_count == 0
         assert chatgpt.data_available is False
         cc = next(entry for entry in insight.provider_coverage if entry.source_name == "claude-code")
@@ -407,14 +345,8 @@ class TestListToolUsageInsightsEndToEnd:
         assert insight.providers_without_data == 1
         assert insight.providers_with_data == 1
 
-    async def test_empty_archive_returns_envelope_with_no_gaps(
-        self,
-        workspace_env: dict[str, Path],
-        storage_repository: ConversationRepository,
-    ) -> None:
-        del storage_repository  # ensure backend initialized via fixture
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
-        result = await list_tool_usage_insights(db_path=db_path)
+    async def test_empty_archive_returns_envelope_with_no_gaps(self, tmp_path: Path) -> None:
+        result = await _archive(tmp_path).list_tool_usage_insights(ToolUsageInsightQuery())
         assert len(result) == 1
         insight = result[0]
         assert insight.entries == ()
@@ -429,8 +361,8 @@ def test_envelope_serializes_to_jsonable_dict() -> None:
     insight = build_tool_usage_insight(
         rows=[_row(provider="claude-code", tool="Read", calls=3)],
         coverage_rows=[
-            _coverage(provider="claude-code", conversations=1, events=3, tools=1, kinds=1),
-            _coverage(provider="chatgpt", conversations=2, events=0),
+            _coverage(provider="claude-code", sessions=1, events=3, tools=1, kinds=1),
+            _coverage(provider="chatgpt", sessions=2, events=0),
         ],
         query=ToolUsageInsightQuery(),
         materialized_at="2026-05-17T00:00:00+00:00",

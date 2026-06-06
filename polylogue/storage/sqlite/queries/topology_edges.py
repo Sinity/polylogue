@@ -3,11 +3,11 @@
 Two operations are exposed:
 
 - :func:`upsert_topology_edges` — write ingest-time edges. Idempotent on
-  ``(src_conversation_id, dst_provider_native_id, edge_type)``. Never demotes
+  ``(src_session_id, dst_provider_native_id, edge_type)``. Never demotes
   ``resolved`` → ``unresolved`` if a later ingest carries less information
   than the prior one.
-- :func:`resolve_topology_edges_for_conversation` — flip pending
-  ``unresolved`` rows pointing at ``(source_name, provider_conversation_id)``
+- :func:`resolve_topology_edges_for_session` — flip pending
+  ``unresolved`` rows pointing at ``(source_name, provider_session_id)``
   to ``resolved`` once their parent has been ingested. Used by
   ``save_via_backend`` so out-of-order ingest backfills the resolver state
   the moment the parent lands.
@@ -15,13 +15,13 @@ Two operations are exposed:
 Cycle quarantine (#1260 / #866 slice C)
 ---------------------------------------
 Both resolver paths refuse to backfill a child's
-``conversations.parent_conversation_id`` when doing so would introduce a
+``sessions.parent_session_id`` when doing so would introduce a
 cycle into the resolved-parent graph (A→B→A, 3-node, etc., including
 the self-cycle A→A). The offending edge is left in the
 ``topology_edges`` table with ``status='quarantined'`` and a
 ``raw_evidence`` JSON document recording the detected cycle path so the
-operator can audit which conversation chain was rejected. The child's
-``parent_conversation_id`` is NOT written for quarantined edges — the
+operator can audit which session chain was rejected. The child's
+``parent_session_id`` is NOT written for quarantined edges — the
 fast-path ancestry walk therefore continues to terminate at the child
 rather than enter the cycle.
 """
@@ -34,7 +34,7 @@ from collections.abc import Iterable
 
 import aiosqlite
 
-from polylogue.archive.conversation.branch_type import BranchType
+from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.topology.edge import TopologyEdgeRecord, TopologyEdgeStatus
 
 
@@ -51,7 +51,7 @@ async def upsert_topology_edges(
     written = 0
     for edge in edges:
         edge_id = _make_edge_id(
-            str(edge.src_conversation_id),
+            str(edge.src_session_id),
             edge.dst_provider_native_id,
             str(edge.edge_type),
         )
@@ -59,22 +59,22 @@ async def upsert_topology_edges(
             """
             INSERT INTO topology_edges (
                 edge_id,
-                src_conversation_id,
+                src_session_id,
                 dst_provider_native_id,
                 dst_provider_name,
                 edge_type,
-                resolved_dst_conversation_id,
+                resolved_dst_session_id,
                 raw_evidence,
                 confidence,
                 status,
                 observed_at,
                 resolved_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (src_conversation_id, dst_provider_native_id, edge_type) DO UPDATE SET
+            ON CONFLICT (src_session_id, dst_provider_native_id, edge_type) DO UPDATE SET
                 dst_provider_name = excluded.dst_provider_name,
-                resolved_dst_conversation_id = COALESCE(
-                    excluded.resolved_dst_conversation_id,
-                    topology_edges.resolved_dst_conversation_id
+                resolved_dst_session_id = COALESCE(
+                    excluded.resolved_dst_session_id,
+                    topology_edges.resolved_dst_session_id
                 ),
                 raw_evidence = COALESCE(excluded.raw_evidence, topology_edges.raw_evidence),
                 confidence = excluded.confidence,
@@ -88,11 +88,11 @@ async def upsert_topology_edges(
             """,
             (
                 edge_id,
-                str(edge.src_conversation_id),
+                str(edge.src_session_id),
                 edge.dst_provider_native_id,
                 edge.dst_provider_name,
                 str(edge.edge_type),
-                str(edge.resolved_dst_conversation_id) if edge.resolved_dst_conversation_id else None,
+                str(edge.resolved_dst_session_id) if edge.resolved_dst_session_id else None,
                 edge.raw_evidence,
                 edge.confidence,
                 str(edge.status),
@@ -107,9 +107,9 @@ async def upsert_topology_edges(
 _CYCLE_WALK_BUDGET = 1024
 """Hard cap on the resolved-parent ancestry walk used by cycle detection.
 
-Any conversation chain longer than this is treated as cyclic regardless
+Any session chain longer than this is treated as cyclic regardless
 of whether the actual cycle was reached, because no legitimate
-conversation lineage is expected to exceed it and a runaway walk would
+session lineage is expected to exceed it and a runaway walk would
 otherwise pin the resolver."""
 
 
@@ -120,11 +120,11 @@ async def _would_create_cycle(
     proposed_parent_id: str,
 ) -> list[str] | None:
     """Return the cycle path if making ``proposed_parent_id`` the parent
-    of ``child_id`` would create a cycle in ``conversations.parent_conversation_id``.
+    of ``child_id`` would create a cycle in ``sessions.parent_session_id``.
 
     A cycle exists when ``proposed_parent_id == child_id`` (self-cycle) or
     when walking ``proposed_parent_id``'s existing ancestry via
-    ``parent_conversation_id`` reaches ``child_id``. Returns ``None`` if no
+    ``parent_session_id`` reaches ``child_id``. Returns ``None`` if no
     cycle would form. The returned list is the chain
     ``[child_id, proposed_parent_id, ..., child_id]`` so the operator can
     see exactly which edge would have closed the loop.
@@ -145,13 +145,13 @@ async def _would_create_cycle(
             return path
         row = await (
             await conn.execute(
-                "SELECT parent_conversation_id FROM conversations WHERE conversation_id = ?",
+                "SELECT parent_session_id FROM sessions WHERE session_id = ?",
                 (current,),
             )
         ).fetchone()
         if row is None:
             return None
-        next_parent = row["parent_conversation_id"]
+        next_parent = row["parent_session_id"]
         if next_parent is None:
             return None
         if next_parent == child_id:
@@ -166,7 +166,7 @@ async def _quarantine_edge(
     conn: aiosqlite.Connection,
     *,
     edge_id: str | None,
-    src_conversation_id: str,
+    src_session_id: str,
     dst_provider_name: str | None,
     dst_provider_native_id: str | None,
     cycle_path: list[str],
@@ -205,14 +205,14 @@ async def _quarantine_edge(
            SET status = 'quarantined',
                raw_evidence = ?,
                resolved_at = ?
-         WHERE src_conversation_id = ?
+         WHERE src_session_id = ?
            AND dst_provider_name = ?
            AND dst_provider_native_id = ?
         """,
         (
             evidence,
             observed_at,
-            src_conversation_id,
+            src_session_id,
             dst_provider_name,
             dst_provider_native_id,
         ),
@@ -230,29 +230,29 @@ async def count_quarantined_topology_edges(conn: aiosqlite.Connection) -> int:
     return int(row["n"]) if row is not None else 0
 
 
-async def resolve_topology_edges_for_conversation(
+async def resolve_topology_edges_for_session(
     conn: aiosqlite.Connection,
     *,
-    conversation_id: str,
+    session_id: str,
     source_name: str,
-    provider_conversation_id: str,
+    provider_session_id: str,
     resolved_at: str,
 ) -> int:
-    """Flip unresolved edges whose parent is the just-saved conversation.
+    """Flip unresolved edges whose parent is the just-saved session.
 
-    Returns the number of rows updated. Used by the conversation save path
+    Returns the number of rows updated. Used by the session save path
     to backfill resolver state for out-of-order ingest: when a child is
     ingested before its parent, its edge is written ``unresolved``; this
-    helper runs after the parent's row hits ``conversations`` and flips
+    helper runs after the parent's row hits ``sessions`` and flips
     every dangling edge that was waiting for that parent's native id.
 
     Slice B (#1259 / #866) — also backfills the resolved children's
-    ``conversations.parent_conversation_id`` (and ``branch_type``, where the
+    ``sessions.parent_session_id`` (and ``branch_type``, where the
     edge type maps to a valid ``BranchType``) so the fast-path ancestry
     walk used by ``derive_session_topology_async``, ``thread_root_id`` and
     other downstream readers benefits from late-parent arrival without
     requiring the child to be re-ingested. The backfill is conservative:
-    it only writes ``parent_conversation_id`` when the column is NULL and
+    it only writes ``parent_session_id`` when the column is NULL and
     only writes ``branch_type`` when the column is NULL and the edge type
     is a member of ``BranchType``. This keeps the operation idempotent —
     running the resolver twice for the same parent produces no further
@@ -260,18 +260,18 @@ async def resolve_topology_edges_for_conversation(
     """
     # Collect the children that would be flipped, *before* any UPDATE runs,
     # so we can partition them into (resolved, quarantined) buckets based
-    # on whether backfilling their ``parent_conversation_id`` would create
+    # on whether backfilling their ``parent_session_id`` would create
     # a cycle (#1260). Per-row processing lets the cycle detector walk the
-    # ancestry of ``conversation_id`` (the proposed parent) for each child.
+    # ancestry of ``session_id`` (the proposed parent) for each child.
     cursor = await conn.execute(
         """
-        SELECT src_conversation_id, edge_type
+        SELECT src_session_id, edge_type
           FROM topology_edges
          WHERE status = 'unresolved'
            AND dst_provider_name = ?
            AND dst_provider_native_id = ?
         """,
-        (source_name, provider_conversation_id),
+        (source_name, provider_session_id),
     )
     pending_rows = list(await cursor.fetchall())
 
@@ -281,24 +281,24 @@ async def resolve_topology_edges_for_conversation(
     valid_branch_types: set[str] = {bt.value for bt in BranchType}
     flipped = 0
     for row in pending_rows:
-        child_id = row["src_conversation_id"]
+        child_id = row["src_session_id"]
         edge_type = row["edge_type"]
 
         cycle_path = await _would_create_cycle(
             conn,
             child_id=child_id,
-            proposed_parent_id=conversation_id,
+            proposed_parent_id=session_id,
         )
         if cycle_path is not None:
             # Quarantine the offending edge instead of resolving it. Leave
-            # ``conversations.parent_conversation_id`` untouched so the
+            # ``sessions.parent_session_id`` untouched so the
             # fast-path ancestry walk does not enter the cycle.
             await _quarantine_edge(
                 conn,
                 edge_id=None,
-                src_conversation_id=child_id,
+                src_session_id=child_id,
                 dst_provider_name=source_name,
-                dst_provider_native_id=provider_conversation_id,
+                dst_provider_native_id=provider_session_id,
                 cycle_path=cycle_path,
                 observed_at=resolved_at,
             )
@@ -307,33 +307,33 @@ async def resolve_topology_edges_for_conversation(
         await conn.execute(
             """
             UPDATE topology_edges
-               SET resolved_dst_conversation_id = ?,
+               SET resolved_dst_session_id = ?,
                    status = 'resolved',
                    resolved_at = ?
              WHERE status = 'unresolved'
-               AND src_conversation_id = ?
+               AND src_session_id = ?
                AND dst_provider_name = ?
                AND dst_provider_native_id = ?
             """,
-            (conversation_id, resolved_at, child_id, source_name, provider_conversation_id),
+            (session_id, resolved_at, child_id, source_name, provider_session_id),
         )
         flipped += 1
-        # Backfill the resolved fast-path on the child conversation. The
-        # ``parent_conversation_id IS NULL`` guard preserves whatever was set
+        # Backfill the resolved fast-path on the child session. The
+        # ``parent_session_id IS NULL`` guard preserves whatever was set
         # at the child's original write time and makes the backfill idempotent;
         # the ``branch_type`` guard mirrors the same constraint and restricts
         # writes to the closed ``BranchType`` vocabulary so the CHECK constraint
-        # on ``conversations.branch_type`` cannot be violated by future
+        # on ``sessions.branch_type`` cannot be violated by future
         # ``RESUME`` / ``BRANCH`` / ``REPAIRED`` edge types.
         branch_type: str | None = edge_type if edge_type in valid_branch_types else None
         await conn.execute(
             """
-            UPDATE conversations
-               SET parent_conversation_id = COALESCE(parent_conversation_id, ?),
+            UPDATE sessions
+               SET parent_session_id = COALESCE(parent_session_id, ?),
                    branch_type = COALESCE(branch_type, ?)
-             WHERE conversation_id = ?
+             WHERE session_id = ?
             """,
-            (conversation_id, branch_type, child_id),
+            (session_id, branch_type, child_id),
         )
 
     return flipped
@@ -342,35 +342,35 @@ async def resolve_topology_edges_for_conversation(
 async def resolve_unresolved_edges_for_child(
     conn: aiosqlite.Connection,
     *,
-    src_conversation_id: str,
+    src_session_id: str,
     resolved_at: str,
 ) -> int:
-    """Resolve any of ``src_conversation_id``'s own unresolved edges whose
-    parent is already in ``conversations``.
+    """Resolve any of ``src_session_id``'s own unresolved edges whose
+    parent is already in ``sessions``.
 
     Closes the concurrent-ingest race where the parent's
-    :func:`resolve_topology_edges_for_conversation` pass ran before the
+    :func:`resolve_topology_edges_for_session` pass ran before the
     child's edge was upserted. After the child's edge lands, this helper
     sweeps every unresolved edge it just wrote, joins against
-    ``conversations`` on ``(source_name, provider_conversation_id)``,
+    ``sessions`` on ``(source_name, provider_session_id)``,
     and flips the edge if a matching parent row now exists.
 
-    Backfills the same ``conversations.parent_conversation_id`` /
+    Backfills the same ``sessions.parent_session_id`` /
     ``branch_type`` fast-path columns as
-    :func:`resolve_topology_edges_for_conversation`, with the same
+    :func:`resolve_topology_edges_for_session`, with the same
     conservative ``COALESCE`` guards so the operation is idempotent.
     """
     cursor = await conn.execute(
         """
-        SELECT te.edge_id, te.edge_type, c.conversation_id AS parent_cid
+        SELECT te.edge_id, te.edge_type, c.session_id AS parent_cid
           FROM topology_edges AS te
-          JOIN conversations  AS c
+          JOIN sessions  AS c
             ON c.source_name = te.dst_provider_name
-           AND c.provider_conversation_id = te.dst_provider_native_id
-         WHERE te.src_conversation_id = ?
+           AND c.provider_session_id = te.dst_provider_native_id
+         WHERE te.src_session_id = ?
            AND te.status = 'unresolved'
         """,
-        (src_conversation_id,),
+        (src_session_id,),
     )
     rows = list(await cursor.fetchall())
     if not rows:
@@ -385,17 +385,17 @@ async def resolve_unresolved_edges_for_child(
 
         cycle_path = await _would_create_cycle(
             conn,
-            child_id=src_conversation_id,
+            child_id=src_session_id,
             proposed_parent_id=parent_cid,
         )
         if cycle_path is not None:
             # Quarantine the offending edge (#1260). Do not flip to resolved
-            # and do not backfill the conversations row, so the fast-path
+            # and do not backfill the sessions row, so the fast-path
             # ancestry walk does not enter the cycle.
             await _quarantine_edge(
                 conn,
                 edge_id=edge_id,
-                src_conversation_id=src_conversation_id,
+                src_session_id=src_session_id,
                 dst_provider_name=None,
                 dst_provider_native_id=None,
                 cycle_path=cycle_path,
@@ -406,7 +406,7 @@ async def resolve_unresolved_edges_for_child(
         await conn.execute(
             """
             UPDATE topology_edges
-               SET resolved_dst_conversation_id = ?,
+               SET resolved_dst_session_id = ?,
                    status = 'resolved',
                    resolved_at = ?
              WHERE edge_id = ?
@@ -417,32 +417,32 @@ async def resolve_unresolved_edges_for_child(
         branch_type: str | None = edge_type if edge_type in valid_branch_types else None
         await conn.execute(
             """
-            UPDATE conversations
-               SET parent_conversation_id = COALESCE(parent_conversation_id, ?),
+            UPDATE sessions
+               SET parent_session_id = COALESCE(parent_session_id, ?),
                    branch_type = COALESCE(branch_type, ?)
-             WHERE conversation_id = ?
+             WHERE session_id = ?
             """,
-            (parent_cid, branch_type, src_conversation_id),
+            (parent_cid, branch_type, src_session_id),
         )
         resolved += 1
     return resolved
 
 
-async def list_topology_edges_for_conversation(
+async def list_topology_edges_for_session(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
 ) -> list[dict[str, object]]:
-    """Read every outbound edge for a conversation. Used by tests."""
+    """Read every outbound edge for a session. Used by tests."""
     cursor = await conn.execute(
         """
-        SELECT edge_id, src_conversation_id, dst_provider_native_id, dst_provider_name,
-               edge_type, resolved_dst_conversation_id, raw_evidence, confidence,
+        SELECT edge_id, src_session_id, dst_provider_native_id, dst_provider_name,
+               edge_type, resolved_dst_session_id, raw_evidence, confidence,
                status, observed_at, resolved_at
           FROM topology_edges
-         WHERE src_conversation_id = ?
+         WHERE src_session_id = ?
          ORDER BY edge_type, dst_provider_native_id
         """,
-        (conversation_id,),
+        (session_id,),
     )
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
@@ -451,8 +451,8 @@ async def list_topology_edges_for_conversation(
 __all__ = [
     "TopologyEdgeStatus",
     "count_quarantined_topology_edges",
-    "list_topology_edges_for_conversation",
-    "resolve_topology_edges_for_conversation",
+    "list_topology_edges_for_session",
+    "resolve_topology_edges_for_session",
     "resolve_unresolved_edges_for_child",
     "upsert_topology_edges",
 ]

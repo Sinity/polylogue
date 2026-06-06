@@ -8,7 +8,7 @@ from polylogue.storage.search import runtime as _search_runtime
 from polylogue.storage.search.models import SearchHit, SearchResult
 from polylogue.storage.search.query_builders import (
     build_ranked_action_search_query,
-    build_ranked_conversation_search_query,
+    build_ranked_session_search_query,
 )
 from polylogue.storage.search.query_support import (
     _FTS5_SPECIAL,
@@ -45,7 +45,7 @@ __all__ = [
     "SearchResult",
     "_FTS5_SPECIAL",
     "build_ranked_action_search_query",
-    "build_ranked_conversation_search_query",
+    "build_ranked_session_search_query",
     "escape_fts5_query",
     "extract_match_terms",
     "normalize_fts5_query",

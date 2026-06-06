@@ -10,12 +10,12 @@ from polylogue.insights.archive_models import (
     SessionInferencePayload,
 )
 from polylogue.storage.runtime import SessionProfileRecord
-from polylogue.storage.sqlite.queries.mappers_insight_legacy import (
-    parse_legacy_payload_dict,
+from polylogue.storage.sqlite.queries.mappers_insight_fallback import (
+    parse_fallback_payload_dict,
     parse_payload_model,
-    session_profile_enrichment_from_legacy,
-    session_profile_evidence_from_legacy,
-    session_profile_inference_from_legacy,
+    session_profile_enrichment_from_fallback,
+    session_profile_evidence_from_fallback,
+    session_profile_inference_from_fallback,
 )
 from polylogue.storage.sqlite.queries.mappers_support import (
     _json_text_tuple,
@@ -25,7 +25,7 @@ from polylogue.storage.sqlite.queries.mappers_support import (
     _row_int,
     _row_text,
 )
-from polylogue.types import ConversationId
+from polylogue.types import SessionId
 
 
 def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
@@ -33,41 +33,41 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
     evidence_search_text = (_row_get(row, "evidence_search_text", "") or "").strip() or search_text
     inference_search_text = (_row_get(row, "inference_search_text", "") or "").strip() or search_text
     enrichment_search_text = (_row_get(row, "enrichment_search_text", "") or "").strip() or inference_search_text
-    legacy_payload = parse_legacy_payload_dict(
+    fallback_payload = parse_fallback_payload_dict(
         row,
-        record_id=row["conversation_id"],
+        record_id=row["session_id"],
     )
     evidence_payload = parse_payload_model(
         row,
         "evidence_payload_json",
-        record_id=row["conversation_id"],
+        record_id=row["session_id"],
         model=SessionEvidencePayload,
     )
     if evidence_payload is None:
-        evidence_payload = session_profile_evidence_from_legacy(row, legacy_payload)
+        evidence_payload = session_profile_evidence_from_fallback(row, fallback_payload)
     inference_payload = parse_payload_model(
         row,
         "inference_payload_json",
-        record_id=row["conversation_id"],
+        record_id=row["session_id"],
         model=SessionInferencePayload,
     )
     if inference_payload is None:
-        inference_payload = session_profile_inference_from_legacy(row, legacy_payload)
+        inference_payload = session_profile_inference_from_fallback(row, fallback_payload)
     enrichment_payload = parse_payload_model(
         row,
         "enrichment_payload_json",
-        record_id=row["conversation_id"],
+        record_id=row["session_id"],
         model=SessionEnrichmentPayload,
     )
     if enrichment_payload is None:
-        enrichment_payload = session_profile_enrichment_from_legacy(
+        enrichment_payload = session_profile_enrichment_from_fallback(
             row,
-            legacy_payload,
+            fallback_payload,
             inference_payload=inference_payload,
         )
     return SessionProfileRecord(
-        conversation_id=ConversationId(row["conversation_id"]),
-        logical_conversation_id=ConversationId(_row_text(row, "logical_conversation_id") or row["conversation_id"]),
+        session_id=SessionId(row["session_id"]),
+        logical_session_id=SessionId(_row_text(row, "logical_session_id") or row["session_id"]),
         materializer_version=int(_row_int(row, "materializer_version", 1) or 1),
         materialized_at=row["materialized_at"],
         source_updated_at=_row_text(row, "source_updated_at"),

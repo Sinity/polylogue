@@ -2,7 +2,7 @@
 
 Provides a ``corpus_seeded_db`` factory fixture that generates wire-format bytes,
 writes them to temp files, and runs the pipeline to produce a seeded database.
-This is additive infrastructure — it does NOT replace ConversationBuilder tests.
+This is additive infrastructure — it does NOT replace SessionBuilder tests.
 
 Usage::
 
@@ -14,9 +14,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
-import hashlib
 from collections.abc import Callable, Sequence
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -24,31 +22,25 @@ import pytest
 
 def _seed_db(
     tmp_path: Path,
+    archive_root: Path,
     providers: Sequence[str] = ("chatgpt", "claude-ai"),
     count: int = 3,
     seed: int = 42,
 ) -> Path:
-    """Generate wire-format bytes, write to temp, run pipeline, return db_path."""
+    """Generate wire-format bytes, write to temp, ingest directly, return index db.
+
+    Writes synthetic corpus artifacts and ingests them through the archive's
+    archive ingest path so the data lands in the same store the facade/CLI read.
+    """
     # Defer all heavy imports to avoid circular import at conftest collection time
     from polylogue.config import Source
-    from polylogue.pipeline.prepare import prepare_records
+    from polylogue.pipeline.services.archive_ingest import parse_sources_archive
     from polylogue.scenarios import build_default_corpus_specs
     from polylogue.schemas.synthetic import SyntheticCorpus
-    from polylogue.sources import iter_source_conversations
-    from polylogue.storage.repository import ConversationRepository
-    from polylogue.storage.runtime import RawConversationRecord
-    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-    from polylogue.storage.sqlite.connection import open_connection
 
-    db_path = tmp_path / "corpus_seeded.db"
-    with open_connection(db_path):
-        pass  # Auto-initialize schema
-
-    backend = SQLiteBackend(db_path=db_path)
-    repository = ConversationRepository(backend=backend)
-
+    archive_root.mkdir(parents=True, exist_ok=True)
     corpus_dir = tmp_path / "corpus"
-    corpus_dir.mkdir()
+    corpus_dir.mkdir(exist_ok=True)
 
     async def _do_seed() -> None:
         available = set(SyntheticCorpus.available_providers())
@@ -59,46 +51,17 @@ def _seed_db(
             messages_max=11,
             seed=seed,
         )
+        sources: list[Source] = []
         for spec in specs:
-            provider = spec.provider
-            provider_dir = corpus_dir / provider
+            provider_dir = corpus_dir / spec.provider
             written = SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="corpus")
+            sources.extend(Source(name=spec.provider, path=file_path) for file_path in written.files)
 
-            for file_path, artifact in zip(written.files, written.batch.artifacts, strict=True):
-                raw_bytes = artifact.raw_bytes
-                raw_id = hashlib.sha256(raw_bytes).hexdigest()
-                record = RawConversationRecord(
-                    raw_id=raw_id,
-                    source_name=provider,
-                    source_path=str(file_path),
-                    blob_size=len(raw_bytes),
-                    acquired_at=datetime.now(timezone.utc).isoformat(),
-                )
-                await backend.save_raw_conversation(record)
-
-        # Parse + ingest
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-
-        for provider_dir in sorted(corpus_dir.iterdir()):
-            provider = provider_dir.name
-            for file_path in sorted(provider_dir.iterdir()):
-                source = Source(name=provider, path=file_path)
-                raw_id = hashlib.sha256(file_path.read_bytes()).hexdigest()
-                for convo in iter_source_conversations(source):
-                    await prepare_records(
-                        convo,
-                        source_name=provider,
-                        archive_root=archive_root,
-                        backend=backend,
-                        repository=repository,
-                        raw_id=raw_id,
-                    )
-
-        await backend.close()
+        if sources:
+            await parse_sources_archive(archive_root, sources)
 
     asyncio.run(_do_seed())
-    return db_path
+    return archive_root / "index.db"
 
 
 @pytest.fixture
@@ -111,13 +74,13 @@ def corpus_seeded_db(tmp_path: Path, workspace_env: dict[str, Path]) -> Callable
             db = corpus_seeded_db(providers=("chatgpt",), count=2)
     """
 
-    del workspace_env
+    archive_root = workspace_env["archive_root"]
 
     def _seed(
         providers: Sequence[str] = ("chatgpt", "claude-ai"),
         count: int = 3,
         seed: int = 42,
     ) -> Path:
-        return _seed_db(tmp_path, providers=providers, count=count, seed=seed)
+        return _seed_db(tmp_path, archive_root, providers=providers, count=count, seed=seed)
 
     return _seed

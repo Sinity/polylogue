@@ -11,7 +11,7 @@ def test_regression_case_roundtrips_probe_summary(tmp_path: Path) -> None:
         "probe": {"stage": "parse"},
         "provenance": {"git_commit": "abc123"},
         "result": {"ok": False},
-        "db_stats": {"raw_conversations": 1},
+        "db_stats": {"raw_sessions": 1},
         "ignored": "not captured",
     }
 

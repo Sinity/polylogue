@@ -19,27 +19,27 @@ _ACTION_EVENT_MISMATCH_COUNT_SQL = """
     FROM action_events
     WHERE materializer_version != ?
 """
-_ACTION_EVENT_MATERIALIZED_CONVERSATION_COUNT_SQL = """
-    SELECT COUNT(DISTINCT conversation_id)
+_ACTION_EVENT_MATERIALIZED_SESSION_COUNT_SQL = """
+    SELECT COUNT(DISTINCT session_id)
     FROM action_events
 """
-_ACTION_EVENT_VALID_SOURCE_CONVERSATION_COUNT_SQL = """
-    SELECT COUNT(DISTINCT cb.conversation_id)
+_ACTION_EVENT_VALID_SOURCE_SESSION_COUNT_SQL = """
+    SELECT COUNT(DISTINCT cb.session_id)
     FROM content_blocks cb
-    JOIN conversations c ON c.conversation_id = cb.conversation_id
+    JOIN sessions c ON c.session_id = cb.session_id
     WHERE cb.type = 'tool_use'
 """
-_ACTION_EVENT_ORPHAN_SOURCE_CONVERSATION_COUNT_SQL = """
-    SELECT COUNT(DISTINCT cb.conversation_id)
+_ACTION_EVENT_ORPHAN_SOURCE_SESSION_COUNT_SQL = """
+    SELECT COUNT(DISTINCT cb.session_id)
     FROM content_blocks cb
-    LEFT JOIN conversations c ON c.conversation_id = cb.conversation_id
-    WHERE cb.type = 'tool_use' AND c.conversation_id IS NULL
+    LEFT JOIN sessions c ON c.session_id = cb.session_id
+    WHERE cb.type = 'tool_use' AND c.session_id IS NULL
 """
 _ACTION_EVENT_ORPHAN_TOOL_BLOCK_COUNT_SQL = """
     SELECT COUNT(*)
     FROM content_blocks cb
-    LEFT JOIN conversations c ON c.conversation_id = cb.conversation_id
-    WHERE cb.type = 'tool_use' AND c.conversation_id IS NULL
+    LEFT JOIN sessions c ON c.session_id = cb.session_id
+    WHERE cb.type = 'tool_use' AND c.session_id IS NULL
 """
 
 SqlRow: TypeAlias = sqlite3.Row | tuple[object, ...]
@@ -49,8 +49,8 @@ ReadModelStatus: TypeAlias = dict[str, StatusValue]
 
 @dataclass(frozen=True, slots=True)
 class _SourceCounts:
-    valid_conversations: int
-    orphan_conversations: int
+    valid_sessions: int
+    orphan_sessions: int
     orphan_tool_blocks: int
 
 
@@ -58,7 +58,7 @@ class _SourceCounts:
 class _ActionEventCounts:
     exists: bool
     materialized_rows: int
-    materialized_conversations: int
+    materialized_sessions: int
     stale_rows: int
     source: _SourceCounts
 
@@ -133,7 +133,7 @@ def _materialized_counts_sync(conn: sqlite3.Connection, *, exists: bool) -> tupl
         return (0, 0)
     return (
         _count_sync(conn, _ACTION_EVENT_DOC_COUNT_SQL),
-        _count_sync(conn, _ACTION_EVENT_MATERIALIZED_CONVERSATION_COUNT_SQL),
+        _count_sync(conn, _ACTION_EVENT_MATERIALIZED_SESSION_COUNT_SQL),
     )
 
 
@@ -142,25 +142,25 @@ async def _materialized_counts_async(conn: aiosqlite.Connection, *, exists: bool
         return (0, 0)
     return (
         await _count_async(conn, _ACTION_EVENT_DOC_COUNT_SQL),
-        await _count_async(conn, _ACTION_EVENT_MATERIALIZED_CONVERSATION_COUNT_SQL),
+        await _count_async(conn, _ACTION_EVENT_MATERIALIZED_SESSION_COUNT_SQL),
     )
 
 
 def _source_counts_sync(
     conn: sqlite3.Connection,
     *,
-    materialized_conversations: int,
+    materialized_sessions: int,
     verify_source_alignment: bool,
 ) -> _SourceCounts:
     if not verify_source_alignment:
         return _SourceCounts(
-            valid_conversations=materialized_conversations,
-            orphan_conversations=0,
+            valid_sessions=materialized_sessions,
+            orphan_sessions=0,
             orphan_tool_blocks=0,
         )
     return _SourceCounts(
-        valid_conversations=_count_sync(conn, _ACTION_EVENT_VALID_SOURCE_CONVERSATION_COUNT_SQL),
-        orphan_conversations=_count_sync(conn, _ACTION_EVENT_ORPHAN_SOURCE_CONVERSATION_COUNT_SQL),
+        valid_sessions=_count_sync(conn, _ACTION_EVENT_VALID_SOURCE_SESSION_COUNT_SQL),
+        orphan_sessions=_count_sync(conn, _ACTION_EVENT_ORPHAN_SOURCE_SESSION_COUNT_SQL),
         orphan_tool_blocks=_count_sync(conn, _ACTION_EVENT_ORPHAN_TOOL_BLOCK_COUNT_SQL),
     )
 
@@ -168,18 +168,18 @@ def _source_counts_sync(
 async def _source_counts_async(
     conn: aiosqlite.Connection,
     *,
-    materialized_conversations: int,
+    materialized_sessions: int,
     verify_source_alignment: bool,
 ) -> _SourceCounts:
     if not verify_source_alignment:
         return _SourceCounts(
-            valid_conversations=materialized_conversations,
-            orphan_conversations=0,
+            valid_sessions=materialized_sessions,
+            orphan_sessions=0,
             orphan_tool_blocks=0,
         )
     return _SourceCounts(
-        valid_conversations=await _count_async(conn, _ACTION_EVENT_VALID_SOURCE_CONVERSATION_COUNT_SQL),
-        orphan_conversations=await _count_async(conn, _ACTION_EVENT_ORPHAN_SOURCE_CONVERSATION_COUNT_SQL),
+        valid_sessions=await _count_async(conn, _ACTION_EVENT_VALID_SOURCE_SESSION_COUNT_SQL),
+        orphan_sessions=await _count_async(conn, _ACTION_EVENT_ORPHAN_SOURCE_SESSION_COUNT_SQL),
         orphan_tool_blocks=await _count_async(conn, _ACTION_EVENT_ORPHAN_TOOL_BLOCK_COUNT_SQL),
     )
 
@@ -212,11 +212,11 @@ def _counts_sync(
     verify_source_alignment: bool,
 ) -> _ActionEventCounts:
     exists = _table_exists_sync(conn)
-    materialized_rows, materialized_conversations = _materialized_counts_sync(conn, exists=exists)
+    materialized_rows, materialized_sessions = _materialized_counts_sync(conn, exists=exists)
     return _ActionEventCounts(
         exists=exists,
         materialized_rows=materialized_rows,
-        materialized_conversations=materialized_conversations,
+        materialized_sessions=materialized_sessions,
         stale_rows=_stale_count_sync(
             conn,
             exists=exists,
@@ -224,7 +224,7 @@ def _counts_sync(
         ),
         source=_source_counts_sync(
             conn,
-            materialized_conversations=materialized_conversations,
+            materialized_sessions=materialized_sessions,
             verify_source_alignment=verify_source_alignment,
         ),
     )
@@ -236,11 +236,11 @@ async def _counts_async(
     verify_source_alignment: bool,
 ) -> _ActionEventCounts:
     exists = await _table_exists_async(conn)
-    materialized_rows, materialized_conversations = await _materialized_counts_async(conn, exists=exists)
+    materialized_rows, materialized_sessions = await _materialized_counts_async(conn, exists=exists)
     return _ActionEventCounts(
         exists=exists,
         materialized_rows=materialized_rows,
-        materialized_conversations=materialized_conversations,
+        materialized_sessions=materialized_sessions,
         stale_rows=await _stale_count_async(
             conn,
             exists=exists,
@@ -248,7 +248,7 @@ async def _counts_async(
         ),
         source=await _source_counts_async(
             conn,
-            materialized_conversations=materialized_conversations,
+            materialized_sessions=materialized_sessions,
             verify_source_alignment=verify_source_alignment,
         ),
     )
@@ -259,8 +259,8 @@ def _artifact_state(
     fts_status: Mapping[str, object],
 ) -> ActionEventArtifactState:
     return ActionEventArtifactState(
-        source_conversations=counts.source.valid_conversations,
-        materialized_conversations=counts.materialized_conversations,
+        source_sessions=counts.source.valid_sessions,
+        materialized_sessions=counts.materialized_sessions,
         materialized_rows=counts.materialized_rows,
         fts_rows=_mapping_int(fts_status, "action_count"),
         stale_rows=counts.stale_rows,
@@ -274,17 +274,17 @@ def _read_model_status(
     state: ActionEventArtifactState,
     fts_status: Mapping[str, object],
 ) -> ReadModelStatus:
-    source_conversations = counts.source.valid_conversations + counts.source.orphan_conversations
+    source_sessions = counts.source.valid_sessions + counts.source.orphan_sessions
     return {
         "exists": counts.exists,
         "count": state.materialized_rows,
         "stale_count": state.stale_rows,
         "matches_version": state.matches_version,
-        "source_conversation_count": source_conversations,
-        "valid_source_conversation_count": counts.source.valid_conversations,
-        "orphan_source_conversation_count": counts.source.orphan_conversations,
+        "source_session_count": source_sessions,
+        "valid_source_session_count": counts.source.valid_sessions,
+        "orphan_source_session_count": counts.source.orphan_sessions,
         "orphan_tool_block_count": state.orphan_rows,
-        "materialized_conversation_count": state.materialized_conversations,
+        "materialized_session_count": state.materialized_sessions,
         "rows_ready": state.rows_ready,
         "action_fts_exists": bool(fts_status.get("action_exists", False)),
         "action_fts_count": state.fts_rows,

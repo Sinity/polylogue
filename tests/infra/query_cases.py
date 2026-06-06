@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class ArchiveQueryCase:
-    """Expected conversation-id projection for one archive query.
+    """Expected session-id projection for one archive query.
 
     A case may carry one primary projection axis (``provider`` or
     ``search_text``) plus optional additional filter axes

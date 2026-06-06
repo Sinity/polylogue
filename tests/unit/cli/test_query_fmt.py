@@ -3,7 +3,7 @@
 This file owns pure formatting/projection behavior:
 - filter description rendering
 - YAML escaping
-- single-conversation formatting across output formats
+- single-session formatting across output formats
 - list formatting across output formats
 - streaming record rendering
 - grouped stats rendering
@@ -28,10 +28,10 @@ from rich.console import Console
 from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
-from polylogue.archive.models import Conversation, ConversationSummary, Message
-from polylogue.archive.query.search_hits import ConversationSearchHit
+from polylogue.archive.models import Message, Session, SessionSummary
+from polylogue.archive.query.search_hits import SessionSearchHit
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
-from polylogue.cli.query import describe_query_filters
+from polylogue.cli.query_contracts import describe_query_filters
 from polylogue.cli.query_output import (
     _format_list,
     _output_stats_by,
@@ -41,8 +41,9 @@ from polylogue.cli.query_output import (
     render_stream_transcript,
 )
 from polylogue.cli.query_output_contracts import StructuredRowsDocument
-from polylogue.rendering.formatting import _conv_to_dict, _yaml_safe, format_conversation
-from polylogue.types import ConversationId, Provider
+from polylogue.core.enums import Origin
+from polylogue.rendering.formatting import _conv_to_dict, _yaml_safe, format_session
+from polylogue.types import Provider, SessionId
 from tests.infra.builders import make_conv as build_conv
 from tests.infra.builders import make_msg as build_msg
 
@@ -55,7 +56,7 @@ class FilterCase:
 
 
 @dataclass(frozen=True)
-class ConversationFormatCase:
+class SessionFormatCase:
     name: str
     output_format: str
     fields: str | None
@@ -77,8 +78,8 @@ FILTER_CASES = (
         "mixed_filters",
         {
             "query": ("python", "errors"),
-            "provider": "claude-ai",
-            "exclude_provider": "chatgpt",
+            "origin": "claude-ai-export",
+            "exclude_origin": "chatgpt-export",
             "tag": "important",
             "exclude_tag": "spam",
             "title": "Test Title",
@@ -89,8 +90,8 @@ FILTER_CASES = (
         },
         (
             "search: python errors",
-            "provider: claude-ai",
-            "exclude provider: chatgpt",
+            "origin: claude-ai-export",
+            "exclude origin: chatgpt-export",
             "tag: important",
             "exclude tag: spam",
             "has: thinking, tools",
@@ -102,70 +103,70 @@ FILTER_CASES = (
     ),
     FilterCase(
         "contains_and_negative",
-        {"contains": ("fallback",), "exclude_text": ("internal",), "provider": "codex"},
-        ("provider: codex", "contains: fallback", "exclude text: internal"),
+        {"contains": ("fallback",), "exclude_text": ("internal",), "origin": "codex-session"},
+        ("origin: codex-session", "contains: fallback", "exclude text: internal"),
     ),
 )
 
 
-CONVERSATION_FORMAT_CASES = (
-    ConversationFormatCase(
+SESSION_FORMAT_CASES = (
+    SessionFormatCase(
         "markdown",
         "markdown",
         None,
-        ("# Example Conversation", "## user", "## assistant", "Hello", "Response"),
+        ("# Example Session", "## user", "## assistant", "Hello", "Response"),
     ),
-    ConversationFormatCase(
+    SessionFormatCase(
         "html",
         "html",
         None,
         ("<!DOCTYPE html>", "&lt;script&gt;alert(&#34;xss&#34;)&lt;/script&gt;", "message-user", "message-assistant"),
         excluded=("<script>",),
     ),
-    ConversationFormatCase(
+    SessionFormatCase(
         "plaintext",
         "plaintext",
         None,
         ("Hello", "Response"),
-        excluded=("## User", "**Provider**"),
+        excluded=("## User", "**Origin**"),
     ),
-    ConversationFormatCase(
+    SessionFormatCase(
         "obsidian",
         "obsidian",
         None,
-        ("---", "provider: claude-ai", "tags:", "# Example Conversation"),
+        ("---", "origin: claude-ai-export", "tags:", "# Example Session"),
     ),
-    ConversationFormatCase(
+    SessionFormatCase(
         "org",
         "org",
         None,
-        ("#+TITLE: Example Conversation", "* USER", "* ASSISTANT"),
+        ("#+TITLE: Example Session", "* USER", "* ASSISTANT"),
     ),
-    ConversationFormatCase(
+    SessionFormatCase(
         "json_full",
         "json",
         None,
-        ('"provider": "claude-ai"', '"messages": [', '"role": "assistant"'),
+        ('"origin": "claude-ai-export"', '"messages": [', '"role": "assistant"'),
     ),
-    ConversationFormatCase(
+    SessionFormatCase(
         "json_selected",
         "json",
-        "id,provider,title",
-        ('"provider": "claude-ai"', '"title": "Example Conversation"'),
+        "id,origin,title",
+        ('"origin": "claude-ai-export"', '"title": "Example Session"'),
         excluded=('"messages": [',),
     ),
-    ConversationFormatCase(
+    SessionFormatCase(
         "yaml_full",
         "yaml",
         None,
-        ("provider: claude-ai", "messages:", "- id: msg-user"),
+        ("origin: claude-ai-export", "messages:", "- id: msg-user"),
     ),
-    ConversationFormatCase(
+    SessionFormatCase(
         "yaml_selected",
         "yaml",
         "id,title",
-        ("title: Example Conversation",),
-        excluded=("messages:", "provider:"),
+        ("title: Example Session",),
+        excluded=("messages:", "origin:"),
     ),
 )
 
@@ -175,31 +176,31 @@ LIST_FORMAT_CASES = (
         "text",
         "text",
         None,
-        ("conv-1234567890abcdef", "claude-ai", "Example Conversation"),
+        ("conv-1234567890abcdef", "claude-ai", "Example Session"),
     ),
     ListFormatCase(
         "json",
         "json",
         None,
-        ('"provider": "claude-ai"', '"summary": "Synthetic summary"'),
+        ('"origin": "claude-ai-export"', '"summary": "Synthetic summary"'),
     ),
     ListFormatCase(
         "yaml",
         "yaml",
         None,
-        ("provider: claude-ai", "summary: Synthetic summary"),
+        ("origin: claude-ai-export", "summary: Synthetic summary"),
     ),
     ListFormatCase(
         "csv",
         "csv",
         None,
-        ("id,date,provider,title,messages,words,tags,summary", "conv-1234567890abcdef"),
+        ("id,date,origin,title,messages,words,tags,summary", "conv-1234567890abcdef"),
     ),
     ListFormatCase(
         "json_selected",
         "json",
         "id,title",
-        ('"id": "conv-1234567890abcdef"', '"title": "Example Conversation"'),
+        ('"id": "conv-1234567890abcdef"', '"title": "Example Session"'),
     ),
 )
 
@@ -216,13 +217,13 @@ StatsCaseRow = tuple[str, str, datetime, list[StatItem]]
 
 STATS_CASES = (
     (
-        "provider",
+        "origin",
         [
             ("conv-1", "claude-ai", datetime(2025, 3, 1, tzinfo=timezone.utc), ["hello there", "more words"]),
             ("conv-2", "chatgpt", datetime(2025, 2, 1, tzinfo=timezone.utc), ["other text"]),
             ("conv-3", "claude-ai", datetime(2025, 1, 1, tzinfo=timezone.utc), ["final message"]),
         ],
-        ("Matched: 3 conversations (by provider)", "claude-ai", "chatgpt", "TOTAL"),
+        ("Matched: 3 sessions (by origin)", "claude-ai-export", "chatgpt-export", "TOTAL"),
     ),
     (
         "month",
@@ -230,7 +231,7 @@ STATS_CASES = (
             ("conv-1", "claude-ai", datetime(2025, 3, 5, tzinfo=timezone.utc), ["month three"]),
             ("conv-2", "claude-ai", datetime(2025, 1, 6, tzinfo=timezone.utc), ["month one"]),
         ],
-        ("Matched: 2 conversations (by month)", "2025-03", "2025-01", "TOTAL"),
+        ("Matched: 2 sessions (by month)", "2025-03", "2025-01", "TOTAL"),
     ),
     (
         "action",
@@ -255,13 +256,13 @@ STATS_CASES = (
             ),
         ],
         (
-            "Matched: 3 conversations (by action)",
+            "Matched: 3 sessions (by action)",
             "file_read",
             "search",
             "none",
             "MATCHED",
             "Facts",
-            "Note: conversations may appear in multiple action groups.",
+            "Note: sessions may appear in multiple action groups.",
         ),
     ),
     (
@@ -287,13 +288,13 @@ STATS_CASES = (
             ),
         ],
         (
-            "Matched: 3 conversations (by tool)",
+            "Matched: 3 sessions (by tool)",
             "read",
             "grep",
             "none",
             "MATCHED",
             "Facts",
-            "Note: conversations may appear in multiple tool groups.",
+            "Note: sessions may appear in multiple tool groups.",
         ),
     ),
 )
@@ -323,13 +324,13 @@ def _make_msg(
 def _make_conv(
     id: str = "conv-1234567890abcdef",
     provider: str = "claude-ai",
-    title: str | None = "Example Conversation",
+    title: str | None = "Example Session",
     messages: list[Message] | None = None,
     created_at: datetime | None = None,
     updated_at: datetime | None = None,
     tags: list[str] | None = None,
     summary: str = "Synthetic summary",
-) -> Conversation:
+) -> Session:
     default_messages: Sequence[Message] | MessageCollection | None = messages
     if default_messages is None:
         default_messages = [
@@ -351,7 +352,7 @@ def _make_conv(
 
 
 @pytest.fixture
-def sample_conversation() -> Conversation:
+def sample_session() -> Session:
     return _make_conv(
         updated_at=datetime(2025, 6, 15, 12, 30, tzinfo=timezone.utc),
         messages=[
@@ -397,39 +398,39 @@ class TestYamlEscaping:
             assert result == expected
 
 
-class TestConversationFormatting:
-    @pytest.mark.parametrize("case", CONVERSATION_FORMAT_CASES, ids=lambda case: case.name)
-    def test_format_conversation_matrix(self, sample_conversation: Conversation, case: ConversationFormatCase) -> None:
-        conversation = sample_conversation
+class TestSessionFormatting:
+    @pytest.mark.parametrize("case", SESSION_FORMAT_CASES, ids=lambda case: case.name)
+    def test_format_session_matrix(self, sample_session: Session, case: SessionFormatCase) -> None:
+        session = sample_session
         if case.output_format == "html":
-            conversation = conversation.model_copy(update={"title": '<script>alert("xss")</script>'})
-        rendered = format_conversation(conversation, case.output_format, case.fields)
+            session = session.model_copy(update={"title": '<script>alert("xss")</script>'})
+        rendered = format_session(session, case.output_format, case.fields)
         for token in case.expected:
             assert token in rendered, (case.name, token)
         for token in case.excluded:
             assert token not in rendered, (case.name, token)
 
-    def test_conv_to_dict_field_selection_contract(self, sample_conversation: Conversation) -> None:
-        selected = _conv_to_dict(sample_conversation, "id,title")
+    def test_conv_to_dict_field_selection_contract(self, sample_session: Session) -> None:
+        selected = _conv_to_dict(sample_session, "id,title")
         assert selected == {
             "id": "conv-1234567890abcdef",
-            "title": "Example Conversation",
+            "title": "Example Session",
         }
 
-    def test_json_and_yaml_roundtrip_contract(self, sample_conversation: Conversation) -> None:
-        json_data = json.loads(format_conversation(sample_conversation, "json", None))
-        yaml_data = yaml.safe_load(format_conversation(sample_conversation, "yaml", None))
+    def test_json_and_yaml_roundtrip_contract(self, sample_session: Session) -> None:
+        json_data = json.loads(format_session(sample_session, "json", None))
+        yaml_data = yaml.safe_load(format_session(sample_session, "yaml", None))
         assert json_data["id"] == yaml_data["id"] == "conv-1234567890abcdef"
         assert len(json_data["messages"]) == len(yaml_data["messages"]) == 2
         assert json_data["messages"][1]["text"] == yaml_data["messages"][1]["text"] == "Response"
 
     def test_csv_messages_skips_empty_text(self) -> None:
         conv = _make_conv(messages=[_make_msg("user", None, id="empty"), _make_msg("assistant", "Reply", id="reply")])
-        rendered = format_conversation(conv, "csv", None)
+        rendered = format_session(conv, "csv", None)
         assert "empty" not in rendered
         assert "reply" in rendered
 
-    def test_format_conversation_applies_content_projection(self) -> None:
+    def test_format_session_applies_content_projection(self) -> None:
         conv = _make_conv(
             messages=[
                 _make_msg(
@@ -440,7 +441,7 @@ class TestConversationFormatting:
             ]
         )
 
-        rendered = format_conversation(conv, "plaintext", None, content_projection=ContentProjectionSpec.prose_only())
+        rendered = format_session(conv, "plaintext", None, content_projection=ContentProjectionSpec.prose_only())
 
         assert rendered == "Alpha\n\nOmega"
 
@@ -471,35 +472,35 @@ class TestListFormatting:
         assert document.render("text") == "conv-a  claude-ai  A (2 msgs)"
 
     @pytest.mark.parametrize("case", LIST_FORMAT_CASES, ids=lambda case: case.name)
-    def test_format_list_contract_matrix(self, sample_conversation: Conversation, case: ListFormatCase) -> None:
+    def test_format_list_contract_matrix(self, sample_session: Session, case: ListFormatCase) -> None:
         other = _make_conv(
             id="conv-bbbbbbbbbbbbbbbb",
             provider="chatgpt",
-            title="Second Conversation",
+            title="Second Session",
             messages=[_make_msg("user", "Question"), _make_msg("assistant", "Answer")],
             updated_at=datetime(2025, 6, 16, 12, 30, tzinfo=timezone.utc),
             summary="Second summary",
             tags=["second"],
         )
-        rendered = _format_list([sample_conversation, other], case.output_format, case.fields)
+        rendered = _format_list([sample_session, other], case.output_format, case.fields)
         for token in case.expected:
             assert token in rendered, (case.name, token)
         if case.name == "json_selected":
             payload = json.loads(rendered)
             # #1618: envelope shape, not bare array.
-            assert payload["items"][0] == {"id": "conv-1234567890abcdef", "title": "Example Conversation"}
+            assert payload["items"][0] == {"id": "conv-1234567890abcdef", "title": "Example Session"}
             assert payload["total"] == 2
         if case.name == "yaml":
             payload = yaml.safe_load(rendered)
             assert payload["items"][0]["id"] == "conv-1234567890abcdef"
-            assert payload["items"][0]["provider"] == "claude-ai"
+            assert payload["items"][0]["origin"] == "claude-ai-export"
 
     @pytest.mark.parametrize("output_format", ["json", "yaml", "csv", "text"])
     def test_format_summary_list_contract(self, output_format: str) -> None:
-        summary = ConversationSummary(
-            id=ConversationId("conv-summary-1"),
-            provider=Provider.CLAUDE_AI,
-            title="Summary Conversation",
+        summary = SessionSummary(
+            id=SessionId("conv-summary-1"),
+            origin=Origin.CLAUDE_AI_EXPORT,
+            title="Summary Session",
             created_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
             updated_at=datetime(2025, 6, 2, tzinfo=timezone.utc),
             metadata={"tags": ["alpha", "beta"], "summary": "Summary text"},
@@ -521,10 +522,10 @@ class TestListFormatting:
             assert payload["total"] == 1
         elif output_format == "yaml":
             payload = yaml.safe_load(rendered)
-            assert payload["items"][0]["provider"] == "claude-ai"
+            assert payload["items"][0]["origin"] == "claude-ai-export"
             assert payload["items"][0]["summary"] == "Summary text"
         elif output_format == "csv":
-            assert "id,date,provider,title,messages,tags,summary" in rendered
+            assert "id,date,origin,title,messages,tags,summary" in rendered
             assert "conv-summary-1" in rendered
             assert "alpha,beta" in rendered
         else:
@@ -534,15 +535,15 @@ class TestListFormatting:
 
     @pytest.mark.parametrize("output_format", ["json", "yaml", "csv", "text"])
     def test_format_search_hit_list_contract(self, output_format: str) -> None:
-        summary = ConversationSummary(
-            id=ConversationId("conv-hit-1"),
-            provider=Provider.CLAUDE_AI,
-            title="Hit Conversation",
+        summary = SessionSummary(
+            id=SessionId("conv-hit-1"),
+            origin=Origin.CLAUDE_AI_EXPORT,
+            title="Hit Session",
             created_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
             updated_at=datetime(2025, 6, 2, tzinfo=timezone.utc),
             metadata={"summary": "Summary text"},
         )
-        hit = ConversationSearchHit(
+        hit = SessionSearchHit(
             summary=summary,
             rank=1,
             retrieval_lane="dialogue",
@@ -562,16 +563,16 @@ class TestListFormatting:
         if output_format == "json":
             payload = json.loads(rendered)
             # #1618: envelope shape, not bare array.
-            assert payload["items"][0]["conversation"]["id"] == "conv-hit-1"
-            assert payload["items"][0]["conversation"]["message_count"] == 4
+            assert payload["items"][0]["session"]["id"] == "conv-hit-1"
+            assert payload["items"][0]["session"]["message_count"] == 4
             assert payload["items"][0]["match"]["message_id"] == "msg-hit-1"
             assert payload["items"][0]["match"]["snippet"] == "[needle] in context"
         elif output_format == "yaml":
             payload = yaml.safe_load(rendered)
-            assert payload["items"][0]["conversation"]["provider"] == "claude-ai"
+            assert payload["items"][0]["session"]["origin"] == "claude-ai-export"
             assert payload["items"][0]["match"]["retrieval_lane"] == "dialogue"
         elif output_format == "csv":
-            assert "id,date,provider,title,messages,rank,retrieval_lane,match_surface,message_id,snippet" in rendered
+            assert "id,date,origin,title,messages,rank,retrieval_lane,match_surface,message_id,snippet" in rendered
             assert "conv-hit-1" in rendered
             assert "msg-hit-1" in rendered
         else:
@@ -580,14 +581,14 @@ class TestListFormatting:
             assert "[needle] in context" in rendered
 
     def test_format_search_hit_list_exposes_attachment_identity_evidence(self) -> None:
-        summary = ConversationSummary(
-            id=ConversationId("conv-attachment-hit"),
-            provider=Provider.GEMINI,
+        summary = SessionSummary(
+            id=SessionId("conv-attachment-hit"),
+            origin=Origin.AISTUDIO_DRIVE,
             title="Attachment Hit",
             created_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
             updated_at=datetime(2025, 6, 2, tzinfo=timezone.utc),
         )
-        hit = ConversationSearchHit(
+        hit = SessionSearchHit(
             summary=summary,
             rank=1,
             retrieval_lane="attachment",
@@ -605,10 +606,10 @@ class TestListFormatting:
         assert payload["items"][0]["match"]["message_id"] == "msg-doc"
         assert "attachment.provider_file_id=drive-file-1" in payload["items"][0]["match"]["snippet"]
 
-    def test_cli_list_json_envelope_matches_mcp_list_conversations_shape(self) -> None:
+    def test_cli_list_json_envelope_matches_mcp_list_sessions_shape(self) -> None:
         """#1618: CLI ``--format json`` list output emits the same
         ``{"items": [...], "total": N, "limit": N, "offset": N}`` envelope
-        that MCP ``list_conversations`` returns. Bare-array output was the
+        that MCP ``list_sessions`` returns. Bare-array output was the
         pre-fix shape; both surfaces now align.
         """
         document = StructuredRowsDocument(
@@ -642,15 +643,15 @@ class TestListFormatting:
         assert [row["id"] for row in parsed] == ["conv-a", "conv-b"]
 
     def test_format_summary_and_search_use_provider_display_label(self) -> None:
-        summary = ConversationSummary(
-            id=ConversationId("gemini:gemini-20250422-1234"),
-            provider=Provider.GEMINI,
+        summary = SessionSummary(
+            id=SessionId("gemini:gemini-20250422-1234"),
+            origin=Origin.AISTUDIO_DRIVE,
             title="gemini-20250422-1234",
             provider_meta={"display_label": "Project Plan: Please review the attached project plan."},
             created_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
             updated_at=datetime(2025, 6, 2, tzinfo=timezone.utc),
         )
-        hit = ConversationSearchHit(
+        hit = SessionSearchHit(
             summary=summary,
             rank=1,
             retrieval_lane="dialogue",
@@ -665,8 +666,7 @@ class TestListFormatting:
         # #1618: envelope shape, not bare array.
         assert summary_payload["items"][0]["title"] == "Project Plan: Please review the attached project plan."
         assert (
-            search_payload["items"][0]["conversation"]["title"]
-            == "Project Plan: Please review the attached project plan."
+            search_payload["items"][0]["session"]["title"] == "Project Plan: Please review the attached project plan."
         )
 
 
@@ -696,8 +696,8 @@ class TestStreamingOutput:
             (
                 "markdown",
                 (
-                    "# Example Conversation",
-                    "**Provider**: claude-ai",
+                    "# Example Session",
+                    "**Origin**: claude-ai-export",
                     "**Date**: 2025-06-15 12:30",
                     "_Streamed 2 messages_",
                 ),
@@ -706,7 +706,7 @@ class TestStreamingOutput:
                 "json-lines",
                 (
                     '"type": "header"',
-                    '"provider": "claude-ai"',
+                    '"origin": "claude-ai-export"',
                     '"date": "2025-06-15T12:30:00+00:00"',
                     '"type": "footer"',
                 ),
@@ -715,18 +715,18 @@ class TestStreamingOutput:
         ],
     )
     def test_render_stream_transcript_contract(
-        self, sample_conversation: Conversation, output_format: str, expected_tokens: tuple[str, ...]
+        self, sample_session: Session, output_format: str, expected_tokens: tuple[str, ...]
     ) -> None:
         rendered, emitted = render_stream_transcript(
-            conversation_id=str(sample_conversation.id),
-            title=sample_conversation.display_title,
-            provider=str(sample_conversation.provider),
-            display_date=sample_conversation.display_date,
-            messages=list(sample_conversation.messages),
+            session_id=str(sample_session.id),
+            title=sample_session.display_title,
+            origin=str(sample_session.origin),
+            display_date=sample_session.display_date,
+            messages=list(sample_session.messages),
             output_format=output_format,
             stats={
-                "total_messages": len(sample_conversation.messages),
-                "dialogue_messages": len(list(sample_conversation.iter_dialogue())),
+                "total_messages": len(sample_session.messages),
+                "dialogue_messages": len(list(sample_session.iter_dialogue())),
             },
         )
 
@@ -743,7 +743,7 @@ class TestGroupedStatsOutput:
         raw_cases: list[StatsCaseRow],
         expected_tokens: tuple[str, ...],
     ) -> None:
-        conversations = []
+        sessions = []
         for conv_id, provider, updated_at, texts in raw_cases:
             messages = []
             for index, item in enumerate(texts):
@@ -767,7 +767,7 @@ class TestGroupedStatsOutput:
                         else [],
                     )
                 )
-            conversations.append(
+            sessions.append(
                 _make_conv(
                     id=conv_id,
                     provider=provider,
@@ -779,7 +779,7 @@ class TestGroupedStatsOutput:
         env = MagicMock()
         env.ui.console = Console(file=console_buffer, force_terminal=False, color_system=None, width=120)
 
-        _output_stats_by(env, conversations, dimension)
+        _output_stats_by(env, sessions, dimension)
 
         output = console_buffer.getvalue()
         for token in expected_tokens:
@@ -789,12 +789,12 @@ class TestGroupedStatsOutput:
         env = MagicMock()
         env.ui.console = MagicMock()
         with pytest.raises(SystemExit) as exc_info:
-            _output_stats_by(env, [], "provider")
+            _output_stats_by(env, [], "origin")
         assert exc_info.value.code == 2
-        env.ui.console.print.assert_called_once_with("No conversations matched.")
+        env.ui.console.print.assert_called_once_with("No sessions matched.")
 
     def test_output_stats_by_action_json_contract(self) -> None:
-        conversations = [
+        sessions = [
             _make_conv(
                 id="conv-1",
                 provider="claude-ai",
@@ -826,7 +826,7 @@ class TestGroupedStatsOutput:
         env.ui.console = MagicMock()
 
         with patch("click.echo") as mock_echo:
-            _output_stats_by(env, conversations, "action", output_format="json")
+            _output_stats_by(env, sessions, "action", output_format="json")
 
         payload = json.loads(mock_echo.call_args.args[0])
         assert payload["dimension"] == "action"
@@ -834,17 +834,17 @@ class TestGroupedStatsOutput:
         env.ui.console.print.assert_not_called()
         assert payload["summary"] == {
             "group": "MATCHED",
-            "conversations": 2,
+            "sessions": 2,
             "facts": 1,
             "messages": 1,
         }
         assert payload["rows"] == [
-            {"group": "file_read", "conversations": 1, "facts": 1, "messages": 1},
-            {"group": "none", "conversations": 1, "facts": 0, "messages": 0},
+            {"group": "file_read", "sessions": 1, "facts": 1, "messages": 1},
+            {"group": "none", "sessions": 1, "facts": 0, "messages": 0},
         ]
 
     def test_output_stats_by_tool_json_contract(self) -> None:
-        conversations = [
+        sessions = [
             _make_conv(
                 id="conv-1",
                 provider="claude-ai",
@@ -876,7 +876,7 @@ class TestGroupedStatsOutput:
         env.ui.console = MagicMock()
 
         with patch("click.echo") as mock_echo:
-            _output_stats_by(env, conversations, "tool", output_format="json")
+            _output_stats_by(env, sessions, "tool", output_format="json")
 
         payload = json.loads(mock_echo.call_args.args[0])
         assert payload["dimension"] == "tool"
@@ -884,11 +884,11 @@ class TestGroupedStatsOutput:
         env.ui.console.print.assert_not_called()
         assert payload["summary"] == {
             "group": "MATCHED",
-            "conversations": 2,
+            "sessions": 2,
             "facts": 1,
             "messages": 1,
         }
         assert payload["rows"] == [
-            {"group": "grep", "conversations": 1, "facts": 1, "messages": 1},
-            {"group": "none", "conversations": 1, "facts": 0, "messages": 0},
+            {"group": "grep", "sessions": 1, "facts": 1, "messages": 1},
+            {"group": "none", "sessions": 1, "facts": 0, "messages": 0},
         ]

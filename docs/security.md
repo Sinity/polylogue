@@ -28,7 +28,7 @@ loopback ports.
 
 ### Assets
 
-- Raw archive data (conversation content, raw artifacts, blob store)
+- Raw archive data (session content, raw artifacts, blob store)
 - Local filesystem paths surfaced via `/api/sources`
 - Daemon control operations (`/api/reset`, `/api/ingest`, `/api/maintenance/*`)
 
@@ -38,10 +38,10 @@ loopback ports.
 |---|---|---|---|---|
 | `/api/status` | GET | Read-only metadata | Token (when configured) | Any |
 | `/api/health`, `/api/health/check` | GET | Health probe | Token (when configured) | Any |
-| `/api/conversations`, `/api/conversations/:id`, `/.../messages`, `/.../raw` | GET | Read conversation data | Token | Any |
+| `/api/sessions`, `/api/sessions/:id`, `/.../messages`, `/.../raw` | GET | Read session data | Token | Any |
 | `/api/facets` | GET | Read-only aggregations | Token | Any |
 | `/api/sources` | GET | Returns absolute filesystem paths to authenticated callers | Token | Any |
-| `/api/raw_artifacts/:id` | GET | Returns raw conversation payload | Token | Any |
+| `/api/raw_artifacts/:id` | GET | Returns raw session payload | Token | Any |
 | `/api/reset` | POST | **Destructive** — resets archive state | Token | Same-origin |
 | `/api/ingest` | POST | **Mutating** — schedules ingestion | Token | Same-origin |
 | `/api/maintenance/plan`, `/api/maintenance/run` | POST | **Mutating** — runs maintenance backfills | Token | Same-origin |

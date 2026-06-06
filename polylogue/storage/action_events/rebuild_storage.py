@@ -13,7 +13,7 @@ from polylogue.storage.runtime import ActionEventRecord, _json_array_or_none
 def _record_values(record: ActionEventRecord) -> tuple[object, ...]:
     return (
         record.event_id,
-        record.conversation_id,
+        record.session_id,
         record.message_id,
         record.materializer_version,
         record.source_block_id,
@@ -38,10 +38,10 @@ def _record_values(record: ActionEventRecord) -> tuple[object, ...]:
 
 def replace_action_events_sync(
     conn: sqlite3.Connection,
-    conversation_id: str,
+    session_id: str,
     records: list[ActionEventRecord],
 ) -> None:
-    conn.execute("DELETE FROM action_events WHERE conversation_id = ?", (conversation_id,))
+    conn.execute("DELETE FROM action_events WHERE session_id = ?", (session_id,))
     if not records:
         return
     conn.executemany(ACTION_EVENT_INSERT_SQL, [_record_values(record) for record in records])
@@ -49,10 +49,10 @@ def replace_action_events_sync(
 
 async def replace_action_events_async(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
     records: list[ActionEventRecord],
 ) -> None:
-    await conn.execute("DELETE FROM action_events WHERE conversation_id = ?", (conversation_id,))
+    await conn.execute("DELETE FROM action_events WHERE session_id = ?", (session_id,))
     if not records:
         return
     await conn.executemany(ACTION_EVENT_INSERT_SQL, [_record_values(record) for record in records])

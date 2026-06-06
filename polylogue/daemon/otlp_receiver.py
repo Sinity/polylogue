@@ -30,7 +30,8 @@ Design notes:
 - **Partial success** — every response includes a ``partial_success``
   block so exporters can track which spans/metrics/logs were rejected.
 - **Storage** — received telemetry is persisted in ``otlp_telemetry``
-  with signal-type, resource/span/metric/log counts, and the raw payload.
+  in archive ``ops.db`` with signal-type, resource/span/metric/log counts,
+  and the raw payload.
 """
 
 from __future__ import annotations
@@ -38,10 +39,13 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from polylogue.logging import get_logger
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 logger = get_logger(__name__)
 
@@ -125,31 +129,17 @@ def supports_otlp() -> bool:
 
 
 def store_telemetry(db_path: str, row: OtlpTelemetryRow) -> None:
-    """Persist received telemetry to the archive database."""
+    """Persist received telemetry to the archive ops database."""
     try:
-        conn = sqlite3.connect(db_path)
+        ops_db = _ops_db_path(db_path)
+        initialize_archive_database(ops_db, ArchiveTier.OPS)
+        conn = sqlite3.connect(ops_db)
         try:
-            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS otlp_telemetry (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    received_at TEXT NOT NULL,
-                    signal_type TEXT NOT NULL,
-                    content_type TEXT NOT NULL,
-                    payload BLOB NOT NULL,
-                    resource_count INTEGER NOT NULL DEFAULT 0,
-                    span_count INTEGER,
-                    metric_count INTEGER,
-                    log_record_count INTEGER
-                )
-                """
-            )
-            conn.execute(
-                "INSERT INTO otlp_telemetry (received_at, signal_type, content_type, payload, resource_count, span_count, metric_count, log_record_count) "
+                "INSERT INTO otlp_telemetry (received_at_ms, signal_type, content_type, payload, resource_count, span_count, metric_count, log_record_count) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    row.received_at,
+                    _epoch_ms(row.received_at),
                     row.signal_type,
                     row.content_type,
                     row.payload,
@@ -164,6 +154,18 @@ def store_telemetry(db_path: str, row: OtlpTelemetryRow) -> None:
             conn.close()
     except Exception as exc:
         logger.warning("otlp: failed to store telemetry: %s", exc)
+
+
+def _ops_db_path(db_path: str) -> Path:
+    path = Path(db_path)
+    return path if path.name == "ops.db" else path.with_name("ops.db")
+
+
+def _epoch_ms(value: str) -> int:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return int(parsed.timestamp() * 1000)
 
 
 # ── Internal helpers ────────────────────────────────────────────────

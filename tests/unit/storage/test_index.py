@@ -36,16 +36,16 @@ def test_update_index_repairs_only_candidate_subset(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(
         index_mod,
         "rebuild_action_event_read_model_sync",
-        lambda db_conn, *, conversation_ids: repaired_targets.append(list(conversation_ids)),
+        lambda db_conn, *, session_ids: repaired_targets.append(list(session_ids)),
     )
     monkeypatch.setattr(
         index_mod,
         "repair_fts_index_sync",
-        lambda db_conn, conversation_ids: repaired_fts_targets.append(list(conversation_ids)),
+        lambda db_conn, session_ids: repaired_fts_targets.append(list(session_ids)),
     )
     monkeypatch.setattr(index_mod, "invalidate_search_cache", lambda: None)
 
-    index_mod.update_index_for_conversations(["conv-a", "conv-b"], conn)
+    index_mod.update_index_for_sessions(["conv-a", "conv-b"], conn)
 
     assert repaired_targets == [["conv-a", "conv-b"]]
     assert repaired_fts_targets == [["conv-a", "conv-b"]]

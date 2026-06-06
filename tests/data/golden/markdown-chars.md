@@ -1,9 +1,9 @@
 # Markdown Chars Test
 
-Provider: chatgpt
-Conversation ID: golden-markdown-chars
+Origin: chatgpt-export
+Session ID: chatgpt-export:ext-golden-markdown-chars
 
 ## user
-_Timestamp: 2024-06-01T16:00:00Z_
+_Timestamp: 2024-06-01T16:00:00+00:00_
 
 This has **bold**, *italic*, `code`, [links](url), and # headers

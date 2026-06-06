@@ -192,13 +192,13 @@ def _default_metadata_for_polylogue(argv: tuple[str, ...]) -> ScenarioMetadata:
     first_token = _first_non_option(argv)
     if first_token in _KNOWN_POLYLOGUE_SUBCOMMANDS or not argv:
         return ScenarioMetadata()
-    return _metadata_for_operations("query-conversations")
+    return _metadata_for_operations("query-sessions")
 
 
 def _default_metadata_for_pipeline_probe(request: PipelineProbeRequest) -> ScenarioMetadata:
     if request.stage == "parse":
         return _metadata_for_operations(
-            "acquire-raw-conversations",
+            "acquire-raw-sessions",
             "plan-validation-backlog",
             "plan-parse-backlog",
             "ingest-archive-runtime",

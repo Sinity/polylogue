@@ -6,8 +6,8 @@ from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING
 
-from polylogue.storage.raw.models import RawConversationState, RawConversationStateUpdate
-from polylogue.storage.runtime import ArtifactObservationRecord, RawConversationRecord
+from polylogue.storage.raw.models import RawSessionState, RawSessionStateUpdate
+from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
 from polylogue.storage.sqlite.queries import artifacts as artifacts_q
 from polylogue.storage.sqlite.queries import raw as raw_queries
 from polylogue.types import Provider, ValidationMode, ValidationStatus
@@ -55,7 +55,7 @@ class SQLiteRawMixin:
         validation_statuses: list[str] | None = None,
         page_size: int = 1000,
     ) -> AsyncIterator[str]:
-        """Iterate raw conversation IDs for a pipeline state slice."""
+        """Iterate raw session IDs for a pipeline state slice."""
         async for rid in self.queries.iter_raw_ids(
             source_names=source_names,
             source_name=source_name,
@@ -76,7 +76,7 @@ class SQLiteRawMixin:
         validation_statuses: list[str] | None = None,
         page_size: int = 1000,
     ) -> AsyncIterator[tuple[str, int]]:
-        """Iterate raw conversation IDs with blob sizes for lightweight batching."""
+        """Iterate raw session IDs with blob sizes for lightweight batching."""
         async for raw_header in self.queries.iter_raw_headers(
             source_names=source_names,
             source_name=source_name,
@@ -87,26 +87,26 @@ class SQLiteRawMixin:
         ):
             yield raw_header
 
-    async def save_raw_conversation(self, record: RawConversationRecord) -> bool:
-        """Save a raw conversation record. Returns True if inserted."""
+    async def save_raw_session(self, record: RawSessionRecord) -> bool:
+        """Save a raw session record. Returns True if inserted."""
         async with self._get_connection() as conn:
-            return await raw_queries.save_raw_conversation(conn, record, self._transaction_depth)
+            return await raw_queries.save_raw_session(conn, record, self._transaction_depth)
 
     async def save_artifact_observation(self, record: ArtifactObservationRecord) -> bool:
         """Persist or refresh one durable artifact observation."""
         async with self._get_connection() as conn:
             return await artifacts_q.save_artifact_observation(conn, record, self._transaction_depth)
 
-    async def get_raw_conversation(self, raw_id: str) -> RawConversationRecord | None:
-        """Retrieve a raw conversation by ID."""
+    async def get_raw_session(self, raw_id: str) -> RawSessionRecord | None:
+        """Retrieve a raw session by ID."""
         async with self._get_connection() as conn:
-            return await raw_queries.get_raw_conversation(conn, raw_id)
+            return await raw_queries.get_raw_session(conn, raw_id)
 
     async def update_raw_state(
         self,
         raw_id: str,
         *,
-        state: RawConversationStateUpdate,
+        state: RawSessionStateUpdate,
     ) -> None:
         """Apply a typed raw-state mutation."""
         async with self._get_connection() as conn:
@@ -124,7 +124,7 @@ class SQLiteRawMixin:
         error: str | None = None,
         payload_provider: Provider | str | None = None,
     ) -> None:
-        """Mark a raw conversation as parsed (or record a parse error)."""
+        """Mark a raw session as parsed (or record a parse error)."""
         async with self._get_connection() as conn:
             await raw_queries.mark_raw_parsed(
                 conn,
@@ -145,7 +145,7 @@ class SQLiteRawMixin:
         mode: ValidationMode | str | None = None,
         payload_provider: Provider | str | None = None,
     ) -> None:
-        """Persist validation status for a raw conversation record."""
+        """Persist validation status for a raw session record."""
         async with self._get_connection() as conn:
             await raw_queries.mark_raw_validated(
                 conn,
@@ -193,57 +193,57 @@ class SQLiteRawMixin:
                 transaction_depth=self._transaction_depth,
             )
 
-    async def get_raw_conversations_batch(
+    async def get_raw_sessions_batch(
         self,
         raw_ids: list[str],
-    ) -> list[RawConversationRecord]:
-        """Fetch multiple raw conversations in a single query."""
+    ) -> list[RawSessionRecord]:
+        """Fetch multiple raw sessions in a single query."""
         async with self._get_connection() as conn:
-            return await raw_queries.get_raw_conversations_batch(conn, raw_ids)
+            return await raw_queries.get_raw_sessions_batch(conn, raw_ids)
 
     async def get_raw_blob_sizes(
         self,
         raw_ids: list[str],
     ) -> list[tuple[str, int]]:
-        """Fetch raw conversation blob sizes without hydrating full records."""
+        """Fetch raw session blob sizes without hydrating full records."""
         async with self._get_connection() as conn:
             return await raw_queries.get_raw_blob_sizes(conn, raw_ids)
 
-    async def get_raw_conversation_states(
+    async def get_raw_session_states(
         self,
         raw_ids: list[str],
-    ) -> dict[str, RawConversationState]:
-        """Fetch persisted processing state for raw conversation IDs."""
+    ) -> dict[str, RawSessionState]:
+        """Fetch persisted processing state for raw session IDs."""
         async with self._get_connection() as conn:
-            return await raw_queries.get_raw_conversation_states(conn, raw_ids)
+            return await raw_queries.get_raw_session_states(conn, raw_ids)
 
-    async def iter_raw_conversations(
+    async def iter_raw_sessions(
         self,
         provider: str | None = None,
         limit: int | None = None,
-    ) -> AsyncIterator[RawConversationRecord]:
-        """Iterate over raw conversation records."""
+    ) -> AsyncIterator[RawSessionRecord]:
+        """Iterate over raw session records."""
         async with self._get_connection() as conn:
-            async for record in raw_queries.iter_raw_conversations(conn, provider, limit):
+            async for record in raw_queries.iter_raw_sessions(conn, provider, limit):
                 yield record
 
-    async def get_raw_conversation_count(self, provider: str | None = None) -> int:
-        """Get count of raw conversations."""
+    async def get_raw_session_count(self, provider: str | None = None) -> int:
+        """Get count of raw sessions."""
         async with self._get_connection() as conn:
-            return await raw_queries.get_raw_conversation_count(conn, provider)
+            return await raw_queries.get_raw_session_count(conn, provider)
 
-    async def get_raw_records_for_conversation(
+    async def get_raw_records_for_session(
         self,
-        conversation_id: str,
+        session_id: str,
         *,
         limit: int = 50,
         offset: int = 0,
-    ) -> tuple[list[RawConversationRecord], int]:
-        """Look up raw conversation records for a given conversation ID."""
+    ) -> tuple[list[RawSessionRecord], int]:
+        """Look up raw session records for a given session ID."""
         async with self._get_connection() as conn:
-            return await raw_queries.get_raw_records_for_conversation(
+            return await raw_queries.get_raw_records_for_session(
                 conn,
-                conversation_id,
+                session_id,
                 limit=limit,
                 offset=offset,
             )

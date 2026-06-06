@@ -2,23 +2,24 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from polylogue.api.insights import PolylogueInsightsMixin
 from polylogue.api.sync import SyncPolylogue
-from polylogue.api.sync.conversations import SyncConversationQueriesMixin
 from polylogue.api.sync.insights import SyncInsightQueriesMixin
+from polylogue.api.sync.sessions import SyncSessionQueriesMixin
 
 
 class _FilterStub:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object]] = []
 
-    def provider(self, value: object) -> _FilterStub:
-        self.calls.append(("provider", value))
+    def origin(self, value: object) -> _FilterStub:
+        self.calls.append(("origin", value))
         return self
 
     def since(self, value: object) -> _FilterStub:
@@ -38,24 +39,24 @@ class _FilterStub:
         return "summaries-coro"
 
 
-class _SyncHarness(SyncConversationQueriesMixin, SyncInsightQueriesMixin):
+class _SyncHarness(SyncSessionQueriesMixin, SyncInsightQueriesMixin):
     pass
 
 
-def test_sync_conversation_queries_forward_through_sync_bridge() -> None:
+def test_sync_session_queries_forward_through_sync_bridge() -> None:
     filter_stub = _FilterStub()
     facade = SimpleNamespace(
-        get_conversation=lambda conversation_id: ("get_conversation", conversation_id),
-        get_conversations=lambda conversation_ids: ("get_conversations", tuple(conversation_ids)),
-        get_messages_paginated=lambda conversation_id, **kwargs: ("messages-page", conversation_id, kwargs),
-        bulk_get_messages=lambda conversation_ids, **kwargs: ("messages-bulk", tuple(conversation_ids), kwargs),
-        list_conversations=lambda **kwargs: ("list_conversations", kwargs),
-        query_conversations=lambda **kwargs: ("query_conversations", kwargs),
-        count_conversations=lambda **kwargs: ("count_conversations", kwargs),
+        get_session=lambda session_id: ("get_session", session_id),
+        get_sessions=lambda session_ids: ("get_sessions", tuple(session_ids)),
+        get_messages_paginated=lambda session_id, **kwargs: ("messages-page", session_id, kwargs),
+        bulk_get_messages=lambda session_ids, **kwargs: ("messages-bulk", tuple(session_ids), kwargs),
+        list_sessions=lambda **kwargs: ("list_sessions", kwargs),
+        query_sessions=lambda **kwargs: ("query_sessions", kwargs),
+        count_sessions=lambda **kwargs: ("count_sessions", kwargs),
         filter=lambda: filter_stub,
-        get_conversation_summary=lambda conversation_id: ("summary", conversation_id),
-        get_conversation_stats=lambda conversation_id: ("stats", conversation_id),
-        get_session_tree=lambda conversation_id: ("tree", conversation_id),
+        get_session_summary=lambda session_id: ("summary", session_id),
+        get_session_stats=lambda session_id: ("stats", session_id),
+        get_session_tree=lambda session_id: ("tree", session_id),
         list_tags=lambda **kwargs: ("tags", kwargs),
         search=lambda query, **kwargs: ("search", query, kwargs),
         stats=lambda: "stats-coro",
@@ -65,9 +66,9 @@ def test_sync_conversation_queries_forward_through_sync_bridge() -> None:
     archive = _SyncHarness()
     archive._facade = facade
 
-    with patch("polylogue.api.sync.conversations.run_coroutine_sync", side_effect=lambda coro: coro) as mock_run:
-        assert archive.get_conversation("conv-1") == ("get_conversation", "conv-1")
-        assert archive.get_conversations(["a", "b"]) == ("get_conversations", ("a", "b"))
+    with patch("polylogue.api.sync.sessions.run_coroutine_sync", side_effect=lambda coro: coro) as mock_run:
+        assert archive.get_session("conv-1") == ("get_session", "conv-1")
+        assert archive.get_sessions(["a", "b"]) == ("get_sessions", ("a", "b"))
         assert archive.get_messages_paginated("conv-1", limit=20, offset=5) == (
             "messages-page",
             "conv-1",
@@ -84,14 +85,14 @@ def test_sync_conversation_queries_forward_through_sync_bridge() -> None:
             ("a", "b"),
             {"since": "2026-01-01", "until": "2026-01-02", "message_role": (), "content_projection": None},
         )
-        assert archive.list_conversations(provider="claude-code", limit=3) == (
-            "list_conversations",
-            {"provider": "claude-code", "limit": 3},
+        assert archive.list_sessions(origin="claude-code-session", limit=3) == (
+            "list_sessions",
+            {"origin": "claude-code-session", "limit": 3},
         )
-        assert archive.query_conversations(provider="claude-code", limit=3, has_tool_use=True) == (
-            "query_conversations",
+        assert archive.query_sessions(origin="claude-code-session", limit=3, has_tool_use=True) == (
+            "query_sessions",
             {
-                "provider": "claude-code",
+                "origin": "claude-code-session",
                 "tag": None,
                 "since": None,
                 "until": None,
@@ -107,23 +108,23 @@ def test_sync_conversation_queries_forward_through_sync_bridge() -> None:
                 "min_words": None,
             },
         )
-        assert archive.count_conversations(provider="claude-code", since="2026-01-01") == (
-            "count_conversations",
-            {"provider": "claude-code", "since": "2026-01-01", "until": None},
+        assert archive.count_sessions(origin="claude-code-session", since="2026-01-01") == (
+            "count_sessions",
+            {"origin": "claude-code-session", "since": "2026-01-01", "until": None},
         )
         assert (
             archive.list_summaries(
-                provider="claude-code",
+                origin="claude-code-session",
                 since="2026-01-01",
                 until="2026-01-31",
                 limit=5,
             )
             == "summaries-coro"
         )
-        assert archive.get_conversation_summary("conv-1") == ("summary", "conv-1")
-        assert archive.get_conversation_stats("conv-1") == ("stats", "conv-1")
+        assert archive.get_session_summary("conv-1") == ("summary", "conv-1")
+        assert archive.get_session_stats("conv-1") == ("stats", "conv-1")
         assert archive.get_session_tree("conv-1") == ("tree", "conv-1")
-        assert archive.list_tags(provider="claude-code") == ("tags", {"provider": "claude-code"})
+        assert archive.list_tags(origin="claude-code-session") == ("tags", {"origin": "claude-code-session"})
         assert archive.search("query", limit=7, source="inbox", since="2026-01-01") == (
             "search",
             "query",
@@ -131,10 +132,10 @@ def test_sync_conversation_queries_forward_through_sync_bridge() -> None:
         )
         assert archive.stats() == "stats-coro"
         assert archive.health_check() == "health-coro"
-        assert archive.neighbor_candidates(conversation_id="conv-1", limit=4) == (
+        assert archive.neighbor_candidates(session_id="conv-1", limit=4) == (
             "neighbors",
             {
-                "conversation_id": "conv-1",
+                "session_id": "conv-1",
                 "query": None,
                 "provider": None,
                 "limit": 4,
@@ -143,7 +144,7 @@ def test_sync_conversation_queries_forward_through_sync_bridge() -> None:
         )
 
     assert filter_stub.calls == [
-        ("provider", "claude-code"),
+        ("origin", "claude-code-session"),
         ("since", "2026-01-01"),
         ("until", "2026-01-31"),
         ("limit", 5),
@@ -155,12 +156,12 @@ def test_sync_conversation_queries_forward_through_sync_bridge() -> None:
 def test_sync_product_queries_forward_through_sync_bridge() -> None:
     facade = SimpleNamespace(
         get_session_insight_status=lambda: "status-coro",
-        get_session_profile_insight=lambda conversation_id, **kwargs: ("profile", conversation_id, kwargs),
+        get_session_profile_insight=lambda session_id, **kwargs: ("profile", session_id, kwargs),
         list_session_profile_insights=lambda query=None: ("profiles", query),
         list_session_tag_rollup_insights=lambda query=None: ("tags", query),
-        get_session_work_event_insights=lambda conversation_id: ("events", conversation_id),
+        get_session_work_event_insights=lambda session_id: ("events", session_id),
         list_session_work_event_insights=lambda query=None: ("events-list", query),
-        get_session_phase_insights=lambda conversation_id: ("phases", conversation_id),
+        get_session_phase_insights=lambda session_id: ("phases", session_id),
         list_session_phase_insights=lambda query=None: ("phases-list", query),
         get_work_thread_insight=lambda thread_id: ("thread", thread_id),
         list_work_thread_insights=lambda query=None: ("threads", query),
@@ -220,54 +221,71 @@ def test_sync_polylogue_wraps_async_facade_and_context_manager() -> None:
 
 
 @pytest.mark.asyncio
-async def test_polylogue_products_mixin_forwards_all_product_calls() -> None:
-    operations = SimpleNamespace(
-        list_session_tag_rollup_insights=AsyncMock(return_value=["tags"]),
-        get_session_work_event_insights=AsyncMock(return_value=["events"]),
-        list_session_work_event_insights=AsyncMock(return_value=["events-list"]),
-        get_session_phase_insights=AsyncMock(return_value=["phases"]),
-        list_session_phase_insights=AsyncMock(return_value=["phases-list"]),
-        get_work_thread_insight=AsyncMock(return_value="thread"),
-        list_work_thread_insights=AsyncMock(return_value=["threads"]),
-        list_archive_coverage_insights=AsyncMock(return_value=["coverage"]),
-        list_tool_usage_insights=AsyncMock(return_value=["tool-usage"]),
-        list_session_cost_insights=AsyncMock(return_value=["session-costs"]),
-        list_cost_rollup_insights=AsyncMock(return_value=["cost-rollups"]),
-        list_archive_debt_insights=AsyncMock(return_value=["debt"]),
-    )
+async def test_polylogue_products_mixin_forwards_all_product_calls(tmp_path: Path) -> None:
+    """The insight mixin forwards every product call to ArchiveStore.
+
+    The mixin reads insights directly from ``ArchiveStore`` (opened from
+    ``self.config``), not from an ``operations`` surface. This pins that every
+    public product method opens the archive and delegates to its
+    same-named substrate method, returning the substrate result unchanged.
+    """
+    from polylogue.config import Config
+
+    archive = MagicMock()
+    archive.list_session_tag_rollup_insights.return_value = []
+    archive.stats_by.return_value = {}
+    archive.get_session_work_event_insights.return_value = ["events"]
+    archive.list_session_work_event_insights.return_value = ["events-list"]
+    archive.get_session_phase_insights.return_value = ["phases"]
+    archive.list_session_phase_insights.return_value = ["phases-list"]
+    archive.get_work_thread_insight.return_value = "thread"
+    archive.list_work_thread_insights.return_value = ["threads"]
+    archive.list_archive_coverage_insights.return_value = ["coverage"]
+    archive.list_tool_usage_insights.return_value = ["tool-usage"]
+    archive.list_session_cost_insights.return_value = []
+    archive.list_cost_rollup_insights.return_value = []
+    archive.list_archive_debt_insights.return_value = ["debt"]
+
+    open_existing = MagicMock()
+    open_existing.return_value.__enter__.return_value = archive
+    open_existing.return_value.__exit__.return_value = False
+
+    config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[], db_path=tmp_path / "index.db")
 
     class _Harness(PolylogueInsightsMixin):
-        def __init__(self, operations: object) -> None:
-            self._operations = operations
+        def __init__(self, config: Config) -> None:
+            self._config = config
 
         @property
-        def operations(self) -> object:
-            return self._operations
+        def config(self) -> Config:
+            return self._config
 
-    archive = _Harness(operations)
+    harness = _Harness(config)
 
-    assert await archive.list_session_tag_rollup_insights("query") == ["tags"]
-    assert await archive.get_session_work_event_insights("conv-1") == ["events"]
-    assert await archive.list_session_work_event_insights("query") == ["events-list"]
-    assert await archive.get_session_phase_insights("conv-1") == ["phases"]
-    assert await archive.list_session_phase_insights("query") == ["phases-list"]
-    assert await archive.get_work_thread_insight("thread-1") == "thread"
-    assert await archive.list_work_thread_insights("query") == ["threads"]
-    assert await archive.list_archive_coverage_insights("query") == ["coverage"]
-    assert await archive.list_tool_usage_insights("query") == ["tool-usage"]
-    assert await archive.list_session_cost_insights("query") == ["session-costs"]
-    assert await archive.list_cost_rollup_insights("query") == ["cost-rollups"]
-    assert await archive.list_archive_debt_insights("query") == ["debt"]
+    with patch("polylogue.api.insights.ArchiveStore.open_existing", open_existing):
+        # tag-rollup merges synthesized provider rollups + sorts; cost enriches.
+        # These post-process (not pure forwarders) — assert delegation + empty post-process.
+        assert await harness.list_session_tag_rollup_insights() == []
+        assert await harness.get_session_work_event_insights("conv-1") == ["events"]
+        assert await harness.list_session_work_event_insights() == ["events-list"]
+        assert await harness.get_session_phase_insights("conv-1") == ["phases"]
+        assert await harness.list_session_phase_insights() == ["phases-list"]
+        assert await harness.get_work_thread_insight("thread-1") == "thread"
+        assert await harness.list_work_thread_insights() == ["threads"]
+        assert await harness.list_archive_coverage_insights() == ["coverage"]
+        assert await harness.list_tool_usage_insights() == ["tool-usage"]
+        assert await harness.list_session_cost_insights() == []
+        assert await harness.list_cost_rollup_insights() == []
+        assert await harness.list_archive_debt_insights() == ["debt"]
 
-    operations.list_session_tag_rollup_insights.assert_awaited_once_with("query")
-    operations.get_session_work_event_insights.assert_awaited_once_with("conv-1")
-    operations.list_session_work_event_insights.assert_awaited_once_with("query")
-    operations.get_session_phase_insights.assert_awaited_once_with("conv-1")
-    operations.list_session_phase_insights.assert_awaited_once_with("query")
-    operations.get_work_thread_insight.assert_awaited_once_with("thread-1")
-    operations.list_work_thread_insights.assert_awaited_once_with("query")
-    operations.list_archive_coverage_insights.assert_awaited_once_with("query")
-    operations.list_tool_usage_insights.assert_awaited_once_with("query")
-    operations.list_session_cost_insights.assert_awaited_once_with("query")
-    operations.list_cost_rollup_insights.assert_awaited_once_with("query")
-    operations.list_archive_debt_insights.assert_awaited_once_with("query")
+    archive.list_session_tag_rollup_insights.assert_called_once()
+    archive.get_session_work_event_insights.assert_called_once_with("conv-1")
+    archive.list_session_work_event_insights.assert_called_once()
+    archive.get_session_phase_insights.assert_called_once_with("conv-1")
+    archive.list_session_phase_insights.assert_called_once()
+    archive.get_work_thread_insight.assert_called_once_with("thread-1")
+    archive.list_work_thread_insights.assert_called_once()
+    archive.list_archive_coverage_insights.assert_called_once()
+    archive.list_tool_usage_insights.assert_called_once()
+    archive.list_session_cost_insights.assert_called()  # also called by cost-rollup derivation
+    archive.list_archive_debt_insights.assert_called_once()

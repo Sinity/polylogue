@@ -122,7 +122,7 @@ CMD ["polylogued", "run", \
 # docker/metadata-action, but bake conservative defaults so a manual
 # `docker build .` still produces an annotated image.
 LABEL org.opencontainers.image.title="polylogue" \
-      org.opencontainers.image.description="Polylogue AI conversation archive daemon (polylogued) + CLI" \
+      org.opencontainers.image.description="Polylogue AI session archive daemon (polylogued) + CLI" \
       org.opencontainers.image.source="https://github.com/Sinity/polylogue" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.vendor="Sinity"

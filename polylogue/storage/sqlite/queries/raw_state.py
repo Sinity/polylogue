@@ -1,4 +1,4 @@
-"""Raw conversation state mutation helpers."""
+"""Raw session state mutation helpers."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import aiosqlite
 
-from polylogue.storage.raw.models import UNSET, RawConversationStateUpdate, _RawStateUnset
+from polylogue.storage.raw.models import UNSET, RawSessionStateUpdate, _RawStateUnset
 from polylogue.storage.sqlite.connection import _build_source_scope_filter
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
@@ -37,7 +37,7 @@ async def apply_raw_state_update(
     conn: aiosqlite.Connection,
     raw_id: str,
     *,
-    state: RawConversationStateUpdate,
+    state: RawSessionStateUpdate,
     transaction_depth: int,
 ) -> None:
     if not state.has_values:
@@ -90,7 +90,7 @@ async def apply_raw_state_update(
 
     params.append(raw_id)
     await conn.execute(
-        f"UPDATE raw_conversations SET {', '.join(set_clauses)} WHERE raw_id = ?",
+        f"UPDATE raw_sessions SET {', '.join(set_clauses)} WHERE raw_id = ?",
         tuple(params),
     )
     if transaction_depth == 0:
@@ -107,13 +107,13 @@ async def mark_raw_parsed(
 ) -> None:
     provider_token = coerce_provider(payload_provider)
     if error is None:
-        state = RawConversationStateUpdate(
+        state = RawSessionStateUpdate(
             parsed_at=datetime.now(timezone.utc).isoformat(),
             parse_error=None,
             payload_provider=provider_token,
         )
     else:
-        state = RawConversationStateUpdate(
+        state = RawSessionStateUpdate(
             parse_error=error[:2000],
             payload_provider=provider_token,
         )
@@ -151,7 +151,7 @@ async def mark_raw_validated(
     else:
         validation_mode = None
 
-    state = RawConversationStateUpdate(
+    state = RawSessionStateUpdate(
         validation_status=validation_status,
         validation_error=(error[:2000] if error else None),
         validation_drift_count=drift_count,
@@ -187,7 +187,7 @@ async def reset_parse_status(
         where_clauses.append(predicate)
         params.extend(scope_params)
     cursor = await conn.execute(
-        f"UPDATE raw_conversations SET parsed_at = NULL, parse_error = NULL WHERE {' AND '.join(where_clauses)}",
+        f"UPDATE raw_sessions SET parsed_at = NULL, parse_error = NULL WHERE {' AND '.join(where_clauses)}",
         tuple(params),
     )
     if transaction_depth == 0:
@@ -215,7 +215,7 @@ async def reset_validation_status(
         where_clauses.append(predicate)
         params.extend(scope_params)
     cursor = await conn.execute(
-        "UPDATE raw_conversations "
+        "UPDATE raw_sessions "
         "SET validated_at = NULL, validation_status = NULL, validation_error = NULL, "
         "validation_drift_count = NULL, validation_provider = NULL, validation_mode = NULL "
         f"WHERE {' AND '.join(where_clauses)}",

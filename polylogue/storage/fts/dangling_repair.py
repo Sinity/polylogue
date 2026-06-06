@@ -131,8 +131,8 @@ def _repair_session_work_events_fts_rows_sync(conn: sqlite3.Connection) -> tuple
         fts_table="session_work_events_fts",
         key_column="event_id",
         insert_sql="""
-            INSERT INTO session_work_events_fts (event_id, conversation_id, source_name, heuristic_label, text)
-            SELECT swe.event_id, swe.conversation_id, swe.source_name, swe.heuristic_label, swe.search_text
+            INSERT INTO session_work_events_fts (event_id, session_id, source_name, heuristic_label, text)
+            SELECT swe.event_id, swe.session_id, swe.source_name, swe.heuristic_label, swe.search_text
             FROM session_work_events AS swe
             LEFT JOIN session_work_events_fts AS fts ON fts.event_id = swe.event_id
             WHERE fts.event_id IS NULL

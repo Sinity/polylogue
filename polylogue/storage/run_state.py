@@ -34,10 +34,10 @@ class PlanDetailsPayload(TypedDict, total=False):
 
 
 class RunCountsPayload(TypedDict, total=False):
-    conversations: int
+    sessions: int
     messages: int
     attachments: int
-    skipped_conversations: int
+    skipped_sessions: int
     skipped_messages: int
     skipped_attachments: int
     acquired: int
@@ -52,12 +52,12 @@ class RunCountsPayload(TypedDict, total=False):
     parse_failures: int
     schemas_generated: int
     schemas_failed: int
-    new_conversations: int
-    changed_conversations: int
+    new_sessions: int
+    changed_sessions: int
 
 
 class DriftBucketPayload(TypedDict):
-    conversations: int
+    sessions: int
     messages: int
     attachments: int
 
@@ -248,10 +248,10 @@ class PlanDetails(_IntPayloadModel):
 
 
 class RunCounts(_IntPayloadModel):
-    conversations: int | None = None
+    sessions: int | None = None
     messages: int | None = None
     attachments: int | None = None
-    skipped_conversations: int | None = None
+    skipped_sessions: int | None = None
     skipped_messages: int | None = None
     skipped_attachments: int | None = None
     acquired: int | None = None
@@ -266,19 +266,19 @@ class RunCounts(_IntPayloadModel):
     parse_failures: int | None = None
     schemas_generated: int | None = None
     schemas_failed: int | None = None
-    new_conversations: int | None = None
-    changed_conversations: int | None = None
+    new_sessions: int | None = None
+    changed_sessions: int | None = None
 
     def to_payload(self) -> RunCountsPayload:
         payload: RunCountsPayload = {}
-        if self.conversations is not None:
-            payload["conversations"] = self.conversations
+        if self.sessions is not None:
+            payload["sessions"] = self.sessions
         if self.messages is not None:
             payload["messages"] = self.messages
         if self.attachments is not None:
             payload["attachments"] = self.attachments
-        if self.skipped_conversations is not None:
-            payload["skipped_conversations"] = self.skipped_conversations
+        if self.skipped_sessions is not None:
+            payload["skipped_sessions"] = self.skipped_sessions
         if self.skipped_messages is not None:
             payload["skipped_messages"] = self.skipped_messages
         if self.skipped_attachments is not None:
@@ -307,22 +307,22 @@ class RunCounts(_IntPayloadModel):
             payload["schemas_generated"] = self.schemas_generated
         if self.schemas_failed is not None:
             payload["schemas_failed"] = self.schemas_failed
-        if self.new_conversations is not None:
-            payload["new_conversations"] = self.new_conversations
-        if self.changed_conversations is not None:
-            payload["changed_conversations"] = self.changed_conversations
+        if self.new_sessions is not None:
+            payload["new_sessions"] = self.new_sessions
+        if self.changed_sessions is not None:
+            payload["changed_sessions"] = self.changed_sessions
         return payload
 
 
 class DriftBucket(_IntPayloadModel):
     _exclude_none_payload: ClassVar[bool] = False
-    conversations: int = 0
+    sessions: int = 0
     messages: int = 0
     attachments: int = 0
 
     def to_payload(self) -> DriftBucketPayload:
         return {
-            "conversations": self.conversations,
+            "sessions": self.sessions,
             "messages": self.messages,
             "attachments": self.attachments,
         }

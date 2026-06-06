@@ -16,7 +16,7 @@ from polylogue.archive.models import Message
 from polylogue.archive.semantic.pricing import (
     CostBasisPayload,
     CostModelBreakdown,
-    estimate_conversation_cost,
+    estimate_session_cost,
 )
 from tests.infra.builders import make_conv, make_msg
 
@@ -33,7 +33,7 @@ def _msg_with_tokens(
 
     Per-message cost facts now flow through the typed cost projection (#803),
     not through this helper. Callers that need a priced aggregate seed the
-    cost facts at the conversation level instead.
+    cost facts at the session level instead.
     """
 
     del model, input_tokens, output_tokens  # accepted for backcompat
@@ -49,7 +49,7 @@ def test_provider_reported_total_populates_provider_and_api_basis() -> None:
     stays zero unless explicitly configured.
     """
 
-    conversation = make_conv(
+    session = make_conv(
         id="conv-exact",
         provider="claude-code",
         provider_meta={
@@ -60,7 +60,7 @@ def test_provider_reported_total_populates_provider_and_api_basis() -> None:
         messages=MessageCollection(messages=[]),
     )
 
-    estimate = estimate_conversation_cost(conversation)
+    estimate = estimate_session_cost(session)
 
     assert estimate.status == "exact"
     assert estimate.basis.provider_reported_usd == pytest.approx(1.25)
@@ -80,7 +80,7 @@ def test_catalog_priced_estimate_populates_catalog_and_api_basis() -> None:
     closest stand-in for what the API would have charged.
     """
 
-    conversation = make_conv(
+    session = make_conv(
         id="conv-priced",
         provider="chatgpt",
         provider_meta={
@@ -90,7 +90,7 @@ def test_catalog_priced_estimate_populates_catalog_and_api_basis() -> None:
         messages=MessageCollection(messages=[]),
     )
 
-    estimate = estimate_conversation_cost(conversation)
+    estimate = estimate_session_cost(session)
 
     assert estimate.status == "priced"
     assert estimate.basis.provider_reported_usd == 0.0
@@ -101,13 +101,13 @@ def test_catalog_priced_estimate_populates_catalog_and_api_basis() -> None:
 def test_unavailable_carries_explicit_reason() -> None:
     """Unpriced estimates must carry a discrete unavailable_reason.
 
-    "no_messages" when the conversation is empty; "no_tokens" when messages
+    "no_messages" when the session is empty; "no_tokens" when messages
     exist but no token usage; "no_model" when usage is present but the
     model is unknown.
     """
 
     empty = make_conv(id="conv-empty", messages=MessageCollection(messages=[]))
-    empty_estimate = estimate_conversation_cost(empty)
+    empty_estimate = estimate_session_cost(empty)
     assert empty_estimate.status == "unavailable"
     assert empty_estimate.unavailable_reason == "no_messages"
 
@@ -120,11 +120,11 @@ def test_mixed_model_session_breakdown_is_empty_without_typed_per_message_cost()
     carrying ``provider_meta``, the per-model breakdown surface requires
     the typed cost projection (#803). Until #803 lands the breakdown is
     empty and the aggregate reports ``status='unavailable'`` for messages
-    with no conversation-level fallback. This test pins the new contract
+    with no session-level fallback. This test pins the new contract
     so future #803 work has a clear seam to flip the assertions through.
     """
 
-    conversation = make_conv(
+    session = make_conv(
         id="conv-mixed",
         provider="claude-code",
         messages=MessageCollection(
@@ -136,7 +136,7 @@ def test_mixed_model_session_breakdown_is_empty_without_typed_per_message_cost()
         ),
     )
 
-    estimate = estimate_conversation_cost(conversation)
+    estimate = estimate_session_cost(session)
 
     assert estimate.status == "unavailable"
     assert estimate.per_model_breakdown == ()
@@ -154,7 +154,7 @@ def test_provider_zero_cost_is_preserved_not_treated_as_free() -> None:
     fields stay non-negative.
     """
 
-    conversation = make_conv(
+    session = make_conv(
         id="conv-zero",
         provider="claude-code",
         provider_meta={
@@ -165,7 +165,7 @@ def test_provider_zero_cost_is_preserved_not_treated_as_free() -> None:
         messages=MessageCollection(messages=[]),
     )
 
-    estimate = estimate_conversation_cost(conversation)
+    estimate = estimate_session_cost(session)
 
     # Zero provider totals route to the usage estimator. The basis fields
     # must stay non-negative; subscription_equivalent stays zero unless
@@ -243,7 +243,7 @@ def test_cost_rollup_aggregates_basis_and_per_model_breakdown() -> None:
                 basis=CostBasisPayload(api_equivalent_usd=4.0, catalog_priced_usd=4.0),
             ),
         ),
-        usage=estimate_conversation_cost(make_conv(id="c", messages=MessageCollection(messages=[]))).usage,
+        usage=estimate_session_cost(make_conv(id="c", messages=MessageCollection(messages=[]))).usage,
         confidence=0.85,
         provenance=__import__(
             "polylogue.insights.archive", fromlist=["ArchiveInsightProvenance"]

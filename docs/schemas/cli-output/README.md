@@ -15,10 +15,10 @@ devtools render-cli-output-schemas --check # CI sync check
 
 | File | Surfaces | Source model |
 | --- | --- | --- |
-| [`conversation-list-row.schema.json`](./conversation-list-row.schema.json) | `polylogue list --format json`<br>`polylogue list --format ndjson`<br>`polylogue list --format yaml` | `ConversationListRowPayload` |
-| [`conversation-summary.schema.json`](./conversation-summary.schema.json) | `polylogue stats --format json (rows)`<br>`polylogue select --format json` | `ConversationSummaryPayload` |
-| [`conversation-search-hit.schema.json`](./conversation-search-hit.schema.json) | `polylogue --format json <query>`<br>`polylogue --format ndjson <query>` | `ConversationSearchHitPayload` |
-| [`search-envelope.schema.json`](./search-envelope.schema.json) | `polylogue --format json <query>`<br>`GET /api/conversations?query=...` | `SearchEnvelope` |
-| [`conversation-neighbor-candidate.schema.json`](./conversation-neighbor-candidate.schema.json) | `polylogue neighbors --format json` | `ConversationNeighborCandidatePayload` |
+| [`session-list-row.schema.json`](./session-list-row.schema.json) | `polylogue list --format json`<br>`polylogue list --format ndjson`<br>`polylogue list --format yaml` | `SessionListRowPayload` |
+| [`session-summary.schema.json`](./session-summary.schema.json) | `polylogue stats --format json (rows)`<br>`polylogue select --format json` | `SessionSummaryPayload` |
+| [`session-search-hit.schema.json`](./session-search-hit.schema.json) | `polylogue --format json <query>`<br>`polylogue --format ndjson <query>` | `SessionSearchHitPayload` |
+| [`search-envelope.schema.json`](./search-envelope.schema.json) | `polylogue --format json <query>`<br>`GET /api/sessions?query=...` | `SearchEnvelope` |
+| [`session-neighbor-candidate.schema.json`](./session-neighbor-candidate.schema.json) | `polylogue neighbors --format json` | `SessionNeighborCandidatePayload` |
 | [`machine-error.schema.json`](./machine-error.schema.json) | `polylogue * --machine (error path)` | `MachineErrorPayload` |
 | [`machine-success.schema.json`](./machine-success.schema.json) | `polylogue * --machine (success path)` | `MachineSuccessPayload` |

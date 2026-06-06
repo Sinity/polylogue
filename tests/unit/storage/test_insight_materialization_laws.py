@@ -1,70 +1,85 @@
-"""Insight materialization laws: session insights agree with source conversations.
+"""Insight materialization laws: session insights agree with source sessions.
 
 Proves that materialized session insights (profiles, work events, phases)
-reflect the conversations they were derived from — counts match, provider
-agrees, no phantom insights for non-existent conversations.
+reflect the sessions they were derived from — counts match, provider
+agrees, no phantom insights for non-existent sessions.
 """
 
 from __future__ import annotations
 
+import asyncio
+import sqlite3
 from collections.abc import Mapping
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
-from tests.infra.storage_records import ConversationBuilder, db_setup
+from tests.infra.storage_records import SessionBuilder, db_setup
+
+
+def _open_archive(db_path: Path) -> sqlite3.Connection:
+    """Open a raw read connection to the index.db.
+
+    The old single-file ``open_connection`` enforces the v22 schema guard and would
+    reject the archive file; these laws assert against the archive tables
+    directly.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 @pytest.fixture()
 def materialized_db(workspace_env: Mapping[str, Path]) -> Path:
-    """Create a DB with conversations and run session insight materialization."""
+    """Create a DB with sessions and run session insight materialization."""
     db_path = db_setup(workspace_env)
 
-    ConversationBuilder(db_path, "mat-gpt-1").provider("chatgpt").title("GPT session").add_message(
+    SessionBuilder(db_path, "mat-gpt-1").provider("chatgpt").title("GPT session").add_message(
         role="user", text="Write a function"
     ).add_message(role="assistant", text="def hello(): pass").add_message(
         role="user", text="Add error handling"
     ).add_message(role="assistant", text="def hello(): try: pass except: pass").save()
 
-    ConversationBuilder(db_path, "mat-claude-1").provider("claude-code").title("Claude session").add_message(
+    SessionBuilder(db_path, "mat-claude-1").provider("claude-code").title("Claude session").add_message(
         role="user", text="Refactor storage"
     ).add_message(role="assistant", text="I will restructure the module").save()
 
-    ConversationBuilder(db_path, "mat-codex-1").provider("codex").title("Codex session").add_message(
+    SessionBuilder(db_path, "mat-codex-1").provider("codex").title("Codex session").add_message(
         role="user", text="Generate tests"
     ).add_message(role="assistant", text="Here are the tests").add_message(role="user", text="Add edge cases").save()
 
-    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
-    from polylogue.storage.sqlite.connection import open_connection
+    from polylogue.api import Polylogue
 
-    with open_connection(db_path) as conn:
-        rebuild_session_insights_sync(conn)
-        conn.commit()
+    async def _rebuild() -> None:
+        archive = Polylogue(archive_root=db_path.parent, db_path=db_path)
+        try:
+            await archive.rebuild_insights()
+        finally:
+            await archive.close()
+
+    asyncio.run(_rebuild())
 
     return db_path
 
 
-class TestProfileConversationAgreement:
-    """Every session profile must correspond to exactly one real conversation."""
+class TestProfileSessionAgreement:
+    """Every session profile must correspond to exactly one real session."""
 
-    def test_profile_count_matches_conversation_count(self, materialized_db: Path) -> None:
-        from polylogue.storage.sqlite.connection import open_connection
-
-        with open_connection(materialized_db) as conn:
-            conv_count = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+    def test_profile_count_matches_session_count(self, materialized_db: Path) -> None:
+        with closing(_open_archive(materialized_db)) as conn:
+            conv_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
             has_profiles = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profiles'"
             ).fetchone()
             if has_profiles is None:
                 pytest.skip("session_profiles table not present")
             profile_count = conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0]
-            assert profile_count == conv_count, f"Profile count ({profile_count}) != conversation count ({conv_count})"
+            assert profile_count == conv_count, f"Profile count ({profile_count}) != session count ({conv_count})"
 
     def test_no_phantom_profiles(self, materialized_db: Path) -> None:
-        """No profile should reference a non-existent conversation."""
-        from polylogue.storage.sqlite.connection import open_connection
-
-        with open_connection(materialized_db) as conn:
+        """No profile should reference a non-existent session."""
+        with closing(_open_archive(materialized_db)) as conn:
             has_profiles = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profiles'"
             ).fetchone()
@@ -73,65 +88,71 @@ class TestProfileConversationAgreement:
 
             phantom_count = conn.execute(
                 "SELECT COUNT(*) FROM session_profiles sp "
-                "WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = sp.conversation_id)"
+                "WHERE NOT EXISTS (SELECT 1 FROM sessions c WHERE c.session_id = sp.session_id)"
             ).fetchone()[0]
             assert phantom_count == 0, f"Found {phantom_count} phantom profiles"
 
-    def test_profile_provider_matches_conversation(self, materialized_db: Path) -> None:
-        """Profile source_name must match source conversation source_name."""
-        from polylogue.storage.sqlite.connection import open_connection
+    def test_profile_every_profile_has_a_session(self, materialized_db: Path) -> None:
+        """Every profile's session must exist with a resolvable origin.
 
-        with open_connection(materialized_db) as conn:
+        In the store the profile does not carry a
+        ``source_name`` column; provider identity lives on ``sessions.origin``.
+        The agreement law is therefore: no profile may reference a session
+        whose origin is missing.
+        """
+        with closing(_open_archive(materialized_db)) as conn:
             has_profiles = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profiles'"
             ).fetchone()
             if has_profiles is None:
                 pytest.skip("session_profiles table not present")
 
-            mismatches = conn.execute(
-                "SELECT sp.conversation_id, sp.source_name AS sp_provider, c.source_name AS c_provider "
+            orphans = conn.execute(
+                "SELECT sp.session_id "
                 "FROM session_profiles sp "
-                "JOIN conversations c ON c.conversation_id = sp.conversation_id "
-                "WHERE sp.source_name != c.source_name"
+                "LEFT JOIN sessions s ON s.session_id = sp.session_id "
+                "WHERE s.session_id IS NULL OR s.origin IS NULL OR s.origin = ''"
             ).fetchall()
-            assert len(mismatches) == 0, f"Provider mismatches: {[dict(r) for r in mismatches]}"
+            assert len(orphans) == 0, f"Profiles without a session/origin: {[dict(r) for r in orphans]}"
 
 
 class TestInsightMaterializationIdempotence:
     """Running materialization twice produces the same profile set."""
 
     def test_rebuild_is_idempotent(self, materialized_db: Path) -> None:
-        from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
-        from polylogue.storage.sqlite.connection import open_connection
+        import asyncio
 
-        with open_connection(materialized_db) as conn:
+        from polylogue.api import Polylogue
+
+        with closing(_open_archive(materialized_db)) as conn:
             has_profiles = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='session_profiles'"
             ).fetchone()
             if has_profiles is None:
                 pytest.skip("session_profiles table not present")
 
-            ids_before = {
-                r["conversation_id"] for r in conn.execute("SELECT conversation_id FROM session_profiles").fetchall()
-            }
+            ids_before = {r["session_id"] for r in conn.execute("SELECT session_id FROM session_profiles").fetchall()}
 
-            rebuild_session_insights_sync(conn)
-            conn.commit()
+        async def _rebuild() -> None:
+            archive = Polylogue(archive_root=materialized_db.parent, db_path=materialized_db)
+            try:
+                await archive.rebuild_insights()
+            finally:
+                await archive.close()
 
-            ids_after = {
-                r["conversation_id"] for r in conn.execute("SELECT conversation_id FROM session_profiles").fetchall()
-            }
+        asyncio.run(_rebuild())
 
-            assert ids_before == ids_after, "Rebuild changed profile set"
+        with closing(_open_archive(materialized_db)) as conn:
+            ids_after = {r["session_id"] for r in conn.execute("SELECT session_id FROM session_profiles").fetchall()}
+
+        assert ids_before == ids_after, "Rebuild changed profile set"
 
 
 class TestWorkEventAgreement:
     """Work events must reference valid profiles."""
 
     def test_no_orphan_work_events(self, materialized_db: Path) -> None:
-        from polylogue.storage.sqlite.connection import open_connection
-
-        with open_connection(materialized_db) as conn:
+        with closing(_open_archive(materialized_db)) as conn:
             has_events = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='session_work_events'"
             ).fetchone()
@@ -140,7 +161,7 @@ class TestWorkEventAgreement:
 
             orphans = conn.execute(
                 "SELECT COUNT(*) FROM session_work_events we "
-                "WHERE NOT EXISTS (SELECT 1 FROM session_profiles sp WHERE sp.conversation_id = we.conversation_id)"
+                "WHERE NOT EXISTS (SELECT 1 FROM session_profiles sp WHERE sp.session_id = we.session_id)"
             ).fetchone()[0]
             assert orphans == 0, f"Found {orphans} orphan work events"
 
@@ -149,9 +170,7 @@ class TestPhaseAgreement:
     """Phases must reference valid profiles."""
 
     def test_no_orphan_phases(self, materialized_db: Path) -> None:
-        from polylogue.storage.sqlite.connection import open_connection
-
-        with open_connection(materialized_db) as conn:
+        with closing(_open_archive(materialized_db)) as conn:
             has_phases = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='session_phases'"
             ).fetchone()
@@ -160,6 +179,6 @@ class TestPhaseAgreement:
 
             orphans = conn.execute(
                 "SELECT COUNT(*) FROM session_phases sp2 "
-                "WHERE NOT EXISTS (SELECT 1 FROM session_profiles sp WHERE sp.conversation_id = sp2.conversation_id)"
+                "WHERE NOT EXISTS (SELECT 1 FROM session_profiles sp WHERE sp.session_id = sp2.session_id)"
             ).fetchone()[0]
             assert orphans == 0, f"Found {orphans} orphan phases"

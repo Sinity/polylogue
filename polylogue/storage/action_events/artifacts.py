@@ -18,8 +18,8 @@ def _format_count_parts(parts: list[str]) -> str:
 class ActionEventArtifactState:
     """Canonical state for the action-event read model and its FTS index."""
 
-    source_conversations: int
-    materialized_conversations: int
+    source_sessions: int
+    materialized_sessions: int
     materialized_rows: int
     fts_rows: int
     stale_rows: int = 0
@@ -29,8 +29,8 @@ class ActionEventArtifactState:
     @classmethod
     def from_metrics(cls, metrics: Mapping[str, int | bool]) -> ActionEventArtifactState:
         return cls(
-            source_conversations=int(metrics["action_source_documents"]),
-            materialized_conversations=int(metrics["action_documents"]),
+            source_sessions=int(metrics["action_source_documents"]),
+            materialized_sessions=int(metrics["action_documents"]),
             materialized_rows=int(metrics["action_rows"]),
             fts_rows=int(metrics["action_fts_rows"]),
             stale_rows=int(metrics["action_stale_rows"]),
@@ -41,8 +41,8 @@ class ActionEventArtifactState:
     @classmethod
     def from_status_snapshot(cls, status: Mapping[str, int | bool]) -> ActionEventArtifactState:
         return cls(
-            source_conversations=int(status["valid_source_conversation_count"]),
-            materialized_conversations=int(status["materialized_conversation_count"]),
+            source_sessions=int(status["valid_source_session_count"]),
+            materialized_sessions=int(status["materialized_session_count"]),
             materialized_rows=int(status["count"]),
             fts_rows=int(status["action_fts_count"]),
             stale_rows=int(status["stale_count"]),
@@ -51,8 +51,8 @@ class ActionEventArtifactState:
         )
 
     @property
-    def missing_conversations(self) -> int:
-        return max(0, self.source_conversations - self.materialized_conversations)
+    def missing_sessions(self) -> int:
+        return max(0, self.source_sessions - self.materialized_sessions)
 
     @property
     def pending_fts_rows(self) -> int:
@@ -64,8 +64,8 @@ class ActionEventArtifactState:
 
     @property
     def rows_ready(self) -> bool:
-        return self.source_conversations == 0 or (
-            self.missing_conversations == 0 and self.stale_rows == 0 and self.orphan_rows == 0
+        return self.source_sessions == 0 or (
+            self.missing_sessions == 0 and self.stale_rows == 0 and self.orphan_rows == 0
         )
 
     @property
@@ -78,21 +78,15 @@ class ActionEventArtifactState:
 
     @property
     def repair_item_count(self) -> int:
-        return (
-            self.missing_conversations
-            + self.stale_rows
-            + self.orphan_rows
-            + self.pending_fts_rows
-            + self.excess_fts_rows
-        )
+        return self.missing_sessions + self.stale_rows + self.orphan_rows + self.pending_fts_rows + self.excess_fts_rows
 
     def repair_detail(self) -> str:
         if self.repair_item_count == 0:
             return "Action-event read model ready"
 
         parts: list[str] = []
-        if self.missing_conversations:
-            parts.append(f"{self.missing_conversations:,} missing conversations")
+        if self.missing_sessions:
+            parts.append(f"{self.missing_sessions:,} missing sessions")
         if self.stale_rows:
             parts.append(f"{self.stale_rows:,} stale action-event rows")
         if self.orphan_rows:
@@ -108,17 +102,17 @@ class ActionEventArtifactState:
             name="action_events",
             ready=self.rows_ready,
             detail=(
-                f"Action-event rows ready ({self.materialized_conversations:,}/{self.source_conversations:,} conversations)"
+                f"Action-event rows ready ({self.materialized_sessions:,}/{self.source_sessions:,} sessions)"
                 if self.rows_ready
                 else (
-                    f"Action-event rows pending ({self.materialized_conversations:,}/{self.source_conversations:,} conversations; "
+                    f"Action-event rows pending ({self.materialized_sessions:,}/{self.source_sessions:,} sessions; "
                     f"stale rows {self.stale_rows:,}, orphan rows {self.orphan_rows:,})"
                 )
             ),
-            source_documents=self.source_conversations,
-            materialized_documents=self.materialized_conversations,
+            source_documents=self.source_sessions,
+            materialized_documents=self.materialized_sessions,
             materialized_rows=self.materialized_rows,
-            pending_documents=self.missing_conversations,
+            pending_documents=self.missing_sessions,
             stale_rows=self.stale_rows,
             orphan_rows=self.orphan_rows,
             matches_version=self.matches_version,

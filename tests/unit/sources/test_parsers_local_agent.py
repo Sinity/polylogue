@@ -9,8 +9,8 @@ from polylogue.config import Source
 from polylogue.core.json import JSONDocument
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers import antigravity
-from polylogue.sources.parsers.base import ParsedConversation
-from polylogue.sources.source_parsing import iter_source_conversations
+from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.source_parsing import iter_source_sessions
 from polylogue.types import ContentBlockType, Provider
 
 
@@ -30,6 +30,7 @@ def test_gemini_cli_session_document_parses_through_dispatch() -> None:
                 "type": "gemini",
                 "content": "response",
                 "model": "gemini-test",
+                "durationMs": 900,
                 "tokens": {"total": 10},
                 "thoughts": [{"text": "reasoned"}],
                 "toolCalls": [{"id": "tool-1", "name": "read_file", "arguments": {"path": "README.md"}}],
@@ -39,18 +40,26 @@ def test_gemini_cli_session_document_parses_through_dispatch() -> None:
 
     assert detect_provider(payload) is Provider.GEMINI_CLI
     classification = classify_artifact(payload, provider=Provider.GEMINI_CLI, source_path="chats/session.json")
-    assert classification.parse_as_conversation is True
+    assert classification.parse_as_session is True
 
-    [conversation] = parse_payload("gemini-cli", payload, "fallback")
+    [session] = parse_payload("gemini-cli", payload, "fallback")
 
-    assert conversation.source_name is Provider.GEMINI_CLI
-    assert conversation.provider_conversation_id == "gemini-session-1"
-    assert conversation.created_at == "2026-04-08T20:45:00.000Z"
-    assert conversation.updated_at == "2026-04-08T20:47:00.000Z"
-    assert conversation.title == "Parser work"
-    assert conversation.messages[1].role == "assistant"
-    assert conversation.messages[1].provider_meta == {"model": "gemini-test", "tokens": {"total": 10}}
-    assert {block.type for block in conversation.messages[1].content_blocks} >= {
+    assert session.source_name is Provider.GEMINI_CLI
+    assert session.provider_session_id == "gemini-session-1"
+    assert session.created_at == "2026-04-08T20:45:00.000Z"
+    assert session.updated_at == "2026-04-08T20:47:00.000Z"
+    assert session.title == "Parser work"
+    assert session.messages[1].role == "assistant"
+    assert [message.position for message in session.messages] == [0, 1]
+    assert [message.is_active_path for message in session.messages] == [True, True]
+    assert [message.is_active_leaf for message in session.messages] == [False, True]
+    assert session.active_leaf_message_provider_id == "a1"
+    assert session.messages[1].model_name == "gemini-test"
+    assert session.messages[1].duration_ms == 900
+    assert session.messages[1].input_tokens == 0
+    assert session.messages[1].output_tokens == 10
+    assert session.messages[1].provider_meta == {"model": "gemini-test", "tokens": {"total": 10}}
+    assert {block.type for block in session.messages[1].content_blocks} >= {
         ContentBlockType.TEXT,
         ContentBlockType.THINKING,
         ContentBlockType.TOOL_USE,
@@ -73,6 +82,9 @@ def test_hermes_session_document_parses_through_dispatch() -> None:
             {
                 "role": "assistant",
                 "content": "running",
+                "model": "local-override",
+                "durationMs": 1250,
+                "usage": {"input_tokens": 4, "output_tokens": 6},
                 "reasoning_content": "need tests",
                 "finish_reason": "tool_calls",
                 "tool_calls": [
@@ -85,37 +97,45 @@ def test_hermes_session_document_parses_through_dispatch() -> None:
 
     assert detect_provider(payload) is Provider.HERMES
     classification = classify_artifact(payload, provider=Provider.HERMES, source_path="session_1.json")
-    assert classification.parse_as_conversation is True
+    assert classification.parse_as_session is True
 
-    [conversation] = parse_payload("hermes", payload, "fallback")
+    [session] = parse_payload("hermes", payload, "fallback")
 
-    assert conversation.source_name is Provider.HERMES
-    assert conversation.provider_conversation_id == "hermes-session-1"
-    assert conversation.created_at == "2026-05-07T08:39:43.000000"
-    assert conversation.updated_at == "2026-05-07T08:46:00.000000"
-    assert conversation.provider_meta == {
+    assert session.source_name is Provider.HERMES
+    assert session.provider_session_id == "hermes-session-1"
+    assert session.created_at == "2026-05-07T08:39:43.000000"
+    assert session.updated_at == "2026-05-07T08:46:00.000000"
+    assert session.provider_meta == {
         "source_family": "hermes",
         "model": "local-model",
         "base_url": "http://localhost",
         "platform": "linux",
         "tools": [{"name": "shell"}],
     }
-    assert conversation.messages[0].role == "system"
-    assert conversation.messages[2].role == "assistant"
-    assert {block.type for block in conversation.messages[2].content_blocks} >= {
+    assert session.messages[0].role == "system"
+    assert [message.position for message in session.messages] == [0, 1, 2, 3]
+    assert session.messages[0].model_name == "local-model"
+    assert session.messages[2].role == "assistant"
+    assert session.messages[2].model_name == "local-override"
+    assert session.messages[2].duration_ms == 1250
+    assert session.messages[2].input_tokens == 4
+    assert session.messages[2].output_tokens == 6
+    assert {block.type for block in session.messages[2].content_blocks} >= {
         ContentBlockType.TEXT,
         ContentBlockType.THINKING,
         ContentBlockType.TOOL_USE,
     }
-    assert conversation.messages[3].role == "tool"
-    assert any(block.type is ContentBlockType.TOOL_RESULT for block in conversation.messages[3].content_blocks)
+    assert session.messages[3].role == "tool"
+    assert session.messages[3].is_active_leaf is True
+    assert session.active_leaf_message_provider_id == "call-1"
+    assert any(block.type is ContentBlockType.TOOL_RESULT for block in session.messages[3].content_blocks)
 
 
-def test_agent_sidecars_are_classified_as_non_conversation() -> None:
+def test_agent_sidecars_are_classified_as_non_session() -> None:
     logs = classify_artifact_path("~/.gemini/tmp/polylogue/logs.json", provider=Provider.GEMINI_CLI)
     request_dump = classify_artifact_path("~/.hermes/sessions/request_dump_1.json", provider=Provider.HERMES)
     antigravity_pb = classify_artifact_path(
-        "~/.gemini/antigravity/conversations/session.pb",
+        "~/.gemini/antigravity/sessions/session.pb",
         provider=Provider.ANTIGRAVITY,
     )
     antigravity_resolved = classify_artifact_path(
@@ -124,13 +144,13 @@ def test_agent_sidecars_are_classified_as_non_conversation() -> None:
     )
 
     assert logs is not None
-    assert logs.parse_as_conversation is False
+    assert logs.parse_as_session is False
     assert request_dump is not None
-    assert request_dump.parse_as_conversation is False
+    assert request_dump.parse_as_session is False
     assert antigravity_pb is not None
-    assert antigravity_pb.parse_as_conversation is False
+    assert antigravity_pb.parse_as_session is False
     assert antigravity_resolved is not None
-    assert antigravity_resolved.parse_as_conversation is False
+    assert antigravity_resolved.parse_as_session is False
 
 
 def test_runtime_provider_identity_keeps_gemini_surfaces_distinct() -> None:
@@ -161,27 +181,27 @@ def test_antigravity_brain_artifact_metadata_parses_sibling_markdown(tmp_path: P
     )
 
     classification = classify_artifact(payload, provider=Provider.ANTIGRAVITY, source_path=metadata)
-    assert classification.parse_as_conversation is True
+    assert classification.parse_as_session is True
 
-    [conversation] = parse_payload(
+    [session] = parse_payload(
         Provider.ANTIGRAVITY,
         payload,
         "fallback",
         source_path=str(metadata),
     )
 
-    assert conversation.source_name is Provider.ANTIGRAVITY
-    assert conversation.provider_conversation_id == "03c22aa3-8b7f-438d-baa8-d12567249cd9:implementation_plan.md"
-    assert conversation.updated_at == "2026-01-07T19:08:15.216541610Z"
-    assert conversation.messages[0].text == "# Implementation Plan\n\nDo the work.\n"
-    assert conversation.provider_meta is not None
-    assert conversation.provider_meta["source_family"] == "antigravity"
+    assert session.source_name is Provider.ANTIGRAVITY
+    assert session.provider_session_id == "03c22aa3-8b7f-438d-baa8-d12567249cd9:implementation_plan.md"
+    assert session.updated_at == "2026-01-07T19:08:15.216541610Z"
+    assert session.messages[0].text == "# Implementation Plan\n\nDo the work.\n"
+    assert session.provider_meta is not None
+    assert session.provider_meta["source_family"] == "antigravity"
 
 
 def test_antigravity_language_server_markdown_export_parses_turns() -> None:
-    markdown = """# Chat Conversation
+    markdown = """# Chat Session
 
-Note: _This is purely the output of the chat conversation._
+Note: _This is purely the output of the chat session._
 
 ### User Input
 
@@ -193,7 +213,7 @@ Run the checks.
 
 Checks passed.
 """
-    summary = antigravity.AntigravityConversationSummary(
+    summary = antigravity.AntigravitySessionSummary(
         cascade_id="e85783e3-f047-49b8-9035-4029f58dd04a",
         title="Refactoring and Executing Plan",
         workspace_name="Sinity/sinex",
@@ -201,25 +221,25 @@ Checks passed.
         last_modified_time="2026-03-05T04:21:34.468316671Z",
     )
 
-    conversation = antigravity.parse_markdown_export(markdown, summary)
+    session = antigravity.parse_markdown_export(markdown, summary)
 
-    assert conversation.source_name is Provider.ANTIGRAVITY
-    assert conversation.provider_conversation_id == "e85783e3-f047-49b8-9035-4029f58dd04a"
-    assert conversation.title == "Refactoring and Executing Plan"
-    assert conversation.updated_at == "2026-03-05T04:21:34.468316671Z"
-    assert [message.role for message in conversation.messages] == ["user", "assistant"]
-    assert "pytest -q" in (conversation.messages[0].text or "")
-    assert conversation.messages[1].text == "Checks passed."
-    assert conversation.provider_meta is not None
-    assert conversation.provider_meta["source_format"] == "language_server_markdown_export"
-    assert conversation.provider_meta["workspace_name"] == "Sinity/sinex"
+    assert session.source_name is Provider.ANTIGRAVITY
+    assert session.provider_session_id == "e85783e3-f047-49b8-9035-4029f58dd04a"
+    assert session.title == "Refactoring and Executing Plan"
+    assert session.updated_at == "2026-03-05T04:21:34.468316671Z"
+    assert [message.role for message in session.messages] == ["user", "assistant"]
+    assert "pytest -q" in (session.messages[0].text or "")
+    assert session.messages[1].text == "Checks passed."
+    assert session.provider_meta is not None
+    assert session.provider_meta["source_format"] == "language_server_markdown_export"
+    assert session.provider_meta["workspace_name"] == "Sinity/sinex"
 
 
-def test_antigravity_language_server_export_dispatches_as_conversation() -> None:
+def test_antigravity_language_server_export_dispatches_as_session() -> None:
     payload = antigravity.markdown_export_payload(
-        antigravity.AntigravityConversationSummary(
+        antigravity.AntigravitySessionSummary(
             cascade_id="cascade-1",
-            title="Conversation",
+            title="Session",
             last_modified_time="2026-03-05T04:21:34Z",
         ),
         "### User Input\n\nhello\n\n### Planner Response\n\nhi",
@@ -227,35 +247,35 @@ def test_antigravity_language_server_export_dispatches_as_conversation() -> None
 
     assert detect_provider(payload) is Provider.ANTIGRAVITY
     classification = classify_artifact(payload, provider=Provider.ANTIGRAVITY)
-    assert classification.parse_as_conversation is True
+    assert classification.parse_as_session is True
 
-    [conversation] = parse_payload(Provider.ANTIGRAVITY, payload, "fallback")
+    [session] = parse_payload(Provider.ANTIGRAVITY, payload, "fallback")
 
-    assert conversation.provider_conversation_id == "cascade-1"
-    assert conversation.updated_at == "2026-03-05T04:21:34Z"
-    assert [message.text for message in conversation.messages] == ["hello", "hi"]
+    assert session.provider_session_id == "cascade-1"
+    assert session.updated_at == "2026-03-05T04:21:34Z"
+    assert [message.text for message in session.messages] == ["hello", "hi"]
 
 
 def test_antigravity_source_walk_prefers_language_server_exports(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    (tmp_path / "conversations").mkdir()
+    (tmp_path / "sessions").mkdir()
     exported = antigravity.parse_markdown_export(
         "### User Input\n\nhello\n\n### Planner Response\n\nhi",
-        antigravity.AntigravityConversationSummary(cascade_id="cascade-1", title="Conversation"),
+        antigravity.AntigravitySessionSummary(cascade_id="cascade-1", title="Session"),
     )
 
-    def fake_exports(root: Path) -> list[ParsedConversation]:
+    def fake_exports(root: Path) -> list[ParsedSession]:
         assert root == tmp_path
         return [exported]
 
     monkeypatch.setattr("polylogue.sources.source_parsing.antigravity.iter_language_server_exports", fake_exports)
 
-    conversations = list(iter_source_conversations(Source(name="antigravity", path=tmp_path)))
+    sessions = list(iter_source_sessions(Source(name="antigravity", path=tmp_path)))
 
-    assert [conversation.provider_conversation_id for conversation in conversations] == ["cascade-1"]
-    assert conversations[0].messages[0].text == "hello"
+    assert [session.provider_session_id for session in sessions] == ["cascade-1"]
+    assert sessions[0].messages[0].text == "hello"
 
 
 def test_antigravity_source_walk_ingests_metadata_not_config(tmp_path: Path) -> None:
@@ -268,7 +288,7 @@ def test_antigravity_source_walk_ingests_metadata_not_config(tmp_path: Path) -> 
     )
     (tmp_path / "mcp_config.json").write_text("{}", encoding="utf-8")
 
-    conversations = list(iter_source_conversations(Source(name="antigravity", path=tmp_path)))
+    sessions = list(iter_source_sessions(Source(name="antigravity", path=tmp_path)))
 
-    assert len(conversations) == 1
-    assert conversations[0].source_name is Provider.ANTIGRAVITY
+    assert len(sessions) == 1
+    assert sessions[0].source_name is Provider.ANTIGRAVITY

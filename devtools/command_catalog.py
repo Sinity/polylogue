@@ -211,7 +211,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools daemon-workload-probe",
             "devtools daemon-workload-probe --json",
-            "devtools daemon-workload-probe --db /path/to/polylogue.db --limit 10",
+            "devtools daemon-workload-probe --db /path/to/index.db --limit 10",
+        ),
+    ),
+    CommandSpec(
+        "self-verify",
+        "verification",
+        "Capture and compare archive golden-master envelopes for schema rewrites.",
+        "devtools.self_verify",
+        use_when=(
+            "Freeze v22 read-surface behavior before archive work, then compare candidate "
+            "archives against the captured envelope baseline."
+        ),
+        examples=(
+            "devtools self-verify capture --out .local/self-verify/v22.json",
+            "devtools self-verify compare .local/self-verify/v22.json .local/self-verify/candidate.json --json",
         ),
     ),
     CommandSpec(
@@ -243,7 +257,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools archive-space-report",
             "devtools archive-space-report --json",
-            "devtools archive-space-report --objects --db /path/to/polylogue.db --limit 50",
+            "devtools archive-space-report --objects --db /path/to/index.db --limit 50",
         ),
     ),
     CommandSpec(
@@ -417,14 +431,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "verify-schema-upgrade-lane",
         "verification",
-        "Verify any in-place schema upgrade helper has a paired driving test under tests/unit/storage/migrations/ (#1302).",
+        "Reject in-place storage schema upgrade helpers (#1302).",
         "devtools.verify_schema_upgrade_lane",
         use_when=(
             "Enforce the policy boundary documented in docs/internals.md § "
-            "'Schema Versioning Model'. Polylogue intentionally has no "
-            "schema migration chain; any reviewed in-place upgrade helper "
-            "added under a PR exception must be exercised by a dedicated "
-            "test lane against a source-version fixture DB."
+            "'Schema Versioning Model'. Polylogue intentionally has no in-place "
+            "storage schema upgrade chain; archive-shape changes edit the canonical "
+            "DDL and require a fresh rebuild from source."
         ),
         examples=("devtools verify-schema-upgrade-lane", "devtools verify-schema-upgrade-lane --json"),
     ),

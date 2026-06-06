@@ -8,8 +8,12 @@ Polylogue follows XDG Base Directory specification:
 
 ```
 ~/.local/share/polylogue/           # XDG_DATA_HOME/polylogue
-├── polylogue.db                    # SQLite database
-├── blobs/                          # Stored attachment/blob payloads
+├── source.db                       # raw acquisition log
+├── index.db                        # Parsed/searchable/read-model index
+├── embeddings.db                   # Vector index and embedding status
+├── user.db                         # User marks, corrections, and annotations
+├── ops.db                          # Daemon/cursor/telemetry state
+├── blob/                           # Stored attachment/blob payloads
 └── browser-capture/                # Browser-capture artifact spool
 
 ~/.claude/projects/                  # Auto-discovered: Claude Code sessions
@@ -30,7 +34,11 @@ XDG environment variables. The defaults (when no override is set) are:
 | Location | Default path | Override |
 |---|---|---|
 | Archive root | `~/.local/share/polylogue/` | `POLYLOGUE_ARCHIVE_ROOT` |
-| Database | `~/.local/share/polylogue/polylogue.db` | (follows data home) |
+| Source DB | `~/.local/share/polylogue/source.db` | (follows archive root) |
+| Index DB | `~/.local/share/polylogue/index.db` | (follows archive root) |
+| Embeddings DB | `~/.local/share/polylogue/embeddings.db` | (follows archive root) |
+| User DB | `~/.local/share/polylogue/user.db` | (follows archive root) |
+| Ops DB | `~/.local/share/polylogue/ops.db` | (follows archive root) |
 | Blob store | `~/.local/share/polylogue/blob/` | (follows data home) |
 | Config file | `~/.config/polylogue/polylogue.toml` | `POLYLOGUE_CONFIG` |
 | Config dir | `~/.config/polylogue/` | `XDG_CONFIG_HOME` |
@@ -149,15 +157,16 @@ Filesystem layout is owned by `polylogue.paths`, which reads directory
 environment variables lazily when its path functions are called.
 
 Path-safety helpers are separate from both surfaces. Code that sanitizes
-provider or conversation names imports from `polylogue.paths.sanitize`.
+provider or session names imports from `polylogue.paths.sanitize`.
 
 ## Environment Policy
 
 Environment variable precedence is:
 
 1. XDG roots define the base config, data, cache, and state directories.
-2. `POLYLOGUE_ARCHIVE_ROOT` overrides only the archive root; the database still
-   defaults to `$XDG_DATA_HOME/polylogue/polylogue.db`.
+2. `POLYLOGUE_ARCHIVE_ROOT` overrides the archive root and the archive
+   databases under it (`source.db`, `index.db`, `embeddings.db`, `user.db`,
+   and `ops.db`).
 3. Source discovery is derived from resolved filesystem paths and Drive cache or
    auth files.
 4. Drive authentication may override credential and token files through the
@@ -182,19 +191,26 @@ These are the supported runtime overrides:
 
 ## Backup and Export
 
-The database is a single SQLite file. To backup:
+The archive uses SQLite files with different durability classes:
+
+- `source.db`, `user.db`, `embeddings.db`, and `blob/` are the expensive or
+  irreplaceable state to prioritize in backups.
+- `index.db` is rebuildable from `source.db`, but a backup avoids a full
+  reindex after restore.
+- `ops.db` is disposable daemon state; back it up only when preserving
+  operational history matters.
+
+For an offline file-level backup, stop the daemon and copy the archive root or
+the specific tier files you need. Include matching `-wal` and `-shm` companions
+when copying a live WAL-mode SQLite database.
+
+To export all sessions as JSON:
 
 ```bash
-cp ~/.local/share/polylogue/polylogue.db ~/backups/polylogue-$(date +%Y%m%d).db
-```
-
-To export all conversations as JSON:
-
-```bash
-polylogue --format json > conversations.json
+polylogue --format json > sessions.json
 
 # Or with filters
-polylogue -p claude-ai --format json > claude-conversations.json
+polylogue -p claude-ai --format json > claude-sessions.json
 ```
 
 Polylogue does not copy one-shot input exports into a managed import directory.
@@ -203,7 +219,7 @@ the exact downloaded payloads.
 
 ## Google Drive Integration
 
-For Gemini conversations via Google Drive:
+For Gemini sessions via Google Drive:
 
 1. Create OAuth credentials at [Google Cloud Console](https://console.cloud.google.com/)
 2. Download to `~/.config/polylogue/polylogue-credentials.json`

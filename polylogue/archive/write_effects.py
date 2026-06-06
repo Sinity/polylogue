@@ -1,7 +1,7 @@
 """Consolidated archive write side effects.
 
 This module is the ONLY place where post-write side effects run:
-- FTS repair for changed conversation IDs
+- FTS repair for changed session IDs
 - Search cache invalidation
 - Readiness recording
 
@@ -32,8 +32,8 @@ def commit_archive_write_effects(
 
     This function:
     1. Ensures FTS triggers exist without dropping live triggers
-    2. Repairs message FTS for changed conversation IDs
-    3. Repairs action-event FTS for changed conversation IDs
+    2. Repairs message FTS for changed session IDs
+    3. Repairs action-event FTS for changed session IDs
     4. Commits the transaction
     5. Invalidates the search cache
 
@@ -45,7 +45,7 @@ def commit_archive_write_effects(
         Write operation type (ingest, delete, tag_update, etc.).
     payload:
         Operation payload. Expected keys:
-        - ``changed_conversation_ids``: sequence of conversation IDs whose
+        - ``changed_session_ids``: sequence of session IDs whose
           FTS rows should be repaired.
         - ``_connection``: (optional) forwarded from the gateway when an
           external connection is already in use.
@@ -60,7 +60,7 @@ def commit_archive_write_effects(
         repair_message_fts_index_sync,
     )
 
-    changed_ids: Sequence[str] = payload.get("changed_conversation_ids", [])
+    changed_ids: Sequence[str] = payload.get("changed_session_ids", [])
     sorted_ids = sorted(set(changed_ids)) if changed_ids else []
     blob_hashes: list[str] = payload.get("_blob_hashes", [])
     operation_id: str = payload.get("_operation_id", "")
@@ -104,7 +104,7 @@ def commit_archive_write_effects(
         total_effect_elapsed_s = trigger_elapsed_s + message_fts_elapsed_s + action_fts_elapsed_s + commit_elapsed_s
         if total_effect_elapsed_s >= 1.0:
             logger.info(
-                "slow_archive_write_effects operation=%s conversations=%d ensure_fts_triggers_s=%.3f "
+                "slow_archive_write_effects operation=%s sessions=%d ensure_fts_triggers_s=%.3f "
                 "message_fts_s=%.3f action_fts_s=%.3f commit_s=%.3f total_s=%.3f",
                 op.value,
                 len(sorted_ids),

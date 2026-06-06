@@ -98,7 +98,7 @@ def list_artifact_cohorts(
     stream_keys_by_provider: dict[str, set[str]] = {}
     for observation in observations:
         if (
-            observation.artifact_kind == ArtifactKind.SUBAGENT_CONVERSATION_STREAM.value
+            observation.artifact_kind == ArtifactKind.SUBAGENT_SESSION_STREAM.value
             and observation.link_group_key is not None
         ):
             stream_keys_by_provider.setdefault(_effective_provider(observation), set()).add(observation.link_group_key)

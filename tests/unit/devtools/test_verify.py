@@ -239,7 +239,7 @@ def test_run_records_pytest_count_metadata_from_terminal_fallback() -> None:
     )
 
     with (
-        patch("devtools.verify.subprocess.run", return_value=completed),
+        patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed),
         patch("devtools.verify._read_pytest_report", return_value=None),
     ):
         rc, _elapsed, metadata = _run("pytest affected", ["pytest"])
@@ -281,7 +281,7 @@ def test_run_reads_structured_pytest_report() -> None:
     }
 
     with (
-        patch("devtools.verify.subprocess.run", return_value=completed),
+        patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed),
         patch("devtools.verify._read_pytest_report", return_value=report),
     ):
         rc, _elapsed, metadata = _run("pytest testmon", ["pytest", "--testmon", "-n", "8"])
@@ -296,6 +296,21 @@ def test_run_reads_structured_pytest_report() -> None:
     assert metadata["report_path"] == str(PYTEST_REPORT_PATH)
     assert metadata["pytest_workers"] == "8"
     assert metadata["pytest_selection"] == "testmon"
+
+
+def test_pytest_run_emits_heartbeat_for_long_silent_child(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.1")
+
+    rc, _elapsed, metadata = _run("pytest heartbeat", [sys.executable, "-c", "import time; time.sleep(0.25)"])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert metadata["heartbeat_s"] == 0.1
+    assert "command:" in captured.err
+    assert "still running: pid=" in captured.err
+    assert "elapsed=" in captured.err
 
 
 def test_pytest_command_metadata_reports_worker_and_selection_policy() -> None:

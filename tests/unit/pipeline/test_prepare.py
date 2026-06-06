@@ -5,26 +5,29 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.api import Polylogue
 from polylogue.errors import PolylogueError
-from polylogue.paths.sanitize import is_within_root
+from polylogue.paths.sanitize import is_within_root, session_render_root
 from polylogue.pipeline.prepare import RecordBundle, save_bundle
-from polylogue.rendering.renderers import HTMLRenderer
-from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.runtime import ConversationRecord
+from polylogue.rendering.formatting import format_session
+from polylogue.rendering.renderers.html import render_session_html
+from polylogue.storage.repository import SessionRepository
+from polylogue.storage.runtime import SessionRecord
 from polylogue.storage.sqlite.connection import open_connection
-from tests.infra.storage_records import make_attachment, make_conversation, make_message
+from tests.infra.archive_scenarios import native_session_id_for
+from tests.infra.storage_records import SessionBuilder, make_attachment, make_message, make_session
 
 
-def _conversation_record() -> ConversationRecord:
-    return make_conversation("conv:hash", source_name="codex", title="Demo")
+def _session_record() -> SessionRecord:
+    return make_session("conv:hash", source_name="codex", title="Demo")
 
 
 async def test_ingest_idempotent(
     workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
+    storage_repository: SessionRepository,
 ) -> None:
     bundle = RecordBundle(
-        conversation=_conversation_record(),
+        session=_session_record(),
         messages=[make_message("msg:hash", "conv:hash", text="hello")],
         attachments=[make_attachment("att-hash", "conv:hash", "msg:hash")],
     )
@@ -32,118 +35,91 @@ async def test_ingest_idempotent(
     first = await save_bundle(bundle, repository=storage_repository)
     second = await save_bundle(bundle, repository=storage_repository)
 
-    assert first.conversations == 1
+    assert first.sessions == 1
     # Second pass on the same bundle either skips (if row_graph_hash also
     # matches) or rewrites the same row idempotently. Both are valid; the
     # contract is that the archive is unchanged content-wise.
-    assert second.conversations + second.skipped_conversations == 1
+    assert second.sessions + second.skipped_sessions == 1
     assert second.messages + second.skipped_messages == 1
 
 
-async def test_render_writes_markdown(
-    workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
-) -> None:
+async def _native_session(archive_root: Path, db_path: Path, session_id: str) -> object:
+    async with Polylogue(archive_root=archive_root, db_path=db_path) as archive:
+        conv = await archive.get_session(session_id)
+    assert conv is not None
+    return conv
+
+
+async def test_render_writes_markdown(workspace_env: dict[str, Path]) -> None:
     archive_root = workspace_env["archive_root"]
-    bundle = RecordBundle(
-        conversation=_conversation_record(),
-        messages=[make_message("msg:hash", "conv:hash", text="hello")],
-        attachments=[],
-    )
-    await save_bundle(bundle, repository=storage_repository)
+    db_path = archive_root / "index.db"
+    SessionBuilder(db_path, "conv-hash").provider("codex").add_message("msg1", role="user", text="hello").save()
 
-    renderer = HTMLRenderer(archive_root)
-    output_root = archive_root / "render"
-    html_path = await renderer.render("conv:hash", output_root)
-    md_path = html_path.parent / "conversation.md"
+    conv = await _native_session(archive_root, db_path, native_session_id_for("codex", "conv-hash"))
+    markdown = format_session(conv, "markdown", None)  # type: ignore[arg-type]
 
-    assert md_path.exists()
-    assert html_path.exists()
-    assert "hello" in md_path.read_text(encoding="utf-8")
+    assert "hello" in markdown
 
 
-async def test_render_escapes_html(
-    workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
-) -> None:
+async def test_render_escapes_html(workspace_env: dict[str, Path]) -> None:
     archive_root = workspace_env["archive_root"]
-    bundle = RecordBundle(
-        conversation=make_conversation("conv-html", source_name="codex", title="<script>alert(1)</script>"),
-        messages=[make_message("msg:hash", "conv-html", text="<script>alert(2)</script>")],
-        attachments=[],
+    db_path = archive_root / "index.db"
+    (
+        SessionBuilder(db_path, "conv-html")
+        .provider("codex")
+        .title("<script>alert(1)</script>")
+        .add_message("msg1", role="user", text="<script>alert(2)</script>")
+        .save()
     )
-    await save_bundle(bundle, repository=storage_repository)
 
-    renderer = HTMLRenderer(archive_root)
-    output_root = archive_root / "render"
-    html_path = await renderer.render("conv-html", output_root)
-    html_text = html_path.read_text(encoding="utf-8")
+    conv = await _native_session(archive_root, db_path, native_session_id_for("codex", "conv-html"))
+    html_text = render_session_html(conv)  # type: ignore[arg-type]
 
-    assert "<script>" not in html_text
+    assert "<script>alert(2)</script>" not in html_text
     assert "&lt;script&gt;" in html_text
 
 
-async def test_render_sanitizes_paths(
-    workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
-) -> None:
-    """Test that render paths are sanitized even with path-like conversation IDs.
+def test_render_root_sanitizes_path_like_ids(workspace_env: dict[str, Path]) -> None:
+    """Path-like session ids must not escape the render output root.
 
-    Note: Invalid provider names are now rejected at the validation layer, so we
-    test path sanitization through conversation_id alone using a valid provider name.
+    The archive string renderers do not write files; file layout safety lives in
+    ``session_render_root``, which is what site generation uses.
     """
+    output_root = workspace_env["archive_root"] / "render"
+    render_root = session_render_root(output_root, "codex", native_session_id_for("codex", "../escape"))
+
+    assert is_within_root(render_root, output_root)
+
+
+async def test_render_includes_orphan_attachments(workspace_env: dict[str, Path]) -> None:
     archive_root = workspace_env["archive_root"]
-    bundle = RecordBundle(
-        conversation=make_conversation("../escape", title="Escape"),
-        messages=[make_message("msg:hash", "../escape", text="hello")],
-        attachments=[],
+    db_path = archive_root / "index.db"
+    (
+        SessionBuilder(db_path, "conv-hash")
+        .provider("codex")
+        .add_message("msg1", role="user", text="hello")
+        .add_attachment(
+            attachment_id="att-orphan",
+            message_id=None,
+            mime_type="text/plain",
+            size_bytes=12,
+            provider_meta={"name": "notes.txt"},
+        )
+        .save()
     )
-    await save_bundle(bundle, repository=storage_repository)
 
-    renderer = HTMLRenderer(archive_root)
-    output_root = archive_root / "render"
-    html_path = await renderer.render("../escape", output_root)
-    md_path = html_path.parent / "conversation.md"
-
-    assert is_within_root(md_path, output_root)
-
-
-async def test_render_includes_orphan_attachments(
-    workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
-) -> None:
-    archive_root = workspace_env["archive_root"]
-    bundle = RecordBundle(
-        conversation=_conversation_record(),
-        messages=[make_message("msg:hash", "conv:hash", text="hello")],
-        attachments=[
-            make_attachment(
-                "att-orphan",
-                "conv:hash",
-                None,
-                mime_type="text/plain",
-                size_bytes=12,
-                provider_meta={"name": "notes.txt"},
-            )
-        ],
-    )
-    await save_bundle(bundle, repository=storage_repository)
-
-    renderer = HTMLRenderer(archive_root)
-    output_root = archive_root / "render"
-    html_path = await renderer.render("conv:hash", output_root)
-    md_path = html_path.parent / "conversation.md"
-    markdown = md_path.read_text(encoding="utf-8")
+    conv = await _native_session(archive_root, db_path, native_session_id_for("codex", "conv-hash"))
+    markdown = format_session(conv, "markdown", None)  # type: ignore[arg-type]
 
     assert "- Attachment: notes.txt" in markdown
 
 
 async def test_ingest_updates_metadata(
     workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
+    storage_repository: SessionRepository,
 ) -> None:
     bundle = RecordBundle(
-        conversation=make_conversation(
+        session=make_session(
             "conv-update",
             source_name="codex",
             title="Old",
@@ -156,7 +132,7 @@ async def test_ingest_updates_metadata(
     await save_bundle(bundle, repository=storage_repository)
 
     updated = RecordBundle(
-        conversation=make_conversation(
+        session=make_session(
             "conv-update",
             source_name="codex",
             title="New",
@@ -171,7 +147,7 @@ async def test_ingest_updates_metadata(
 
     with open_connection(None) as conn:
         convo = conn.execute(
-            "SELECT title, updated_at, content_hash, provider_meta FROM conversations WHERE conversation_id = ?",
+            "SELECT title, updated_at, content_hash, provider_meta FROM sessions WHERE session_id = ?",
             ("conv-update",),
         ).fetchone()
         msg = conn.execute(
@@ -187,17 +163,17 @@ async def test_ingest_updates_metadata(
 
 async def test_ingest_updates_fields_without_hash_changes(
     workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
+    storage_repository: SessionRepository,
 ) -> None:
-    """Conversation record fields (title, updated_at, provider_meta) should
+    """Session record fields (title, updated_at, provider_meta) should
     update via UPSERT even when the content_hash is unchanged.
 
     Note: message-level updates require content_hash to change (since unchanged
     content_hash means the save path correctly skips heavy message re-processing).
-    This test now uses different content_hashes for the conversation to reflect
+    This test now uses different content_hashes for the session to reflect
     realistic behavior — content_hash includes message content.
     """
-    base_conversation = make_conversation(
+    base_session = make_session(
         "conv-hash-stable",
         source_name="codex",
         title="Original",
@@ -207,12 +183,12 @@ async def test_ingest_updates_fields_without_hash_changes(
     )
     base_message = make_message("msg-stable", "conv-hash-stable", text="hello", content_hash="msg-v1")
     await save_bundle(
-        RecordBundle(conversation=base_conversation, messages=[base_message], attachments=[]),
+        RecordBundle(session=base_session, messages=[base_message], attachments=[]),
         repository=storage_repository,
     )
 
     updated = RecordBundle(
-        conversation=make_conversation(
+        session=make_session(
             "conv-hash-stable",
             source_name="codex",
             title="Updated title",
@@ -229,7 +205,7 @@ async def test_ingest_updates_fields_without_hash_changes(
 
     with open_connection(None) as conn:
         convo = conn.execute(
-            "SELECT title, updated_at, provider_meta FROM conversations WHERE conversation_id = ?",
+            "SELECT title, updated_at, provider_meta FROM sessions WHERE session_id = ?",
             ("conv-hash-stable",),
         ).fetchone()
         msg = conn.execute(
@@ -246,10 +222,10 @@ async def test_ingest_updates_fields_without_hash_changes(
 
 async def test_ingest_removes_missing_attachments(
     workspace_env: dict[str, Path],
-    storage_repository: ConversationRepository,
+    storage_repository: SessionRepository,
 ) -> None:
     bundle = RecordBundle(
-        conversation=_conversation_record(),
+        session=_session_record(),
         messages=[make_message("msg:att", "conv:hash", text="hello", content_hash="msg:att")],
         attachments=[make_attachment("att-old", "conv:hash", "msg:att", mime_type="text/plain", size_bytes=10)],
     )
@@ -257,7 +233,7 @@ async def test_ingest_removes_missing_attachments(
 
     await save_bundle(
         RecordBundle(
-            conversation=_conversation_record(),
+            session=_session_record(),
             messages=[make_message("msg:att", "conv:hash", text="hello", content_hash="msg:att")],
             attachments=[],
         ),

@@ -18,8 +18,8 @@ from polylogue.archive.message.roles import Role
 from polylogue.sources.assembly import SidecarData
 from polylogue.sources.assembly_claude_code import ClaudeCodeAssemblySpec
 from polylogue.sources.parsers.base import (
-    ParsedConversation,
     ParsedMessage,
+    ParsedSession,
 )
 from polylogue.sources.parsers.claude.history import HistoryEntry, HistoryPaste
 from polylogue.types import Provider
@@ -38,13 +38,13 @@ def _user_message(provider_message_id: str, text: str, timestamp_iso: str) -> Pa
     )
 
 
-def _conversation(
+def _session(
     session_id: str,
     messages: list[ParsedMessage],
-) -> ParsedConversation:
-    return ParsedConversation(
+) -> ParsedSession:
+    return ParsedSession(
         source_name=Provider.CLAUDE_CODE,
-        provider_conversation_id=session_id,
+        provider_session_id=session_id,
         title="t",
         created_at=None,
         updated_at=None,
@@ -138,19 +138,19 @@ def test_discover_sidecars_handles_missing_history_jsonl(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
-# enrich_conversation: strong-identity matching by sessionId + timestamp.
+# enrich_session: strong-identity matching by sessionId + timestamp.
 # ---------------------------------------------------------------------------
 
 
 def test_enrich_marks_matched_user_message_with_paste_evidence() -> None:
     ts_ms = 1_700_000_000_000
-    conv = _conversation(
+    conv = _session(
         "sess-a",
         [_user_message("m1", "prompt one", _iso(ts_ms))],
     )
     history = {"sess-a": [_history_entry("sess-a", ts_ms, with_paste=True)]}
 
-    enriched = ClaudeCodeAssemblySpec().enrich_conversation(conv, _sidecars(history))
+    enriched = ClaudeCodeAssemblySpec().enrich_session(conv, _sidecars(history))
 
     annotated = enriched.messages[0].provider_meta or {}
     assert annotated.get("claude_code_history_paste") is True
@@ -159,27 +159,27 @@ def test_enrich_marks_matched_user_message_with_paste_evidence() -> None:
 def test_enrich_marks_hash_only_paste_as_evidence_too() -> None:
     """Hash-only history rows still record that a paste existed (AC #3)."""
     ts_ms = 1_700_000_000_000
-    conv = _conversation(
+    conv = _session(
         "sess-a",
         [_user_message("m1", "prompt one", _iso(ts_ms))],
     )
     history = {"sess-a": [_history_entry("sess-a", ts_ms, with_paste=True, hash_only=True)]}
 
-    enriched = ClaudeCodeAssemblySpec().enrich_conversation(conv, _sidecars(history))
+    enriched = ClaudeCodeAssemblySpec().enrich_session(conv, _sidecars(history))
 
     assert (enriched.messages[0].provider_meta or {}).get("claude_code_history_paste") is True
 
 
 def test_enrich_skips_message_outside_timestamp_tolerance() -> None:
     ts_ms = 1_700_000_000_000
-    conv = _conversation(
+    conv = _session(
         "sess-a",
         [_user_message("m1", "prompt one", _iso(ts_ms))],
     )
     # 30 seconds away — well outside the 6-second tolerance.
     history = {"sess-a": [_history_entry("sess-a", ts_ms + 30_000, with_paste=True)]}
 
-    enriched = ClaudeCodeAssemblySpec().enrich_conversation(conv, _sidecars(history))
+    enriched = ClaudeCodeAssemblySpec().enrich_session(conv, _sidecars(history))
 
     assert (enriched.messages[0].provider_meta or {}).get("claude_code_history_paste") is None
 
@@ -192,7 +192,7 @@ def test_enrich_does_not_silently_fan_evidence_across_ambiguous_matches() -> Non
     than annotate either.
     """
     ts_ms = 1_700_000_000_000
-    conv = _conversation(
+    conv = _session(
         "sess-a",
         [
             _user_message("m1", "prompt one", _iso(ts_ms)),
@@ -201,7 +201,7 @@ def test_enrich_does_not_silently_fan_evidence_across_ambiguous_matches() -> Non
     )
     history = {"sess-a": [_history_entry("sess-a", ts_ms + 500, with_paste=True)]}
 
-    enriched = ClaudeCodeAssemblySpec().enrich_conversation(conv, _sidecars(history))
+    enriched = ClaudeCodeAssemblySpec().enrich_session(conv, _sidecars(history))
 
     for msg in enriched.messages:
         assert (msg.provider_meta or {}).get("claude_code_history_paste") is None
@@ -210,19 +210,19 @@ def test_enrich_does_not_silently_fan_evidence_across_ambiguous_matches() -> Non
 def test_enrich_does_not_cross_session_boundaries() -> None:
     """Session A's history rows never annotate session B's messages."""
     ts_ms = 1_700_000_000_000
-    conv_a = _conversation(
+    conv_a = _session(
         "sess-a",
         [_user_message("m1", "a-prompt", _iso(ts_ms))],
     )
-    conv_b = _conversation(
+    conv_b = _session(
         "sess-b",
         [_user_message("m1", "b-prompt", _iso(ts_ms))],
     )
     history = {"sess-a": [_history_entry("sess-a", ts_ms, with_paste=True)]}
     sidecars = _sidecars(history)
 
-    enriched_a = ClaudeCodeAssemblySpec().enrich_conversation(conv_a, sidecars)
-    enriched_b = ClaudeCodeAssemblySpec().enrich_conversation(conv_b, sidecars)
+    enriched_a = ClaudeCodeAssemblySpec().enrich_session(conv_a, sidecars)
+    enriched_b = ClaudeCodeAssemblySpec().enrich_session(conv_b, sidecars)
 
     assert (enriched_a.messages[0].provider_meta or {}).get("claude_code_history_paste") is True
     assert (enriched_b.messages[0].provider_meta or {}).get("claude_code_history_paste") is None
@@ -237,22 +237,22 @@ def test_enrich_leaves_assistant_messages_alone() -> None:
         text="response",
         timestamp=_iso(ts_ms),
     )
-    conv = _conversation("sess-a", [assistant])
+    conv = _session("sess-a", [assistant])
     history = {"sess-a": [_history_entry("sess-a", ts_ms, with_paste=True)]}
 
-    enriched = ClaudeCodeAssemblySpec().enrich_conversation(conv, _sidecars(history))
+    enriched = ClaudeCodeAssemblySpec().enrich_session(conv, _sidecars(history))
 
     assert (enriched.messages[0].provider_meta or {}).get("claude_code_history_paste") is None
 
 
 def test_enrich_is_noop_when_history_index_empty() -> None:
     ts_ms = 1_700_000_000_000
-    conv = _conversation(
+    conv = _session(
         "sess-a",
         [_user_message("m1", "prompt", _iso(ts_ms))],
     )
 
-    result = ClaudeCodeAssemblySpec().enrich_conversation(conv, _sidecars())
+    result = ClaudeCodeAssemblySpec().enrich_session(conv, _sidecars())
 
     assert result is conv
 

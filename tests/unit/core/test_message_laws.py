@@ -1,8 +1,8 @@
-"""Semantic invariant laws for Message and Conversation models.
+"""Semantic invariant laws for Message and Session models.
 
 These laws encode structural guarantees that hold for any Message or
-Conversation. Example-heavy semantic projections live in
-``test_conversation_semantics.py``.
+Session. Example-heavy semantic projections live in
+``test_session_semantics.py``.
 """
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ from __future__ import annotations
 from hypothesis import HealthCheck, given, settings
 
 from polylogue.archive.message.roles import Role
-from polylogue.archive.models import Conversation, Message
-from tests.infra.strategies.messages import conversation_model_strategy, message_model_strategy
+from polylogue.archive.models import Message, Session
+from tests.infra.strategies.messages import message_model_strategy, session_model_strategy
 
 
 @given(message_model_strategy())
@@ -66,47 +66,47 @@ def test_dialogue_implies_user_or_assistant(msg: Message) -> None:
         assert msg.is_user or msg.is_assistant
 
 
-@given(conversation_model_strategy())
+@given(session_model_strategy())
 @settings(suppress_health_check=[HealthCheck.too_slow])
-def test_without_noise_removes_all_noise(conv: Conversation) -> None:
+def test_without_noise_removes_all_noise(conv: Session) -> None:
     clean = conv.without_noise()
     assert all(not msg.is_noise for msg in clean.messages)
 
 
-@given(conversation_model_strategy())
+@given(session_model_strategy())
 @settings(suppress_health_check=[HealthCheck.too_slow])
-def test_substantive_only_all_substantive(conv: Conversation) -> None:
+def test_substantive_only_all_substantive(conv: Session) -> None:
     filtered = conv.substantive_only()
     assert all(msg.is_substantive for msg in filtered.messages)
 
 
-@given(conversation_model_strategy())
+@given(session_model_strategy())
 @settings(suppress_health_check=[HealthCheck.too_slow])
-def test_without_noise_preserves_non_noise_count(conv: Conversation) -> None:
+def test_without_noise_preserves_non_noise_count(conv: Session) -> None:
     expected_ids = [msg.id for msg in conv.messages if not msg.is_noise]
     clean = conv.without_noise()
     assert [msg.id for msg in clean.messages] == expected_ids
 
 
-@given(conversation_model_strategy())
+@given(session_model_strategy())
 @settings(suppress_health_check=[HealthCheck.too_slow])
-def test_substantive_only_preserves_count(conv: Conversation) -> None:
+def test_substantive_only_preserves_count(conv: Session) -> None:
     expected_ids = [msg.id for msg in conv.messages if msg.is_substantive]
     filtered = conv.substantive_only()
     assert [msg.id for msg in filtered.messages] == expected_ids
 
 
-@given(conversation_model_strategy())
+@given(session_model_strategy())
 @settings(suppress_health_check=[HealthCheck.too_slow])
-def test_with_roles_preserves_selected_role_count(conv: Conversation) -> None:
+def test_with_roles_preserves_selected_role_count(conv: Session) -> None:
     expected_ids = [msg.id for msg in conv.messages if msg.is_user]
     filtered = conv.with_roles((Role.USER,))
     assert [msg.id for msg in filtered.messages] == expected_ids
 
 
-@given(conversation_model_strategy())
+@given(session_model_strategy())
 @settings(suppress_health_check=[HealthCheck.too_slow])
-def test_without_noise_idempotent(conv: Conversation) -> None:
+def test_without_noise_idempotent(conv: Session) -> None:
     once = conv.without_noise()
     twice = once.without_noise()
     assert [msg.id for msg in once.messages] == [msg.id for msg in twice.messages]

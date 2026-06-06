@@ -13,7 +13,7 @@ const Handoff = () => (
       <p>Smallest change that lets a user run <Mono>polylogued run</Mono> and open the local archive at <Mono>http://127.0.0.1:8765</Mono>. No new query semantics. Existing query/read kernel reused.</p>
       <div className="handoff__pills">
         <Pill state="ok">3–5 days</Pill>
-        <Pill state="ok">no schema migration</Pill>
+        <Pill state="ok">no schema rebuild</Pill>
         <Pill state="warn">touches click_app</Pill>
         <Pill state="ok">behind feature flag <Mono>POLYLOGUE_DAEMON=1</Mono></Pill>
       </div>

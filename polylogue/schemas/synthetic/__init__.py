@@ -1,4 +1,4 @@
-"""Schema-driven synthetic conversation generator.
+"""Schema-driven synthetic session generator.
 
 This package generates realistic provider-format test data from annotated
 JSON schemas.
@@ -6,12 +6,12 @@ JSON schemas.
 Submodules:
     - ``core`` — SyntheticCorpus facade and batch/report entrypoints
     - ``selection`` — package-aware provider/element selection
-    - ``builders`` — conversation builders and wire-format shaping
+    - ``builders`` — session builders and wire-format shaping
     - ``runtime`` — recursive schema-driven value emission
     - ``semantic_values`` — Semantic-role-driven value generation
     - ``relations`` — Relational constraint satisfaction
     - ``wire_formats`` — WireFormat, TreeConfig, PROVIDER_WIRE_FORMATS
-    - ``showcase`` — ConversationTheme and curated synthetic themes
+    - ``showcase`` — SessionTheme and curated synthetic themes
 """
 
 from polylogue.schemas.synthetic.core import (

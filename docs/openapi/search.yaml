@@ -15,13 +15,13 @@ servers:
       default: '8765'
       description: Daemon HTTP port; see `polylogued status`.
 paths:
-  /api/conversations:
+  /api/sessions:
     get:
-      summary: Ranked conversation search and list
+      summary: Ranked session search and list
       description: When ``query`` is supplied, returns a ranked search envelope (``SearchEnvelope``) with per-hit match evidence
-        and pagination handles. When ``query`` is omitted, returns the conversation list envelope. Both envelopes carry ``total``,
+        and pagination handles. When ``query`` is omitted, returns the session list envelope. Both envelopes carry ``total``,
         ``limit``, ``offset``, and ``next_cursor`` for cursor-based pagination.
-      operationId: searchConversations
+      operationId: searchSessions
       parameters:
       - name: query
         in: query
@@ -53,7 +53,7 @@ paths:
           type: string
       - name: since
         in: query
-        description: ISO 8601 lower bound on conversation date.
+        description: ISO 8601 lower bound on session date.
         required: false
         schema:
           type: string
@@ -81,29 +81,146 @@ paths:
           type: string
       responses:
         '200':
-          description: Ranked search envelope (when ``query`` is supplied) or conversation list envelope.
+          description: Ranked search envelope (when ``query`` is supplied) or session list envelope.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SearchEnvelope'
 components:
   schemas:
-    ConversationSearchHitPayload:
+    QueryMissDiagnosticsPayload:
+      additionalProperties: false
+      description: Shared diagnostics payload for zero-result queries.
+      properties:
+        message:
+          title: Message
+          type: string
+        filters:
+          items:
+            type: string
+          title: Filters
+          type: array
+        reasons:
+          items:
+            $ref: '#/components/schemas/QueryMissReasonPayload'
+          title: Reasons
+          type: array
+        archive_session_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Archive Session Count
+        raw_session_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Raw Session Count
+      required:
+      - message
+      - filters
+      - reasons
+      title: QueryMissDiagnosticsPayload
+      type: object
+    QueryMissReasonPayload:
+      additionalProperties: false
+      description: Shared reason entry explaining why a query produced no results.
+      properties:
+        code:
+          title: Code
+          type: string
+        severity:
+          title: Severity
+          type: string
+        summary:
+          title: Summary
+          type: string
+        detail:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Detail
+        count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Count
+      required:
+      - code
+      - severity
+      - summary
+      title: QueryMissReasonPayload
+      type: object
+    ReaderActionAvailabilityPayload:
+      additionalProperties: false
+      description: 'Per-target reader action availability with explicit disabled reason.
+
+
+        Reader actions surface seven distinct states (see :data:`ReaderActionState`)
+
+        so the UI can render "disabled because X" / "loading" / "dangerous"
+
+        without conflating them under a single boolean (#1488). ``enabled``
+
+        is kept as a back-compat alias derived from ``state`` so existing
+
+        call sites that only know about enabled/disabled continue to work.'
+      properties:
+        enabled:
+          default: true
+          title: Enabled
+          type: boolean
+        state:
+          default: enabled
+          enum:
+          - enabled
+          - disabled
+          - partial
+          - dangerous
+          - loading
+          - target
+          - unavailable
+          title: State
+          type: string
+        disabled_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Disabled Reason
+        repair_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Repair Path
+        inspect_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Inspect Path
+      title: ReaderActionAvailabilityPayload
+      type: object
+    SessionSearchHitPayload:
       additionalProperties: false
       description: Search-hit payload with summary identity and match evidence.
       properties:
-        conversation:
-          $ref: '#/components/schemas/ConversationSummaryPayload'
+        session:
+          $ref: '#/components/schemas/SessionSummaryPayload'
         match:
-          $ref: '#/components/schemas/ConversationSearchMatchPayload'
+          $ref: '#/components/schemas/SessionSearchMatchPayload'
       required:
-      - conversation
+      - session
       - match
-      title: ConversationSearchHitPayload
+      title: SessionSearchHitPayload
       type: object
-    ConversationSearchMatchPayload:
+    SessionSearchMatchPayload:
       additionalProperties: false
-      description: "Evidence explaining why a conversation appeared in search results.\n\n``score_kind`` describes the meaning\
+      description: "Evidence explaining why a session appeared in search results.\n\n``score_kind`` describes the meaning\
         \ of ``score`` so consumers don't\nhave to guess at ordering or comparability:\n\n- ``\"bm25\"`` — SQLite FTS5 raw\
         \ BM25 (lower magnitude = better match;\n  values typically negative; never comparable across queries).\n- ``\"rrf\"\
         `` — Reciprocal Rank Fusion (higher = stronger consensus;\n  ``score_components`` carries per-lane ``*_rank`` and\
@@ -195,17 +312,17 @@ components:
       - rank
       - retrieval_lane
       - match_surface
-      title: ConversationSearchMatchPayload
+      title: SessionSearchMatchPayload
       type: object
-    ConversationSummaryPayload:
+    SessionSummaryPayload:
       additionalProperties: false
-      description: Compact conversation summary payload used by MCP/search surfaces.
+      description: Compact session summary payload used by MCP/search surfaces.
       properties:
         id:
           title: Id
           type: string
-        provider:
-          title: Provider
+        origin:
+          title: Origin
           type: string
         title:
           title: Title
@@ -245,127 +362,10 @@ components:
           title: Updated At
       required:
       - id
-      - provider
+      - origin
       - title
       - message_count
-      title: ConversationSummaryPayload
-      type: object
-    QueryMissDiagnosticsPayload:
-      additionalProperties: false
-      description: Shared diagnostics payload for zero-result queries.
-      properties:
-        message:
-          title: Message
-          type: string
-        filters:
-          items:
-            type: string
-          title: Filters
-          type: array
-        reasons:
-          items:
-            $ref: '#/components/schemas/QueryMissReasonPayload'
-          title: Reasons
-          type: array
-        archive_conversation_count:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          default: null
-          title: Archive Conversation Count
-        raw_conversation_count:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          default: null
-          title: Raw Conversation Count
-      required:
-      - message
-      - filters
-      - reasons
-      title: QueryMissDiagnosticsPayload
-      type: object
-    QueryMissReasonPayload:
-      additionalProperties: false
-      description: Shared reason entry explaining why a query produced no results.
-      properties:
-        code:
-          title: Code
-          type: string
-        severity:
-          title: Severity
-          type: string
-        summary:
-          title: Summary
-          type: string
-        detail:
-          anyOf:
-          - type: string
-          - type: 'null'
-          default: null
-          title: Detail
-        count:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          default: null
-          title: Count
-      required:
-      - code
-      - severity
-      - summary
-      title: QueryMissReasonPayload
-      type: object
-    ReaderActionAvailabilityPayload:
-      additionalProperties: false
-      description: 'Per-target reader action availability with explicit disabled reason.
-
-
-        Reader actions surface seven distinct states (see :data:`ReaderActionState`)
-
-        so the UI can render "disabled because X" / "loading" / "dangerous"
-
-        without conflating them under a single boolean (#1488). ``enabled``
-
-        is kept as a back-compat alias derived from ``state`` so existing
-
-        call sites that only know about enabled/disabled continue to work.'
-      properties:
-        enabled:
-          default: true
-          title: Enabled
-          type: boolean
-        state:
-          default: enabled
-          enum:
-          - enabled
-          - disabled
-          - partial
-          - dangerous
-          - loading
-          - target
-          - unavailable
-          title: State
-          type: string
-        disabled_reason:
-          anyOf:
-          - type: string
-          - type: 'null'
-          default: null
-          title: Disabled Reason
-        repair_path:
-          anyOf:
-          - type: string
-          - type: 'null'
-          default: null
-          title: Repair Path
-        inspect_path:
-          anyOf:
-          - type: string
-          - type: 'null'
-          default: null
-          title: Inspect Path
-      title: ReaderActionAvailabilityPayload
+      title: SessionSummaryPayload
       type: object
     TargetRefPayload:
       additionalProperties: false
@@ -373,19 +373,19 @@ components:
       properties:
         target_type:
           enum:
-          - conversation
+          - session
           - message
           title: Target Type
           type: string
         target_id:
           title: Target Id
           type: string
-        conversation_id:
+        session_id:
           anyOf:
           - type: string
           - type: 'null'
           default: null
-          title: Conversation Id
+          title: Session Id
         message_id:
           anyOf:
           - type: string
@@ -414,21 +414,21 @@ components:
       description: "Typed ranked-result envelope shared across CLI, MCP, API, and daemon HTTP.\n\nThis is the canonical search\
         \ response shape (#1266). The same envelope\nis emitted from every read surface so downstream consumers — shell\n\
         pipelines, LLM tool-use harnesses, web clients — see one stable\ncontract regardless of which surface produced the\
-        \ result.\n\nFields:\n\n- ``hits``: ordered tuple of :class:`ConversationSearchHitPayload`\n  (already evidence-bearing\
-        \ — see #873).\n- ``total``: total number of matching conversations. Every read surface\n  (CLI, MCP, daemon HTTP,\
-        \ Python API) computes this via the shared\n  ``spec.count()`` so the field carries a concrete count uniformly\n \
-        \ (#1749). ``None`` is reserved for the genuine no-spec case where a\n  surface emits a hits list with no backing\
-        \ query spec to count from.\n- ``limit``: applied page size.\n- ``offset``: applied byte/row offset (offset-based\
-        \ pagination is\n  \"best-effort, not stable\" for ranked results; prefer ``next_cursor``).\n- ``next_offset``: convenience\
-        \ pointer for offset-based clients; only\n  set when more results are likely available.\n- ``next_cursor``: opaque\
-        \ keyset cursor encoding (rank, conversation_id)\n  for stable rank-first pagination. Pass back unchanged in the\n\
-        \  following request.\n- ``query``: the search query text actually applied (after CLI/MCP/HTTP\n  coercion). Empty\
-        \ string when there is no FTS query.\n- ``sort``: applied sort field, e.g. ``\"rank\"`` (default for ranked\n  search),\
-        \ ``\"date\"``, ``\"messages\"``. ``None`` when no explicit sort\n  was requested and the underlying lane order is\
-        \ preserved.\n- ``retrieval_lane``: the *resolved* per-hit ranking lane — one of\n  ``\"dialogue\"``, ``\"actions\"\
-        ``, ``\"hybrid\"``, ``\"semantic\"``,\n  ``\"auto\"``. This is distinct from the *request* ``retrieval_lane``\n  input\
-        \ parameter, whose closed accepted vocabulary is only\n  ``QUERY_RETRIEVAL_LANES`` (``\"auto\"``/``\"dialogue\"``/``\"\
-        actions\"``/\n  ``\"hybrid\"``) — ``\"semantic\"`` is never a request lane (a vector-only\n  run is driven by ``similar_text``)\
+        \ result.\n\nFields:\n\n- ``hits``: ordered tuple of :class:`SessionSearchHitPayload`\n  (already evidence-bearing\
+        \ — see #873).\n- ``total``: total number of matching sessions. Every read surface\n  (CLI, MCP, daemon HTTP, Python\
+        \ API) computes this via the shared\n  ``spec.count()`` so the field carries a concrete count uniformly\n  (#1749).\
+        \ ``None`` is reserved for the genuine no-spec case where a\n  surface emits a hits list with no backing query spec\
+        \ to count from.\n- ``limit``: applied page size.\n- ``offset``: applied byte/row offset (offset-based pagination\
+        \ is\n  \"best-effort, not stable\" for ranked results; prefer ``next_cursor``).\n- ``next_offset``: convenience pointer\
+        \ for offset-based clients; only\n  set when more results are likely available.\n- ``next_cursor``: opaque keyset\
+        \ cursor encoding (rank, session_id)\n  for stable rank-first pagination. Pass back unchanged in the\n  following\
+        \ request.\n- ``query``: the search query text actually applied (after CLI/MCP/HTTP\n  coercion). Empty string when\
+        \ there is no FTS query.\n- ``sort``: applied sort field, e.g. ``\"rank\"`` (default for ranked\n  search), ``\"date\"\
+        ``, ``\"messages\"``. ``None`` when no explicit sort\n  was requested and the underlying lane order is preserved.\n\
+        - ``retrieval_lane``: the *resolved* per-hit ranking lane — one of\n  ``\"dialogue\"``, ``\"actions\"``, ``\"hybrid\"\
+        ``, ``\"semantic\"``,\n  ``\"auto\"``. This is distinct from the *request* ``retrieval_lane``\n  input parameter,\
+        \ whose closed accepted vocabulary is only\n  ``QUERY_RETRIEVAL_LANES`` (``\"auto\"``/``\"dialogue\"``/``\"actions\"\
+        ``/\n  ``\"hybrid\"``) — ``\"semantic\"`` is never a request lane (a vector-only\n  run is driven by ``similar_text``)\
         \ but IS reported here as the\n  resolved lane for vector hits (#1749). ``auto`` means the surface\n  left the lane\
         \ to the planner.\n- ``ranking_policy``: policy identifier the lane used to order hits.\n  Currently always :data:`RANKING_POLICY_MIXED`.\n\
         - ``ranking_policy_version``: numeric version of the ranking policy\n  so external consumers can detect ordering changes.\n\
@@ -436,7 +436,7 @@ components:
       properties:
         hits:
           items:
-            $ref: '#/components/schemas/ConversationSearchHitPayload'
+            $ref: '#/components/schemas/SessionSearchHitPayload'
           title: Hits
           type: array
         total:
@@ -496,9 +496,9 @@ components:
       - retrieval_lane
       title: SearchEnvelope
       type: object
-    ConversationFlagsPayload:
+    SessionFlagsPayload:
       additionalProperties: false
-      description: Boolean flags summarizing conversation content characteristics.
+      description: Boolean flags summarizing session content characteristics.
       properties:
         has_tool_use:
           default: false
@@ -512,11 +512,11 @@ components:
           default: false
           title: Has Paste
           type: boolean
-      title: ConversationFlagsPayload
+      title: SessionFlagsPayload
       type: object
-    ConversationListRowPayload:
+    SessionListRowPayload:
       additionalProperties: false
-      description: 'Conversation row payload used by CLI list, JSON, and YAML surfaces.
+      description: 'Session row payload used by CLI list, JSON, and YAML surfaces.
 
 
         Carries the canonical row shape for the web reader contract (#848).'
@@ -524,8 +524,8 @@ components:
         id:
           title: Id
           type: string
-        provider:
-          title: Provider
+        origin:
+          title: Origin
           type: string
         title:
           title: Title
@@ -604,14 +604,14 @@ components:
           title: Cwd Display
         flags:
           anyOf:
-          - $ref: '#/components/schemas/ConversationFlagsPayload'
+          - $ref: '#/components/schemas/SessionFlagsPayload'
           - type: 'null'
           default: null
       required:
       - id
-      - provider
+      - origin
       - title
-      title: ConversationListRowPayload
+      title: SessionListRowPayload
       type: object
   x-polylogue-ranking-policy:
     default: mixed-bm25-rrf-vector

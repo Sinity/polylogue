@@ -193,9 +193,9 @@ extension, and external clients hand-type each fetch.
 The `provider` vs `source` dual-vocabulary period (see
 `docs/architecture.md` § "Dual Vocabulary Period") affects every
 surface uniformly: storage column `provider_name`, CLI `--provider`,
-MCP `provider`, HTTP `?provider=`. No surface has migrated yet;
+MCP `provider`, HTTP `?provider=`. No surface has moved yet;
 #1022 and #1214 track the staged transition. The audit confirms no
-half-migrated surface exists today.
+half-moved surface exists today.
 
 `conversation_id` vs `conv_id` is split inside the daemon:
 `get_conversation`, `_do_get_conversation_attachments`,

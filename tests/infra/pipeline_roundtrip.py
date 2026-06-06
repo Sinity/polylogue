@@ -6,13 +6,13 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.archive.conversation.models import Conversation
+from polylogue.archive.session.domain_models import Session
 from polylogue.core.json import JSONValue, loads
 from polylogue.pipeline.prepare_models import TransformResult
 from polylogue.pipeline.prepare_transform import transform_to_records
 from polylogue.sources.dispatch import detect_provider, parse_payload
-from polylogue.sources.parsers.base import ParsedConversation
-from polylogue.storage.hydrators import conversation_from_records
+from polylogue.sources.parsers.base import ParsedSession
+from polylogue.storage.hydrators import session_from_records
 from tests.infra.storage_records import store_records
 
 
@@ -20,7 +20,7 @@ from tests.infra.storage_records import store_records
 class PipelineRoundtrip:
     """Parsed and transformed representation of one source payload."""
 
-    parsed: ParsedConversation
+    parsed: ParsedSession
     transform: TransformResult
 
 
@@ -45,7 +45,7 @@ def parse_and_transform_payload(
     assert detected is not None, f"Provider detection failed for {source_name}"
 
     parsed_list = parse_payload(detected, payload, f"rt-{unique_id}")
-    assert parsed_list, "Parser returned no conversations"
+    assert parsed_list, "Parser returned no sessions"
     parsed = parsed_list[0]
     return PipelineRoundtrip(
         parsed=parsed,
@@ -53,16 +53,16 @@ def parse_and_transform_payload(
     )
 
 
-def save_transform_and_hydrate(result: TransformResult, db_conn: sqlite3.Connection) -> Conversation:
+def save_transform_and_hydrate(result: TransformResult, db_conn: sqlite3.Connection) -> Session:
     """Persist transform records and hydrate the resulting bundle."""
     bundle = result.bundle
     store_records(
-        conversation=bundle.conversation,
+        session=bundle.session,
         messages=bundle.messages,
         attachments=bundle.attachments,
         conn=db_conn,
     )
-    return conversation_from_records(bundle.conversation, bundle.messages, bundle.attachments)
+    return session_from_records(bundle.session, bundle.messages, bundle.attachments)
 
 
 __all__ = [

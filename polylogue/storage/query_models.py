@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from typing_extensions import TypedDict
 
 
-class ConversationListQueryKwargs(TypedDict):
+class SessionListQueryKwargs(TypedDict):
     source: str | None
     provider: str | None
     providers: list[str] | None
@@ -35,7 +35,7 @@ class ConversationListQueryKwargs(TypedDict):
     include_provider_meta: bool
 
 
-class ConversationCountQueryKwargs(TypedDict):
+class SessionCountQueryKwargs(TypedDict):
     source: str | None
     provider: str | None
     providers: list[str] | None
@@ -60,8 +60,8 @@ class ConversationCountQueryKwargs(TypedDict):
 
 
 @dataclass(frozen=True)
-class ConversationRecordQuery:
-    """Canonical record-level conversation selection for storage reads."""
+class SessionRecordQuery:
+    """Canonical record-level session selection for storage reads."""
 
     source: str | None = None
     provider: str | None = None
@@ -90,16 +90,16 @@ class ConversationRecordQuery:
     message_type: str | None = None
     include_provider_meta: bool = False
 
-    def with_limit(self, limit: int | None) -> ConversationRecordQuery:
+    def with_limit(self, limit: int | None) -> SessionRecordQuery:
         return replace(self, limit=limit)
 
-    def with_offset(self, offset: int) -> ConversationRecordQuery:
+    def with_offset(self, offset: int) -> SessionRecordQuery:
         return replace(self, offset=offset)
 
-    def for_count(self) -> ConversationRecordQuery:
+    def for_count(self) -> SessionRecordQuery:
         return replace(self, limit=None, offset=0)
 
-    def without_unstable_semantic_filters(self) -> ConversationRecordQuery:
+    def without_unstable_semantic_filters(self) -> SessionRecordQuery:
         return replace(
             self,
             referenced_path=(),
@@ -114,7 +114,7 @@ class ConversationRecordQuery:
             return None, list(self.providers)
         return None, None
 
-    def to_list_kwargs(self) -> ConversationListQueryKwargs:
+    def to_list_kwargs(self) -> SessionListQueryKwargs:
         return {
             "source": self.source,
             "provider": self.provider,
@@ -143,7 +143,7 @@ class ConversationRecordQuery:
             "include_provider_meta": self.include_provider_meta,
         }
 
-    def to_count_kwargs(self) -> ConversationCountQueryKwargs:
+    def to_count_kwargs(self) -> SessionCountQueryKwargs:
         return {
             "source": self.source,
             "provider": self.provider,
@@ -195,7 +195,7 @@ class SessionProfileListQuery:
 class SessionTimelineListQuery:
     """Canonical session timeline selection for work-event and phase reads."""
 
-    conversation_id: str | None = None
+    session_id: str | None = None
     provider: str | None = None
     since: str | None = None
     until: str | None = None
@@ -242,9 +242,9 @@ class ArtifactObservationListQuery:
 
 __all__ = [
     "ArtifactObservationListQuery",
-    "ConversationCountQueryKwargs",
-    "ConversationListQueryKwargs",
-    "ConversationRecordQuery",
+    "SessionCountQueryKwargs",
+    "SessionListQueryKwargs",
+    "SessionRecordQuery",
     "SessionProfileListQuery",
     "SessionTagRollupListQuery",
     "SessionTimelineListQuery",

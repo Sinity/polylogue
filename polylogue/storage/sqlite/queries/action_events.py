@@ -6,74 +6,26 @@ import aiosqlite
 
 from polylogue.core.common import SQL_ACTION_EVENT_INSERT as _ACTION_EVENT_INSERT_SQL
 from polylogue.storage.runtime import ActionEventRecord, _json_array_or_none
-from polylogue.storage.sqlite.queries.mappers import _row_to_action_event
 
 __all__ = [
-    "get_action_events",
-    "get_action_events_batch",
     "replace_action_events",
 ]
 
 
-async def get_action_events(
-    conn: aiosqlite.Connection,
-    conversation_id: str,
-) -> list[ActionEventRecord]:
-    cursor = await conn.execute(
-        """
-        SELECT *
-        FROM action_events
-        WHERE conversation_id = ?
-        ORDER BY sort_key, message_id, sequence_index
-        """,
-        (conversation_id,),
-    )
-    rows = await cursor.fetchall()
-    return [_row_to_action_event(row) for row in rows]
-
-
-async def get_action_events_batch(
-    conn: aiosqlite.Connection,
-    conversation_ids: list[str],
-) -> dict[str, list[ActionEventRecord]]:
-    if not conversation_ids:
-        return {}
-    result: dict[str, list[ActionEventRecord]] = {conversation_id: [] for conversation_id in conversation_ids}
-    batch_size = 900
-    for index in range(0, len(conversation_ids), batch_size):
-        batch = conversation_ids[index : index + batch_size]
-        placeholders = ",".join("?" for _ in batch)
-        cursor = await conn.execute(
-            f"""
-            SELECT *
-            FROM action_events
-            WHERE conversation_id IN ({placeholders})
-            ORDER BY conversation_id, sort_key, message_id, sequence_index
-            """,
-            batch,
-        )
-        rows = await cursor.fetchall()
-        for row in rows:
-            conversation_id = row["conversation_id"]
-            if conversation_id in result:
-                result[conversation_id].append(_row_to_action_event(row))
-    return result
-
-
 async def replace_action_events(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
     records: list[ActionEventRecord],
     transaction_depth: int,
 ) -> None:
-    await conn.execute("DELETE FROM action_events WHERE conversation_id = ?", (conversation_id,))
+    await conn.execute("DELETE FROM action_events WHERE session_id = ?", (session_id,))
     if records:
         await conn.executemany(
             _ACTION_EVENT_INSERT_SQL,
             [
                 (
                     record.event_id,
-                    record.conversation_id,
+                    record.session_id,
                     record.message_id,
                     record.materializer_version,
                     record.source_block_id,

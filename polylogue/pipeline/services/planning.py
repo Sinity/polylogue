@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from polylogue.config import Config, Source
 from polylogue.protocols import ProgressCallback
-from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 from .planning_backlog import collect_parse_backlog, collect_validation_backlog
@@ -17,7 +17,7 @@ class PlanningService:
 
     def __init__(self, backend: SQLiteBackend, config: Config):
         self.backend = backend
-        self.repository = ConversationRepository(backend=backend)
+        self.repository = SessionRepository(backend=backend)
         self.config = config
 
     async def collect_validation_backlog(

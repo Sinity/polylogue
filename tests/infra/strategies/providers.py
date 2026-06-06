@@ -87,7 +87,7 @@ def chatgpt_export_strategy(
     corpus = _corpus_for("chatgpt")
     seed = draw(st.integers(min_value=0, max_value=2**32))
     n = draw(st.integers(min_value=max(min_messages, 2), max_value=max_messages))
-    raw = corpus.generate(count=1, messages_per_conversation=range(n, n + 1), seed=seed)[0]
+    raw = corpus.generate(count=1, messages_per_session=range(n, n + 1), seed=seed)[0]
     return _json_document_from_bytes(raw)
 
 
@@ -125,7 +125,7 @@ def claude_ai_export_strategy(
     corpus = _corpus_for("claude-ai")
     seed = draw(st.integers(min_value=0, max_value=2**32))
     n = draw(st.integers(min_value=max(min_messages, 2), max_value=max_messages))
-    raw = corpus.generate(count=1, messages_per_conversation=range(n, n + 1), seed=seed)[0]
+    raw = corpus.generate(count=1, messages_per_session=range(n, n + 1), seed=seed)[0]
     return _json_document_from_bytes(raw)
 
 
@@ -154,7 +154,7 @@ def claude_code_session_strategy(
     corpus = _corpus_for("claude-code")
     seed = draw(st.integers(min_value=0, max_value=2**32))
     n = draw(st.integers(min_value=max(min_messages, 2), max_value=max_messages))
-    raw = corpus.generate(count=1, messages_per_conversation=range(n, n + 1), seed=seed)[0]
+    raw = corpus.generate(count=1, messages_per_session=range(n, n + 1), seed=seed)[0]
     return _jsonl_documents(raw)
 
 
@@ -173,7 +173,7 @@ def gemini_export_strategy(
     corpus = _corpus_for("gemini")
     seed = draw(st.integers(min_value=0, max_value=2**32))
     n = draw(st.integers(min_value=max(min_messages, 2), max_value=max_messages))
-    raw = corpus.generate(count=1, messages_per_conversation=range(n, n + 1), seed=seed)[0]
+    raw = corpus.generate(count=1, messages_per_session=range(n, n + 1), seed=seed)[0]
     return _json_document_from_bytes(raw)
 
 
@@ -221,7 +221,7 @@ def codex_session_strategy(
     corpus = _corpus_for("codex")
     seed = draw(st.integers(min_value=0, max_value=2**32))
     n = draw(st.integers(min_value=max(min_messages, 2), max_value=max_messages))
-    raw = corpus.generate(count=1, messages_per_conversation=range(n, n + 1), seed=seed)[0]
+    raw = corpus.generate(count=1, messages_per_session=range(n, n + 1), seed=seed)[0]
     records = _jsonl_documents(raw)
 
     if use_envelope and records:
@@ -434,7 +434,7 @@ def provider_export_strategy(
     corpus = _corpus_for(provider)
     seed = draw(st.integers(min_value=0, max_value=2**32))
     n = draw(st.integers(min_value=max(min_msgs, 2), max_value=max_msgs))
-    return corpus.generate(count=1, messages_per_conversation=range(n, n + 1), seed=seed)[0]
+    return corpus.generate(count=1, messages_per_session=range(n, n + 1), seed=seed)[0]
 
 
 @st.composite

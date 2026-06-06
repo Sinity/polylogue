@@ -96,6 +96,10 @@ _STUCK_SAMPLE_LIMIT = 10
 
 def cursor_lag_summary_info(dbf: Path, *, now: datetime | None = None) -> CursorLagSummary:
     """Return per-family cursor-lag rollups read from ``live_cursor``."""
+    resolved_now = now or datetime.now(UTC)
+    ops_summary = _archive_cursor_lag_summary_info(dbf.with_name("ops.db"), now=resolved_now)
+    if ops_summary is not None:
+        return _decorate_with_baselines(ops_summary, dbf, now=resolved_now)
     if not dbf.exists():
         return CursorLagSummary()
     try:
@@ -118,8 +122,52 @@ def cursor_lag_summary_info(dbf: Path, *, now: datetime | None = None) -> Cursor
     except sqlite3.Error:
         return CursorLagSummary()
 
-    summary = _project_rows(rows, now=now or datetime.now(UTC))
-    return _decorate_with_baselines(summary, dbf, now=now or datetime.now(UTC))
+    summary = _project_rows(rows, now=resolved_now)
+    return _decorate_with_baselines(summary, dbf, now=resolved_now)
+
+
+def _archive_cursor_lag_summary_info(ops_db: Path, *, now: datetime) -> CursorLagSummary | None:
+    if not ops_db.exists():
+        return None
+    try:
+        conn = open_readonly_connection(ops_db)
+        try:
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ingest_cursor'"
+            ).fetchone()
+            if has_table is None:
+                return None
+            rows = conn.execute(
+                """
+                SELECT
+                    source_path,
+                    COALESCE(stat_size, byte_offset, 0) AS byte_size,
+                    COALESCE(byte_offset, 0) AS byte_offset,
+                    failure_count,
+                    excluded,
+                    updated_at_ms
+                FROM ingest_cursor
+                """
+            ).fetchall()
+            if not rows:
+                return None
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+
+    projected_rows: list[sqlite3.Row | tuple[object, ...]] = [
+        (
+            row[0],
+            row[1],
+            row[2],
+            row[3],
+            row[4],
+            _iso_from_epoch_ms(row[5]),
+        )
+        for row in rows
+    ]
+    return _project_rows(projected_rows, now=now)
 
 
 def _decorate_with_baselines(
@@ -132,8 +180,8 @@ def _decorate_with_baselines(
 
     Lazy import to avoid a config-load cycle when projection is invoked
     from non-daemon paths (e.g. CLI status against a read-only archive).
-    The decoration is a pure read against ``live_cursor_lag_sample`` plus
-    the same config the anomaly check uses; when either is unavailable
+    The decoration is a pure read against archive ops cursor-lag samples
+    plus the same config the anomaly check uses; when either is unavailable
     the family carries its default ``CursorLagBaselineState()``.
     """
     if not summary.family_summaries:
@@ -313,6 +361,10 @@ def _age_seconds(iso_value: str, *, now: datetime) -> float:
     if observed.tzinfo is None:
         observed = observed.replace(tzinfo=UTC)
     return max(0.0, (now - observed.astimezone(UTC)).total_seconds())
+
+
+def _iso_from_epoch_ms(value: object) -> str:
+    return datetime.fromtimestamp(_row_int(value) / 1000.0, UTC).isoformat()
 
 
 __all__ = [

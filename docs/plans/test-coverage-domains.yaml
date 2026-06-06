@@ -103,7 +103,7 @@ domains:
       - polylogue/storage/repository/
       - polylogue/storage/sqlite/
     covering_tests:
-      - tests/unit/storage/test_backend.py
+      - tests/unit/storage/test_store_ops.py
       - tests/unit/storage/test_repository_lifecycle_laws.py
       - tests/unit/storage/test_repository_state_machine.py
     notes: covered — save, get, list, delete, metadata, lifecycle laws
@@ -128,7 +128,7 @@ domains:
   - domain: tags
     production_modules:
       - polylogue/storage/repository/archive/repository_writes.py
-      - polylogue/storage/sqlite/queries/conversations_identity.py
+      - polylogue/storage/sqlite/queries/sessions_identity.py
     covering_tests:
       - tests/unit/storage/test_repository_lifecycle_laws.py
       - tests/unit/storage/test_tag_contracts.py
@@ -189,7 +189,7 @@ domains:
     covering_tests:
       - tests/unit/cli/test_click_app.py
       - tests/unit/cli/test_cli_error_boundaries.py
-      - tests/unit/cli/test_query_exec.py
+      - tests/unit/cli/test_query_verbs_runtime.py
       - tests/unit/cli/test_deterministic_output.py
       - tests/unit/cli/test_json_envelope_contract.py
       - tests/unit/cli/test_terminal_snapshots.py
@@ -273,7 +273,7 @@ domains:
 #   - site/rendering: GitHub Pages site generation not tested
 #   - auth: no authentication boundary tests
 #   - scale: no scale/performance regression tests (benchmarks are out-of-band)
-#   - schema_migration: in-place schema upgrade scripts not tested
+#   - schema_upgrade: in-place schema upgrade scripts not tested
 #   - browser_capture: not a testable surface (external browser integration)
 #   - cli_insights: insights subcommands tested via surface scenarios only
 #

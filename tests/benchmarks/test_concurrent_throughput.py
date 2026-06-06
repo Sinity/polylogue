@@ -4,6 +4,12 @@ Measures: read throughput under write load, WAL growth under concurrency,
 concurrent reader scaling, and the performance cost of WAL checkpointing
 during active reads.
 
+These benchmarks run against the ``index.db``: the corpus is
+seeded through ``SessionBuilder`` (native ``ArchiveStore`` writes), reads go
+through the archive `blocks_fts` full-text index, and the write load inserts
+archive `blocks` rows (which generate WAL traffic and re-index via the
+``blocks_fts`` triggers).
+
 Run with:
     pytest tests/benchmarks/test_concurrent_throughput.py \\
       --benchmark-enable -p no:xdist -o "addopts=" -v
@@ -19,63 +25,88 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage.search import search_messages
-from polylogue.storage.sqlite.connection_profile import open_connection
 from tests.benchmarks.helpers import BenchmarkFixture
-from tests.infra.storage_records import (
-    ConversationBuilder,
-    DbFactory,
-)
+from tests.infra.storage_records import SessionBuilder
+
+_WORDS = [
+    "analysis",
+    "python",
+    "data",
+    "test",
+    "implementation",
+    "performance",
+    "benchmark",
+    "query",
+    "search",
+    "index",
+    "configuration",
+    "deployment",
+    "monitoring",
+    "pipeline",
+    "optimization",
+    "refactoring",
+    "validation",
+    "integration",
+]
 
 
-def _populate_corpus(db_path: Path, n_messages: int = 2000) -> int:
-    """Populate a database with test conversations and return message count."""
-    _ = DbFactory(db_path)  # initialize schema
-    words = [
-        "analysis",
-        "python",
-        "data",
-        "test",
-        "implementation",
-        "performance",
-        "benchmark",
-        "query",
-        "search",
-        "index",
-        "configuration",
-        "deployment",
-        "monitoring",
-        "pipeline",
-        "optimization",
-        "refactoring",
-        "validation",
-        "integration",
-    ]
+def _populate_corpus(archive_root: Path, n_messages: int = 2000) -> tuple[Path, int]:
+    """Seed an archive `index.db` corpus, returning (index_db_path, message_count).
+
+    Sessions and messages are written through ``SessionBuilder`` so the
+    archive `blocks` / ``blocks_fts`` indexes are maintained by the archive
+    write path and triggers.
+    """
+    archive_root.mkdir(parents=True, exist_ok=True)
+    db_path = archive_root / "index.db"
 
     n_convs = max(5, n_messages // 40)
     msgs_per_conv = n_messages // n_convs
 
     for c in range(n_convs):
-        conv_id = f"concurrent-conv-{c:04d}"
-        builder = ConversationBuilder(db_path, conv_id)
+        builder = SessionBuilder(db_path, f"concurrent-conv-{c:04d}")
         builder.title(f"Concurrent Test {c}")
-
         for m in range(msgs_per_conv):
-            word = words[(c * msgs_per_conv + m) % len(words)]
+            word = _WORDS[(c * msgs_per_conv + m) % len(_WORDS)]
             role = "user" if m % 2 == 0 else "assistant"
-            text = f"Message {m} in conv {c}: {word} {words[(m + 1) % len(words)]} "
-            text += "additional context for realistic message size. "
-            text += "The quick brown fox jumps over the lazy dog. " * 3
+            text = (
+                f"Message {m} in conv {c}: {word} {_WORDS[(m + 1) % len(_WORDS)]} "
+                "additional context for realistic message size. " + "The quick brown fox jumps over the lazy dog. " * 3
+            )
             builder.add_message(f"msg-{c:04d}-{m:04d}", role=role, text=text)
-
         builder.save()
 
-    with open_connection(db_path) as conn:
-        from polylogue.storage.index import rebuild_index
+    return db_path, n_convs * msgs_per_conv
 
-        rebuild_index(conn)
 
-    return n_convs * msgs_per_conv
+def _fts_search(db_path: Path, query: str, limit: int = 20) -> int:
+    """Run an archive `blocks_fts` query, returning the hit count."""
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30.0)
+    try:
+        rows = conn.execute(
+            "SELECT block_id FROM blocks_fts WHERE blocks_fts MATCH ? LIMIT ?",
+            (query, limit),
+        ).fetchall()
+        return len(rows)
+    finally:
+        conn.close()
+
+
+def _write_target(db_path: Path) -> tuple[str, str, int]:
+    """Resolve (message_id, session_id, next_block_position) for write-load inserts."""
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute("SELECT message_id, session_id FROM messages LIMIT 1").fetchone()
+        assert row is not None, "seeded corpus has no messages"
+        next_position = int(
+            conn.execute(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM blocks WHERE message_id = ?",
+                (row[0],),
+            ).fetchone()[0]
+        )
+        return row[0], row[1], next_position
+    finally:
+        conn.close()
 
 
 # ── Read throughput with concurrent writes ────────────────────────────
@@ -86,56 +117,39 @@ def test_read_throughput_with_writes(
     benchmark: BenchmarkFixture,
     tmp_path: Path,
 ) -> None:
-    """Measure search throughput while writes are happening concurrently."""
-    db_path = tmp_path / "concurrent.db"
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir(parents=True, exist_ok=True)
-
-    msg_count = _populate_corpus(db_path, n_messages=2000)
+    """Measure archive FTS search throughput while writes happen concurrently."""
+    db_path, msg_count = _populate_corpus(tmp_path / "archive", n_messages=2000)
     assert msg_count > 0
 
-    # Pre-create additional messages to insert during benchmark
-    new_messages: list[tuple[str, str, str, str]] = []
-    for i in range(200):
-        new_messages.append(
-            (
-                f"new-msg-{i:04d}",
-                "concurrent-conv-0000",
-                "user" if i % 2 == 0 else "assistant",
-                f"New concurrent message {i} with searchable terms analysis data",
-            )
-        )
-
+    message_id, session_id, base_position = _write_target(db_path)
     queries = ["analysis", "python", "data", "performance", "benchmark"]
 
     def mixed_workload() -> dict[str, float]:
         t0 = time.perf_counter()
         read_count = 0
         read_times: list[float] = []
+        position = base_position
 
         for batch in range(10):
-            # Do a write
-            with open_connection(db_path) as conn:
-                for j in range(20):
-                    idx = (batch * 20 + j) % len(new_messages)
-                    msg_id, conv_id, role, text = new_messages[idx]
-                    try:
-                        conn.execute(
-                            "INSERT OR IGNORE INTO messages "
-                            "(message_id, conversation_id, role, text, source_name, version) "
-                            "VALUES (?, ?, ?, ?, 'test', 1)",
-                            (msg_id, conv_id, role, text),
-                        )
-                    except sqlite3.OperationalError:
-                        pass
+            # Do a write: insert archive blocks rows (re-indexed by FTS triggers).
+            conn = sqlite3.connect(str(db_path), timeout=30.0)
+            try:
+                for _ in range(20):
+                    conn.execute(
+                        "INSERT INTO blocks(message_id, session_id, position, block_type, text) "
+                        "VALUES (?, ?, ?, 'text', ?)",
+                        (message_id, session_id, position, "new concurrent analysis data row"),
+                    )
+                    position += 1
                 conn.commit()
+            finally:
+                conn.close()
 
-            # Do a read
+            # Do a read against the archive FTS index.
             query = queries[batch % len(queries)]
             t_read = time.perf_counter()
             try:
-                result = search_messages(query, archive_root=archive_root, db_path=db_path, limit=20)
-                read_count += len(result.hits)
+                read_count += _fts_search(db_path, query, limit=20)
             except Exception:
                 pass
             read_times.append((time.perf_counter() - t_read) * 1000)
@@ -170,12 +184,8 @@ def test_concurrent_reader_scaling(
     n_readers: int,
     tmp_path: Path,
 ) -> None:
-    """Measure query throughput scaling with concurrent readers."""
-    db_path = tmp_path / "readers.db"
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir(parents=True, exist_ok=True)
-
-    msg_count = _populate_corpus(db_path, n_messages=2000)
+    """Measure archive FTS query throughput scaling with concurrent readers."""
+    db_path, msg_count = _populate_corpus(tmp_path / "archive", n_messages=2000)
     assert msg_count > 0
 
     queries = [
@@ -197,20 +207,11 @@ def test_concurrent_reader_scaling(
             futures = []
             for i in range(n_readers * 5):  # 5 queries per reader
                 query = queries[i % len(queries)]
-                futures.append(
-                    executor.submit(
-                        search_messages,
-                        query,
-                        archive_root=archive_root,
-                        db_path=db_path,
-                        limit=20,
-                    )
-                )
+                futures.append(executor.submit(_fts_search, db_path, query, 20))
 
             for future in concurrent.futures.as_completed(futures):
                 try:
-                    result = future.result(timeout=30)
-                    total_hits += len(result.hits)
+                    total_hits += future.result(timeout=30)
                 except Exception:
                     pass
 
@@ -239,32 +240,31 @@ def test_wal_growth_under_sustained_writes(
     benchmark: BenchmarkFixture,
     tmp_path: Path,
 ) -> None:
-    """Measure WAL file growth during sustained write workload."""
-    db_path = tmp_path / "wal_growth.db"
-    _populate_corpus(db_path, n_messages=500)
+    """Measure WAL file growth during sustained native-blocks write workload."""
+    db_path, _ = _populate_corpus(tmp_path / "archive", n_messages=500)
+    message_id, session_id, base_position = _write_target(db_path)
 
-    wal_path = db_path.with_suffix(".db-wal")
+    wal_path = db_path.with_name(db_path.name + "-wal")
 
     def sustained_writes() -> dict[str, float]:
         wal_sizes: list[int] = []
 
-        with open_connection(db_path) as conn:
+        conn = sqlite3.connect(str(db_path), timeout=30.0)
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
             # Disable autocheckpoint for measurement
             conn.execute("PRAGMA wal_autocheckpoint = 0")
             conn.commit()
 
             t0 = time.perf_counter()
+            position = base_position
             for i in range(500):
                 conn.execute(
-                    "INSERT INTO messages (message_id, conversation_id, role, text, source_name, version) "
-                    "VALUES (?, ?, ?, ?, 'test', 1)",
-                    (
-                        f"wal-msg-{i:04d}",
-                        "concurrent-conv-0000",
-                        "user" if i % 2 == 0 else "assistant",
-                        f"WAL growth test message {i} with padding " + "x" * 200,
-                    ),
+                    "INSERT INTO blocks(message_id, session_id, position, block_type, text) "
+                    "VALUES (?, ?, ?, 'text', ?)",
+                    (message_id, session_id, position, f"WAL growth test block {i} with padding " + "x" * 200),
                 )
+                position += 1
                 if i % 50 == 0:
                     conn.commit()
                     if wal_path.exists():
@@ -276,6 +276,8 @@ def test_wal_growth_under_sustained_writes(
             # Run a checkpoint
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             conn.commit()
+        finally:
+            conn.close()
 
         wal_after_checkpoint = wal_path.stat().st_size if wal_path.exists() else 0
 
@@ -309,27 +311,35 @@ def test_wal_checkpoint_latency(
     tmp_path: Path,
 ) -> None:
     """Measure WAL checkpoint latency at different WAL sizes."""
-    db_path = tmp_path / "checkpoint.db"
-    _populate_corpus(db_path, n_messages=500)
+    db_path, _ = _populate_corpus(tmp_path / "archive", n_messages=500)
+    message_id, session_id, base_position = _write_target(db_path)
 
     # Build up WAL by inserting without checkpointing
-    with open_connection(db_path) as conn:
+    conn = sqlite3.connect(str(db_path), timeout=30.0)
+    try:
+        conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA wal_autocheckpoint = 0")
+        position = base_position
         for i in range(1000):
             conn.execute(
-                "INSERT INTO messages (message_id, conversation_id, role, text, source_name, version) "
-                "VALUES (?, ?, ?, ?, 'test', 1)",
-                (f"cp-msg-{i:04d}", "concurrent-conv-0000", "user", f"Checkpoint test message {i} " + "y" * 300),
+                "INSERT INTO blocks(message_id, session_id, position, block_type, text) VALUES (?, ?, ?, 'text', ?)",
+                (message_id, session_id, position, f"Checkpoint test block {i} " + "y" * 300),
             )
+            position += 1
         conn.commit()
+    finally:
+        conn.close()
 
-    wal_path = db_path.with_suffix(".db-wal")
+    wal_path = db_path.with_name(db_path.name + "-wal")
     wal_size_before = wal_path.stat().st_size if wal_path.exists() else 0
 
     def run_checkpoint() -> dict[str, float]:
         t0 = time.perf_counter()
-        with open_connection(db_path, timeout=5.0) as conn:
+        conn = sqlite3.connect(str(db_path), timeout=5.0)
+        try:
             row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        finally:
+            conn.close()
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
         wal_after = wal_path.stat().st_size if wal_path.exists() else 0

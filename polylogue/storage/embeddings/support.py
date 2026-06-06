@@ -46,22 +46,22 @@ def _coerce_int(value: object, *, default: int = 0) -> int:
 
 def build_retrieval_bands_from_status(
     *,
-    total_conversations: int,
-    embedded_conversations: int,
+    total_sessions: int,
+    embedded_sessions: int,
     embedded_messages: int,
-    pending_conversations: int,
+    pending_sessions: int,
     stale_messages: int,
     missing_provenance: int,
     action_status: Mapping[str, object],
     session_status: SessionInsightStatusSnapshot,
 ) -> dict[str, dict[str, object]]:
-    transcript_ready = total_conversations == 0 or (
-        embedded_conversations == total_conversations
-        and pending_conversations == 0
+    transcript_ready = total_sessions == 0 or (
+        embedded_sessions == total_sessions
+        and pending_sessions == 0
         and stale_messages == 0
         and missing_provenance == 0
     )
-    transcript_status = "empty" if total_conversations == 0 else ("ready" if transcript_ready else "pending")
+    transcript_status = "empty" if total_sessions == 0 else ("ready" if transcript_ready else "pending")
 
     evidence_source_rows = _coerce_int(action_status["count"]) + session_status.profile_row_count
     evidence_materialized_rows = _coerce_int(action_status["action_fts_count"]) + session_status.profile_row_count
@@ -86,18 +86,18 @@ def build_retrieval_bands_from_status(
         "transcript_embeddings": {
             "status": transcript_status,
             "ready": transcript_ready,
-            "source_documents": total_conversations,
-            "materialized_documents": embedded_conversations,
+            "source_documents": total_sessions,
+            "materialized_documents": embedded_sessions,
             "materialized_rows": embedded_messages,
-            "pending_documents": pending_conversations,
+            "pending_documents": pending_sessions,
             "stale_rows": stale_messages,
             "missing_provenance_rows": missing_provenance,
             "detail": (
-                f"Transcript embeddings ready ({embedded_conversations:,}/{total_conversations:,} conversations, {embedded_messages:,} messages)"
+                f"Transcript embeddings ready ({embedded_sessions:,}/{total_sessions:,} sessions, {embedded_messages:,} messages)"
                 if transcript_ready
                 else (
-                    f"Transcript embeddings pending ({embedded_conversations:,}/{total_conversations:,} conversations, "
-                    f"pending {pending_conversations:,}, stale {stale_messages:,}, missing provenance {missing_provenance:,})"
+                    f"Transcript embeddings pending ({embedded_sessions:,}/{total_sessions:,} sessions, "
+                    f"pending {pending_sessions:,}, stale {stale_messages:,}, missing provenance {missing_provenance:,})"
                 )
             ),
         },

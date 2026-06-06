@@ -8,7 +8,8 @@ import shutil
 import sqlite3
 import sys
 import time
-from contextlib import AbstractContextManager
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -17,8 +18,9 @@ from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.maintenance.targets import build_maintenance_target_catalog
-from polylogue.paths import db_path
+from polylogue.paths import active_index_db_path
 from polylogue.storage.repair import ArchiveDebtStatus
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 
 # Re-export canonical types for downstream consumers.
 ReadinessCheck = OutcomeCheck
@@ -97,10 +99,27 @@ def _summarize_db_error(exc: Exception) -> str:
     return detail
 
 
-def _open_readiness_probe_connection(db_path: Path) -> AbstractContextManager[sqlite3.Connection]:
-    from polylogue.storage.sqlite.connection import open_read_connection
+@contextmanager
+def _open_readiness_probe_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
+    """Open a read-only probe connection over the archive."""
+    from polylogue.storage.sqlite.connection import READ_DB_TIMEOUT
 
-    return open_read_connection(db_path)
+    if not db_path.exists():
+        _bootstrap_archive_root(db_path)
+
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=READ_DB_TIMEOUT)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def _bootstrap_archive_root(db_path: Path) -> None:
+    """Ensure an archive root exists at ``db_path``'s parent."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    ArchiveStore.open_existing(db_path.parent, read_only=False).close()
 
 
 def _module_available(module_name: str) -> bool:
@@ -119,12 +138,9 @@ def _config_path_checks(config: Config) -> list[ReadinessCheck]:
 
 
 def _database_probe_checks(config: Config, *, deep: bool) -> tuple[list[ReadinessCheck], str | None]:
-    from polylogue.storage.sqlite.schema import assert_supported_archive_layout
-
     checks: list[ReadinessCheck] = []
     try:
         with _open_readiness_probe_connection(config.db_path) as conn:
-            assert_supported_archive_layout(conn)
             checks.append(ReadinessCheck("database", VerifyStatus.OK, summary="DB reachable"))
             if deep:
                 integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
@@ -150,10 +166,64 @@ def _skipped_index_check(db_error: str) -> ReadinessCheck:
     )
 
 
-def _message_index_check(conn: sqlite3.Connection, *, exact_counts: bool) -> ReadinessCheck:
-    from polylogue.storage.fts.fts_lifecycle import message_fts_readiness_sync
+_BLOCKS_FTS_TRIGGERS: tuple[str, ...] = ("blocks_fts_ai", "blocks_fts_ad", "blocks_fts_au")
 
-    index_readiness = message_fts_readiness_sync(conn, verify_total_rows=exact_counts)
+
+def _archive_table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name = ? LIMIT 1",
+        (name,),
+    ).fetchone()
+    return row is not None
+
+
+def _blocks_fts_triggers_present(conn: sqlite3.Connection) -> bool:
+    placeholders = ",".join("?" for _ in _BLOCKS_FTS_TRIGGERS)
+    present = {
+        str(row[0])
+        for row in conn.execute(
+            f"SELECT name FROM sqlite_master WHERE type = 'trigger' AND name IN ({placeholders})",
+            _BLOCKS_FTS_TRIGGERS,
+        ).fetchall()
+    }
+    return all(name in present for name in _BLOCKS_FTS_TRIGGERS)
+
+
+def _archive_blocks_fts_readiness(conn: sqlite3.Connection, *, exact_counts: bool) -> dict[str, int | bool]:
+    """Blocks FTS readiness over the ``blocks_fts`` table.
+
+    The search index is ``blocks_fts`` (contentless FTS5 over ``blocks``),
+    maintained by ``blocks_fts_a{i,d,u}`` triggers.
+    """
+    exists = _archive_table_exists(conn, "blocks_fts")
+    if not exists:
+        return {"exists": False, "indexed_rows": 0, "total_rows": 0, "ready": False, "triggers_present": False}
+
+    triggers_present = _blocks_fts_triggers_present(conn)
+    if exact_counts:
+        indexed_rows = int(conn.execute("SELECT COUNT(*) FROM blocks_fts").fetchone()[0] or 0)
+        total_rows = int(
+            conn.execute("SELECT COUNT(*) FROM blocks WHERE NULLIF(text, '') IS NOT NULL").fetchone()[0] or 0
+        )
+        ready = triggers_present and indexed_rows == total_rows
+        return {
+            "exists": True,
+            "indexed_rows": indexed_rows,
+            "total_rows": total_rows,
+            "ready": ready,
+            "triggers_present": triggers_present,
+        }
+
+    has_indexed_rows = bool(conn.execute("SELECT 1 FROM blocks_fts_docsize LIMIT 1").fetchone())
+    has_indexable_blocks = bool(
+        conn.execute("SELECT 1 FROM blocks WHERE NULLIF(text, '') IS NOT NULL LIMIT 1").fetchone()
+    )
+    ready = triggers_present and (has_indexed_rows or not has_indexable_blocks)
+    return {"exists": True, "indexed_rows": 0, "total_rows": 0, "ready": ready, "triggers_present": triggers_present}
+
+
+def _message_index_check(conn: sqlite3.Connection, *, exact_counts: bool) -> ReadinessCheck:
+    index_readiness = _archive_blocks_fts_readiness(conn, exact_counts=exact_counts)
     if not index_readiness["exists"]:
         return ReadinessCheck("index", VerifyStatus.WARNING, summary="index not built")
 
@@ -214,38 +284,141 @@ def _archive_debt_checks(archive_debt: dict[str, ArchiveDebtStatus], *, deep: bo
     return checks
 
 
-def _duplicate_conversations_check(conn: sqlite3.Connection) -> ReadinessCheck:
-    duplicate_count = conn.execute(
-        """
-        SELECT COUNT(*) FROM (
-            SELECT conversation_id FROM conversations GROUP BY conversation_id HAVING COUNT(*) > 1
-        )
-        """
-    ).fetchone()[0]
+def _duplicate_sessions_check(conn: sqlite3.Connection) -> ReadinessCheck:
+    # Archive invariant: the ``sessions`` table keys each session by
+    # ``(origin, native_id)`` with a generated UNIQUE ``session_id``, so the
+    # storage layer cannot persist two rows for one logical session. This check
+    # remains a user-visible integrity probe — it confirms that invariant held
+    # rather than papering over silent duplicates.
+    duplicate_count = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) FROM (
+                SELECT session_id FROM sessions GROUP BY session_id HAVING COUNT(*) > 1
+            )
+            """
+        ).fetchone()[0]
+        or 0
+    )
     return ReadinessCheck(
-        "duplicate_conversations",
+        "duplicate_sessions",
         VerifyStatus.OK if duplicate_count == 0 else VerifyStatus.ERROR,
         count=duplicate_count,
-        summary="No duplicates" if duplicate_count == 0 else f"{duplicate_count} duplicate conversation IDs",
+        summary="No duplicates" if duplicate_count == 0 else f"{duplicate_count} duplicate session IDs",
     )
 
 
 def _provider_distribution_check(conn: sqlite3.Connection) -> ReadinessCheck:
     provider_rows = conn.execute(
         """
-        SELECT source_name, COUNT(*) AS count
-        FROM conversations
-        GROUP BY source_name
-        ORDER BY count DESC, source_name ASC
+        SELECT origin, COUNT(*) AS count
+        FROM sessions
+        GROUP BY origin
+        ORDER BY count DESC, origin ASC
         """
     ).fetchall()
-    provider_breakdown = {str(row["source_name"]): int(row["count"]) for row in provider_rows}
+    provider_breakdown = {str(row["origin"]): int(row["count"]) for row in provider_rows}
     return ReadinessCheck(
         "provider_distribution",
         VerifyStatus.OK,
         count=sum(provider_breakdown.values()),
         summary=f"{len(provider_breakdown)} provider(s) represented",
         breakdown=provider_breakdown,
+    )
+
+
+def _fts_sync_check(conn: sqlite3.Connection) -> ReadinessCheck:
+    """Archive FTS sync check over ``blocks_fts``.
+
+    Reports a warning when the blocks FTS table is absent (desynced/dropped)
+    or when its maintenance triggers are missing.
+    """
+    if not _archive_table_exists(conn, "blocks_fts"):
+        return ReadinessCheck(
+            "fts_sync",
+            VerifyStatus.WARNING,
+            summary="Blocks FTS missing — search index unavailable; run repair dangling_fts",
+        )
+    if not _blocks_fts_triggers_present(conn):
+        return ReadinessCheck(
+            "fts_sync",
+            VerifyStatus.WARNING,
+            summary="Blocks FTS triggers missing — index is stale; run repair dangling_fts",
+        )
+    return ReadinessCheck("fts_sync", VerifyStatus.OK, summary="Messages FTS present")
+
+
+def _orphaned_messages_check(conn: sqlite3.Connection) -> ReadinessCheck:
+    """Messages whose owning session is absent.
+
+    ``messages.session_id`` references ``sessions(session_id)`` with ``ON
+    DELETE CASCADE``, so orphans cannot arise while foreign keys are enforced.
+    This check still scans for them so a corrupted or foreign-key-disabled
+    write surfaces as an error.
+    """
+    orphan_count = int(
+        conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM messages m
+            LEFT JOIN sessions s ON s.session_id = m.session_id
+            WHERE s.session_id IS NULL
+            """
+        ).fetchone()[0]
+        or 0
+    )
+    return ReadinessCheck(
+        "orphaned_messages",
+        VerifyStatus.OK if orphan_count == 0 else VerifyStatus.ERROR,
+        count=orphan_count,
+        summary="No orphaned messages" if orphan_count == 0 else f"{orphan_count} orphaned message(s)",
+    )
+
+
+def _orphaned_content_blocks_check(conn: sqlite3.Connection) -> ReadinessCheck:
+    """Blocks whose owning message is absent (deep check).
+
+    ``blocks.message_id`` references ``messages(message_id)`` with ``ON DELETE
+    CASCADE``. Like orphaned messages, this surfaces corruption or
+    foreign-key-disabled writes.
+    """
+    orphan_count = int(
+        conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM blocks b
+            LEFT JOIN messages m ON m.message_id = b.message_id
+            WHERE m.message_id IS NULL
+            """
+        ).fetchone()[0]
+        or 0
+    )
+    return ReadinessCheck(
+        "orphaned_content_blocks",
+        VerifyStatus.OK if orphan_count == 0 else VerifyStatus.ERROR,
+        count=orphan_count,
+        summary="No orphaned content blocks" if orphan_count == 0 else f"{orphan_count} orphaned content block(s)",
+    )
+
+
+def _empty_sessions_check(conn: sqlite3.Connection) -> ReadinessCheck:
+    """Sessions with no messages — surfaced as a warning."""
+    empty_count = int(
+        conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM sessions s
+            LEFT JOIN messages m ON m.session_id = s.session_id
+            WHERE m.session_id IS NULL
+            """
+        ).fetchone()[0]
+        or 0
+    )
+    return ReadinessCheck(
+        "empty_sessions",
+        VerifyStatus.OK if empty_count == 0 else VerifyStatus.WARNING,
+        count=empty_count,
+        summary="No empty sessions" if empty_count == 0 else f"{empty_count} session(s) with no messages",
     )
 
 
@@ -310,10 +483,41 @@ def _transcript_embedding_checks(derived_statuses: dict[str, DerivedModelStatus]
 # ---------------------------------------------------------------------------
 
 
-def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: bool = False) -> ReadinessReport:
+def _collect_table_status_best_effort(
+    conn: sqlite3.Connection,
+    *,
+    db_path: Path,
+    deep: bool,
+    probe_only: bool,
+) -> tuple[dict[str, DerivedModelStatus], dict[str, ArchiveDebtStatus]]:
+    """Collect derived-model and archive-debt statuses without aborting.
+
+    These collectors still assume table layouts that may not be present in the
+    active archive database. When they raise ``sqlite3.OperationalError``
+    (`no such table: ...`), continue with the integrity checks that can be
+    answered from the opened archive.
+    """
     from polylogue.storage.derived.derived_status import collect_derived_model_statuses_sync
     from polylogue.storage.repair import collect_archive_debt_statuses_sync
 
+    try:
+        derived_statuses = collect_derived_model_statuses_sync(conn, verify_full=deep)
+    except sqlite3.OperationalError:
+        return {}, {}
+    try:
+        archive_debt = collect_archive_debt_statuses_sync(
+            conn,
+            db_path=db_path,
+            derived_statuses=derived_statuses,
+            include_expensive=deep,
+            probe_only=probe_only,
+        )
+    except sqlite3.OperationalError:
+        archive_debt = {}
+    return derived_statuses, archive_debt
+
+
+def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: bool = False) -> ReadinessReport:
     checks: list[ReadinessCheck] = []
     checks.append(ReadinessCheck("config", VerifyStatus.OK, summary="XDG defaults active"))
     checks.extend(_config_path_checks(config))
@@ -334,18 +538,21 @@ def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: boo
         exact_index_counts = deep or not probe_only
         checks.append(_message_index_check(conn, exact_counts=exact_index_counts))
 
-        derived_statuses = collect_derived_model_statuses_sync(conn, verify_full=deep)
-        archive_debt = collect_archive_debt_statuses_sync(
-            conn,
-            derived_statuses=derived_statuses,
-            include_expensive=deep,
-            probe_only=probe_only,
+        # Integrity probes over the archive tables.
+        checks.append(_orphaned_messages_check(conn))
+        if deep:
+            checks.append(_orphaned_content_blocks_check(conn))
+        checks.append(_fts_sync_check(conn))
+        checks.append(_empty_sessions_check(conn))
+        checks.append(_duplicate_sessions_check(conn))
+        checks.append(_provider_distribution_check(conn))
+
+        # Run table-dependent collectors best-effort so archive integrity
+        # probes above always register.
+        derived_statuses, archive_debt = _collect_table_status_best_effort(
+            conn, db_path=config.db_path, deep=deep, probe_only=probe_only
         )
         checks.extend(_archive_debt_checks(archive_debt, deep=deep))
-
-        checks.append(_duplicate_conversations_check(conn))
-
-        checks.append(_provider_distribution_check(conn))
         checks.extend(_derived_model_checks(derived_statuses))
         checks.extend(_transcript_embedding_checks(derived_statuses))
 
@@ -393,12 +600,9 @@ def run_runtime_readiness(config: Config) -> ReadinessReport:
             checks.append(ReadinessCheck("db_writable", VerifyStatus.WARNING, summary=f"Parent missing: {parent}"))
 
     try:
-        from polylogue.storage.sqlite.schema import SCHEMA_VERSION, assert_supported_archive_layout
-
         with _open_readiness_probe_connection(config.db_path) as conn:
-            assert_supported_archive_layout(conn)
             current = conn.execute("PRAGMA user_version").fetchone()[0]
-            if current == SCHEMA_VERSION:
+            if current == INDEX_SCHEMA_VERSION:
                 checks.append(ReadinessCheck("schema_version", VerifyStatus.OK, summary=f"v{current} (current)"))
             elif current == 0:
                 checks.append(ReadinessCheck("schema_version", VerifyStatus.WARNING, summary="Uninitialized (v0)"))
@@ -407,7 +611,10 @@ def run_runtime_readiness(config: Config) -> ReadinessReport:
                     ReadinessCheck(
                         "schema_version",
                         VerifyStatus.ERROR,
-                        summary=f"v{current} (expected v{SCHEMA_VERSION})",
+                        summary=(
+                            f"schema version {current} is not expected v{INDEX_SCHEMA_VERSION}; "
+                            "rebuild from source with `polylogue reset --database && polylogued run`"
+                        ),
                     )
                 )
     except Exception as exc:
@@ -417,9 +624,9 @@ def run_runtime_readiness(config: Config) -> ReadinessReport:
 
     try:
         with _open_readiness_probe_connection(config.db_path) as conn:
-            fts = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
+            fts = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='blocks_fts'").fetchone()
             if fts:
-                conn.execute("SELECT * FROM messages_fts LIMIT 0")
+                conn.execute("SELECT * FROM blocks_fts LIMIT 0")
                 checks.append(ReadinessCheck("fts_tables", VerifyStatus.OK, summary="FTS5 table present and queryable"))
             else:
                 checks.append(ReadinessCheck("fts_tables", VerifyStatus.WARNING, summary="FTS5 table not found"))
@@ -602,20 +809,18 @@ def _build_schema_readiness_checks() -> list[ReadinessCheck]:
 def quick_readiness_summary(archive_root: Path) -> str:
     """Return a one-line readiness summary without running a full readiness pass.
 
-    Reads basic DB stats (conversation count, schema version) for a cheap
+    Reads basic DB stats (session count, schema version) for a cheap
     summary suitable for the non-verbose CLI status line.
     """
     try:
-        from polylogue.storage.sqlite.schema import SCHEMA_VERSION
-
-        db_path_val = db_path()
+        db_path_val = active_index_db_path()
         with _open_readiness_probe_connection(db_path_val) as conn:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version != SCHEMA_VERSION:
-                return f"schema v{version} (expected v{SCHEMA_VERSION})"
-            row = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()
+            if version != INDEX_SCHEMA_VERSION:
+                return f"schema v{version} (expected v{INDEX_SCHEMA_VERSION})"
+            row = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
             count = row[0] if row else 0
-            return f"OK ({count:,} conversations)"
+            return f"OK ({count:,} sessions)"
     except Exception as exc:
         return f"unavailable ({_summarize_db_error(exc)})"
 

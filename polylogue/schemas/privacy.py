@@ -64,7 +64,6 @@ _IDENTIFIER_FIELD_TOKENS = frozenset(
         "resourceid",
         "fileid",
         "messageid",
-        "conversationid",
         "sessionid",
         "promptid",
         "parentid",
@@ -120,8 +119,8 @@ _CONTENT_FIELD_NAMES = frozenset(
         "attribution",
         "async_task_title",
         "serialization_title",
-        "branching_from_conversation_title",
-        "branching_from_conversation_owner",
+        "branching_from_session_title",
+        "branching_from_session_owner",
         "country",
         "owner",
         "state",
@@ -215,7 +214,7 @@ def _is_safe_enum_value(
         config: Optional PrivacyConfig for field/value override checks.
 
     The goal is to preserve structural enum metadata in committed schemas
-    without leaking personal data from conversations.
+    without leaking personal data from sessions.
     """
     effective_max_len = max_length if max_length is not None else _SAFE_ENUM_MAX_LEN
 

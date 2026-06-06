@@ -29,7 +29,7 @@ CoOccurrenceByPath: TypeAlias = dict[str, dict[int, set[str]]]
 def _collect_field_stats(
     samples: Sequence[SampleMapping],
     *,
-    conversation_ids: Sequence[str | None] | None = None,
+    session_ids: Sequence[str | None] | None = None,
     max_depth: int = 15,
 ) -> FieldStatsByPath:
     """Walk all samples and collect per-JSON-path statistics."""
@@ -105,11 +105,11 @@ def _collect_field_stats(
                 if value not in stats.observed_values:
                     stats.distinct_value_count += 1
                 stats.observed_values[value] += 1
-                if conversation_ids is not None:
-                    conv_id = conversation_ids[sample_idx] if sample_idx < len(conversation_ids) else None
+                if session_ids is not None:
+                    conv_id = session_ids[sample_idx] if sample_idx < len(session_ids) else None
                     if conv_id is not None:
-                        stats.value_conversation_ids.setdefault(value, set()).add(conv_id)
-                        stats.values_per_conversation.setdefault(conv_id, set()).add(value)
+                        stats.value_session_ids.setdefault(value, set()).add(conv_id)
+                        stats.values_per_session.setdefault(conv_id, set()).add(value)
             else:
                 stats.distinct_value_count += 1
 

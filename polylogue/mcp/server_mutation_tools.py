@@ -29,12 +29,12 @@ if TYPE_CHECKING:
     from polylogue.mcp.server_support import ServerCallbacks
 
 
-async def _resolve_or_error(hooks: ServerCallbacks, conversation_id: str) -> tuple[str | None, str | None]:
-    """Resolve a conversation ID, returning the canonical ID or an error JSON."""
-    resolved = await hooks.get_query_store().resolve_id(conversation_id, strict=True)
-    if not resolved:
-        return None, hooks.error_json("Conversation not found", code="not_found", conversation_id=conversation_id)
-    return resolved, None
+async def _resolve_or_error(hooks: ServerCallbacks, session_id: str) -> tuple[str | None, str | None]:
+    """Resolve a session ID, returning the canonical ID or an error JSON."""
+    summary = await hooks.get_polylogue().get_session_summary(session_id)
+    if summary is None:
+        return None, hooks.error_json("Session not found", code="not_found", session_id=session_id)
+    return str(summary.id), None
 
 
 def _mark_type_error(hooks: ServerCallbacks, mark_type: str) -> str | None:
@@ -65,11 +65,11 @@ def _saved_view_payload(row: dict[str, str]) -> MCPSavedViewPayload:
 
 def _recall_pack_payload(row: dict[str, str]) -> MCPRecallPackPayload:
     try:
-        conversation_ids = json.loads(row["conversation_ids_json"])
+        session_ids = json.loads(row["session_ids_json"])
     except (json.JSONDecodeError, TypeError):
-        conversation_ids = []
-    if not isinstance(conversation_ids, list):
-        conversation_ids = []
+        session_ids = []
+    if not isinstance(session_ids, list):
+        session_ids = []
     try:
         payload = json.loads(row["payload_json"])
     except (json.JSONDecodeError, TypeError):
@@ -79,7 +79,7 @@ def _recall_pack_payload(row: dict[str, str]) -> MCPRecallPackPayload:
     return MCPRecallPackPayload(
         pack_id=row["pack_id"],
         label=row["label"],
-        conversation_ids=tuple(str(item) for item in conversation_ids),
+        session_ids=tuple(str(item) for item in session_ids),
         payload=payload,
         created_at=row["created_at"],
     )
@@ -125,7 +125,7 @@ def _annotation_payload(row: dict[str, str]) -> MCPUserAnnotationPayload:
         annotation_id=row["annotation_id"],
         target_type=row["target_type"],
         target_id=row["target_id"],
-        conversation_id=row["conversation_id"],
+        session_id=row["session_id"],
         message_id=_none_if_empty(row.get("message_id")),
         note_text=row["note_text"],
         created_at=row["created_at"],
@@ -135,9 +135,9 @@ def _annotation_payload(row: dict[str, str]) -> MCPUserAnnotationPayload:
 
 def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
-    async def add_tag(conversation_id: str, tag: str) -> str:
+    async def add_tag(session_id: str, tag: str) -> str:
         async def run() -> str:
-            resolved, err = await _resolve_or_error(hooks, conversation_id)
+            resolved, err = await _resolve_or_error(hooks, session_id)
             if err:
                 return err
             assert resolved is not None  # _resolve_or_error contract
@@ -146,7 +146,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             return hooks.json_payload(
                 MutationResultPayload(
                     status="ok" if result.outcome == "added" else "unchanged",
-                    conversation_id=resolved,
+                    session_id=resolved,
                     tag=tag,
                     detail=result.detail,
                     outcome=result.outcome,
@@ -157,9 +157,9 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("add_tag", run)
 
     @mcp.tool()
-    async def remove_tag(conversation_id: str, tag: str) -> str:
+    async def remove_tag(session_id: str, tag: str) -> str:
         async def run() -> str:
-            resolved, err = await _resolve_or_error(hooks, conversation_id)
+            resolved, err = await _resolve_or_error(hooks, session_id)
             if err:
                 return err
             assert resolved is not None  # _resolve_or_error contract
@@ -168,7 +168,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             return hooks.json_payload(
                 MutationResultPayload(
                     status="ok" if result.outcome == "removed" else "not_found",
-                    conversation_id=resolved,
+                    session_id=resolved,
                     tag=tag,
                     detail=result.detail,
                     outcome=result.outcome,
@@ -179,17 +179,17 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("remove_tag", run)
 
     @mcp.tool()
-    async def bulk_tag_conversations(conversation_ids: list[str], tags: list[str]) -> str:
+    async def bulk_tag_sessions(session_ids: list[str], tags: list[str]) -> str:
         async def run() -> str:
             poly = hooks.get_polylogue()
             try:
-                result = await poly.bulk_tag_conversations(conversation_ids, tags)
+                result = await poly.bulk_tag_sessions(session_ids, tags)
             except ValueError as exc:
                 return hooks.error_json(str(exc))
             return hooks.json_payload(
                 MutationResultPayload(
                     status=result.outcome,
-                    conversation_count=result.conversation_count,
+                    session_count=result.session_count,
                     tag_count=result.tag_count,
                     affected_count=result.affected_count,
                     skipped_count=result.skipped_count,
@@ -197,13 +197,13 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("bulk_tag_conversations", run)
+        return await hooks.async_safe_call("bulk_tag_sessions", run)
 
     @mcp.tool()
-    async def list_tags(provider: str | None = None) -> str:
+    async def list_tags(origin: str | None = None) -> str:
         async def run() -> str:
             poly = hooks.get_polylogue()
-            tags = await poly.list_tags(provider=provider)
+            tags = await poly.list_tags(origin=origin)
             return hooks.json_payload(MCPTagCountsPayload(root=tags))
 
         return await hooks.async_safe_call("list_tags", run)
@@ -211,7 +211,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def list_marks(
         mark_type: str | None = None,
-        conversation_id: str | None = None,
+        session_id: str | None = None,
         target_type: str | None = None,
         target_id: str | None = None,
         message_id: str | None = None,
@@ -220,7 +220,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             poly = hooks.get_polylogue()
             rows = await poly.list_marks(
                 mark_type=mark_type,
-                conversation_id=conversation_id,
+                session_id=session_id,
                 target_type=target_type,
                 target_id=target_id,
                 message_id=message_id,
@@ -229,7 +229,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 MCPUserMarkPayload(
                     target_type=row["target_type"],
                     target_id=row["target_id"],
-                    conversation_id=row["conversation_id"],
+                    session_id=row["session_id"],
                     message_id=_none_if_empty(row.get("message_id")),
                     mark_type=row["mark_type"],
                     created_at=row["created_at"],
@@ -242,9 +242,9 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
     @mcp.tool()
     async def add_mark(
-        conversation_id: str,
+        session_id: str,
         mark_type: str,
-        target_type: str = "conversation",
+        target_type: str = "session",
         target_id: str | None = None,
         message_id: str | None = None,
     ) -> str:
@@ -252,7 +252,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             mark_error = _mark_type_error(hooks, mark_type)
             if mark_error:
                 return mark_error
-            resolved, err = await _resolve_or_error(hooks, conversation_id)
+            resolved, err = await _resolve_or_error(hooks, session_id)
             if err:
                 return err
             assert resolved is not None
@@ -267,7 +267,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             return hooks.json_payload(
                 MutationResultPayload(
                     status="ok" if created else "unchanged",
-                    conversation_id=resolved,
+                    session_id=resolved,
                     detail=None if created else "already_present",
                     key=mark_type,
                     outcome="added" if created else "no_op",
@@ -279,9 +279,9 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
     @mcp.tool()
     async def remove_mark(
-        conversation_id: str,
+        session_id: str,
         mark_type: str,
-        target_type: str = "conversation",
+        target_type: str = "session",
         target_id: str | None = None,
         message_id: str | None = None,
     ) -> str:
@@ -289,7 +289,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             mark_error = _mark_type_error(hooks, mark_type)
             if mark_error:
                 return mark_error
-            resolved, err = await _resolve_or_error(hooks, conversation_id)
+            resolved, err = await _resolve_or_error(hooks, session_id)
             if err:
                 return err
             assert resolved is not None
@@ -304,7 +304,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             return hooks.json_payload(
                 MutationResultPayload(
                     status="ok" if deleted else "not_found",
-                    conversation_id=resolved,
+                    session_id=resolved,
                     detail=None if deleted else "mark_not_present",
                     key=mark_type,
                     outcome="removed" if deleted else "not_present",
@@ -316,7 +316,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
     @mcp.tool()
     async def list_annotations(
-        conversation_id: str | None = None,
+        session_id: str | None = None,
         target_type: str | None = None,
         target_id: str | None = None,
         message_id: str | None = None,
@@ -324,7 +324,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         async def run() -> str:
             poly = hooks.get_polylogue()
             rows = await poly.list_annotations(
-                conversation_id=conversation_id,
+                session_id=session_id,
                 target_type=target_type,
                 target_id=target_id,
                 message_id=message_id,
@@ -337,9 +337,9 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def save_annotation(
         annotation_id: str,
-        conversation_id: str,
+        session_id: str,
         note_text: str,
-        target_type: str = "conversation",
+        target_type: str = "session",
         target_id: str | None = None,
         message_id: str | None = None,
     ) -> str:
@@ -348,7 +348,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 return hooks.error_json("annotation_id must not be empty")
             if not note_text.strip():
                 return hooks.error_json("note_text must not be empty")
-            resolved, err = await _resolve_or_error(hooks, conversation_id)
+            resolved, err = await _resolve_or_error(hooks, session_id)
             if err:
                 return err
             assert resolved is not None
@@ -364,7 +364,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             return hooks.json_payload(
                 MutationResultPayload(
                     status="ok",
-                    conversation_id=resolved,
+                    session_id=resolved,
                     key=annotation_id,
                     outcome="added" if created else "updated",
                 ),
@@ -411,13 +411,13 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             if not isinstance(query, dict):
                 return hooks.error_json("query_json must encode an object")
 
-            from polylogue.archive.query.spec import ConversationQuerySpec
+            from polylogue.archive.query.spec import SessionQuerySpec
 
             try:
-                ConversationQuerySpec.from_params(query, strict=True)
+                SessionQuerySpec.from_params(query, strict=True)
             except Exception as exc:
                 detail = f"{type(exc).__name__}: {exc}"
-                return hooks.error_json("query_json is not a valid ConversationQuerySpec", detail=detail)
+                return hooks.error_json("query_json is not a valid SessionQuerySpec", detail=detail)
 
             canonical_query_json = json.dumps(query, sort_keys=True, separators=(",", ":"))
             poly = hooks.get_polylogue()
@@ -594,20 +594,19 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("delete_workspace", run)
 
     @mcp.tool()
-    async def get_metadata(conversation_id: str) -> str:
+    async def get_metadata(session_id: str) -> str:
         async def run() -> str:
             poly = hooks.get_polylogue()
-            metadata = await poly.get_metadata(conversation_id)
+            metadata = await poly.get_metadata(session_id)
             return hooks.json_payload(MCPMetadataPayload.from_document(metadata))  # type: ignore[arg-type]
 
         return await hooks.async_safe_call("get_metadata", run)
 
     @mcp.tool()
-    async def set_metadata(conversation_id: str, key: str, value: str) -> str:
+    async def set_metadata(session_id: str, key: str, value: str) -> str:
         async def run() -> str:
-            from polylogue.api.archive import ConversationNotFoundError
-            from polylogue.operations.mutations import MetadataKeyValidationError
-            from polylogue.surfaces.payloads import validate_metadata_key
+            from polylogue.api.archive import SessionNotFoundError
+            from polylogue.surfaces.payloads import MetadataKeyValidationError, validate_metadata_key
 
             # Short-circuit on key validation before opening the facade so
             # the contract is fast and unit tests can exercise the rejection
@@ -616,7 +615,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             if key_error is not None:
                 return hooks.error_json(
                     key_error,
-                    conversation_id=conversation_id,
+                    session_id=session_id,
                     code="invalid_key",
                 )
 
@@ -627,23 +626,23 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
             poly = hooks.get_polylogue()
             try:
-                result = await poly.set_metadata(conversation_id, key, parsed_str)
+                result = await poly.set_metadata(session_id, key, parsed_str)
             except MetadataKeyValidationError as exc:
                 return hooks.error_json(
                     str(exc),
-                    conversation_id=conversation_id,
+                    session_id=session_id,
                     code="invalid_key",
                 )
-            except ConversationNotFoundError:
+            except SessionNotFoundError:
                 return hooks.error_json(
-                    "Conversation not found",
+                    "Session not found",
                     code="not_found",
-                    conversation_id=conversation_id,
+                    session_id=session_id,
                 )
             return hooks.json_payload(
                 MutationResultPayload(
                     status="ok" if result.outcome == "set" else "unchanged",
-                    conversation_id=result.conversation_id,
+                    session_id=result.session_id,
                     key=result.key,
                     detail=result.detail,
                 ),
@@ -653,39 +652,38 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("set_metadata", run)
 
     @mcp.tool()
-    async def delete_metadata(conversation_id: str, key: str) -> str:
+    async def delete_metadata(session_id: str, key: str) -> str:
         async def run() -> str:
-            from polylogue.api.archive import ConversationNotFoundError
-            from polylogue.operations.mutations import MetadataKeyValidationError
-            from polylogue.surfaces.payloads import validate_metadata_key
+            from polylogue.api.archive import SessionNotFoundError
+            from polylogue.surfaces.payloads import MetadataKeyValidationError, validate_metadata_key
 
             key_error = validate_metadata_key(key)
             if key_error is not None:
                 return hooks.error_json(
                     key_error,
-                    conversation_id=conversation_id,
+                    session_id=session_id,
                     code="invalid_key",
                 )
 
             poly = hooks.get_polylogue()
             try:
-                result = await poly.delete_metadata(conversation_id, key)
+                result = await poly.delete_metadata(session_id, key)
             except MetadataKeyValidationError as exc:
                 return hooks.error_json(
                     str(exc),
-                    conversation_id=conversation_id,
+                    session_id=session_id,
                     code="invalid_key",
                 )
-            except ConversationNotFoundError:
+            except SessionNotFoundError:
                 return hooks.error_json(
-                    "Conversation not found",
+                    "Session not found",
                     code="not_found",
-                    conversation_id=conversation_id,
+                    session_id=session_id,
                 )
             return hooks.json_payload(
                 MutationResultPayload(
                     status="ok" if result.outcome == "deleted" else "not_found",
-                    conversation_id=result.conversation_id,
+                    session_id=result.session_id,
                     key=result.key,
                     detail=result.detail,
                 ),
@@ -695,26 +693,26 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("delete_metadata", run)
 
     @mcp.tool()
-    async def delete_conversation(conversation_id: str, confirm: bool = False) -> str:
+    async def delete_session(session_id: str, confirm: bool = False) -> str:
         async def run() -> str:
             if not confirm:
                 return hooks.error_json(
                     "Safety guard: set confirm=true to delete",
-                    conversation_id=conversation_id,
+                    session_id=session_id,
                 )
 
             poly = hooks.get_polylogue()
-            result = await poly.delete_conversation_safe(conversation_id)
+            result = await poly.delete_session_safe(session_id)
             return hooks.json_payload(
                 MutationResultPayload(
                     status="deleted" if result.outcome == "deleted" else "not_found",
-                    conversation_id=result.conversation_id,
+                    session_id=result.session_id,
                     detail=result.detail,
                 ),
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("delete_conversation", run)
+        return await hooks.async_safe_call("delete_session", run)
 
     # ------------------------------------------------------------------
     # Learning corrections (#1131)
@@ -722,7 +720,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
     @mcp.tool()
     async def record_correction(
-        conversation_id: str,
+        session_id: str,
         kind: str,
         payload: dict[str, str],
         note: str | None = None,
@@ -732,7 +730,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         async def run() -> str:
             from polylogue.insights.feedback import UnknownCorrectionKindError
 
-            resolved, err = await _resolve_or_error(hooks, conversation_id)
+            resolved, err = await _resolve_or_error(hooks, session_id)
             if err:
                 return err
             assert resolved is not None
@@ -744,7 +742,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             return hooks.json_payload(
                 MutationResultPayload(
                     status="ok",
-                    conversation_id=correction.conversation_id,
+                    session_id=correction.session_id,
                     outcome=correction.kind.value,
                     detail=correction.note,
                 ),
@@ -755,7 +753,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
     @mcp.tool()
     async def list_corrections(
-        conversation_id: str | None = None,
+        session_id: str | None = None,
         kind: str | None = None,
     ) -> str:
         """List stored learning corrections."""
@@ -765,12 +763,12 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
             poly = hooks.get_polylogue()
             try:
-                corrections = await poly.list_corrections(conversation_id=conversation_id, kind=kind)
+                corrections = await poly.list_corrections(session_id=session_id, kind=kind)
             except UnknownCorrectionKindError as exc:
                 return hooks.error_json(str(exc), code="unknown_kind", kind=str(kind or ""))
             items = [
                 {
-                    "conversation_id": c.conversation_id,
+                    "session_id": c.session_id,
                     "kind": c.kind.value,
                     "payload": dict(c.payload),
                     "note": c.note,
@@ -783,13 +781,13 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("list_corrections", run)
 
     @mcp.tool()
-    async def clear_corrections(conversation_id: str, kind: str | None = None) -> str:
-        """Delete one or all corrections for a conversation."""
+    async def clear_corrections(session_id: str, kind: str | None = None) -> str:
+        """Delete one or all corrections for a session."""
 
         async def run() -> str:
             from polylogue.insights.feedback import UnknownCorrectionKindError
 
-            resolved, err = await _resolve_or_error(hooks, conversation_id)
+            resolved, err = await _resolve_or_error(hooks, session_id)
             if err:
                 return err
             assert resolved is not None
@@ -800,7 +798,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     return hooks.json_payload(
                         MutationResultPayload(
                             status="ok",
-                            conversation_id=resolved,
+                            session_id=resolved,
                             affected_count=count,
                             outcome="cleared",
                         ),
@@ -812,7 +810,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             return hooks.json_payload(
                 MutationResultPayload(
                     status="ok" if removed else "not_found",
-                    conversation_id=resolved,
+                    session_id=resolved,
                     outcome=kind,
                 ),
                 exclude_none=True,

@@ -2,9 +2,27 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+from typing import TypedDict
+
 import click
 
 from polylogue.cli.shared.types import AppEnv
+from polylogue.paths import archive_file_set_root_for_paths, archive_root, db_path
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.user_write import upsert_blackboard_note
+
+_KIND_CHOICES = ("finding", "blocker", "decision", "handoff", "question", "observation")
+_KIND_RE = re.compile(r"^\[([^\]]+)\]\s*(.*)$")
+
+
+class _ParsedBlackboardBody(TypedDict):
+    kind: str
+    title: str
+    content: str
+    scope_repo: str | None
 
 
 @click.group("blackboard")
@@ -17,7 +35,7 @@ def blackboard_command() -> None:
     "--kind",
     "-k",
     required=True,
-    type=click.Choice(["finding", "blocker", "decision", "handoff", "question", "observation"]),
+    type=click.Choice(_KIND_CHOICES),
 )
 @click.option("--title", "-t", required=True)
 @click.option("--content", "-c", required=True)
@@ -39,32 +57,31 @@ def blackboard_post(
     related_sessions: tuple[str, ...],
 ) -> None:
     """Post a note to the blackboard."""
-    import json
+    import sqlite3
     import uuid
-    from datetime import datetime, timezone
 
     note_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
-    related_json = json.dumps(list(related_sessions))
+    user_db = _user_db_path()
+    initialize_archive_database(user_db, ArchiveTier.USER)
+    body = _blackboard_body(
+        kind=kind,
+        title=title,
+        content=content,
+        scope_repo=scope_repo,
+        scope_issue=scope_issue,
+        scope_path=scope_path,
+        related_sessions=related_sessions,
+    )
+    target_type = "session" if scope_session else None
 
-    from polylogue.paths import db_path
-
-    db = db_path()
-    if not db.exists():
-        env.ui.error("No archive database found. Run polylogued first.")
-        raise SystemExit(1)
-
-    import sqlite3
-
-    conn = sqlite3.connect(str(db))
+    conn = sqlite3.connect(user_db)
     try:
-        conn.execute(
-            """INSERT INTO blackboard_notes
-               (note_id, kind, title, content, scope_repo, scope_session,
-                scope_issue, scope_path, related_session_ids_json,
-                created_at, materialized_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (note_id, kind, title, content, scope_repo, scope_session, scope_issue, scope_path, related_json, now, now),
+        upsert_blackboard_note(
+            conn,
+            body,
+            target_type=target_type,
+            target_id=scope_session,
+            note_id=note_id,
         )
         conn.commit()
     finally:
@@ -73,9 +90,7 @@ def blackboard_post(
 
 
 @blackboard_command.command("list")
-@click.option(
-    "--kind", "-k", type=click.Choice(["finding", "blocker", "decision", "handoff", "question", "observation"])
-)
+@click.option("--kind", "-k", type=click.Choice(_KIND_CHOICES))
 @click.option("--scope-repo", "-r")
 @click.option("--unresolved", is_flag=True, help="Only show unresolved notes (blockers, questions).")
 @click.option("--limit", "-l", type=int, default=20)
@@ -88,50 +103,50 @@ def blackboard_list(
     limit: int,
 ) -> None:
     """List blackboard notes."""
-    from polylogue.paths import db_path
-
-    db = db_path()
-    if not db.exists():
-        env.ui.error("No archive database found.")
-        raise SystemExit(1)
-
     import sqlite3
 
-    conn = sqlite3.connect(str(db))
+    user_db = _user_db_path()
+    if not user_db.exists():
+        env.ui.console.print("[dim]No blackboard notes yet.[/dim]")
+        return
+
+    conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
     try:
         if not _table_exists(conn, "blackboard_notes"):
             env.ui.console.print("[dim]No blackboard notes yet.[/dim]")
             return
 
-        where = ["1=1"]
-        params: list[object] = []
-        if kind:
-            where.append("kind = ?")
-            params.append(kind)
-        if scope_repo:
-            where.append("scope_repo = ?")
-            params.append(scope_repo)
-        if unresolved:
-            where.append("resolved_at IS NULL")
-
         rows = conn.execute(
-            f"SELECT note_id, kind, title, content, scope_repo, scope_session, "
-            f"scope_issue, scope_path, created_at, resolved_at "
-            f"FROM blackboard_notes WHERE {' AND '.join(where)} "
-            f"ORDER BY created_at DESC LIMIT ?",
-            (*params, limit),
+            """
+            SELECT note_id, target_type, target_id, body, created_at_ms
+            FROM blackboard_notes
+            ORDER BY created_at_ms DESC, note_id DESC
+            """
         ).fetchall()
+        filtered = []
+        for row in rows:
+            parsed = _parse_blackboard_body(str(row[3]))
+            if kind and parsed["kind"] != kind:
+                continue
+            if scope_repo and parsed["scope_repo"] != scope_repo:
+                continue
+            if unresolved and parsed["kind"] not in {"blocker", "question"}:
+                continue
+            filtered.append((row, parsed))
+            if len(filtered) >= limit:
+                break
 
-        if not rows:
+        if not filtered:
             env.ui.console.print("[dim]No matching notes.[/dim]")
             return
 
-        for row in rows:
-            status = "[green]open[/green]" if row[9] is None else "[dim]resolved[/dim]"
+        for row, parsed in filtered:
+            status = "[green]open[/green]"
+            content = parsed["content"]
             env.ui.console.print(
-                f"[bold]{row[1]}[/bold] {status}  {row[2]}\n"
-                f"  {row[3][:120]}{'...' if len(row[3] or '') > 120 else ''}\n"
-                f"  id={row[0]}  repo={row[4] or '-'}  created={row[8]}\n"
+                f"[bold]{parsed['kind']}[/bold] {status}  {parsed['title']}\n"
+                f"  {content[:120]}{'...' if len(content) > 120 else ''}\n"
+                f"  id={row[0]}  repo={parsed['scope_repo'] or '-'}  created_ms={row[4]}\n"
             )
     finally:
         conn.close()
@@ -140,3 +155,50 @@ def blackboard_list(
 def _table_exists(conn: object, table: str) -> bool:
     row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", (table,)).fetchone()  # type: ignore[attr-defined]
     return row is not None
+
+
+def _user_db_path() -> Path:
+    return archive_file_set_root_for_paths(archive_root_path=archive_root(), db_anchor=db_path()) / "user.db"
+
+
+def _blackboard_body(
+    *,
+    kind: str,
+    title: str,
+    content: str,
+    scope_repo: str | None,
+    scope_issue: int | None,
+    scope_path: str | None,
+    related_sessions: tuple[str, ...],
+) -> str:
+    lines = [f"[{kind}] {title}".strip(), "", content]
+    scope_lines = []
+    if scope_repo:
+        scope_lines.append(f"scope_repo: {scope_repo}")
+    if scope_issue is not None:
+        scope_lines.append(f"scope_issue: {scope_issue}")
+    if scope_path:
+        scope_lines.append(f"scope_path: {scope_path}")
+    if related_sessions:
+        scope_lines.append(f"related_sessions: {', '.join(related_sessions)}")
+    if scope_lines:
+        lines.extend(["", *scope_lines])
+    return "\n".join(lines)
+
+
+def _parse_blackboard_body(body: str) -> _ParsedBlackboardBody:
+    first, _, rest = body.partition("\n")
+    match = _KIND_RE.match(first)
+    kind = match.group(1) if match else "observation"
+    title = match.group(2) if match else first
+    content_lines: list[str] = []
+    scope_repo: str | None = None
+    for line in rest.strip().splitlines():
+        if line.startswith("scope_repo: "):
+            scope_repo = line.removeprefix("scope_repo: ").strip()
+            continue
+        if line.startswith(("scope_issue: ", "scope_path: ", "related_sessions: ")):
+            continue
+        content_lines.append(line)
+    content = "\n".join(content_lines).strip()
+    return {"kind": kind, "title": title, "content": content, "scope_repo": scope_repo}

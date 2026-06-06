@@ -51,14 +51,12 @@ def test_messages_fts_storage_does_not_duplicate_message_bodies(tmp_path: Path) 
     try:
         conn.executescript(SCHEMA_DDL)
         conn.execute(
-            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) "
-            "VALUES('c1','test','pc1',1)"
+            "INSERT INTO sessions(session_id, source_name, provider_session_id, version) VALUES('c1','test','pc1',1)"
         )
         body = "lorem ipsum dolor sit amet consectetur adipiscing elit " * 100
         for i in range(2000):
             conn.execute(
-                "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) "
-                "VALUES(?,?,?,?,?,1)",
+                "INSERT INTO messages(message_id, session_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
                 (f"m{i}", "c1", "user", body, "test"),
             )
         conn.commit()
@@ -105,15 +103,14 @@ def test_messages_fts_deletion_consistency_with_external_content(tmp_path: Path)
     try:
         conn.executescript(SCHEMA_DDL)
         conn.execute(
-            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) "
-            "VALUES('c1','test','pc1',1)"
+            "INSERT INTO sessions(session_id, source_name, provider_session_id, version) VALUES('c1','test','pc1',1)"
         )
         conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) "
+            "INSERT INTO messages(message_id, session_id, role, text, source_name, version) "
             "VALUES('m1','c1','user','unique_token_alpha here','test',1)"
         )
         conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) "
+            "INSERT INTO messages(message_id, session_id, role, text, source_name, version) "
             "VALUES('m2','c1','user','unique_token_beta here','test',1)"
         )
         conn.commit()
@@ -141,26 +138,25 @@ def test_messages_fts_deletion_consistency_with_external_content(tmp_path: Path)
         conn.close()
 
 
-def test_conversation_replacement_purges_fts_when_delete_triggers_missing(tmp_path: Path) -> None:
+def test_session_replacement_purges_fts_when_delete_triggers_missing(tmp_path: Path) -> None:
     """Replacement must not orphan FTS rows if bulk ingest has suspended triggers."""
-    from polylogue.storage.conversation_replacement import replace_conversation_runtime_state_sync
+    from polylogue.storage.session_replacement import replace_session_runtime_state_sync
     from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
 
     conn = sqlite3.connect(str(tmp_path / "fts_replace_missing_triggers.db"))
     try:
         conn.executescript(SCHEMA_DDL)
         conn.execute(
-            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, version) "
-            "VALUES('c1','test','pc1',1)"
+            "INSERT INTO sessions(session_id, source_name, provider_session_id, version) VALUES('c1','test','pc1',1)"
         )
         conn.execute(
-            "INSERT INTO messages(message_id, conversation_id, role, text, source_name, version) "
+            "INSERT INTO messages(message_id, session_id, role, text, source_name, version) "
             "VALUES('m1','c1','user','replace orphan needle','test',1)"
         )
         conn.execute(
             """
             INSERT INTO action_events (
-                event_id, conversation_id, message_id, sequence_index,
+                event_id, session_id, message_id, sequence_index,
                 action_kind, normalized_tool_name, search_text
             ) VALUES ('a1', 'c1', 'm1', 0, 'shell', 'bash', 'action orphan needle')
             """
@@ -171,7 +167,7 @@ def test_conversation_replacement_purges_fts_when_delete_triggers_missing(tmp_pa
 
         conn.execute("DROP TRIGGER messages_fts_ad")
         conn.execute("DROP TRIGGER action_events_fts_ad")
-        replace_conversation_runtime_state_sync(conn, "c1")
+        replace_session_runtime_state_sync(conn, "c1")
         conn.commit()
 
         message_orphans = conn.execute(

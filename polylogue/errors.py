@@ -38,12 +38,13 @@ class DatabaseError(PolylogueError):
     http_status_code: int = HTTPStatus.SERVICE_UNAVAILABLE
 
 
-class SchemaIncompatibleError(DatabaseError):
+class SchemaVersionMismatchError(DatabaseError):
     """Raised when the on-disk schema version cannot be served by this runtime.
 
     The runtime expects ``expected_version`` (the build-time ``SCHEMA_VERSION``
     constant). The database reports ``current_version``. There is no automatic
-    migration path that the runtime is willing to apply for this transition.
+    in-place upgrade path that the runtime is willing to apply for this
+    transition.
 
     Both versions are exposed as attributes so call sites can format a
     structured message (and the daemon health surface can render it) without
@@ -92,5 +93,5 @@ __all__ = [
     "DatabaseError",
     "EmbeddingRetrievalNotReadyError",
     "PolylogueError",
-    "SchemaIncompatibleError",
+    "SchemaVersionMismatchError",
 ]

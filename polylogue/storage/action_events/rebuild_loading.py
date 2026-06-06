@@ -9,71 +9,69 @@ import aiosqlite
 
 # Re-export canonical chunked from polylogue.core.common.
 from polylogue.core.common import chunked  # noqa: F401
-from polylogue.storage.runtime import ContentBlockRecord, ConversationRecord, MessageRecord
+from polylogue.storage.runtime import ContentBlockRecord, MessageRecord, SessionRecord
 from polylogue.storage.sqlite.queries.mappers import (
     _row_to_content_block,
     _row_to_message,
 )
 
-_ALL_ACTION_EVENT_CONVERSATION_IDS_SQL = (
-    "SELECT conversation_id FROM conversations ORDER BY COALESCE(sort_key, 0) DESC, conversation_id"
-)
-_ACTION_EVENT_CONVERSATION_SQL_TEMPLATE = """
+_ALL_ACTION_EVENT_SESSION_IDS_SQL = "SELECT session_id FROM sessions ORDER BY COALESCE(sort_key, 0) DESC, session_id"
+_ACTION_EVENT_SESSION_SQL_TEMPLATE = """
 SELECT
-    conversation_id,
+    session_id,
     source_name,
-    provider_conversation_id,
+    provider_session_id,
     content_hash
-FROM conversations
-WHERE conversation_id IN ({placeholders})
+FROM sessions
+WHERE session_id IN ({placeholders})
 """
 
 
-def iter_conversation_id_pages_sync(
+def iter_session_id_pages_sync(
     conn: sqlite3.Connection,
     *,
     page_size: int,
 ) -> Iterable[list[str]]:
-    cursor = conn.execute(_ALL_ACTION_EVENT_CONVERSATION_IDS_SQL)
+    cursor = conn.execute(_ALL_ACTION_EVENT_SESSION_IDS_SQL)
     while True:
         rows = cursor.fetchmany(page_size)
         if not rows:
             break
-        yield [str(row["conversation_id"]) for row in rows]
+        yield [str(row["session_id"]) for row in rows]
 
 
-async def iter_conversation_id_pages_async(
+async def iter_session_id_pages_async(
     conn: aiosqlite.Connection,
     *,
     page_size: int,
 ) -> AsyncIterator[list[str]]:
-    cursor = await conn.execute(_ALL_ACTION_EVENT_CONVERSATION_IDS_SQL)
+    cursor = await conn.execute(_ALL_ACTION_EVENT_SESSION_IDS_SQL)
     while True:
         rows = list(await cursor.fetchmany(page_size))
         if not rows:
             break
-        yield [str(row["conversation_id"]) for row in rows]
+        yield [str(row["session_id"]) for row in rows]
 
 
-def _row_to_action_event_conversation(row: sqlite3.Row) -> ConversationRecord:
-    return ConversationRecord(
-        conversation_id=row["conversation_id"],
+def _row_to_action_event_session(row: sqlite3.Row) -> SessionRecord:
+    return SessionRecord(
+        session_id=row["session_id"],
         source_name=row["source_name"],
-        provider_conversation_id=row["provider_conversation_id"],
+        provider_session_id=row["provider_session_id"],
         content_hash=row["content_hash"],
     )
 
 
 def load_sync_batch(
     conn: sqlite3.Connection,
-    conversation_ids: Sequence[str],
-) -> tuple[list[ConversationRecord], list[MessageRecord], list[ContentBlockRecord]]:
-    placeholders = ", ".join("?" for _ in conversation_ids)
-    conversations = [
-        _row_to_action_event_conversation(row)
+    session_ids: Sequence[str],
+) -> tuple[list[SessionRecord], list[MessageRecord], list[ContentBlockRecord]]:
+    placeholders = ", ".join("?" for _ in session_ids)
+    sessions = [
+        _row_to_action_event_session(row)
         for row in conn.execute(
-            _ACTION_EVENT_CONVERSATION_SQL_TEMPLATE.format(placeholders=placeholders),
-            tuple(conversation_ids),
+            _ACTION_EVENT_SESSION_SQL_TEMPLATE.format(placeholders=placeholders),
+            tuple(session_ids),
         ).fetchall()
     ]
     messages = [
@@ -82,10 +80,10 @@ def load_sync_batch(
             f"""
             SELECT *
             FROM messages
-            WHERE conversation_id IN ({placeholders})
-            ORDER BY conversation_id, sort_key, message_id
+            WHERE session_id IN ({placeholders})
+            ORDER BY session_id, sort_key, message_id
             """,
-            tuple(conversation_ids),
+            tuple(session_ids),
         ).fetchall()
     ]
     blocks = [
@@ -94,26 +92,26 @@ def load_sync_batch(
             f"""
             SELECT *
             FROM content_blocks
-            WHERE conversation_id IN ({placeholders})
-            ORDER BY conversation_id, message_id, block_index
+            WHERE session_id IN ({placeholders})
+            ORDER BY session_id, message_id, block_index
             """,
-            tuple(conversation_ids),
+            tuple(session_ids),
         ).fetchall()
     ]
-    return conversations, messages, blocks
+    return sessions, messages, blocks
 
 
 async def load_async_batch(
     conn: aiosqlite.Connection,
-    conversation_ids: Sequence[str],
-) -> tuple[list[ConversationRecord], list[MessageRecord], list[ContentBlockRecord]]:
-    placeholders = ", ".join("?" for _ in conversation_ids)
-    conversations = [
-        _row_to_action_event_conversation(row)
+    session_ids: Sequence[str],
+) -> tuple[list[SessionRecord], list[MessageRecord], list[ContentBlockRecord]]:
+    placeholders = ", ".join("?" for _ in session_ids)
+    sessions = [
+        _row_to_action_event_session(row)
         for row in await (
             await conn.execute(
-                _ACTION_EVENT_CONVERSATION_SQL_TEMPLATE.format(placeholders=placeholders),
-                tuple(conversation_ids),
+                _ACTION_EVENT_SESSION_SQL_TEMPLATE.format(placeholders=placeholders),
+                tuple(session_ids),
             )
         ).fetchall()
     ]
@@ -124,10 +122,10 @@ async def load_async_batch(
                 f"""
                 SELECT *
                 FROM messages
-                WHERE conversation_id IN ({placeholders})
-                ORDER BY conversation_id, sort_key, message_id
+                WHERE session_id IN ({placeholders})
+                ORDER BY session_id, sort_key, message_id
                 """,
-                tuple(conversation_ids),
+                tuple(session_ids),
             )
         ).fetchall()
     ]
@@ -138,11 +136,11 @@ async def load_async_batch(
                 f"""
                 SELECT *
                 FROM content_blocks
-                WHERE conversation_id IN ({placeholders})
-                ORDER BY conversation_id, message_id, block_index
+                WHERE session_id IN ({placeholders})
+                ORDER BY session_id, message_id, block_index
                 """,
-                tuple(conversation_ids),
+                tuple(session_ids),
             )
         ).fetchall()
     ]
-    return conversations, messages, blocks
+    return sessions, messages, blocks

@@ -10,12 +10,12 @@ from polylogue.rendering.core import build_rendered_message
 from polylogue.rendering.core_messages import RenderedMessage, attach_rendered_message_branches
 
 if TYPE_CHECKING:
-    from polylogue.archive.models import Conversation
-    from polylogue.storage.archive_views import ConversationRenderProjection
+    from polylogue.archive.models import Session
+    from polylogue.storage.archive_views import SessionRenderProjection
 
 
 def build_projection_html_messages(
-    projection: ConversationRenderProjection,
+    projection: SessionRenderProjection,
     *,
     render_html: Callable[[str], str],
     preview_limit: int = 120,
@@ -41,14 +41,14 @@ def build_projection_html_messages(
     return attach_rendered_message_branches(raw_messages)
 
 
-def build_conversation_html_messages(
-    conversation: Conversation,
+def build_session_html_messages(
+    session: Session,
     *,
     render_html: Callable[[str], str],
     preview_limit: int = 120,
 ) -> list[RenderedMessage]:
     raw_messages: list[RenderedMessage] = []
-    for msg in conversation.messages:
+    for msg in session.messages:
         content_blocks = coerce_renderable_blocks(getattr(msg, "content_blocks", None))
         text = msg.text or ""
         if not text and not content_blocks:
@@ -73,6 +73,6 @@ _attach_branches = attach_rendered_message_branches
 
 __all__ = [
     "_attach_branches",
-    "build_conversation_html_messages",
+    "build_session_html_messages",
     "build_projection_html_messages",
 ]

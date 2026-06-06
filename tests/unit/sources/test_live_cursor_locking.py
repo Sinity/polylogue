@@ -24,7 +24,7 @@ def test_cursor_progress_writes_do_not_raise_on_transient_sqlite_lock(
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr("polylogue.sources.live.sqlite_locking.time.sleep", lambda _seconds: None)
-    monkeypatch.setattr(store, "_connect", locked_connect)
+    monkeypatch.setattr(store, "_connect_ops", locked_connect)
 
     assert (
         store.update_ingest_attempt(
@@ -59,7 +59,7 @@ def test_cursor_progress_writes_still_raise_non_lock_sqlite_errors(
     def broken_connect() -> sqlite3.Connection:
         raise sqlite3.OperationalError("disk I/O error")
 
-    monkeypatch.setattr(store, "_connect", broken_connect)
+    monkeypatch.setattr(store, "_connect_ops", broken_connect)
 
     with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
         store.update_ingest_attempt(attempt_id, phase="full_parse")

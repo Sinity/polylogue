@@ -1,4 +1,4 @@
-"""Claude Code conversation parsing helpers."""
+"""Claude Code session parsing helpers."""
 
 from __future__ import annotations
 
@@ -6,22 +6,29 @@ import re
 from collections.abc import Iterable, Sequence
 from typing import TypeAlias
 
-from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.artifacts import classify_text_message_type
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
+from polylogue.archive.session.branch_type import BranchType
 from polylogue.logging import get_logger
 from polylogue.pipeline.semantic_capture import detect_context_compaction
 from polylogue.types import ContentBlockType, Provider
 
 from ..base import (
     ParsedContentBlock,
-    ParsedConversation,
     ParsedMessage,
     ParsedProviderEvent,
+    ParsedSession,
     content_blocks_from_segments,
 )
-from .common import extract_message_text, normalize_timestamp, reclassify_tool_result_envelope
+from .common import (
+    _message_duration_ms,
+    _message_model_effort,
+    _message_model_name,
+    extract_message_text,
+    normalize_timestamp,
+    reclassify_tool_result_envelope,
+)
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -114,8 +121,8 @@ def _string_field(item: dict[str, object], key: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedConversation:
-    """Parse Claude Code JSONL payloads into a canonical conversation model."""
+def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSession:
+    """Parse Claude Code JSONL payloads into a canonical session model."""
     messages: list[ParsedMessage] = []
     created_at: str | None = None
     updated_at: str | None = None
@@ -132,6 +139,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
     has_sidechain = False
     cwds: set[str] = set()
     models: set[str] = set()
+    message_position = 0
 
     for index, item in enumerate(records, start=1):
         if not isinstance(item, dict):
@@ -162,8 +170,12 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
                     if summary_text
                     else [],
                     message_type=MessageType.SUMMARY,
+                    position=message_position,
+                    variant_index=0,
+                    is_active_path=True,
                 )
             )
+            message_position += 1
             continue
 
         record_type = item.get("type")
@@ -213,7 +225,10 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
         msg_usage = message.get("usage") if isinstance(message, dict) else None
         if not isinstance(msg_usage, dict):
             msg_usage = {}
-        msg_model = message.get("model") if isinstance(message, dict) else None
+        message_payload = message if isinstance(message, dict) else {}
+        msg_model = _message_model_name(message_payload) or _message_model_name(item)
+        msg_effort = _message_model_effort(message_payload) or _message_model_effort(item)
+        msg_duration_ms = _message_duration_ms(item)
         messages.append(
             ParsedMessage(
                 provider_message_id=str(record_uuid or f"msg-{index}"),
@@ -223,13 +238,19 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
                 content_blocks=content_blocks,
                 message_type=message_type,
                 parent_message_provider_id=_string_field(item, "parentUuid"),
+                position=message_position,
+                variant_index=0,
+                is_active_path=True,
                 input_tokens=_safe_int(msg_usage.get("input_tokens")),
                 output_tokens=_safe_int(msg_usage.get("output_tokens")),
                 cache_read_tokens=_safe_int(msg_usage.get("cache_read_input_tokens")),
                 cache_write_tokens=_safe_int(msg_usage.get("cache_creation_input_tokens")),
-                model_name=msg_model if isinstance(msg_model, str) else None,
+                model_name=msg_model,
+                model_effort=msg_effort,
+                duration_ms=msg_duration_ms,
             )
         )
+        message_position += 1
 
         if "costUSD" in item:
             saw_cost_field = True
@@ -242,7 +263,6 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
         cwd = item.get("cwd")
         if isinstance(cwd, str):
             cwds.add(cwd)
-        message_payload = message if isinstance(message, dict) else {}
         model_name = message_payload.get("model")
         if isinstance(model_name, str):
             models.add(model_name)
@@ -258,10 +278,10 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
     is_subagent = fallback_id.startswith("agent-")
     parent_session_id: str | None = None
     if is_subagent and session_id:
-        conversation_id = f"{session_id}:{fallback_id}"
+        composed_session_id = f"{session_id}:{fallback_id}"
         parent_session_id = session_id
     else:
-        conversation_id = session_id or fallback_id
+        composed_session_id = session_id or fallback_id
 
     provider_meta: ClaudeCodeProviderMeta = {}
     if saw_cost_field:
@@ -280,7 +300,16 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
     else:
         branch_type = None
 
-    title = str(conversation_id)
+    active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
+    if active_leaf_message_provider_id is not None:
+        messages = [
+            message.model_copy(
+                update={"is_active_leaf": message.provider_message_id == active_leaf_message_provider_id}
+            )
+            for message in messages
+        ]
+
+    title = str(composed_session_id)
     for message in messages:
         if message.role == "user" and message.text and len(message.text.strip()) > 3:
             # Strip protocol artifacts before extracting title
@@ -291,26 +320,27 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedCo
                     title += "..."
                 break
 
-    return ParsedConversation(
+    return ParsedSession(
         source_name=Provider.CLAUDE_CODE,
-        provider_conversation_id=str(conversation_id),
+        provider_session_id=str(composed_session_id),
         title=title,
         created_at=created_at,
         updated_at=updated_at,
         messages=messages,
+        active_leaf_message_provider_id=active_leaf_message_provider_id,
         provider_meta=provider_meta if provider_meta else None,
         provider_events=provider_events,
-        parent_conversation_provider_id=parent_session_id,
+        parent_session_provider_id=parent_session_id,
         branch_type=branch_type,
         working_directories=sorted(cwds),
     )
 
 
-def parse_code(payload: Sequence[object], fallback_id: str) -> ParsedConversation:
+def parse_code(payload: Sequence[object], fallback_id: str) -> ParsedSession:
     return _parse_code_records(payload, fallback_id)
 
 
-def parse_code_stream(records: Iterable[object], fallback_id: str) -> ParsedConversation:
+def parse_code_stream(records: Iterable[object], fallback_id: str) -> ParsedSession:
     return _parse_code_records(records, fallback_id)
 
 

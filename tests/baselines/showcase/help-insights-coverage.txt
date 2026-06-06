@@ -1,0 +1,15 @@
+Usage: polylogue insights coverage [OPTIONS]
+
+  List archive coverage buckets by provider, day, or week.
+
+Options:
+  --group-by [provider|day|week]  Bucket coverage by provider, day, or ISO
+                                  week  [default: provider]
+  -p, --provider TEXT             Only this provider
+  --since TEXT                    Only buckets at/after this timestamp or date
+  --until TEXT                    Only buckets at/before this timestamp or
+                                  date
+  -l, --limit INTEGER             Maximum rows  [default: 50]
+  --offset INTEGER                Start offset  [default: 0]
+  -f, --format [json]             Output format
+  -h, --help                      Show this message and exit.

@@ -10,7 +10,7 @@ from polylogue.core.common import chunked
 FTS_MESSAGES_TABLE_SQL = """
     CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
         message_id UNINDEXED,
-        conversation_id UNINDEXED,
+        session_id UNINDEXED,
         text,
         content='',
         contentless_delete=1,
@@ -22,7 +22,7 @@ FTS_ACTIONS_TABLE_SQL = """
     CREATE VIRTUAL TABLE IF NOT EXISTS action_events_fts USING fts5(
         event_id UNINDEXED,
         message_id UNINDEXED,
-        conversation_id UNINDEXED,
+        session_id UNINDEXED,
         action_kind UNINDEXED,
         normalized_tool_name UNINDEXED,
         search_text,
@@ -62,11 +62,11 @@ ACTION_FTS_REBUILD_SQL = """
 
 class IndexedMessage(Protocol):
     message_id: str
-    conversation_id: str
+    session_id: str
     text: str | None
 
 
-def delete_conversation_rows_sql(chunk_size: int) -> str:
+def delete_session_rows_sql(chunk_size: int) -> str:
     placeholders = ", ".join("?" for _ in range(chunk_size))
     # DELETE on external-content FTS5 raises ``database disk image is malformed``
     # when a rowid is not present in the FTS index.  Filter the deletion to
@@ -76,45 +76,45 @@ def delete_conversation_rows_sql(chunk_size: int) -> str:
         WHERE rowid IN (
             SELECT messages.rowid
             FROM messages
-            WHERE messages.conversation_id IN ({placeholders})
+            WHERE messages.session_id IN ({placeholders})
         )
         AND rowid IN (SELECT id FROM messages_fts_docsize)
     """
 
 
-def insert_conversation_rows_sql(chunk_size: int) -> str:
+def insert_session_rows_sql(chunk_size: int) -> str:
     values = ", ".join("(?)" for _ in range(chunk_size))
     return f"""
-        WITH raw_target_conversations(conversation_id) AS (
+        WITH raw_target_sessions(session_id) AS (
             VALUES {values}
         ),
-        target_conversations AS (
-            SELECT DISTINCT conversation_id
-            FROM raw_target_conversations
+        target_sessions AS (
+            SELECT DISTINCT session_id
+            FROM raw_target_sessions
         ),
         message_parts AS (
             SELECT m.message_id, m.text AS part, -1 AS block_index, 0 AS part_index
             FROM messages AS m
-            JOIN target_conversations AS target
-              ON target.conversation_id = m.conversation_id
+            JOIN target_sessions AS target
+              ON target.session_id = m.session_id
             WHERE m.text IS NOT NULL AND m.text != ''
             UNION ALL
             SELECT cb.message_id, cb.text AS part, cb.block_index, 1 AS part_index
             FROM content_blocks AS cb
-            JOIN target_conversations AS target
-              ON target.conversation_id = cb.conversation_id
+            JOIN target_sessions AS target
+              ON target.session_id = cb.session_id
             WHERE cb.text IS NOT NULL AND cb.text != ''
             UNION ALL
             SELECT cb.message_id, cb.tool_input AS part, cb.block_index, 2 AS part_index
             FROM content_blocks AS cb
-            JOIN target_conversations AS target
-              ON target.conversation_id = cb.conversation_id
+            JOIN target_sessions AS target
+              ON target.session_id = cb.session_id
             WHERE cb.tool_input IS NOT NULL AND cb.tool_input != ''
             UNION ALL
             SELECT cb.message_id, cb.metadata AS part, cb.block_index, 3 AS part_index
             FROM content_blocks AS cb
-            JOIN target_conversations AS target
-              ON target.conversation_id = cb.conversation_id
+            JOIN target_sessions AS target
+              ON target.session_id = cb.session_id
             WHERE cb.metadata IS NOT NULL AND cb.metadata != ''
         ),
         grouped_parts AS (
@@ -128,19 +128,19 @@ def insert_conversation_rows_sql(chunk_size: int) -> str:
             ) AS message_parts
             GROUP BY message_parts.message_id
         )
-        INSERT INTO messages_fts (rowid, message_id, conversation_id, text)
-        SELECT m.rowid, m.message_id, m.conversation_id, grouped_parts.search_text
+        INSERT INTO messages_fts (rowid, message_id, session_id, text)
+        SELECT m.rowid, m.message_id, m.session_id, grouped_parts.search_text
         FROM messages AS m
-        JOIN target_conversations AS target
-          ON target.conversation_id = m.conversation_id
+        JOIN target_sessions AS target
+          ON target.session_id = m.session_id
         JOIN grouped_parts ON grouped_parts.message_id = m.message_id
     """
 
 
 def insert_all_message_rows_sql() -> str:
     return """
-        INSERT INTO messages_fts (rowid, message_id, conversation_id, text)
-        SELECT m.rowid, m.message_id, m.conversation_id, parts.search_text
+        INSERT INTO messages_fts (rowid, message_id, session_id, text)
+        SELECT m.rowid, m.message_id, m.session_id, parts.search_text
         FROM messages AS m
         JOIN (
             SELECT
@@ -171,8 +171,8 @@ def insert_all_message_rows_sql() -> str:
 
 def insert_missing_message_rows_sql() -> str:
     return """
-        WITH missing(rowid, message_id, conversation_id) AS (
-            SELECT m.rowid, m.message_id, m.conversation_id
+        WITH missing(rowid, message_id, session_id) AS (
+            SELECT m.rowid, m.message_id, m.session_id
             FROM messages AS m
             LEFT JOIN messages_fts_docsize AS d ON d.id = m.rowid
             WHERE d.id IS NULL
@@ -190,8 +190,8 @@ def insert_missing_message_rows_sql() -> str:
                   )
               )
         )
-        INSERT INTO messages_fts (rowid, message_id, conversation_id, text)
-        SELECT missing.rowid, missing.message_id, missing.conversation_id, parts.search_text
+        INSERT INTO messages_fts (rowid, message_id, session_id, text)
+        SELECT missing.rowid, missing.message_id, missing.session_id, parts.search_text
         FROM missing
         JOIN (
             SELECT
@@ -229,8 +229,8 @@ def insert_missing_message_rows_sql() -> str:
 
 def insert_missing_plain_message_rows_sql() -> str:
     return """
-        INSERT INTO messages_fts (rowid, message_id, conversation_id, text)
-        SELECT m.rowid, m.message_id, m.conversation_id, m.text
+        INSERT INTO messages_fts (rowid, message_id, session_id, text)
+        SELECT m.rowid, m.message_id, m.session_id, m.text
         FROM messages AS m
         LEFT JOIN messages_fts_docsize AS d ON d.id = m.rowid
         WHERE d.id IS NULL
@@ -248,7 +248,7 @@ def delete_action_rows_sql(chunk_size: int) -> str:
         WHERE rowid IN (
             SELECT ae.rowid
             FROM action_events ae
-            WHERE ae.conversation_id IN ({placeholders})
+            WHERE ae.session_id IN ({placeholders})
         )
         AND rowid IN (SELECT id FROM action_events_fts_docsize)
     """
@@ -257,47 +257,47 @@ def delete_action_rows_sql(chunk_size: int) -> str:
 def insert_action_rows_sql(chunk_size: int) -> str:
     placeholders = ", ".join("?" for _ in range(chunk_size))
     return f"""
-        INSERT INTO action_events_fts (rowid, event_id, message_id, conversation_id, action_kind, normalized_tool_name, search_text)
+        INSERT INTO action_events_fts (rowid, event_id, message_id, session_id, action_kind, normalized_tool_name, search_text)
         SELECT
             ae.rowid,
             ae.event_id,
             ae.message_id,
-            ae.conversation_id,
+            ae.session_id,
             ae.action_kind,
             ae.normalized_tool_name,
             ae.search_text
         FROM action_events ae
-        WHERE ae.conversation_id IN ({placeholders})
+        WHERE ae.session_id IN ({placeholders})
     """
 
 
 def insert_missing_action_rows_sql(chunk_size: int) -> str:
     placeholders = ", ".join("?" for _ in range(chunk_size))
     return f"""
-        INSERT INTO action_events_fts (rowid, event_id, message_id, conversation_id, action_kind, normalized_tool_name, search_text)
+        INSERT INTO action_events_fts (rowid, event_id, message_id, session_id, action_kind, normalized_tool_name, search_text)
         SELECT
             ae.rowid,
             ae.event_id,
             ae.message_id,
-            ae.conversation_id,
+            ae.session_id,
             ae.action_kind,
             ae.normalized_tool_name,
             ae.search_text
         FROM action_events ae
         LEFT JOIN action_events_fts_docsize d ON d.id = ae.rowid
-        WHERE ae.conversation_id IN ({placeholders})
+        WHERE ae.session_id IN ({placeholders})
           AND d.id IS NULL
     """
 
 
 def insert_all_missing_action_rows_sql() -> str:
     return """
-        INSERT INTO action_events_fts (rowid, event_id, message_id, conversation_id, action_kind, normalized_tool_name, search_text)
+        INSERT INTO action_events_fts (rowid, event_id, message_id, session_id, action_kind, normalized_tool_name, search_text)
         SELECT
             ae.rowid,
             ae.event_id,
             ae.message_id,
-            ae.conversation_id,
+            ae.session_id,
             ae.action_kind,
             ae.normalized_tool_name,
             ae.search_text
@@ -320,11 +320,11 @@ __all__ = [
     "IndexedMessage",
     "chunked",
     "delete_action_rows_sql",
-    "delete_conversation_rows_sql",
+    "delete_session_rows_sql",
     "insert_action_rows_sql",
     "insert_all_message_rows_sql",
     "insert_all_missing_action_rows_sql",
-    "insert_conversation_rows_sql",
+    "insert_session_rows_sql",
     "insert_missing_action_rows_sql",
     "insert_missing_message_rows_sql",
     "insert_missing_plain_message_rows_sql",

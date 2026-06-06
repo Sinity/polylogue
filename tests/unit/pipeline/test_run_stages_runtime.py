@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import click
 import pytest
 
+from polylogue.config import Source
 from polylogue.pipeline import run_stages
 from polylogue.pipeline.run_stages import (
     EmbedStageOutcome,
@@ -42,8 +43,8 @@ def _backend(
     connection = conn if conn is not None else SimpleNamespace()
     return SimpleNamespace(
         get_session_insight_status=AsyncMock(return_value=status),
-        count_conversation_ids=AsyncMock(return_value=count),
-        iter_conversation_ids=lambda **kwargs: _aiter(*iter_values),
+        count_session_ids=AsyncMock(return_value=count),
+        iter_session_ids=lambda **kwargs: _aiter(*iter_values),
         connection=lambda: _AsyncContext(connection),
     )
 
@@ -69,7 +70,7 @@ async def test_execute_materialize_stage_covers_noop_and_incremental_refresh_pat
     )
     assert empty_outcome == MaterializeStageOutcome(item_count=0, rebuilt=False)
 
-    backend = _backend(status=SimpleNamespace(total_conversations=2, profile_row_count=0))
+    backend = _backend(status=SimpleNamespace(total_sessions=2, profile_row_count=0))
     progress = MagicMock()
     with patch(
         "polylogue.pipeline.services.ingest_batch.refresh_session_insights_bulk",
@@ -91,7 +92,7 @@ async def test_execute_materialize_stage_covers_noop_and_incremental_refresh_pat
     assert refresh.await_args.args[1] == ["conv-a", "conv-b"]
     backend.get_session_insight_status.assert_not_awaited()
 
-    reprocess_backend = _backend(status=SimpleNamespace(total_conversations=2, profile_row_count=0))
+    reprocess_backend = _backend(status=SimpleNamespace(total_sessions=2, profile_row_count=0))
     reprocess_progress = MagicMock()
     with patch(
         "polylogue.pipeline.services.ingest_batch.refresh_session_insights_bulk",
@@ -117,7 +118,7 @@ async def test_execute_materialize_stage_covers_noop_and_incremental_refresh_pat
 @pytest.mark.asyncio
 async def test_execute_materialize_stage_covers_refresh_scoped_and_unscoped_paths() -> None:
     backend = _backend(
-        status=SimpleNamespace(total_conversations=3, profile_row_count=2),
+        status=SimpleNamespace(total_sessions=3, profile_row_count=2),
     )
     with patch(
         "polylogue.pipeline.services.ingest_batch.refresh_session_insights_bulk",
@@ -146,7 +147,7 @@ async def test_execute_materialize_stage_covers_refresh_scoped_and_unscoped_path
     scoped_backend = _backend(count=2, iter_values=("conv-1", "conv-2"))
     with patch(
         "polylogue.pipeline.services.ingest_batch.refresh_session_insights_bulk",
-        new=AsyncMock(return_value={"conversations": 2}),
+        new=AsyncMock(return_value={"sessions": 2}),
     ) as refresh:
         scoped = await run_stages.execute_materialize_stage(
             stage="materialize",
@@ -156,7 +157,7 @@ async def test_execute_materialize_stage_covers_refresh_scoped_and_unscoped_path
         )
 
     assert scoped.item_count == 2
-    assert scoped.observation == {"conversations": 2}
+    assert scoped.observation == {"sessions": 2}
     assert refresh.await_args is not None
     assert refresh.await_args.args[1] == ["conv-1", "conv-2"]
 
@@ -192,6 +193,53 @@ async def test_execute_materialize_stage_covers_refresh_scoped_and_unscoped_path
         backend=_backend(),
     )
     assert other_stage == MaterializeStageOutcome(item_count=0, rebuilt=False)
+
+
+@pytest.mark.asyncio
+async def test_execute_ingest_stage_routes_active_archive_to_native_writer(tmp_path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    archive_root = tmp_path
+    source_path = tmp_path / "gemini-session.json"
+    source_path.write_text(
+        """
+        {
+          "sessionId": "stage-v1-parse",
+          "projectHash": "project-hash",
+          "startTime": "2026-04-08T20:45:00.000Z",
+          "lastUpdated": "2026-04-08T20:47:00.000Z",
+          "kind": "chat",
+          "summary": "Stage Native Parse",
+          "messages": [
+            {"id": "u1", "timestamp": "2026-04-08T20:45:01.000Z", "type": "user", "content": ["stage archive needle"]}
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+    with ArchiveStore(archive_root):
+        pass
+
+    with patch("polylogue.pipeline.services.parsing.ParsingService") as parsing_service:
+        result = await run_stages.execute_ingest_stage(
+            config=SimpleNamespace(archive_root=archive_root, db_path=tmp_path / "polylogue.db"),
+            repository=SimpleNamespace(),
+            archive_root=archive_root,
+            sources=[Source(name="gemini-cli", path=source_path)],
+            stage="all",
+        )
+
+    parsing_service.assert_not_called()
+    assert result.parse_result.counts["sessions"] == 1
+    observation = result.parse_result.batch_observations[-1]
+    assert observation["archive_write_mode"] == "archive"
+    assert observation["archive_root"] == str(archive_root)
+    assert observation["archive_write_targets"] == ["source.db", "index.db"]
+    assert observation["archive_source_rows"] == 1
+    assert observation["archive_index_rows"] == 1
+    with ArchiveStore.open_existing(archive_root) as archive_db:
+        assert archive_db.search_blocks("needle")
+    assert not (tmp_path / "polylogue.db").exists()
 
 
 @pytest.mark.asyncio
@@ -291,9 +339,9 @@ async def test_execute_embed_stage_covers_stats_errors_single_and_batch_paths() 
 
     stats_payload = {
         "status": "complete",
-        "total_conversations": 5,
-        "embedded_conversations": 5,
-        "pending_conversations": 0,
+        "total_sessions": 5,
+        "embedded_sessions": 5,
+        "pending_sessions": 0,
     }
     with patch(
         "polylogue.storage.embeddings.status_payload.embedding_status_payload", return_value=stats_payload
@@ -314,20 +362,20 @@ async def test_execute_embed_stage_covers_stats_errors_single_and_batch_paths() 
                 await run_stages.execute_embed_stage(config=config, backend=SimpleNamespace())
 
     provider = SimpleNamespace(model="voyage-4")
-    from polylogue.storage.embeddings.materialization import EmbedConversationOutcome
+    from polylogue.storage.embeddings.materialization import EmbedSessionOutcome
 
-    embedded_outcome = EmbedConversationOutcome(status="embedded", conversation_id="conv-1", embedded_message_count=2)
+    embedded_outcome = EmbedSessionOutcome(status="embedded", session_id="conv-1", embedded_message_count=2)
     with patch.dict("os.environ", {"VOYAGE_API_KEY": "key"}, clear=True):
         with patch("polylogue.storage.search_providers.create_vector_provider", return_value=provider):
             with patch(
-                "polylogue.storage.embeddings.materialization.embed_conversation_sync",
+                "polylogue.storage.embeddings.materialization.embed_session_sync",
                 return_value=embedded_outcome,
             ) as embed_one:
-                with patch("polylogue.storage.repository.ConversationRepository", return_value="repo"):
+                with patch("polylogue.storage.repository.SessionRepository", return_value="repo"):
                     single = await run_stages.execute_embed_stage(
                         config=config,
                         backend=SimpleNamespace(),
-                        conversation_id="conv-1",
+                        session_id="conv-1",
                         model="voyage-4-large",
                     )
     assert provider.model == "voyage-4-large"
@@ -338,10 +386,10 @@ async def test_execute_embed_stage_covers_stats_errors_single_and_batch_paths() 
     with patch.dict("os.environ", {"VOYAGE_API_KEY": "key"}, clear=True):
         with patch("polylogue.storage.search_providers.create_vector_provider", return_value=provider):
             with patch(
-                "polylogue.storage.embeddings.materialization.iter_pending_conversations",
+                "polylogue.storage.embeddings.materialization.iter_pending_sessions",
                 return_value=[],
             ) as iter_pending:
-                with patch("polylogue.storage.repository.ConversationRepository", return_value="repo"):
+                with patch("polylogue.storage.repository.SessionRepository", return_value="repo"):
                     batch = await run_stages.execute_embed_stage(
                         config=config,
                         backend=SimpleNamespace(),
@@ -351,4 +399,4 @@ async def test_execute_embed_stage_covers_stats_errors_single_and_batch_paths() 
     assert batch == EmbedStageOutcome(embedded_count=0, error_count=0)
     iter_pending.assert_called_once()
     assert iter_pending.call_args.kwargs["rebuild"] is True
-    assert iter_pending.call_args.kwargs["max_conversations"] == 3
+    assert iter_pending.call_args.kwargs["max_sessions"] == 3

@@ -13,7 +13,7 @@ RUN_ALL_REPAIRS_EXPECTED = {
     "session_insights",
     "orphaned_messages",
     "orphaned_content_blocks",
-    "empty_conversations",
+    "empty_sessions",
     "action_event_read_model",
     "dangling_fts",
     "orphaned_attachments",
@@ -21,21 +21,19 @@ RUN_ALL_REPAIRS_EXPECTED = {
 }
 
 
-def _insert_conversation(
-    conn: sqlite3.Connection, conversation_id: str, source_name: str = "test", title: str = "Test"
-) -> None:
-    """Helper to insert a conversation with all required fields."""
-    content_hash = hashlib.sha256(f"{source_name}:{conversation_id}".encode()).hexdigest()
+def _insert_session(conn: sqlite3.Connection, session_id: str, source_name: str = "test", title: str = "Test") -> None:
+    """Helper to insert a session with all required fields."""
+    content_hash = hashlib.sha256(f"{source_name}:{session_id}".encode()).hexdigest()
     conn.execute(
-        "INSERT INTO conversations (conversation_id, source_name, provider_conversation_id, title, content_hash, version) VALUES (?, ?, ?, ?, ?, ?)",
-        (conversation_id, source_name, f"{source_name}-id", title, content_hash, 1),
+        "INSERT INTO sessions (session_id, source_name, provider_session_id, title, content_hash, version) VALUES (?, ?, ?, ?, ?, ?)",
+        (session_id, source_name, f"{source_name}-id", title, content_hash, 1),
     )
 
 
 def _insert_message(
     conn: sqlite3.Connection,
     message_id: str,
-    conversation_id: str,
+    session_id: str,
     role: str = "user",
     text: str = "Text",
     allow_orphaned: bool = False,
@@ -47,15 +45,15 @@ def _insert_message(
         conn.execute("PRAGMA foreign_keys = OFF")
         try:
             conn.execute(
-                "INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version) VALUES (?, ?, ?, ?, ?, ?)",
-                (message_id, conversation_id, role, text, content_hash, 1),
+                "INSERT INTO messages (message_id, session_id, role, text, content_hash, version) VALUES (?, ?, ?, ?, ?, ?)",
+                (message_id, session_id, role, text, content_hash, 1),
             )
         finally:
             conn.execute("PRAGMA foreign_keys = ON")
     else:
         conn.execute(
-            "INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version) VALUES (?, ?, ?, ?, ?, ?)",
-            (message_id, conversation_id, role, text, content_hash, 1),
+            "INSERT INTO messages (message_id, session_id, role, text, content_hash, version) VALUES (?, ?, ?, ?, ?, ?)",
+            (message_id, session_id, role, text, content_hash, 1),
         )
 
 
@@ -63,7 +61,7 @@ def _insert_content_block(
     conn: sqlite3.Connection,
     block_id: str,
     message_id: str,
-    conversation_id: str,
+    session_id: str,
     *,
     allow_orphaned: bool = False,
     type: str = "tool_use",
@@ -77,11 +75,11 @@ def _insert_content_block(
             conn.execute(
                 """
                 INSERT INTO content_blocks (
-                    block_id, message_id, conversation_id, block_index, type, text, tool_name
+                    block_id, message_id, session_id, block_index, type, text, tool_name
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (block_id, message_id, conversation_id, 0, type, text, tool_name),
+                (block_id, message_id, session_id, 0, type, text, tool_name),
             )
         finally:
             conn.execute("PRAGMA foreign_keys = ON")
@@ -89,11 +87,11 @@ def _insert_content_block(
         conn.execute(
             """
             INSERT INTO content_blocks (
-                block_id, message_id, conversation_id, block_index, type, text, tool_name
+                block_id, message_id, session_id, block_index, type, text, tool_name
             )
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (block_id, message_id, conversation_id, 0, type, text, tool_name),
+            (block_id, message_id, session_id, 0, type, text, tool_name),
         )
 
 
@@ -106,10 +104,10 @@ class TestRepairOrphanedMessages:
         from polylogue.storage.repair import repair_orphaned_messages
         from polylogue.storage.sqlite.connection import connection_context
 
-        # Setup: create a valid conversation and message
+        # Setup: create a valid session and message
         config = get_config()
         with connection_context(None) as conn:
-            _insert_conversation(conn, "conv-1")
+            _insert_session(conn, "conv-1")
             _insert_message(conn, "msg-1", "conv-1")
             conn.commit()
 
@@ -130,7 +128,7 @@ class TestRepairOrphanedMessages:
 
         config = get_config()
         with connection_context(None) as conn:
-            # Insert orphaned message (references non-existent conversation)
+            # Insert orphaned message (references non-existent session)
             _insert_message(conn, "orphan-1", "nonexistent-conv", "user", "I am orphaned", allow_orphaned=True)
             _insert_message(conn, "orphan-2", "nonexistent-conv", "assistant", "Also orphaned", allow_orphaned=True)
             conn.commit()
@@ -202,7 +200,7 @@ class TestRepairOrphanedContentBlocks:
 
         config = get_config()
         with connection_context(None) as conn:
-            _insert_conversation(conn, "conv-1")
+            _insert_session(conn, "conv-1")
             _insert_message(conn, "msg-1", "conv-1")
             _insert_content_block(conn, "blk-1", "msg-1", "conv-1")
             conn.commit()
@@ -227,7 +225,7 @@ class TestRepairOrphanedContentBlocks:
                 "missing-conv",
                 allow_orphaned=True,
             )
-            _insert_conversation(conn, "conv-1")
+            _insert_session(conn, "conv-1")
             _insert_content_block(
                 conn,
                 "blk-orphan-msg",
@@ -297,69 +295,69 @@ class TestRepairOrphanedContentBlocks:
         assert result2.success is True
 
 
-class TestRepairEmptyConversations:
-    """Tests for repair_empty_conversations function."""
+class TestRepairEmptySessions:
+    """Tests for repair_empty_sessions function."""
 
-    def test_clean_state_no_empty_conversations(self, cli_workspace: CliWorkspace) -> None:
-        """repair_empty_conversations should return 0 when no empty convos exist."""
+    def test_clean_state_no_empty_sessions(self, cli_workspace: CliWorkspace) -> None:
+        """repair_empty_sessions should return 0 when no empty convos exist."""
         from polylogue.config import get_config
-        from polylogue.storage.repair import repair_empty_conversations
+        from polylogue.storage.repair import repair_empty_sessions
         from polylogue.storage.sqlite.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
-            # Create conversation with message
-            _insert_conversation(conn, "conv-1")
+            # Create session with message
+            _insert_session(conn, "conv-1")
             _insert_message(conn, "msg-1", "conv-1", "user", "Hello")
             conn.commit()
 
         # Act
-        result = repair_empty_conversations(config, dry_run=False)
+        result = repair_empty_sessions(config, dry_run=False)
 
         # Assert
-        assert result.name == "empty_conversations"
+        assert result.name == "empty_sessions"
         assert result.repaired_count == 0
         assert result.success is True
 
-    def test_empty_conversations_found_and_deleted(self, cli_workspace: CliWorkspace) -> None:
-        """repair_empty_conversations should find and delete empty conversations."""
+    def test_empty_sessions_found_and_deleted(self, cli_workspace: CliWorkspace) -> None:
+        """repair_empty_sessions should find and delete empty sessions."""
         from polylogue.config import get_config
-        from polylogue.storage.repair import repair_empty_conversations
+        from polylogue.storage.repair import repair_empty_sessions
         from polylogue.storage.sqlite.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
-            # Create empty conversations (no messages)
-            _insert_conversation(conn, "empty-1")
-            _insert_conversation(conn, "empty-2")
+            # Create empty sessions (no messages)
+            _insert_session(conn, "empty-1")
+            _insert_session(conn, "empty-2")
             conn.commit()
 
         # Act
-        result = repair_empty_conversations(config, dry_run=False)
+        result = repair_empty_sessions(config, dry_run=False)
 
         # Assert
-        assert result.name == "empty_conversations"
+        assert result.name == "empty_sessions"
         assert result.repaired_count == 2
         assert result.success is True
 
         # Verify they were deleted
         with connection_context(None) as conn:
-            remaining = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+            remaining = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
             assert remaining == 0
 
-    def test_empty_conversations_dry_run_counts_but_doesnt_delete(self, cli_workspace: CliWorkspace) -> None:
-        """repair_empty_conversations with dry_run=True should count but not delete."""
+    def test_empty_sessions_dry_run_counts_but_doesnt_delete(self, cli_workspace: CliWorkspace) -> None:
+        """repair_empty_sessions with dry_run=True should count but not delete."""
         from polylogue.config import get_config
-        from polylogue.storage.repair import repair_empty_conversations
+        from polylogue.storage.repair import repair_empty_sessions
         from polylogue.storage.sqlite.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
-            _insert_conversation(conn, "empty-1")
+            _insert_session(conn, "empty-1")
             conn.commit()
 
         # Act
-        result = repair_empty_conversations(config, dry_run=True)
+        result = repair_empty_sessions(config, dry_run=True)
 
         # Assert
         assert result.repaired_count == 1
@@ -367,26 +365,26 @@ class TestRepairEmptyConversations:
 
         # Verify not deleted
         with connection_context(None) as conn:
-            remaining = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+            remaining = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
             assert remaining == 1
 
-    def test_empty_conversations_idempotency(self, cli_workspace: CliWorkspace) -> None:
+    def test_empty_sessions_idempotency(self, cli_workspace: CliWorkspace) -> None:
         """Running repair twice should find 0 on second run."""
         from polylogue.config import get_config
-        from polylogue.storage.repair import repair_empty_conversations
+        from polylogue.storage.repair import repair_empty_sessions
         from polylogue.storage.sqlite.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
-            _insert_conversation(conn, "empty-1")
+            _insert_session(conn, "empty-1")
             conn.commit()
 
         # First repair
-        result1 = repair_empty_conversations(config, dry_run=False)
+        result1 = repair_empty_sessions(config, dry_run=False)
         assert result1.repaired_count == 1
 
         # Second repair should find nothing
-        result2 = repair_empty_conversations(config, dry_run=False)
+        result2 = repair_empty_sessions(config, dry_run=False)
         assert result2.repaired_count == 0
 
 
@@ -401,8 +399,8 @@ class TestRepairDanglingFts:
 
         config = get_config()
         with connection_context(None) as conn:
-            # Create conversation and message (FTS auto-syncs)
-            _insert_conversation(conn, "conv-1")
+            # Create session and message (FTS auto-syncs)
+            _insert_session(conn, "conv-1")
             _insert_message(conn, "msg-1", "conv-1", "user", "Searchable text")
             conn.commit()
 
@@ -423,7 +421,7 @@ class TestRepairDanglingFts:
         config = get_config()
         with connection_context(None) as conn:
             # Insert a message first (creates FTS entry via trigger)
-            _insert_conversation(conn, "conv-1")
+            _insert_session(conn, "conv-1")
             _insert_message(conn, "msg-1", "conv-1", "user", "Text")
             conn.commit()
 
@@ -435,7 +433,7 @@ class TestRepairDanglingFts:
 
             # Manually insert a dangling FTS entry (rowid won't match any message)
             conn.execute(
-                "INSERT INTO messages_fts (rowid, message_id, conversation_id, text) VALUES (?, ?, ?, ?)",
+                "INSERT INTO messages_fts (rowid, message_id, session_id, text) VALUES (?, ?, ?, ?)",
                 (rowid + 999, "orphan-fts", "conv-1", "dangling entry"),
             )
             conn.commit()
@@ -456,8 +454,8 @@ class TestRepairDanglingFts:
 
         config = get_config()
         with connection_context(None) as conn:
-            # Insert conversation and message
-            _insert_conversation(conn, "conv-1")
+            # Insert session and message
+            _insert_session(conn, "conv-1")
             _insert_message(conn, "msg-1", "conv-1", "user", "Text1")
             conn.commit()
 
@@ -490,7 +488,7 @@ class TestRepairDanglingFts:
 
         config = get_config()
         with connection_context(None) as conn:
-            _insert_conversation(conn, "conv-1")
+            _insert_session(conn, "conv-1")
             _insert_message(conn, "msg-1", "conv-1", "user", "Text")
             _insert_message(conn, "msg-2", "conv-1", "user", "Text2")
             conn.commit()
@@ -519,7 +517,7 @@ class TestRepairDanglingFts:
 
         config = get_config()
         with connection_context(None) as conn:
-            _insert_conversation(conn, "conv-1")
+            _insert_session(conn, "conv-1")
             _insert_message(conn, "msg-1", "conv-1", "user", "Text")
             _insert_message(conn, "msg-2", "conv-1", "assistant", "Placeholder")
             conn.execute("UPDATE messages SET text = NULL WHERE message_id = ?", ("msg-2",))
@@ -545,7 +543,7 @@ class TestRepairActionEventReadModel:
 
         config = get_config()
         with connection_context(None) as conn:
-            _insert_conversation(conn, "conv-1")
+            _insert_session(conn, "conv-1")
             _insert_message(conn, "msg-1", "conv-1", text="Read file")
             _insert_content_block(conn, "blk-1", "msg-1", "conv-1", tool_name="Read")
             conn.commit()
@@ -566,7 +564,7 @@ class TestRepairActionEventReadModel:
 
         config = get_config()
         with connection_context(None) as conn:
-            _insert_conversation(conn, "conv-1")
+            _insert_session(conn, "conv-1")
             _insert_message(conn, "msg-1", "conv-1", text="Read file")
             _insert_content_block(conn, "blk-1", "msg-1", "conv-1", tool_name="Read")
             conn.commit()
@@ -589,15 +587,15 @@ class TestRepairOrphanedAttachments:
 
         config = get_config()
         with connection_context(None) as conn:
-            # Create conversation, message, attachment, and reference
-            _insert_conversation(conn, "conv-1")
+            # Create session, message, attachment, and reference
+            _insert_session(conn, "conv-1")
             _insert_message(conn, "msg-1", "conv-1", "user", "Text")
             conn.execute(
                 "INSERT INTO attachments (attachment_id, mime_type) VALUES (?, ?)",
                 ("att-1", "text/plain"),
             )
             conn.execute(
-                "INSERT INTO attachment_refs (ref_id, attachment_id, conversation_id, message_id) VALUES (?, ?, ?, ?)",
+                "INSERT INTO attachment_refs (ref_id, attachment_id, session_id, message_id) VALUES (?, ?, ?, ?)",
                 ("ref-1", "att-1", "conv-1", "msg-1"),
             )
             conn.commit()
@@ -623,10 +621,10 @@ class TestRepairOrphanedAttachments:
                 "INSERT INTO attachments (attachment_id, mime_type) VALUES (?, ?)",
                 ("att-1", "text/plain"),
             )
-            _insert_conversation(conn, "conv-1")
+            _insert_session(conn, "conv-1")
             # Insert a proper ref
             conn.execute(
-                "INSERT INTO attachment_refs (ref_id, attachment_id, conversation_id, message_id) VALUES (?, ?, ?, ?)",
+                "INSERT INTO attachment_refs (ref_id, attachment_id, session_id, message_id) VALUES (?, ?, ?, ?)",
                 ("ref-1", "att-1", "conv-1", None),
             )
             conn.commit()
@@ -758,7 +756,7 @@ class TestMaintenanceSelection:
         assert {r.name for r in results} == {
             "orphaned_messages",
             "orphaned_content_blocks",
-            "empty_conversations",
+            "empty_sessions",
             "orphaned_attachments",
         }
         assert all(r.destructive is True for r in results)
@@ -798,7 +796,7 @@ class TestMaintenanceSelection:
                 "dangling_fts": 3,
                 "orphaned_messages": 2,
                 "orphaned_content_blocks": 11,
-                "empty_conversations": 5,
+                "empty_sessions": 5,
             },
         )
 
@@ -808,19 +806,19 @@ class TestMaintenanceSelection:
         assert by_name["dangling_fts"].repaired_count == 3
         assert by_name["orphaned_messages"].repaired_count == 2
         assert by_name["orphaned_content_blocks"].repaired_count == 11
-        assert by_name["empty_conversations"].repaired_count == 5
+        assert by_name["empty_sessions"].repaired_count == 5
 
     def test_run_selected_maintenance_can_scope_to_session_insights(self, cli_workspace: CliWorkspace) -> None:
         """Scoped maintenance should repair only the durable session-insight layer."""
         from polylogue.config import get_config
         from polylogue.storage.repair import run_selected_maintenance
         from polylogue.storage.sqlite.connection import connection_context
-        from tests.infra.storage_records import ConversationBuilder
+        from tests.infra.storage_records import SessionBuilder
 
         config = get_config()
         db_path = cli_workspace["db_path"]
         (
-            ConversationBuilder(db_path, "conv-insights")
+            SessionBuilder(db_path, "conv-insights")
             .provider("claude-code")
             .title("Scoped Insight Repair")
             .add_message("u1", role="user", text="Plan the change")
@@ -848,12 +846,12 @@ class TestMaintenanceSelection:
         from polylogue.storage.insights.session.status import session_insight_status_sync
         from polylogue.storage.repair import repair_session_insights
         from polylogue.storage.sqlite.connection import connection_context
-        from tests.infra.storage_records import ConversationBuilder
+        from tests.infra.storage_records import SessionBuilder
 
         config = get_config()
         db_path = cli_workspace["db_path"]
         (
-            ConversationBuilder(db_path, "conv-insight-fts")
+            SessionBuilder(db_path, "conv-insight-fts")
             .provider("claude-code")
             .title("Duplicate Insight FTS")
             .add_message("u1", role="user", text="Implement the data repair")
@@ -865,7 +863,7 @@ class TestMaintenanceSelection:
         with connection_context(None) as conn:
             event = conn.execute(
                 """
-                SELECT event_id, conversation_id, source_name, heuristic_label, search_text
+                SELECT event_id, session_id, source_name, heuristic_label, search_text
                 FROM session_work_events
                 LIMIT 1
                 """
@@ -881,12 +879,12 @@ class TestMaintenanceSelection:
             assert thread is not None
             conn.execute(
                 """
-                INSERT INTO session_work_events_fts (event_id, conversation_id, source_name, heuristic_label, text)
+                INSERT INTO session_work_events_fts (event_id, session_id, source_name, heuristic_label, text)
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     event["event_id"],
-                    event["conversation_id"],
+                    event["session_id"],
                     event["source_name"],
                     event["heuristic_label"],
                     event["search_text"],
@@ -920,7 +918,7 @@ class TestMaintenanceSelection:
 
         # Setup: add issues
         with connection_context(None) as conn:
-            _insert_conversation(conn, "empty-1")
+            _insert_session(conn, "empty-1")
             conn.commit()
 
         results1 = run_selected_maintenance(config, repair=True, cleanup=True, dry_run=False)

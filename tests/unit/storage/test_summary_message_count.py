@@ -1,4 +1,4 @@
-"""Regression coverage for #1623: `ConversationSummary.message_count` hydration.
+"""Regression coverage for #1623: `SessionSummary.message_count` hydration.
 
 Without this the facets surface reports ``total_messages: 0`` because
 ``compute_facets`` sums ``s.message_count or 0`` over summaries whose
@@ -11,45 +11,44 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage.query_models import ConversationRecordQuery
-from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from tests.infra.storage_records import ConversationBuilder
+from polylogue.archive.filter.filters import SessionFilter
+from polylogue.archive.query.plan import SessionQueryPlan
+from tests.infra.archive_scenarios import native_session_id_for
+from tests.infra.storage_records import SessionBuilder, db_setup
 
 
 @pytest.mark.asyncio
-async def test_list_summaries_by_query_populates_message_count(tmp_path: Path) -> None:
-    db_path = tmp_path / "summary-counts.db"
+async def test_list_summaries_by_query_populates_message_count(workspace_env: dict[str, Path]) -> None:
+    db_path = db_setup(workspace_env)
+    archive_root = workspace_env["archive_root"]
 
     (
-        ConversationBuilder(db_path, "conv-three")
+        SessionBuilder(db_path, "conv-three")
         .provider("chatgpt")
         .add_message("m1", role="user", text="hi")
         .add_message("m2", role="assistant", text="hello")
         .add_message("m3", role="user", text="bye")
         .save()
     )
-    (ConversationBuilder(db_path, "conv-one").provider("chatgpt").add_message("m4", role="user", text="ping").save())
+    (SessionBuilder(db_path, "conv-one").provider("chatgpt").add_message("m4", role="user", text="ping").save())
 
-    backend = SQLiteBackend(db_path=db_path)
-    repo = ConversationRepository(backend=backend)
-    try:
-        summaries = await repo.list_summaries_by_query(ConversationRecordQuery(provider="chatgpt", limit=10))
-        counts = {str(s.id): s.message_count for s in summaries}
-        assert counts == {"conv-three": 3, "conv-one": 1}
-    finally:
-        await repo.close()
+    plan = SessionQueryPlan(origins=("chatgpt-export",), limit=10)
+    summaries = await SessionFilter(archive_root=archive_root, query_plan=plan).list_summaries()
+    counts = {str(s.id): s.message_count for s in summaries}
+    assert counts == {
+        native_session_id_for("chatgpt", "conv-three"): 3,
+        native_session_id_for("chatgpt", "conv-one"): 1,
+    }
 
 
 @pytest.mark.asyncio
-async def test_list_summaries_by_query_returns_none_for_unknown_conversations(tmp_path: Path) -> None:
+async def test_list_summaries_by_query_returns_none_for_unknown_sessions(workspace_env: dict[str, Path]) -> None:
     """Empty-result path doesn't error and doesn't issue a count query."""
-    db_path = tmp_path / "summary-empty.db"
+    db_path = db_setup(workspace_env)
+    archive_root = workspace_env["archive_root"]
+    # Touch db_path so the archive root exists; no sessions seeded.
+    assert db_path.parent == archive_root
 
-    backend = SQLiteBackend(db_path=db_path)
-    repo = ConversationRepository(backend=backend)
-    try:
-        summaries = await repo.list_summaries_by_query(ConversationRecordQuery(provider="chatgpt", limit=10))
-        assert summaries == []
-    finally:
-        await repo.close()
+    plan = SessionQueryPlan(origins=("chatgpt-export",), limit=10)
+    summaries = await SessionFilter(archive_root=archive_root, query_plan=plan).list_summaries()
+    assert summaries == []

@@ -36,7 +36,7 @@ def resume_candidates_command(
 
     env: AppEnv = ctx.obj
     candidates = run_coroutine_sync(
-        env.operations.find_resume_candidates(
+        env.polylogue.find_resume_candidates(
             repo_path=repo_path,
             cwd=cwd,
             recent_files=recent_files,
@@ -51,7 +51,7 @@ def resume_candidates_command(
         emit_success(payload)
         return
     for candidate in candidates:
-        click.echo(f"{candidate.score:.3f} {candidate.logical_conversation_id} {candidate.title}")
+        click.echo(f"{candidate.score:.3f} {candidate.logical_session_id} {candidate.title}")
 
 
 __all__ = ["resume_candidates_command"]

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.config import Config, get_config
-from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite import SQLiteBackend, create_backend
 
 
@@ -20,7 +20,7 @@ class RuntimeServices:
 
     config: Config | None = None
     backend: SQLiteBackend | None = None
-    repository: ConversationRepository | None = None
+    repository: SessionRepository | None = None
     db_path: Path | None = None
 
     def __post_init__(self) -> None:
@@ -41,9 +41,12 @@ class RuntimeServices:
             self.backend = create_backend(self.db_path)
         return self.backend
 
-    def get_repository(self) -> ConversationRepository:
+    def get_repository(self) -> SessionRepository:
         if self.repository is None:
-            self.repository = ConversationRepository(backend=self.get_backend())
+            self.repository = SessionRepository(
+                backend=self.get_backend(),
+                archive_root=self.get_config().archive_root,
+            )
         return self.repository
 
     async def close(self) -> None:
@@ -57,7 +60,7 @@ def build_runtime_services(
     *,
     config: Config | None = None,
     backend: SQLiteBackend | None = None,
-    repository: ConversationRepository | None = None,
+    repository: SessionRepository | None = None,
     db_path: Path | None = None,
 ) -> RuntimeServices:
     """Build an explicit runtime service scope."""

@@ -43,7 +43,7 @@ def _db_row_counts(db_path: Path) -> dict[str, int]:
         return stats
     stats["db_size_bytes"] = db_path.stat().st_size
     with open_connection(db_path) as conn:
-        for table in ("conversations", "messages", "content_blocks", "raw_conversations", "action_events"):
+        for table in ("sessions", "messages", "content_blocks", "raw_sessions", "action_events"):
             try:
                 row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
                 stats[f"{table}_count"] = _row_count(row[0]) if row else 0
@@ -134,24 +134,24 @@ def run_fts_rebuild_campaign(db_path: Path) -> CampaignResult:
 
 async def run_incremental_index_campaign(db_path: Path, batch_size: int = 100) -> CampaignResult:
     """Benchmark incremental FTS index updates."""
-    from polylogue.storage.query_models import ConversationRecordQuery
+    from polylogue.storage.query_models import SessionRecordQuery
     from polylogue.storage.search_providers.fts5 import FTS5Provider
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
     backend = SQLiteBackend(db_path=db_path)
     try:
-        total_convs = await backend.queries.count_conversations(ConversationRecordQuery())
+        total_convs = await backend.queries.count_sessions(SessionRecordQuery())
         batch_times: list[float] = []
         indexed_total = 0
         fts = FTS5Provider(db_path=db_path)
 
         offset = 0
         while offset < total_convs:
-            convs = await backend.queries.list_conversations(ConversationRecordQuery(limit=batch_size, offset=offset))
+            convs = await backend.queries.list_sessions(SessionRecordQuery(limit=batch_size, offset=offset))
             if not convs:
                 break
 
-            conv_ids = [str(c.conversation_id) for c in convs]
+            conv_ids = [str(c.session_id) for c in convs]
             messages_by_conv = await backend.get_messages_batch(conv_ids)
             all_messages = [msg for msgs in messages_by_conv.values() for msg in msgs]
 
@@ -182,41 +182,41 @@ async def run_incremental_index_campaign(db_path: Path, batch_size: int = 100) -
 
 async def run_filter_scan_campaign(db_path: Path) -> CampaignResult:
     """Benchmark common filter query patterns."""
-    from polylogue.storage.query_models import ConversationRecordQuery
+    from polylogue.storage.query_models import SessionRecordQuery
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
     backend = SQLiteBackend(db_path=db_path)
     metrics: dict[str, float] = {}
 
     try:
-        elapsed, results = await _ameasure(backend.queries.list_conversations(ConversationRecordQuery(limit=50)))
+        elapsed, results = await _ameasure(backend.queries.list_sessions(SessionRecordQuery(limit=50)))
         metrics["list_50_wall_s"] = round(elapsed, 4)
         metrics["list_50_count"] = len(results)
 
         elapsed, results = await _ameasure(
-            backend.queries.list_conversations(ConversationRecordQuery(provider="chatgpt", limit=50))
+            backend.queries.list_sessions(SessionRecordQuery(provider="chatgpt", limit=50))
         )
         metrics["filter_provider_wall_s"] = round(elapsed, 4)
         metrics["filter_provider_count"] = len(results)
 
         elapsed, results = await _ameasure(
-            backend.queries.list_conversations(ConversationRecordQuery(has_tool_use=True, limit=50))
+            backend.queries.list_sessions(SessionRecordQuery(has_tool_use=True, limit=50))
         )
         metrics["filter_tool_use_wall_s"] = round(elapsed, 4)
         metrics["filter_tool_use_count"] = len(results)
 
         elapsed, results = await _ameasure(
-            backend.queries.list_conversations(ConversationRecordQuery(has_thinking=True, limit=50))
+            backend.queries.list_sessions(SessionRecordQuery(has_thinking=True, limit=50))
         )
         metrics["filter_thinking_wall_s"] = round(elapsed, 4)
         metrics["filter_thinking_count"] = len(results)
 
-        elapsed, count = await _ameasure(backend.queries.count_conversations(ConversationRecordQuery()))
+        elapsed, count = await _ameasure(backend.queries.count_sessions(SessionRecordQuery()))
         metrics["count_all_wall_s"] = round(elapsed, 4)
         metrics["count_all"] = count
 
         elapsed, _ = await _ameasure(
-            backend.queries.list_conversations(ConversationRecordQuery(title_contains="synthetic", limit=50))
+            backend.queries.list_sessions(SessionRecordQuery(title_contains="synthetic", limit=50))
         )
         metrics["filter_title_wall_s"] = round(elapsed, 4)
 
@@ -232,7 +232,7 @@ async def run_filter_scan_campaign(db_path: Path) -> CampaignResult:
 
 async def run_startup_readiness_campaign(db_path: Path) -> CampaignResult:
     """Benchmark startup readiness check speed."""
-    from polylogue.storage.query_models import ConversationRecordQuery
+    from polylogue.storage.query_models import SessionRecordQuery
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
     metrics: dict[str, float] = {}
@@ -242,9 +242,9 @@ async def run_startup_readiness_campaign(db_path: Path) -> CampaignResult:
     metrics["backend_init_s"] = round(time.monotonic() - t0, 4)
 
     try:
-        elapsed, count = await _ameasure(backend.queries.count_conversations(ConversationRecordQuery()))
+        elapsed, count = await _ameasure(backend.queries.count_sessions(SessionRecordQuery()))
         metrics["count_convs_s"] = round(elapsed, 4)
-        metrics["conversation_count"] = count
+        metrics["session_count"] = count
 
         elapsed, _ = await _ameasure(backend.get_stats_by("provider"))
         metrics["stats_by_provider_s"] = round(elapsed, 4)

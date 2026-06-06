@@ -7,19 +7,19 @@ from pathlib import Path
 import pytest
 
 import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
-from polylogue.pipeline.services.ingest_batch import _write_conversation
+from polylogue.pipeline.services.ingest_batch import _write_session
 from polylogue.storage.sqlite.connection import open_connection
-from polylogue.types import ConversationId
+from polylogue.types import SessionId
 from tests.unit.pipeline.test_ingest_batch import (
     _block_tuple,
-    _conversation_data,
     _message_tuple,
+    _session_data,
 )
 
 
 def test_append_mode_filters_unchanged_replayed_rows(tmp_path: Path) -> None:
     with open_connection(tmp_path / "ingest.db") as conn:
-        initial = _conversation_data(
+        initial = _session_data(
             "codex:append-replay",
             content_hash="hash-v1",
             message_tuples=[
@@ -36,14 +36,14 @@ def test_append_mode_filters_unchanged_replayed_rows(tmp_path: Path) -> None:
                 _block_tuple(
                     block_id="blk-msg-1-0",
                     message_id="msg-1",
-                    conversation_id="codex:append-replay",
+                    session_id="codex:append-replay",
                     block_index=0,
                     text="first block",
                 )
             ],
-            stats_tuple=(ConversationId("codex:append-replay"), "codex", 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+            stats_tuple=(SessionId("codex:append-replay"), "codex", 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0),
         )
-        replay = _conversation_data(
+        replay = _session_data(
             "codex:append-replay",
             content_hash="hash-replayed-full-file",
             message_tuples=[
@@ -68,14 +68,14 @@ def test_append_mode_filters_unchanged_replayed_rows(tmp_path: Path) -> None:
                 _block_tuple(
                     block_id="blk-msg-1-0",
                     message_id="msg-1",
-                    conversation_id="codex:append-replay",
+                    session_id="codex:append-replay",
                     block_index=0,
                     text="rewritten block should be ignored",
                 ),
                 _block_tuple(
                     block_id="blk-msg-2-0",
                     message_id="msg-2",
-                    conversation_id="codex:append-replay",
+                    session_id="codex:append-replay",
                     block_index=0,
                     text="second block",
                 ),
@@ -83,23 +83,23 @@ def test_append_mode_filters_unchanged_replayed_rows(tmp_path: Path) -> None:
             append_only=True,
         )
 
-        changed_initial, _initial_counts = _write_conversation(conn, initial)
-        changed_tail, tail_counts = _write_conversation(conn, replay)
+        changed_initial, _initial_counts = _write_session(conn, initial)
+        changed_tail, tail_counts = _write_session(conn, replay)
         conn.commit()
 
         rows = conn.execute(
-            "SELECT message_id, text FROM messages WHERE conversation_id = ? ORDER BY sort_key",
+            "SELECT message_id, text FROM messages WHERE session_id = ? ORDER BY sort_key",
             ("codex:append-replay",),
         ).fetchall()
         block_rows = conn.execute(
-            "SELECT message_id, text FROM content_blocks WHERE conversation_id = ? ORDER BY message_id",
+            "SELECT message_id, text FROM content_blocks WHERE session_id = ? ORDER BY message_id",
             ("codex:append-replay",),
         ).fetchall()
         stats = conn.execute(
             """
             SELECT message_count, word_count, tool_use_count, thinking_count, paste_count
-            FROM conversation_stats
-            WHERE conversation_id = ?
+            FROM session_stats
+            WHERE session_id = ?
             """,
             ("codex:append-replay",),
         ).fetchone()
@@ -124,7 +124,7 @@ def test_append_mode_updates_stats_without_full_message_recount(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with open_connection(tmp_path / "ingest.db") as conn:
-        initial = _conversation_data(
+        initial = _session_data(
             "codex:append-stats",
             content_hash="hash-v1",
             message_tuples=[
@@ -137,9 +137,9 @@ def test_append_mode_updates_stats_without_full_message_recount(
                     sort_key=1.0,
                 )
             ],
-            stats_tuple=(ConversationId("codex:append-stats"), "codex", 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+            stats_tuple=(SessionId("codex:append-stats"), "codex", 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0),
         )
-        changed_initial, _initial_counts = _write_conversation(conn, initial)
+        changed_initial, _initial_counts = _write_session(conn, initial)
         conn.commit()
 
         def fail_full_recount(*_args: object, **_kwargs: object) -> None:
@@ -147,7 +147,7 @@ def test_append_mode_updates_stats_without_full_message_recount(
 
         monkeypatch.setattr(ingest_batch_core, "_upsert_stats_from_messages", fail_full_recount)
 
-        replay = _conversation_data(
+        replay = _session_data(
             "codex:append-stats",
             content_hash="hash-v2",
             message_tuples=[
@@ -171,13 +171,13 @@ def test_append_mode_updates_stats_without_full_message_recount(
             append_only=True,
         )
 
-        changed_tail, tail_counts = _write_conversation(conn, replay)
+        changed_tail, tail_counts = _write_session(conn, replay)
         conn.commit()
         stats = conn.execute(
             """
             SELECT message_count, word_count, tool_use_count, thinking_count, paste_count
-            FROM conversation_stats
-            WHERE conversation_id = ?
+            FROM session_stats
+            WHERE session_id = ?
             """,
             ("codex:append-stats",),
         ).fetchone()
@@ -192,7 +192,7 @@ def test_append_mode_updates_stats_without_full_message_recount(
 
 def test_append_mode_repairs_missing_stats_on_unchanged_replay(tmp_path: Path) -> None:
     with open_connection(tmp_path / "ingest.db") as conn:
-        initial = _conversation_data(
+        initial = _session_data(
             "codex:append-stats-repair",
             content_hash="hash-v1",
             message_tuples=[
@@ -205,16 +205,16 @@ def test_append_mode_repairs_missing_stats_on_unchanged_replay(tmp_path: Path) -
                     sort_key=1.0,
                 )
             ],
-            stats_tuple=(ConversationId("codex:append-stats-repair"), "codex", 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+            stats_tuple=(SessionId("codex:append-stats-repair"), "codex", 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0),
         )
-        changed_initial, _initial_counts = _write_conversation(conn, initial)
+        changed_initial, _initial_counts = _write_session(conn, initial)
         conn.execute(
-            "DELETE FROM conversation_stats WHERE conversation_id = ?",
+            "DELETE FROM session_stats WHERE session_id = ?",
             ("codex:append-stats-repair",),
         )
         conn.commit()
 
-        replay = _conversation_data(
+        replay = _session_data(
             "codex:append-stats-repair",
             content_hash="hash-v1",
             message_tuples=[
@@ -230,13 +230,13 @@ def test_append_mode_repairs_missing_stats_on_unchanged_replay(tmp_path: Path) -
             append_only=True,
         )
 
-        changed_tail, tail_counts = _write_conversation(conn, replay)
+        changed_tail, tail_counts = _write_session(conn, replay)
         conn.commit()
         stats = conn.execute(
             """
             SELECT message_count, word_count, tool_use_count, thinking_count, paste_count
-            FROM conversation_stats
-            WHERE conversation_id = ?
+            FROM session_stats
+            WHERE session_id = ?
             """,
             ("codex:append-stats-repair",),
         ).fetchone()

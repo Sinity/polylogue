@@ -1,16 +1,16 @@
 # Tool Use Example
 
-Provider: claude-code
-Conversation ID: golden-tool-use
+Origin: claude-code-session
+Session ID: claude-code-session:ext-golden-tool-use
 
 ## user
-_Timestamp: 2024-02-01T09:00:00Z_
+_Timestamp: 2024-02-01T09:00:00+00:00_
 
 List files in current directory
 
 
 ## assistant
-_Timestamp: 2024-02-01T09:00:03Z_
+_Timestamp: 2024-02-01T09:00:03+00:00_
 
 ```json
 {

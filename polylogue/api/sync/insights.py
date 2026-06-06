@@ -43,11 +43,11 @@ class SyncInsightQueriesMixin:
 
     def get_session_profile_insight(
         self,
-        conversation_id: str,
+        session_id: str,
         *,
         tier: str = "merged",
     ) -> SessionProfileInsight | None:
-        return run_coroutine_sync(self._facade.get_session_profile_insight(conversation_id, tier=tier))
+        return run_coroutine_sync(self._facade.get_session_profile_insight(session_id, tier=tier))
 
     def list_session_profile_insights(
         self,
@@ -61,8 +61,8 @@ class SyncInsightQueriesMixin:
     ) -> list[SessionTagRollupInsight]:
         return run_coroutine_sync(self._facade.list_session_tag_rollup_insights(query))
 
-    def get_session_work_event_insights(self, conversation_id: str) -> list[SessionWorkEventInsight]:
-        return run_coroutine_sync(self._facade.get_session_work_event_insights(conversation_id))
+    def get_session_work_event_insights(self, session_id: str) -> list[SessionWorkEventInsight]:
+        return run_coroutine_sync(self._facade.get_session_work_event_insights(session_id))
 
     def list_session_work_event_insights(
         self,
@@ -70,8 +70,8 @@ class SyncInsightQueriesMixin:
     ) -> list[SessionWorkEventInsight]:
         return run_coroutine_sync(self._facade.list_session_work_event_insights(query))
 
-    def get_session_phase_insights(self, conversation_id: str) -> list[SessionPhaseInsight]:
-        return run_coroutine_sync(self._facade.get_session_phase_insights(conversation_id))
+    def get_session_phase_insights(self, session_id: str) -> list[SessionPhaseInsight]:
+        return run_coroutine_sync(self._facade.get_session_phase_insights(session_id))
 
     def list_session_phase_insights(
         self,

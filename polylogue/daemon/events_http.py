@@ -11,8 +11,8 @@ Two shapes share the ``/api/events`` route:
   ``max_seconds`` so HTTP idle timeouts and tests cannot deadlock.
 
 Granular topics (#1204): callers may filter by ``?kinds=`` (comma-list).
-The reader subscribes by view — list view filters to ``conversation.*``;
-the conversation view filters to ``message.appended`` plus
+The reader subscribes by view — list view filters to ``session.*``;
+the session view filters to ``message.appended`` plus
 ``insight.updated``.
 
 Backpressure coalescing (#1204): when the ledger has produced more than

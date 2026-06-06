@@ -5,12 +5,13 @@ from __future__ import annotations
 import json as _json
 from datetime import datetime
 
-from polylogue.archive.models import Conversation
+from polylogue.archive.models import Session
 from polylogue.archive.semantic.timing import SessionLatencyProfileFacts, compute_session_latency_profile
 from polylogue.archive.session.session_profile import SessionProfile
+from polylogue.core.sources import provider_from_origin
 from polylogue.storage.runtime import SessionLatencyProfileRecord
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
-from polylogue.types import ConversationId
+from polylogue.types import SessionId
 
 from .profiles import now_iso
 
@@ -20,19 +21,19 @@ def _iso_datetime(value: datetime | None) -> str | None:
 
 
 def build_latency_profile_facts(
-    conversation: Conversation,
+    session: Session,
     profile: SessionProfile,
 ) -> SessionLatencyProfileFacts:
     return compute_session_latency_profile(
-        list(conversation.messages),
-        list(conversation.provider_events),
-        session_end=conversation.updated_at or profile.last_message_at,
+        list(session.messages),
+        list(session.provider_events),
+        session_end=session.updated_at or profile.last_message_at,
         tool_call_count_by_category=dict(profile.tool_categories),
     )
 
 
 def build_session_latency_profile_record(
-    conversation: Conversation,
+    session: Session,
     profile: SessionProfile,
     facts: SessionLatencyProfileFacts,
     *,
@@ -52,25 +53,25 @@ def build_session_latency_profile_record(
     search_text = " \n".join(
         part
         for part in (
-            str(conversation.id),
-            str(conversation.provider),
-            conversation.title or "",
+            str(session.id),
+            provider_from_origin(session.origin).value,
+            session.title or "",
             profile.workflow_shape,
             profile.terminal_state,
         )
         if part
     )
     return SessionLatencyProfileRecord(
-        conversation_id=ConversationId(str(conversation.id)),
+        session_id=SessionId(str(session.id)),
         materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
         materialized_at=built_at,
-        source_updated_at=_iso_datetime(conversation.updated_at),
-        source_sort_key=float(conversation.updated_at.timestamp()) if conversation.updated_at is not None else None,
+        source_updated_at=_iso_datetime(session.updated_at),
+        source_sort_key=float(session.updated_at.timestamp()) if session.updated_at is not None else None,
         input_high_water_mark=input_high_water_mark,
         input_high_water_mark_source=input_high_water_mark_source,
         input_row_count=input_row_count,
-        source_name=str(conversation.provider),
-        title=conversation.title,
+        source_name=provider_from_origin(session.origin).value,
+        title=session.title,
         first_message_at=_iso_datetime(profile.first_message_at),
         last_message_at=_iso_datetime(profile.last_message_at),
         canonical_session_date=profile.canonical_session_date.isoformat() if profile.canonical_session_date else None,
@@ -82,7 +83,7 @@ def build_session_latency_profile_record(
         median_user_response_ms=facts.median_user_response_ms,
         tool_call_count_by_category_json=_json.dumps(facts.tool_call_count_by_category, sort_keys=True),
         evidence_payload_json=_json.dumps(evidence, sort_keys=True),
-        search_text=search_text or str(conversation.id),
+        search_text=search_text or str(session.id),
     )
 
 

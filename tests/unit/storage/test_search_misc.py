@@ -1,6 +1,6 @@
 """Miscellaneous storage and search tests.
 
-Tests cover database migrations, vec0 tables, asset handling, raw conversation
+Tests cover database rebuild checks, vec0 tables, asset handling, raw session
 storage, session index parsing, and related edge cases.
 
 Extracted from monolithic test_search_index.py.
@@ -17,19 +17,19 @@ from unittest.mock import patch
 
 import pytest
 
-from polylogue.archive.conversation.branch_type import BranchType
+from polylogue.archive.session.branch_type import BranchType
 from polylogue.assets import asset_path, write_asset
-from polylogue.sources.parsers.base_models import ParsedConversation
+from polylogue.sources.parsers.base_models import ParsedSession
 from polylogue.sources.parsers.claude import (
     SessionIndexEntry,
-    enrich_conversation_from_index,
+    enrich_session_from_index,
     find_sessions_index,
     parse_sessions_index,
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import connection_context
 from polylogue.storage.sqlite.schema import _ensure_schema
-from tests.infra.storage_records import make_conversation, make_hash
+from tests.infra.storage_records import make_hash, make_session
 
 
 class TestEnsureVec0Table:
@@ -164,14 +164,14 @@ class TestWriteAsset:
         assert result_path.exists()
 
 
-class TestRawConversationEdgeCases:
-    """Tests for raw conversation storage and edge cases."""
+class TestRawSessionEdgeCases:
+    """Tests for raw session storage and edge cases."""
 
-    async def test_raw_conversation_with_all_fields(self, tmp_path: Path) -> None:
-        """Raw conversation records can be saved with all optional fields."""
+    async def test_raw_session_with_all_fields(self, tmp_path: Path) -> None:
+        """Raw session records can be saved with all optional fields."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
-        # First, create a raw_conversations record
+        # First, create a raw_sessions record
         from polylogue.storage.blob_store import get_blob_store
 
         blob_store = get_blob_store()
@@ -180,7 +180,7 @@ class TestRawConversationEdgeCases:
         with connection_context(tmp_path / "test.db") as conn:
             conn.execute(
                 """
-                INSERT INTO raw_conversations
+                INSERT INTO raw_sessions
                 (raw_id, source_name, source_path, blob_size, acquired_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
@@ -188,59 +188,59 @@ class TestRawConversationEdgeCases:
             )
             conn.commit()
 
-        # Create conversation linked to raw data
-        conv = make_conversation(
-            conversation_id="conv-with-raw",
+        # Create session linked to raw data
+        conv = make_session(
+            session_id="conv-with-raw",
             source_name="claude-ai",
-            provider_conversation_id="claude-123",
+            provider_session_id="claude-123",
             content_hash=make_hash("conv-with-raw"),
             title="Test Conv",
             created_at="2024-01-01T00:00:00Z",
             updated_at="2024-01-01T00:00:00Z",
             raw_id="raw-123",
-            parent_conversation_id=None,
+            parent_session_id=None,
             branch_type=None,
         )
-        await backend.save_conversation_record(conv)
+        await backend.save_session_record(conv)
 
         # Retrieve and verify
-        retrieved = await backend.get_conversation("conv-with-raw")
+        retrieved = await backend.get_session("conv-with-raw")
         assert retrieved is not None
         assert retrieved.raw_id == "raw-123"
 
         await backend.close()
 
-    async def test_list_conversations_with_branch_type(self, tmp_path: Path) -> None:
-        """List conversations by parent respects branch_type field."""
+    async def test_list_sessions_with_branch_type(self, tmp_path: Path) -> None:
+        """List sessions by parent respects branch_type field."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
-        parent = make_conversation(
-            conversation_id="parent",
+        parent = make_session(
+            session_id="parent",
             source_name="test",
-            provider_conversation_id="p",
+            provider_session_id="p",
             content_hash=make_hash("parent"),
             title="Parent",
             created_at="2024-01-01T00:00:00Z",
             updated_at="2024-01-01T00:00:00Z",
         )
-        await backend.save_conversation_record(parent)
+        await backend.save_session_record(parent)
 
         # Create child with branch_type
-        child = make_conversation(
-            conversation_id="child",
+        child = make_session(
+            session_id="child",
             source_name="test",
-            provider_conversation_id="c",
+            provider_session_id="c",
             content_hash=make_hash("child"),
             title="Child",
             created_at="2024-01-02T00:00:00Z",
             updated_at="2024-01-02T00:00:00Z",
-            parent_conversation_id="parent",
+            parent_session_id="parent",
             branch_type=BranchType.SIDECHAIN,
         )
-        await backend.save_conversation_record(child)
+        await backend.save_session_record(child)
 
         # Query and verify branch_type is preserved
-        children = await backend.list_conversations_by_parent("parent")
+        children = await backend.list_sessions_by_parent("parent")
         assert len(children) == 1
         assert children[0].branch_type == "sidechain"
 
@@ -403,36 +403,34 @@ class TestSessionIndexEntry:
         assert entry.is_sidechain is False
 
 
-class TestEnrichConversationFromIndex:
-    """Tests for enrich_conversation_from_index function."""
+class TestEnrichSessionFromIndex:
+    """Tests for enrich_session_from_index function."""
 
-    def test_enriches_title_with_summary(
-        self, sample_conversation: ParsedConversation, sample_sessions_index: Path
-    ) -> None:
+    def test_enriches_title_with_summary(self, sample_session: ParsedSession, sample_sessions_index: Path) -> None:
         """Uses summary as title when available."""
         entries = parse_sessions_index(sample_sessions_index)
         entry = entries["abc123-def456"]
 
-        enriched = enrich_conversation_from_index(sample_conversation, entry)
+        enriched = enrich_session_from_index(sample_session, entry)
 
         assert enriched.title == "Fixed authentication bug in login flow"
 
-    def test_enriches_timestamps(self, sample_conversation: ParsedConversation, sample_sessions_index: Path) -> None:
-        """Uses index timestamps when conversation lacks them."""
+    def test_enriches_timestamps(self, sample_session: ParsedSession, sample_sessions_index: Path) -> None:
+        """Uses index timestamps when session lacks them."""
         entries = parse_sessions_index(sample_sessions_index)
         entry = entries["abc123-def456"]
 
-        enriched = enrich_conversation_from_index(sample_conversation, entry)
+        enriched = enrich_session_from_index(sample_session, entry)
 
         assert enriched.created_at == "2024-01-15T10:30:00.000Z"
         assert enriched.updated_at == "2024-01-15T11:45:00.000Z"
 
-    def test_enriches_provider_meta(self, sample_conversation: ParsedConversation, sample_sessions_index: Path) -> None:
+    def test_enriches_provider_meta(self, sample_session: ParsedSession, sample_sessions_index: Path) -> None:
         """Adds git branch and project path to provider_meta."""
         entries = parse_sessions_index(sample_sessions_index)
         entry = entries["abc123-def456"]
 
-        enriched = enrich_conversation_from_index(sample_conversation, entry)
+        enriched = enrich_session_from_index(sample_session, entry)
 
         assert enriched.provider_meta is not None
         assert enriched.provider_meta["gitBranch"] == "feature/auth-fix"
@@ -440,18 +438,18 @@ class TestEnrichConversationFromIndex:
         assert enriched.provider_meta["isSidechain"] is False
 
     def test_uses_first_prompt_when_no_summary(
-        self, sample_conversation: ParsedConversation, sample_sessions_index: Path
+        self, sample_session: ParsedSession, sample_sessions_index: Path
     ) -> None:
         """Falls back to firstPrompt when summary is generic."""
         entries = parse_sessions_index(sample_sessions_index)
         entry = entries["ghi789-jkl012"]
 
-        enrich_conversation_from_index(sample_conversation, entry)
+        enrich_session_from_index(sample_session, entry)
 
         # "User Exits CLI Session" is filtered out, falls back to firstPrompt
         # But "No prompt" is also filtered, so keeps original title
 
-    def test_truncates_long_first_prompt(self, sample_conversation: ParsedConversation) -> None:
+    def test_truncates_long_first_prompt(self, sample_session: ParsedSession) -> None:
         """Truncates firstPrompt if longer than 80 chars."""
         long_prompt = "A" * 100
         entry = SessionIndexEntry(
@@ -467,7 +465,7 @@ class TestEnrichConversationFromIndex:
             is_sidechain=False,
         )
 
-        enriched = enrich_conversation_from_index(sample_conversation, entry)
+        enriched = enrich_session_from_index(sample_session, entry)
 
         assert enriched.title is not None
         assert len(enriched.title) == 83  # 80 + "..."

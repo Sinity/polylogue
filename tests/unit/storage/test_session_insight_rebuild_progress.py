@@ -16,33 +16,26 @@ Pins two contracts:
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from pathlib import Path
 
 import pytest
 
-from polylogue.storage.insights.session.rebuild import (
-    _delete_tables_with_progress_sync,
-    rebuild_session_insights_sync,
-)
-from polylogue.storage.sqlite.connection import open_connection
-from tests.infra.storage_records import ConversationBuilder
+from polylogue.api import Polylogue
+from polylogue.storage.insights.session.rebuild import _delete_tables_with_progress_sync
+from tests.infra.storage_records import SessionBuilder
 
 
-def _seed_insight_tables(conn: sqlite3.Connection, conversation_id: str = "conv-1") -> None:
-    """Populate a couple of insight rows so DELETEs have something to clear."""
-    conn.execute(
-        """
-        INSERT INTO session_profiles (conversation_id, logical_conversation_id, provider_name,
-            session_date, first_message_at, last_message_at, message_count, user_message_count,
-            assistant_message_count, total_words, total_tool_use, total_thinking, total_paste,
-            heuristic_label, primary_topic_tag)
-        VALUES (?, ?, 'claude-code', '2026-03-01', '2026-03-01T10:00:00+00:00',
-            '2026-03-01T10:05:00+00:00', 2, 1, 1, 10, 0, 0, 0, 'idle', NULL)
-        """,
-        (conversation_id, conversation_id),
-    )
-    conn.commit()
+def _rebuild(db_path: Path, *, progress_callback: object = None) -> None:
+    async def _run() -> None:
+        archive = Polylogue(archive_root=db_path.parent, db_path=db_path)
+        try:
+            await archive.rebuild_insights(progress_callback=progress_callback)  # type: ignore[arg-type]
+        finally:
+            await archive.close()
+
+    asyncio.run(_run())
 
 
 def _count_profiles(db_path: Path) -> int:
@@ -112,12 +105,12 @@ def test_delete_tables_progress_callback_is_optional(tmp_path: Path) -> None:
 def test_full_rebuild_emits_progress_for_each_deleted_table(
     cli_workspace: dict[str, Path],
 ) -> None:
-    """The full ``rebuild_session_insights_sync(conversation_ids=None)`` path
-    must surface DELETE progress through the user-supplied callback so
-    "polylogue ... --rebuild-insights" stops hanging silently."""
+    """The full native ``rebuild_insights`` path must surface DELETE progress
+    through the user-supplied callback so "polylogue ... --rebuild-insights"
+    stops hanging silently (#1607 parity over archive)."""
     db_path = cli_workspace["db_path"]
     (
-        ConversationBuilder(db_path, "conv-1")
+        SessionBuilder(db_path, "conv-1")
         .provider("claude-code")
         .title("seed")
         .updated_at("2026-03-01T10:10:00+00:00")
@@ -130,18 +123,16 @@ def test_full_rebuild_emits_progress_for_each_deleted_table(
     def progress(amount: int, desc: str | None = None) -> None:
         events.append(desc)
 
-    with open_connection(db_path) as conn:
-        rebuild_session_insights_sync(conn, progress_callback=progress)
+    _rebuild(db_path, progress_callback=progress)
 
     delete_events = [desc for desc in events if desc and desc.startswith("rebuild: cleared ")]
     assert delete_events == [
         "rebuild: cleared session_work_events",
         "rebuild: cleared session_phases",
-        "rebuild: cleared session_latency_profiles",
         "rebuild: cleared session_profiles",
-        "rebuild: cleared session_tag_rollups",
-        "rebuild: cleared conversation_repo_observations",
-        "rebuild: cleared repo_identities",
+        "rebuild: cleared thread_sessions",
+        "rebuild: cleared threads",
+        "rebuild: cleared insight_materialization",
     ]
 
 
@@ -161,7 +152,7 @@ def test_full_rebuild_rolls_back_on_exception_keeping_prior_profiles(
     """
     db_path = cli_workspace["db_path"]
     (
-        ConversationBuilder(db_path, "conv-existing")
+        SessionBuilder(db_path, "conv-existing")
         .provider("claude-code")
         .title("prior")
         .updated_at("2026-02-01T10:10:00+00:00")
@@ -170,25 +161,22 @@ def test_full_rebuild_rolls_back_on_exception_keeping_prior_profiles(
     )
 
     # Establish a baseline of insight rows by running one successful rebuild.
-    with open_connection(db_path) as conn:
-        rebuild_session_insights_sync(conn)
+    _rebuild(db_path)
     baseline = _count_profiles(db_path)
     assert baseline >= 1, "baseline rebuild produced no profiles"
 
-    # Now arrange for the next rebuild's inner loop to fail after the
-    # DELETE phase. Patch a function called from inside the chunk loop.
+    # Now arrange for the next rebuild's per-session loop to fail after the
+    # DELETE phase. The archive rebuild imports build_session_insight_records
+    # at call time from the rebuild module, so patching it there is observed.
     from polylogue.storage.insights.session import rebuild as rebuild_module
 
     def _explode(*args: object, **kwargs: object) -> None:
         raise RuntimeError("simulated mid-rebuild failure")
 
-    monkeypatch.setattr(rebuild_module, "build_session_insight_record_bundles", _explode)
+    monkeypatch.setattr(rebuild_module, "build_session_insight_records", _explode)
 
-    with (
-        open_connection(db_path) as conn,
-        pytest.raises(RuntimeError, match="simulated mid-rebuild failure"),
-    ):
-        rebuild_session_insights_sync(conn)
+    with pytest.raises(RuntimeError, match="simulated mid-rebuild failure"):
+        _rebuild(db_path)
 
     # The post-failure count must equal the baseline. If the DELETEs had
     # leaked past their implicit transaction, this would be 0.

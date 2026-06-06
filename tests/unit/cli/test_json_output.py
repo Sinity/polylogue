@@ -100,7 +100,7 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     (["resume"], True),
     (["resume-candidates"], True),
     (["tags"], False),
-    (["--latest", "export"], True),  # --latest at root level resolves conversation
+    (["--latest", "export"], True),  # --latest at root level resolves session
     # ── Insights subcommands ─────────────────────────────────────────
     (["insights", "status"], False),
     (["insights", "audit"], False),
@@ -117,7 +117,7 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     # ── Diagnostics subcommands ──────────────────────────────────────
     (["diagnostics", "pace"], False),
     (["diagnostics", "tools"], False),
-    (["--latest", "diagnostics", "turns"], True),  # needs conversation; fails cleanly on empty
+    (["--latest", "diagnostics", "turns"], True),  # needs session; fails cleanly on empty
     # ── Embed, feedback, schema, maintenance ─────────────────────────
     (["embed", "status"], False),
     (["feedback", "list"], False),
@@ -142,7 +142,7 @@ _EXCLUDED: list[str] = [
     "recent (pre-existing bug: hardcoded sort=updated_at is invalid)",
     "context compose (not wired for lazy subcommand dispatch from root)",
     "context-pack (not wired for lazy subcommand dispatch from root)",
-    "insights timeline (requires CONVERSATION_ID argument)",
+    "insights timeline (requires SESSION_ID argument)",
     "insights export (requires --out argument)",
     "blackboard list (not wired for lazy subcommand dispatch from root)",
     "user-state marks (not wired for lazy subcommand dispatch from root)",

@@ -10,7 +10,7 @@ out of `provider_meta` into typed columns on `attachments` / `attachment_refs`:
   the stored rows.
 - The hot-path attachment identity lookup (`search_attachment_identity_evidence_hits`)
   resolves against stored columns, not `json_extract` on `provider_meta`.
-- The composite `(upload_origin, conversation_id)` index that the #1199
+- The composite `(upload_origin, session_id)` index that the #1199
   attachment library UI relies on exists in the canonical schema.
 
 See `docs/architecture.md` for the Source vocabulary discussion;
@@ -72,7 +72,7 @@ def test_native_identifier_columns_are_first_class(
 def test_upload_origin_index_supports_attachment_library_grouping(
     fresh_schema_db: Mapping[str, sqlite3.Connection],
 ) -> None:
-    """#1199 needs an index over (upload_origin, conversation_id) so the
+    """#1199 needs an index over (upload_origin, session_id) so the
     attachment-library UI can group by origin without scanning."""
     conn = fresh_schema_db["conn"]
     row = conn.execute(
@@ -81,7 +81,7 @@ def test_upload_origin_index_supports_attachment_library_grouping(
     ).fetchone()
     assert row is not None, "#1252: idx_attachment_refs_upload_origin must be defined"
     assert "upload_origin" in row["sql"]
-    assert "conversation_id" in row["sql"]
+    assert "session_id" in row["sql"]
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +261,7 @@ async def test_attachment_identity_lookup_uses_stored_columns(tmp_path: Path) ->
     try:
         bootstrap.executescript(SCHEMA_DDL)
         bootstrap.execute(
-            "INSERT INTO conversations (conversation_id, source_name, provider_conversation_id, "
+            "INSERT INTO sessions (session_id, source_name, provider_session_id, "
             "content_hash, version) VALUES (?, ?, ?, ?, ?)",
             ("conv-1", "gemini", "gemini-1", "deadbeef", 1),
         )
@@ -274,7 +274,7 @@ async def test_attachment_identity_lookup_uses_stored_columns(tmp_path: Path) ->
         )
         bootstrap.execute(
             """INSERT INTO attachment_refs (
-                ref_id, attachment_id, conversation_id, message_id, provider_meta,
+                ref_id, attachment_id, session_id, message_id, provider_meta,
                 provider_attachment_id, provider_file_id, provider_drive_id, upload_origin
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             ("ref-1", "att-1", "conv-1", None, None, "prov-att-1", "drive-file-1", "drive-root-1", "drive"),
@@ -292,7 +292,7 @@ async def test_attachment_identity_lookup_uses_stored_columns(tmp_path: Path) ->
         ):
             hits = await search_attachment_identity_evidence_hits(conn, query=query, limit=10)
             assert len(hits) == 1, f"#1252: stored-column lookup for {query!r} must find one hit"
-            assert hits[0].conversation_id == "conv-1"
+            assert hits[0].session_id == "conv-1"
             assert hits[0].match_surface == "attachment"
             assert expected_field in (hits[0].snippet or ""), (
                 f"#1252: snippet must name the typed column {expected_field}, got {hits[0].snippet!r}"

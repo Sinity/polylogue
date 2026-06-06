@@ -60,7 +60,7 @@ point you at `polylogue init` until the starter file exists.
 polylogued run
 ```
 
-The daemon watches the configured roots, ingests new conversations,
+The daemon watches the configured roots, ingests new sessions,
 and keeps insights and FTS indexes converged. The first run does
 a catch-up pass over everything it finds.
 

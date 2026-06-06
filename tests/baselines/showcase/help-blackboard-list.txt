@@ -1,0 +1,11 @@
+Usage: polylogue blackboard list [OPTIONS]
+
+  List blackboard notes.
+
+Options:
+  -k, --kind [finding|blocker|decision|handoff|question|observation]
+  -r, --scope-repo TEXT
+  --unresolved                    Only show unresolved notes (blockers,
+                                  questions).
+  -l, --limit INTEGER
+  -h, --help                      Show this message and exit.

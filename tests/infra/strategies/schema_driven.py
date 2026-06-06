@@ -1,15 +1,17 @@
 """Schema-driven Hypothesis strategies for crashlessness testing.
 
 Generates structurally valid but adversarial data from real provider
-JSON schemas, stripping test-irrelevant extensions and nested legacy
+JSON schemas, stripping test-irrelevant extensions and nested older
 metaschema declarations that upset ``hypothesis-jsonschema``.
 """
 
 from __future__ import annotations
 
 import copy
+from functools import cache
 
 from hypothesis import strategies as st
+from hypothesis.strategies import SearchStrategy
 from hypothesis_jsonschema import from_schema
 
 from polylogue.core.json import JSONDocument, JSONValue, json_document, require_json_value
@@ -63,10 +65,14 @@ def schema_conformant_payload(draw: st.DrawFn, provider: str) -> JSONValue:
     Returns:
         A dict/list conformant to the provider's schema.
     """
+    return draw(_schema_strategy(provider))
+
+
+@cache
+def _schema_strategy(provider: str) -> SearchStrategy[JSONValue]:
     registry = SchemaRegistry()
     raw_schema = registry.get_schema(provider, version="latest")
     if raw_schema is None:
-        # Fall back — draw a minimal valid dict
-        return draw(st.fixed_dictionaries({}))
+        return st.fixed_dictionaries({})
     cleaned = json_document(strip_schema_extensions(copy.deepcopy(raw_schema)))
-    return draw(from_schema(cleaned))
+    return from_schema(cleaned)

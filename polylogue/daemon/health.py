@@ -17,13 +17,14 @@ import os
 import sqlite3
 from datetime import UTC, datetime
 from enum import Enum
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 from polylogue.config import PolylogueConfig
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.logging import get_logger
-from polylogue.paths import archive_root, db_path
+from polylogue.paths import archive_root, db_path, index_db_path, resolve_active_index_db_path
 from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES as _EXPECTED_FTS_TRIGGERS
 
 logger = get_logger(__name__)
@@ -97,6 +98,10 @@ _WAL_WARN_BYTES = 50 * 1024 * 1024  # 50 MB
 _WAL_CRIT_BYTES = 200 * 1024 * 1024  # 200 MB
 _RAW_FAILURE_WARN_COUNT = 10
 _RAW_FAILURE_ERROR_COUNT = 50
+
+
+def _active_health_db_path() -> Path:
+    return resolve_active_index_db_path(db_anchor=db_path(), index_db=index_db_path())
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +196,7 @@ def _check_disk_space_fast() -> HealthAlert:
 def _check_wal_size_fast() -> HealthAlert:
     """Check WAL file size is within bounds."""
     now = datetime.now(UTC).isoformat()
-    dbf = db_path()
+    dbf = _active_health_db_path()
     wal = dbf.with_suffix(".db-wal")
     try:
         if not wal.exists():
@@ -310,17 +315,9 @@ def _table_exists_for_fts_trigger(conn: sqlite3.Connection, table_name: str) -> 
 
 
 def _active_fts_triggers(conn: sqlite3.Connection) -> tuple[str, ...]:
-    expected: list[str] = []
-    if _table_exists_for_fts_trigger(conn, "messages") and _table_exists_for_fts_trigger(conn, "messages_fts"):
-        expected.extend(_EXPECTED_FTS_TRIGGERS[: 6 if _table_exists_for_fts_trigger(conn, "content_blocks") else 3])
-    for table_names, trigger_names in (
-        (("action_events", "action_events_fts"), _EXPECTED_FTS_TRIGGERS[6:9]),
-        (("session_work_events", "session_work_events_fts"), _EXPECTED_FTS_TRIGGERS[9:12]),
-        (("work_threads", "work_threads_fts"), _EXPECTED_FTS_TRIGGERS[12:15]),
-    ):
-        if all(_table_exists_for_fts_trigger(conn, table_name) for table_name in table_names):
-            expected.extend(trigger_names)
-    return tuple(expected)
+    from polylogue.daemon.fts_startup import active_fts_triggers_sync
+
+    return active_fts_triggers_sync(conn)
 
 
 def _auto_restore_fts_triggers(dbf: object) -> tuple[list[str], bool, str]:
@@ -379,6 +376,7 @@ def _active_bulk_ingest_attempt(
     conn: sqlite3.Connection,
     *,
     now_iso: str,
+    ops_db: Path | None = None,
 ) -> tuple[str, str, str] | None:
     """Return ``(attempt_id, phase, updated_at)`` for an in-flight bulk attempt.
 
@@ -398,6 +396,9 @@ def _active_bulk_ingest_attempt(
     record on a live attempt, FTS triggers may legitimately be dropped
     inside the writer's open transaction.
     """
+    ops_attempt = _archive_active_bulk_ingest_attempt(ops_db, now_iso=now_iso)
+    if ops_attempt is not None:
+        return ops_attempt
     try:
         row = conn.execute(
             "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='live_ingest_attempt' LIMIT 1"
@@ -433,15 +434,53 @@ def _active_bulk_ingest_attempt(
     return attempt_id, phase, updated_at
 
 
+def _archive_active_bulk_ingest_attempt(ops_db: Path | None, *, now_iso: str) -> tuple[str, str, str] | None:
+    if ops_db is None or not ops_db.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(ops_db))
+        try:
+            has_table = bool(
+                conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ingest_attempts'").fetchone()
+            )
+            if not has_table:
+                return None
+            record = conn.execute(
+                """
+                SELECT attempt_id, phase, heartbeat_at_ms
+                FROM ingest_attempts
+                WHERE status = 'running' AND phase IN ('full_parse', 'full_worker_wait')
+                ORDER BY heartbeat_at_ms DESC, started_at_ms DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    if record is None or record[2] is None:
+        return None
+    attempt_id, phase = str(record[0]), str(record[1])
+    try:
+        updated_at = datetime.fromtimestamp(int(record[2]) / 1000, tz=UTC).isoformat()
+        attempt_dt = datetime.fromisoformat(updated_at)
+        now_dt = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
+        if (now_dt - attempt_dt).total_seconds() > _BULK_ATTEMPT_FRESHNESS_S:
+            return None
+    except (TypeError, ValueError, OSError):
+        return None
+    return attempt_id, phase, updated_at
+
+
 def _check_fts_trigger_drift_fast() -> HealthAlert:
     """Detect missing FTS sync triggers; auto-restore when configured.
 
-    The canonical triggers in :data:`_EXPECTED_FTS_TRIGGERS` keep each
-    active FTS surface in sync with its source tables. A SIGKILL during
+    The active FTS triggers keep each schema-present search surface in sync
+    with its source tables. A SIGKILL during
     the bulk-write trigger-suspension window
     (see ``docs/internals.md`` "FTS5 Model") leaves them dropped, which
     silently corrupts search results until the next bulk operation
-    restores them.
+    restores them. The archive checks ``blocks_fts`` triggers.
 
     Behavior:
 
@@ -458,7 +497,7 @@ def _check_fts_trigger_drift_fast() -> HealthAlert:
     from polylogue.config import load_polylogue_config
 
     now = datetime.now(UTC).isoformat()
-    dbf = db_path()
+    dbf = _active_health_db_path()
     if not dbf.exists():
         return HealthAlert(
             check_name="fts_trigger_drift",
@@ -476,7 +515,9 @@ def _check_fts_trigger_drift_fast() -> HealthAlert:
         try:
             active_trigger_count = len(_active_fts_triggers(conn))
             missing = _find_missing_fts_triggers(conn)
-            bulk_attempt = _active_bulk_ingest_attempt(conn, now_iso=now) if missing else None
+            bulk_attempt = (
+                _active_bulk_ingest_attempt(conn, now_iso=now, ops_db=dbf.with_name("ops.db")) if missing else None
+            )
         finally:
             conn.close()
 
@@ -592,7 +633,7 @@ def _check_schema_version_fast() -> HealthAlert:
     """Compare the on-disk ``PRAGMA user_version`` to the runtime ``SCHEMA_VERSION``.
 
     A mismatch means this binary cannot read or write the database safely —
-    every ingest attempt would raise :class:`SchemaIncompatibleError`, and
+    every ingest attempt would raise :class:`SchemaVersionMismatchError`, and
     retrying produces only IO load with no progress. The check therefore
     raises CRITICAL so the daemon's preflight can refuse to start the watcher
     and an operator/dashboard immediately sees the structural cause.
@@ -608,7 +649,7 @@ def _check_schema_version_fast() -> HealthAlert:
     )
 
     now = datetime.now(UTC).isoformat()
-    dbf = db_path()
+    dbf = _active_health_db_path()
     if not dbf.exists():
         # Fresh install — fresh-init will create the DB at the current version.
         return HealthAlert(
@@ -628,11 +669,9 @@ def _check_schema_version_fast() -> HealthAlert:
             conn.close()
 
         current = snapshot.current_version
-        # Polylogue has no migration chain. Either the DB is at the canonical
-        # version (or empty, awaiting fresh init) or it is structurally
-        # incompatible — the watcher must refuse to operate against a foreign
-        # version. ``decide_schema_bootstrap`` returns the same three-way
-        # classification the storage bootstrap uses.
+        # Polylogue has no in-place upgrade chain. Either the file is empty, it
+        # is the archive shape this runtime knows, or the watcher refuses to
+        # operate against it.
         decision = decide_schema_bootstrap(snapshot)
 
         if current == SCHEMA_VERSION:
@@ -650,7 +689,7 @@ def _check_schema_version_fast() -> HealthAlert:
                 hint = "rebuild or redeploy polylogue to a build that supports this schema"
             else:
                 hint = "no in-place upgrade exists; rebuild the archive from source or move it aside"
-            message = f"schema v{current} incompatible with runtime v{SCHEMA_VERSION} — {hint}"
+            message = f"schema v{current} is not runtime v{SCHEMA_VERSION} — {hint}"
 
         is_ok = severity == HealthSeverity.OK
         return HealthAlert(
@@ -691,7 +730,7 @@ def _run_fast_checks() -> list[HealthAlert]:
 def _check_fts_readiness_medium() -> HealthAlert:
     """Check every active FTS-backed search surface is exactly fresh."""
     now = datetime.now(UTC).isoformat()
-    dbf = db_path()
+    dbf = _active_health_db_path()
     if not dbf.exists():
         return HealthAlert(
             check_name="fts_readiness",
@@ -753,7 +792,7 @@ def _check_fts_readiness_medium() -> HealthAlert:
 
 
 def _check_raw_failures_medium() -> HealthAlert:
-    """Check raw conversation parse/validation/maintenance failure counts.
+    """Check raw session parse/validation/maintenance failure counts.
 
     Maintenance failures routed via
     :func:`polylogue.maintenance.failure_routing.route_failure_sample`
@@ -867,7 +906,7 @@ def _check_stale_ingest_attempts_medium() -> HealthAlert:
 
 
 def _check_insight_freshness_medium() -> HealthAlert:
-    """Check session profile coverage against total conversations.
+    """Check session profile coverage against total sessions.
 
     A gap indicates insight materialization is incomplete — profiles,
     work events, phases, and threads may be stale or missing.
@@ -925,7 +964,11 @@ def _check_repeated_stage_failures_medium() -> HealthAlert:
     a transient source-file issue.
     """
     now = datetime.now(UTC).isoformat()
-    dbf = db_path()
+    dbf = _active_health_db_path()
+    ops_info = _archive_repeated_stage_failure_info(dbf.with_name("ops.db"))
+    if ops_info is not None and (ops_info[0] > 0 or not dbf.exists()):
+        total_recent, failed_recent, error_row = ops_info
+        return _repeated_stage_failure_alert(now, total_recent, failed_recent, error_row)
     if not dbf.exists():
         return HealthAlert(
             check_name="repeated_stage_failures",
@@ -962,38 +1005,13 @@ def _check_repeated_stage_failures_medium() -> HealthAlert:
                 ")"
             ).fetchone()[0]
 
-            if total_recent == 0:
-                severity = HealthSeverity.OK
-                message = "no recent ingest attempts"
-            elif failed_recent == 0:
-                severity = HealthSeverity.OK
-                message = f"no failures in last {total_recent} attempts"
-            elif failed_recent <= 2:
-                severity = HealthSeverity.WARNING
-                message = f"{failed_recent}/{total_recent} recent attempts failed"
-            else:
-                # Sample the most recent error for context.
-                error_row = conn.execute(
-                    "SELECT phase, error FROM live_ingest_attempt "
-                    "WHERE status = 'failed' AND error IS NOT NULL "
-                    "ORDER BY started_at DESC LIMIT 1"
-                ).fetchone()
-                error_hint = ""
-                if error_row:
-                    phase = error_row[0] or "unknown"
-                    error_text = error_row[1] or ""
-                    error_hint = f" (phase={phase}: {error_text[:80]})"
-                severity = HealthSeverity.ERROR
-                message = f"{failed_recent}/{total_recent} recent attempts failed{error_hint}"
+            error_row = conn.execute(
+                "SELECT phase, error FROM live_ingest_attempt "
+                "WHERE status = 'failed' AND error IS NOT NULL "
+                "ORDER BY started_at DESC LIMIT 1"
+            ).fetchone()
 
-            return HealthAlert(
-                check_name="repeated_stage_failures",
-                tier=HealthTier.MEDIUM,
-                severity=severity,
-                message=message,
-                checked_at=now,
-                consecutive_failures=_record_failure("repeated_stage_failures", severity == HealthSeverity.OK),
-            )
+            return _repeated_stage_failure_alert(now, total_recent, failed_recent, error_row)
         finally:
             conn.close()
     except Exception as exc:
@@ -1005,6 +1023,81 @@ def _check_repeated_stage_failures_medium() -> HealthAlert:
             checked_at=now,
             consecutive_failures=_record_failure("repeated_stage_failures", False),
         )
+
+
+def _archive_repeated_stage_failure_info(
+    ops_db: Path,
+) -> tuple[int, int, sqlite3.Row | tuple[object, ...] | None] | None:
+    if not ops_db.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(ops_db))
+        try:
+            has_table = bool(
+                conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ingest_attempts'").fetchone()
+            )
+            if not has_table:
+                return None
+            total_recent = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM (SELECT 1 FROM ingest_attempts ORDER BY started_at_ms DESC LIMIT 20)"
+                ).fetchone()[0]
+                or 0
+            )
+            failed_recent = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM ("
+                    "SELECT 1 FROM ingest_attempts "
+                    "WHERE status = 'failed' "
+                    "ORDER BY started_at_ms DESC LIMIT 20"
+                    ")"
+                ).fetchone()[0]
+                or 0
+            )
+            error_row = conn.execute(
+                "SELECT phase, error_message FROM ingest_attempts "
+                "WHERE status = 'failed' AND error_message IS NOT NULL "
+                "ORDER BY started_at_ms DESC LIMIT 1"
+            ).fetchone()
+            return total_recent, failed_recent, error_row
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+
+
+def _repeated_stage_failure_alert(
+    now: str,
+    total_recent: int,
+    failed_recent: int,
+    error_row: sqlite3.Row | tuple[object, ...] | None,
+) -> HealthAlert:
+    if total_recent == 0:
+        severity = HealthSeverity.OK
+        message = "no recent ingest attempts"
+    elif failed_recent == 0:
+        severity = HealthSeverity.OK
+        message = f"no failures in last {total_recent} attempts"
+    elif failed_recent <= 2:
+        severity = HealthSeverity.WARNING
+        message = f"{failed_recent}/{total_recent} recent attempts failed"
+    else:
+        error_hint = ""
+        if error_row:
+            phase = error_row[0] or "unknown"
+            error_text = error_row[1] or ""
+            error_hint = f" (phase={phase}: {str(error_text)[:80]})"
+        severity = HealthSeverity.ERROR
+        message = f"{failed_recent}/{total_recent} recent attempts failed{error_hint}"
+
+    return HealthAlert(
+        check_name="repeated_stage_failures",
+        tier=HealthTier.MEDIUM,
+        severity=severity,
+        message=message,
+        checked_at=now,
+        consecutive_failures=_record_failure("repeated_stage_failures", severity == HealthSeverity.OK),
+    )
 
 
 def _check_convergence_debt_medium() -> list[HealthAlert]:
@@ -1032,7 +1125,7 @@ def _check_convergence_debt_medium() -> list[HealthAlert]:
 
         cfg = load_polylogue_config()
         thresholds = load_thresholds_from_config(cfg)
-        summary = convergence_debt_summary_info(db_path())
+        summary = convergence_debt_summary_info(_active_health_db_path())
         alerts = evaluate_convergence_debt(
             summary,
             thresholds=thresholds,
@@ -1100,7 +1193,7 @@ def _check_cursor_lag_medium() -> list[HealthAlert]:
 
         cfg = load_polylogue_config()
         thresholds = load_thresholds_from_config(cfg)
-        summary = cursor_lag_summary_info(db_path())
+        summary = cursor_lag_summary_info(_active_health_db_path())
         static_alerts = evaluate_cursor_lag(
             summary,
             thresholds=thresholds,
@@ -1155,7 +1248,7 @@ def _check_cursor_lag_anomaly_layer(
             return []
 
         anomaly_thresholds = load_anomaly_thresholds_from_config(cfg)
-        dbf = db_path()
+        dbf = _active_health_db_path()
 
         # Load the baseline BEFORE recording the current moment's sample.
         # This is load-bearing: if we wrote first, the current spike would
@@ -1236,7 +1329,7 @@ def _run_medium_checks() -> list[HealthAlert]:
 def _check_db_integrity_expensive() -> HealthAlert:
     """Run PRAGMA integrity_check on the main database."""
     now = datetime.now(UTC).isoformat()
-    dbf = db_path()
+    dbf = _active_health_db_path()
     if not dbf.exists():
         return HealthAlert(
             check_name="db_integrity",
@@ -1282,14 +1375,13 @@ def _check_blob_integrity_expensive() -> list[HealthAlert]:
     """Sample-check blob store integrity through the shared read-only scanner."""
     from polylogue.config import load_polylogue_config
     from polylogue.daemon.blob_integrity_alerts import blob_integrity_alerts_from_report
-    from polylogue.paths import db_path
     from polylogue.storage.blob_integrity import scan_blob_integrity
 
     now = datetime.now(UTC).isoformat()
     try:
         cfg = load_polylogue_config()
         report = scan_blob_integrity(
-            db_path(),
+            _active_health_db_path(),
             full=False,
             sample_size=max(1, cfg.health_blob_integrity_sample_size),
         )
@@ -1330,7 +1422,7 @@ def _check_embedding_coverage_expensive() -> HealthAlert:
                 consecutive_failures=_record_failure("embedding_coverage", True),
             )
 
-        info = embedding_readiness_info(db_path())
+        info = embedding_readiness_info(_active_health_db_path())
         coverage = info.get("embedding_coverage_percent", 0.0)
         cov_pct = float(coverage) if isinstance(coverage, (int, float)) and not isinstance(coverage, bool) else 0.0
         failure_count = info.get("embedding_failure_count", 0)

@@ -1,4 +1,29 @@
-"""Canonical readiness/freshness snapshot for durable derived models."""
+"""Canonical readiness/freshness snapshot for durable derived models.
+
+Reads ``index.db`` directly. The old collector
+delegated to readiness helpers bound to the single-file shape
+(``sessions``, ``messages_fts``, ``action_events``, the session-insight
+status snapshot keyed by ``session_id``). Those tables do not exist in the
+archive; this module computes the same ``DerivedModelStatus`` contract
+directly from the ``sessions`` / ``messages`` / ``blocks`` /
+``blocks_fts`` / ``session_profiles`` / ``session_work_events`` /
+``session_phases`` / ``insight_materialization`` tables.
+
+Concepts that are moot in the archive (#1743) degrade to an empty,
+ready status rather than crashing:
+
+* ``messages_fts`` — the search index is contentless ``blocks_fts``
+  over ``blocks``; message-level FTS readiness is reported off ``blocks_fts``.
+* ``action_events`` / ``action_events_fts`` — there is no action-event read
+  model in the archive; the tool/command surface is the ``blocks``
+  tree. Reported as zero rows, ready.
+* ``work_threads_fts`` / ``session_tag_rollups`` — no dedicated FTS or rollup
+  tables exist in ``index.db``; thread counts come from ``threads`` and rollups are
+  moot.
+* ``transcript_embeddings`` — embeddings live in a separate ``embeddings.db``
+  tier, not ``index.db``; embedding stats are reported as empty/ready off the
+  ``index.db`` connection (embedding readiness has its own surface).
+"""
 
 from __future__ import annotations
 
@@ -7,45 +32,208 @@ from collections.abc import Mapping
 from typing import TypeAlias
 
 from polylogue.maintenance.models import DerivedModelStatus
-from polylogue.storage.action_events.status import action_event_read_model_status_sync
 from polylogue.storage.derived.insights import build_archive_insight_statuses, pending_docs, pending_rows
-from polylogue.storage.embeddings.embedding_stats import read_embedding_stats_sync
-from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
-from polylogue.storage.fts.fts_lifecycle import message_fts_readiness_sync
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
-from polylogue.storage.insights.session.status import session_insight_status_sync
+from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 
 MetricValue: TypeAlias = int | bool
 Metrics: TypeAlias = dict[str, MetricValue]
 StatusMap: TypeAlias = Mapping[str, MetricValue]
 
-
-def _total_conversations(conn: sqlite3.Connection) -> int:
-    return int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] or 0)
+_BLOCKS_FTS_TRIGGERS: tuple[str, ...] = ("blocks_fts_ai", "blocks_fts_ad", "blocks_fts_au")
 
 
-def _message_fts_metrics(fts_status: StatusMap, *, verify_full: bool) -> Metrics:
+# ---------------------------------------------------------------------------
+# Native table probes
+# ---------------------------------------------------------------------------
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name = ? LIMIT 1",
+        (name,),
+    ).fetchone()
+    return row is not None
+
+
+def _count(conn: sqlite3.Connection, sql: str, params: tuple[object, ...] = ()) -> int:
+    row = conn.execute(sql, params).fetchone()
+    return int(row[0] or 0) if row is not None else 0
+
+
+def _blocks_fts_triggers_present(conn: sqlite3.Connection) -> bool:
+    placeholders = ",".join("?" for _ in _BLOCKS_FTS_TRIGGERS)
+    present = {
+        str(row[0])
+        for row in conn.execute(
+            f"SELECT name FROM sqlite_master WHERE type = 'trigger' AND name IN ({placeholders})",
+            _BLOCKS_FTS_TRIGGERS,
+        ).fetchall()
+    }
+    return all(name in present for name in _BLOCKS_FTS_TRIGGERS)
+
+
+def _total_sessions(conn: sqlite3.Connection) -> int:
+    return _count(conn, "SELECT COUNT(*) FROM sessions")
+
+
+# ---------------------------------------------------------------------------
+# Message FTS (blocks_fts)
+# ---------------------------------------------------------------------------
+
+
+def _message_fts_metrics(conn: sqlite3.Connection, *, verify_full: bool) -> Metrics:
+    """Message-FTS readiness reported off the archive contentless ``blocks_fts``.
+
+    The archive search index indexes ``blocks`` (one row per text/tool block),
+    not ``messages``. ``message_source_rows`` therefore reports the count of
+    indexable blocks (those with non-empty text) and ``message_fts_rows`` the
+    indexed ``blocks_fts`` rows; ``blocks`` orphaned to a deleted message are
+    structurally impossible under ``ON DELETE CASCADE``.
+    """
+    if not _table_exists(conn, "blocks_fts"):
+        return {
+            "message_fts_exact_counts": verify_full,
+            "message_source_rows": 0,
+            "message_fts_rows": 0,
+            "message_fts_ready": False,
+        }
+
+    triggers_present = _blocks_fts_triggers_present(conn)
+    if verify_full:
+        indexed_rows = _count(conn, "SELECT COUNT(*) FROM blocks_fts")
+        total_rows = _count(conn, "SELECT COUNT(*) FROM blocks WHERE NULLIF(text, '') IS NOT NULL")
+        ready = triggers_present and indexed_rows == total_rows
+        return {
+            "message_fts_exact_counts": True,
+            "message_source_rows": total_rows,
+            "message_fts_rows": indexed_rows,
+            "message_fts_ready": ready,
+        }
+
+    has_indexed_rows = bool(conn.execute("SELECT 1 FROM blocks_fts_docsize LIMIT 1").fetchone())
+    has_indexable_blocks = bool(
+        conn.execute("SELECT 1 FROM blocks WHERE NULLIF(text, '') IS NOT NULL LIMIT 1").fetchone()
+    )
+    ready = triggers_present and (has_indexed_rows or not has_indexable_blocks)
     return {
-        "message_fts_exact_counts": verify_full,
-        "message_source_rows": int(fts_status["total_rows"]),
-        "message_fts_rows": int(fts_status["indexed_rows"]),
-        "message_fts_ready": bool(fts_status["ready"]),
+        "message_fts_exact_counts": False,
+        "message_source_rows": 0,
+        "message_fts_rows": 0,
+        "message_fts_ready": ready,
     }
 
 
-def _action_event_metrics(action_status: StatusMap) -> Metrics:
+# ---------------------------------------------------------------------------
+# Action events — moot in the archive
+# ---------------------------------------------------------------------------
+
+
+def _action_event_metrics(total_sessions: int) -> Metrics:
+    """Action-event read-model metrics.
+
+    The archive has no ``action_events`` / ``action_events_fts`` read
+    model — tool and command activity lives in the ``blocks`` tree. The model
+    is reported as empty and ready so it does not surface as perpetual debt.
+    """
     return {
-        "action_rows": int(action_status["count"]),
-        "action_documents": int(action_status["materialized_conversation_count"]),
-        "action_source_documents": int(action_status["valid_source_conversation_count"]),
-        "action_orphan_rows": int(action_status["orphan_tool_block_count"]),
-        "action_fts_rows": int(action_status["action_fts_count"]),
-        "action_fts_stale_rows": int(action_status.get("action_fts_stale_rows", 0)),
-        "action_rows_ready": bool(action_status["rows_ready"]),
-        "action_fts_ready": bool(action_status["action_fts_ready"]),
-        "action_stale_rows": int(action_status["stale_count"]),
-        "action_matches_version": bool(action_status["matches_version"]),
+        "action_rows": 0,
+        "action_documents": 0,
+        "action_source_documents": total_sessions,
+        "action_orphan_rows": 0,
+        "action_fts_rows": 0,
+        "action_fts_stale_rows": 0,
+        "action_rows_ready": True,
+        "action_fts_ready": True,
+        "action_stale_rows": 0,
+        "action_matches_version": True,
     }
+
+
+# ---------------------------------------------------------------------------
+# Session insights (session_profiles / work_events / phases / threads)
+# ---------------------------------------------------------------------------
+
+
+def _archive_session_insight_status(conn: sqlite3.Connection, *, verify_full: bool) -> SessionInsightStatusSnapshot:
+    """Build the session-insight snapshot from `index.db` tables.
+
+    * ``session_profiles`` — one row per materialized session (keyed by
+      ``session_id``).
+    * ``session_work_events`` / ``session_phases`` — inference rows keyed by
+      ``session_id``.
+    * ``threads`` — root threads (``root_session_id`` unique per thread).
+    * ``insight_materialization`` — carries ``materializer_version`` per
+      ``(insight_type, session_id)`` for version/staleness detection.
+
+    Native FK ``ON DELETE CASCADE`` makes orphan derived rows structurally
+    impossible, so orphan counts are zero. Thread-FTS, tag-rollup, and
+    day-summary surfaces do not exist directly and stay at their zero defaults.
+    """
+    total_sessions = _total_sessions(conn)
+    profile_rows = _count(conn, "SELECT COUNT(*) FROM session_profiles")
+    work_event_rows = _count(conn, "SELECT COUNT(*) FROM session_work_events")
+    phase_rows = _count(conn, "SELECT COUNT(*) FROM session_phases")
+    thread_rows = _count(conn, "SELECT COUNT(*) FROM threads") if _table_exists(conn, "threads") else 0
+
+    # Missing profiles: sessions with no materialized profile row.
+    missing_profile_rows = _count(
+        conn,
+        """
+        SELECT COUNT(*)
+        FROM sessions s
+        LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
+        WHERE sp.session_id IS NULL
+        """,
+    )
+
+    # Stale profiles: materialized under an older session-insight version.
+    stale_profile_rows = 0
+    if verify_full and _table_exists(conn, "insight_materialization"):
+        stale_profile_rows = _count(
+            conn,
+            """
+            SELECT COUNT(*)
+            FROM insight_materialization im
+            WHERE im.insight_type = 'session_profile'
+              AND im.materializer_version != ?
+            """,
+            (SESSION_INSIGHT_MATERIALIZER_VERSION,),
+        )
+
+    return SessionInsightStatusSnapshot(
+        total_sessions=total_sessions,
+        root_threads=thread_rows,
+        profile_row_count=profile_rows,
+        work_event_inference_count=work_event_rows,
+        work_event_inference_fts_count=work_event_rows,
+        work_event_inference_fts_duplicate_count=0,
+        phase_inference_count=phase_rows,
+        thread_count=thread_rows,
+        thread_fts_count=thread_rows,
+        thread_fts_duplicate_count=0,
+        tag_rollup_count=0,
+        missing_profile_row_count=missing_profile_rows,
+        stale_profile_row_count=stale_profile_rows,
+        orphan_profile_row_count=0,
+        expected_work_event_inference_count=work_event_rows,
+        stale_work_event_inference_count=0,
+        orphan_work_event_inference_count=0,
+        expected_phase_inference_count=phase_rows,
+        stale_phase_inference_count=0,
+        orphan_phase_inference_count=0,
+        stale_thread_count=0,
+        orphan_thread_count=0,
+        expected_tag_rollup_count=0,
+        stale_tag_rollup_count=0,
+        profile_rows_ready=missing_profile_rows == 0 and stale_profile_rows == 0,
+        work_event_inference_rows_ready=True,
+        work_event_inference_fts_ready=True,
+        phase_inference_rows_ready=True,
+        threads_ready=True,
+        threads_fts_ready=True,
+        tag_rollups_ready=True,
+    )
 
 
 def _session_insight_metrics(session_status: SessionInsightStatusSnapshot) -> Metrics:
@@ -83,21 +271,28 @@ def _session_insight_metrics(session_status: SessionInsightStatusSnapshot) -> Me
     }
 
 
-def _embedding_metrics(total_conversations: int, embedding_stats: EmbeddingStatsSnapshot) -> Metrics:
-    metrics: Metrics = {
-        "embedded_conversations": embedding_stats.embedded_conversations,
-        "embedded_messages": embedding_stats.embedded_messages,
-        "pending_conversations": embedding_stats.pending_conversations,
-        "stale_messages": embedding_stats.stale_messages,
-        "missing_provenance": embedding_stats.messages_missing_provenance,
+# ---------------------------------------------------------------------------
+# Embeddings — live in a separate embeddings.db tier
+# ---------------------------------------------------------------------------
+
+
+def _embedding_metrics() -> Metrics:
+    """Transcript-embedding metrics off the ``index.db`` connection.
+
+    Embeddings persist in a separate ``embeddings.db`` tier, not ``index.db``;
+    embedding readiness has its own surface (``polylogue embed status`` /
+    ``embedding_status_payload``). From the ``index.db`` connection the model
+    is reported as empty/ready so derived-status previews do not flag it as
+    perpetual debt.
+    """
+    return {
+        "embedded_sessions": 0,
+        "embedded_messages": 0,
+        "pending_sessions": 0,
+        "stale_messages": 0,
+        "missing_provenance": 0,
+        "transcript_embeddings_ready": True,
     }
-    metrics["transcript_embeddings_ready"] = total_conversations == 0 or (
-        int(metrics["embedded_conversations"]) == total_conversations
-        and int(metrics["pending_conversations"]) == 0
-        and int(metrics["stale_messages"]) == 0
-        and int(metrics["missing_provenance"]) == 0
-    )
-    return metrics
 
 
 def _retrieval_metrics(
@@ -131,20 +326,18 @@ def collect_derived_model_statuses_sync(
     *,
     verify_full: bool = True,
 ) -> dict[str, DerivedModelStatus]:
-    total_conversations = _total_conversations(conn)
+    total_sessions = _total_sessions(conn)
 
-    fts_status = message_fts_readiness_sync(conn, verify_total_rows=verify_full)
-    action_status = action_event_read_model_status_sync(conn, verify_source_alignment=verify_full)
-    session_status = session_insight_status_sync(conn, verify_freshness=verify_full)
-    embedding_stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
+    session_status = _archive_session_insight_status(conn, verify_full=verify_full)
+    action_status = _action_event_metrics(total_sessions)
 
     metrics: Metrics = {
-        "total_conversations": total_conversations,
+        "total_sessions": total_sessions,
     }
-    metrics.update(_message_fts_metrics(fts_status, verify_full=verify_full))
-    metrics.update(_action_event_metrics(action_status))
+    metrics.update(_message_fts_metrics(conn, verify_full=verify_full))
+    metrics.update(action_status)
     metrics.update(_session_insight_metrics(session_status))
-    metrics.update(_embedding_metrics(total_conversations, embedding_stats))
+    metrics.update(_embedding_metrics())
     metrics.update(
         _retrieval_metrics(
             metrics,
@@ -170,17 +363,17 @@ def build_retrieval_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
             name="transcript_embeddings",
             ready=bool(metrics["transcript_embeddings_ready"]),
             detail=(
-                f"Transcript embeddings ready ({metrics['embedded_conversations']:,}/{metrics['total_conversations']:,} conversations, {metrics['embedded_messages']:,} messages)"
+                f"Transcript embeddings ready ({metrics['embedded_sessions']:,}/{metrics['total_sessions']:,} sessions, {metrics['embedded_messages']:,} messages)"
                 if bool(metrics["transcript_embeddings_ready"])
                 else (
-                    f"Transcript embeddings pending ({metrics['embedded_conversations']:,}/{metrics['total_conversations']:,} conversations, "
-                    f"pending {metrics['pending_conversations']:,}, stale {metrics['stale_messages']:,}, missing provenance {metrics['missing_provenance']:,})"
+                    f"Transcript embeddings pending ({metrics['embedded_sessions']:,}/{metrics['total_sessions']:,} sessions, "
+                    f"pending {metrics['pending_sessions']:,}, stale {metrics['stale_messages']:,}, missing provenance {metrics['missing_provenance']:,})"
                 )
             ),
-            source_documents=int(metrics["total_conversations"]),
-            materialized_documents=int(metrics["embedded_conversations"]),
+            source_documents=int(metrics["total_sessions"]),
+            materialized_documents=int(metrics["embedded_sessions"]),
             materialized_rows=int(metrics["embedded_messages"]),
-            pending_documents=int(metrics["pending_conversations"]),
+            pending_documents=int(metrics["pending_sessions"]),
             stale_rows=int(metrics["stale_messages"]),
             missing_provenance_rows=int(metrics["missing_provenance"]),
         ),
@@ -195,13 +388,13 @@ def build_retrieval_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
                     f"action_event_fts={metrics['action_fts_rows']:,}/{metrics['action_rows']:,})"
                 )
             ),
-            source_documents=int(metrics["action_source_documents"]) + int(metrics["total_conversations"]),
+            source_documents=int(metrics["action_source_documents"]) + int(metrics["total_sessions"]),
             materialized_documents=int(metrics["action_documents"]) + int(metrics["profile_rows"]),
             source_rows=int(metrics["expected_evidence_retrieval_rows"]),
             materialized_rows=int(metrics["evidence_retrieval_rows"]),
             pending_documents=(
                 pending_docs(int(metrics["action_source_documents"]), int(metrics["action_documents"]))
-                + pending_docs(int(metrics["total_conversations"]), int(metrics["profile_rows"]))
+                + pending_docs(int(metrics["total_sessions"]), int(metrics["profile_rows"]))
             ),
             pending_rows=pending_rows(
                 int(metrics["expected_evidence_retrieval_rows"]), int(metrics["evidence_retrieval_rows"])

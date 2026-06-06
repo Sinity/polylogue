@@ -1,7 +1,7 @@
 class Polylogue < Formula
   include Language::Python::Virtualenv
 
-  desc "Local archive for AI conversations (Claude, ChatGPT, Codex, Gemini)"
+  desc "Local archive for AI sessions (Claude, ChatGPT, Codex, Gemini)"
   homepage "https://github.com/Sinity/polylogue"
   # url, sha256, and version are bumped automatically by the
   # `.github/workflows/homebrew-bump.yml` workflow in the upstream repo on

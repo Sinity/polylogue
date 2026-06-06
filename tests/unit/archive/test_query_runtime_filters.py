@@ -4,18 +4,19 @@ from datetime import datetime, timezone
 
 import pytest
 
-from polylogue.archive.conversation.branch_type import BranchType
-from polylogue.archive.conversation.models import ConversationSummary
-from polylogue.archive.models import Attachment, Conversation, Message
+from polylogue.archive.models import Attachment, Message, Session
 from polylogue.archive.query.path_prefix import path_matches_prefix
-from polylogue.archive.query.plan import ConversationQueryPlan
+from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.runtime_filters import apply_common_filters, apply_full_filters
-from polylogue.types import ConversationId, Provider
+from polylogue.archive.session.branch_type import BranchType
+from polylogue.archive.session.domain_models import SessionSummary
+from polylogue.core.sources import origin_from_provider
+from polylogue.types import Provider, SessionId
 from tests.infra.builders import make_conv, make_msg
 
 
 def _summary(
-    conversation_id: str,
+    session_id: str,
     *,
     provider: Provider,
     title: str,
@@ -24,36 +25,36 @@ def _summary(
     summary: str | None = None,
     parent_id: str | None = None,
     branch_type: BranchType | None = None,
-) -> ConversationSummary:
+) -> SessionSummary:
     metadata: dict[str, object] = {}
     if tags is not None:
         metadata["tags"] = tags
     if summary is not None:
         metadata["summary"] = summary
-    return ConversationSummary(
-        id=ConversationId(conversation_id),
-        provider=provider,
+    return SessionSummary(
+        id=SessionId(session_id),
+        origin=origin_from_provider(provider),
         title=title,
         updated_at=updated_at,
         metadata=metadata,
-        parent_id=ConversationId(parent_id) if parent_id is not None else None,
+        parent_id=SessionId(parent_id) if parent_id is not None else None,
         branch_type=branch_type,
     )
 
 
-def _conversation(
-    conversation_id: str,
+def _session(
+    session_id: str,
     *messages: Message,
     provider: Provider = Provider.CLAUDE_CODE,
-    title: str = "Conversation",
+    title: str = "Session",
     metadata: dict[str, object] | None = None,
     provider_meta: dict[str, object] | None = None,
     parent_id: str | None = None,
     branch_type: BranchType | None = None,
     updated_at: datetime | None = None,
-) -> Conversation:
+) -> Session:
     return make_conv(
-        id=conversation_id,
+        id=session_id,
         provider=provider,
         title=title,
         metadata=metadata or {},
@@ -96,14 +97,14 @@ def test_apply_common_filters_respects_non_sql_fields_and_shared_selection_flags
     ]
 
     narrowed = apply_common_filters(
-        ConversationQueryPlan(
-            providers=(Provider.CHATGPT, Provider.CLAUDE_AI),
+        SessionQueryPlan(
+            origins=("chatgpt-export", "claude-ai-export"),
             since=datetime(2026, 4, 22, tzinfo=timezone.utc),
             until=datetime(2026, 4, 24, tzinfo=timezone.utc),
             title="deploy",
             parent_id="chatgpt:alpha",
             tags=("beta",),
-            conversation_id="claude-ai",
+            session_id="claude-ai",
             has_types=("summary",),
             continuation=True,
         ),
@@ -114,8 +115,8 @@ def test_apply_common_filters_respects_non_sql_fields_and_shared_selection_flags
     assert [str(item.id) for item in narrowed] == ["claude-ai:beta"]
 
     not_continuations = apply_common_filters(
-        ConversationQueryPlan(
-            excluded_providers=(Provider.CODEX,),
+        SessionQueryPlan(
+            excluded_origins=("codex-session",),
             tags=("ship",),
             excluded_tags=("ops",),
             continuation=False,
@@ -149,8 +150,8 @@ def test_apply_common_filters_skips_sql_pushed_predicates_but_keeps_shared_ones(
     ]
 
     preserved = apply_common_filters(
-        ConversationQueryPlan(
-            providers=(Provider.CODEX,),
+        SessionQueryPlan(
+            origins=("codex-session",),
             since=datetime(2026, 4, 25, tzinfo=timezone.utc),
             title="missing",
             parent_id="other-parent",
@@ -167,7 +168,7 @@ def test_apply_common_filters_skips_sql_pushed_predicates_but_keeps_shared_ones(
 def test_apply_full_filters_handles_content_word_branch_predicate_and_action_filters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    branchy = _conversation(
+    branchy = _session(
         "conv-branchy",
         make_msg(
             id="u1",
@@ -193,7 +194,7 @@ def test_apply_full_filters_handles_content_word_branch_predicate_and_action_fil
         ),
         metadata={"tags": ["ship"], "summary": "ship summary"},
     )
-    plain = _conversation(
+    plain = _session(
         "conv-plain",
         make_msg(
             id="u2",
@@ -218,11 +219,11 @@ def test_apply_full_filters_handles_content_word_branch_predicate_and_action_fil
     ):
         monkeypatch.setattr(
             "polylogue.archive.query.runtime_filters." + name,
-            lambda _plan, conversation, *, _target="conv-branchy": str(conversation.id) == _target,
+            lambda _plan, session, *, _target="conv-branchy": str(session.id) == _target,
         )
 
     filtered = apply_full_filters(
-        ConversationQueryPlan(
+        SessionQueryPlan(
             has_types=("thinking", "tools", "attachments"),
             filter_has_tool_use=True,
             filter_has_thinking=True,
@@ -231,7 +232,7 @@ def test_apply_full_filters_handles_content_word_branch_predicate_and_action_fil
             min_words=5,
             negative_terms=("negative",),
             has_branches=True,
-            predicates=(lambda conversation: "branchy" in str(conversation.id),),
+            predicates=(lambda session: "branchy" in str(session.id),),
             referenced_path=("/repo/src/app.py",),
             action_terms=("shell",),
             action_sequence=("search", "shell"),
@@ -242,10 +243,10 @@ def test_apply_full_filters_handles_content_word_branch_predicate_and_action_fil
         sql_pushed=False,
     )
 
-    assert [str(conversation.id) for conversation in filtered] == ["conv-branchy"]
+    assert [str(session.id) for session in filtered] == ["conv-branchy"]
 
     no_branches = apply_full_filters(
-        ConversationQueryPlan(
+        SessionQueryPlan(
             negative_terms=("needle",),
             has_branches=False,
             max_messages=2,
@@ -255,18 +256,18 @@ def test_apply_full_filters_handles_content_word_branch_predicate_and_action_fil
         sql_pushed=False,
     )
 
-    assert [str(conversation.id) for conversation in no_branches] == ["conv-plain"]
+    assert [str(session.id) for session in no_branches] == ["conv-plain"]
 
 
 def test_apply_full_filters_handles_message_type_and_since_session_scope() -> None:
     reference_ts = datetime(2026, 4, 23, 10, 0, tzinfo=timezone.utc)
-    reference = _conversation(
+    reference = _session(
         "session-root",
         make_msg(id="ref-user", role="user", text="root", timestamp=reference_ts),
         provider_meta={"working_directories": ["/repo"]},
         updated_at=reference_ts,
     )
-    later_same_repo = _conversation(
+    later_same_repo = _session(
         "session-later",
         make_msg(
             id="later-summary",
@@ -278,7 +279,7 @@ def test_apply_full_filters_handles_message_type_and_since_session_scope() -> No
         provider_meta={"working_directories": ["/repo/polylogue"]},
         updated_at=datetime(2026, 4, 23, 10, 2, tzinfo=timezone.utc),
     )
-    later_sibling_repo = _conversation(
+    later_sibling_repo = _session(
         "session-sibling",
         make_msg(
             id="sibling-summary",
@@ -290,7 +291,7 @@ def test_apply_full_filters_handles_message_type_and_since_session_scope() -> No
         provider_meta={"working_directories": ["/repository"]},
         updated_at=datetime(2026, 4, 23, 10, 4, tzinfo=timezone.utc),
     )
-    later_unknown_cwd = _conversation(
+    later_unknown_cwd = _session(
         "session-unknown",
         make_msg(
             id="unknown-summary",
@@ -302,7 +303,7 @@ def test_apply_full_filters_handles_message_type_and_since_session_scope() -> No
         provider_meta={},
         updated_at=datetime(2026, 4, 23, 10, 5, tzinfo=timezone.utc),
     )
-    later_other_repo = _conversation(
+    later_other_repo = _session(
         "session-other",
         make_msg(
             id="other-summary",
@@ -314,7 +315,7 @@ def test_apply_full_filters_handles_message_type_and_since_session_scope() -> No
         provider_meta={"working_directories": ["/other"]},
         updated_at=datetime(2026, 4, 23, 10, 3, tzinfo=timezone.utc),
     )
-    earlier_same_repo = _conversation(
+    earlier_same_repo = _session(
         "session-earlier",
         make_msg(
             id="earlier-summary",
@@ -328,7 +329,7 @@ def test_apply_full_filters_handles_message_type_and_since_session_scope() -> No
     )
 
     filtered = apply_full_filters(
-        ConversationQueryPlan(
+        SessionQueryPlan(
             message_type="summary",
             since_session_id="session-root",
         ),
@@ -336,10 +337,10 @@ def test_apply_full_filters_handles_message_type_and_since_session_scope() -> No
         sql_pushed=False,
     )
 
-    assert [str(conversation.id) for conversation in filtered] == ["session-later"]
+    assert [str(session.id) for session in filtered] == ["session-later"]
 
     missing_reference = apply_full_filters(
-        ConversationQueryPlan(since_session_id="missing"),
+        SessionQueryPlan(since_session_id="missing"),
         [reference, later_same_repo],
         sql_pushed=False,
     )
@@ -347,32 +348,32 @@ def test_apply_full_filters_handles_message_type_and_since_session_scope() -> No
 
 
 def test_apply_full_filters_rejects_unknown_message_type() -> None:
-    conversation = _conversation(
+    session = _session(
         "session",
         make_msg(id="msg", role="user", text="hello", message_type="message"),
     )
 
     with pytest.raises(ValueError, match="Unknown message type"):
         apply_full_filters(
-            ConversationQueryPlan(message_type="summmary"),
-            [conversation],
+            SessionQueryPlan(message_type="summmary"),
+            [session],
             sql_pushed=False,
         )
 
 
 def test_apply_full_filters_cwd_prefix_is_path_component_bounded() -> None:
-    exact = _conversation("exact", provider_meta={"working_directories": ["/realm/project/polylogue"]})
-    child = _conversation("child", provider_meta={"working_directories": ["/realm/project/polylogue/src"]})
-    sibling = _conversation("sibling", provider_meta={"working_directories": ["/realm/project/polylogue2"]})
-    missing = _conversation("missing", provider_meta={})
+    exact = _session("exact", provider_meta={"working_directories": ["/realm/project/polylogue"]})
+    child = _session("child", provider_meta={"working_directories": ["/realm/project/polylogue/src"]})
+    sibling = _session("sibling", provider_meta={"working_directories": ["/realm/project/polylogue2"]})
+    missing = _session("missing", provider_meta={})
 
     filtered = apply_full_filters(
-        ConversationQueryPlan(cwd_prefix="/realm/project/polylogue"),
+        SessionQueryPlan(cwd_prefix="/realm/project/polylogue"),
         [exact, child, sibling, missing],
         sql_pushed=False,
     )
 
-    assert [str(conversation.id) for conversation in filtered] == ["exact", "child"]
+    assert [str(session.id) for session in filtered] == ["exact", "child"]
 
 
 def test_path_prefix_matching_is_component_bounded() -> None:

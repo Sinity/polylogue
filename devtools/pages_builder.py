@@ -16,7 +16,7 @@ from jinja2 import DictLoader, Environment, select_autoescape
 from devtools import repo_root as _get_root
 from devtools.pages_style import PAGES_STYLE
 from devtools.pages_templates import PAGES_TEMPLATES
-from polylogue.paths import db_path
+from polylogue.paths import active_index_db_path
 from polylogue.rendering.renderers.html import PygmentsHighlighter
 from polylogue.rendering.renderers.html_sanitizer import sanitize_html
 
@@ -119,22 +119,33 @@ def _find_prev_next(page: PageEntry, all_pages: list[PageEntry]) -> tuple[dict[s
 
 def _site_archive_stats() -> dict[str, Any]:
     """Return cheap archive counts for the site hero without invoking the CLI."""
-    path = db_path()
+    path = active_index_db_path()
     if not path.exists():
         return {}
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1.0)
         try:
-            row = conn.execute(
-                """
-                SELECT
-                    COUNT(*) AS total_conversations,
-                    COALESCE(SUM(message_count), 0) AS total_messages,
-                    COUNT(DISTINCT source_name) AS provider_count
-                FROM conversation_stats
-                """
-            ).fetchone()
-            total_conversations = int(row[0] or 0)
+            if _table_exists(conn, "sessions"):
+                row = conn.execute(
+                    """
+                    SELECT
+                        COUNT(*) AS total_sessions,
+                        COALESCE(SUM(message_count), 0) AS total_messages,
+                        COUNT(DISTINCT origin) AS provider_count
+                    FROM sessions
+                    """
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT
+                        COUNT(*) AS total_sessions,
+                        COALESCE(SUM(message_count), 0) AS total_messages,
+                        COUNT(DISTINCT source_name) AS provider_count
+                    FROM session_stats
+                    """
+                ).fetchone()
+            total_sessions = int(row[0] or 0)
             total_messages = int(row[1] or 0)
             provider_count = int(row[2] or 0)
         finally:
@@ -142,10 +153,18 @@ def _site_archive_stats() -> dict[str, Any]:
     except sqlite3.Error:
         return {}
     return {
-        "total_conversations": total_conversations,
+        "total_sessions": total_sessions,
         "total_messages": total_messages,
         "provider_count": provider_count,
     }
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        (table_name,),
+    ).fetchone()
+    return row is not None
 
 
 def build_site(config_path: Path | None = None, output_dir: Path | None = None) -> Path:
@@ -173,7 +192,7 @@ def build_site(config_path: Path | None = None, output_dir: Path | None = None) 
     stats_raw = _site_archive_stats()
 
     stats = {
-        "session_count": f"{stats_raw.get('total_conversations', 0):,}",
+        "session_count": f"{stats_raw.get('total_sessions', 0):,}",
         "message_count": f"{stats_raw.get('total_messages', 0) / 1_000_000:.1f}M",
         "provider_count": str(stats_raw.get("provider_count", 0)),
     }

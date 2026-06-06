@@ -10,6 +10,7 @@ Covers:
 
 from __future__ import annotations
 
+from polylogue.core.enums import Origin
 from polylogue.pipeline.semantic_capture import detect_context_compaction
 from polylogue.sources.parsers.claude.code_parser import parse_code
 from polylogue.sources.parsers.codex import parse as parse_codex
@@ -168,7 +169,7 @@ class TestClaudeCodeParserProviderEvents:
                 "type": "summary",
                 "uuid": "s1",
                 "timestamp": "2024-01-01T10:05:00Z",
-                "message": {"content": "Summary of conversation"},
+                "message": {"content": "Summary of session"},
             },
             {
                 "type": "assistant",
@@ -181,7 +182,7 @@ class TestClaudeCodeParserProviderEvents:
         assert len(result.provider_events) == 1
         event = result.provider_events[0]
         assert event.event_type == "compaction"
-        assert event.payload["summary"] == "Summary of conversation"
+        assert event.payload["summary"] == "Summary of session"
         assert event.payload["is_modern"] is False
 
     def test_modern_compaction_emits_provider_event(self) -> None:
@@ -210,7 +211,7 @@ class TestClaudeCodeParserProviderEvents:
         assert event.payload["pre_tokens"] == 100000
 
     def test_compaction_not_duplicated_in_provider_meta(self) -> None:
-        """Compactions are provider events, not conversation metadata."""
+        """Compactions are provider events, not session metadata."""
         payload: list[object] = [
             {"type": "summary", "uuid": "s1", "message": {"content": "sum"}},
         ]
@@ -366,7 +367,7 @@ class TestCodexParserProviderEvents:
         assert result.provider_events[1].event_type == "turn_context"
 
     def test_compaction_not_duplicated_in_provider_meta(self) -> None:
-        """Compactions are provider events, not conversation metadata."""
+        """Compactions are provider events, not session metadata."""
         payload: list[object] = [
             {"type": "compacted", "payload": {"message": "compact text"}},
             {
@@ -432,8 +433,8 @@ class TestProfileCompactionCounting:
         from polylogue.storage.insights.session.profiles import profile_evidence_payload
 
         profile = SessionProfile(
-            conversation_id="test",
-            provider="claude-code",
+            session_id="test",
+            origin="claude-code-session",
             title="Test",
             created_at=None,
             updated_at=None,
@@ -461,21 +462,21 @@ class TestProfileCompactionCounting:
         assert evidence.has_compaction is True
 
     def test_session_profile_counts_provider_event_compactions(self) -> None:
-        from polylogue.archive.conversation.models import Conversation
         from polylogue.archive.message.messages import MessageCollection
         from polylogue.archive.provider.events import ProviderEvent
+        from polylogue.archive.session.domain_models import Session
         from polylogue.archive.session.runtime import build_session_profile
-        from polylogue.types import ConversationId, Provider, ProviderEventId
+        from polylogue.types import Provider, ProviderEventId, SessionId
 
-        conversation = Conversation(
-            id=ConversationId("claude-code:session-1"),
-            provider=Provider.CLAUDE_CODE,
+        session = Session(
+            id=SessionId("claude-code:session-1"),
+            origin=Origin.CLAUDE_CODE_SESSION,
             title="Session",
             messages=MessageCollection.empty(),
             provider_events=(
                 ProviderEvent(
                     id=ProviderEventId("claude-code:session-1:provider-event:000000"),
-                    conversation_id=ConversationId("claude-code:session-1"),
+                    session_id=SessionId("claude-code:session-1"),
                     provider=Provider.CLAUDE_CODE,
                     event_index=0,
                     event_type="compaction",
@@ -483,7 +484,7 @@ class TestProfileCompactionCounting:
                 ),
                 ProviderEvent(
                     id=ProviderEventId("claude-code:session-1:provider-event:000001"),
-                    conversation_id=ConversationId("claude-code:session-1"),
+                    session_id=SessionId("claude-code:session-1"),
                     provider=Provider.CLAUDE_CODE,
                     event_index=1,
                     event_type="turn_context",
@@ -492,7 +493,7 @@ class TestProfileCompactionCounting:
             ),
         )
 
-        profile = build_session_profile(conversation)
+        profile = build_session_profile(session)
 
         assert profile.compaction_count == 1
 
@@ -501,8 +502,8 @@ class TestProfileCompactionCounting:
         from polylogue.storage.insights.session.profiles import profile_evidence_payload
 
         profile = SessionProfile(
-            conversation_id="test",
-            provider="codex",
+            session_id="test",
+            origin="codex-session",
             title="Test",
             created_at=None,
             updated_at=None,

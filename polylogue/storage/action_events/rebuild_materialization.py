@@ -8,29 +8,29 @@ from polylogue.storage.action_events.rows import attach_blocks_to_messages, buil
 from polylogue.storage.runtime import (
     ActionEventRecord,
     ContentBlockRecord,
-    ConversationRecord,
     MessageRecord,
+    SessionRecord,
 )
 
 
 def materialize_batch(
-    conversations: list[ConversationRecord],
+    sessions: list[SessionRecord],
     messages: list[MessageRecord],
     blocks: list[ContentBlockRecord],
 ) -> dict[str, list[ActionEventRecord]]:
-    messages_by_conversation: dict[str, list[MessageRecord]] = defaultdict(list)
+    messages_by_session: dict[str, list[MessageRecord]] = defaultdict(list)
     for message in messages:
-        messages_by_conversation[str(message.conversation_id)].append(message)
-    blocks_by_conversation: dict[str, list[ContentBlockRecord]] = defaultdict(list)
+        messages_by_session[str(message.session_id)].append(message)
+    blocks_by_session: dict[str, list[ContentBlockRecord]] = defaultdict(list)
     for block in blocks:
-        blocks_by_conversation[str(block.conversation_id)].append(block)
+        blocks_by_session[str(block.session_id)].append(block)
 
     materialized: dict[str, list[ActionEventRecord]] = {}
-    for conversation in conversations:
-        conversation_id = str(conversation.conversation_id)
+    for session in sessions:
+        session_id = str(session.session_id)
         attached_messages = attach_blocks_to_messages(
-            messages_by_conversation.get(conversation_id, []),
-            blocks_by_conversation.get(conversation_id, []),
+            messages_by_session.get(session_id, []),
+            blocks_by_session.get(session_id, []),
         )
-        materialized[conversation_id] = build_action_event_records(conversation, attached_messages)
+        materialized[session_id] = build_action_event_records(session, attached_messages)
     return materialized

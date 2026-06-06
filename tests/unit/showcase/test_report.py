@@ -258,7 +258,7 @@ def test_full_qa_session_contains_composed_stage_payloads() -> None:
                     contract_backed_records=1,
                     unsupported_parseable_records=1,
                     package_versions={"v1": 1},
-                    element_kinds={"conversation_document": 1},
+                    element_kinds={"session_document": 1},
                     resolution_reasons={"exact_structure": 1},
                 )
             },
@@ -288,7 +288,7 @@ def test_full_qa_session_contains_composed_stage_payloads() -> None:
     assert proof_summary["contract_backed_records"] == 1
     assert proof_summary["unsupported_parseable_records"] == 1
     assert proof_summary["package_versions"] == {"v1": 1}
-    assert proof_summary["element_kinds"] == {"conversation_document": 1}
+    assert proof_summary["element_kinds"] == {"session_document": 1}
     assert showcase_summary is not None
     assert showcase_summary.to_payload() == {
         "total": 2,
@@ -316,7 +316,7 @@ def test_generate_qa_summary_reports_stage_statuses() -> None:
                     total_records=1,
                     contract_backed_records=1,
                     package_versions={"v1": 1},
-                    element_kinds={"conversation_document": 1},
+                    element_kinds={"session_document": 1},
                     resolution_reasons={"exact_structure": 1},
                 )
             },
@@ -331,7 +331,7 @@ def test_generate_qa_summary_reports_stage_statuses() -> None:
     assert "Schema Audit: PASS" in summary
     assert "Artifact Proof: contract_backed=1" in summary
     assert "Packages: v1=1" in summary
-    assert "Elements: conversation_document=1" in summary
+    assert "Elements: session_document=1" in summary
     assert "Exercises: SKIPPED" in summary
     assert "Invariants: SKIPPED" in summary
 
@@ -351,7 +351,7 @@ def test_generate_qa_markdown_includes_artifact_proof_section() -> None:
                     recognized_non_parseable_records=1,
                     unsupported_parseable_records=1,
                     package_versions={"v4": 1},
-                    element_kinds={"subagent_conversation_stream": 1},
+                    element_kinds={"subagent_session_stream": 1},
                     resolution_reasons={"bundle_scope": 1},
                     linked_sidecars=1,
                     subagent_streams=1,
@@ -369,6 +369,6 @@ def test_generate_qa_markdown_includes_artifact_proof_section() -> None:
     assert "## Artifact Proof" in markdown
     assert "| Unsupported parseable | 1 |" in markdown
     assert "| v4 | 1 |" in markdown
-    assert "| subagent_conversation_stream | 1 |" in markdown
+    assert "| subagent_session_stream | 1 |" in markdown
     assert "| bundle_scope | 1 |" in markdown
     assert "| claude-code | 2 | 0 | 1 | 1 | 0 | 0 |" in markdown

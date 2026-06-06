@@ -16,26 +16,26 @@ def context_command() -> None:
 
 
 @context_command.command("compose")
-@click.argument("conversation_id")
+@click.argument("session_id")
 @click.option("--related-limit", "-n", type=int, default=5, help="Number of related sessions to include.")
 @click.pass_obj
-def compose_command(env: AppEnv, conversation_id: str, related_limit: int) -> None:
+def compose_command(env: AppEnv, session_id: str, related_limit: int) -> None:
     """Compose a context preamble for a session (#1494)."""
     from polylogue.api.sync.bridge import run_coroutine_sync
 
-    conv = run_coroutine_sync(env.polylogue.get_conversation(conversation_id))
+    conv = run_coroutine_sync(env.polylogue.get_session(session_id))
     if conv is None:
-        env.ui.error(f"Conversation not found: {conversation_id}")
+        env.ui.error(f"Session not found: {session_id}")
         raise SystemExit(1)
 
     # Session lineage from topology.
     lineage: dict[str, object] = {}
     try:
-        topology = run_coroutine_sync(env.polylogue.get_session_topology(conversation_id))
+        topology = run_coroutine_sync(env.polylogue.get_session_topology(session_id))
         if topology:
             lineage = {
-                "logical_session_root": getattr(topology, "logical_conversation_id", None),
-                "parent_session_id": getattr(topology, "parent_conversation_id", None),
+                "logical_session_root": getattr(topology, "logical_session_id", None),
+                "parent_session_id": getattr(topology, "parent_session_id", None),
             }
     except Exception:
         pass
@@ -54,7 +54,7 @@ def compose_command(env: AppEnv, conversation_id: str, related_limit: int) -> No
         for c in candidates:
             related.append(
                 {
-                    "session_id": getattr(c, "logical_conversation_id", None) or getattr(c, "conversation_id", "?"),
+                    "session_id": getattr(c, "logical_session_id", None) or getattr(c, "session_id", "?"),
                     "title": getattr(c, "title", None),
                     "terminal_state": getattr(c, "terminal_state", None),
                 }

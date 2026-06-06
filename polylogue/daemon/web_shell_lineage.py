@@ -6,9 +6,9 @@ interpolated into ``WEB_SHELL_HTML`` at module import time. It owns:
 
 - the inspector "Lineage" tab rendering (rooted-tree BFS list with
   edge-kind chips, depth indentation, focused-node highlight);
-- the ``/api/conversations/{id}/topology`` fetch call;
+- the ``/api/sessions/{id}/topology`` fetch call;
 - the "Open parent" / "Compare with parent" affordances that delegate
-  to existing reader actions (``selectConversation`` and the
+  to existing reader actions (``selectSession`` and the
   ``openCompareWith`` workspace route from #1124).
 
 The view never queries lineage tables directly: it consumes the public
@@ -20,13 +20,13 @@ from __future__ import annotations
 LINEAGE_JS = r"""
 // --- Lineage inspector (#1121) ------------------------------------------
 // Renders the rooted-tree projection of SessionTopology (#866) for the
-// currently-selected conversation. The fetch is bounded server-side; the
+// currently-selected session. The fetch is bounded server-side; the
 // reader never plots a node outside the envelope it received.
 
 async function loadLineage(id) {
   state.lineage = undefined;
   try {
-    var data = await fetchJSON('/api/conversations/' + encodeURIComponent(id) + '/topology');
+    var data = await fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/topology');
     state.lineage = data;
   } catch(e) {
     state.lineage = {error: String(e)};
@@ -50,16 +50,16 @@ function lineageEdgeKindClass(kind) {
 }
 
 function lineageNodeLabel(node) {
-  var label = node.title || node.conversation_id;
+  var label = node.title || node.session_id;
   if (label.length > 48) label = label.substring(0, 45) + '\u2026';
   return label;
 }
 
-function findLineageParent(data, conversationId) {
+function findLineageParent(data, sessionId) {
   if (!data || !data.edges) return null;
   for (var i = 0; i < data.edges.length; i++) {
     var edge = data.edges[i];
-    if (edge.resolved && edge.child_id === conversationId && edge.parent_id) {
+    if (edge.resolved && edge.child_id === sessionId && edge.parent_id) {
       return edge.parent_id;
     }
   }
@@ -69,9 +69,9 @@ function findLineageParent(data, conversationId) {
 function renderLineageNodeRow(node, edgeKindByChild, focusedId) {
   var depth = Math.max(0, Number(node.depth || 0));
   var indent = 'padding-left:' + (depth * 14) + 'px';
-  var focused = node.conversation_id === focusedId;
+  var focused = node.session_id === focusedId;
   var bg = focused ? 'background:var(--panel-elevated);' : '';
-  var edgeKind = edgeKindByChild[node.conversation_id];
+  var edgeKind = edgeKindByChild[node.session_id];
   var chip = '';
   if (node.is_root) {
     chip = '<span class="chip q-canonical" style="margin-left:4px">root</span>';
@@ -80,7 +80,7 @@ function renderLineageNodeRow(node, edgeKindByChild, focusedId) {
   }
   var btn = focused
     ? '<span class="value" style="color:var(--accent)">' + esc(lineageNodeLabel(node)) + '</span>'
-    : '<button class="user-action" style="padding:0;border:none;background:none;color:var(--accent);cursor:pointer;text-align:left" onclick="selectConversation(\'' + escAttr(node.conversation_id) + '\', true)">' + esc(lineageNodeLabel(node)) + '</button>';
+    : '<button class="user-action" style="padding:0;border:none;background:none;color:var(--accent);cursor:pointer;text-align:left" onclick="selectSession(\'' + escAttr(node.session_id) + '\', true)">' + esc(lineageNodeLabel(node)) + '</button>';
   return '<div class="inspector-field" style="' + indent + ';' + bg + '">'
     + '<span class="label">d' + depth + '</span>'
     + '<span class="value">' + btn + chip + '</span>'
@@ -115,7 +115,7 @@ function renderInspectorLineage(el, c) {
 
   if (data.readiness === 'empty' && (!data.nodes || data.nodes.length <= 1)) {
     html += '<div class="inspector-section"><h4>No related sessions</h4>'
-      + '<div style="font-size:var(--small);color:var(--text-dim)">This conversation has no resolved parent or descendants.</div></div>';
+      + '<div style="font-size:var(--small);color:var(--text-dim)">This session has no resolved parent or descendants.</div></div>';
     el.innerHTML = html;
     return;
   }
@@ -153,12 +153,12 @@ function renderInspectorLineage(el, c) {
       var kindChip = '<span class="chip ' + esc(lineageEdgeKindClass(edge.kind)) + '">' + esc(edge.kind) + '</span>';
       var sourceText = (edge.child_id) ? String(edge.child_id).substring(0, 12) + '…' : '?';
       var sourceLink = (edge.child_id)
-        ? '<button class="user-action" style="padding:0 4px;font-size:10px;border:none;background:none;color:var(--accent);cursor:pointer" onclick="selectConversation(\'' + escAttr(edge.child_id) + '\', true)">' + esc(sourceText) + '</button>'
+        ? '<button class="user-action" style="padding:0 4px;font-size:10px;border:none;background:none;color:var(--accent);cursor:pointer" onclick="selectSession(\'' + escAttr(edge.child_id) + '\', true)">' + esc(sourceText) + '</button>'
         : '<span style="color:var(--text-dim)">?</span>';
       var targetLink;
       if (edge.resolved && edge.parent_id) {
         var parentText = String(edge.parent_id).substring(0, 12) + '…';
-        targetLink = '<button class="user-action" style="padding:0 4px;font-size:10px;border:none;background:none;color:var(--accent);cursor:pointer" onclick="selectConversation(\'' + escAttr(edge.parent_id) + '\', true)">' + esc(parentText) + '</button>';
+        targetLink = '<button class="user-action" style="padding:0 4px;font-size:10px;border:none;background:none;color:var(--accent);cursor:pointer" onclick="selectSession(\'' + escAttr(edge.parent_id) + '\', true)">' + esc(parentText) + '</button>';
       } else if (edge.parent_native_id) {
         // Unresolved edge — render placeholder with provider-native ID (#1518 slice 4c).
         targetLink = '<span class="chip q-unresolved" title="Not yet ingested">' + esc(String(edge.parent_native_id).substring(0, 30)) + '</span>';
@@ -189,7 +189,7 @@ function renderInspectorLineage(el, c) {
   html += '</div>';
 
   // Unresolved native pointer block — provider-native parent IDs that did
-  // not resolve to a stored conversation. Surfaced as a dedicated section
+  // not resolve to a stored session. Surfaced as a dedicated section
   // so late-arriving parents are visible to the operator.
   var unresolvedEdges = (data.edges || []).filter(function(edge) { return !edge.resolved; });
   if (unresolvedEdges.length) {
@@ -210,7 +210,7 @@ function renderInspectorLineage(el, c) {
   var hasChain = (data.nodes || []).length > 1;
   html += '<div class="inspector-section"><h4>Actions</h4>';
   if (parentId) {
-    html += '<button class="user-action" style="margin-right:6px" onclick="selectConversation(\'' + escAttr(parentId) + '\', true)">Open parent</button>';
+    html += '<button class="user-action" style="margin-right:6px" onclick="selectSession(\'' + escAttr(parentId) + '\', true)">Open parent</button>';
     html += '<button class="user-action" style="margin-right:6px" onclick="openCompareWithParent()">Compare with parent</button>';
   }
   if (hasChain) {

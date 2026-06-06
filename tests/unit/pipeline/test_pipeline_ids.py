@@ -10,14 +10,14 @@ from polylogue.archive.message.roles import Role
 from polylogue.assets import asset_path
 from polylogue.pipeline.ids import (
     attachment_content_id,
-    conversation_content_hash,
-    conversation_content_hashes,
-    conversation_id,
     materialize_attachment_path,
     message_content_hash,
     move_attachment_to_archive,
+    session_content_hash,
+    session_content_hashes,
+    session_id,
 )
-from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation, ParsedMessage
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.types import Provider
 
 
@@ -30,17 +30,17 @@ def _parsed_message(provider_message_id: str, role: str, text: str, timestamp: s
     )
 
 
-def _parsed_conversation(
-    provider_conversation_id: str,
+def _parsed_session(
+    provider_session_id: str,
     title: str,
     messages: list[ParsedMessage],
     *,
     created_at: str | None,
     updated_at: str | None,
-) -> ParsedConversation:
-    return ParsedConversation(
+) -> ParsedSession:
+    return ParsedSession(
         source_name=Provider.CHATGPT,
-        provider_conversation_id=provider_conversation_id,
+        provider_session_id=provider_session_id,
         title=title,
         created_at=created_at,
         updated_at=updated_at,
@@ -124,19 +124,19 @@ class TestAttachmentPathMove:
         assert not source.exists()
 
 
-class TestConversationIdValidation:
+class TestSessionIdValidation:
     def test_rejects_empty_provider(self) -> None:
         # provider→source_name rename: the empty-first-arg error now names source_name.
         with pytest.raises(ValueError, match="source_name"):
-            conversation_id("", "conv-123")
+            session_id("", "conv-123")
 
-    def test_rejects_empty_provider_conversation_id(self) -> None:
-        with pytest.raises(ValueError, match="conversation"):
-            conversation_id("chatgpt", "")
+    def test_rejects_empty_provider_session_id(self) -> None:
+        with pytest.raises(ValueError, match="session"):
+            session_id("chatgpt", "")
 
 
-def test_conversation_content_hash_with_missing_message_ids() -> None:
-    conversation = _parsed_conversation(
+def test_session_content_hash_with_missing_message_ids() -> None:
+    session = _parsed_session(
         "conv-1",
         "Test",
         [_parsed_message("", "user", "Hello", "2024-01-01T00:00:00Z")],
@@ -144,7 +144,7 @@ def test_conversation_content_hash_with_missing_message_ids() -> None:
         updated_at="2024-01-01T00:00:00Z",
     )
 
-    digest = conversation_content_hash(conversation)
+    digest = session_content_hash(session)
     assert isinstance(digest, str)
     assert len(digest) == 64
 
@@ -169,10 +169,10 @@ def test_message_hash_different_provider_id_produces_different_hash() -> None:
     assert message_content_hash(message, "msg-1") != message_content_hash(message, "msg-2")
 
 
-def test_conversation_content_hashes_include_existing_message_hashes() -> None:
+def test_session_content_hashes_include_existing_message_hashes() -> None:
     first = _parsed_message("m1", "user", "hi", "2024-01-01")
     second = _parsed_message("", "assistant", "hello", None)
-    conversation = _parsed_conversation(
+    session = _parsed_session(
         "conv-1",
         "Test",
         [first, second],
@@ -180,29 +180,29 @@ def test_conversation_content_hashes_include_existing_message_hashes() -> None:
         updated_at="2024-01-02",
     )
 
-    conversation_hash, message_hashes = conversation_content_hashes(conversation)
+    session_hash, message_hashes = session_content_hashes(session)
 
-    assert conversation_hash == conversation_content_hash(conversation)
+    assert session_hash == session_content_hash(session)
     assert message_hashes == {
         "m1": message_content_hash(first, "m1"),
         "msg-2": message_content_hash(second, "msg-2"),
     }
 
 
-def test_conversation_hash_empty_messages_is_valid() -> None:
-    conversation = _parsed_conversation(
+def test_session_hash_empty_messages_is_valid() -> None:
+    session = _parsed_session(
         "conv-1",
         "Empty Conv",
         [],
         created_at=None,
         updated_at=None,
     )
-    assert len(conversation_content_hash(conversation)) == 64
+    assert len(session_content_hash(session)) == 64
 
 
-def test_conversation_hash_timestamps_affect_hash() -> None:
+def test_session_hash_timestamps_affect_hash() -> None:
     message = _parsed_message("m1", "user", "hi", None)
-    conversation_one = _parsed_conversation("conv-1", "Test", [message], created_at="2024-01-01", updated_at=None)
-    conversation_two = _parsed_conversation("conv-1", "Test", [message], created_at="2024-01-02", updated_at=None)
+    session_one = _parsed_session("conv-1", "Test", [message], created_at="2024-01-01", updated_at=None)
+    session_two = _parsed_session("conv-1", "Test", [message], created_at="2024-01-02", updated_at=None)
 
-    assert conversation_content_hash(conversation_one) != conversation_content_hash(conversation_two)
+    assert session_content_hash(session_one) != session_content_hash(session_two)

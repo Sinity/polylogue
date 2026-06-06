@@ -33,7 +33,7 @@ rendered in your pager.
 
 ## First list
 
-List recent conversations with natural-language time filters:
+List recent sessions with natural-language time filters:
 
 ```bash
 polylogue --since yesterday list
@@ -59,7 +59,7 @@ Google models. Session-level and provider-wide rollups are available.
 
 ## Running the daemon
 
-The daemon watches your chat directories and ingests new conversations in real
+The daemon watches your chat directories and ingests new sessions in real
 time:
 
 ```bash
@@ -80,15 +80,15 @@ polylogued status
 | Command | Purpose |
 |---------|---------|
 | `polylogue <terms>` | Full-text search |
-| `polylogue --since <when> list` | List matched conversations |
-| `polylogue -p <provider> count` | Count matched conversations |
+| `polylogue --since <when> list` | List matched sessions |
+| `polylogue -p <provider> count` | Count matched sessions |
 | `polylogue stats --by provider` | Grouped statistics |
 | `polylogue cost --this-month` | Cost estimates |
-| `polylogue export <id>` | Export one conversation |
+| `polylogue export <id>` | Export one session |
 | `polylogue --since yesterday bulk-export` | Batch export |
 | `polylogued run` | Start the daemon |
 | `polylogued status` | Daemon health check |
-| `polylogue <id> show` | Display full conversation |
+| `polylogue <id> show` | Display full session |
 
 ## Configuration
 

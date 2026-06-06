@@ -1,11 +1,11 @@
 """Bulk-operations assets for the daemon-served reader shell (#1119).
 
 The bulk surface is composed client-side over existing daemon endpoints:
-``/api/user/marks`` for tag mutations and ``/api/conversations/{id}`` for
+``/api/user/marks`` for tag mutations and ``/api/sessions/{id}`` for
 export. Delete and re-embed are exposed only through a preview overlay —
-the daemon currently has no DELETE-conversation or re-embed mutation
+the daemon currently has no DELETE-session or re-embed mutation
 route, so confirming the preview records ``no_endpoint`` skip entries in
-the per-conversation status envelope rather than appearing to mutate
+the per-session status envelope rather than appearing to mutate
 state. This keeps the AC contract (preview gate + typed envelope) honest
 while the substrate routes catch up.
 
@@ -24,7 +24,7 @@ BULK_CSS = r"""
 .conv-item.bulk-selected { background: var(--accent-bg); }
 
 /* Bulk operations toolbar — appears in the sidebar when one or more
-   conversations are checkbox-selected. Drives bulk tag (marks),
+   sessions are checkbox-selected. Drives bulk tag (marks),
    markdown export (client-side), and preview-only delete/re-embed
    per #1119. The toolbar is intentionally inert until selection > 0. */
 #bulk-toolbar { display: none; flex-direction: column; gap: 6px; padding: 8px 10px;
@@ -96,12 +96,12 @@ BULK_PREVIEW_HTML = r"""
 BULK_JS = r"""
 // --- Bulk selection (#1119) ------------------------------------------------
 // The bulk surface is purely client-side composition over existing daemon
-// endpoints. Tag operations issue per-conversation POSTs to /api/user/marks
-// (the centralized tag mutation contract). Export streams conversation
-// detail through GET /api/conversations/{id} and downloads a single JSON
+// endpoints. Tag operations issue per-session POSTs to /api/user/marks
+// (the centralized tag mutation contract). Export streams session
+// detail through GET /api/sessions/{id} and downloads a single JSON
 // bundle. Delete and re-embed are exposed only through a preview overlay —
-// the daemon currently has no DELETE-conversation or re-embed route, so the
-// confirm button records a per-conversation "skipped: no_endpoint" entry
+// the daemon currently has no DELETE-session or re-embed route, so the
+// confirm button records a per-session "skipped: no_endpoint" entry
 // rather than silently appearing to mutate state. This keeps the AC
 // contract (preview gate + typed envelope) honest.
 
@@ -119,12 +119,12 @@ function toggleBulkSelected(id) { setBulkSelected(id, !isBulkSelected(id)); }
 function clearBulkSelection() {
   state.bulkSelection = {};
   state.lastBulkResult = null;
-  renderConversations();
+  renderSessions();
 }
 
 function selectAllVisible() {
-  (state.conversations || []).forEach(function(c) { state.bulkSelection[c.id] = true; });
-  renderConversations();
+  (state.sessions || []).forEach(function(c) { state.bulkSelection[c.id] = true; });
+  renderSessions();
 }
 
 function renderBulkToolbar() {
@@ -168,7 +168,7 @@ async function bulkApplyMark(markType) {
       continue;
     }
     try {
-      await sendJSON('/api/user/marks', 'POST', {conversation_id: id, mark_type: markType});
+      await sendJSON('/api/user/marks', 'POST', {session_id: id, mark_type: markType});
       setMarkLocal(id, markType, true);
       envelope.succeeded.push(id);
     } catch(e) {
@@ -176,7 +176,7 @@ async function bulkApplyMark(markType) {
     }
   }
   state.lastBulkResult = envelope;
-  renderConversations();
+  renderSessions();
   renderInspector();
 }
 
@@ -184,12 +184,12 @@ async function bulkExport() {
   var ids = bulkSelectedIds();
   if (!ids.length) return;
   var envelope = {action: 'export', dryRun: false, succeeded: [], failed: [], skipped: []};
-  var bundle = {exported_at: new Date().toISOString(), conversations: []};
+  var bundle = {exported_at: new Date().toISOString(), sessions: []};
   for (var i = 0; i < ids.length; i++) {
     var id = ids[i];
     try {
-      var data = await fetchJSON('/api/conversations/' + encodeURIComponent(id));
-      bundle.conversations.push(data);
+      var data = await fetchJSON('/api/sessions/' + encodeURIComponent(id));
+      bundle.sessions.push(data);
       envelope.succeeded.push(id);
     } catch(e) {
       envelope.failed.push({id: id, reason: 'fetch_failed'});
@@ -217,8 +217,8 @@ function openBulkPreview(kind) {
   var bodyEl = document.getElementById('bulk-preview-body');
   var listEl = document.getElementById('bulk-preview-list');
   var labels = {
-    'delete': {title: 'Preview: Delete', body: 'Delete is gated. Confirming will record a dry-run envelope with one entry per conversation — no daemon delete endpoint is wired yet, so every conversation will be skipped with reason no_endpoint.'},
-    'reembed': {title: 'Preview: Re-embed', body: 'Re-embed is gated. Confirming will record a dry-run envelope with one entry per conversation — no daemon re-embed endpoint is wired yet, so every conversation will be skipped with reason no_endpoint.'}
+    'delete': {title: 'Preview: Delete', body: 'Delete is gated. Confirming will record a dry-run envelope with one entry per session — no daemon delete endpoint is wired yet, so every session will be skipped with reason no_endpoint.'},
+    'reembed': {title: 'Preview: Re-embed', body: 'Re-embed is gated. Confirming will record a dry-run envelope with one entry per session — no daemon re-embed endpoint is wired yet, so every session will be skipped with reason no_endpoint.'}
   };
   var spec = labels[kind] || labels['delete'];
   titleEl.textContent = spec.title;

@@ -18,10 +18,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, TypeAlias
+from typing import Any, TypeAlias, cast
 
 import click
 
+from polylogue.core.enums import Origin
+from polylogue.core.sources import origin_from_provider
 from polylogue.errors import PolylogueError
 from polylogue.insights.archive import (
     ArchiveCoverageInsightQuery,
@@ -36,6 +38,7 @@ from polylogue.insights.archive import (
     WorkThreadInsightQuery,
 )
 from polylogue.insights.tool_usage import ToolUsageInsightQuery
+from polylogue.types import Provider
 
 InsightAccessor: TypeAlias = Callable[[ArchiveInsightModel], str]
 
@@ -90,7 +93,54 @@ class InsightType:
 def _model_payload(item: ArchiveInsightModel) -> dict[str, object]:
     """Convert an insight item to a JSON-serializable payload."""
 
-    return item.model_dump(mode="json")
+    return cast(dict[str, object], project_origin_payload(item.model_dump(mode="json")))
+
+
+_CANONICAL_ORIGIN_VALUES = frozenset(origin.value for origin in Origin)
+
+
+def _source_name_origin(source_name: object) -> str:
+    value = str(source_name or "")
+    if not value:
+        return "unknown"
+    if value in _CANONICAL_ORIGIN_VALUES:
+        return value
+    try:
+        return origin_from_provider(Provider.from_string(value)).value
+    except ValueError:
+        return "unknown"
+
+
+def project_origin_payload(value: object) -> object:
+    """Project source-origin fields to public origin vocabulary."""
+
+    if isinstance(value, list):
+        return [project_origin_payload(item) for item in value]
+    if isinstance(value, tuple):
+        return [project_origin_payload(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    group_by_provider = value.get("group_by") == "provider"
+    projected: dict[str, object] = {}
+    for key, item in value.items():
+        if key in {"source_name", "provider"}:
+            projected["origin"] = _source_name_origin(item)
+        elif key == "provider_coverage":
+            projected["origin_coverage"] = project_origin_payload(item)
+        elif key == "provider_breakdown" and isinstance(item, dict):
+            projected["origin_breakdown"] = {_source_name_origin(origin): count for origin, count in item.items()}
+        elif key == "providers_with_data":
+            projected["origins_with_data"] = item
+        elif key == "providers_without_data":
+            projected["origins_without_data"] = item
+        elif key == "group_by" and item == "provider":
+            projected[key] = "origin"
+        else:
+            projected[key] = project_origin_payload(item)
+    if group_by_provider and "bucket" in projected:
+        projected["bucket"] = _source_name_origin(projected["bucket"])
+    return projected
 
 
 def insight_items_payload(
@@ -190,13 +240,13 @@ def _nested_ms_as_seconds(outer: str, inner: str, default: str = "-") -> Insight
     return accessor
 
 
-def _id_with_provider(identifier_attr: str) -> InsightAccessor:
-    """Accessor rendering an identifier together with the provider name."""
+def _id_with_origin(identifier_attr: str) -> InsightAccessor:
+    """Accessor rendering an identifier together with the origin name."""
 
     def accessor(item: ArchiveInsightModel) -> str:
         identifier = _stringify(getattr(item, identifier_attr, None))
-        provider = _stringify(getattr(item, "source_name", None))
-        return f"{identifier} [{provider}]"
+        origin = _source_name_origin(getattr(item, "source_name", None))
+        return f"{identifier} [{origin}]"
 
     return accessor
 
@@ -338,7 +388,7 @@ register(
             _QUERY_OPTION,
         ),
         fields=(
-            InsightField("", _id_with_provider("conversation_id"), group=0),
+            InsightField("", _id_with_origin("session_id"), group=0),
             InsightField("tier", _attr("semantic_tier"), group=0),
             InsightField("", _attr("title", "(untitled)"), group=0),
             InsightField("session_date", _nested("evidence", "canonical_session_date"), group=1),
@@ -370,7 +420,7 @@ register(
         cli_command_name="work-events",
         cli_help="List durable work-event insights.",
         cli_options=(
-            CliOption("conversation_id", ("--conversation-id",), help="Only events from one conversation"),
+            CliOption("session_id", ("--session-id",), help="Only events from one session"),
             CliOption(
                 "session_date_since",
                 ("--session-date-since",),
@@ -389,9 +439,9 @@ register(
             _QUERY_OPTION,
         ),
         fields=(
-            InsightField("", _id_with_provider("event_id"), group=0),
+            InsightField("", _id_with_origin("event_id"), group=0),
             InsightField("label", _nested("inference", "heuristic_label"), group=0),
-            InsightField("conv", _attr("conversation_id"), group=0),
+            InsightField("conv", _attr("session_id"), group=0),
             InsightField("start", _nested("evidence", "start_time"), group=1),
             InsightField("end", _nested("evidence", "end_time"), group=1),
             InsightField("duration_ms", _nested("evidence", "duration_ms", "0"), group=1),
@@ -410,13 +460,13 @@ register(
         cli_command_name="phases",
         cli_help="List durable session-phase insights.",
         cli_options=(
-            CliOption("conversation_id", ("--conversation-id",), help="Only phases from one conversation"),
+            CliOption("session_id", ("--session-id",), help="Only phases from one session"),
             CliOption("kind", ("--kind",), help="Only this session phase kind"),
         ),
         fields=(
-            InsightField("", _id_with_provider("phase_id"), group=0),
+            InsightField("", _id_with_origin("phase_id"), group=0),
             InsightField("kind", _nested("inference", "kind"), group=0),
-            InsightField("conv", _attr("conversation_id"), group=0),
+            InsightField("conv", _attr("session_id"), group=0),
             InsightField("start", _nested("evidence", "start_time"), group=1),
             InsightField("words", _nested("evidence", "word_count", "0"), group=1),
         ),
@@ -458,7 +508,7 @@ register(
         mcp_default_limit=100,
         fields=(
             InsightField("", _attr("tag"), group=0),
-            InsightField("conversations", _attr("conversation_count", "0"), group=0),
+            InsightField("sessions", _attr("session_count", "0"), group=0),
             InsightField("explicit", _attr("explicit_count", "0"), group=0),
             InsightField("auto", _attr("auto_count", "0"), group=0),
         ),
@@ -474,26 +524,26 @@ register(
         query_model=ArchiveCoverageInsightQuery,
         operations_method_name="list_archive_coverage_insights",
         cli_command_name="coverage",
-        cli_help="List archive coverage buckets by provider, day, or week.",
+        cli_help="List archive coverage buckets by origin, day, or week.",
         readiness_exempt=True,
         cli_options=(
             CliOption(
                 "group_by",
                 ("--group-by",),
-                type=click.Choice(["provider", "day", "week"]),
-                default="provider",
+                type=click.Choice(["origin", "day", "week"]),
+                default="origin",
                 show_default=True,
-                help="Bucket coverage by provider, day, or ISO week",
+                help="Bucket coverage by origin, day, or ISO week",
             ),
-            CliOption("provider", ("--provider", "-p"), help="Only this provider"),
+            CliOption("provider", ("--origin", "-o"), help="Only this origin"),
             CliOption("since", ("--since",), help="Only buckets at/after this timestamp or date"),
             CliOption("until", ("--until",), help="Only buckets at/before this timestamp or date"),
         ),
         fields=(
             InsightField("", _attr("bucket"), group=0),
             InsightField("group", _attr("group_by"), group=0),
-            InsightField("provider", _attr("source_name"), group=0),
-            InsightField("conversations", _attr("conversation_count", "0"), group=1),
+            InsightField("origin", lambda item: _source_name_origin(getattr(item, "source_name", None)), group=0),
+            InsightField("sessions", _attr("session_count", "0"), group=1),
             InsightField("messages", _attr("message_count", "0"), group=1),
             InsightField("words", _attr("total_words", "0"), group=1),
             InsightField("tool_active_ms", _attr("total_tool_active_duration_ms", "0"), group=1),
@@ -510,7 +560,7 @@ register(
         query_model=ToolUsageInsightQuery,
         operations_method_name="list_tool_usage_insights",
         cli_command_name="tool-usage",
-        cli_help="Per-tool, per-provider rollups over canonical action events with coverage map.",
+        cli_help="Per-tool, per-origin rollups over canonical action events with coverage map.",
         readiness_exempt=True,
         cli_options=(
             CliOption("tool", ("--tool",), help="Only entries for this normalized tool name"),
@@ -523,8 +573,8 @@ register(
         ),
         mcp_default_limit=200,
         fields=(
-            InsightField("providers_with_data", _attr("providers_with_data", "0"), group=0),
-            InsightField("providers_without_data", _attr("providers_without_data", "0"), group=0),
+            InsightField("origins_with_data", _attr("providers_with_data", "0"), group=0),
+            InsightField("origins_without_data", _attr("providers_without_data", "0"), group=0),
             InsightField("total_calls", _attr("total_call_count", "0"), group=0),
             InsightField("distinct_tools", _attr("total_distinct_tools", "0"), group=0),
             InsightField("coverage_gaps", _attr("has_coverage_gaps"), group=0),
@@ -544,12 +594,12 @@ register(
         cli_help="List session-level cost estimates.",
         readiness_exempt=True,
         cli_options=(
-            CliOption("conversation_id", ("--conversation-id",), help="Only one conversation"),
+            CliOption("session_id", ("--session-id",), help="Only one session"),
             CliOption("model", ("--model",), help="Only this model or normalized model"),
             CliOption("status", ("--status",), type=click.Choice(["exact", "priced", "partial", "unavailable"])),
         ),
         fields=(
-            InsightField("", _id_with_provider("conversation_id"), group=0),
+            InsightField("", _id_with_origin("session_id"), group=0),
             InsightField("status", _nested("estimate", "status"), group=0),
             InsightField("model", _nested("estimate", "normalized_model"), group=0),
             InsightField("usd", _nested("estimate", "total_usd", "0"), group=1),
@@ -567,11 +617,11 @@ register(
         query_model=CostRollupInsightQuery,
         operations_method_name="list_cost_rollup_insights",
         cli_command_name="cost-rollups",
-        cli_help="List provider/model cost rollups.",
+        cli_help="List origin/model cost rollups.",
         readiness_exempt=True,
         cli_options=(CliOption("model", ("--model",), help="Only this model or normalized model"),),
         fields=(
-            InsightField("", _attr("source_name"), group=0),
+            InsightField("", lambda item: _source_name_origin(getattr(item, "source_name", None)), group=0),
             InsightField("model", _attr("normalized_model"), group=0),
             InsightField("sessions", _attr("session_count", "0"), group=0),
             InsightField("priced", _attr("priced_session_count", "0"), group=1),
@@ -683,6 +733,7 @@ __all__ = [
     "get_insight_type",
     "list_insight_types",
     "insight_items_payload",
+    "project_origin_payload",
     "register",
     "render_insight_items",
 ]

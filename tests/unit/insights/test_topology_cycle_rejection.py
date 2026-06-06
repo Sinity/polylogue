@@ -1,22 +1,22 @@
 """Topology cycle rejection and quarantine (#1260 / #866 slice C).
 
 When resolving a topology edge would create a cycle in
-``conversations.parent_conversation_id`` (A → B → A, longer cycles, or
+``sessions.parent_session_id`` (A → B → A, longer cycles, or
 the self-cycle A → A), the resolver must:
 
-- Refuse to backfill ``parent_conversation_id`` (the fast-path graph
+- Refuse to backfill ``parent_session_id`` (the fast-path graph
   must never enter the cycle).
 - Refuse to flip the edge to ``status='resolved'``; instead, mark it
   ``status='quarantined'`` with a ``raw_evidence`` JSON document that
   records the detected cycle path so the operator can audit which
-  conversation chain was rejected.
+  session chain was rejected.
 - Leave non-cyclic edges in the same resolver batch untouched (a cycle
   on one child does not poison legitimate siblings).
 - Stay idempotent: re-running the resolver on an archive that already
   contains quarantined edges produces no further changes.
 
 These tests exercise both resolver entry points
-(:func:`resolve_topology_edges_for_conversation` and
+(:func:`resolve_topology_edges_for_session` and
 :func:`resolve_unresolved_edges_for_child`) and also assert the
 no-false-positive case on a diamond DAG, which is a legitimate shape
 (B→D, C→D both pointing at D) that some prior implementations confuse
@@ -39,12 +39,12 @@ from polylogue.archive.topology.edge import (
 )
 from polylogue.storage.sqlite.queries.topology_edges import (
     count_quarantined_topology_edges,
-    resolve_topology_edges_for_conversation,
+    resolve_topology_edges_for_session,
     resolve_unresolved_edges_for_child,
     upsert_topology_edges,
 )
 from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL, SCHEMA_VERSION
-from polylogue.types import ConversationId
+from polylogue.types import SessionId
 from tests.infra.frozen_clock import fixed_now
 
 
@@ -59,28 +59,28 @@ def _bootstrap_db(path: Path) -> None:
         conn.commit()
 
 
-def _insert_conversation(
+def _insert_session(
     conn: sqlite3.Connection,
     *,
-    conversation_id: str,
+    session_id: str,
     source_name: str,
-    provider_conversation_id: str,
-    parent_conversation_id: str | None = None,
+    provider_session_id: str,
+    parent_session_id: str | None = None,
 ) -> None:
     conn.execute(
         """
-        INSERT INTO conversations (
-            conversation_id, source_name, provider_conversation_id, title,
-            parent_conversation_id, content_hash, created_at, updated_at, version
+        INSERT INTO sessions (
+            session_id, source_name, provider_session_id, title,
+            parent_session_id, content_hash, created_at, updated_at, version
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            conversation_id,
+            session_id,
             source_name,
-            provider_conversation_id,
-            f"conv {conversation_id}",
-            parent_conversation_id,
-            f"hash-{conversation_id}",
+            provider_session_id,
+            f"conv {session_id}",
+            parent_session_id,
+            f"hash-{session_id}",
             _now(),
             _now(),
             1,
@@ -141,7 +141,7 @@ def cycle_db(tmp_path: Path) -> Iterator[sqlite3.Connection]:
 def _seed_edge(
     conn: sqlite3.Connection,
     *,
-    src_conversation_id: str,
+    src_session_id: str,
     dst_provider_native_id: str,
     dst_provider_name: str = "codex",
     edge_type: TopologyEdgeType = TopologyEdgeType.CONTINUATION,
@@ -151,7 +151,7 @@ def _seed_edge(
     import asyncio
 
     edge = TopologyEdgeRecord(
-        src_conversation_id=ConversationId(src_conversation_id),
+        src_session_id=SessionId(src_session_id),
         dst_provider_native_id=dst_provider_native_id,
         dst_provider_name=dst_provider_name,
         edge_type=edge_type,
@@ -163,50 +163,50 @@ def _seed_edge(
 def _run_resolve_for_parent(
     conn: sqlite3.Connection,
     *,
-    conversation_id: str,
+    session_id: str,
     source_name: str,
-    provider_conversation_id: str,
+    provider_session_id: str,
 ) -> int:
     import asyncio
 
     return asyncio.run(
-        resolve_topology_edges_for_conversation(
+        resolve_topology_edges_for_session(
             _AsyncSqliteAdapter(conn),  # type: ignore[arg-type]
-            conversation_id=conversation_id,
+            session_id=session_id,
             source_name=source_name,
-            provider_conversation_id=provider_conversation_id,
+            provider_session_id=provider_session_id,
             resolved_at=_now(),
         )
     )
 
 
-def _run_resolve_for_child(conn: sqlite3.Connection, *, src_conversation_id: str) -> int:
+def _run_resolve_for_child(conn: sqlite3.Connection, *, src_session_id: str) -> int:
     import asyncio
 
     return asyncio.run(
         resolve_unresolved_edges_for_child(
             _AsyncSqliteAdapter(conn),  # type: ignore[arg-type]
-            src_conversation_id=src_conversation_id,
+            src_session_id=src_session_id,
             resolved_at=_now(),
         )
     )
 
 
-def _fetch_edge_status(conn: sqlite3.Connection, src_conversation_id: str) -> tuple[str, str | None]:
+def _fetch_edge_status(conn: sqlite3.Connection, src_session_id: str) -> tuple[str, str | None]:
     row = conn.execute(
-        "SELECT status, raw_evidence FROM topology_edges WHERE src_conversation_id = ?",
-        (src_conversation_id,),
+        "SELECT status, raw_evidence FROM topology_edges WHERE src_session_id = ?",
+        (src_session_id,),
     ).fetchone()
     assert row is not None
     return str(row["status"]), row["raw_evidence"]
 
 
-def _fetch_parent(conn: sqlite3.Connection, conversation_id: str) -> str | None:
+def _fetch_parent(conn: sqlite3.Connection, session_id: str) -> str | None:
     row = conn.execute(
-        "SELECT parent_conversation_id FROM conversations WHERE conversation_id = ?",
-        (conversation_id,),
+        "SELECT parent_session_id FROM sessions WHERE session_id = ?",
+        (session_id,),
     ).fetchone()
-    return None if row is None else row["parent_conversation_id"]
+    return None if row is None else row["parent_session_id"]
 
 
 class TestTwoNodeCycle:
@@ -214,33 +214,33 @@ class TestTwoNodeCycle:
     with a topology edge that would make B its parent)."""
 
     def test_two_node_cycle_quarantines_edge_and_leaves_parent_null(self, cycle_db: sqlite3.Connection) -> None:
-        # Topology: A's parent_conversation_id will eventually be set to B,
+        # Topology: A's parent_session_id will eventually be set to B,
         # but B already has A as its parent. Resolving A→B is the cycle.
-        _insert_conversation(
+        _insert_session(
             cycle_db,
-            conversation_id="conv-A",
+            session_id="conv-A",
             source_name="codex",
-            provider_conversation_id="native-A",
-            parent_conversation_id=None,
+            provider_session_id="native-A",
+            parent_session_id=None,
         )
-        _insert_conversation(
+        _insert_session(
             cycle_db,
-            conversation_id="conv-B",
+            session_id="conv-B",
             source_name="codex",
-            provider_conversation_id="native-B",
-            parent_conversation_id="conv-A",  # B → A already.
+            provider_session_id="native-B",
+            parent_session_id="conv-A",  # B → A already.
         )
         # A asserts an unresolved edge to B (this would normally flip to
         # resolved when B's row was already in place).
         _seed_edge(
             cycle_db,
-            src_conversation_id="conv-A",
+            src_session_id="conv-A",
             dst_provider_native_id="native-B",
         )
 
         # The resolver-by-child code path is what runs when A's own edge
         # is upserted and we then sweep for matching parent rows.
-        _run_resolve_for_child(cycle_db, src_conversation_id="conv-A")
+        _run_resolve_for_child(cycle_db, src_session_id="conv-A")
 
         status, evidence = _fetch_edge_status(cycle_db, "conv-A")
         assert status == TopologyEdgeStatus.QUARANTINED.value
@@ -251,42 +251,42 @@ class TestTwoNodeCycle:
         assert "conv-A" in payload["cycle_path"]
         assert "conv-B" in payload["cycle_path"]
 
-        # And critically, A.parent_conversation_id stays NULL so the
+        # And critically, A.parent_session_id stays NULL so the
         # fast-path ancestry walk does not enter the cycle.
         assert _fetch_parent(cycle_db, "conv-A") is None
 
     def test_two_node_cycle_via_parent_first_path(self, cycle_db: sqlite3.Connection) -> None:
         # Same topology but exercised through the parent-first entry point
         # (parent X is being saved; we look for unresolved edges pointing at X).
-        _insert_conversation(
+        _insert_session(
             cycle_db,
-            conversation_id="conv-A",
+            session_id="conv-A",
             source_name="codex",
-            provider_conversation_id="native-A",
-            parent_conversation_id=None,
+            provider_session_id="native-A",
+            parent_session_id=None,
         )
-        _insert_conversation(
+        _insert_session(
             cycle_db,
-            conversation_id="conv-B",
+            session_id="conv-B",
             source_name="codex",
-            provider_conversation_id="native-B",
-            parent_conversation_id="conv-A",
+            provider_session_id="native-B",
+            parent_session_id="conv-A",
         )
         _seed_edge(
             cycle_db,
-            src_conversation_id="conv-A",
+            src_session_id="conv-A",
             dst_provider_native_id="native-B",
         )
 
-        # B is now being "saved" (already present in conversations from
+        # B is now being "saved" (already present in sessions from
         # the fixture), and we sweep edges that point at native-B. Without
         # cycle detection this would resolve the edge and backfill
-        # A.parent_conversation_id = B, closing the loop.
+        # A.parent_session_id = B, closing the loop.
         flipped = _run_resolve_for_parent(
             cycle_db,
-            conversation_id="conv-B",
+            session_id="conv-B",
             source_name="codex",
-            provider_conversation_id="native-B",
+            provider_session_id="native-B",
         )
         assert flipped == 0  # nothing was successfully resolved
 
@@ -300,36 +300,36 @@ class TestThreeNodeCycle:
     """A → B → C → A. C is being saved; resolving A→C would close the loop."""
 
     def test_three_node_cycle_quarantined(self, cycle_db: sqlite3.Connection) -> None:
-        _insert_conversation(
+        _insert_session(
             cycle_db,
-            conversation_id="conv-A",
+            session_id="conv-A",
             source_name="codex",
-            provider_conversation_id="native-A",
-            parent_conversation_id=None,
+            provider_session_id="native-A",
+            parent_session_id=None,
         )
-        _insert_conversation(
+        _insert_session(
             cycle_db,
-            conversation_id="conv-B",
+            session_id="conv-B",
             source_name="codex",
-            provider_conversation_id="native-B",
-            parent_conversation_id="conv-A",
+            provider_session_id="native-B",
+            parent_session_id="conv-A",
         )
-        _insert_conversation(
+        _insert_session(
             cycle_db,
-            conversation_id="conv-C",
+            session_id="conv-C",
             source_name="codex",
-            provider_conversation_id="native-C",
-            parent_conversation_id="conv-B",
+            provider_session_id="native-C",
+            parent_session_id="conv-B",
         )
         # A asserts unresolved edge to C → resolving would mean
         # A.parent = C → B → A → cycle.
         _seed_edge(
             cycle_db,
-            src_conversation_id="conv-A",
+            src_session_id="conv-A",
             dst_provider_native_id="native-C",
         )
 
-        _run_resolve_for_child(cycle_db, src_conversation_id="conv-A")
+        _run_resolve_for_child(cycle_db, src_session_id="conv-A")
 
         status, evidence = _fetch_edge_status(cycle_db, "conv-A")
         assert status == TopologyEdgeStatus.QUARANTINED.value
@@ -346,25 +346,25 @@ class TestSelfCycle:
     """A → A. The most pathological cycle shape."""
 
     def test_self_cycle_quarantined(self, cycle_db: sqlite3.Connection) -> None:
-        _insert_conversation(
+        _insert_session(
             cycle_db,
-            conversation_id="conv-A",
+            session_id="conv-A",
             source_name="codex",
-            provider_conversation_id="native-A",
-            parent_conversation_id=None,
+            provider_session_id="native-A",
+            parent_session_id=None,
         )
         # A's edge points at its own native id.
         _seed_edge(
             cycle_db,
-            src_conversation_id="conv-A",
+            src_session_id="conv-A",
             dst_provider_native_id="native-A",
         )
 
         flipped = _run_resolve_for_parent(
             cycle_db,
-            conversation_id="conv-A",
+            session_id="conv-A",
             source_name="codex",
-            provider_conversation_id="native-A",
+            provider_session_id="native-A",
         )
         assert flipped == 0
 
@@ -381,43 +381,43 @@ class TestDiamondDagNoFalsePositive:
     cleanly without quarantining either edge."""
 
     def test_diamond_dag_resolves_both_children(self, cycle_db: sqlite3.Connection) -> None:
-        _insert_conversation(
+        _insert_session(
             cycle_db,
-            conversation_id="conv-D",
+            session_id="conv-D",
             source_name="codex",
-            provider_conversation_id="native-D",
-            parent_conversation_id=None,
+            provider_session_id="native-D",
+            parent_session_id=None,
         )
-        _insert_conversation(
+        _insert_session(
             cycle_db,
-            conversation_id="conv-B",
+            session_id="conv-B",
             source_name="codex",
-            provider_conversation_id="native-B",
-            parent_conversation_id=None,
+            provider_session_id="native-B",
+            parent_session_id=None,
         )
-        _insert_conversation(
+        _insert_session(
             cycle_db,
-            conversation_id="conv-C",
+            session_id="conv-C",
             source_name="codex",
-            provider_conversation_id="native-C",
-            parent_conversation_id=None,
+            provider_session_id="native-C",
+            parent_session_id=None,
         )
         _seed_edge(
             cycle_db,
-            src_conversation_id="conv-B",
+            src_session_id="conv-B",
             dst_provider_native_id="native-D",
         )
         _seed_edge(
             cycle_db,
-            src_conversation_id="conv-C",
+            src_session_id="conv-C",
             dst_provider_native_id="native-D",
         )
 
         flipped = _run_resolve_for_parent(
             cycle_db,
-            conversation_id="conv-D",
+            session_id="conv-D",
             source_name="codex",
-            provider_conversation_id="native-D",
+            provider_session_id="native-D",
         )
         assert flipped == 2  # both edges resolved
 
@@ -436,43 +436,43 @@ class TestSiblingNotQuarantined:
         # X is the parent native id. Two children share it:
         #   - cyclic: X is descendant of cycle-child, so resolving creates cycle.
         #   - clean: independent child with no ancestry conflict.
-        _insert_conversation(
+        _insert_session(
             cycle_db,
-            conversation_id="conv-cycle",
+            session_id="conv-cycle",
             source_name="codex",
-            provider_conversation_id="native-cycle",
-            parent_conversation_id=None,
+            provider_session_id="native-cycle",
+            parent_session_id=None,
         )
-        _insert_conversation(
+        _insert_session(
             cycle_db,
-            conversation_id="conv-X",
+            session_id="conv-X",
             source_name="codex",
-            provider_conversation_id="native-X",
-            parent_conversation_id="conv-cycle",  # X already descends from cycle-child
+            provider_session_id="native-X",
+            parent_session_id="conv-cycle",  # X already descends from cycle-child
         )
-        _insert_conversation(
+        _insert_session(
             cycle_db,
-            conversation_id="conv-clean",
+            session_id="conv-clean",
             source_name="codex",
-            provider_conversation_id="native-clean",
-            parent_conversation_id=None,
+            provider_session_id="native-clean",
+            parent_session_id=None,
         )
         _seed_edge(
             cycle_db,
-            src_conversation_id="conv-cycle",
+            src_session_id="conv-cycle",
             dst_provider_native_id="native-X",
         )
         _seed_edge(
             cycle_db,
-            src_conversation_id="conv-clean",
+            src_session_id="conv-clean",
             dst_provider_native_id="native-X",
         )
 
         flipped = _run_resolve_for_parent(
             cycle_db,
-            conversation_id="conv-X",
+            session_id="conv-X",
             source_name="codex",
-            provider_conversation_id="native-X",
+            provider_session_id="native-X",
         )
         # Only the clean child resolved; the cyclic one was quarantined.
         assert flipped == 1
@@ -487,36 +487,36 @@ class TestSiblingNotQuarantined:
 
 class TestIdempotency:
     """Re-running the resolver after quarantine produces no further state
-    changes — the edge stays quarantined, the conversations row stays
+    changes — the edge stays quarantined, the sessions row stays
     untouched."""
 
     def test_resolver_idempotent_on_quarantined_edge(self, cycle_db: sqlite3.Connection) -> None:
-        _insert_conversation(
+        _insert_session(
             cycle_db,
-            conversation_id="conv-A",
+            session_id="conv-A",
             source_name="codex",
-            provider_conversation_id="native-A",
-            parent_conversation_id=None,
+            provider_session_id="native-A",
+            parent_session_id=None,
         )
-        _insert_conversation(
+        _insert_session(
             cycle_db,
-            conversation_id="conv-B",
+            session_id="conv-B",
             source_name="codex",
-            provider_conversation_id="native-B",
-            parent_conversation_id="conv-A",
+            provider_session_id="native-B",
+            parent_session_id="conv-A",
         )
         _seed_edge(
             cycle_db,
-            src_conversation_id="conv-A",
+            src_session_id="conv-A",
             dst_provider_native_id="native-B",
         )
 
         # First pass quarantines.
         _run_resolve_for_parent(
             cycle_db,
-            conversation_id="conv-B",
+            session_id="conv-B",
             source_name="codex",
-            provider_conversation_id="native-B",
+            provider_session_id="native-B",
         )
         status1, evidence1 = _fetch_edge_status(cycle_db, "conv-A")
         assert status1 == TopologyEdgeStatus.QUARANTINED.value
@@ -526,9 +526,9 @@ class TestIdempotency:
         # changes. No spurious second quarantine event, no parent backfill.
         _run_resolve_for_parent(
             cycle_db,
-            conversation_id="conv-B",
+            session_id="conv-B",
             source_name="codex",
-            provider_conversation_id="native-B",
+            provider_session_id="native-B",
         )
         status2, evidence2 = _fetch_edge_status(cycle_db, "conv-A")
         assert status2 == TopologyEdgeStatus.QUARANTINED.value
@@ -536,28 +536,28 @@ class TestIdempotency:
         assert _fetch_parent(cycle_db, "conv-A") is None
 
     def test_resolver_for_child_idempotent_on_quarantined_edge(self, cycle_db: sqlite3.Connection) -> None:
-        _insert_conversation(
+        _insert_session(
             cycle_db,
-            conversation_id="conv-A",
+            session_id="conv-A",
             source_name="codex",
-            provider_conversation_id="native-A",
-            parent_conversation_id=None,
+            provider_session_id="native-A",
+            parent_session_id=None,
         )
-        _insert_conversation(
+        _insert_session(
             cycle_db,
-            conversation_id="conv-B",
+            session_id="conv-B",
             source_name="codex",
-            provider_conversation_id="native-B",
-            parent_conversation_id="conv-A",
+            provider_session_id="native-B",
+            parent_session_id="conv-A",
         )
         _seed_edge(
             cycle_db,
-            src_conversation_id="conv-A",
+            src_session_id="conv-A",
             dst_provider_native_id="native-B",
         )
 
-        _run_resolve_for_child(cycle_db, src_conversation_id="conv-A")
-        _run_resolve_for_child(cycle_db, src_conversation_id="conv-A")
+        _run_resolve_for_child(cycle_db, src_session_id="conv-A")
+        _run_resolve_for_child(cycle_db, src_session_id="conv-A")
 
         status, _ = _fetch_edge_status(cycle_db, "conv-A")
         assert status == TopologyEdgeStatus.QUARANTINED.value
@@ -576,26 +576,26 @@ class TestQuarantineCount:
         assert count0 == 0
 
         # Create a cycle.
-        _insert_conversation(
+        _insert_session(
             cycle_db,
-            conversation_id="conv-A",
+            session_id="conv-A",
             source_name="codex",
-            provider_conversation_id="native-A",
-            parent_conversation_id=None,
+            provider_session_id="native-A",
+            parent_session_id=None,
         )
-        _insert_conversation(
+        _insert_session(
             cycle_db,
-            conversation_id="conv-B",
+            session_id="conv-B",
             source_name="codex",
-            provider_conversation_id="native-B",
-            parent_conversation_id="conv-A",
+            provider_session_id="native-B",
+            parent_session_id="conv-A",
         )
         _seed_edge(
             cycle_db,
-            src_conversation_id="conv-A",
+            src_session_id="conv-A",
             dst_provider_native_id="native-B",
         )
-        _run_resolve_for_child(cycle_db, src_conversation_id="conv-A")
+        _run_resolve_for_child(cycle_db, src_session_id="conv-A")
 
         count1 = asyncio.run(count_quarantined_topology_edges(_AsyncSqliteAdapter(cycle_db)))  # type: ignore[arg-type]
         assert count1 == 1

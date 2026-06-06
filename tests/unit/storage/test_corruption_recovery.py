@@ -42,7 +42,7 @@ class TestCorruptionRecovery:
         with open_connection(db) as conn:
             result = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
             table_names = {row[0] for row in result}
-            assert "conversations" in table_names
+            assert "sessions" in table_names
 
     def test_truncated_file(self, tmp_path: Path) -> None:
         """Truncating a DB file to 50% produces a clean error or recovery."""
@@ -60,7 +60,7 @@ class TestCorruptionRecovery:
         # Should either raise a clean error or create a fresh DB
         try:
             with open_connection(db) as conn:
-                conn.execute("SELECT count(*) FROM conversations")
+                conn.execute("SELECT count(*) FROM sessions")
         except (sqlite3.DatabaseError, sqlite3.OperationalError):
             pass  # Expected: clean error
 
@@ -77,10 +77,10 @@ class TestCorruptionRecovery:
         try:
             with open_connection(db) as conn:
                 # Read should work
-                conn.execute("SELECT count(*) FROM conversations")
+                conn.execute("SELECT count(*) FROM sessions")
                 # Write should fail cleanly
                 with pytest.raises((sqlite3.OperationalError, Exception)):
-                    conn.execute("INSERT INTO conversations (conversation_id, source_name) VALUES ('test', 'test')")
+                    conn.execute("INSERT INTO sessions (session_id, source_name) VALUES ('test', 'test')")
                     conn.commit()
         finally:
             # Restore permissions for cleanup
@@ -96,7 +96,7 @@ class TestCorruptionRecovery:
             # Should have schema tables
             result = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
             table_names = {row[0] for row in result}
-            assert "conversations" in table_names
+            assert "sessions" in table_names
 
     def test_empty_file(self, tmp_path: Path) -> None:
         """Zero-byte file is handled cleanly."""
@@ -108,6 +108,6 @@ class TestCorruptionRecovery:
         # Should either initialize fresh or raise clean error
         try:
             with open_connection(db) as conn:
-                conn.execute("SELECT count(*) FROM conversations")
+                conn.execute("SELECT count(*) FROM sessions")
         except (sqlite3.DatabaseError, sqlite3.OperationalError):
             pass  # Clean error is acceptable

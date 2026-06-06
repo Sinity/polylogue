@@ -54,12 +54,18 @@ def _make_gc_db(path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.executescript(
         """
-        CREATE TABLE raw_conversations (
+        CREATE TABLE raw_sessions (
             raw_id TEXT PRIMARY KEY,
             source_name TEXT NOT NULL DEFAULT '',
             source_path TEXT NOT NULL DEFAULT '',
+            blob_hash BLOB,
             blob_size INTEGER NOT NULL DEFAULT 0,
             acquired_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE blob_refs (
+            blob_hash BLOB NOT NULL,
+            raw_id TEXT NOT NULL,
+            ref_type TEXT NOT NULL DEFAULT 'raw_payload'
         );
         CREATE TABLE pending_blob_refs (
             blob_hash TEXT NOT NULL,
@@ -293,7 +299,7 @@ def test_orphan_detection_only_surfaces_unreferenced_blobs(tmp_path: Path) -> No
 def test_gc_skips_blobs_with_db_reference(tmp_path: Path) -> None:
     """docs/internals.md § GC concurrency model — invariant 1
     (DB reference check): ``_still_referenced`` queries
-    ``raw_conversations`` for the blob's ``raw_id``; if the row exists,
+    ``raw_sessions`` for the blob's ``raw_id``; if the row exists,
     GC skips the blob.
     """
     blob_root = tmp_path / "blobs"
@@ -303,7 +309,7 @@ def test_gc_skips_blobs_with_db_reference(tmp_path: Path) -> None:
 
     h, _ = store.write_from_bytes(b"still-referenced")
     conn.execute(
-        "INSERT INTO raw_conversations (raw_id, source_name, source_path, blob_size, acquired_at) "
+        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
         "VALUES (?, 'claude', 'src.json', 1, '2025-01-01')",
         (h,),
     )
@@ -338,17 +344,16 @@ def test_gc_skips_blobs_with_active_lease(tmp_path: Path) -> None:
     _backdate_blobs(store)
 
     # Simulate the in-flight ingest: lease acquired on the blob,
-    # but the ``raw_conversations`` row has not yet been written.
+    # but the ``raw_sessions`` row has not yet been written.
     acquire_blob_leases(db_path, [h], operation_id="op-in-flight")
 
     deleted = run_blob_gc(db_path, blob_root)
 
     assert deleted == 0, (
-        "GC must skip blobs whose write transaction has acquired a lease "
-        "but not yet committed the raw_conversations row"
+        "GC must skip blobs whose write transaction has acquired a lease but not yet committed the raw_sessions row"
     )
     assert store.exists(h), (
-        "An in-flight, leased blob must survive GC even when its raw_conversations row has not been written yet"
+        "An in-flight, leased blob must survive GC even when its raw_sessions row has not been written yet"
     )
 
     # Confirm the protection was lease-driven rather than something
@@ -411,7 +416,7 @@ def test_lease_predicate_and_reference_predicate_are_independent(tmp_path: Path)
 
     # 2. Reference only.
     conn.execute(
-        "INSERT INTO raw_conversations (raw_id, source_name, source_path, blob_size, acquired_at) "
+        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
         "VALUES (?, 'p', 's', 0, 't')",
         (blob,),
     )
@@ -429,7 +434,7 @@ def test_lease_predicate_and_reference_predicate_are_independent(tmp_path: Path)
     assert _has_active_lease(conn, blob)
 
     # 4. Lease only — the race window the lease design closes.
-    conn.execute("DELETE FROM raw_conversations WHERE raw_id = ?", (blob,))
+    conn.execute("DELETE FROM raw_sessions WHERE raw_id = ?", (blob,))
     conn.commit()
     assert not _still_referenced(conn, blob)
     assert _has_active_lease(conn, blob)
@@ -489,12 +494,12 @@ def test_link_group_isolation_in_artifact_observations(tmp_path: Path) -> None:
     conn = sqlite3.connect(str(db_path))
     conn.executescript(
         """
-        CREATE TABLE raw_conversations (
+        CREATE TABLE raw_sessions (
             raw_id TEXT PRIMARY KEY
         );
         CREATE TABLE artifact_observations (
             observation_id TEXT PRIMARY KEY,
-            raw_id TEXT NOT NULL REFERENCES raw_conversations(raw_id) ON DELETE CASCADE,
+            raw_id TEXT NOT NULL REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
             link_group_key TEXT
         );
         CREATE INDEX idx_artifact_obs_link_group
@@ -509,7 +514,7 @@ def test_link_group_isolation_in_artifact_observations(tmp_path: Path) -> None:
         ("raw-c1", "obs-c1", None),
     ]
     for raw_id, obs_id, group in fixtures:
-        conn.execute("INSERT INTO raw_conversations (raw_id) VALUES (?)", (raw_id,))
+        conn.execute("INSERT INTO raw_sessions (raw_id) VALUES (?)", (raw_id,))
         conn.execute(
             "INSERT INTO artifact_observations (observation_id, raw_id, link_group_key) VALUES (?, ?, ?)",
             (obs_id, raw_id, group),

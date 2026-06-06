@@ -9,8 +9,8 @@ import aiosqlite
 
 from polylogue.core.common import chunked
 from polylogue.storage.action_events.rebuild_loading import (
-    iter_conversation_id_pages_async,
-    iter_conversation_id_pages_sync,
+    iter_session_id_pages_async,
+    iter_session_id_pages_sync,
     load_async_batch,
     load_sync_batch,
 )
@@ -38,31 +38,31 @@ def _row_int(row: sqlite3.Row | None, key: int | str) -> int:
 def rebuild_action_event_read_model_sync(
     conn: sqlite3.Connection,
     *,
-    conversation_ids: Sequence[str] | None = None,
+    session_ids: Sequence[str] | None = None,
     page_size: int = 200,
 ) -> int:
     replaced = 0
-    if conversation_ids is None:
+    if session_ids is None:
         conn.execute("DELETE FROM action_events")
-        for chunk in iter_conversation_id_pages_sync(conn, page_size=page_size):
-            conversations, messages, blocks = load_sync_batch(conn, chunk)
-            materialized = materialize_batch(conversations, messages, blocks)
-            for conversation_id in chunk:
-                records = materialized.get(conversation_id, [])
-                replace_action_events_sync(conn, conversation_id, records)
+        for chunk in iter_session_id_pages_sync(conn, page_size=page_size):
+            sessions, messages, blocks = load_sync_batch(conn, chunk)
+            materialized = materialize_batch(sessions, messages, blocks)
+            for session_id in chunk:
+                records = materialized.get(session_id, [])
+                replace_action_events_sync(conn, session_id, records)
                 replaced += len(records)
         return replaced
-    elif not conversation_ids:
+    elif not session_ids:
         conn.execute("DELETE FROM action_events")
         return 0
 
-    for raw_chunk in chunked(list(conversation_ids), size=page_size):
+    for raw_chunk in chunked(list(session_ids), size=page_size):
         chunk = list(raw_chunk)
-        conversations, messages, blocks = load_sync_batch(conn, chunk)
-        materialized = materialize_batch(conversations, messages, blocks)
-        for conversation_id in chunk:
-            records = materialized.get(conversation_id, [])
-            replace_action_events_sync(conn, conversation_id, records)
+        sessions, messages, blocks = load_sync_batch(conn, chunk)
+        materialized = materialize_batch(sessions, messages, blocks)
+        for session_id in chunk:
+            records = materialized.get(session_id, [])
+            replace_action_events_sync(conn, session_id, records)
             replaced += len(records)
     return replaced
 
@@ -70,42 +70,42 @@ def rebuild_action_event_read_model_sync(
 async def rebuild_action_event_read_model_async(
     conn: aiosqlite.Connection,
     *,
-    conversation_ids: Sequence[str] | None = None,
+    session_ids: Sequence[str] | None = None,
     page_size: int = 200,
     progress_callback: Callable[[int, str | None], None] | None = None,
     progress_desc: Callable[[int, int], str] | None = None,
 ) -> int:
-    if conversation_ids is None:
+    if session_ids is None:
         await conn.execute("DELETE FROM action_events")
-        total = _row_int(await (await conn.execute("SELECT COUNT(*) FROM conversations")).fetchone(), 0)
-    elif not conversation_ids:
+        total = _row_int(await (await conn.execute("SELECT COUNT(*) FROM sessions")).fetchone(), 0)
+    elif not session_ids:
         await conn.execute("DELETE FROM action_events")
         return 0
     else:
-        total = len(conversation_ids)
+        total = len(session_ids)
 
     replaced = 0
     processed = 0
-    if conversation_ids is None:
-        async for chunk in iter_conversation_id_pages_async(conn, page_size=page_size):
-            conversations, messages, blocks = await load_async_batch(conn, chunk)
-            materialized = materialize_batch(conversations, messages, blocks)
-            for conversation_id in chunk:
-                records = materialized.get(conversation_id, [])
-                await replace_action_events_async(conn, conversation_id, records)
+    if session_ids is None:
+        async for chunk in iter_session_id_pages_async(conn, page_size=page_size):
+            sessions, messages, blocks = await load_async_batch(conn, chunk)
+            materialized = materialize_batch(sessions, messages, blocks)
+            for session_id in chunk:
+                records = materialized.get(session_id, [])
+                await replace_action_events_async(conn, session_id, records)
                 replaced += len(records)
             processed += len(chunk)
             if progress_callback is not None:
                 desc = progress_desc(processed, total) if progress_desc is not None else None
                 progress_callback(len(chunk), desc)
     else:
-        for raw_chunk in chunked(list(conversation_ids), size=page_size):
+        for raw_chunk in chunked(list(session_ids), size=page_size):
             chunk = list(raw_chunk)
-            conversations, messages, blocks = await load_async_batch(conn, chunk)
-            materialized = materialize_batch(conversations, messages, blocks)
-            for conversation_id in chunk:
-                records = materialized.get(conversation_id, [])
-                await replace_action_events_async(conn, conversation_id, records)
+            sessions, messages, blocks = await load_async_batch(conn, chunk)
+            materialized = materialize_batch(sessions, messages, blocks)
+            for session_id in chunk:
+                records = materialized.get(session_id, [])
+                await replace_action_events_async(conn, session_id, records)
                 replaced += len(records)
             processed += len(chunk)
             if progress_callback is not None:
@@ -119,7 +119,7 @@ def action_event_repair_candidates_sync(conn: sqlite3.Connection) -> list[str]:
         ACTION_EVENT_REPAIR_CANDIDATE_IDS_SQL,
         (ACTION_EVENT_MATERIALIZER_VERSION,),
     ).fetchall()
-    return [str(row["conversation_id"]) for row in rows]
+    return [str(row["session_id"]) for row in rows]
 
 
 async def action_event_repair_candidates_async(conn: aiosqlite.Connection) -> list[str]:
@@ -129,17 +129,17 @@ async def action_event_repair_candidates_async(conn: aiosqlite.Connection) -> li
             (ACTION_EVENT_MATERIALIZER_VERSION,),
         )
     ).fetchall()
-    return [str(row["conversation_id"]) for row in rows]
+    return [str(row["session_id"]) for row in rows]
 
 
 def valid_action_event_source_ids_sync(conn: sqlite3.Connection) -> list[str]:
     rows = conn.execute(ACTION_EVENT_VALID_SOURCE_IDS_SQL).fetchall()
-    return [str(row["conversation_id"]) for row in rows]
+    return [str(row["session_id"]) for row in rows]
 
 
 async def valid_action_event_source_ids_async(conn: aiosqlite.Connection) -> list[str]:
     rows = await (await conn.execute(ACTION_EVENT_VALID_SOURCE_IDS_SQL)).fetchall()
-    return [str(row["conversation_id"]) for row in rows]
+    return [str(row["session_id"]) for row in rows]
 
 
 __all__ = [

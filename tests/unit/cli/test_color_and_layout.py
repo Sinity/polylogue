@@ -87,14 +87,14 @@ class TestNoColorEnv:
 
 
 class TestNarrowTerminalLayout:
-    """Conversation/search-hit tables degrade gracefully at narrow widths.
+    """Session/search-hit tables degrade gracefully at narrow widths.
 
     The layout helpers are pure functions and the public contract is:
 
     * Wide (>=80 cols): show every column.
     * Mid  (>=60 cols): drop the ID column to make room for titles.
-    * Narrow (>=40 cols): drop provider too; keep date+title+msgs for the
-      conversation list, title+match for search hits.
+    * Narrow (>=40 cols): drop origin too; keep date+title+msgs for the
+      session list, title+match for search hits.
     * Below 40 cols: degenerate to a single ``title`` column.
 
     The mapping is pinned here because downstream syrupy snapshots would not
@@ -105,10 +105,10 @@ class TestNarrowTerminalLayout:
     @pytest.mark.parametrize(
         ("width", "expected"),
         [
-            (200, ("id", "date", "provider", "title", "msgs")),
-            (_LayoutBreakpoints.WIDE_MIN, ("id", "date", "provider", "title", "msgs")),
-            (_LayoutBreakpoints.WIDE_MIN - 1, ("date", "provider", "title", "msgs")),
-            (_LayoutBreakpoints.MID_MIN, ("date", "provider", "title", "msgs")),
+            (200, ("id", "date", "origin", "title", "msgs")),
+            (_LayoutBreakpoints.WIDE_MIN, ("id", "date", "origin", "title", "msgs")),
+            (_LayoutBreakpoints.WIDE_MIN - 1, ("date", "origin", "title", "msgs")),
+            (_LayoutBreakpoints.MID_MIN, ("date", "origin", "title", "msgs")),
             (_LayoutBreakpoints.MID_MIN - 1, ("date", "title", "msgs")),
             (_LayoutBreakpoints.NARROW_MIN, ("date", "title", "msgs")),
             (_LayoutBreakpoints.NARROW_MIN - 1, ("title",)),
@@ -121,10 +121,10 @@ class TestNarrowTerminalLayout:
     @pytest.mark.parametrize(
         ("width", "expected"),
         [
-            (200, ("id", "date", "provider", "title", "msgs", "match")),
-            (_LayoutBreakpoints.WIDE_MIN, ("id", "date", "provider", "title", "msgs", "match")),
-            (_LayoutBreakpoints.WIDE_MIN - 1, ("date", "provider", "title", "match")),
-            (_LayoutBreakpoints.MID_MIN, ("date", "provider", "title", "match")),
+            (200, ("id", "date", "origin", "title", "msgs", "match")),
+            (_LayoutBreakpoints.WIDE_MIN, ("id", "date", "origin", "title", "msgs", "match")),
+            (_LayoutBreakpoints.WIDE_MIN - 1, ("date", "origin", "title", "match")),
+            (_LayoutBreakpoints.MID_MIN, ("date", "origin", "title", "match")),
             (_LayoutBreakpoints.MID_MIN - 1, ("title", "match")),
             (_LayoutBreakpoints.NARROW_MIN, ("title", "match")),
             (_LayoutBreakpoints.NARROW_MIN - 1, ("title",)),

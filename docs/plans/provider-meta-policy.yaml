@@ -3,7 +3,7 @@
 # Source of truth for every `provider_meta` key that production parsers, source
 # assembly, or insight rebuild paths write into either:
 #
-#   - conversation.provider_meta  (ParsedConversation / ConversationRecord)
+#   - session.provider_meta  (ParsedSession / SessionRecord)
 #   - message.provider_meta       (ParsedMessage / HarmonizedMessage)
 #   - attachment.provider_meta    (ParsedAttachment)
 #
@@ -17,7 +17,7 @@
 #
 # provider-specific-retained
 #   The field is provider/source-specific and stays inside provider_meta. It is
-#   not promoted to a typed column on conversations/messages because there is
+#   not promoted to a typed column on sessions/messages because there is
 #   no useful cross-provider semantics for it; downstream code reads it via
 #   provider_meta when it needs the provider-shaped detail. Examples: ChatGPT
 #   gizmo identifiers, Gemini grounding metadata.
@@ -48,9 +48,9 @@
 # fields:
 #   - key: "name"
 #     classification: provider-specific-retained | raw-only | promoted | removed
-#     scope: conversation | message | attachment   # (omit for any-scope)
+#     scope: session | message | attachment   # (omit for any-scope)
 #     providers: [chatgpt, claude-code, codex, ...]  # producers (optional)
-#     promoted_column: "conversations.git_branch"   # for `promoted`
+#     promoted_column: "sessions.git_branch"   # for `promoted`
 #     note: "human-readable rationale"
 #
 # Updated: 2026-05-18 — initial population for #1255 / #864 slice E.
@@ -67,7 +67,7 @@ fields:
 
   - key: session
     classification: raw-only
-    scope: conversation
+    scope: session
     providers: [browser-capture]
     note: |
       Raw session envelope copied from browser-capture upload. Used by
@@ -75,7 +75,7 @@ fields:
 
   - key: capture
     classification: raw-only
-    scope: conversation
+    scope: session
     providers: [browser-capture]
     note: |
       Raw capture envelope copied from browser-capture upload.
@@ -116,74 +116,74 @@ fields:
   # ---- promoted: also exists as a typed column ----------------------------
   - key: working_directories
     classification: promoted
-    scope: conversation
+    scope: session
     providers: [claude-code, codex]
-    promoted_column: conversations.working_directories
+    promoted_column: sessions.working_directories
     note: |
       Promoted to the typed `working_directories` array column on
-      conversations. The provider_meta mirror is retained for callers that
+      sessions. The provider_meta mirror is retained for callers that
       still read the dict shape during the dual-vocabulary period.
 
   - key: gitBranch
     classification: promoted
-    scope: conversation
+    scope: session
     providers: [claude-ai, session-rebuild]
-    promoted_column: conversations.git_branch
+    promoted_column: sessions.git_branch
     note: |
-      Mirror of `conversations.git_branch`. Populated by the claude-ai session
+      Mirror of `sessions.git_branch`. Populated by the claude-ai session
       index path and the session-rebuild insight loader for compatibility.
 
   - key: git_branch
     classification: promoted
-    scope: conversation
+    scope: session
     providers: [codex]
-    promoted_column: conversations.git_branch
+    promoted_column: sessions.git_branch
     note: |
       Same semantics as `gitBranch`; codex parser uses the snake_case spelling.
-      Promoted to `conversations.git_branch`.
+      Promoted to `sessions.git_branch`.
 
   - key: cwd
     classification: promoted
-    scope: conversation
+    scope: session
     providers: [session-rebuild]
-    promoted_column: conversations.working_directories
+    promoted_column: sessions.working_directories
     note: |
       Single-cwd compatibility mirror used by the session-rebuild loader.
-      Conversation-level cwd lives in the typed `working_directories` column.
+      Session-level cwd lives in the typed `working_directories` column.
 
   - key: git
     classification: promoted
-    scope: conversation
+    scope: session
     providers: [codex, session-rebuild]
-    promoted_column: conversations.git_repository_url
+    promoted_column: sessions.git_repository_url
     note: |
       Codex git context dict (repository_url + branch). Repository URL is
-      promoted to `conversations.git_repository_url`; the nested dict is kept
+      promoted to `sessions.git_repository_url`; the nested dict is kept
       for replay/debug callers.
 
   - key: models_used
     classification: promoted
-    scope: conversation
+    scope: session
     providers: [claude-code]
-    promoted_column: conversations.models_used
+    promoted_column: sessions.models_used
     note: |
-      Mirror of the typed `models_used` array column on conversations.
+      Mirror of the typed `models_used` array column on sessions.
 
   - key: total_cost_usd
     classification: promoted
-    scope: conversation
+    scope: session
     providers: [claude-code]
-    promoted_column: conversations.total_cost_usd
+    promoted_column: sessions.total_cost_usd
     note: |
-      Mirror of the typed cost rollup column on conversations.
+      Mirror of the typed cost rollup column on sessions.
 
   - key: total_duration_ms
     classification: promoted
-    scope: conversation
+    scope: session
     providers: [claude-code]
-    promoted_column: conversations.total_duration_ms
+    promoted_column: sessions.total_duration_ms
     note: |
-      Mirror of the typed duration rollup column on conversations.
+      Mirror of the typed duration rollup column on sessions.
 
   - key: model
     classification: promoted
@@ -206,16 +206,16 @@ fields:
   # ---- provider-specific-retained: stays inside provider_meta -------------
   - key: source_family
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [antigravity, gemini-cli, hermes]
     note: |
       Source-family tag used by the local-agent parser family before the
-      `Source` dataclass migration completes (#1022). Distinct from the
-      conversation-level Provider enum.
+      `Source` dataclass adoption completes (#1022). Distinct from the
+      session-level Provider enum.
 
   - key: source_format
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [antigravity]
     note: |
       Discriminates the antigravity ingest path (brain-artifact metadata vs
@@ -223,28 +223,28 @@ fields:
 
   - key: title_source
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [drive, gemini, codex, session-rebuild, claude-ai]
     note: |
-      Provenance tag for the conversation title (e.g. `imported:title`,
+      Provenance tag for the session title (e.g. `imported:title`,
       `session-index:thread-name`, `first-user-message`). Used by reader UIs
       to disambiguate placeholder titles.
 
   - key: display_label
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [gemini]
     note: Human-readable label override surfaced by the gemini assembly path.
 
   - key: display_label_source
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [gemini]
     note: Provenance for `display_label`.
 
   - key: display_label_reason
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [gemini]
     note: |
       Rationale for choosing the `display_label` override (e.g. `weak-title`).
@@ -252,7 +252,7 @@ fields:
 
   - key: thread_name
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [codex]
     note: |
       Codex session-index thread name. Used to display human-meaningful titles
@@ -260,99 +260,99 @@ fields:
 
   - key: default_model
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [chatgpt]
-    note: ChatGPT conversation-level default model slug.
+    note: ChatGPT session-level default model slug.
 
   - key: gizmo_id
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [chatgpt]
-    note: ChatGPT custom-GPT (gizmo) identifier when the conversation used one.
+    note: ChatGPT custom-GPT (gizmo) identifier when the session used one.
 
   - key: gizmo_type
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [chatgpt]
     note: ChatGPT custom-GPT kind tag.
 
   - key: is_archived
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [chatgpt]
     note: ChatGPT archive-flag mirror; not promoted because it has no archive-wide semantics.
 
   - key: instructions
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [codex]
     note: Codex session-level instructions blob.
 
   - key: artifact_path
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [antigravity]
     note: |
-      Path of the antigravity artifact this conversation row represents.
+      Path of the antigravity artifact this session row represents.
       Filesystem-specific, so not promoted.
 
   - key: session_id
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [antigravity]
     note: Antigravity session identifier (distinct from cascade_id).
 
   - key: artifact_type
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [antigravity]
     note: Antigravity brain-artifact type tag (e.g. plan/note).
 
   - key: summary
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [antigravity, claude-ai]
-    note: Provider-supplied conversation summary (not the user-generated summary).
+    note: Provider-supplied session summary (not the user-generated summary).
 
   - key: firstPrompt
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [claude-ai]
     note: Claude.ai session-index first-prompt mirror.
 
   - key: projectPath
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [claude-ai]
     note: Claude.ai project path from the session index.
 
   - key: isSidechain
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [claude-ai]
-    note: Claude.ai sidechain-conversation flag.
+    note: Claude.ai sidechain-session flag.
 
   - key: missing_markdown_body
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [antigravity]
     note: Tombstone flag when the antigravity markdown file was unreadable.
 
   - key: cascade_id
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [antigravity]
     note: Antigravity language-server cascade identifier.
 
   - key: workspace_name
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [antigravity]
     note: Antigravity workspace name reported by the language server.
 
   - key: snippet
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [antigravity]
     note: Antigravity language-server preview snippet.
 
@@ -366,37 +366,37 @@ fields:
 
   - key: kind
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [gemini-cli]
     note: Gemini-CLI session kind tag.
 
   - key: projectHash
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [gemini-cli]
     note: Gemini-CLI project hash from the session payload.
 
   - key: base_url
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [hermes]
     note: Hermes endpoint base URL.
 
   - key: platform
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [hermes]
     note: Hermes platform tag.
 
   - key: tools
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [hermes]
     note: Hermes tool inventory list.
 
   - key: message_count
     classification: provider-specific-retained
-    scope: conversation
+    scope: session
     providers: [hermes]
     note: Hermes-reported message count (provider-side, not authoritative).
 

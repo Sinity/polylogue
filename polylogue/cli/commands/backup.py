@@ -10,7 +10,7 @@ from polylogue.daemon.backup import backup_archive, format_backup_result
 from polylogue.logging import configure_logging
 
 
-@click.command("backup", help="Back up the Polylogue archive database.")
+@click.command("backup", help="Back up the Polylogue archive durability tiers.")
 @click.option(
     "--output-dir",
     "output_dir",
@@ -30,17 +30,26 @@ from polylogue.logging import configure_logging
     "include_blobs",
     is_flag=True,
     default=False,
-    help="Also back up the blob store directory.",
+    help="Accepted for compatibility; backups copy referenced blobs automatically.",
+)
+@click.option(
+    "--verify",
+    "verify",
+    is_flag=True,
+    default=False,
+    help="Restore the finished backup into a scratch directory and run smoke checks.",
 )
 def backup_command(
     output_dir: Path,
     check_only: bool,
     include_blobs: bool,
+    verify: bool,
 ) -> None:
-    """Back up the Polylogue archive database and optionally the blob store.
+    """Back up the Polylogue archive.
 
-    Uses SQLite VACUUM INTO for a clean, defragmented copy when available
-    (SQLite >= 3.27.0), falling back to a file copy with WAL checkpoint.
+    Backups copy the precious source/user/embeddings tiers
+    plus referenced blobs, and intentionally omit rebuildable index.db and
+    disposable ops.db.
 
     Use --check to verify prerequisites (disk space, DB readability)
     without creating a backup.
@@ -50,6 +59,7 @@ def backup_command(
         output_dir=output_dir,
         check_only=check_only,
         include_blobs=include_blobs,
+        verify=verify,
     )
     for line in format_backup_result(result):
         click.echo(line)

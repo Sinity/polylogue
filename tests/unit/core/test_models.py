@@ -1,7 +1,7 @@
 """Pinned regression and record-conversion tests for core models, code detection, and provider identity.
 
 Broader semantic ownership lives in ``test_message_laws.py`` and
-``test_conversation_semantics.py``. This file keeps only model-specific
+``test_session_semantics.py``. This file keeps only model-specific
 regressions and storage-record conversions, code language detection, and provider identity.
 """
 
@@ -17,6 +17,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Message
 from polylogue.archive.raw_payload import build_raw_payload_envelope
 from polylogue.archive.viewport.viewports import ToolCall, classify_tool
+from polylogue.core.enums import Origin
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.core.provider_identity import (
     canonical_acquisition_provider,
@@ -26,16 +27,16 @@ from polylogue.core.provider_identity import (
 from polylogue.schemas.code_detection.detection import LANGUAGE_PATTERNS, detect_language, extract_code_block
 from polylogue.storage.hydrators import (
     attachment_from_record,
-    conversation_from_records,
-    conversation_summary_from_record,
     message_from_record,
+    session_from_records,
+    session_summary_from_record,
 )
 from polylogue.storage.runtime import (
     MessageRecord,
 )
-from polylogue.types import ContentHash, ConversationId, MessageId, Provider, SemanticBlockType
+from polylogue.types import ContentHash, MessageId, Provider, SemanticBlockType, SessionId
 from tests.infra.builders import make_msg
-from tests.infra.storage_records import make_attachment, make_content_block, make_conversation, make_message
+from tests.infra.storage_records import make_attachment, make_content_block, make_message, make_session
 
 TOOL_FILE_OPS = [
     ("Read", True),
@@ -293,7 +294,7 @@ class TestAttachmentFromRecord:
     ) -> None:
         record = make_attachment(
             attachment_id="att1",
-            conversation_id="c1",
+            session_id="c1",
             provider_meta=provider_meta,
         )
         attachment = attachment_from_record(record)
@@ -306,7 +307,7 @@ class TestMessageFromRecord:
         record = MessageRecord.model_validate(
             {
                 "message_id": MessageId("m1"),
-                "conversation_id": ConversationId("c1"),
+                "session_id": SessionId("c1"),
                 "role": role,
                 "text": "hello",
                 "content_hash": ContentHash("hash1"),
@@ -318,13 +319,13 @@ class TestMessageFromRecord:
     def test_from_record_preserves_structured_content_block_semantics(self) -> None:
         record = make_message(
             message_id="m1",
-            conversation_id="c1",
+            session_id="c1",
             role="assistant",
             text="Inspecting file",
             content_blocks=[
                 make_content_block(
                     message_id="m1",
-                    conversation_id="c1",
+                    session_id="c1",
                     block_index=0,
                     block_type="tool_use",
                     tool_name="Read",
@@ -352,10 +353,10 @@ class TestMessageFromRecord:
         ]
 
 
-class TestConversationSummaryFromRecord:
-    def test_conversation_record_canonicalizes_epoch_timestamp_text(self) -> None:
-        record = make_conversation(
-            conversation_id="c-epoch",
+class TestSessionSummaryFromRecord:
+    def test_session_record_canonicalizes_epoch_timestamp_text(self) -> None:
+        record = make_session(
+            session_id="c-epoch",
             created_at="1705312200.123",
             updated_at="1705314600",
         )
@@ -363,55 +364,55 @@ class TestConversationSummaryFromRecord:
         assert record.created_at == "2024-01-15T09:50:00.123000+00:00"
         assert record.updated_at == "2024-01-15T10:30:00+00:00"
 
-    def test_conversation_record_rejects_unparseable_timestamp_text(self) -> None:
+    def test_session_record_rejects_unparseable_timestamp_text(self) -> None:
         with pytest.raises(ValueError, match="Unsupported archive timestamp"):
-            make_conversation(conversation_id="c-bad", created_at="not-a-timestamp")
+            make_session(session_id="c-bad", created_at="not-a-timestamp")
 
     def test_from_record_projects_metadata(self) -> None:
-        record = make_conversation(
-            conversation_id="c1",
+        record = make_session(
+            session_id="c1",
             source_name="claude-ai",
-            provider_conversation_id="prov-c1",
+            provider_session_id="prov-c1",
             title="Test",
             created_at="2024-01-01T00:00:00Z",
             updated_at="2024-01-02T00:00:00Z",
             provider_meta={"key": "value"},
             metadata={"tags": ["test"], "summary": "summary"},
         )
-        summary = conversation_summary_from_record(record)
+        summary = session_summary_from_record(record)
         assert summary.id == "c1"
-        assert summary.provider == Provider.CLAUDE_AI
+        assert summary.origin == Origin.CLAUDE_AI_EXPORT
         assert summary.title == "Test"
         assert summary.tags == ["test"]
         assert summary.summary == "summary"
 
 
-class TestConversationFromRecords:
+class TestSessionFromRecords:
     def test_from_records_attaches_records_to_messages(self) -> None:
-        conversation_record = make_conversation(
-            conversation_id="c1",
+        session_record = make_session(
+            session_id="c1",
             source_name="claude-ai",
-            provider_conversation_id="prov-c1",
+            provider_session_id="prov-c1",
             title="Test",
         )
         message_record = make_message(
             message_id="m1",
-            conversation_id="c1",
+            session_id="c1",
             role="user",
             text="hello",
         )
         attachment_record = make_attachment(
             attachment_id="att1",
-            conversation_id="c1",
+            session_id="c1",
             message_id="m1",
             provider_meta={"name": "file.txt"},
         )
 
-        conversation = conversation_from_records(conversation_record, [message_record], [attachment_record])
+        session = session_from_records(session_record, [message_record], [attachment_record])
 
-        assert conversation.id == "c1"
-        assert conversation.provider == Provider.CLAUDE_AI
-        hydrated_messages = conversation.messages.to_list()
+        assert session.id == "c1"
+        assert session.origin == Origin.CLAUDE_AI_EXPORT
+        hydrated_messages = session.messages.to_list()
         assert len(hydrated_messages) == 1
         hydrated_message = hydrated_messages[0]
         assert hydrated_message.role == Role.USER
@@ -552,7 +553,7 @@ def test_build_raw_payload_envelope_returns_provider_enum_for_known_providers() 
     raw = b'[{"id":"conv-1","mapping":{}}]'
     envelope = build_raw_payload_envelope(
         raw,
-        source_path="/tmp/opaque/conversations.json",
+        source_path="/tmp/opaque/sessions.json",
         fallback_provider="openai",
     )
     assert envelope.provider is Provider.CHATGPT
@@ -562,7 +563,7 @@ def test_build_raw_payload_envelope_detects_payload_shape_without_path_hints() -
     raw = b'[{"id":"conv-1","mapping":{}}]'
     envelope = build_raw_payload_envelope(
         raw,
-        source_path="/tmp/export.zip:takeout/opaque/conversations.json",
+        source_path="/tmp/export.zip:takeout/opaque/sessions.json",
         fallback_provider="archive-source",
     )
     assert envelope.provider is Provider.CHATGPT
@@ -598,7 +599,7 @@ def test_build_raw_payload_envelope_classifies_agent_meta_sidecars() -> None:
         fallback_provider="claude-code",
     )
     assert envelope.artifact.kind.value == "agent_sidecar_meta"
-    assert envelope.artifact.parse_as_conversation is False
+    assert envelope.artifact.parse_as_session is False
 
 
 def test_build_raw_payload_envelope_prefers_claude_subagent_path_over_codex_like_shape() -> None:
@@ -609,7 +610,7 @@ def test_build_raw_payload_envelope_prefers_claude_subagent_path_over_codex_like
         fallback_provider="claude-code",
     )
     assert envelope.provider is Provider.CLAUDE_CODE
-    assert envelope.artifact.kind.value == "subagent_conversation_stream"
+    assert envelope.artifact.kind.value == "subagent_session_stream"
 
 
 def test_build_raw_payload_envelope_classifies_chatgpt_user_sidecars_as_metadata() -> None:

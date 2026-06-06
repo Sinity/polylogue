@@ -1,6 +1,6 @@
-"""Fluent projection builder for conversation filtering and transformation.
+"""Fluent projection builder for session filtering and transformation.
 
-Provides lazy-evaluated, composable projections over conversations.
+Provides lazy-evaluated, composable projections over sessions.
 
 Example usage:
     # Fluent composition
@@ -29,19 +29,19 @@ from polylogue.archive.projection.terminal_mixin import ProjectionTerminalMixin
 from polylogue.archive.projection.transform_mixin import ProjectionTransformMixin
 
 if TYPE_CHECKING:
-    from polylogue.archive.conversation.models import Conversation
     from polylogue.archive.message.models import Message
+    from polylogue.archive.session.domain_models import Session
 
 
-class ConversationProjection(ProjectionFilterMixin, ProjectionTransformMixin, ProjectionTerminalMixin):
-    """Lazy-evaluated projection builder for conversations.
+class SessionProjection(ProjectionFilterMixin, ProjectionTransformMixin, ProjectionTerminalMixin):
+    """Lazy-evaluated projection builder for sessions.
 
     Filters and transforms are accumulated and only applied when
     a terminal operation (execute, iter, count, etc.) is called.
     """
 
-    def __init__(self, conversation: Conversation) -> None:
-        self._conv = conversation
+    def __init__(self, session: Session) -> None:
+        self._conv = session
         self._filters: list[Callable[[Message], bool]] = []
         self._transforms: list[Callable[[Message], Message]] = []
         self._limit: int | None = None
@@ -49,4 +49,4 @@ class ConversationProjection(ProjectionFilterMixin, ProjectionTransformMixin, Pr
         self._reverse: bool = False
 
 
-__all__ = ["ConversationProjection"]
+__all__ = ["SessionProjection"]

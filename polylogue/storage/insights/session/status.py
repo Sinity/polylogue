@@ -182,27 +182,27 @@ WORK_THREAD_COUNT_SQL = "SELECT COUNT(*) FROM work_threads"
 WORK_THREAD_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT thread_id) FROM work_threads_fts"
 WORK_THREAD_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT thread_id) FROM work_threads_fts"
 SESSION_TAG_ROLLUP_COUNT_SQL = "SELECT COUNT(*) FROM session_tag_rollups"
-TOTAL_CONVERSATIONS_SQL = "SELECT COUNT(*) FROM conversations"
+TOTAL_SESSIONS_SQL = "SELECT COUNT(*) FROM sessions"
 HOT_SOURCE_GRACE_SECONDS = 600
 HOT_SOURCE_READY_CUTOFF_SQL = f"(strftime('%s', 'now') - {HOT_SOURCE_GRACE_SECONDS})"
 ROOT_THREAD_COUNT_SQL = """
     SELECT COUNT(*)
-    FROM conversations c
-    LEFT JOIN conversations parent ON c.parent_conversation_id = parent.conversation_id
-    WHERE parent.conversation_id IS NULL
+    FROM sessions c
+    LEFT JOIN sessions parent ON c.parent_session_id = parent.session_id
+    WHERE parent.session_id IS NULL
 """
 MISSING_SESSION_PROFILE_COUNT_SQL = """
     SELECT COUNT(*)
-    FROM conversations c
-    LEFT JOIN session_profiles sp ON sp.conversation_id = c.conversation_id
-    WHERE sp.conversation_id IS NULL
+    FROM sessions c
+    LEFT JOIN session_profiles sp ON sp.session_id = c.session_id
+    WHERE sp.session_id IS NULL
       AND COALESCE(c.sort_key, 0.0) < {cutoff}
 """
 MISSING_SESSION_PROFILE_COUNT_SQL = MISSING_SESSION_PROFILE_COUNT_SQL.format(cutoff=HOT_SOURCE_READY_CUTOFF_SQL)
 STALE_SESSION_PROFILE_COUNT_SQL = f"""
     SELECT COUNT(*)
-    FROM conversations c
-    JOIN session_profiles sp ON sp.conversation_id = c.conversation_id
+    FROM sessions c
+    JOIN session_profiles sp ON sp.session_id = c.session_id
     WHERE COALESCE(c.sort_key, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
       AND (
            sp.materializer_version != ?
@@ -212,21 +212,21 @@ STALE_SESSION_PROFILE_COUNT_SQL = f"""
 ORPHAN_SESSION_PROFILE_COUNT_SQL = """
     SELECT COUNT(*)
     FROM session_profiles sp
-    LEFT JOIN conversations c ON c.conversation_id = sp.conversation_id
-    WHERE c.conversation_id IS NULL
+    LEFT JOIN sessions c ON c.session_id = sp.session_id
+    WHERE c.session_id IS NULL
 """
 MISSING_SESSION_LATENCY_PROFILE_COUNT_SQL = f"""
     SELECT COUNT(*)
     FROM session_profiles sp
-    JOIN conversations c ON c.conversation_id = sp.conversation_id
-    LEFT JOIN session_latency_profiles slp ON slp.conversation_id = sp.conversation_id
-    WHERE slp.conversation_id IS NULL
+    JOIN sessions c ON c.session_id = sp.session_id
+    LEFT JOIN session_latency_profiles slp ON slp.session_id = sp.session_id
+    WHERE slp.session_id IS NULL
       AND COALESCE(c.sort_key, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
 """
 STALE_SESSION_LATENCY_PROFILE_COUNT_SQL = f"""
     SELECT COUNT(*)
     FROM session_latency_profiles slp
-    JOIN conversations c ON c.conversation_id = slp.conversation_id
+    JOIN sessions c ON c.session_id = slp.session_id
     WHERE COALESCE(c.sort_key, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
       AND (
            slp.materializer_version != ?
@@ -236,15 +236,15 @@ STALE_SESSION_LATENCY_PROFILE_COUNT_SQL = f"""
 ORPHAN_SESSION_LATENCY_PROFILE_COUNT_SQL = """
     SELECT COUNT(*)
     FROM session_latency_profiles slp
-    LEFT JOIN conversations c ON c.conversation_id = slp.conversation_id
-    WHERE c.conversation_id IS NULL
+    LEFT JOIN sessions c ON c.session_id = slp.session_id
+    WHERE c.session_id IS NULL
 """
 EXPECTED_WORK_EVENT_COUNT_SQL = "SELECT COALESCE(SUM(work_event_count), 0) FROM session_profiles"
 EXPECTED_PHASE_COUNT_SQL = "SELECT COALESCE(SUM(phase_count), 0) FROM session_profiles"
 STALE_WORK_EVENT_COUNT_SQL = f"""
     SELECT COUNT(*)
     FROM session_work_events swe
-    JOIN conversations c ON c.conversation_id = swe.conversation_id
+    JOIN sessions c ON c.session_id = swe.session_id
     WHERE COALESCE(c.sort_key, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
       AND (
            swe.materializer_version != ?
@@ -254,35 +254,35 @@ STALE_WORK_EVENT_COUNT_SQL = f"""
 ORPHAN_SESSION_WORK_EVENT_COUNT_SQL = """
     SELECT COUNT(*)
     FROM session_work_events swe
-    LEFT JOIN conversations c ON c.conversation_id = swe.conversation_id
-    WHERE c.conversation_id IS NULL
+    LEFT JOIN sessions c ON c.session_id = swe.session_id
+    WHERE c.session_id IS NULL
 """
 STALE_SESSION_PHASE_COUNT_SQL = """
     SELECT COUNT(*)
     FROM session_phases sph
-    JOIN conversations c ON c.conversation_id = sph.conversation_id
+    JOIN sessions c ON c.session_id = sph.session_id
     WHERE sph.materializer_version != ?
        OR ABS(COALESCE(sph.source_sort_key, 0.0) - COALESCE(c.sort_key, 0.0)) > 0.000001
 """
 ORPHAN_SESSION_PHASE_COUNT_SQL = """
     SELECT COUNT(*)
     FROM session_phases sph
-    LEFT JOIN conversations c ON c.conversation_id = sph.conversation_id
-    WHERE c.conversation_id IS NULL
+    LEFT JOIN sessions c ON c.session_id = sph.session_id
+    WHERE c.session_id IS NULL
 """
 STALE_WORK_THREAD_COUNT_SQL = """
     WITH RECURSIVE roots(root_id) AS (
-        SELECT c.conversation_id
-        FROM conversations c
-        LEFT JOIN conversations parent ON c.parent_conversation_id = parent.conversation_id
-        WHERE parent.conversation_id IS NULL
+        SELECT c.session_id
+        FROM sessions c
+        LEFT JOIN sessions parent ON c.parent_session_id = parent.session_id
+        WHERE parent.session_id IS NULL
     ),
-    descendants(root_id, conversation_id) AS (
+    descendants(root_id, session_id) AS (
         SELECT root_id, root_id FROM roots
         UNION ALL
-        SELECT d.root_id, c.conversation_id
-        FROM conversations c
-        JOIN descendants d ON c.parent_conversation_id = d.conversation_id
+        SELECT d.root_id, c.session_id
+        FROM sessions c
+        JOIN descendants d ON c.parent_session_id = d.session_id
     )
     SELECT COUNT(*)
     FROM work_threads wt
@@ -290,7 +290,7 @@ STALE_WORK_THREAD_COUNT_SQL = """
        OR EXISTS (
             SELECT 1
             FROM descendants d
-            JOIN session_profiles sp ON sp.conversation_id = d.conversation_id
+            JOIN session_profiles sp ON sp.session_id = d.session_id
             WHERE d.root_id = wt.thread_id
               AND sp.materialized_at > wt.materialized_at
        )
@@ -298,8 +298,8 @@ STALE_WORK_THREAD_COUNT_SQL = """
 ORPHAN_WORK_THREAD_COUNT_SQL = """
     SELECT COUNT(*)
     FROM work_threads wt
-    LEFT JOIN conversations c ON c.conversation_id = wt.root_id
-    WHERE c.conversation_id IS NULL
+    LEFT JOIN sessions c ON c.session_id = wt.root_id
+    WHERE c.session_id IS NULL
 """
 EXPECTED_SESSION_TAG_ROLLUP_COUNT_SQL = f"""
     WITH tag_rows AS (
@@ -351,16 +351,16 @@ STALE_SESSION_TAG_ROLLUP_COUNT_SQL = f"""
        OR COALESCE(e.max_profile_materialized_at, '') > COALESCE(str.materialized_at, '')
 """
 SESSION_PROFILE_REPAIR_CANDIDATES_SQL = """
-    SELECT c.conversation_id
-    FROM conversations c
-    LEFT JOIN session_profiles sp ON sp.conversation_id = c.conversation_id
+    SELECT c.session_id
+    FROM sessions c
+    LEFT JOIN session_profiles sp ON sp.session_id = c.session_id
     WHERE COALESCE(c.sort_key, 0.0) < {cutoff}
       AND (
-           sp.conversation_id IS NULL
+           sp.session_id IS NULL
         OR sp.materializer_version != ?
         OR ABS(COALESCE(sp.source_sort_key, 0.0) - COALESCE(c.sort_key, 0.0)) > 0.000001
       )
-    ORDER BY c.conversation_id
+    ORDER BY c.session_id
 """
 SESSION_PROFILE_REPAIR_CANDIDATES_SQL = SESSION_PROFILE_REPAIR_CANDIDATES_SQL.format(cutoff=HOT_SOURCE_READY_CUTOFF_SQL)
 
@@ -439,7 +439,7 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         count_key="missing_profile_row_count",
         table_key="session_profiles",
         sql=MISSING_SESSION_PROFILE_COUNT_SQL,
-        fallback_count_key="total_conversations",
+        fallback_count_key="total_sessions",
     ),
     SessionInsightCountDescriptor(
         count_key="stale_profile_row_count",
@@ -668,7 +668,7 @@ def _materialized_counts_sync(
     verify_freshness: bool,
 ) -> StatusCounts:
     counts: StatusCounts = {
-        "total_conversations": _count_sync(conn, TOTAL_CONVERSATIONS_SQL),
+        "total_sessions": _count_sync(conn, TOTAL_SESSIONS_SQL),
     }
     counts.update(_table_row_counts_sync(conn, tables))
     counts["root_threads"] = _count_sync(conn, ROOT_THREAD_COUNT_SQL) if verify_freshness else counts["thread_count"]
@@ -729,7 +729,7 @@ def session_profile_repair_candidate_ids_sync(conn: sqlite3.Connection) -> list[
         SESSION_PROFILE_REPAIR_CANDIDATES_SQL,
         (SESSION_INSIGHT_MATERIALIZER_VERSION,),
     ).fetchall()
-    return [str(row["conversation_id"] if isinstance(row, sqlite3.Row) else row[0]) for row in rows]
+    return [str(row["session_id"] if isinstance(row, sqlite3.Row) else row[0]) for row in rows]
 
 
 async def session_profile_repair_candidate_ids_async(conn: aiosqlite.Connection) -> list[str]:
@@ -739,7 +739,7 @@ async def session_profile_repair_candidate_ids_async(conn: aiosqlite.Connection)
             (SESSION_INSIGHT_MATERIALIZER_VERSION,),
         )
     ).fetchall()
-    return [str(row["conversation_id"]) for row in rows]
+    return [str(row["session_id"]) for row in rows]
 
 
 def session_insight_status_sync(
@@ -759,7 +759,7 @@ async def _materialized_counts_async(
     verify_freshness: bool,
 ) -> StatusCounts:
     counts: StatusCounts = {
-        "total_conversations": await _count_async(conn, TOTAL_CONVERSATIONS_SQL),
+        "total_sessions": await _count_async(conn, TOTAL_SESSIONS_SQL),
     }
     counts.update(await _table_row_counts_async(conn, tables))
     counts["root_threads"] = (

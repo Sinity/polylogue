@@ -16,15 +16,15 @@ def test_repair_missing_fts_rows_marks_derived_surfaces_ready(tmp_path: Path) ->
     try:
         conn.executescript(
             """
-            CREATE TABLE messages (message_id TEXT, conversation_id TEXT, text TEXT);
-            CREATE VIRTUAL TABLE messages_fts USING fts5(message_id UNINDEXED, conversation_id UNINDEXED, text);
-            CREATE TABLE action_events (event_id TEXT, message_id TEXT, conversation_id TEXT, action_kind TEXT,
+            CREATE TABLE messages (message_id TEXT, session_id TEXT, text TEXT);
+            CREATE VIRTUAL TABLE messages_fts USING fts5(message_id UNINDEXED, session_id UNINDEXED, text);
+            CREATE TABLE action_events (event_id TEXT, message_id TEXT, session_id TEXT, action_kind TEXT,
                 normalized_tool_name TEXT, search_text TEXT);
             CREATE VIRTUAL TABLE action_events_fts USING fts5(event_id UNINDEXED, message_id UNINDEXED,
-                conversation_id UNINDEXED, action_kind UNINDEXED, normalized_tool_name UNINDEXED, search_text);
-            CREATE TABLE session_work_events (event_id TEXT PRIMARY KEY, conversation_id TEXT, source_name TEXT,
+                session_id UNINDEXED, action_kind UNINDEXED, normalized_tool_name UNINDEXED, search_text);
+            CREATE TABLE session_work_events (event_id TEXT PRIMARY KEY, session_id TEXT, source_name TEXT,
                 heuristic_label TEXT, search_text TEXT);
-            CREATE VIRTUAL TABLE session_work_events_fts USING fts5(event_id UNINDEXED, conversation_id UNINDEXED,
+            CREATE VIRTUAL TABLE session_work_events_fts USING fts5(event_id UNINDEXED, session_id UNINDEXED,
                 source_name UNINDEXED, heuristic_label UNINDEXED, text);
             CREATE TABLE work_threads (thread_id TEXT PRIMARY KEY, root_id TEXT, search_text TEXT);
             CREATE VIRTUAL TABLE work_threads_fts USING fts5(thread_id UNINDEXED, root_id UNINDEXED, text);
@@ -53,15 +53,15 @@ def test_repair_stale_fts_rows_skips_ready_archive_surfaces(tmp_path: Path) -> N
     try:
         conn.executescript(
             """
-            CREATE TABLE messages (message_id TEXT, conversation_id TEXT, text TEXT);
-            CREATE VIRTUAL TABLE messages_fts USING fts5(message_id UNINDEXED, conversation_id UNINDEXED, text);
-            CREATE TABLE action_events (event_id TEXT, message_id TEXT, conversation_id TEXT, action_kind TEXT,
+            CREATE TABLE messages (message_id TEXT, session_id TEXT, text TEXT);
+            CREATE VIRTUAL TABLE messages_fts USING fts5(message_id UNINDEXED, session_id UNINDEXED, text);
+            CREATE TABLE action_events (event_id TEXT, message_id TEXT, session_id TEXT, action_kind TEXT,
                 normalized_tool_name TEXT, search_text TEXT);
             CREATE VIRTUAL TABLE action_events_fts USING fts5(event_id UNINDEXED, message_id UNINDEXED,
-                conversation_id UNINDEXED, action_kind UNINDEXED, normalized_tool_name UNINDEXED, search_text);
-            CREATE TABLE session_work_events (event_id TEXT PRIMARY KEY, conversation_id TEXT, source_name TEXT,
+                session_id UNINDEXED, action_kind UNINDEXED, normalized_tool_name UNINDEXED, search_text);
+            CREATE TABLE session_work_events (event_id TEXT PRIMARY KEY, session_id TEXT, source_name TEXT,
                 heuristic_label TEXT, search_text TEXT);
-            CREATE VIRTUAL TABLE session_work_events_fts USING fts5(event_id UNINDEXED, conversation_id UNINDEXED,
+            CREATE VIRTUAL TABLE session_work_events_fts USING fts5(event_id UNINDEXED, session_id UNINDEXED,
                 source_name UNINDEXED, heuristic_label UNINDEXED, text);
             CREATE TABLE work_threads (thread_id TEXT PRIMARY KEY, root_id TEXT, search_text TEXT);
             CREATE VIRTUAL TABLE work_threads_fts USING fts5(thread_id UNINDEXED, root_id UNINDEXED, text);
@@ -107,11 +107,11 @@ def test_search_readiness_rejects_poisoned_zero_count_ready_marker(tmp_path: Pat
     try:
         conn.executescript(
             """
-            CREATE TABLE messages (message_id TEXT, conversation_id TEXT, text TEXT);
+            CREATE TABLE messages (message_id TEXT, session_id TEXT, text TEXT);
             CREATE TABLE content_blocks (
-                message_id TEXT, conversation_id TEXT, text TEXT, tool_input TEXT, metadata TEXT
+                message_id TEXT, session_id TEXT, text TEXT, tool_input TEXT, metadata TEXT
             );
-            CREATE VIRTUAL TABLE messages_fts USING fts5(message_id UNINDEXED, conversation_id UNINDEXED, text);
+            CREATE VIRTUAL TABLE messages_fts USING fts5(message_id UNINDEXED, session_id UNINDEXED, text);
             CREATE TABLE fts_freshness_state (
                 surface TEXT PRIMARY KEY, state TEXT NOT NULL, checked_at TEXT NOT NULL,
                 source_rows INTEGER NOT NULL DEFAULT 0, indexed_rows INTEGER NOT NULL DEFAULT 0,
@@ -145,8 +145,8 @@ def test_repair_stale_fts_rows_recomputes_poisoned_archive_counts(tmp_path: Path
     try:
         conn.executescript(
             """
-            CREATE TABLE messages (message_id TEXT, conversation_id TEXT, text TEXT);
-            CREATE VIRTUAL TABLE messages_fts USING fts5(message_id UNINDEXED, conversation_id UNINDEXED, text);
+            CREATE TABLE messages (message_id TEXT, session_id TEXT, text TEXT);
+            CREATE VIRTUAL TABLE messages_fts USING fts5(message_id UNINDEXED, session_id UNINDEXED, text);
             CREATE TABLE fts_freshness_state (
                 surface TEXT PRIMARY KEY, state TEXT NOT NULL, checked_at TEXT NOT NULL,
                 source_rows INTEGER NOT NULL DEFAULT 0, indexed_rows INTEGER NOT NULL DEFAULT 0,

@@ -32,9 +32,9 @@ def _make_msg(
 def _make_payload(
     conv_id: str,
     *,
-    provider: str = "claude-code",
+    origin: str = "claude-code-session",
     model: str | None = "claude-opus",
-    title: str = "Conversation",
+    title: str = "Session",
     repo: str | None = None,
     tags: list[str] | None = None,
     messages: list[dict[str, Any]] | None = None,
@@ -43,7 +43,7 @@ def _make_payload(
     return {
         "id": conv_id,
         "title": title,
-        "provider": provider,
+        "origin": origin,
         "model": model,
         "created_at": "2026-01-01T00:00:00",
         "updated_at": "2026-01-02T00:00:00",
@@ -62,7 +62,7 @@ class TestMetadataDiff:
         left = _make_payload("c1")
         right = _make_payload("c2")
         diff = compare.build_metadata_diff(left, right)
-        assert diff["provider"]["status"] == "equal"
+        assert diff["origin"]["status"] == "equal"
         assert diff["model"]["status"] == "equal"
 
     def test_changed_field_records_both_sides(self) -> None:
@@ -213,9 +213,9 @@ class TestEnvelope:
         assert env["degraded_count"] == 1
         assert env["degraded_sides"] == ["left"]
         assert env["metadata_diff"] == {}
-        # Missing-side placeholder uses the missing_conversation_target shape.
+        # Missing-side placeholder uses the missing_session_target shape.
         assert env["left"]["status"] == "missing"
-        assert env["left"]["conversation_id"] == "missing"
+        assert env["left"]["session_id"] == "missing"
 
     def test_envelope_both_sides_missing(self) -> None:
         env = compare.build_compare_envelope(None, None, "x", "y", "prompt")

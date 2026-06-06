@@ -8,7 +8,7 @@ cheaply before doing any work.
 
 The module lives in ``core/`` so substrate code (``polylogue.sources``) can
 read and write it without violating the layering rule that forbids
-``sources/`` from importing ``daemon/``. There is no migration the daemon
+``sources/`` from importing ``daemon/``. There is no in-place schema upgrade the daemon
 itself can apply, so re-validation only happens on SIGHUP or an explicit
 operator action; a process restart picks up a new value naturally.
 """

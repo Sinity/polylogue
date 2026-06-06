@@ -82,7 +82,7 @@ class MaintenanceScopePayload(SurfacePayloadModel):
 
     ``filter`` is the serialized form of
     :class:`polylogue.maintenance.scope.MaintenanceScopeFilter` —
-    a dict of named scope dimensions (``conversation_ids``,
+    a dict of named scope dimensions (``session_ids``,
     ``provider``, ``source_family``, ``source_root``,
     ``raw_artifact_id``, ``time_range``, ``failure_kind``,
     ``parser_version``). It is typed as ``dict[str, Any]`` at the

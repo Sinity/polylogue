@@ -29,17 +29,17 @@ def _archive_coverage_insight() -> ArchiveCoverageInsight:
         group_by="provider",
         bucket="claude-code",
         source_name="claude-code",
-        conversation_count=1,
+        session_count=1,
         message_count=2,
         user_message_count=1,
         assistant_message_count=1,
-        avg_messages_per_conversation=2.0,
+        avg_messages_per_session=2.0,
         avg_user_words=3.0,
         avg_assistant_words=4.0,
         tool_use_count=1,
         thinking_count=0,
-        total_conversations_with_tools=1,
-        total_conversations_with_thinking=0,
+        total_sessions_with_tools=1,
+        total_sessions_with_thinking=0,
         tool_use_percentage=100.0,
         thinking_percentage=0.0,
     )
@@ -61,7 +61,7 @@ def test_registry_accessors_format_values_and_defaults() -> None:
     assert insight_registry._attr("thread_id")(item) == "thread-1"
     assert insight_registry._nested("nested", "value")(item) == "nested-value"
     assert insight_registry._nested("missing", "value")(item) == "-"
-    assert insight_registry._id_with_provider("thread_id")(item) == "thread-1 [claude-code]"
+    assert insight_registry._id_with_origin("thread_id")(item) == "thread-1 [claude-code-session]"
     assert insight_registry._list_preview("values", limit=2)(item) == "a, b"
     assert insight_registry._formatted_float("ratio", precision=2)(item) == "12.35"
     assert insight_registry._formatted_float("missing")(item) == "-"
@@ -108,7 +108,7 @@ def test_insight_items_payload_and_rendering_cover_json_plain_and_empty_paths() 
 
     payload = insight_items_payload([insight], insight_type, item_key="items")
     assert payload["total"] == 1
-    assert payload["items"][0]["source_name"] == "claude-code"
+    assert payload["items"][0]["origin"] == "claude-code-session"
 
     with patch("polylogue.cli.shared.machine_errors.emit_success") as mock_emit:
         render_insight_items([insight], insight_type, json_mode=True)

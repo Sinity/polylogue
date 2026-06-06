@@ -1,4 +1,4 @@
-"""CLI tests for neighboring-conversation discovery."""
+"""CLI tests for neighboring-session discovery."""
 
 from __future__ import annotations
 
@@ -8,17 +8,18 @@ from unittest.mock import AsyncMock, MagicMock
 
 from click.testing import CliRunner
 
-from polylogue.archive.conversation.neighbor_candidates import ConversationNeighborCandidate, NeighborReason
-from polylogue.archive.models import ConversationSummary
+from polylogue.archive.models import SessionSummary
+from polylogue.archive.session.neighbor_candidates import NeighborReason, SessionNeighborCandidate
 from polylogue.cli.commands.neighbors import neighbors_command
-from polylogue.types import ConversationId, Provider
+from polylogue.core.enums import Origin
+from polylogue.types import SessionId
 
 
-def _candidate() -> ConversationNeighborCandidate:
-    return ConversationNeighborCandidate(
-        summary=ConversationSummary(
-            id=ConversationId("candidate"),
-            provider=Provider.CODEX,
+def _candidate() -> SessionNeighborCandidate:
+    return SessionNeighborCandidate(
+        summary=SessionSummary(
+            id=SessionId("candidate"),
+            origin=Origin.CODEX_SESSION,
             title="Archive Lock Retries",
             updated_at=datetime(2026, 4, 22, 14, 0, tzinfo=timezone.utc),
             message_count=2,
@@ -32,7 +33,7 @@ def _candidate() -> ConversationNeighborCandidate:
                 weight=3.0,
             ),
         ),
-        source_conversation_id="target",
+        source_session_id="target",
     )
 
 
@@ -43,7 +44,7 @@ def test_neighbors_command_emits_json_payload(cli_runner: CliRunner) -> None:
 
     result = cli_runner.invoke(
         neighbors_command,
-        ["--id", "target", "--format", "json"],
+        ["--id", "target", "--origin", "codex-session", "--format", "json"],
         obj=env,
         catch_exceptions=False,
     )
@@ -51,12 +52,12 @@ def test_neighbors_command_emits_json_payload(cli_runner: CliRunner) -> None:
     assert result.exit_code == 0
     payload = json.loads(result.output)
     neighbor = payload["result"]["neighbors"][0]
-    assert neighbor["conversation"]["id"] == "candidate"
+    assert neighbor["session"]["id"] == "candidate"
     assert neighbor["reasons"][0]["kind"] == "same_title"
     env.polylogue.neighbor_candidates.assert_called_once_with(
-        conversation_id="target",
+        session_id="target",
         query=None,
-        provider=None,
+        provider="codex",
         limit=10,
         window_hours=24,
     )

@@ -92,8 +92,8 @@ def _make_codex_session(uuid: str, n_messages: int) -> list[dict[str, object]]:
     return records
 
 
-def _make_chatgpt_conversation(conv_id: str, n_messages: int) -> dict[str, object]:
-    """Generate a ChatGPT-shaped conversation JSON."""
+def _make_chatgpt_session(conv_id: str, n_messages: int) -> dict[str, object]:
+    """Generate a ChatGPT-shaped session JSON."""
     messages: list[dict[str, object]] = []
     for i in range(n_messages):
         role = "user" if i % 2 == 0 else "assistant"
@@ -107,7 +107,7 @@ def _make_chatgpt_conversation(conv_id: str, n_messages: int) -> dict[str, objec
         )
     return {
         "id": conv_id,
-        "title": f"ChatGPT Conversation {conv_id}",
+        "title": f"ChatGPT Session {conv_id}",
         "create_time": 1700000000,
         "update_time": 1700000000 + n_messages,
         "messages": messages,
@@ -118,7 +118,7 @@ def _make_chatgpt_conversation(conv_id: str, n_messages: int) -> dict[str, objec
 _PROVIDER_GENERATORS = {
     "claude-code": ("jsonl", _make_claude_code_session),
     "codex": ("jsonl", _make_codex_session),
-    "chatgpt": ("json", _make_chatgpt_conversation),
+    "chatgpt": ("json", _make_chatgpt_session),
 }
 
 _SCALE_TIERS = {
@@ -170,7 +170,7 @@ def _run_convergence_probe(
     os.environ["POLYLOGUE_CONFIG"] = str(tmp_path / "polylogue.toml")
 
     files = list(corpus_root.rglob("*.jsonl")) + list(corpus_root.rglob("*.json"))
-    # Filter only conversation files (skip metadata)
+    # Filter only session files (skip metadata)
     files = [f for f in files if not f.name.startswith(".")]
 
     converger = DaemonConverger(stages=make_default_convergence_stages(db_path), max_workers=4)
@@ -190,6 +190,7 @@ def _run_convergence_probe(
     return {
         "total_s": round(elapsed, 2),
         "files": float(len(files)),
+        "total_files": float(len(files)),
         "succeeded_files": float(metrics.succeeded_file_count),
         "failed_files": float(metrics.failed_file_count),
         "parse_wall_s": metrics.parse_time_s,

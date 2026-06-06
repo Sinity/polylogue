@@ -538,12 +538,14 @@ def default_sources() -> tuple[WatchSource, ...]:
 
 
 def _cursor_db_path(polylogue: Polylogue) -> Path:
-    """Use the archive database for daemon cursor state."""
+    """Use the archive ops tier for daemon cursor state."""
     backend = getattr(polylogue, "backend", None)
     db_path = getattr(backend, "db_path", None)
     if isinstance(db_path, Path):
+        if db_path.name == "polylogue.db":
+            return db_path.with_name("ops.db")
         return db_path
-    return Path(polylogue.archive_root) / "polylogue.db"
+    return Path(polylogue.archive_root) / "ops.db"
 
 
 def _is_database_locked(exc: sqlite3.OperationalError) -> bool:

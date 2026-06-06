@@ -3,7 +3,7 @@
 # Daemon (polylogued)
 
 `polylogued` is the long-lived Polylogue service. It watches chat directories,
-ingests new conversations, runs periodic maintenance, and exposes optional HTTP
+ingests new sessions, runs periodic maintenance, and exposes optional HTTP
 surfaces.
 
 ## Quickstart
@@ -84,17 +84,17 @@ Health check with database statistics.
 Full daemon status including component state, source lag, ingestion throughput,
 FTS readiness, and insight freshness.
 
-### GET /api/conversations
+### GET /api/sessions
 
-List conversations. Query params: `limit`, `provider`, `since`.
+List sessions. Query params: `limit`, `origin`, `since`.
 
-### GET /api/conversations/:id
+### GET /api/sessions/:id
 
-Get a single conversation by ID.
+Get a single session by ID.
 
-### GET /api/conversations/:id/messages
+### GET /api/sessions/:id/messages
 
-Get messages for a conversation. Query params: `limit`, `offset`.
+Get messages for a session. Query params: `limit`, `offset`.
 
 ### GET /api/facets
 
@@ -275,7 +275,7 @@ These run automatically inside the daemon process:
 | Task | Frequency | Description |
 |------|-----------|-------------|
 | WAL checkpoint | Every 5 minutes | Keeps the WAL file bounded via `PRAGMA wal_checkpoint(TRUNCATE)` |
-| Heartbeat | Every 15 minutes | Logs conversation/message counts as structured heartbeat |
+| Heartbeat | Every 15 minutes | Logs session/message counts as structured heartbeat |
 | FTS convergence | Every 10 minutes | Verifies FTS coverage, rebuilds if messages are unindexed |
 | Health checks | Configurable (default 5 min) | Runs bounded FAST health checks by default, sends notifications on non-OK status. MEDIUM and EXPENSIVE checks are explicit operator diagnostics. |
 | FTS startup check | Once at startup | Rebuilds the FTS index if messages exist but aren't indexed (covers gaps from pre-daemon data) |
@@ -296,8 +296,8 @@ these — operators are responsible for scheduling them:
 
 | Task | Tool | Frequency | Description |
 |------|------|-----------|-------------|
-| Database backup | `polylogue backup` | Daily | Creates a clean SQLite database copy. Use `VACUUM INTO` when available (SQLite >= 3.27) for a defragmented copy. |
-| Blob store backup | `polylogue backup --include-blobs` | Weekly | Copies the content-addressed blob store. Integration with restic or similar incremental backup tools is recommended for production use. |
+| Durability-tier backup | `polylogue backup` | Daily | archives copy `source.db`, `user.db`, `embeddings.db`, and referenced blobs while omitting rebuildable `index.db` and disposable `ops.db`. Legacy archives fall back to a clean single-database copy. |
+| Blob store backup | `polylogue backup` | Weekly | backup copies referenced blob files. For large archives, restic or similar incremental backup tools can also target `blob/` directly. |
 | Database vacuum | `sqlite3 <db> "VACUUM"` | Monthly | Reclaims space after large deletes or updates. Requires downtime or `VACUUM INTO` to a new file while the daemon runs. |
 | Litestream replication | Litestream | Continuous | Real-time WAL replication to S3-compatible storage. Configure Litestream to watch the database and WAL files; the daemon's periodic WAL checkpoint is compatible with Litestream's replication model. |
 
@@ -306,8 +306,9 @@ these — operators are responsible for scheduling them:
 Litestream provides continuous SQLite replication by shipping WAL frames
 to object storage. Integration guidance:
 
-1. Install Litestream and configure it to watch the Polylogue database
-   (typically `~/.local/share/polylogue/polylogue.db`).
+1. Install Litestream and configure it to watch the Polylogue tier files you
+   need to preserve continuously. Prioritize `source.db`, `user.db`, and
+   `embeddings.db`; include `index.db` when avoiding reindex time matters.
 2. The daemon's periodic WAL checkpoint (`PRAGMA wal_checkpoint(TRUNCATE)`)
    triggers Litestream to create new generations. No daemon changes needed.
 3. Test restores periodically: `litestream restore -o /tmp/restore.db <path>`.
@@ -316,11 +317,17 @@ A sample Litestream config:
 
 ```yaml
 dbs:
-  - path: /home/user/.local/share/polylogue/polylogue.db
+  - path: /home/user/.local/share/polylogue/source.db
     replicas:
       - type: s3
         bucket: my-backups
-        path: polylogue
+        path: polylogue/source
+        endpoint: https://s3.amazonaws.com
+  - path: /home/user/.local/share/polylogue/user.db
+    replicas:
+      - type: s3
+        bucket: my-backups
+        path: polylogue/user
         endpoint: https://s3.amazonaws.com
 ```
 
@@ -330,7 +337,7 @@ The blob store uses content-addressed storage under
 `<archive_root>/blob/`. Each blob's filename is its SHA-256 hash, so
 identical content is automatically deduplicated. For backup:
 
-- `polylogue backup --include-blobs` copies blobs alongside the database
+- `polylogue backup` copies archive blobs referenced by `source.db`
 - For large archives, use restic or rsync targeting the `blob/` directory
 - Blobs are write-once, read-many — incremental backup tools work well
 
@@ -406,7 +413,7 @@ status — this is not an error.
 ### Model/dimension changes
 
 When the configured model or dimension differs from stored embeddings, the
-daemon marks all conversations for re-embedding. A dimension change also drops
+daemon marks all sessions for re-embedding. A dimension change also drops
 and recreates the vec0 virtual table.
 
 ### Checking coverage
@@ -421,9 +428,9 @@ polylogued status                    # daemon status includes embedding readines
 `polylogue embed backfill` records each bounded catch-up window in the local
 archive as `embedding_catchup_runs`. The latest run is shown by
 `polylogue embed status`, including terminal state, stop reason, processed
-conversations, embedded messages, errors, and estimated cost. This is the
+sessions, embedded messages, errors, and estimated cost. This is the
 operator recovery point after interruption, OOM, restart, or a cost/error
-window stop; per-conversation retry state still lives in `embedding_status`.
+window stop; per-session retry state still lives in `embedding_status`.
 
 ## Service Recovery
 
@@ -464,24 +471,28 @@ Operators can override those systemd resource controls in Nix or via a
 systemd drop-in without changing daemon behavior.
 
 If the daemon fails to start, check:
-- Archive DB exists and is writable
+- tier files exist and are writable
 - `polylogue.toml` is valid (run `polylogue config`)
 - No other instance is running (pidfile lock)
 
 ## Backup and Recovery
 
 The Polylogue archive consists of:
-- `polylogue.db` — SQLite database (WAL mode, includes `-wal` and `-shm` files)
+- `source.db` — raw acquisition/source evidence SQLite database
+- `index.db` — parsed sessions, search, graph, and insight read models
+- `embeddings.db` — vector index, embedding status, and catch-up metadata
+- `user.db` — user marks, corrections, and annotations
+- `ops.db` — daemon, cursor, and telemetry SQLite state
 - `blob/` — content-addressed blob store
 
-**Quick backup** (daemon stopped):
-```bash
-polylogue backup --output-dir /backup/polylogue
-```
+For backups, prioritize `source.db`, `user.db`, `embeddings.db`, and `blob/`.
+`index.db` is rebuildable but convenient to keep. `ops.db` is disposable unless
+you need operational history.
 
 **Continuous backup** with Litestream:
 ```bash
-litestream replicate polylogue.db s3://my-bucket/polylogue
+litestream replicate source.db s3://my-bucket/polylogue/source
+litestream replicate user.db s3://my-bucket/polylogue/user
 ```
 
 **Blob store backup** with restic:
@@ -494,7 +505,9 @@ restic backup /path/to/archive/blob/
 # Stop daemon
 systemctl --user stop polylogued
 # Restore files
-cp /backup/polylogue.db /path/to/archive/
+cp /backup/source.db /path/to/archive/
+cp /backup/user.db /path/to/archive/
+cp /backup/embeddings.db /path/to/archive/
 cp -r /backup/blob/ /path/to/archive/blob/
 # Start daemon
 systemctl --user start polylogued

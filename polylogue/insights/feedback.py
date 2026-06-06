@@ -3,9 +3,9 @@
 This module defines the typed shape of *user corrections* applied to
 heuristic insights. A correction is a user override that:
 
-- lives **outside** the content-hashed conversation payload, so applying or
-  removing a correction never alters ``conversation_content_hash()``;
-- is keyed by ``(conversation_id, insight_kind)``: at most one correction
+- lives **outside** the content-hashed session payload, so applying or
+  removing a correction never alters ``session_content_hash()``;
+- is keyed by ``(session_id, insight_kind)``: at most one correction
   of each kind per session, so deterministic rebuilds always produce the
   same merged output;
 - is consulted by the insight materialization path **after** the heuristic
@@ -112,8 +112,8 @@ class LearningCorrection(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    conversation_id: str = Field(min_length=1)
-    """Target conversation. Stored after the surface layer resolves it."""
+    session_id: str = Field(min_length=1)
+    """Target session. Stored after the surface layer resolves it."""
 
     kind: CorrectionKind
     """Closed-enum correction kind. See :class:`CorrectionKind`."""
@@ -154,7 +154,7 @@ def select_correction(
 ) -> LearningCorrection | None:
     """Pick the correction of ``kind`` from a session's correction set.
 
-    The ``(conversation_id, insight_kind)`` uniqueness invariant means
+    The ``(session_id, insight_kind)`` uniqueness invariant means
     there can be at most one match, but callers pass in a generic
     iterable, so the helper iterates defensively and returns the first
     one. The DB-level UNIQUE constraint is the durable source of truth.

@@ -23,7 +23,7 @@ Models inventoried:
   ``retrieval_inference``, ``retrieval_enrichment`` — retrieval-layer
   read models.
 * ``orphaned_messages``, ``orphaned_content_blocks``,
-  ``empty_conversations``, ``orphaned_attachments`` — archive-cleanup
+  ``empty_sessions``, ``orphaned_attachments`` — archive-cleanup
   scopes (orphan rows only).
 * ``message_type_backfill`` — message-type classification backlog.
 
@@ -45,7 +45,7 @@ from polylogue.core.json import JSONDocument, json_document
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.storage.message_type_backfill import count_unclassified_message_type_sync
 from polylogue.storage.repair import (
-    count_empty_conversations_sync,
+    count_empty_sessions_sync,
     count_orphaned_attachments_sync,
     count_orphaned_blobs_sync,
     count_orphaned_content_blocks_sync,
@@ -283,7 +283,12 @@ _RETRIEVAL_MODEL_NAMES: frozenset[str] = frozenset(
 )
 
 
-def _archive_cleanup_items(conn: sqlite3.Connection, *, include_expensive: bool) -> list[StalenessItem]:
+def _archive_cleanup_items(
+    conn: sqlite3.Connection,
+    *,
+    db_path: Path | str | None,
+    include_expensive: bool,
+) -> list[StalenessItem]:
     """Orphan-row counts for archive-cleanup scopes (read-only)."""
 
     if not include_expensive:
@@ -301,7 +306,7 @@ def _archive_cleanup_items(conn: sqlite3.Connection, *, include_expensive: bool)
             for model in (
                 "orphaned_messages",
                 "orphaned_content_blocks",
-                "empty_conversations",
+                "empty_sessions",
                 "orphaned_attachments",
                 "orphaned_blobs",
             )
@@ -309,24 +314,24 @@ def _archive_cleanup_items(conn: sqlite3.Connection, *, include_expensive: bool)
 
     orphan_messages = count_orphaned_messages_sync(conn)
     orphan_content_blocks = count_orphaned_content_blocks_sync(conn)
-    empty_conversations = count_empty_conversations_sync(conn)
+    empty_sessions = count_empty_sessions_sync(conn)
     orphan_attachments = count_orphaned_attachments_sync(conn)
 
     rows: list[tuple[str, int, str]] = [
         (
             "orphaned_messages",
             orphan_messages,
-            "messages referencing missing conversations",
+            "messages referencing missing sessions",
         ),
         (
             "orphaned_content_blocks",
             orphan_content_blocks,
-            "content blocks referencing missing conversations or messages",
+            "content blocks referencing missing sessions or messages",
         ),
         (
-            "empty_conversations",
-            empty_conversations,
-            "conversations with no messages",
+            "empty_sessions",
+            empty_sessions,
+            "sessions with no messages",
         ),
         (
             "orphaned_attachments",
@@ -336,12 +341,12 @@ def _archive_cleanup_items(conn: sqlite3.Connection, *, include_expensive: bool)
     ]
 
     if include_expensive:
-        orphan_blobs = count_orphaned_blobs_sync(conn)
+        orphan_blobs = count_orphaned_blobs_sync(conn, db_path=db_path)
         rows.append(
             (
                 "orphaned_blobs",
                 orphan_blobs,
-                "content-addressed blob files with no raw_conversations reference",
+                "content-addressed blob files with no source blob reference",
             )
         )
 
@@ -423,18 +428,39 @@ def staleness_inventory(
         N ids per stale (model, reason) when the planner needs them.)
     """
 
+    from contextlib import closing, nullcontext
+
+    from polylogue.paths import active_index_db_path
     from polylogue.storage.derived.derived_status import collect_derived_model_statuses_sync
-    from polylogue.storage.sqlite.connection import connection_context, open_read_connection
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
     selected_scopes = _coerce_scopes(scopes)
     _ = sample_limit  # reserved; see docstring.
 
     captured_at = datetime.now(timezone.utc).isoformat()
 
+    # The archive is the split-file store; reads target
+    # ``index.db`` (sessions/messages/blocks tree) directly. A pre-opened
+    # connection is used as-is; otherwise the caller's path — or the active
+    # ``index.db`` — is opened read-only.
+    from contextlib import AbstractContextManager
+
+    connection_manager: AbstractContextManager[sqlite3.Connection]
     if isinstance(db_path, sqlite3.Connection):
-        connection_manager = connection_context(db_path)
+        connection_manager = nullcontext(db_path)
     else:
-        connection_manager = open_read_connection(db_path)
+        resolved = Path(db_path) if db_path is not None else active_index_db_path()
+        if not resolved.exists():
+            # No archive `index.db` yet (fresh archive before first ingest).
+            # There is nothing to inventory; report an empty result rather
+            # than failing to open a non-existent file.
+            return StalenessInventory(
+                captured_at=captured_at,
+                db_path=str(resolved),
+                scopes=selected_scopes,
+                items=(),
+            )
+        connection_manager = closing(open_readonly_connection(resolved))
 
     with connection_manager as conn:
         if _DERIVED_MODEL_SCOPE in selected_scopes or _RETRIEVAL_MODEL_SCOPE in selected_scopes:
@@ -456,7 +482,7 @@ def staleness_inventory(
                     items.extend(_model_items(status, scope=_RETRIEVAL_MODEL_SCOPE))
 
         if _ARCHIVE_CLEANUP_SCOPE in selected_scopes:
-            items.extend(_archive_cleanup_items(conn, include_expensive=verify_full))
+            items.extend(_archive_cleanup_items(conn, db_path=resolved_path, include_expensive=verify_full))
 
         if _BACKFILL_SCOPE in selected_scopes:
             items.extend(_backfill_items(conn))

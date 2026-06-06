@@ -186,7 +186,7 @@ def test_infer_schema_emits_cluster_backed_corpus_specs_when_manifest_exists(tmp
                 representative_paths=["/tmp/source.json"],
                 dominant_keys=["id", "messages"],
                 confidence=0.92,
-                artifact_kind="conversation_document",
+                artifact_kind="session_document",
             )
         ],
     )
@@ -215,7 +215,7 @@ def test_infer_schema_emits_cluster_backed_corpus_specs_when_manifest_exists(tmp
     assert len(result.corpus_specs) == 1
     assert len(result.corpus_scenarios) == 1
     assert result.corpus_specs[0].profile.family_ids == ("cluster-a",)
-    assert result.corpus_specs[0].element_kind == "conversation_document"
+    assert result.corpus_specs[0].element_kind == "session_document"
     assert result.corpus_scenarios[0].corpus_specs[0].profile.family_ids == ("cluster-a",)
 
 
@@ -232,7 +232,7 @@ def test_list_inferred_corpus_specs_reads_registry_catalog_and_manifest() -> Non
                 representative_paths=["/tmp/source.json"],
                 dominant_keys=["id", "messages"],
                 confidence=0.92,
-                artifact_kind="conversation_document",
+                artifact_kind="session_document",
                 promoted_package_version="v7",
             )
         ],
@@ -247,16 +247,16 @@ def test_list_inferred_corpus_specs_reads_registry_catalog_and_manifest() -> Non
             SchemaVersionPackage(
                 provider="chatgpt",
                 version="v7",
-                anchor_kind="conversation_document",
-                default_element_kind="conversation_document",
+                anchor_kind="session_document",
+                default_element_kind="session_document",
                 first_seen="2026-04-01T00:00:00Z",
                 last_seen="2026-04-02T00:00:00Z",
                 bundle_scope_count=1,
                 sample_count=12,
                 elements=[
                     SchemaElementManifest(
-                        element_kind="conversation_document",
-                        schema_file="conversation_document.schema.json",
+                        element_kind="session_document",
+                        schema_file="session_document.schema.json",
                         sample_count=12,
                         artifact_count=12,
                     )
@@ -287,8 +287,8 @@ def test_list_inferred_corpus_scenarios_groups_specs_by_provider_and_version() -
             SchemaVersionPackage(
                 provider="chatgpt",
                 version="v7",
-                anchor_kind="conversation_document",
-                default_element_kind="conversation_document",
+                anchor_kind="session_document",
+                default_element_kind="session_document",
                 first_seen="2026-04-01T00:00:00Z",
                 last_seen="2026-04-02T00:00:00Z",
                 bundle_scope_count=1,
@@ -308,7 +308,7 @@ def test_list_inferred_corpus_scenarios_groups_specs_by_provider_and_version() -
                 representative_paths=["/tmp/source-a.json"],
                 dominant_keys=["id"],
                 confidence=0.9,
-                artifact_kind="conversation_document",
+                artifact_kind="session_document",
             ),
             SchemaCluster(
                 cluster_id="cluster-b",
@@ -319,7 +319,7 @@ def test_list_inferred_corpus_scenarios_groups_specs_by_provider_and_version() -
                 representative_paths=["/tmp/source-b.json"],
                 dominant_keys=["id"],
                 confidence=0.8,
-                artifact_kind="conversation_document",
+                artifact_kind="session_document",
             ),
         ],
         default_version="v7",
@@ -346,8 +346,8 @@ def test_list_inferred_corpus_specs_can_scope_to_one_provider() -> None:
             SchemaVersionPackage(
                 provider="chatgpt",
                 version="v3",
-                anchor_kind="conversation_document",
-                default_element_kind="conversation_document",
+                anchor_kind="session_document",
+                default_element_kind="session_document",
                 first_seen="2026-04-01T00:00:00Z",
                 last_seen="2026-04-02T00:00:00Z",
                 bundle_scope_count=1,
@@ -362,8 +362,8 @@ def test_list_inferred_corpus_specs_can_scope_to_one_provider() -> None:
             SchemaVersionPackage(
                 provider="codex",
                 version="v1",
-                anchor_kind="conversation_document",
-                default_element_kind="conversation_document",
+                anchor_kind="session_document",
+                default_element_kind="session_document",
                 first_seen="2026-04-01T00:00:00Z",
                 last_seen="2026-04-02T00:00:00Z",
                 bundle_scope_count=1,
@@ -442,8 +442,8 @@ def test_list_schemas_returns_selected_and_all_provider_snapshots() -> None:
             SchemaVersionPackage(
                 provider="chatgpt",
                 version="v7",
-                anchor_kind="conversation_document",
-                default_element_kind="conversation_document",
+                anchor_kind="session_document",
+                default_element_kind="session_document",
                 first_seen="2026-04-01T00:00:00Z",
                 last_seen="2026-04-02T00:00:00Z",
                 bundle_scope_count=1,
@@ -463,7 +463,7 @@ def test_list_schemas_returns_selected_and_all_provider_snapshots() -> None:
                 representative_paths=["/tmp/source.json"],
                 dominant_keys=["id"],
                 confidence=0.9,
-                artifact_kind="conversation_document",
+                artifact_kind="session_document",
             )
         ],
     )
@@ -504,8 +504,8 @@ def test_promote_schema_cluster_with_samples_filters_matching_cluster(tmp_path: 
     promoted_package = SchemaVersionPackage(
         provider="chatgpt",
         version="v8",
-        anchor_kind="conversation_document",
-        default_element_kind="conversation_document",
+        anchor_kind="session_document",
+        default_element_kind="session_document",
         first_seen="2026-04-01T00:00:00Z",
         last_seen="2026-04-02T00:00:00Z",
         bundle_scope_count=1,

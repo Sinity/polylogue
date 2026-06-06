@@ -30,8 +30,8 @@ from polylogue.insights.topology import (
     TopologyEdgeKind,
     TopologyNode,
 )
-from polylogue.types import ConversationId
-from tests.infra.storage_records import ConversationBuilder, db_setup
+from polylogue.types import SessionId
+from tests.infra.storage_records import SessionBuilder, db_setup
 
 
 class _MockServer:
@@ -76,21 +76,27 @@ def _seed_lineage(db_path: Path) -> None:
     walk.
     """
 
-    ConversationBuilder(db_path, "root").provider("claude-code").title("Root").add_message(
+    SessionBuilder(db_path, "root").provider("claude-code").title("Root").add_message(
         role="user", text="kickoff"
     ).save()
-    ConversationBuilder(db_path, "child").provider("claude-code").title("Resume").parent_conversation(
-        "root"
-    ).branch_type("subagent").add_message(role="user", text="continue").save()
-    ConversationBuilder(db_path, "grandchild").provider("claude-code").title("Fork").parent_conversation(
-        "child"
-    ).branch_type("continuation").add_message(role="user", text="fork").save()
-    ConversationBuilder(db_path, "side").provider("claude-code").title("Side").parent_conversation("root").branch_type(
+    SessionBuilder(db_path, "child").provider("claude-code").title("Resume").parent_session("ext-root").branch_type(
+        "subagent"
+    ).add_message(role="user", text="continue").save()
+    SessionBuilder(db_path, "grandchild").provider("claude-code").title("Fork").parent_session("ext-child").branch_type(
+        "continuation"
+    ).add_message(role="user", text="fork").save()
+    SessionBuilder(db_path, "side").provider("claude-code").title("Side").parent_session("ext-root").branch_type(
         "sidechain"
     ).add_message(role="user", text="side").save()
-    ConversationBuilder(db_path, "isolated").provider("claude-code").title("Lone").add_message(
+    SessionBuilder(db_path, "isolated").provider("claude-code").title("Lone").add_message(
         role="user", text="alone"
     ).save()
+
+
+# Archive session ids derive from the builder's provider_session_id
+# (``ext-<conv_id>``) and the claude-code origin.
+def _native(token: str) -> str:
+    return f"claude-code-session:ext-{token}"
 
 
 def _make_topology(
@@ -102,7 +108,7 @@ def _make_topology(
 ) -> SessionTopology:
     node_tuple = tuple(
         TopologyNode(
-            conversation_id=ConversationId(cid),
+            session_id=SessionId(cid),
             source_name="claude-code",
             title=cid.title(),
             depth=depth,
@@ -112,8 +118,8 @@ def _make_topology(
     )
     edge_tuple = tuple(
         TopologyEdge(
-            child_id=ConversationId(child),
-            parent_id=ConversationId(parent) if parent else None,
+            child_id=SessionId(child),
+            parent_id=SessionId(parent) if parent else None,
             kind=kind,
             resolved=resolved,
         )
@@ -121,8 +127,8 @@ def _make_topology(
     )
     root_id = nodes[0][0]
     return SessionTopology(
-        target_id=ConversationId(target),
-        root_id=ConversationId(root_id),
+        target_id=SessionId(target),
+        root_id=SessionId(root_id),
         nodes=node_tuple,
         edges=edge_tuple,
         cycle_detected=cycle,
@@ -201,11 +207,11 @@ class TestParentChainProjection:
 
 
 class TestParentChainEndpointDispatch:
-    """``GET /api/conversations/{id}/topology/parent-chain`` routing."""
+    """``GET /api/sessions/{id}/topology/parent-chain`` routing."""
 
-    def test_unknown_conversation_returns_404(self, workspace_env: dict[str, Path]) -> None:
+    def test_unknown_session_returns_404(self, workspace_env: dict[str, Path]) -> None:
         _seed_lineage(db_setup(workspace_env))
-        handler = _make_handler("GET", "/api/conversations/missing/topology/parent-chain")
+        handler = _make_handler("GET", "/api/sessions/missing/topology/parent-chain")
         send_error, send_json = _capture_responses(handler)
         handler.do_GET()
         send_json.assert_not_called()
@@ -216,7 +222,7 @@ class TestParentChainEndpointDispatch:
 
     def test_grandchild_walks_back_to_root_and_orders_chain(self, workspace_env: dict[str, Path]) -> None:
         _seed_lineage(db_setup(workspace_env))
-        handler = _make_handler("GET", "/api/conversations/grandchild/topology/parent-chain")
+        handler = _make_handler("GET", f"/api/sessions/{_native('grandchild')}/topology/parent-chain")
         send_error, send_json = _capture_responses(handler)
         handler.do_GET()
         send_error.assert_not_called()
@@ -224,35 +230,35 @@ class TestParentChainEndpointDispatch:
         assert status == HTTPStatus.OK
         # Oldest-to-newest ordering: root then the subagent child then the
         # grandchild itself. The sidechain sibling is NOT part of the chain.
-        assert payload["chain_ids"][0] == "root"
-        assert payload["chain_ids"][1] == "child"
-        assert payload["chain_ids"][2] == "grandchild"
-        assert payload["focus_id"] == "grandchild"
-        assert payload["parent_id"] == "child"
+        assert payload["chain_ids"][0] == _native("root")
+        assert payload["chain_ids"][1] == _native("child")
+        assert payload["chain_ids"][2] == _native("grandchild")
+        assert payload["focus_id"] == _native("grandchild")
+        assert payload["parent_id"] == _native("child")
         # Sibling is surfaced separately for the popover, not inline.
-        assert "side" not in payload["chain_ids"]
+        assert _native("side") not in payload["chain_ids"]
 
-    def test_isolated_conversation_returns_single_element_chain(self, workspace_env: dict[str, Path]) -> None:
+    def test_isolated_session_returns_single_element_chain(self, workspace_env: dict[str, Path]) -> None:
         _seed_lineage(db_setup(workspace_env))
-        handler = _make_handler("GET", "/api/conversations/isolated/topology/parent-chain")
+        handler = _make_handler("GET", f"/api/sessions/{_native('isolated')}/topology/parent-chain")
         send_error, send_json = _capture_responses(handler)
         handler.do_GET()
         send_error.assert_not_called()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.OK
-        assert payload["chain_ids"] == ["isolated"]
+        assert payload["chain_ids"] == [_native("isolated")]
         assert payload["ancestors"] == []
         assert payload["branch_kind"] is None
 
     def test_descendants_query_param_excludes_descendants(self, workspace_env: dict[str, Path]) -> None:
         _seed_lineage(db_setup(workspace_env))
-        handler = _make_handler("GET", "/api/conversations/child/topology/parent-chain?descendants=0")
+        handler = _make_handler("GET", f"/api/sessions/{_native('child')}/topology/parent-chain?descendants=0")
         send_error, send_json = _capture_responses(handler)
         handler.do_GET()
         send_error.assert_not_called()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.OK
-        assert payload["chain_ids"] == ["root", "child"]
+        assert payload["chain_ids"] == [_native("root"), _native("child")]
         assert payload["descendants"] == []
 
 
@@ -268,7 +274,7 @@ class TestReaderShellTopologyHooks:
 
     def test_open_chain_action_is_in_lineage_inspector(self) -> None:
         # The lineage tab exposes the same action so it is reachable from
-        # either the conversation header or the inspector.
+        # either the session header or the inspector.
         assert "Open chain as stack" in WEB_SHELL_HTML
 
     def test_branch_chip_uses_q_vocabulary(self) -> None:
@@ -283,7 +289,7 @@ class TestReaderShellTopologyHooks:
         assert "openLineageInspector" in WEB_SHELL_HTML
 
     def test_parent_chain_endpoint_is_called(self) -> None:
-        # JS routes through ``/api/conversations/{id}/topology/parent-chain``
+        # JS routes through ``/api/sessions/{id}/topology/parent-chain``
         # so the daemon owns the lineage walk; the reader never re-derives
         # the chain client-side.
         assert "/topology/parent-chain" in WEB_SHELL_HTML

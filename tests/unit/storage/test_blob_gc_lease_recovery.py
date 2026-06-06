@@ -39,6 +39,15 @@ def db_path(tmp_path: Path) -> Path:
     conn = open_connection(db)
     try:
         _ensure_schema(conn)
+        # Archive blob GC reads raw_sessions.blob_hash and blob_refs; ensure
+        # they exist on top of the bootstrapped schema.
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(raw_sessions)")}
+        if "blob_hash" not in columns:
+            conn.execute("ALTER TABLE raw_sessions ADD COLUMN blob_hash BLOB")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS blob_refs ("
+            "blob_hash BLOB NOT NULL, raw_id TEXT NOT NULL, ref_type TEXT NOT NULL DEFAULT 'raw_payload')"
+        )
         conn.commit()
     finally:
         conn.close()
@@ -104,7 +113,7 @@ def test_write_effects_releases_lease_on_failure(db_path: Path, monkeypatch: pyt
                 conn,
                 WriteOperation.INGEST,
                 {
-                    "changed_conversation_ids": ["conv-1"],
+                    "changed_session_ids": ["conv-1"],
                     "_blob_hashes": [blob_hash],
                     "_operation_id": "op-fail",
                     "_db_path": str(db_path),
@@ -125,7 +134,7 @@ def test_write_effects_releases_lease_on_success(db_path: Path) -> None:
             conn,
             WriteOperation.INGEST,
             {
-                "changed_conversation_ids": [],
+                "changed_session_ids": [],
                 "_blob_hashes": [blob_hash],
                 "_operation_id": "op-ok",
                 "_db_path": str(db_path),

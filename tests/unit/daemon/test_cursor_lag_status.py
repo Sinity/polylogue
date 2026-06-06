@@ -7,6 +7,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from polylogue.daemon.cursor_lag_status import cursor_lag_summary_info
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.ops_write import record_cursor_lag_sample, upsert_ingest_cursor
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def _seed_cursor(
@@ -64,6 +67,104 @@ def test_cursor_lag_summary_returns_empty_when_db_missing(tmp_path: Path) -> Non
     assert summary.tracked_file_count == 0
     assert summary.stuck_file_count == 0
     assert summary.family_summaries == []
+
+
+def test_cursor_lag_summary_reads_ops_tier_without_polylogue_db(tmp_path: Path) -> None:
+    db = tmp_path / "polylogue.db"
+    ops_db = db.with_name("ops.db")
+    now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(ops_db) as conn:
+        upsert_ingest_cursor(
+            conn,
+            source_path="/x/behind.jsonl",
+            stat_size=2_000,
+            byte_offset=500,
+            failure_count=0,
+            excluded=False,
+            updated_at_ms=int((now - timedelta(seconds=120)).timestamp() * 1000),
+        )
+        upsert_ingest_cursor(
+            conn,
+            source_path="/x/idle.jsonl",
+            stat_size=1_000,
+            byte_offset=1_000,
+            failure_count=0,
+            excluded=False,
+            updated_at_ms=int((now - timedelta(seconds=10)).timestamp() * 1000),
+        )
+
+    summary = cursor_lag_summary_info(db, now=now)
+
+    assert summary.tracked_file_count == 2
+    assert summary.stuck_file_count == 1
+    assert summary.idle_file_count == 1
+    assert summary.max_lag_s == 120.0
+    assert [item.source_path for item in summary.stuck] == ["/x/behind.jsonl"]
+
+
+def test_cursor_lag_summary_decorates_ops_tier_baseline_without_polylogue_db(tmp_path: Path) -> None:
+    db = tmp_path / "polylogue.db"
+    ops_db = db.with_name("ops.db")
+    now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(ops_db) as conn:
+        upsert_ingest_cursor(
+            conn,
+            source_path="/x/behind.jsonl",
+            stat_size=2_000,
+            byte_offset=500,
+            failure_count=0,
+            excluded=False,
+            updated_at_ms=int((now - timedelta(seconds=120)).timestamp() * 1000),
+        )
+        for index, lag_ms in enumerate((90_000, 100_000, 110_000), start=1):
+            record_cursor_lag_sample(
+                conn,
+                sample_id=f"sample-{index}",
+                family="unknown",
+                source_path="/x/behind.jsonl",
+                lag_ms=lag_ms,
+                severity="warning",
+                sampled_at_ms=int((now - timedelta(minutes=index)).timestamp() * 1000),
+            )
+        conn.commit()
+
+    summary = cursor_lag_summary_info(db, now=now)
+
+    assert not db.exists()
+    assert summary.family_summaries[0].baseline.sample_count == 3
+    assert summary.family_summaries[0].baseline.rolling_median_lag_s == 100.0
+
+
+def test_cursor_lag_summary_prefers_archive_ops_when_both_exist(tmp_path: Path) -> None:
+    db = tmp_path / "polylogue.db"
+    now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
+    _seed_cursor(
+        db,
+        rows=[
+            ("/legacy/stuck.jsonl", 2_000, 500, 0, 0, (now - timedelta(seconds=300)).isoformat()),
+        ],
+    )
+    ops_db = db.with_name("ops.db")
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(ops_db) as conn:
+        upsert_ingest_cursor(
+            conn,
+            source_path="/v1/idle.jsonl",
+            stat_size=1_000,
+            byte_offset=1_000,
+            failure_count=0,
+            excluded=False,
+            updated_at_ms=int((now - timedelta(seconds=10)).timestamp() * 1000),
+        )
+
+    summary = cursor_lag_summary_info(db, now=now)
+
+    assert summary.tracked_file_count == 1
+    assert summary.stuck_file_count == 0
+    assert summary.idle_file_count == 1
+    assert summary.stuck == []
 
 
 def test_cursor_lag_summary_returns_empty_when_table_missing(tmp_path: Path) -> None:

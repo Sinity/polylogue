@@ -1,8 +1,8 @@
 Usage: polylogue delete [OPTIONS]
 
-  Delete matched conversations.
+  Delete matched sessions.
 
 Options:
-  --dry-run   Preview without deleting
-  --force     Skip confirmation
-  -h, --help  Show this message and exit.
+  --dry-run  Preview without deleting
+  --force    Skip confirmation
+  --help     Show this message and exit.

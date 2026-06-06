@@ -20,12 +20,12 @@ function fnv1a(text) {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
-function conversationIdFromUrl(provider, url) {
+function sessionIdFromUrl(provider, url) {
   const parsed = new URL(url);
   const parts = parsed.pathname.split("/").filter(Boolean);
-  const conversationToken =
+  const sessionToken =
     parts.at(-1) || parsed.pathname || parsed.hostname;
-  return `${provider}:${conversationToken}:${fnv1a(parsed.origin + parsed.pathname)}`;
+  return `${provider}:${sessionToken}:${fnv1a(parsed.origin + parsed.pathname)}`;
 }
 
 function visibleText(node) {
@@ -36,7 +36,7 @@ function visibleText(node) {
 
 function buildEnvelope({ provider, adapterName, turns, model = null }) {
   const sourceUrl = "https://chatgpt.com/c/test-conv";
-  const providerSessionId = conversationIdFromUrl(provider, sourceUrl);
+  const providerSessionId = sessionIdFromUrl(provider, sourceUrl);
   const now = new Date().toISOString();
   return {
     polylogue_capture_kind: "browser_llm_session",
@@ -97,12 +97,12 @@ describe("fnv1a", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tests: conversationIdFromUrl
+// Tests: sessionIdFromUrl
 // ---------------------------------------------------------------------------
 
-describe("conversationIdFromUrl", () => {
+describe("sessionIdFromUrl", () => {
   it("extracts last path segment as token", () => {
-    const id = conversationIdFromUrl(
+    const id = sessionIdFromUrl(
       "chatgpt",
       "https://chatgpt.com/c/abc-123",
     );
@@ -110,7 +110,7 @@ describe("conversationIdFromUrl", () => {
   });
 
   it("includes provider prefix", () => {
-    const id = conversationIdFromUrl(
+    const id = sessionIdFromUrl(
       "claude-ai",
       "https://claude.ai/chat/test-conv",
     );
@@ -118,7 +118,7 @@ describe("conversationIdFromUrl", () => {
   });
 
   it("handles URL with query params", () => {
-    const id = conversationIdFromUrl(
+    const id = sessionIdFromUrl(
       "chatgpt",
       "https://chatgpt.com/c/conv?q=1",
     );

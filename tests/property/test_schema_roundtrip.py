@@ -12,7 +12,7 @@ import json
 from hypothesis import given, settings
 
 from polylogue.archive.message.messages import MessageCollection
-from polylogue.rendering.formatting import format_conversation
+from polylogue.rendering.formatting import format_session
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.strategies.schema_driven import schema_conformant_payload
 
@@ -100,7 +100,7 @@ def test_claude_code_json_roundtrip_preserves_message_count(payload: object) -> 
         messages=MessageCollection(messages=[msg]),
     )
 
-    json_str = format_conversation(conv, "json", None)
+    json_str = format_session(conv, "json", None)
     json_data = json.loads(json_str)
 
     assert isinstance(json_data.get("messages"), list)

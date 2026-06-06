@@ -1,0 +1,16 @@
+Usage: polylogue maintenance [OPTIONS] COMMAND [ARGS]...
+
+  Preview and run maintenance backfill operations.
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  archive-init  Initialize the archive file set after explicit...
+  archive-plan  Inspect readiness for the archive file set.
+  archive-read  Read index sessions from the archive.
+  gc-history      Show recent blob-GC passes recorded in...
+  plan            Dry-run summary: show what would be rebuilt without...
+  preview         Staleness inventory by model and scope.
+  run             Run (or dry-run) maintenance backfill operations.
+  status          Inspect persisted maintenance operations (#1197).

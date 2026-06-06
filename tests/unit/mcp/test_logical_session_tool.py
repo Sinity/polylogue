@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, patch
 
-from polylogue.insights.topology import ConversationRef, LogicalSession
-from polylogue.types import ConversationId
+from polylogue.insights.topology import LogicalSession, SessionRef
+from polylogue.types import SessionId
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface, make_polylogue_mock
 
 
@@ -13,11 +13,11 @@ def test_logical_session_tool_returns_compact_envelope(mcp_server: MCPServerUnde
         mock_poly = make_polylogue_mock()
         mock_poly.get_logical_session = AsyncMock(
             return_value=LogicalSession(
-                conversation_id=ConversationId("fork"),
-                root_id=ConversationId("root"),
+                session_id=SessionId("fork"),
+                root_id=SessionId("root"),
                 thread=(
-                    ConversationRef(conversation_id=ConversationId("root"), source_name="claude-code", depth=0),
-                    ConversationRef(conversation_id=ConversationId("fork"), source_name="claude-code", depth=1),
+                    SessionRef(session_id=SessionId("root"), source_name="claude-code", depth=0),
+                    SessionRef(session_id=SessionId("fork"), source_name="claude-code", depth=1),
                 ),
                 siblings=(),
                 descendants=(),
@@ -28,13 +28,13 @@ def test_logical_session_tool_returns_compact_envelope(mcp_server: MCPServerUnde
 
         result = invoke_surface(
             mcp_server._tool_manager._tools["get_logical_session"].fn,
-            conversation_id="fork",
+            session_id="fork",
         )
 
     parsed = json.loads(result)
-    assert parsed["conversation_id"] == "fork"
+    assert parsed["session_id"] == "fork"
     assert parsed["root_id"] == "root"
-    assert [item["conversation_id"] for item in parsed["thread"]] == ["root", "fork"]
+    assert [item["session_id"] for item in parsed["thread"]] == ["root", "fork"]
     assert parsed["cycle_detected"] is False
 
 
@@ -46,7 +46,7 @@ def test_logical_session_tool_returns_not_found(mcp_server: MCPServerUnderTest) 
 
         result = invoke_surface(
             mcp_server._tool_manager._tools["get_logical_session"].fn,
-            conversation_id="missing",
+            session_id="missing",
         )
 
     parsed = json.loads(result)

@@ -220,25 +220,11 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         description="Run a SQLite WAL checkpoint/truncate maintenance pass.",
     ),
     MaintenanceTargetSpec(
-        name="source_replay",
-        mode=MaintenanceTargetMode.REPAIR,
-        category=MaintenanceCategory.SOURCE_INGEST,
-        destructive=False,
-        description=(
-            "Re-acquire raw artifacts from configured sources. Idempotent by "
-            "content hash — unchanged artifacts produce zero new raw rows. "
-            "Scope narrowing is honored via --source-root, --source-family, "
-            "--provider, and --raw-artifact filters."
-        ),
-        aliases=("source-replay",),
-        invalidation_keys=("raw_conversations",),
-    ),
-    MaintenanceTargetSpec(
         name="orphaned_messages",
         mode=MaintenanceTargetMode.CLEANUP,
         category=MaintenanceCategory.ARCHIVE_CLEANUP,
         destructive=True,
-        description="Delete message rows that reference missing conversations.",
+        description="Delete message rows that reference missing sessions.",
         include_in_archive_readiness=True,
         archive_readiness_unready_status=OutcomeStatus.ERROR,
     ),
@@ -247,17 +233,17 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         mode=MaintenanceTargetMode.CLEANUP,
         category=MaintenanceCategory.ARCHIVE_CLEANUP,
         destructive=True,
-        description="Delete content blocks that reference missing conversations or messages.",
+        description="Delete content blocks that reference missing sessions or messages.",
         include_in_archive_readiness=True,
         archive_readiness_unready_status=OutcomeStatus.ERROR,
         archive_readiness_requires_deep=True,
     ),
     MaintenanceTargetSpec(
-        name="empty_conversations",
+        name="empty_sessions",
         mode=MaintenanceTargetMode.CLEANUP,
         category=MaintenanceCategory.ARCHIVE_CLEANUP,
         destructive=True,
-        description="Delete conversations that no longer contain any messages.",
+        description="Delete sessions that no longer contain any messages.",
         include_in_archive_readiness=True,
         archive_readiness_unready_status=OutcomeStatus.WARNING,
     ),
@@ -290,7 +276,7 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         archive_readiness_unready_status=OutcomeStatus.WARNING,
         archive_readiness_requires_deep=True,
         aliases=("raw_snapshots",),
-        invalidation_keys=("raw_conversations",),
+        invalidation_keys=("raw_sessions",),
     ),
 )
 
@@ -300,19 +286,9 @@ def build_maintenance_target_catalog() -> MaintenanceTargetCatalog:
     return MaintenanceTargetCatalog(specs=MAINTENANCE_TARGET_SPECS)
 
 
-#: Targets the doctor's ``--repair`` umbrella iterates by default. The
-#: ``source_replay`` target is intentionally excluded: re-acquiring raw
-#: artifacts is an opt-in maintenance operation that re-scans every
-#: configured source root and is too heavy for the default repair pass.
-#: Operators explicitly request it via
-#: ``polylogue maintenance run --target source_replay``.
-_DEFAULT_REPAIR_EXCLUSIONS = frozenset({"source_replay"})
-
-SAFE_REPAIR_TARGETS = tuple(
-    name
-    for name in build_maintenance_target_catalog().names_for_mode(MaintenanceTargetMode.REPAIR)
-    if name not in _DEFAULT_REPAIR_EXCLUSIONS
-)
+#: Targets the doctor's ``--repair`` umbrella iterates by default — every
+#: REPAIR-mode target in the catalog.
+SAFE_REPAIR_TARGETS = build_maintenance_target_catalog().names_for_mode(MaintenanceTargetMode.REPAIR)
 CLEANUP_TARGETS = build_maintenance_target_catalog().names_for_mode(MaintenanceTargetMode.CLEANUP)
 MAINTENANCE_TARGET_NAMES = build_maintenance_target_catalog().names()
 

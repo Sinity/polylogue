@@ -10,9 +10,9 @@ from typing import TypeAlias
 from polylogue.assets import asset_path
 from polylogue.core.hashing import hash_file, hash_payload, hash_text
 from polylogue.core.json import JSONValue
-from polylogue.sources import ParsedAttachment, ParsedConversation, ParsedMessage
+from polylogue.sources import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.base import ParsedContentBlock
-from polylogue.types import ContentHash, ConversationId, MessageId, ProviderEventId
+from polylogue.types import ContentHash, MessageId, ProviderEventId, SessionId
 
 # Sentinel values to distinguish None from empty in hash computations
 _NULL_SENTINEL = "__POLYLOGUE_NULL__"
@@ -133,31 +133,31 @@ def attachment_content_id(
     return (hash_text(seed), meta, updated_path)
 
 
-def conversation_id(source_name: str, provider_conversation_id: str) -> ConversationId:
-    """Generate deterministic conversation ID from provider info.
+def session_id(source_name: str, provider_session_id: str) -> SessionId:
+    """Generate deterministic session ID from provider info.
 
     Args:
-        provider_conversation_id: Provider's conversation identifier.
+        provider_session_id: Provider's session identifier.
 
     Returns:
-        Formatted conversation ID.
+        Formatted session ID.
 
     Raises:
-        ValueError: If source_name or provider_conversation_id is empty.
+        ValueError: If source_name or provider_session_id is empty.
     """
     if not source_name or not source_name.strip():
         raise ValueError("source_name cannot be empty")
-    if not provider_conversation_id or not provider_conversation_id.strip():
-        raise ValueError("provider_conversation_id cannot be empty")
-    return ConversationId(f"{source_name}:{provider_conversation_id}")
+    if not provider_session_id or not provider_session_id.strip():
+        raise ValueError("provider_session_id cannot be empty")
+    return SessionId(f"{source_name}:{provider_session_id}")
 
 
-def message_id(conversation_id: ConversationId, provider_message_id: str) -> MessageId:
-    return MessageId(f"{conversation_id}:{provider_message_id}")
+def message_id(session_id: SessionId, provider_message_id: str) -> MessageId:
+    return MessageId(f"{session_id}:{provider_message_id}")
 
 
-def provider_event_id(conversation_id: ConversationId, event_index: int) -> ProviderEventId:
-    return ProviderEventId(f"{conversation_id}:provider-event:{event_index:06d}")
+def provider_event_id(session_id: SessionId, event_index: int) -> ProviderEventId:
+    return ProviderEventId(f"{session_id}:provider-event:{event_index:06d}")
 
 
 def _content_block_payload(block: ParsedContentBlock) -> dict[str, JSONValue]:
@@ -190,7 +190,7 @@ def message_content_hash(message: ParsedMessage, provider_message_id: str) -> Co
     return ContentHash(hash_payload(payload))
 
 
-def _conversation_hash_payload(
+def _session_hash_payload(
     *,
     title: str | None,
     created_at: str | None,
@@ -217,16 +217,16 @@ def _conversation_hash_payload(
     }
 
 
-def conversation_content_hashes(convo: ParsedConversation) -> tuple[ContentHash, dict[str, ContentHash]]:
-    """Generate conversation and per-message content hashes in one pass.
+def session_content_hashes(convo: ParsedSession) -> tuple[ContentHash, dict[str, ContentHash]]:
+    """Generate session and per-message content hashes in one pass.
 
     Uses sentinel values to distinguish None from empty/missing fields.
 
     Args:
-        convo: Parsed conversation object.
+        convo: Parsed session object.
 
     Returns:
-        Tuple of conversation content hash and message hashes keyed by effective
+        Tuple of session content hash and message hashes keyed by effective
         provider message ID.
     """
     messages_payload: list[dict[str, JSONValue]] = []
@@ -269,7 +269,7 @@ def conversation_content_hashes(convo: ParsedConversation) -> tuple[ContentHash,
     return (
         ContentHash(
             hash_payload(
-                _conversation_hash_payload(
+                _session_hash_payload(
                     title=convo.title,
                     created_at=convo.created_at,
                     updated_at=convo.updated_at,
@@ -283,6 +283,6 @@ def conversation_content_hashes(convo: ParsedConversation) -> tuple[ContentHash,
     )
 
 
-def conversation_content_hash(convo: ParsedConversation) -> ContentHash:
-    """Generate content hash for conversation."""
-    return conversation_content_hashes(convo)[0]
+def session_content_hash(convo: ParsedSession) -> ContentHash:
+    """Generate content hash for session."""
+    return session_content_hashes(convo)[0]

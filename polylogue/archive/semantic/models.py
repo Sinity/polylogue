@@ -68,9 +68,9 @@ class ProjectionSemanticFacts:
 
 
 @dataclass(frozen=True, slots=True)
-class ConversationSemanticFacts:
-    conversation_id: str
-    provider: str
+class SessionSemanticFacts:
+    session_id: str
+    origin: str
     title: str
     date: str | None
     total_messages: int
@@ -98,8 +98,8 @@ class ConversationSemanticFacts:
     def to_proof_input(self) -> JSONDocument:
         return json_document(
             {
-                "conversation_id": self.conversation_id,
-                "provider": self.provider,
+                "session_id": self.session_id,
+                "origin": self.origin,
                 "title": self.title,
                 "date": self.date,
                 "total_messages": self.total_messages,
@@ -121,8 +121,8 @@ class ConversationSemanticFacts:
 
 @dataclass(frozen=True, slots=True)
 class SummarySemanticFacts:
-    conversation_id: str
-    provider: str
+    session_id: str
+    origin: str
     title: str
     date: str | None
     messages: int
@@ -132,8 +132,8 @@ class SummarySemanticFacts:
     def to_proof_input(self) -> JSONDocument:
         return json_document(
             {
-                "conversation_id": self.conversation_id,
-                "provider": self.provider,
+                "session_id": self.session_id,
+                "origin": self.origin,
                 "title": self.title,
                 "date": self.date,
                 "messages": self.messages,
@@ -145,8 +145,8 @@ class SummarySemanticFacts:
 
 @dataclass(frozen=True, slots=True)
 class StreamSemanticFacts:
-    conversation_id: str
-    provider: str
+    session_id: str
+    origin: str
     title: str
     date: str | None
     text_messages: int
@@ -164,8 +164,8 @@ class StreamSemanticFacts:
     def to_proof_input(self) -> JSONDocument:
         return json_document(
             {
-                "conversation_id": self.conversation_id,
-                "provider": self.provider,
+                "session_id": self.session_id,
+                "origin": self.origin,
                 "title": self.title,
                 "date": self.date,
                 "text_messages": self.text_messages,
@@ -185,8 +185,8 @@ class StreamSemanticFacts:
 
 @dataclass(frozen=True, slots=True)
 class MCPDetailSemanticFacts:
-    conversation_id: str
-    provider: str
+    session_id: str
+    origin: str
     title: str
     created_at: str | None
     updated_at: str | None
@@ -202,8 +202,8 @@ class MCPDetailSemanticFacts:
     def to_proof_input(self) -> JSONDocument:
         return json_document(
             {
-                "conversation_id": self.conversation_id,
-                "provider": self.provider,
+                "session_id": self.session_id,
+                "origin": self.origin,
                 "title": self.title,
                 "created_at": self.created_at,
                 "updated_at": self.updated_at,
@@ -221,8 +221,8 @@ class MCPDetailSemanticFacts:
 
 @dataclass(frozen=True, slots=True)
 class MCPSummarySemanticFacts:
-    conversation_id: str
-    provider: str
+    session_id: str
+    origin: str
     title: str
     messages: int
     created_at: str | None
@@ -233,8 +233,8 @@ class MCPSummarySemanticFacts:
     def to_proof_input(self) -> JSONDocument:
         return json_document(
             {
-                "conversation_id": self.conversation_id,
-                "provider": self.provider,
+                "session_id": self.session_id,
+                "origin": self.origin,
                 "title": self.title,
                 "messages": self.messages,
                 "created_at": self.created_at,
@@ -246,7 +246,7 @@ class MCPSummarySemanticFacts:
 
 
 __all__ = [
-    "ConversationSemanticFacts",
+    "SessionSemanticFacts",
     "MCPDetailSemanticFacts",
     "MCPSummarySemanticFacts",
     "MessageSemanticFacts",

@@ -40,7 +40,7 @@ status, test choices, resource constraints, and handoff notes.
 | Verification baseline (format, lint, mypy, topology, manifests) | Done | #944 |
 | Type tightening (SubjectRef.kind enum) | Done | #421, #968 |
 | CLI mutation flags (--add-tag/--remove-tag) | Done; broader mutation contracts remain under #862 | #967 |
-| Manifest-only conversation prevention | Done | #945 |
+| Manifest-only session prevention | Done | #945 |
 | MCP error sanitization and metadata validation | Done | #948 |
 | CLI format matrix coverage | Done | #949 |
 
@@ -51,7 +51,7 @@ status, test choices, resource constraints, and handoff notes.
 | Runtime convergence and host evidence | #845, #996, #999, #829 | Packaged daemon rollout plus production-corpus convergence report | The daemon must converge over the real archive; bounded status/health evidence is the blocking deployment artifact. |
 | Source and semantic vocabulary | #1022, #839, #864, #1041, #1027 | Source-family contract, typed context/protocol fields, and provider/schema distribution evidence | MK3 reader contracts need typed source/provenance facts before UI can stop scraping provider metadata. |
 | Shared read contracts | #859, #873, #860, #848 | TargetRef/message-envelope/query/facet/status contracts shared by CLI, MCP, API, and daemon HTTP | This is the smallest useful MK3 start because later UI work consumes these envelopes. |
-| Reader evidence and product shell | #848, #865, #956, #993 | Single-conversation reader slice with executable DOM/browser evidence | MK3 must become a verified runtime reader, not only design screenshots. |
+| Reader evidence and product shell | #848, #865, #956, #993 | Single-session reader slice with executable DOM/browser evidence | MK3 must become a verified runtime reader, not only design screenshots. |
 | Topology and durable user state | #866, #867, #993 | Canonical topology read model and TargetRef-based marks/annotations/saved views | Multi-chat workspace, compare, recall packs, and topology panels need these substrates. |
 | Insight and cost rigor | #1019, #994, #995 | Readiness/confidence matrix for insight, cost, similarity, and derived panels | Advanced panels must show real availability, stale, inferred, and partial states. |
 | Verification and throughput | #1026, #997, #998, #594, #590, #1012 | Affected-test default, pytest evidence artifacts, benchmark/coverage reports, and inherited-failure cleanup | Broad changes are too expensive and too easy to misclaim without a faster, more precise gate. |
@@ -68,7 +68,7 @@ is ready to merge.
 | G2: shared read envelope | Reader shell, visual smoke, advanced panels | #859, #873, #860 | Versioned list/detail/message/facet/status envelopes and query serialization. |
 | G3: executable reader evidence | Closing #848/#993 rows that claim runtime UI behavior | #865 | Synthetic-data DOM/browser lane with nonblank, private-safe, stateful assertions. |
 | G4: topology read model | Stack, compare, lineage rail, topology explorer | #866 | Ancestor/descendant/sibling/root APIs with unresolved/late-repair/cycle evidence. |
-| G5: TargetRef user state | Marks, annotations, saved views, recall packs, durable workspaces | #867 | Idempotent CRUD and content-hash exclusion for conversation/message targets first. |
+| G5: TargetRef user state | Marks, annotations, saved views, recall packs, durable workspaces | #867 | Idempotent CRUD and content-hash exclusion for session/message targets first. |
 | G6: runtime deployment evidence | Distribution docs and system service guidance | #845, #996, #999, #829, #869, #953 | Packaged daemon installed through Sinnix, real archive convergence report, health/status evidence. |
 | G7: faster verification | Large MK3/daemon waves | #1026, #997, #998, #594, #590, #1012 | Affected-test default, contract evidence artifacts, and inherited failure cleanup so broad verification is credible. |
 
@@ -79,12 +79,12 @@ parallel when their write surfaces do not overlap.
 
 | Candidate | Owner issues | Primary files | Acceptance evidence |
 |-----------|--------------|---------------|------------------|
-| Define `TargetRef` and message-anchor contract | #859, #848, #867 | `polylogue/surfaces/`, `polylogue/daemon/http.py`, `polylogue/archive/query/`, daemon tests | Conversation/message targets serialize deterministically; reader endpoints expose anchors; unsupported targets return explicit disabled reasons. |
+| Define `TargetRef` and message-anchor contract | #859, #848, #867 | `polylogue/surfaces/`, `polylogue/daemon/http.py`, `polylogue/archive/query/`, daemon tests | Session/message targets serialize deterministically; reader endpoints expose anchors; unsupported targets return explicit disabled reasons. |
 | Replace reader/provider metadata scraping with typed source fields | #1022, #839, #864 | source parsers, archive models, payloads, schema docs | Header/search chips read typed fields; provider-meta fallback is either removed or marked transitional with tests. |
-| Make reader visual smoke MK3-ready | #865, #848, #956 | `tests/unit/daemon/test_web_reader.py`, possible `tests/visual/`, `devtools/lab_scenario.py` | Synthetic reader evidence covers list/search, conversation detail, empty/no-results, privacy, degraded state, and nonblank output. |
+| Make reader visual smoke MK3-ready | #865, #848, #956 | `tests/unit/daemon/test_web_reader.py`, possible `tests/visual/`, `devtools/lab_scenario.py` | Synthetic reader evidence covers list/search, session detail, empty/no-results, privacy, degraded state, and nonblank output. |
 | Implement paste-span projection MVP | #839, #864, #848, #993 | message/storage projections, payloads, reader API/tests | Explicit span fixture and whole-message fallback fixture render distinct states; typed-only/paste-only copy disables when boundaries are unknown. |
 | Materialize topology edge substrate | #866 | storage DDL, ingest enrichment, archive operations, parser fixtures | Child-before-parent unresolved edge, late repair, cycle quarantine, and sibling/ancestor read tests pass. |
-| Add TargetRef-based marks and annotations | #867, #862 | user-state DDL/repository/API, daemon endpoints, reader tests | Idempotent CRUD works for conversation/message targets; content hash unchanged; reimport preservation tested where identity evidence exists. |
+| Add TargetRef-based marks and annotations | #867, #862 | user-state DDL/repository/API, daemon endpoints, reader tests | Idempotent CRUD works for session/message targets; content hash unchanged; reimport preservation tested where identity evidence exists. |
 | Prove packaged daemon convergence | #845, #996, #999, #829, #869 | Sinnix input update, package/service config, daemon docs | Installed service is latest merged Polylogue, real archive converges, health/status and residual workload are recorded. |
 | Reduce verification wall time | #1026, #997, #998, #594/#590 | `devtools/verify.py`, test config, pytest artifacts | default `devtools verify` runs affected tests; full non-slow baseline is measured explicitly and outliers have owners. |
 
@@ -175,12 +175,12 @@ consuming.
 Start condition:
 
 - No broad frontend work is needed first. This wave can start immediately if it
-  keeps the first TargetRef scope to conversation/message and treats missing
+  keeps the first TargetRef scope to session/message and treats missing
   substrate as disabled/partial states.
 
 Scope:
 
-- Define `TargetRef` vocabulary for conversation/message first, with disabled
+- Define `TargetRef` vocabulary for session/message first, with disabled
   reasons for content block, attachment, paste span, raw artifact, topology
   edge, saved view, and workspace targets.
 - Enrich reader list/detail/message/facet/status envelopes through shared
@@ -199,7 +199,7 @@ Handoff to next wave:
 
 - #848 can render a message list without provider-specific frontend inference.
 
-### Wave 2 - Single-Conversation Reader
+### Wave 2 - Single-Session Reader
 
 Owner issues: #848 and #865.
 
@@ -220,14 +220,14 @@ Scope:
 
 Exit evidence:
 
-- #865 browser/DOM lane covers list/search, conversation detail, degraded
+- #865 browser/DOM lane covers list/search, session detail, degraded
   states, nonblank rendering, and private-path safety;
 - fast DOM/contract smoke remains separate from heavier browser screenshot
   evidence.
 
 Handoff to next wave:
 
-- Runtime reader has a stable single-conversation baseline that paste,
+- Runtime reader has a stable single-session baseline that paste,
   attachment, topology, and user-state panels can plug into without rewriting
   the shell.
 
@@ -291,7 +291,7 @@ Exit evidence:
 Handoff to next wave:
 
 - Workspaces can persist references to topology nodes/edges through TargetRef
-  rather than URL-only conversation IDs.
+  rather than URL-only session IDs.
 
 ### Wave 5 - Durable User State And Advanced Panels
 
@@ -299,7 +299,7 @@ Owner issues: #867, #993, #1019, #995.
 
 Start condition:
 
-- Conversation/message TargetRef is stable. Saved-view work also needs shared
+- Session/message TargetRef is stable. Saved-view work also needs shared
   query serialization from Wave 1.
 
 Scope:
@@ -333,7 +333,7 @@ Start condition:
 
 Scope:
 
-- Stream or poll typed archive, conversation, message, insight, FTS, and
+- Stream or poll typed archive, session, message, insight, FTS, and
   snapshot events with coalescing/backpressure semantics.
 - Expose status, maintenance, capture, replay, first-run, stale,
   disconnected, and degraded states without shrinking daemon convergence scope.

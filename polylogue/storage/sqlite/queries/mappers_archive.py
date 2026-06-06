@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import sqlite3
 
-from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
+from polylogue.archive.session.branch_type import BranchType
 from polylogue.storage.runtime import (
     ActionEventRecord,
     ArtifactObservationRecord,
     ContentBlockRecord,
-    ConversationRecord,
     MessageRecord,
     ProviderEventRecord,
-    RawConversationRecord,
+    RawSessionRecord,
+    SessionRecord,
 )
 from polylogue.storage.sqlite.queries.mappers_support import (
     _json_object,
@@ -28,33 +28,33 @@ from polylogue.storage.sqlite.queries.mappers_support import (
 from polylogue.types import (
     ArtifactSupportStatus,
     ContentBlockType,
-    ConversationId,
     MessageId,
     Provider,
     ProviderEventId,
     SemanticBlockType,
+    SessionId,
     ValidationMode,
     ValidationStatus,
 )
 
 
-def _row_to_conversation(row: sqlite3.Row) -> ConversationRecord:
-    parent_conversation_id = _row_text(row, "parent_conversation_id")
+def _row_to_session(row: sqlite3.Row) -> SessionRecord:
+    parent_session_id = _row_text(row, "parent_session_id")
     branch_type = _row_text(row, "branch_type")
-    return ConversationRecord(
-        conversation_id=row["conversation_id"],
-        provider_conversation_id=row["provider_conversation_id"],
+    return SessionRecord(
+        session_id=row["session_id"],
+        provider_session_id=row["provider_session_id"],
         title=row["title"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         sort_key=_row_float(row, "sort_key"),
         content_hash=row["content_hash"],
         provider_meta=_json_object(
-            _parse_json(row["provider_meta"], field="provider_meta", record_id=row["conversation_id"])
+            _parse_json(row["provider_meta"], field="provider_meta", record_id=row["session_id"])
         ),
-        metadata=_json_object(_parse_json(row["metadata"], field="metadata", record_id=row["conversation_id"])),
+        metadata=_json_object(_parse_json(row["metadata"], field="metadata", record_id=row["session_id"])),
         version=row["version"],
-        parent_conversation_id=ConversationId(parent_conversation_id) if parent_conversation_id is not None else None,
+        parent_session_id=SessionId(parent_session_id) if parent_session_id is not None else None,
         branch_type=BranchType(branch_type) if branch_type is not None else None,
         raw_id=_row_text(row, "raw_id"),
         source_name=_row_text(row, "source_name") or "",
@@ -70,7 +70,7 @@ def _row_to_message(row: sqlite3.Row) -> MessageRecord:
     parent_message_id = _row_text(row, "parent_message_id")
     return MessageRecord(
         message_id=row["message_id"],
-        conversation_id=row["conversation_id"],
+        session_id=row["session_id"],
         provider_message_id=_row_text(row, "provider_message_id"),
         role=normalized_role,
         text=_row_text(row, "text"),
@@ -99,7 +99,7 @@ def _row_to_content_block(row: sqlite3.Row) -> ContentBlockRecord:
     return ContentBlockRecord(
         block_id=row["block_id"],
         message_id=MessageId(row["message_id"]),
-        conversation_id=ConversationId(row["conversation_id"]),
+        session_id=SessionId(row["session_id"]),
         block_index=row["block_index"],
         type=ContentBlockType.from_string(row["type"]),
         text=_row_text(row, "text"),
@@ -111,11 +111,11 @@ def _row_to_content_block(row: sqlite3.Row) -> ContentBlockRecord:
     )
 
 
-def _row_to_raw_conversation(row: sqlite3.Row) -> RawConversationRecord:
+def _row_to_raw_session(row: sqlite3.Row) -> RawSessionRecord:
     validation_status = _row_text(row, "validation_status")
     validation_provider = _row_text(row, "validation_provider")
     validation_mode = _row_text(row, "validation_mode")
-    return RawConversationRecord(
+    return RawSessionRecord(
         raw_id=row["raw_id"],
         payload_provider=(
             Provider.from_string(_row_text(row, "payload_provider"))
@@ -155,7 +155,7 @@ def _row_to_artifact_observation(row: sqlite3.Row) -> ArtifactObservationRecord:
         wire_format=_row_text(row, "wire_format"),
         artifact_kind=row["artifact_kind"],
         classification_reason=row["classification_reason"],
-        parse_as_conversation=bool(_row_get(row, "parse_as_conversation", 0)),
+        parse_as_session=bool(_row_get(row, "parse_as_session", 0)),
         schema_eligible=bool(_row_get(row, "schema_eligible", 0)),
         support_status=ArtifactSupportStatus.from_string(row["support_status"]),
         malformed_jsonl_lines=int(_row_get(row, "malformed_jsonl_lines", 0) or 0),
@@ -175,7 +175,7 @@ def _row_to_artifact_observation(row: sqlite3.Row) -> ArtifactObservationRecord:
 def _row_to_action_event(row: sqlite3.Row) -> ActionEventRecord:
     return ActionEventRecord(
         event_id=row["event_id"],
-        conversation_id=ConversationId(row["conversation_id"]),
+        session_id=SessionId(row["session_id"]),
         message_id=MessageId(row["message_id"]),
         materializer_version=int(_row_int(row, "materializer_version", 1) or 1),
         source_block_id=_row_text(row, "source_block_id"),
@@ -261,7 +261,7 @@ def _row_to_provider_event(row: sqlite3.Row) -> ProviderEventRecord:
             payload["ghost_commit"] = value
     return ProviderEventRecord(
         event_id=ProviderEventId(row["event_id"]),
-        conversation_id=ConversationId(row["conversation_id"]),
+        session_id=SessionId(row["session_id"]),
         source_name=_row_text(row, "source_name") or "unknown",
         event_index=_row_int(row, "event_index", 0) or 0,
         event_type=event_type,
@@ -278,8 +278,8 @@ __all__ = [
     "_row_to_action_event",
     "_row_to_artifact_observation",
     "_row_to_content_block",
-    "_row_to_conversation",
+    "_row_to_session",
     "_row_to_message",
     "_row_to_provider_event",
-    "_row_to_raw_conversation",
+    "_row_to_raw_session",
 ]

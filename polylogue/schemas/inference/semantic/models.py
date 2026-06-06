@@ -40,7 +40,7 @@ SEMANTIC_ROLES = (
     "message_role",
     "message_body",
     "message_timestamp",
-    "conversation_title",
+    "session_title",
 )
 
 

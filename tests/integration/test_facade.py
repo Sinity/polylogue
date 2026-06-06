@@ -102,13 +102,13 @@ class TestPolylogueParsing:
         result = await archive.parse_file(sample_chatgpt_file)
 
         # Verify counts
-        assert result.counts["conversations"] > 0
+        assert result.counts["sessions"] > 0
         assert result.counts["messages"] > 0
 
-        # Verify we can retrieve the conversation
-        conversations = await archive.list_conversations(provider="chatgpt")
-        assert len(conversations) > 0
-        assert conversations[0].title == "Python Help"
+        # Verify we can retrieve the session
+        sessions = await archive.list_sessions(origin="chatgpt-export")
+        assert len(sessions) > 0
+        assert sessions[0].title == "Python Help"
 
     @pytest.mark.asyncio
     async def test_ingest_claude_file(self, workspace_env: dict[str, Path], sample_claude_file: Path) -> None:
@@ -121,12 +121,12 @@ class TestPolylogueParsing:
         result = await archive.parse_file(sample_claude_file)
 
         # Verify counts
-        assert result.counts["conversations"] > 0
+        assert result.counts["sessions"] > 0
         assert result.counts["messages"] > 0
 
-        # Verify we can retrieve the conversation
-        conversations = await archive.list_conversations(provider="claude-ai")
-        assert len(conversations) > 0
+        # Verify we can retrieve the session
+        sessions = await archive.list_sessions(origin="claude-ai-export")
+        assert len(sessions) > 0
 
     @pytest.mark.asyncio
     async def test_ingest_duplicate_is_idempotent(
@@ -145,17 +145,17 @@ class TestPolylogueParsing:
 
         # First ingest
         result1 = await archive.parse_file(sample_chatgpt_file)
-        first_count = result1.counts["conversations"]
+        first_count = result1.counts["sessions"]
         assert first_count > 0
 
         # Second ingest (acquire stage skips duplicate raw_id)
         result2 = await archive.parse_file(sample_chatgpt_file)
         # With stage architecture, no parsing happens when acquire skips
-        assert result2.counts["conversations"] == 0
+        assert result2.counts["sessions"] == 0
 
-        # Verify DB still has same number of conversations (idempotent)
-        conversations = await archive.list_conversations()
-        assert len(conversations) == first_count
+        # Verify DB still has same number of sessions (idempotent)
+        sessions = await archive.list_sessions()
+        assert len(sessions) == first_count
 
     @pytest.mark.asyncio
     async def test_ingest_with_custom_source_name(
@@ -168,7 +168,7 @@ class TestPolylogueParsing:
         )
 
         result = await archive.parse_file(sample_chatgpt_file, source_name="my_custom_source")
-        assert result.counts["conversations"] > 0
+        assert result.counts["sessions"] > 0
 
     @pytest.mark.asyncio
     async def test_parse_sources(
@@ -196,11 +196,11 @@ class TestPolylogueParsing:
         result = await archive.parse_sources(sources=sources, download_assets=False)
 
         # Verify both sources were ingested
-        assert result.counts["conversations"] >= 2
+        assert result.counts["sessions"] >= 2
 
-        # Verify we can list conversations from both providers
-        chatgpt_convs = await archive.list_conversations(provider="chatgpt")
-        claude_convs = await archive.list_conversations(provider="claude-ai")
+        # Verify we can list sessions from both origins
+        chatgpt_convs = await archive.list_sessions(origin="chatgpt-export")
+        claude_convs = await archive.list_sessions(origin="claude-ai-export")
         assert len(chatgpt_convs) > 0
         assert len(claude_convs) > 0
 
@@ -209,61 +209,59 @@ class TestPolylogueQuery:
     """Test query functionality."""
 
     @pytest.mark.asyncio
-    async def test_get_conversation_by_full_id(self, workspace_env: dict[str, Path], sample_chatgpt_file: Path) -> None:
-        """Test getting a conversation by full ID."""
+    async def test_get_session_by_full_id(self, workspace_env: dict[str, Path], sample_chatgpt_file: Path) -> None:
+        """Test getting a session by full ID."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
             db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
-        # Ingest and get conversation ID
+        # Ingest and get session ID
         await archive.parse_file(sample_chatgpt_file)
-        conversations = await archive.list_conversations(provider="chatgpt")
-        conv_id = conversations[0].id
+        sessions = await archive.list_sessions(origin="chatgpt-export")
+        conv_id = sessions[0].id
 
         # Retrieve by full ID
-        conv = await archive.get_conversation(conv_id)
+        conv = await archive.get_session(conv_id)
         assert conv is not None
         assert conv.id == conv_id
         assert conv.title == "Python Help"
 
     @pytest.mark.asyncio
-    async def test_get_conversation_by_partial_id(
-        self, workspace_env: dict[str, Path], sample_chatgpt_file: Path
-    ) -> None:
-        """Test getting a conversation by partial ID (prefix match)."""
+    async def test_get_session_by_partial_id(self, workspace_env: dict[str, Path], sample_chatgpt_file: Path) -> None:
+        """Test getting a session by partial ID (prefix match)."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
             db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
-        # Ingest and get conversation ID
+        # Ingest and get session ID
         await archive.parse_file(sample_chatgpt_file)
-        conversations = await archive.list_conversations(provider="chatgpt")
-        conv_id = conversations[0].id
+        sessions = await archive.list_sessions(origin="chatgpt-export")
+        conv_id = sessions[0].id
 
         # Retrieve by partial ID (first 8 characters)
         partial_id = conv_id[:8]
-        conv = await archive.get_conversation(partial_id)
+        conv = await archive.get_session(partial_id)
         assert conv is not None
         assert conv.id == conv_id
 
     @pytest.mark.asyncio
-    async def test_get_conversation_nonexistent(self, workspace_env: dict[str, Path]) -> None:
-        """Test getting a non-existent conversation returns None."""
+    async def test_get_session_nonexistent(self, workspace_env: dict[str, Path]) -> None:
+        """Test getting a non-existent session returns None."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
             db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
-        conv = await archive.get_conversation("nonexistent_id")
+        conv = await archive.get_session("nonexistent_id")
         assert conv is None
 
     @pytest.mark.asyncio
-    async def test_list_conversations_all(
+    async def test_list_sessions_all(
         self, workspace_env: dict[str, Path], sample_chatgpt_file: Path, sample_claude_file: Path
     ) -> None:
-        """Test listing all conversations."""
+        """Test listing all sessions."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
             db_path=workspace_env["data_root"] / "polylogue.db",
@@ -274,14 +272,14 @@ class TestPolylogueQuery:
         await archive.parse_file(sample_claude_file)
 
         # List all
-        all_convs = await archive.list_conversations()
+        all_convs = await archive.list_sessions()
         assert len(all_convs) >= 2
 
     @pytest.mark.asyncio
-    async def test_list_conversations_filter_by_provider(
+    async def test_list_sessions_filter_by_provider(
         self, workspace_env: dict[str, Path], sample_chatgpt_file: Path, sample_claude_file: Path
     ) -> None:
-        """Test filtering conversations by provider."""
+        """Test filtering sessions by provider."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
             db_path=workspace_env["data_root"] / "polylogue.db",
@@ -291,20 +289,18 @@ class TestPolylogueQuery:
         await archive.parse_file(sample_chatgpt_file)
         await archive.parse_file(sample_claude_file)
 
-        # Filter by provider
-        chatgpt_convs = await archive.list_conversations(provider="chatgpt")
-        claude_convs = await archive.list_conversations(provider="claude-ai")
+        # Filter by origin
+        chatgpt_convs = await archive.list_sessions(origin="chatgpt-export")
+        claude_convs = await archive.list_sessions(origin="claude-ai-export")
 
         assert len(chatgpt_convs) > 0
         assert len(claude_convs) > 0
-        assert all(c.provider == "chatgpt" for c in chatgpt_convs)
-        assert all(c.provider == "claude-ai" for c in claude_convs)
+        assert all(c.origin == "chatgpt-export" for c in chatgpt_convs)
+        assert all(c.origin == "claude-ai-export" for c in claude_convs)
 
     @pytest.mark.asyncio
-    async def test_list_conversations_with_limit(
-        self, workspace_env: dict[str, Path], sample_chatgpt_file: Path
-    ) -> None:
-        """Test limiting the number of conversations returned."""
+    async def test_list_sessions_with_limit(self, workspace_env: dict[str, Path], sample_chatgpt_file: Path) -> None:
+        """Test limiting the number of sessions returned."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
             db_path=workspace_env["data_root"] / "polylogue.db",
@@ -313,17 +309,15 @@ class TestPolylogueQuery:
         await archive.parse_file(sample_chatgpt_file)
 
         # List with limit
-        convs = await archive.list_conversations(limit=1)
+        convs = await archive.list_sessions(limit=1)
         assert len(convs) == 1
 
 
 class TestPolylogueSemanticProjections:
-    """Test semantic projections on retrieved conversations."""
+    """Test semantic projections on retrieved sessions."""
 
     @pytest.mark.asyncio
-    async def test_conversation_substantive_only(
-        self, workspace_env: dict[str, Path], sample_chatgpt_file: Path
-    ) -> None:
+    async def test_session_substantive_only(self, workspace_env: dict[str, Path], sample_chatgpt_file: Path) -> None:
         """Test getting substantive messages only."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
@@ -332,8 +326,8 @@ class TestPolylogueSemanticProjections:
 
         # Ingest
         await archive.parse_file(sample_chatgpt_file)
-        conversations = await archive.list_conversations()
-        conv = conversations[0]
+        sessions = await archive.list_sessions()
+        conv = sessions[0]
 
         # Get substantive messages
         substantive_conv = conv.substantive_only()
@@ -342,7 +336,7 @@ class TestPolylogueSemanticProjections:
         assert all(msg.is_substantive for msg in substantive)
 
     @pytest.mark.asyncio
-    async def test_conversation_iter_pairs(self, workspace_env: dict[str, Path], sample_chatgpt_file: Path) -> None:
+    async def test_session_iter_pairs(self, workspace_env: dict[str, Path], sample_chatgpt_file: Path) -> None:
         """Test iterating user/assistant pairs."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
@@ -351,8 +345,8 @@ class TestPolylogueSemanticProjections:
 
         # Ingest
         await archive.parse_file(sample_chatgpt_file)
-        conversations = await archive.list_conversations()
-        conv = conversations[0]
+        sessions = await archive.list_sessions()
+        conv = sessions[0]
 
         # Get pairs
         pairs = list(conv.iter_pairs())
@@ -362,7 +356,7 @@ class TestPolylogueSemanticProjections:
             assert pair.assistant.role == "assistant"
 
     @pytest.mark.asyncio
-    async def test_conversation_without_noise(self, workspace_env: dict[str, Path], sample_chatgpt_file: Path) -> None:
+    async def test_session_without_noise(self, workspace_env: dict[str, Path], sample_chatgpt_file: Path) -> None:
         """Test filtering out noise messages."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
@@ -371,8 +365,8 @@ class TestPolylogueSemanticProjections:
 
         # Ingest
         await archive.parse_file(sample_chatgpt_file)
-        conversations = await archive.list_conversations()
-        conv = conversations[0]
+        sessions = await archive.list_sessions()
+        conv = sessions[0]
 
         # Get without noise
         clean = list(conv.without_noise())
@@ -401,9 +395,9 @@ class TestPolylogueSearch:
         assert results is not None
         assert results.hits
         first_hit = results.hits[0]
-        assert first_hit.conversation_id
+        assert first_hit.session_id
         assert first_hit.title
-        assert first_hit.conversation_url.startswith("/?conversation=")
+        assert first_hit.session_url.startswith("/?session=")
 
     @pytest.mark.asyncio
     async def test_search_with_limit(self, workspace_env: dict[str, Path], sample_chatgpt_file: Path) -> None:
@@ -439,11 +433,11 @@ class TestPolylogueEdgeCases:
         )
 
         # List should return empty
-        convs = await archive.list_conversations()
+        convs = await archive.list_sessions()
         assert len(convs) == 0
 
         # Get should return None
-        conv = await archive.get_conversation("nonexistent")
+        conv = await archive.get_session("nonexistent")
         assert conv is None
 
     @pytest.mark.asyncio
@@ -458,7 +452,7 @@ class TestPolylogueEdgeCases:
 
         # Should handle gracefully with empty counts
         result = await archive.parse_file(nonexistent)
-        assert result.counts["conversations"] == 0
+        assert result.counts["sessions"] == 0
         assert result.counts["messages"] == 0
 
 

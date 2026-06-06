@@ -18,18 +18,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock
+from pathlib import Path
 
 import pytest
 
-from polylogue.archive.filter.filters import ConversationFilter
-from polylogue.archive.message.roles import Role
-from polylogue.archive.models import Conversation
-from polylogue.storage.repository import ConversationRepository
+from polylogue.archive.filter.filters import SessionFilter
+from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from tests.infra.builders import make_conv, make_msg
-from tests.infra.storage_records import make_conversation, make_message
+from tests.infra.storage_records import SessionBuilder, make_message, make_session
 
 # =============================================================================
 # Filter state isolation (implicit in CLI routing bugs)
@@ -37,125 +33,98 @@ from tests.infra.storage_records import make_conversation, make_message
 
 
 class TestFilterStateIsolation:
-    """ConversationFilter must not leak state between uses.
+    """SessionFilter must not leak state between uses.
 
-    The filter builder returns `self` for chaining. If users accidentally
-    reuse a filter instance, accumulated predicates could cause incorrect
-    results. This tests that each filter chain produces independent state.
+    The fluent filter builder returns ``self`` for chaining over an
+    immutable :class:`SessionQueryPlan`. The plan is the canonical
+    execution state in the archive; these tests assert that each
+    mutator updates the plan with the documented accumulate/replace
+    semantics and that two filters never share a plan.
     """
 
-    @pytest.fixture
-    def mock_repo(self) -> AsyncMock:
-        """Create a mock repository for filter testing."""
-        repo = AsyncMock()
-        repo.list_by_query = AsyncMock(return_value=[])
-        repo.search = AsyncMock(return_value=[])
-        repo.count = AsyncMock(return_value=0)
-        repo.list_summaries = AsyncMock(return_value=[])
-        repo.search_summaries = AsyncMock(return_value=[])
-        repo.list_summaries_by_query = AsyncMock(return_value=[])
-        repo.resolve_id = AsyncMock(return_value=None)
-        repo.get = AsyncMock(return_value=None)
-        repo.get_summary = AsyncMock(return_value=None)
-        return repo
-
     @staticmethod
-    def _conversation(
-        *,
-        conv_id: str,
-        text: str,
-        updated_at: datetime,
-        provider: str = "chatgpt",
-    ) -> Conversation:
-        return make_conv(
-            id=conv_id,
-            provider=provider,
-            title=conv_id,
-            updated_at=updated_at,
-            messages=[make_msg(id=f"{conv_id}:m1", role=Role.USER, text=text)],
+    def _filter(tmp_path: Path) -> SessionFilter:
+        return SessionFilter(archive_root=tmp_path)
+
+    def test_separate_filters_have_independent_state(self, tmp_path: Path) -> None:
+        """Two filters built from the same root must not share plan state."""
+        f1 = self._filter(tmp_path)
+        f2 = self._filter(tmp_path)
+
+        f1.origin("chatgpt-export")
+        f2.origin("claude-ai-export")
+
+        assert f1.build_query_plan().origins == ("chatgpt-export",)
+        assert f2.build_query_plan().origins == ("claude-ai-export",)
+
+    def test_chained_methods_accumulate_on_same_instance(self, tmp_path: Path) -> None:
+        """Chaining on the same filter must accumulate predicates in the plan."""
+        f = self._filter(tmp_path)
+        f.origin("chatgpt-export").contains("error").limit(10)
+
+        plan = f.build_query_plan()
+        assert plan.origins == ("chatgpt-export",)
+        assert plan.contains_terms == ("error",)
+        assert plan.limit == 10
+
+    def test_filter_reuse_accumulates_providers(self, tmp_path: Path) -> None:
+        """Reusing a filter OR-accumulates providers (documented contract)."""
+        f = self._filter(tmp_path)
+        f.origin("chatgpt-export")
+        f.origin("claude-ai-export")  # second call accumulates, not replaces
+
+        assert f.build_query_plan().origins == ("chatgpt-export", "claude-ai-export")
+
+    @pytest.mark.asyncio
+    async def test_filter_sort_replaces_not_accumulates(self, tmp_path: Path) -> None:
+        """sort() should replace the previous sort, not append.
+
+        Seeded directly: an older long session and a newer short one.
+        sort("date") would put the newer first; the later sort("words")
+        must win, ordering by word count so the long session is first.
+        """
+        db_path = tmp_path / "index.db"
+        (
+            SessionBuilder(db_path, "old-long")
+            .provider("chatgpt")
+            .title("old-long")
+            .created_at("2025-01-01T00:00:00+00:00")
+            .updated_at("2025-01-01T00:00:00+00:00")
+            .add_message(role="user", text="this message has many many words")
+            .save()
+        )
+        (
+            SessionBuilder(db_path, "new-short")
+            .provider("chatgpt")
+            .title("new-short")
+            .created_at("2025-01-02T00:00:00+00:00")
+            .updated_at("2025-01-02T00:00:00+00:00")
+            .add_message(role="user", text="tiny")
+            .save()
         )
 
-    @pytest.mark.asyncio
-    async def test_separate_filters_have_independent_state(self, mock_repo: AsyncMock) -> None:
-        """Two filters from same repo must not share state."""
-        f1 = ConversationFilter(mock_repo)
-        f2 = ConversationFilter(mock_repo)
-
-        f1.provider("chatgpt")
-        f2.provider("claude-ai")
-
-        await f1.list()
-        await f2.list()
-
-        first_query = mock_repo.list_by_query.await_args_list[0].args[0]
-        second_query = mock_repo.list_by_query.await_args_list[1].args[0]
-        assert first_query.provider == "chatgpt"
-        assert second_query.provider == "claude-ai"
-
-    @pytest.mark.asyncio
-    async def test_chained_methods_accumulate_on_same_instance(self, mock_repo: AsyncMock) -> None:
-        """Chaining on same filter must accumulate predicates."""
-        f = ConversationFilter(mock_repo)
-        f.provider("chatgpt").contains("error").limit(10)
-
-        await f.list()
-
-        mock_repo.search.assert_awaited_once_with("error", limit=100, providers=["chatgpt"])
-
-    @pytest.mark.asyncio
-    async def test_filter_reuse_accumulates_providers(self, mock_repo: AsyncMock) -> None:
-        """Reusing a filter adds to existing providers list."""
-        f = ConversationFilter(mock_repo)
-        f.provider("chatgpt")
-        f.provider("claude-ai")  # second call
-
-        await f.list()
-        query = mock_repo.list_by_query.await_args_list[-1].args[0]
-        assert query.providers == ("chatgpt", "claude-ai")
-
-    @pytest.mark.asyncio
-    async def test_filter_sort_replaces_not_accumulates(self, mock_repo: AsyncMock) -> None:
-        """sort() should replace the previous sort, not append."""
-        newer_short = self._conversation(
-            conv_id="test:new-short",
-            text="tiny",
-            updated_at=datetime(2025, 1, 2, tzinfo=timezone.utc),
-        )
-        older_long = self._conversation(
-            conv_id="test:old-long",
-            text="this message has many many words",
-            updated_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
-        )
-        mock_repo.list_by_query.return_value = [newer_short, older_long]
-
-        f = ConversationFilter(mock_repo)
+        f = self._filter(tmp_path)
         f.sort("date")
         f.sort("words")
+        assert f.build_query_plan().sort == "words"
 
         results = await f.list()
-        assert str(results[0].id) == "test:old-long"
+        assert [str(c.id).split(":")[-1] for c in results][0] == "ext-old-long"
 
-    @pytest.mark.asyncio
-    async def test_fresh_filter_has_no_predicates(self, mock_repo: AsyncMock) -> None:
-        """A brand-new filter should have empty state."""
-        f = ConversationFilter(mock_repo)
-        await f.list()
+    def test_fresh_filter_has_no_predicates(self, tmp_path: Path) -> None:
+        """A brand-new filter should carry an empty plan."""
+        plan = self._filter(tmp_path).build_query_plan()
+        assert plan.limit is None
+        assert plan.origins == ()
+        assert plan.contains_terms == ()
+        assert plan.sort is None
 
-        mock_repo.search.assert_not_called()
-        query = mock_repo.list_by_query.await_args.args[0]
-        assert query.limit is None
-
-    @pytest.mark.asyncio
-    async def test_limit_replaces_previous_limit(self, mock_repo: AsyncMock) -> None:
+    def test_limit_replaces_previous_limit(self, tmp_path: Path) -> None:
         """Calling limit() twice replaces, doesn't stack."""
-        f = ConversationFilter(mock_repo)
+        f = self._filter(tmp_path)
         f.limit(40)
         f.limit(5)
-        await f.list()
-
-        query = mock_repo.list_by_query.await_args_list[-1].args[0]
-        # _effective_fetch_limit() applies a 2x safety margin: max(5*2, 2) = 10
-        assert query.limit == 10
+        assert f.build_query_plan().limit == 5
 
 
 # =============================================================================
@@ -167,16 +136,16 @@ class TestConnectionManagement:
     """Batch operations must use O(1) connections, not O(N)."""
 
     @pytest.mark.asyncio
-    async def test_get_conversations_batch_uses_single_connection(self, sqlite_backend: SQLiteBackend) -> None:
-        """get_conversations_batch must use 1 query, not N queries."""
+    async def test_get_sessions_batch_uses_single_connection(self, sqlite_backend: SQLiteBackend) -> None:
+        """get_sessions_batch must use 1 query, not N queries."""
         backend = sqlite_backend
 
-        # Insert 20 conversations
+        # Insert 20 sessions
         async with backend.connection() as conn:
             for i in range(20):
                 await conn.execute(
-                    "INSERT INTO conversations (conversation_id, source_name, "
-                    "provider_conversation_id, content_hash, version) "
+                    "INSERT INTO sessions (session_id, source_name, "
+                    "provider_session_id, content_hash, version) "
                     "VALUES (?, 'test', ?, ?, 1)",
                     (f"conv-{i}", f"pconv-{i}", f"hash-{i}"),
                 )
@@ -184,26 +153,26 @@ class TestConnectionManagement:
 
         # Batch get should work
         ids = [f"conv-{i}" for i in range(20)]
-        records = await backend.get_conversations_batch(ids)
+        records = await backend.get_sessions_batch(ids)
         assert len(records) == 20
 
     @pytest.mark.asyncio
-    async def test_get_messages_batch_groups_by_conversation(self, sqlite_backend: SQLiteBackend) -> None:
-        """get_messages_batch must return messages grouped by conversation_id."""
+    async def test_get_messages_batch_groups_by_session(self, sqlite_backend: SQLiteBackend) -> None:
+        """get_messages_batch must return messages grouped by session_id."""
         backend = sqlite_backend
 
-        # Insert conversations with messages
+        # Insert sessions with messages
         async with backend.connection() as conn:
             for i in range(5):
                 await conn.execute(
-                    "INSERT INTO conversations (conversation_id, source_name, "
-                    "provider_conversation_id, content_hash, version) "
+                    "INSERT INTO sessions (session_id, source_name, "
+                    "provider_session_id, content_hash, version) "
                     "VALUES (?, 'test', ?, ?, 1)",
                     (f"conv-{i}", f"pconv-{i}", f"hash-{i}"),
                 )
                 for j in range(3):
                     await conn.execute(
-                        "INSERT INTO messages (message_id, conversation_id, role, "
+                        "INSERT INTO messages (message_id, session_id, role, "
                         "text, content_hash, version) "
                         "VALUES (?, ?, 'user', ?, ?, 1)",
                         (f"msg-{i}-{j}", f"conv-{i}", f"text {i} {j}", f"mhash-{i}-{j}"),
@@ -216,13 +185,13 @@ class TestConnectionManagement:
         assert len(msgs_by_id) == 5
         for conv_id, msgs in msgs_by_id.items():
             assert len(msgs) == 3
-            assert all(m.conversation_id == conv_id for m in msgs)
+            assert all(m.session_id == conv_id for m in msgs)
 
     @pytest.mark.asyncio
     async def test_batch_with_empty_ids_returns_empty(self, sqlite_backend: SQLiteBackend) -> None:
         """Passing empty list of IDs should return empty, not error."""
         backend = sqlite_backend
-        records = await backend.get_conversations_batch([])
+        records = await backend.get_sessions_batch([])
         assert records == []
 
     @pytest.mark.asyncio
@@ -232,15 +201,15 @@ class TestConnectionManagement:
 
         async with backend.connection() as conn:
             await conn.execute(
-                "INSERT INTO conversations (conversation_id, source_name, "
-                "provider_conversation_id, content_hash, version) "
+                "INSERT INTO sessions (session_id, source_name, "
+                "provider_session_id, content_hash, version) "
                 "VALUES ('exists', 'test', 'pconv', 'hash', 1)",
             )
             await conn.commit()
 
-        records = await backend.get_conversations_batch(["exists", "ghost-1", "ghost-2"])
+        records = await backend.get_sessions_batch(["exists", "ghost-1", "ghost-2"])
         assert len(records) == 1
-        assert records[0].conversation_id == "exists"
+        assert records[0].session_id == "exists"
 
 
 # =============================================================================
@@ -253,70 +222,70 @@ class TestConcurrentSaveGuards:
 
     @pytest.mark.asyncio
     async def test_concurrent_saves_dont_crash(self, sqlite_backend: SQLiteBackend) -> None:
-        """Concurrent saves to different conversations must not error."""
+        """Concurrent saves to different sessions must not error."""
         backend = sqlite_backend
-        repo = ConversationRepository(backend=backend)
+        repo = SessionRepository(backend=backend)
 
         async def _save_one(idx: int) -> None:
-            conv = make_conversation(
-                conversation_id=f"test:conv-{idx}",
+            conv = make_session(
+                session_id=f"test:conv-{idx}",
                 source_name="test",
-                provider_conversation_id=f"conv-{idx}",
-                title=f"Conversation {idx}",
+                provider_session_id=f"conv-{idx}",
+                title=f"Session {idx}",
                 content_hash=f"hash-{idx}",
                 version=1,
             )
             msg = make_message(
                 message_id=f"msg-{idx}",
-                conversation_id=f"test:conv-{idx}",
+                session_id=f"test:conv-{idx}",
                 role="user",
-                text=f"Hello from conversation {idx}",
+                text=f"Hello from session {idx}",
                 content_hash=f"mhash-{idx}",
                 version=1,
             )
-            await repo.save_conversation(conv, [msg], [])
+            await repo.save_session(conv, [msg], [])
 
         # Run 10 concurrent saves
         await asyncio.gather(*[_save_one(i) for i in range(10)])
 
         # Verify all saved
         async with backend.connection() as conn:
-            cursor = await conn.execute("SELECT COUNT(*) FROM conversations")
+            cursor = await conn.execute("SELECT COUNT(*) FROM sessions")
             row = await cursor.fetchone()
             assert row is not None
             assert row[0] == 10
 
     @pytest.mark.asyncio
-    async def test_concurrent_saves_to_same_conversation(self, sqlite_backend: SQLiteBackend) -> None:
-        """Concurrent upserts to the same conversation must not corrupt."""
+    async def test_concurrent_saves_to_same_session(self, sqlite_backend: SQLiteBackend) -> None:
+        """Concurrent upserts to the same session must not corrupt."""
         backend = sqlite_backend
-        repo = ConversationRepository(backend=backend)
+        repo = SessionRepository(backend=backend)
 
         async def _upsert(version: int) -> None:
-            conv = make_conversation(
-                conversation_id="test:same-conv",
+            conv = make_session(
+                session_id="test:same-conv",
                 source_name="test",
-                provider_conversation_id="same",
+                provider_session_id="same",
                 title=f"Version {version}",
                 content_hash=f"hash-v{version}",
                 version=version,
             )
             msg = make_message(
                 message_id=f"msg-v{version}",
-                conversation_id="test:same-conv",
+                session_id="test:same-conv",
                 role="user",
                 text=f"Version {version}",
                 content_hash=f"mhash-v{version}",
                 version=version,
             )
-            await repo.save_conversation(conv, [msg], [])
+            await repo.save_session(conv, [msg], [])
 
-        # Run 5 concurrent upserts to the same conversation
+        # Run 5 concurrent upserts to the same session
         await asyncio.gather(*[_upsert(i) for i in range(5)])
 
-        # Should have exactly 1 conversation (upserted, not duplicated)
+        # Should have exactly 1 session (upserted, not duplicated)
         async with backend.connection() as conn:
-            cursor = await conn.execute("SELECT COUNT(*) FROM conversations")
+            cursor = await conn.execute("SELECT COUNT(*) FROM sessions")
             row = await cursor.fetchone()
             assert row is not None
             assert row[0] == 1
@@ -325,22 +294,22 @@ class TestConcurrentSaveGuards:
     async def test_concurrent_reads_during_writes(self, sqlite_backend: SQLiteBackend) -> None:
         """Reads during concurrent writes must not error or return garbage."""
         backend = sqlite_backend
-        repo = ConversationRepository(backend=backend)
+        repo = SessionRepository(backend=backend)
 
         async def _write(idx: int) -> None:
-            conv = make_conversation(
-                conversation_id=f"test:conv-{idx}",
+            conv = make_session(
+                session_id=f"test:conv-{idx}",
                 source_name="test",
-                provider_conversation_id=f"conv-{idx}",
-                title=f"Conversation {idx}",
+                provider_session_id=f"conv-{idx}",
+                title=f"Session {idx}",
                 content_hash=f"hash-{idx}",
                 version=1,
             )
-            await repo.save_conversation(conv, [], [])
+            await repo.save_session(conv, [], [])
 
         async def _read() -> int:
             async with backend.read_connection() as conn:
-                cursor = await conn.execute("SELECT COUNT(*) FROM conversations")
+                cursor = await conn.execute("SELECT COUNT(*) FROM sessions")
                 row = await cursor.fetchone()
                 assert row is not None
                 return int(row[0])

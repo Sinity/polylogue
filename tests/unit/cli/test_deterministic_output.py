@@ -545,18 +545,18 @@ def test_format_cursors_contract(cursors: dict[str, object], expected_parts: tup
 @pytest.mark.parametrize(
     ("counts", "expected_parts"),
     [
-        ({"conversations": 10, "messages": 100}, ("10 conv", "100 msg")),
+        ({"sessions": 10, "messages": 100}, ("10 conv", "100 msg")),
         (
             {
-                "conversations": 3,
-                "new_conversations": 2,
-                "changed_conversations": 1,
+                "sessions": 3,
+                "new_sessions": 2,
+                "changed_sessions": 1,
                 "messages": 30,
             },
             ("3 conv (2 new, 1 changed)", "30 msg"),
         ),
         ({"acquired": 4, "validated": 4, "validation_drift": 2}, ("4 acquired", "4 validated", "2 drift")),
-        ({"conversations": 5, "messages": 50}, ("5 conv", "50 msg")),
+        ({"sessions": 5, "messages": 50}, ("5 conv", "50 msg")),
         ({}, ("0 conv", "0 msg")),
     ],
 )

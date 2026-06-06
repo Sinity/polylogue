@@ -15,7 +15,7 @@ maintenance loop, see [daemon.md](daemon.md).
 
 A *maintenance operation* is an explicit, resumable, idempotent pass
 over already-ingested archive state. It does **not** acquire new
-source data. It does **not** rewrite or delete imported conversations
+source data. It does **not** rewrite or delete imported sessions
 beyond targeted cleanup. It rebuilds, repairs, or prunes the things
 the archive depends on but does not own as primary data:
 
@@ -26,7 +26,7 @@ the archive depends on but does not own as primary data:
 - backfilled columns (e.g. `message_type` for rows ingested before the
   classifier existed);
 - archive-cleanup scopes (orphaned messages, orphaned content blocks,
-  empty conversations, orphaned attachments, orphaned blobs);
+  empty sessions, orphaned attachments, orphaned blobs);
 - SQLite housekeeping (WAL checkpoint).
 
 A maintenance operation is distinguished from three adjacent things:
@@ -36,7 +36,7 @@ A maintenance operation is distinguished from three adjacent things:
 | **Ingest** (`polylogued`, `polylogue ingest PATH`) | Daemon acquires source payloads, parses provider records, writes archive rows, and advances derived models *for the new rows*. `polylogue ingest PATH` asks the running daemon to schedule an explicit file or directory. | You have new exports/sessions to import. |
 | **Daemon convergence** (`polylogued` inline loops) | Performs the same operations as ingest plus the lightweight maintenance loop (WAL checkpoint every 5 min, FTS convergence every 10 min, heartbeat, health checks). | The daemon is running. You do nothing. |
 | **Maintenance** (`polylogue maintenance ...`) | Rebuilds derived state and prunes archive debt over already-ingested rows. Read-only by default; mutations are explicit. | A derived model is stale or missing for old rows that the daemon's small inline windows will not pick up. |
-| **Reset** (`polylogue reset`) | Deletes data: the SQLite database, the blob store, attachments, cache, OAuth tokens, or named conversations (soft-delete via tombstones). | The data itself is wrong or unwanted, not just a derived projection of it. |
+| **Reset** (`polylogue reset`) | Deletes data: the SQLite database, the blob store, attachments, cache, OAuth tokens, or named sessions (soft-delete via tombstones). | The data itself is wrong or unwanted, not just a derived projection of it. |
 
 The order of preference is: **do nothing → daemon → maintenance →
 reset**. Reset is the only one that destroys primary data.
@@ -49,8 +49,8 @@ Maintenance targets are grouped into four scopes:
 | --- | --- | --- | --- |
 | `derived` (derived_repair) | repair | no | `session_insights`, `action_event_read_model`, `dangling_fts`, `message_type_backfill`, `message_embeddings` |
 | `retrieval` (database_maintenance) | repair | no | `wal_checkpoint` |
-| `archive_cleanup` | cleanup | **yes** | `orphaned_messages`, `orphaned_content_blocks`, `empty_conversations`, `orphaned_attachments`, `orphaned_blobs` |
-| `backfill` | repair | no | column/row backfills surfaced by the planner (currently subsumed by `derived`; reserved for future source-replay backfills tracked in [#1195](https://github.com/Sinity/polylogue/issues/1195)) |
+| `archive_cleanup` | cleanup | **yes** | `orphaned_messages`, `orphaned_content_blocks`, `empty_sessions`, `orphaned_attachments`, `orphaned_blobs` |
+| `backfill` | repair | no | column/row backfills surfaced by the planner (currently subsumed by `derived`). Re-acquiring raw artifacts from source is not a maintenance target: re-ingest (`polylogue reset --database && polylogued run`) re-acquires from the source archives. |
 
 The canonical target list is enforced by
 `polylogue/maintenance/targets.py`. The CLI `--target` option's
@@ -65,13 +65,13 @@ unknown target is rejected at the CLI boundary.
                                  |
             +--------------------+--------------------+
             |                                         |
-   one or a few conversations               wide swath of the archive
+   one or a few sessions               wide swath of the archive
    look wrong / outdated                    looks stale (FTS misses
             |                                hits, session profiles
             |                                missing for old data, ...)
             |                                         |
    polylogue maintenance preview          polylogue maintenance preview
-   (scoped to that conversation)          (no scope — full inventory)
+   (scoped to that session)          (no scope — full inventory)
             |                                         |
    nothing stale?                          nothing stale?
    - the data really is that way.          - the daemon already converged.
@@ -80,12 +80,12 @@ unknown target is rejected at the CLI boundary.
             |                                         |
    stale rows reported?                    stale rows reported?
    polylogue maintenance run               polylogue maintenance run
-     --conversation <id>                     (no scope) or
+     --session <id>                     (no scope) or
      [--target ...]                          --target <subset>
             |                                         |
    still wrong? the data itself            failures reported?
    is wrong, not the projection.            inspect failure_samples,
-   polylogue reset --conversation           re-run with --operation-id
+   polylogue reset --session           re-run with --operation-id
    <id>  (tombstones it; preserves         to resume from cursor.
    identity ledger for re-import)
 ```
@@ -205,14 +205,14 @@ If the state file is missing and `--operation-id` is supplied without
 The current shipping surface accepts `--target` and `--scope` only.
 The typed scope filters tracked in
 [#1196](https://github.com/Sinity/polylogue/issues/1196) — repeatable
-`--conversation-id`, `--provider`, `--source-family`, `--source-root`,
+`--session-id`, `--provider`, `--source-family`, `--source-root`,
 `--raw-artifact`, `--since`/`--until`, `--failure-kind` — will be
 plumbed through CLI, HTTP, and MCP in a follow-up PR. Once landed,
 this section will gain one worked example per flag:
 
 ```bash
 # Planned (#1196):
-polylogue maintenance run --conversation-id abc123 --target session_insights
+polylogue maintenance run --session-id abc123 --target session_insights
 polylogue maintenance run --provider claude        --target session_insights
 polylogue maintenance run --source-root ~/.claude/projects --target dangling_fts
 polylogue maintenance run --since 2026-04-01 --until 2026-05-01 \
@@ -343,7 +343,7 @@ backup, and open an issue with the probe output attached.
 **Symptoms.** `devtools daemon-workload-probe` reports a non-trivial
 `convergence_debt` section. `polylogue stats` shows derived
 materialization counts (`session_profile`, `action_events`,
-`work_threads`) lagging behind `conversations`.
+`work_threads`) lagging behind `sessions`.
 
 **Root cause.** The daemon's inline convergence loops process a
 bounded slice each cycle. If ingest outpaced the loop (initial
@@ -382,25 +382,25 @@ escalate.
 
 **Symptoms.** Polylogue refuses to start after a schema bump:
 `SchemaVersionError: database is version N, code expects version M`.
-Polylogue uses fresh-first schema versioning, not migration chains
+Polylogue uses fresh-first schema versioning, not in-place upgrade chains
 (see [internals.md § Schema Versioning
 Model](internals.md#schema-versioning-model)) — there is no
 auto-downgrade.
 
 **Root cause.** A new release advanced `SCHEMA_VERSION` and the
-database is on the previous version. There is no reverse migration.
+database is on the previous version. There is no reverse in-place upgrade.
 
 **Recovery.**
 
 ```bash
 # 1. Confirm the version mismatch.
 polylogue --version
-sqlite3 ~/.local/share/polylogue/polylogue.db "PRAGMA user_version;"
+sqlite3 ~/.local/share/polylogue/index.db "PRAGMA user_version;"
 
 # 2. STOP the daemon to release exclusive locks.
 systemctl --user stop polylogued.service
 
-# 3. Decide: roll the code back, or migrate the data forward.
+# 3. Decide: roll the code back, or rebuild the changed tier forward.
 #    There is no third option — fresh-first schema versioning is
 #    explicit about rejecting mismatched databases.
 
@@ -409,29 +409,26 @@ systemctl --user stop polylogued.service
 #     install the previous polylogue version, leave the database
 #     alone, restart the daemon.
 
-# 3b. Forward migration: locate the explicit in-place upgrade script
-#     for this exact transition under polylogue/storage/sqlite/
-#     and run it against a *copy* of the database first.
-cp ~/.local/share/polylogue/polylogue.db /tmp/upgrade-test.db
-# ...apply the upgrade script to /tmp/upgrade-test.db, verify it
-# opens cleanly with the new polylogue binary, then point production
-# at the migrated copy.
+# 3b. Forward rebuild: keep the source/user/embedding tiers safe,
+#     move the mismatched index database aside, and re-ingest/rederive
+#     the rebuildable index with the new polylogue binary.
+cp ~/.local/share/polylogue/index.db /tmp/index-before-rebuild.db
+# ...run the documented re-ingest/rederive flow for the release, verify
+# it opens cleanly with the new polylogue binary, then restart production.
 
 # 4. Restart and verify.
 systemctl --user start polylogued.service
 polylogue check
 ```
 
-If no explicit upgrade script exists for the transition, **do not**
-hand-edit the schema. The combination of fresh-first versioning and
-no migration-chain machinery means an ad-hoc edit will leave the
-database in a state no future release knows how to recognize. Restore
-from backup and stay on the old version until an upgrade script
-ships.
+Polylogue does not maintain an in-place upgrade chain for ordinary schema
+bumps. If the release notes do not provide an explicit, reviewed
+transition, **do not** hand-edit the schema. Move the mismatched tier
+aside, protect `source.db` and `user.db`, and rebuild from source.
 
 ### Investigating a stuck source
 
-**Symptoms.** A source family stops producing new conversations even
+**Symptoms.** A source family stops producing new sessions even
 though source files are present. `polylogue sources` shows a source
 with stale `last_seen`. Daemon logs show repeated parse errors for
 the same artifact id.
@@ -458,8 +455,8 @@ polylogue ingest <path-to-source>
 #    in the parser. File an issue with the provider and artifact details.
 
 # 6. While the upstream fix is in flight, you can tombstone the
-#    bad conversation so it stops blocking convergence:
-polylogue reset --conversation <conv_id>
+#    bad session so it stops blocking convergence:
+polylogue reset --session <conv_id>
 ```
 
 Do **not** reach for `polylogue maintenance run` to "fix" a stuck
@@ -468,7 +465,7 @@ are not in the archive yet, maintenance has nothing to do.
 
 ### Recovering a corrupt blob store
 
-**Symptoms.** `polylogue check` reports unreadable blobs. Conversation
+**Symptoms.** `polylogue check` reports unreadable blobs. Session
 exports fail with "blob not found". `devtools daemon-workload-probe`
 shows divergence between `blob_links` count and the count of files
 under `blob/`.
@@ -489,7 +486,7 @@ systemctl --user stop polylogued.service
 #    flight at the time.
 devtools daemon-workload-probe --json | jq '{lease: .blob_lease_state, gc: .gc_state}'
 
-# 3. Identify the affected conversations.
+# 3. Identify the affected sessions.
 polylogue check --schemas --blob-integrity --output-format json \
   | jq '.unreadable_blobs[]'
 
@@ -498,10 +495,10 @@ polylogue check --schemas --blob-integrity --output-format json \
 #    safe — the hash is the address.
 restic restore latest --target / --include /path/to/archive_root/blob
 
-# 5. If the blob is gone for good, the conversation referencing it
+# 5. If the blob is gone for good, the session referencing it
 #    cannot be exported. Tombstone it so it stops blocking exports
 #    and re-ingest from the original source if available:
-polylogue reset --conversation <conv_id>
+polylogue reset --session <conv_id>
 polylogue ingest <path-to-source>
 
 # 6. After recovery, GC the orphan references that point at the

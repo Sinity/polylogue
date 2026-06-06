@@ -1,4 +1,4 @@
-"""Per-key rate limiter and schema-incompatible handler for live ingest.
+"""Per-key rate limiter and schema-version-mismatch handler for live ingest.
 
 Used to dedup high-frequency, structural log events such as schema-version
 mismatches: every inotify event under a watched root would otherwise produce
@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Mapping
 
 from polylogue.core.degraded import DegradedReason, is_degraded, set_degraded
-from polylogue.errors import DatabaseError, SchemaIncompatibleError
+from polylogue.errors import DatabaseError, SchemaVersionMismatchError
 from polylogue.logging import get_logger
 
 SCHEMA_MISMATCH_DEDUP_WINDOW_S = 60.0
@@ -62,8 +62,8 @@ def handle_structural_database_error(source_name: str, exc: DatabaseError) -> No
     what produced the journal flood and IOPS storm in #1003.
     """
     detail: Mapping[str, object]
-    if isinstance(exc, SchemaIncompatibleError):
-        code = "schema_incompatible"
+    if isinstance(exc, SchemaVersionMismatchError):
+        code = "schema_version_mismatch"
         signature = f"{code}:{exc.current_version}->{exc.expected_version}"
         detail = {
             "current_version": exc.current_version,
@@ -71,7 +71,7 @@ def handle_structural_database_error(source_name: str, exc: DatabaseError) -> No
         }
         version_suffix = f" (db schema v{exc.current_version}, runtime expects v{exc.expected_version})"
     else:
-        code = "database_layout_incompatible"
+        code = "database_layout_mismatch"
         signature = f"{code}:{type(exc).__name__}:{str(exc)}"
         detail = {"error": str(exc)}
         version_suffix = ""
@@ -92,15 +92,15 @@ def handle_structural_database_error(source_name: str, exc: DatabaseError) -> No
         )
 
 
-def handle_schema_incompatible(source_name: str, exc: SchemaIncompatibleError) -> None:
-    """Compatibility wrapper for callers and tests naming the v-only case."""
+def handle_schema_version_mismatch(source_name: str, exc: SchemaVersionMismatchError) -> None:
+    """Handle the common version-only structural database error."""
     handle_structural_database_error(source_name, exc)
 
 
 __all__ = [
     "SCHEMA_MISMATCH_DEDUP_WINDOW_S",
     "RateLimiter",
-    "handle_schema_incompatible",
+    "handle_schema_version_mismatch",
     "handle_structural_database_error",
     "schema_warning_limiter",
 ]

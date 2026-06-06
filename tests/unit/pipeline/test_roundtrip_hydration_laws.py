@@ -15,7 +15,9 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from polylogue.core.sources import origin_from_provider
 from polylogue.schemas.synthetic.core import SyntheticCorpus
+from polylogue.types import Provider
 from tests.infra.pipeline_roundtrip import parse_and_transform_payload, save_transform_and_hydrate
 from tests.infra.storage_records import db_setup
 
@@ -193,20 +195,20 @@ class TestIdempotentReimport:
             bundle = result.bundle
 
             store_records(
-                conversation=bundle.conversation,
+                session=bundle.session,
                 messages=bundle.messages,
                 attachments=bundle.attachments,
                 conn=conn,
             )
 
             counts2 = store_records(
-                conversation=bundle.conversation,
+                session=bundle.session,
                 messages=bundle.messages,
                 attachments=bundle.attachments,
                 conn=conn,
             )
 
-            assert counts2["conversations"] == 0, "Re-import should not re-insert conversation"
+            assert counts2["sessions"] == 0, "Re-import should not re-insert session"
             assert counts2["messages"] == 0, "Re-import should not re-insert messages"
 
 
@@ -232,17 +234,18 @@ class TestProviderIdentity:
             roundtrip = parse_and_transform_payload(source_name, raw_bytes, workspace_env["archive_root"], unique_id)
             hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
 
-            assert str(hydrated.provider) == str(roundtrip.parsed.source_name), (
-                f"Provider changed: {roundtrip.parsed.source_name!r} → {hydrated.provider!r}"
+            expected_origin = origin_from_provider(Provider.from_string(str(roundtrip.parsed.source_name))).value
+            assert str(hydrated.origin) == expected_origin, (
+                f"Origin changed: {roundtrip.parsed.source_name!r} → {hydrated.origin!r}"
             )
 
 
 # ---------------------------------------------------------------------------
-# Law 7: Conversation ID determinism
+# Law 7: Session ID determinism
 # ---------------------------------------------------------------------------
 
 
-class TestConversationIdDeterminism:
+class TestSessionIdDeterminism:
     @given(data=synthetic_payload())
     @settings(
         max_examples=20,
@@ -254,7 +257,7 @@ class TestConversationIdDeterminism:
         result1 = parse_and_transform_payload(source_name, raw_bytes, tmp_path, unique_id).transform
         result2 = parse_and_transform_payload(source_name, raw_bytes, tmp_path, unique_id).transform
 
-        assert result1.candidate_cid == result2.candidate_cid, "Same payload produced different conversation IDs"
+        assert result1.candidate_cid == result2.candidate_cid, "Same payload produced different session IDs"
 
 
 # ---------------------------------------------------------------------------

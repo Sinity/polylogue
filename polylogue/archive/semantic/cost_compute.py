@@ -1,33 +1,33 @@
-"""Cost computation for session profiles from conversation data."""
+"""Cost computation for session profiles from session data."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
 from polylogue.archive.semantic.cost_records import SessionCostBreakdown, SessionCostSummary
-from polylogue.archive.semantic.pricing import _normalize_model, estimate_conversation_cost, estimate_cost
+from polylogue.archive.semantic.pricing import _normalize_model, estimate_cost, estimate_session_cost
 from polylogue.archive.semantic.subscription_pricing import compute_credit_cost, get_credit_rate
 from polylogue.archive.semantic.tokenizer import TOKENIZER_VERSION, estimate_tokens_from_words
 
 if TYPE_CHECKING:
-    from polylogue.archive.models import Conversation
+    from polylogue.archive.models import Session
 
 _PRICE_SNAPSHOT_VERSION = "polylogue-curated-litellm-shaped-seed"
 
 
-def compute_session_cost(conversation: Conversation) -> SessionCostSummary:
+def compute_session_cost(session: Session) -> SessionCostSummary:
     """Compute per-model cost breakdown and aggregate cost summary."""
-    conversation_estimate = estimate_conversation_cost(conversation)
-    if conversation_estimate.status == "exact":
+    session_estimate = estimate_session_cost(session)
+    if session_estimate.status == "exact":
         return SessionCostSummary(
-            total_input_tokens=conversation_estimate.usage.input_tokens,
-            total_output_tokens=conversation_estimate.usage.output_tokens,
-            total_cache_read_tokens=conversation_estimate.usage.cache_read_tokens,
-            total_cache_write_tokens=conversation_estimate.usage.cache_write_tokens,
-            total_api_cost_usd=round(conversation_estimate.total_usd, 6),
+            total_input_tokens=session_estimate.usage.input_tokens,
+            total_output_tokens=session_estimate.usage.output_tokens,
+            total_cache_read_tokens=session_estimate.usage.cache_read_tokens,
+            total_cache_write_tokens=session_estimate.usage.cache_write_tokens,
+            total_api_cost_usd=round(session_estimate.total_usd, 6),
             total_credit_cost=0.0,
             total_subscription_equivalent_usd=round(
-                conversation_estimate.basis.subscription_equivalent_usd,
+                session_estimate.basis.subscription_equivalent_usd,
                 6,
             ),
             cost_provenance="provider_reported",
@@ -36,16 +36,16 @@ def compute_session_cost(conversation: Conversation) -> SessionCostSummary:
             price_snapshot_version=_PRICE_SNAPSHOT_VERSION,
             per_model=(
                 SessionCostBreakdown(
-                    normalized_model=conversation_estimate.normalized_model,
-                    provider_model_name=conversation_estimate.model_name,
-                    input_tokens=conversation_estimate.usage.input_tokens,
-                    output_tokens=conversation_estimate.usage.output_tokens,
-                    cache_read_tokens=conversation_estimate.usage.cache_read_tokens,
-                    cache_write_tokens=conversation_estimate.usage.cache_write_tokens,
-                    total_tokens=conversation_estimate.usage.total_tokens,
-                    api_cost_usd=round(conversation_estimate.total_usd, 6),
+                    normalized_model=session_estimate.normalized_model,
+                    provider_model_name=session_estimate.model_name,
+                    input_tokens=session_estimate.usage.input_tokens,
+                    output_tokens=session_estimate.usage.output_tokens,
+                    cache_read_tokens=session_estimate.usage.cache_read_tokens,
+                    cache_write_tokens=session_estimate.usage.cache_write_tokens,
+                    total_tokens=session_estimate.usage.total_tokens,
+                    api_cost_usd=round(session_estimate.total_usd, 6),
                     subscription_equivalent_usd=round(
-                        conversation_estimate.basis.subscription_equivalent_usd,
+                        session_estimate.basis.subscription_equivalent_usd,
                         6,
                     ),
                     confidence="reported",
@@ -55,7 +55,7 @@ def compute_session_cost(conversation: Conversation) -> SessionCostSummary:
         )
     per_model: dict[str, SessionCostBreakdown] = {}
 
-    for message in conversation.messages:
+    for message in session.messages:
         model_name = _get_message_model_name(message)
         norm_model = _normalize_model(model_name) if model_name else None
         key = norm_model or "unknown"

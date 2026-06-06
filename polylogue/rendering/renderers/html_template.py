@@ -1,4 +1,4 @@
-"""Template support for HTML conversation rendering."""
+"""Template support for HTML session rendering."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from jinja2 import DictLoader, Environment, select_autoescape
 
 from polylogue.rendering.renderers.html_sanitizer import sanitize_html
 
-DEFAULT_HTML_TEMPLATE = (Path(__file__).parent.parent / "templates" / "conversation.html").read_text()
+DEFAULT_HTML_TEMPLATE = (Path(__file__).parent.parent / "templates" / "session.html").read_text()
 
 _CACHED_TEMPLATE_ENV: Environment | None = None
 
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 def _build_template_environment() -> Environment:
     env = Environment(
-        loader=DictLoader({"conversation.html": DEFAULT_HTML_TEMPLATE}),
+        loader=DictLoader({"session.html": DEFAULT_HTML_TEMPLATE}),
         autoescape=select_autoescape(["html", "xml"]),
     )
     env.filters["sanitize_html"] = sanitize_html
@@ -31,7 +31,7 @@ def get_cached_template() -> Template:
     global _CACHED_TEMPLATE_ENV
     if _CACHED_TEMPLATE_ENV is None:
         _CACHED_TEMPLATE_ENV = _build_template_environment()
-    return _CACHED_TEMPLATE_ENV.get_template("conversation.html")
+    return _CACHED_TEMPLATE_ENV.get_template("session.html")
 
 
 __all__ = ["DEFAULT_HTML_TEMPLATE", "get_cached_template"]

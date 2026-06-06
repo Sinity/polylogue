@@ -7,76 +7,74 @@ from typing import TYPE_CHECKING
 
 import click
 
-from polylogue.cli.query_contracts import QueryMutationSpec, result_date, result_id, result_provider, result_title
+from polylogue.cli.query_contracts import QueryMutationSpec, result_date, result_id, result_origin, result_title
 
 if TYPE_CHECKING:
-    from polylogue.archive.filter.filters import ConversationFilter
-    from polylogue.archive.models import Conversation, ConversationSummary
-    from polylogue.archive.query.spec import ConversationQuerySpec
+    from polylogue.archive.filter.filters import SessionFilter
+    from polylogue.archive.models import Session, SessionSummary
+    from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.cli.shared.types import AppEnv
-    from polylogue.protocols import ConversationQueryRuntimeStore, TagStore
+    from polylogue.protocols import SessionQueryRuntimeStore, TagStore
 
 
 async def resolve_stream_target(
-    repo: ConversationQueryRuntimeStore,
-    filter_chain: ConversationFilter,
-    selection: ConversationQuerySpec,
+    repo: SessionQueryRuntimeStore,
+    filter_chain: SessionFilter,
+    selection: SessionQuerySpec,
 ) -> str:
-    """Resolve the conversation ID for a streaming query."""
+    """Resolve the session ID for a streaming query."""
     query_terms = selection.query_terms
-    if selection.conversation_id:
-        resolved = await repo.resolve_id(selection.conversation_id)
+    if selection.session_id:
+        resolved = await repo.resolve_id(selection.session_id)
         if not resolved:
-            click.echo(f"No conversation found matching: {selection.conversation_id}", err=True)
+            click.echo(f"No session found matching: {selection.session_id}", err=True)
             raise SystemExit(2)
         return str(resolved)
 
     if selection.latest:
         summaries = await filter_chain.list_summaries()
         if not summaries:
-            click.echo("No conversations matched.", err=True)
+            click.echo("No sessions matched.", err=True)
             raise SystemExit(2)
         return str(summaries[0].id)
 
     if selection.has_filters():
         summaries = await filter_chain.sort("date").limit(1).list_summaries()
         if not summaries:
-            click.echo("No conversations matched filters.", err=True)
+            click.echo("No sessions matched filters.", err=True)
             raise SystemExit(2)
         return str(summaries[0].id)
 
     if query_terms:
         resolved = await repo.resolve_id(query_terms[0])
         if not resolved:
-            click.echo(f"No conversation found matching: {query_terms[0]}", err=True)
-            click.echo("Hint: use `list` to browse conversations, or --latest for most recent", err=True)
+            click.echo(f"No session found matching: {query_terms[0]}", err=True)
+            click.echo("Hint: use `list` to browse sessions, or --latest for most recent", err=True)
             raise SystemExit(2)
         return str(resolved)
 
-    click.echo("--stream requires a specific conversation. Use --latest or specify an ID.", err=True)
+    click.echo("--stream requires a specific session. Use --latest or specify an ID.", err=True)
     raise SystemExit(1)
 
 
 async def apply_modifiers(
     env: AppEnv,
-    results: Sequence[Conversation | ConversationSummary],
+    results: Sequence[Session | SessionSummary],
     mutation: QueryMutationSpec,
     repo: TagStore | None = None,
 ) -> None:
-    """Apply metadata modifiers to matched conversations.
+    """Apply metadata modifiers to matched sessions.
 
     When the caller supplies a custom ``repo`` (test harnesses with
     fictional summaries, batch tools that have already validated
     existence), tag mutations are routed straight at the repo. With no
     custom repo, mutations go through ``env.polylogue.add_tag`` so the
-    shared facade enforces idempotency and conversation-existence
+    shared facade enforces idempotency and session-existence
     checks. Mixing the two paths against summaries that are not in
-    the polylogue archive raises ``ConversationNotFoundError`` (#1012).
+    the polylogue archive raises ``SessionNotFoundError`` (#1012).
     """
-    custom_repo = repo is not None
-    repo = repo or env.repository
     if not results:
-        env.ui.console.print("No conversations matched.")
+        env.ui.console.print("No sessions matched.")
         return
 
     dry_run = mutation.dry_run
@@ -93,16 +91,16 @@ async def apply_modifiers(
     op_desc = "; ".join(operations)
 
     if dry_run:
-        click.echo(f"DRY-RUN: Would modify {count} conversation(s)")
+        click.echo(f"DRY-RUN: Would modify {count} session(s)")
         click.echo(f"Operations: {op_desc}")
-        env.ui.console.print("\nSample of affected conversations:")
+        env.ui.console.print("\nSample of affected sessions:")
         for conv in results[:5]:
             title = result_title(conv)[:40]
-            env.ui.console.print(f"  - {result_id(conv)[:24]} [{result_provider(conv)}] {title}")
+            env.ui.console.print(f"  - {result_id(conv)[:24]} [{result_origin(conv)}] {title}")
         return
 
     if count > 10 and not force:
-        click.echo(f"About to modify {count} conversations")
+        click.echo(f"About to modify {count} sessions")
         click.echo(f"Operations: {op_desc}")
         if not env.ui.confirm("Proceed?", default=False):
             env.ui.console.print("Aborted.")
@@ -115,18 +113,18 @@ async def apply_modifiers(
         if mutation.set_meta:
             for kv in mutation.set_meta:
                 key, value = kv[0], kv[1]
-                if custom_repo:
+                if repo is not None:
                     await repo.update_metadata(result_id(conv), key, value)
                 else:
                     # Route through the facade so the metadata key is
-                    # validated and the conversation existence check fires
+                    # validated and the session existence check fires
                     # (#862). The facade returns a typed MetadataMutationResult.
                     await env.polylogue.set_metadata(result_id(conv), key, value)
                 meta_set += 1
 
         if mutation.add_tags:
             for tag in mutation.add_tags:
-                if custom_repo:
+                if repo is not None:
                     await repo.add_tag(result_id(conv), tag)
                     tags_added += 1
                 else:
@@ -136,7 +134,7 @@ async def apply_modifiers(
 
     reports: list[str] = []
     if tags_added:
-        reports.append(f"Added tags to {count} conversations")
+        reports.append(f"Added tags to {count} sessions")
     if meta_set:
         reports.append(f"Set {meta_set} metadata field(s)")
 
@@ -144,15 +142,15 @@ async def apply_modifiers(
         click.echo(report)
 
 
-async def delete_conversations(
+async def delete_sessions(
     env: AppEnv,
-    results: Sequence[Conversation | ConversationSummary],
+    results: Sequence[Session | SessionSummary],
     mutation: QueryMutationSpec,
-    repo: ConversationQueryRuntimeStore | None = None,
+    repo: SessionQueryRuntimeStore | None = None,
 ) -> None:
-    """Delete matched conversations.
+    """Delete matched sessions.
 
-    Routes deletes through ``env.polylogue.delete_conversation_safe`` by
+    Routes deletes through ``env.polylogue.delete_session_safe`` by
     default so resolution and idempotency stay centralized in
     :class:`ArchiveMutationsMixin` (#862). Tests/batch tools that supply a
     custom repository keep direct access for the same reason
@@ -160,25 +158,23 @@ async def delete_conversations(
     """
     from collections import Counter
 
-    custom_repo = repo is not None
-    repo = repo or env.repository
     if not results:
-        env.ui.console.print("No conversations matched.")
+        env.ui.console.print("No sessions matched.")
         return
 
     dry_run = mutation.dry_run
     force = mutation.force
     count = len(results)
 
-    provider_counts = Counter(result_provider(conv) for conv in results)
+    origin_counts = Counter(result_origin(conv) for conv in results)
     dates = [dt for conv in results if (dt := result_date(conv)) is not None]
     date_min = min(dates) if dates else None
     date_max = max(dates) if dates else None
 
     def _print_breakdown() -> None:
-        click.echo("  Providers:")
-        for provider, pcount in provider_counts.most_common():
-            click.echo(f"    {provider}: {pcount}")
+        click.echo("  Origins:")
+        for origin, pcount in origin_counts.most_common():
+            click.echo(f"    {origin}: {pcount}")
         if date_min and date_max:
             fmt = "%Y-%m-%d"
             if date_min.date() == date_max.date():
@@ -188,23 +184,23 @@ async def delete_conversations(
         click.echo("  Sample:")
         for conv in results[:5]:
             title = result_title(conv)[:40]
-            click.echo(f"    {result_id(conv)[:24]} [{result_provider(conv)}] {title}")
+            click.echo(f"    {result_id(conv)[:24]} [{result_origin(conv)}] {title}")
         if count > 5:
             click.echo(f"    ... and {count - 5} more")
 
     if dry_run:
-        click.echo(f"DRY-RUN: Would delete {count} conversation(s)")
+        click.echo(f"DRY-RUN: Would delete {count} session(s)")
         _print_breakdown()
         return
 
     if count > 10 and not force:
-        click.echo(f"About to DELETE {count} conversations:", err=True)
+        click.echo(f"About to DELETE {count} sessions:", err=True)
         _print_breakdown()
         if not env.ui.confirm("Proceed?", default=False):
             env.ui.console.print("Aborted.")
             return
     elif not force:
-        click.echo(f"About to delete {count} conversation(s):")
+        click.echo(f"About to delete {count} session(s):")
         _print_breakdown()
         if not env.ui.confirm("Proceed?", default=False):
             env.ui.console.print("Aborted.")
@@ -212,19 +208,19 @@ async def delete_conversations(
 
     deleted_count = 0
     for conv in results:
-        if custom_repo:
-            if await repo.delete_conversation(result_id(conv)):
+        if repo is not None:
+            if await repo.delete_session(result_id(conv)):
                 deleted_count += 1
         else:
-            result = await env.polylogue.delete_conversation_safe(result_id(conv))
+            result = await env.polylogue.delete_session_safe(result_id(conv))
             if result.outcome == "deleted":
                 deleted_count += 1
 
-    click.echo(f"Deleted {deleted_count} conversation(s)")
+    click.echo(f"Deleted {deleted_count} session(s)")
 
 
-def apply_transform(results: list[Conversation], transform: str) -> list[Conversation]:
-    """Apply a transform to filter messages from conversations."""
+def apply_transform(results: list[Session], transform: str) -> list[Session]:
+    """Apply a transform to filter messages from sessions."""
     transformed = []
     for conv in results:
         proj = conv.project()

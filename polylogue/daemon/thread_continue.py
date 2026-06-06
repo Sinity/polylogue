@@ -27,7 +27,7 @@ Variables available inside a template:
 - ``{prompt}`` — URL-encoded message text (plus optional context).
 - ``{prompt_plain}`` — raw message text (no encoding); use only when the
   template's URL scheme handles encoding itself (rare).
-- ``{conversation_id}`` — the source conversation id.
+- ``{session_id}`` — the source session id.
 - ``{message_id}`` — the source message id, or empty when not provided.
 
 The endpoint never returns the prompt contents — it only returns the
@@ -75,12 +75,12 @@ _BUILTIN_TEMPLATES: tuple[AgentTemplate, ...] = (
     AgentTemplate(
         agent_id="claude-code",
         label="Open in Claude Code",
-        url_template="polylogue://thread?agent=claude-code&conv={conversation_id}&msg={message_id}&prompt={prompt}",
+        url_template="polylogue://thread?agent=claude-code&conv={session_id}&msg={message_id}&prompt={prompt}",
     ),
     AgentTemplate(
         agent_id="codex",
         label="Open in Codex",
-        url_template="polylogue://thread?agent=codex&conv={conversation_id}&msg={message_id}&prompt={prompt}",
+        url_template="polylogue://thread?agent=codex&conv={session_id}&msg={message_id}&prompt={prompt}",
     ),
     AgentTemplate(
         agent_id="copy-prompt",
@@ -158,7 +158,7 @@ def build_url(
     template: AgentTemplate,
     *,
     prompt: str,
-    conversation_id: str,
+    session_id: str,
     message_id: str | None = None,
 ) -> str:
     """Substitute the template variables into ``template.url_template``.
@@ -166,14 +166,14 @@ def build_url(
     ``prompt`` is percent-encoded for the ``{prompt}`` placeholder and
     left raw for ``{prompt_plain}`` so an operator who configured a
     scheme handler that wants the raw text can opt in deliberately.
-    ``conversation_id`` and ``message_id`` are URL-quoted.
+    ``session_id`` and ``message_id`` are URL-quoted.
     """
 
     encoded_prompt = quote(prompt, safe="")
     return template.url_template.format(
         prompt=encoded_prompt,
         prompt_plain=prompt,
-        conversation_id=quote(conversation_id, safe=""),
+        session_id=quote(session_id, safe=""),
         message_id=quote(message_id or "", safe=""),
     )
 

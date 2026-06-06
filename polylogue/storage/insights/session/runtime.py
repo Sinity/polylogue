@@ -25,9 +25,9 @@ SessionInsightReadyFlag: TypeAlias = Literal[
 
 
 class SessionInsightRefreshChunkPayload(TypedDict):
-    conversation_count: int
+    session_count: int
     estimated_message_count: int
-    max_estimated_conversation_messages: int
+    max_estimated_session_messages: int
     hydrated_count: int
     profiles_written: int
     work_events_written: int
@@ -86,7 +86,7 @@ class SessionInsightStatusSnapshot:
     for health checks that must prove materialized tables are current.
     """
 
-    total_conversations: int = 0
+    total_sessions: int = 0
     root_threads: int = 0
     profile_row_count: int = 0
     latency_profile_row_count: int = 0

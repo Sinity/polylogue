@@ -12,19 +12,19 @@ from polylogue.archive.message.roles import Role
 from polylogue.pipeline import prepare as prepare_module
 from polylogue.pipeline.prepare_models import (
     AttachmentMaterializationPlan,
-    PersistedConversationResult,
+    PersistedSessionResult,
     PreparedBundle,
     SaveResult,
 )
-from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.types import Provider
 
 
-def _conversation(*, messages: list[ParsedMessage] | None = None) -> ParsedConversation:
-    return ParsedConversation(
+def _session(*, messages: list[ParsedMessage] | None = None) -> ParsedSession:
+    return ParsedSession(
         source_name=Provider.UNKNOWN,
-        provider_conversation_id="conv-1",
-        title="Conversation",
+        provider_session_id="conv-1",
+        title="Session",
         created_at="2026-04-23T00:00:00Z",
         updated_at="2026-04-23T00:00:00Z",
         messages=messages if messages is not None else [],
@@ -35,7 +35,7 @@ def _conversation(*, messages: list[ParsedMessage] | None = None) -> ParsedConve
 @pytest.mark.asyncio
 async def test_save_bundle_passes_records_to_repository_and_wraps_counts() -> None:
     bundle = SimpleNamespace(
-        conversation="conversation-record",
+        session="session-record",
         messages=["message-record"],
         attachments=["attachment-record"],
         content_blocks=["content-block-record"],
@@ -43,12 +43,12 @@ async def test_save_bundle_passes_records_to_repository_and_wraps_counts() -> No
         topology_edges=[],
     )
     repository = SimpleNamespace(
-        save_conversation=AsyncMock(
+        save_session=AsyncMock(
             return_value={
-                "conversations": 1,
+                "sessions": 1,
                 "messages": 2,
                 "attachments": 3,
-                "skipped_conversations": 4,
+                "skipped_sessions": 4,
                 "skipped_messages": 5,
                 "skipped_attachments": 6,
             }
@@ -58,15 +58,15 @@ async def test_save_bundle_passes_records_to_repository_and_wraps_counts() -> No
     result = await prepare_module.save_bundle(bundle, repository=repository)
 
     assert result == SaveResult(
-        conversations=1,
+        sessions=1,
         messages=2,
         attachments=3,
-        skipped_conversations=4,
+        skipped_sessions=4,
         skipped_messages=5,
         skipped_attachments=6,
     )
-    repository.save_conversation.assert_awaited_once_with(
-        conversation="conversation-record",
+    repository.save_session.assert_awaited_once_with(
+        session="session-record",
         messages=["message-record"],
         attachments=["attachment-record"],
         content_blocks=["content-block-record"],
@@ -78,7 +78,7 @@ async def test_save_bundle_passes_records_to_repository_and_wraps_counts() -> No
 @pytest.mark.asyncio
 async def test_prepare_bundle_requires_context_and_can_construct_repository(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="prepare_bundle requires a repository or backend"):
-        await prepare_module.prepare_bundle(_conversation(), "source", archive_root=tmp_path)
+        await prepare_module.prepare_bundle(_session(), "source", archive_root=tmp_path)
 
     backend = SimpleNamespace()
     repository = SimpleNamespace(backend=backend)
@@ -89,14 +89,14 @@ async def test_prepare_bundle_requires_context_and_can_construct_repository(tmp_
         cid="cid-1",
         changed=False,
     )
-    with patch("polylogue.storage.repository.ConversationRepository", return_value=repository) as repo_cls:
+    with patch("polylogue.storage.repository.SessionRepository", return_value=repository) as repo_cls:
         with patch("polylogue.pipeline.prepare.transform_to_records", return_value=transform) as transform_to_records:
             with patch(
                 "polylogue.pipeline.prepare._build_single_cache", new=AsyncMock(return_value="cache")
             ) as build_cache:
                 with patch("polylogue.pipeline.prepare.enrich_bundle_from_db", return_value=prepared) as enrich:
                     result = await prepare_module.prepare_bundle(
-                        _conversation(messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hi")]),
+                        _session(messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hi")]),
                         "source",
                         archive_root=tmp_path,
                         backend=backend,
@@ -125,7 +125,7 @@ async def test_prepare_bundle_uses_repository_backend_and_skips_cache_build_when
         with patch("polylogue.pipeline.prepare._build_single_cache") as build_cache:
             with patch("polylogue.pipeline.prepare.enrich_bundle_from_db", return_value=prepared) as enrich:
                 result = await prepare_module.prepare_bundle(
-                    _conversation(messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hi")]),
+                    _session(messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hi")]),
                     "source",
                     archive_root=tmp_path,
                     repository=repository,
@@ -164,10 +164,10 @@ async def test_persist_prepared_bundle_rolls_back_failed_moves_and_cleans_duplic
             "polylogue.pipeline.prepare.save_bundle",
             new=AsyncMock(
                 return_value=SaveResult(
-                    conversations=1,
+                    sessions=1,
                     messages=2,
                     attachments=1,
-                    skipped_conversations=0,
+                    skipped_sessions=0,
                     skipped_messages=0,
                     skipped_attachments=0,
                 )
@@ -175,13 +175,13 @@ async def test_persist_prepared_bundle_rolls_back_failed_moves_and_cleans_duplic
         ):
             result = await prepare_module.persist_prepared_bundle(prepared, repository=SimpleNamespace())
 
-    assert result == PersistedConversationResult(
-        conversation_id="cid-1",
+    assert result == PersistedSessionResult(
+        session_id="cid-1",
         save_result=SaveResult(
-            conversations=1,
+            sessions=1,
             messages=2,
             attachments=1,
-            skipped_conversations=0,
+            skipped_sessions=0,
             skipped_messages=0,
             skipped_attachments=0,
         ),
@@ -199,38 +199,38 @@ async def test_persist_prepared_bundle_rolls_back_failed_moves_and_cleans_duplic
 
 
 @pytest.mark.asyncio
-async def test_prepare_records_requires_context_handles_empty_conversations_and_delegates(tmp_path: Path) -> None:
+async def test_prepare_records_requires_context_handles_empty_sessions_and_delegates(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="prepare_records requires a repository or backend"):
-        await prepare_module.prepare_records(_conversation(), "source", archive_root=tmp_path)
+        await prepare_module.prepare_records(_session(), "source", archive_root=tmp_path)
 
     empty_repo = SimpleNamespace(backend="repo-backend")
     with patch("polylogue.pipeline.prepare.logger.debug") as debug:
         empty = await prepare_module.prepare_records(
-            _conversation(),
+            _session(),
             "source",
             archive_root=tmp_path,
             repository=empty_repo,
         )
 
-    assert empty.save_result.skipped_conversations == 1
+    assert empty.save_result.skipped_sessions == 1
     assert empty.content_changed is False
     debug.assert_called_once()
 
     repository = SimpleNamespace(backend="repo-backend")
     backend = SimpleNamespace()
-    persisted = PersistedConversationResult(
-        conversation_id="cid-1",
+    persisted = PersistedSessionResult(
+        session_id="cid-1",
         save_result=SaveResult(
-            conversations=1,
+            sessions=1,
             messages=1,
             attachments=0,
-            skipped_conversations=0,
+            skipped_sessions=0,
             skipped_messages=0,
             skipped_attachments=0,
         ),
         content_changed=True,
     )
-    with patch("polylogue.storage.repository.ConversationRepository", return_value=repository) as repo_cls:
+    with patch("polylogue.storage.repository.SessionRepository", return_value=repository) as repo_cls:
         with patch(
             "polylogue.pipeline.prepare.prepare_bundle", new=AsyncMock(return_value="prepared")
         ) as prepare_bundle:
@@ -238,7 +238,7 @@ async def test_prepare_records_requires_context_handles_empty_conversations_and_
                 "polylogue.pipeline.prepare.persist_prepared_bundle", new=AsyncMock(return_value=persisted)
             ) as persist:
                 result = await prepare_module.prepare_records(
-                    _conversation(messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hi")]),
+                    _session(messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hi")]),
                     "source",
                     archive_root=tmp_path,
                     backend=backend,

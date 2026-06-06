@@ -42,7 +42,7 @@ async def _make_work_events_db() -> aiosqlite.Connection:
         """
         CREATE TABLE session_work_events (
             event_id TEXT PRIMARY KEY,
-            conversation_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
             materializer_version INTEGER NOT NULL DEFAULT 5,
             materialized_at TEXT NOT NULL,
             source_updated_at TEXT,
@@ -68,7 +68,7 @@ async def _make_work_events_db() -> aiosqlite.Connection:
         );
         CREATE VIRTUAL TABLE session_work_events_fts USING fts5(
             event_id UNINDEXED,
-            conversation_id UNINDEXED,
+            session_id UNINDEXED,
             source_name UNINDEXED,
             heuristic_label UNINDEXED,
             text,
@@ -77,10 +77,10 @@ async def _make_work_events_db() -> aiosqlite.Connection:
         CREATE TRIGGER session_work_events_fts_ai AFTER INSERT ON session_work_events BEGIN SELECT 1; END;
         CREATE TRIGGER session_work_events_fts_ad AFTER DELETE ON session_work_events BEGIN SELECT 1; END;
         CREATE TRIGGER session_work_events_fts_au AFTER UPDATE ON session_work_events BEGIN SELECT 1; END;
-        INSERT INTO session_work_events_fts (event_id, conversation_id, source_name, heuristic_label, text)
+        INSERT INTO session_work_events_fts (event_id, session_id, source_name, heuristic_label, text)
         VALUES ('e1', 'c1', 'claude-code', 'edit', 'hello world');
         INSERT INTO session_work_events (
-            event_id, conversation_id, materialized_at, source_name, event_index,
+            event_id, session_id, materialized_at, source_name, event_index,
             heuristic_label, summary, search_text
         ) VALUES ('e1', 'c1', '2026-01-01T00:00:00Z', 'claude-code', 0, 'edit', 'hello', 'hello world');
         """

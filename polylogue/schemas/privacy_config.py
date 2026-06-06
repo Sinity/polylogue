@@ -82,7 +82,7 @@ class PrivacyConfig:
         level: Preset name ("strict", "standard", "permissive").
         safe_enum_max_length: Max string length for enum values.
         high_entropy_min_length: Min token length for high-entropy detection.
-        cross_conv_min_count: Minimum conversations a value must appear in.
+        cross_conv_min_count: Minimum sessions a value must appear in.
         cross_conv_proportional: If True, threshold = max(3, corpus_size * 0.02).
         field_overrides: Path glob → "allow" | "deny" | "default".
         allow_value_patterns: Glob patterns for values to always include.
@@ -110,7 +110,7 @@ class PrivacyConfig:
                 setattr(self, attr, preset[attr])
 
     def effective_cross_conv_threshold(self, corpus_size: int) -> int:
-        """Compute the effective cross-conversation threshold."""
+        """Compute the effective cross-session threshold."""
         if self.cross_conv_proportional:
             return max(3, int(corpus_size * 0.02))
         return self.cross_conv_min_count

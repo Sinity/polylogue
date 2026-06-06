@@ -1,4 +1,4 @@
-"""Schema validation service for raw conversation payloads."""
+"""Schema validation service for raw session payloads."""
 
 from __future__ import annotations
 
@@ -16,11 +16,11 @@ from polylogue.pipeline.services.validation_flow import (
 )
 from polylogue.pipeline.stage_models import ValidateResult
 from polylogue.protocols import ProgressCallback
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.runtime import RawSessionRecord
 from polylogue.types import ValidationMode
 
 if TYPE_CHECKING:
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.repository import SessionRepository
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 __all__ = ["ValidationService", "ValidateResult"]
@@ -38,9 +38,9 @@ class ValidationService:
 
     def __init__(self, backend: SQLiteBackend):
         self.backend = backend
-        from polylogue.storage.repository import ConversationRepository
+        from polylogue.storage.repository import SessionRepository
 
-        self.repository: ConversationRepository = ConversationRepository(backend=backend)
+        self.repository: SessionRepository = SessionRepository(backend=backend)
 
     def _schema_validation_mode(self) -> ValidationMode:
         return schema_validation_mode(
@@ -70,7 +70,7 @@ class ValidationService:
     async def evaluate_raw_artifacts(
         self,
         *,
-        raw_artifacts: list[RawConversationRecord],
+        raw_artifacts: list[RawSessionRecord],
         progress_callback: ProgressCallback | None = None,
         persist: bool = False,
         mode: ValidationMode | None = None,

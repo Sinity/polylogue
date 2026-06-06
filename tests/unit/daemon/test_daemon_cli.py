@@ -4,7 +4,6 @@ import asyncio
 import inspect
 import sqlite3
 import threading
-from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -18,6 +17,8 @@ from polylogue.daemon.cli import main
 from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.frozen_clock import FrozenClock
 
 
@@ -82,6 +83,63 @@ def test_polylogued_status_plain_reports_daemon_components(tmp_path: Path) -> No
     assert "Browser capture spool:" in result.output
 
 
+def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
+    for filename, tier in (
+        ("source.db", ArchiveTier.SOURCE),
+        ("index.db", ArchiveTier.INDEX),
+        ("user.db", ArchiveTier.USER),
+        ("ops.db", ArchiveTier.OPS),
+    ):
+        initialize_archive_database(tmp_path / filename, tier)
+    with sqlite3.connect(tmp_path / "embeddings.db") as conn:
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+
+    with (
+        patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "polylogue.db"),
+        patch("polylogue.daemon.status.index_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status.default_sources", return_value=()),
+    ):
+        result = CliRunner().invoke(main, ["status", "--format", "json"])
+
+    assert result.exit_code == 0
+    payload = loads(result.output)
+    assert isinstance(payload, dict)
+    storage = cast(dict[str, object], payload["archive_storage"])
+    assert storage["active_store"] == "archive_file_set"
+    assert storage["archive_root"] == str(tmp_path)
+    assert storage["configured_archive_root"] == str(tmp_path)
+    assert storage["archive_root_matches_configured"] is True
+    assert storage["archive_ready"] is True
+    assert storage["final_shape_ready"] is True
+    assert storage["present_tiers"] == ["source", "index", "embeddings", "user", "ops"]
+    tiers = cast(list[dict[str, object]], storage["tiers"])
+    assert {tier["name"]: tier["user_version"] for tier in tiers} == {
+        "source": 1,
+        "index": 1,
+        "embeddings": 1,
+        "user": 1,
+        "ops": 1,
+    }
+
+
+def test_polylogued_status_plain_reports_archive_storage(tmp_path: Path) -> None:
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+
+    with (
+        patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "polylogue.db"),
+        patch("polylogue.daemon.status.index_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status.default_sources", return_value=()),
+    ):
+        result = CliRunner().invoke(main, ["status"])
+
+    assert result.exit_code == 0
+    assert "Storage: archive_file_set (source, index); missing embeddings, user, ops" in result.output
+
+
 @pytest.mark.contract
 @pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor")
 def test_drain_convergence_debt_retries_due_items_without_source_failure(
@@ -90,7 +148,7 @@ def test_drain_convergence_debt_retries_due_items_without_source_failure(
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     source = tmp_path / "session.jsonl"
     source.write_text("{}\n", encoding="utf-8")
     cursor = CursorStore(db)
@@ -100,11 +158,11 @@ def test_drain_convergence_debt_retries_due_items_without_source_failure(
         subject_id=str(source),
         error="initial failure",
     )
-    due_at = (frozen_clock.now() - timedelta(minutes=1)).isoformat()
-    with sqlite3.connect(db) as conn:
-        conn.execute("UPDATE live_convergence_debt SET next_retry_at = ?", (due_at,))
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute(
+            "UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'",
+        )
         conn.commit()
-
     stage = ConvergenceStage(
         name="insights",
         description="retry test",
@@ -122,7 +180,7 @@ def test_drain_convergence_debt_retries_due_items_without_source_failure(
 
 @pytest.mark.contract
 @pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor")
-def test_drain_convergence_debt_retries_conversation_subjects_without_source_lookup(
+def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
     tmp_path: Path,
     frozen_clock: FrozenClock,
 ) -> None:
@@ -132,22 +190,22 @@ def test_drain_convergence_debt_retries_conversation_subjects_without_source_loo
     cursor = CursorStore(db)
     cursor.record_convergence_debt(
         stage="insights",
-        subject_type="conversation_id",
+        subject_type="session_id",
         subject_id="conv-1",
         error="initial failure",
     )
-    due_at = (frozen_clock.now() - timedelta(minutes=1)).isoformat()
-    with sqlite3.connect(db) as conn:
-        conn.execute("UPDATE live_convergence_debt SET next_retry_at = ?", (due_at,))
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute(
+            "UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'",
+        )
         conn.commit()
-
     stage = ConvergenceStage(
         name="insights",
         description="retry test",
         check=lambda _candidate: False,
         execute=lambda _candidate: False,
-        check_conversations=lambda conversation_ids: {"conv-1"} if tuple(conversation_ids) == ("conv-1",) else set(),
-        execute_conversations=lambda conversation_ids: tuple(conversation_ids) == ("conv-1",),
+        check_sessions=lambda session_ids: {"conv-1"} if tuple(session_ids) == ("conv-1",) else set(),
+        execute_sessions=lambda session_ids: tuple(session_ids) == ("conv-1",),
     )
     with patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=(stage,)):
         retried = daemon_cli._drain_convergence_debt_once(db)
@@ -174,7 +232,7 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
         raise sqlite3.OperationalError("database is locked")
 
     with (
-        patch("polylogue.paths.db_path", return_value=db),
+        patch("polylogue.daemon.cli._active_index_db_path", return_value=db),
         patch("asyncio.sleep", side_effect=fake_sleep),
         patch("asyncio.to_thread", side_effect=fake_to_thread),
         patch.object(daemon_cli.logger, "info") as info,
@@ -205,7 +263,7 @@ def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -
         raise RuntimeError("unexpected convergence retry failure")
 
     with (
-        patch("polylogue.paths.db_path", return_value=db),
+        patch("polylogue.daemon.cli._active_index_db_path", return_value=db),
         patch("asyncio.sleep", side_effect=fake_sleep),
         patch("asyncio.to_thread", side_effect=fake_to_thread),
         patch.object(daemon_cli.logger, "info") as info,
@@ -402,7 +460,7 @@ def test_ensure_fts_startup_readiness_runs_bounded_repair(
 
     repairs: list[FakeConnection] = []
 
-    monkeypatch.setattr("polylogue.paths.db_path", lambda: db)
+    monkeypatch.setattr("polylogue.paths.index_db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", ensure)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", rebuild)
@@ -439,7 +497,7 @@ def test_ensure_fts_startup_readiness_rebuilds_when_bounded_repair_fails(
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     db.write_bytes(b"sqlite placeholder")
 
     class FakeCursor:
@@ -498,7 +556,7 @@ def test_ensure_fts_startup_readiness_rebuilds_when_bounded_repair_fails(
     def rebuild(fake_conn: FakeConnection) -> None:
         rebuilds.append(fake_conn)
 
-    monkeypatch.setattr("polylogue.paths.db_path", lambda: db)
+    monkeypatch.setattr("polylogue.paths.index_db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", lambda _conn: None)
     monkeypatch.setattr(
@@ -536,7 +594,7 @@ def test_ensure_fts_startup_readiness_skips_when_messages_table_absent(
     """
     from polylogue.daemon import cli as daemon_cli
 
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     db.write_bytes(b"sqlite placeholder")
 
     class FakeCursor:
@@ -570,7 +628,7 @@ def test_ensure_fts_startup_readiness_skips_when_messages_table_absent(
             self.closed = True
 
     conn = FakeConnection()
-    monkeypatch.setattr("polylogue.paths.db_path", lambda: db)
+    monkeypatch.setattr("polylogue.paths.index_db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr(
         "polylogue.storage.fts.dangling_repair.repair_stale_fts_rows",
@@ -595,7 +653,7 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    db = tmp_path / "polylogue.db"
+    db = tmp_path / "index.db"
     db.write_bytes(b"sqlite placeholder")
 
     class FakeCursor:
@@ -656,7 +714,7 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
     restored: list[FakeConnection] = []
     rebuilds: list[FakeConnection] = []
 
-    monkeypatch.setattr("polylogue.paths.db_path", lambda: db)
+    monkeypatch.setattr("polylogue.paths.index_db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", lambda fake_conn: None)
     monkeypatch.setattr(
@@ -717,6 +775,106 @@ def test_periodic_db_optimize_does_not_run_on_startup(monkeypatch: pytest.Monkey
         asyncio.run(daemon_cli._periodic_db_optimize())
 
     assert opened == []
+
+
+def test_daemon_cli_active_archive_uses_archive_file_set_without_polylogue_db(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+
+    assert daemon_cli._active_index_db_path() == index_db
+
+
+def test_daemon_cli_active_archive_ignores_polylogue_db_when_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    legacy_db = tmp_path / "polylogue.db"
+    legacy_db.touch()
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+
+    assert daemon_cli._active_index_db_path() == index_db
+
+
+def test_daemon_cli_heartbeat_counts_archive_archive(tmp_path: Path) -> None:
+    from polylogue.archive.message.roles import Role
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.types import ContentBlockType, Provider
+
+    archive_root = tmp_path
+    with ArchiveStore(archive_root) as archive:
+        archive.write_parsed(
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="daemon-heartbeat-v1",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text="heartbeat v1",
+                        content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="heartbeat v1")],
+                    )
+                ],
+            )
+        )
+
+    assert daemon_cli._heartbeat_counts(archive_root / "index.db") == (1, 1, "sessions")
+
+
+def test_ensure_fts_startup_readiness_handles_archive_archive(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from polylogue.archive.message.roles import Role
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.types import ContentBlockType, Provider
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    with ArchiveStore(tmp_path) as archive:
+        archive.write_parsed(
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="daemon-startup-v1",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text="startup v1",
+                        content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="startup v1")],
+                    )
+                ],
+            )
+        )
+
+    asyncio.run(daemon_cli._ensure_fts_startup_readiness())
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT name FROM sqlite_master WHERE name='messages_fts'").fetchone() is None
+        row = conn.execute(
+            """
+            SELECT state, source_rows, indexed_rows
+            FROM fts_freshness_state
+            WHERE surface = 'blocks_fts'
+            """
+        ).fetchone()
+    assert row == ("ready", 1, 1)
 
 
 def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
@@ -886,7 +1044,7 @@ def test_run_daemon_services_schema_block_skips_db_background_work() -> None:
         check_name="schema_version",
         tier=HealthTier.FAST,
         severity=HealthSeverity.CRITICAL,
-        message="schema v12 incompatible with runtime v8",
+        message="archive2 is not runtime v8",
         checked_at="2026-05-24T00:00:00+00:00",
     )
     with (

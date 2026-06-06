@@ -13,29 +13,30 @@ from datetime import datetime, timezone
 
 import pytest
 
-from polylogue.archive.conversation.models import ConversationSummary
 from polylogue.archive.query.search_hits import (
-    ConversationSearchHit,
-    conversation_search_hit_from_summary,
+    SessionSearchHit,
+    session_search_hit_from_summary,
 )
+from polylogue.archive.session.domain_models import SessionSummary
+from polylogue.core.enums import Origin
 from polylogue.surfaces.payloads import (
     SEARCH_CURSOR_VERSION,
-    ConversationSearchHitPayload,
     InvalidSearchCursorError,
     SearchCursor,
+    SessionSearchHitPayload,
     apply_search_cursor,
     build_search_cursor,
     build_search_envelope,
     decode_search_cursor,
 )
-from polylogue.types import ConversationId, Provider
+from polylogue.types import SessionId
 
 
-def _summary(conv_id: str) -> ConversationSummary:
-    return ConversationSummary(
-        id=ConversationId(conv_id),
-        provider=Provider.CHATGPT,
-        title=f"Conversation {conv_id}",
+def _summary(conv_id: str) -> SessionSummary:
+    return SessionSummary(
+        id=SessionId(conv_id),
+        origin=Origin.CHATGPT_EXPORT,
+        title=f"Session {conv_id}",
         created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
 
@@ -47,8 +48,8 @@ def _hit(
     score: float | None,
     retrieval_lane: str = "dialogue",
     score_kind: str | None = "bm25",
-) -> ConversationSearchHit:
-    return conversation_search_hit_from_summary(
+) -> SessionSearchHit:
+    return session_search_hit_from_summary(
         _summary(conv_id),
         rank=rank,
         retrieval_lane=retrieval_lane,
@@ -61,8 +62,8 @@ def _hit(
     )
 
 
-def _payloads(hits: list[ConversationSearchHit]) -> list[ConversationSearchHitPayload]:
-    return [ConversationSearchHitPayload.from_search_hit(hit, message_count=0) for hit in hits]
+def _payloads(hits: list[SessionSearchHit]) -> list[SessionSearchHitPayload]:
+    return [SessionSearchHitPayload.from_search_hit(hit, message_count=0) for hit in hits]
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +128,7 @@ def test_apply_cursor_drops_up_to_and_including_anchor_by_rank() -> None:
     )
     cursor = SearchCursor(v=1, r=2, s=None, c="b", lane="dialogue")
     survived = apply_search_cursor(hits, cursor)
-    assert [h.conversation.id for h in survived] == ["c"]
+    assert [h.session.id for h in survived] == ["c"]
 
 
 def test_apply_cursor_uses_score_for_bm25_lane() -> None:
@@ -139,11 +140,11 @@ def test_apply_cursor_uses_score_for_bm25_lane() -> None:
             _hit(conv_id="c", rank=3, score=-3.0),  # even worse
         ]
     )
-    # Cursor anchor at conversation 'a' with score -5.0.
+    # Cursor anchor at session 'a' with score -5.0.
     cursor = SearchCursor(v=1, r=1, s=-5.0, c="a", lane="dialogue")
     survived = apply_search_cursor(hits, cursor)
     # 'a' is dropped (score equal AND id <= anchor's c); b,c survive (worse scores).
-    assert [h.conversation.id for h in survived] == ["b", "c"]
+    assert [h.session.id for h in survived] == ["b", "c"]
 
 
 def test_apply_cursor_rejects_lane_mismatch() -> None:
@@ -164,7 +165,7 @@ def test_apply_cursor_accepts_auto_request_for_resolved_lane_cursor() -> None:
 
     survived = apply_search_cursor(hits, cursor, retrieval_lane="auto")
 
-    assert [h.conversation.id for h in survived] == ["b"]
+    assert [h.session.id for h in survived] == ["b"]
 
 
 # ---------------------------------------------------------------------------
@@ -178,14 +179,14 @@ def test_paginate_two_pages_no_duplicates_no_gaps() -> None:
 
     # Page 1: offset=0 limit=2 → c0, c1; next_cursor anchors c1.
     page1 = build_search_envelope(hits[:2], total=5, limit=2, offset=0, query="q", retrieval_lane="dialogue")
-    assert [h.conversation.id for h in page1.hits] == ["c0", "c1"]
+    assert [h.session.id for h in page1.hits] == ["c0", "c1"]
     assert page1.next_cursor is not None
 
     # Page 2: caller passes back next_cursor; simulate provider returning
     # the remaining 3 hits, builder trims past the anchor and truncates to limit.
     cursor = decode_search_cursor(page1.next_cursor)
     page2 = build_search_envelope(hits, total=5, limit=2, offset=2, query="q", retrieval_lane="dialogue", cursor=cursor)
-    assert [h.conversation.id for h in page2.hits] == ["c2", "c3"]
+    assert [h.session.id for h in page2.hits] == ["c2", "c3"]
     assert page2.next_cursor is not None
 
     # Page 3: final page.
@@ -193,15 +194,13 @@ def test_paginate_two_pages_no_duplicates_no_gaps() -> None:
     page3 = build_search_envelope(
         hits, total=5, limit=2, offset=4, query="q", retrieval_lane="dialogue", cursor=cursor2
     )
-    assert [h.conversation.id for h in page3.hits] == ["c4"]
+    assert [h.session.id for h in page3.hits] == ["c4"]
     # Last page may still mint a next_cursor when total is unknown; here total=5
     # and offset+limit >= total, so no further cursor is needed.
     assert page3.next_cursor is None
 
     walked = (
-        [h.conversation.id for h in page1.hits]
-        + [h.conversation.id for h in page2.hits]
-        + [h.conversation.id for h in page3.hits]
+        [h.session.id for h in page1.hits] + [h.session.id for h in page2.hits] + [h.session.id for h in page3.hits]
     )
     assert walked == ["c0", "c1", "c2", "c3", "c4"]
 
@@ -220,10 +219,10 @@ def test_paginate_remains_contiguous_under_simulated_ingest_noise() -> None:
         query="q",
         retrieval_lane="dialogue",
     )
-    walked_ids = [h.conversation.id for h in page1.hits]
+    walked_ids = [h.session.id for h in page1.hits]
     cursor = decode_search_cursor(page1.next_cursor or "")
 
-    # Simulate ingest noise: a new conversation appears with a score that
+    # Simulate ingest noise: a new session appears with a score that
     # sorts it BEFORE the anchor (i.e., it would have been on page 1 had
     # it existed). The cursor anchors on c1, so c-new (rank 1, better
     # score) is filtered out by apply_search_cursor's score check.
@@ -240,7 +239,7 @@ def test_paginate_remains_contiguous_under_simulated_ingest_noise() -> None:
         retrieval_lane="dialogue",
         cursor=cursor,
     )
-    walked_ids += [h.conversation.id for h in page2.hits]
+    walked_ids += [h.session.id for h in page2.hits]
     # c-new has a strictly better score than the cursor anchor (-12 < -5),
     # so apply_search_cursor drops it (would have appeared on page 1).
     assert "c-new" not in walked_ids
@@ -270,7 +269,7 @@ def test_apply_cursor_with_rrf_lane_higher_is_better() -> None:
     )
     cursor = SearchCursor(v=1, r=1, s=0.05, c="a", lane="hybrid")
     survived = apply_search_cursor(hits, cursor)
-    assert [h.conversation.id for h in survived] == ["b", "c"]
+    assert [h.session.id for h in survived] == ["b", "c"]
 
 
 def test_cursor_survives_server_restart_round_trip() -> None:

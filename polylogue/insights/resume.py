@@ -1,4 +1,4 @@
-"""Typed resume-brief assembly over archived conversations and insights."""
+"""Typed resume-brief assembly over archived sessions and insights."""
 
 from __future__ import annotations
 
@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING, Protocol
 from pydantic import Field, field_validator
 
 from polylogue.archive.action_event.action_events import build_tool_calls_from_content_blocks
-from polylogue.archive.conversation.models import Conversation
+from polylogue.archive.session.domain_models import Session
+from polylogue.core.sources import provider_from_origin
 from polylogue.insights.archive import (
     ArchiveInsightUnavailableError,
     SessionPhaseInsight,
@@ -50,7 +51,7 @@ class ResumeLastMessage(ArchiveInsightModel):
 
 
 class ResumeFacts(ArchiveInsightModel):
-    conversation_id: str
+    session_id: str
     source_name: str
     title: str | None = None
     created_at: str | None = None
@@ -106,7 +107,7 @@ class ResumeInferences(ArchiveInsightModel):
 
 
 class ResumeRelatedSession(ArchiveInsightModel):
-    conversation_id: str
+    session_id: str
     relation: str
     source_name: str
     title: str | None = None
@@ -152,7 +153,7 @@ class ResumeBrief(ArchiveInsightModel):
 
 
 class ResumeCandidate(ArchiveInsightModel):
-    logical_conversation_id: str
+    logical_session_id: str
     canonical_session_date: str | None = None
     last_message_at: str | None = None
     title: str
@@ -163,7 +164,7 @@ class ResumeCandidate(ArchiveInsightModel):
     score_breakdown: dict[str, float]
     brief_url: str
 
-    @field_validator("logical_conversation_id", "title", "brief_url")
+    @field_validator("logical_session_id", "title", "brief_url")
     @classmethod
     def _non_empty(cls, value: str) -> str:
         if not value or not value.strip():
@@ -172,22 +173,22 @@ class ResumeCandidate(ArchiveInsightModel):
 
 
 class ResumeOperations(Protocol):
-    async def get_conversation(self, conversation_id: str) -> Conversation | None: ...
+    async def get_session(self, session_id: str) -> Session | None: ...
 
-    async def get_conversations(self, conversation_ids: list[str]) -> list[Conversation]: ...
+    async def get_sessions(self, session_ids: list[str]) -> list[Session]: ...
 
-    async def get_session_tree(self, conversation_id: str) -> list[Conversation]: ...
+    async def get_session_tree(self, session_id: str) -> list[Session]: ...
 
     async def get_session_profile_insight(
         self,
-        conversation_id: str,
+        session_id: str,
         *,
         tier: str = "merged",
     ) -> SessionProfileInsight | None: ...
 
-    async def get_session_work_event_insights(self, conversation_id: str) -> list[SessionWorkEventInsight]: ...
+    async def get_session_work_event_insights(self, session_id: str) -> list[SessionWorkEventInsight]: ...
 
-    async def get_session_phase_insights(self, conversation_id: str) -> list[SessionPhaseInsight]: ...
+    async def get_session_phase_insights(self, session_id: str) -> list[SessionPhaseInsight]: ...
 
     async def list_work_thread_insights(
         self,
@@ -245,7 +246,7 @@ def _profile_last_message_at(profile: SessionProfileInsight) -> str | None:
 
 def _candidate_title(profile: SessionProfileInsight) -> str:
     inferred = profile.inference.inferred_topic if profile.inference is not None else None
-    return inferred or profile.title or str(profile.conversation_id)
+    return inferred or profile.title or str(profile.session_id)
 
 
 def _terminal_weight(state: str) -> float:
@@ -350,12 +351,12 @@ def _last_message(messages: Sequence[Message]) -> ResumeLastMessage | None:
     )
 
 
-def _tool_facts(conversation: Conversation) -> tuple[dict[str, int], tuple[str, ...]]:
+def _tool_facts(session: Session) -> tuple[dict[str, int], tuple[str, ...]]:
     categories: Counter[str] = Counter()
     paths: list[str] = []
-    for message in conversation.messages:
+    for message in session.messages:
         tool_calls = build_tool_calls_from_content_blocks(
-            provider=conversation.provider,
+            provider=provider_from_origin(session.origin),
             content_blocks=message.content_blocks,
         )
         for tool_call in tool_calls:
@@ -365,23 +366,23 @@ def _tool_facts(conversation: Conversation) -> tuple[dict[str, int], tuple[str, 
     return dict(sorted(categories.items())), tuple(dict.fromkeys(paths))
 
 
-def _facts_from_conversation(
-    conversation: Conversation,
+def _facts_from_session(
+    session: Session,
     profile: SessionProfileInsight | None,
 ) -> ResumeFacts:
-    messages = conversation.messages.to_list()
-    tool_categories, file_paths = _tool_facts(conversation)
+    messages = session.messages.to_list()
+    tool_categories, file_paths = _tool_facts(session)
     evidence = profile.evidence if profile is not None else None
     return ResumeFacts(
-        conversation_id=str(conversation.id),
-        source_name=str(conversation.provider),
-        title=conversation.title,
-        created_at=_iso(conversation.created_at),
-        updated_at=_iso(conversation.updated_at),
-        parent_id=str(conversation.parent_id) if conversation.parent_id is not None else None,
-        branch_type=str(conversation.branch_type) if conversation.branch_type is not None else None,
+        session_id=str(session.id),
+        source_name=provider_from_origin(session.origin).value,
+        title=session.title,
+        created_at=_iso(session.created_at),
+        updated_at=_iso(session.updated_at),
+        parent_id=str(session.parent_id) if session.parent_id is not None else None,
+        branch_type=str(session.branch_type) if session.branch_type is not None else None,
         message_count=len(messages),
-        tags=evidence.tags if evidence is not None else _metadata_tags(conversation.metadata),
+        tags=evidence.tags if evidence is not None else _metadata_tags(session.metadata),
         repo_paths=evidence.repo_paths if evidence is not None else (),
         cwd_paths=evidence.cwd_paths if evidence is not None else (),
         branch_names=evidence.branch_names if evidence is not None else (),
@@ -453,7 +454,7 @@ def _inferences(
     )
 
 
-def _relation(target: Conversation, candidate: Conversation, work_thread_ids: set[str]) -> str:
+def _relation(target: Session, candidate: Session, work_thread_ids: set[str]) -> str:
     candidate_id = str(candidate.id)
     if target.parent_id is not None and candidate_id == str(target.parent_id):
         return "parent"
@@ -465,14 +466,14 @@ def _relation(target: Conversation, candidate: Conversation, work_thread_ids: se
 
 
 def _related_session(
-    target: Conversation,
-    candidate: Conversation,
+    target: Session,
+    candidate: Session,
     work_thread_ids: set[str],
 ) -> ResumeRelatedSession:
     return ResumeRelatedSession(
-        conversation_id=str(candidate.id),
+        session_id=str(candidate.id),
         relation=_relation(target, candidate, work_thread_ids),
-        source_name=str(candidate.provider),
+        source_name=provider_from_origin(candidate.origin).value,
         title=candidate.title,
         updated_at=_iso(candidate.updated_at or candidate.created_at),
         message_count=len(candidate.messages),
@@ -481,40 +482,40 @@ def _related_session(
 
 async def _related_sessions(
     operations: ResumeOperations,
-    target: Conversation,
+    target: Session,
     work_thread: WorkThreadInsight | None,
     *,
     related_limit: int,
 ) -> tuple[ResumeRelatedSession, ...]:
     work_thread_ids = set(work_thread.thread.session_ids if work_thread is not None else ())
-    conversations_by_id: dict[str, Conversation] = {}
+    sessions_by_id: dict[str, Session] = {}
 
-    for conversation in await operations.get_session_tree(str(target.id)):
-        conversations_by_id[str(conversation.id)] = conversation
+    for session in await operations.get_session_tree(str(target.id)):
+        sessions_by_id[str(session.id)] = session
 
-    missing_work_thread_ids = [session_id for session_id in work_thread_ids if session_id not in conversations_by_id]
+    missing_work_thread_ids = [session_id for session_id in work_thread_ids if session_id not in sessions_by_id]
     if missing_work_thread_ids:
-        for conversation in await operations.get_conversations(missing_work_thread_ids):
-            conversations_by_id[str(conversation.id)] = conversation
+        for session in await operations.get_sessions(missing_work_thread_ids):
+            sessions_by_id[str(session.id)] = session
 
-    conversations_by_id.pop(str(target.id), None)
-    related = [_related_session(target, conversation, work_thread_ids) for conversation in conversations_by_id.values()]
+    sessions_by_id.pop(str(target.id), None)
+    related = [_related_session(target, session, work_thread_ids) for session in sessions_by_id.values()]
     related.sort(key=lambda item: item.updated_at or "", reverse=True)
     return tuple(related[:related_limit])
 
 
 async def _find_work_thread(
     operations: ResumeOperations,
-    conversation_id: str,
+    session_id: str,
     uncertainties: list[ResumeUncertainty],
 ) -> WorkThreadInsight | None:
-    fts_query = normalize_fts5_query(conversation_id)
+    fts_query = normalize_fts5_query(session_id)
     if fts_query is not None:
         try:
             for candidate in await operations.list_work_thread_insights(
                 WorkThreadInsightQuery(query=fts_query, limit=10)
             ):
-                if conversation_id in candidate.thread.session_ids:
+                if session_id in candidate.thread.session_ids:
                     return candidate
         except ArchiveInsightUnavailableError:
             pass
@@ -526,13 +527,13 @@ async def _find_work_thread(
         return None
 
     for candidate in candidates:
-        if conversation_id in candidate.thread.session_ids:
+        if session_id in candidate.thread.session_ids:
             return candidate
     return None
 
 
 def _next_steps(
-    conversation: Conversation,
+    session: Session,
     inferences: ResumeInferences,
 ) -> tuple[str, ...]:
     steps: list[str] = []
@@ -543,7 +544,7 @@ def _next_steps(
     if last is not None:
         steps.append(f"Continue after latest work event: {last.summary}")
 
-    last_message = _last_message(conversation.messages.to_list())
+    last_message = _last_message(session.messages.to_list())
     if last_message is not None and last_message.role == "user" and last_message.preview:
         steps.append(f"Respond to latest user request: {last_message.preview}")
 
@@ -564,32 +565,39 @@ async def build_resume_brief(
     related_limit: int = 6,
 ) -> ResumeBrief | None:
     """Build a compact handoff brief for one archived session."""
-    conversation = await operations.get_conversation(session_id)
-    if conversation is None:
+    session = await operations.get_session(session_id)
+    if session is None:
         return None
 
-    conversation_id = str(conversation.id)
+    session_id = str(session.id)
     uncertainties: list[ResumeUncertainty] = []
 
     profile: SessionProfileInsight | None = None
     try:
-        profile = await operations.get_session_profile_insight(conversation_id)
+        profile = await operations.get_session_profile_insight(session_id)
     except ArchiveInsightUnavailableError as exc:
         uncertainties.append(ResumeUncertainty(source="session_profile", detail=str(exc)))
+    if profile is None and not any(u.source == "session_profile" for u in uncertainties):
+        uncertainties.append(
+            ResumeUncertainty(
+                source="session_profile",
+                detail="session_insights not materialized for this session; run rebuild_insights",
+            )
+        )
 
     events: list[SessionWorkEventInsight] = []
     try:
-        events = await operations.get_session_work_event_insights(conversation_id)
+        events = await operations.get_session_work_event_insights(session_id)
     except ArchiveInsightUnavailableError as exc:
         uncertainties.append(ResumeUncertainty(source="work_events", detail=str(exc)))
 
     phases: list[SessionPhaseInsight] = []
     try:
-        phases = await operations.get_session_phase_insights(conversation_id)
+        phases = await operations.get_session_phase_insights(session_id)
     except ArchiveInsightUnavailableError as exc:
         uncertainties.append(ResumeUncertainty(source="phases", detail=str(exc)))
 
-    work_thread = await _find_work_thread(operations, conversation_id, uncertainties)
+    work_thread = await _find_work_thread(operations, session_id, uncertainties)
     inferences = _inferences(
         profile=profile,
         events=events,
@@ -598,15 +606,13 @@ async def build_resume_brief(
     )
     related_sessions = await _related_sessions(
         operations,
-        conversation,
+        session,
         work_thread,
         related_limit=related_limit,
     )
 
-    cited_session_ids: tuple[str, ...] = (conversation_id,) + tuple(
-        related.conversation_id for related in related_sessions
-    )
-    cited_message_ids: tuple[str, ...] = tuple(str(message.id) for message in conversation.messages)
+    cited_session_ids: tuple[str, ...] = (session_id,) + tuple(related.session_id for related in related_sessions)
+    cited_message_ids: tuple[str, ...] = tuple(str(message.id) for message in session.messages)
     cited_work_event_ids: tuple[str, ...] = tuple(event.event_id for event in events[:5])
     cited_phase_ids: tuple[str, ...] = tuple(phase.phase_id for phase in phases[:5])
     provenance = ResumeProvenance(
@@ -620,12 +626,12 @@ async def build_resume_brief(
     )
 
     return ResumeBrief(
-        session_id=conversation_id,
-        facts=_facts_from_conversation(conversation, profile),
+        session_id=session_id,
+        facts=_facts_from_session(session, profile),
         inferences=inferences,
         related_sessions=related_sessions,
         uncertainties=tuple(uncertainties),
-        next_steps=_next_steps(conversation, inferences),
+        next_steps=_next_steps(session, inferences),
         provenance=provenance,
     )
 
@@ -652,7 +658,7 @@ async def find_resume_candidates(
     )
     grouped: dict[str, list[SessionProfileInsight]] = {}
     for profile in profiles:
-        logical_id = str(profile.logical_conversation_id or profile.conversation_id)
+        logical_id = str(profile.logical_session_id or profile.session_id)
         grouped.setdefault(logical_id, []).append(profile)
 
     if normalized_repo:
@@ -678,7 +684,7 @@ async def find_resume_candidates(
             members,
             key=lambda profile: (
                 _parse_timestamp(_profile_last_message_at(profile)) or datetime.min.replace(tzinfo=timezone.utc),
-                str(profile.conversation_id),
+                str(profile.session_id),
             ),
         )
         evidence = representative.evidence
@@ -725,7 +731,7 @@ async def find_resume_candidates(
         )
         candidates.append(
             ResumeCandidate(
-                logical_conversation_id=logical_id,
+                logical_session_id=logical_id,
                 canonical_session_date=(evidence.canonical_session_date if evidence is not None else None),
                 last_message_at=last_message_at,
                 title=_candidate_title(representative),
@@ -744,7 +750,7 @@ async def find_resume_candidates(
         key=lambda candidate: (
             -candidate.score,
             candidate.last_message_at or "",
-            candidate.logical_conversation_id,
+            candidate.logical_session_id,
         )
     )
     return tuple(candidates[: max(0, int(limit))])

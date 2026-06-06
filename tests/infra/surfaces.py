@@ -20,36 +20,41 @@ from typing import Any, Protocol
 from click.testing import CliRunner
 
 from polylogue.api import Polylogue
-from polylogue.storage.sqlite.connection import open_connection
-from tests.infra.archive_scenarios import ArchiveScenario, repository_for_scenario_db
+from tests.infra.archive_scenarios import ArchiveScenario, archive_for_scenario_db, open_index_db
 from tests.infra.query_cases import ArchiveQueryCase
-from tests.infra.semantic_facts import ArchiveFacts, ConversationFacts
+from tests.infra.semantic_facts import ArchiveFacts, SessionFacts
 
 
 def _sorted_unique(values: list[str] | tuple[str, ...] | set[str]) -> tuple[str, ...]:
     return tuple(sorted(set(values)))
 
 
+def _origin_for_provider_token(provider: str) -> str:
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.types import Provider
+
+    return origin_from_provider(Provider.from_string(provider)).value
+
+
 def _provider_ids_from_connection(conn: sqlite3.Connection, provider: str) -> tuple[str, ...]:
     rows = conn.execute(
-        "SELECT conversation_id FROM conversations WHERE source_name = ? ORDER BY conversation_id",
-        (provider,),
+        "SELECT session_id FROM sessions WHERE origin = ? ORDER BY session_id",
+        (_origin_for_provider_token(provider),),
     ).fetchall()
-    return tuple(str(row["conversation_id"]) for row in rows)
+    return tuple(str(row["session_id"]) for row in rows)
 
 
 def _search_ids_from_connection(conn: sqlite3.Connection, search_text: str) -> tuple[str, ...]:
     rows = conn.execute(
         """
-        SELECT DISTINCT messages.conversation_id
-        FROM messages_fts
-        JOIN messages ON messages.rowid = messages_fts.rowid
-        WHERE messages_fts MATCH ?
-        ORDER BY messages.conversation_id
+        SELECT DISTINCT session_id
+        FROM blocks_fts
+        WHERE blocks_fts MATCH ?
+        ORDER BY session_id
         """,
         (search_text,),
     ).fetchall()
-    return tuple(str(row["conversation_id"]) for row in rows)
+    return tuple(str(row["session_id"]) for row in rows)
 
 
 class ArchiveSurfaceAdapter(Protocol):
@@ -58,7 +63,7 @@ class ArchiveSurfaceAdapter(Protocol):
     @property
     def name(self) -> str: ...
 
-    async def conversation_facts(self, scenario: ArchiveScenario) -> ConversationFacts: ...
+    async def session_facts(self, scenario: ArchiveScenario) -> SessionFacts: ...
 
     async def archive_facts(self) -> ArchiveFacts: ...
 
@@ -76,16 +81,16 @@ class SQLiteRecordSurface:
     db_path: Path
     name: str = "sqlite-records"
 
-    async def conversation_facts(self, scenario: ArchiveScenario) -> ConversationFacts:
-        with open_connection(self.db_path) as conn:
+    async def session_facts(self, scenario: ArchiveScenario) -> SessionFacts:
+        with open_index_db(self.db_path) as conn:
             return scenario.facts_from_connection(conn)
 
     async def archive_facts(self) -> ArchiveFacts:
-        with open_connection(self.db_path) as conn:
+        with open_index_db(self.db_path) as conn:
             return ArchiveFacts.from_db_connection(conn)
 
     async def query_ids(self, query_case: ArchiveQueryCase) -> tuple[str, ...]:
-        with open_connection(self.db_path) as conn:
+        with open_index_db(self.db_path) as conn:
             if query_case.provider is not None:
                 return _provider_ids_from_connection(conn, query_case.provider)
             if query_case.search_text is not None:
@@ -107,24 +112,22 @@ class SQLiteHydratedSurface:
     scenarios: tuple[ArchiveScenario, ...]
     name: str = "sqlite-hydrated"
 
-    async def conversation_facts(self, scenario: ArchiveScenario) -> ConversationFacts:
-        with open_connection(self.db_path) as conn:
+    async def session_facts(self, scenario: ArchiveScenario) -> SessionFacts:
+        with open_index_db(self.db_path) as conn:
             return scenario.hydrated_facts_from_connection(conn)
 
     async def archive_facts(self) -> ArchiveFacts:
-        with open_connection(self.db_path) as conn:
-            conversations = [
-                scenario.hydrated_facts_from_connection(conn) for scenario in _current_archive_scenarios(conn)
-            ]
+        with open_index_db(self.db_path) as conn:
+            sessions = [scenario.hydrated_facts_from_connection(conn) for scenario in _current_archive_scenarios(conn)]
         return ArchiveFacts(
-            total_conversations=len(conversations),
-            provider_counts=_provider_counts(conversations),
-            total_messages=sum(facts.message_count for facts in conversations),
-            conversation_ids=tuple(facts.conversation_id for facts in conversations),
+            total_sessions=len(sessions),
+            provider_counts=_provider_counts(sessions),
+            total_messages=sum(facts.message_count for facts in sessions),
+            session_ids=tuple(facts.session_id for facts in sessions),
         )
 
     async def query_ids(self, query_case: ArchiveQueryCase) -> tuple[str, ...]:
-        with open_connection(self.db_path) as conn:
+        with open_index_db(self.db_path) as conn:
             if query_case.provider is not None:
                 return _provider_ids_from_connection(conn, query_case.provider)
             if query_case.search_text is not None:
@@ -139,25 +142,24 @@ class SQLiteHydratedSurface:
 
 
 def _query_case_to_spec(query_case: ArchiveQueryCase) -> Any:
-    """Build a ConversationQuerySpec from a query case.
+    """Build a SessionQuerySpec from a query case.
 
     Imported lazily so test modules that never construct spec-routed
     surfaces avoid the import-time cost of the archive query stack.
     """
-    from polylogue.archive.query.spec import ConversationQuerySpec
-    from polylogue.types import Provider
+    from polylogue.archive.query.spec import SessionQuerySpec
 
-    providers: tuple[Any, ...] = ()
+    origins: tuple[str, ...] = ()
     if query_case.provider is not None:
-        providers = (Provider.from_string(query_case.provider),)
+        origins = (_origin_for_provider_token(query_case.provider),)
     # Route the search text through ``contains_terms`` so it follows the
     # FTS-AND semantics the CLI exposes via --contains; the MCP
-    # list_conversations ``contains`` arg lands on the same spec field
+    # list_sessions ``contains`` arg lands on the same spec field
     # downstream.
     contains_terms = (query_case.search_text,) if query_case.search_text else ()
-    return ConversationQuerySpec(
+    return SessionQuerySpec(
         contains_terms=contains_terms,
-        providers=providers,
+        origins=origins,
         since=query_case.since,
         until=query_case.until,
         limit=query_case.limit,
@@ -170,44 +172,51 @@ def _query_case_to_spec(query_case: ArchiveQueryCase) -> Any:
     )
 
 
-def _ids_from_conversations(conversations: list[Any]) -> tuple[str, ...]:
-    return _sorted_unique([str(conv.id) for conv in conversations])
+def _ids_from_sessions(sessions: list[Any]) -> tuple[str, ...]:
+    return _sorted_unique([str(conv.id) for conv in sessions])
 
 
 class RepositorySurface:
-    """Async repository projection."""
+    """Facade projection with a long-lived mutating handle.
+
+    Distinct from ``FacadeSurface`` only in lifecycle: the repository
+    lifecycle harness holds this handle across tag/metadata mutations and
+    delete transitions. Both project through the same ``Polylogue`` API over
+    ``index.db``.
+    """
 
     name = "repository"
 
     def __init__(self, db_path: Path) -> None:
-        self._repository = repository_for_scenario_db(db_path)
+        self._archive = archive_for_scenario_db(db_path)
 
-    async def conversation_facts(self, scenario: ArchiveScenario) -> ConversationFacts:
-        return await scenario.facts_from_repository(self._repository)
+    @property
+    def archive(self) -> Polylogue:
+        return self._archive
+
+    async def session_facts(self, scenario: ArchiveScenario) -> SessionFacts:
+        return await scenario.facts_from_archive(self._archive)
 
     async def archive_facts(self) -> ArchiveFacts:
-        return ArchiveFacts.from_conversations(await self._repository.list(limit=None))
+        return ArchiveFacts.from_sessions(await self._archive.list_sessions(limit=None))
 
     async def query_ids(self, query_case: ArchiveQueryCase) -> tuple[str, ...]:
         if query_case.has_extended_filters or query_case.search_text is not None:
             spec = _query_case_to_spec(query_case)
-            conversations = await spec.list(self._repository)
-            return _ids_from_conversations(conversations)
+            sessions = await self._archive.list_sessions_for_spec(spec)
+            return _ids_from_sessions(sessions)
         if query_case.provider is not None:
-            conversations = await self._repository.list(provider=query_case.provider, limit=None)
-            return _ids_from_conversations(conversations)
+            sessions = await self._archive.list_sessions(
+                origin=_origin_for_provider_token(query_case.provider), limit=None
+            )
+            return _ids_from_sessions(sessions)
         raise ValueError(f"Query case {query_case.name!r} does not define a supported projection")
 
     async def query_count(self, query_case: ArchiveQueryCase) -> int:
-        if query_case.has_extended_filters or query_case.search_text is not None:
-            spec = _query_case_to_spec(query_case)
-            return int(await spec.count(self._repository))
-        if query_case.provider is not None:
-            return await self._repository.count(provider=query_case.provider)
         return len(await self.query_ids(query_case))
 
     async def close(self) -> None:
-        await self._repository.close()
+        await self._archive.close()
 
 
 class FacadeSurface:
@@ -218,24 +227,26 @@ class FacadeSurface:
     def __init__(self, *, archive_root: Path, db_path: Path) -> None:
         self._archive = Polylogue(archive_root=archive_root, db_path=db_path)
 
-    async def conversation_facts(self, scenario: ArchiveScenario) -> ConversationFacts:
-        conversation = await self._archive.get_conversation(scenario.resolved_conversation_id)
-        if conversation is None:
-            raise AssertionError(f"Scenario {scenario.resolved_conversation_id!r} missing through facade")
-        return ConversationFacts.from_domain_conversation(conversation)
+    async def session_facts(self, scenario: ArchiveScenario) -> SessionFacts:
+        session = await self._archive.get_session(scenario.native_session_id)
+        if session is None:
+            raise AssertionError(f"Scenario {scenario.resolved_session_id!r} missing through facade")
+        return SessionFacts.from_domain_session(session)
 
     async def archive_facts(self) -> ArchiveFacts:
-        return ArchiveFacts.from_conversations(await self._archive.list_conversations(limit=None))
+        return ArchiveFacts.from_sessions(await self._archive.list_sessions(limit=None))
 
     async def query_ids(self, query_case: ArchiveQueryCase) -> tuple[str, ...]:
         if query_case.has_extended_filters or query_case.search_text is not None:
             spec = _query_case_to_spec(query_case)
-            # query_conversations runs the same filter chain that MCP/CLI use.
-            conversations = await self._archive.operations.query_conversations(spec)
-            return _ids_from_conversations(conversations)
+            # query_sessions runs the same filter chain that MCP/CLI use.
+            sessions = await self._archive.list_sessions_for_spec(spec)
+            return _ids_from_sessions(sessions)
         if query_case.provider is not None:
-            conversations = await self._archive.list_conversations(provider=query_case.provider, limit=None)
-            return _ids_from_conversations(conversations)
+            sessions = await self._archive.list_sessions(
+                origin=_origin_for_provider_token(query_case.provider), limit=None
+            )
+            return _ids_from_sessions(sessions)
         raise ValueError(f"Query case {query_case.name!r} does not define a supported projection")
 
     async def query_count(self, query_case: ArchiveQueryCase) -> int:
@@ -269,7 +280,7 @@ class CLISurface:
 
         args: list[str] = []
         if query_case.provider is not None:
-            args.extend(["--provider", query_case.provider])
+            args.extend(["--origin", _origin_for_provider_token(query_case.provider)])
         if query_case.since is not None:
             args.extend(["--since", query_case.since])
         if query_case.until is not None:
@@ -299,7 +310,7 @@ class CLISurface:
             raise result.exception
         return result.exit_code, result.output
 
-    async def conversation_facts(self, scenario: ArchiveScenario) -> ConversationFacts:
+    async def session_facts(self, scenario: ArchiveScenario) -> SessionFacts:
         raise NotImplementedError("CLISurface only supports query-level projections")
 
     async def archive_facts(self) -> ArchiveFacts:
@@ -324,9 +335,9 @@ class CLISurface:
             raise AssertionError(f"CLI list output is not JSON ({query_case.name!r}): {output!r}") from exc
         # Three shapes can land here:
         #   * list mode envelope (#1618): ``{"items": [...], "total": ..., ...}``
-        #   * search-hit mode (legacy bare array): ``[{"conversation": {"id": ...}, ...}, ...]``
+        #   * search-hit mode (legacy bare array): ``[{"session": {"id": ...}, ...}, ...]``
         #   * typed ranked-result envelope (PR #1370):
-        #     ``{"hits": [{"conversation": {"id": ...}, "match": {...}}, ...], "limit": ..., ...}``
+        #     ``{"hits": [{"session": {"id": ...}, "match": {...}}, ...], "limit": ..., ...}``
         # All three project to the same id tuple for parity comparison.
         if isinstance(parsed, dict) and isinstance(parsed.get("hits"), list):
             parsed = parsed["hits"]
@@ -340,8 +351,8 @@ class CLISurface:
                 continue
             if "id" in row:
                 ids.append(str(row["id"]))
-            elif "conversation" in row and isinstance(row["conversation"], dict):
-                conv = row["conversation"]
+            elif "session" in row and isinstance(row["session"], dict):
+                conv = row["session"]
                 if "id" in conv:
                     ids.append(str(conv["id"]))
         return _sorted_unique(ids)
@@ -356,7 +367,7 @@ class CLISurface:
 class MCPSurface:
     """MCP server-tool adapter projection.
 
-    Invokes ``list_conversations`` directly on the registered FastMCP tool
+    Invokes ``list_sessions`` directly on the registered FastMCP tool
     function, bound to a ``RuntimeServices`` instance pointed at the parity
     database.  This is the same code path MCP clients hit over the JSON-RPC
     transport.
@@ -376,7 +387,7 @@ class MCPSurface:
     def _tool(self, name: str) -> Any:
         return self._server._tool_manager._tools[name].fn
 
-    async def conversation_facts(self, scenario: ArchiveScenario) -> ConversationFacts:
+    async def session_facts(self, scenario: ArchiveScenario) -> SessionFacts:
         raise NotImplementedError("MCPSurface only supports query-level projections")
 
     async def archive_facts(self) -> ArchiveFacts:
@@ -387,9 +398,9 @@ class MCPSurface:
         # parity matrix is dominated by the case-level expected count rather
         # than transport-level bounds.
         request_limit = query_case.limit if query_case.limit is not None else 1000
-        payload_json = await self._tool("list_conversations")(
+        payload_json = await self._tool("list_sessions")(
             limit=request_limit,
-            provider=query_case.provider,
+            origin=_origin_for_provider_token(query_case.provider) if query_case.provider is not None else None,
             contains=query_case.search_text,
             since=query_case.since,
             until=query_case.until,
@@ -466,16 +477,26 @@ def build_adapter_surface_set(
     return ArchiveSurfaceSet(surfaces=surfaces)
 
 
-def _provider_counts(conversations: list[ConversationFacts]) -> dict[str, int]:
+def _provider_counts(sessions: list[SessionFacts]) -> dict[str, int]:
     counts: dict[str, int] = {}
-    for conversation in conversations:
-        counts[conversation.provider] = counts.get(conversation.provider, 0) + 1
+    for session in sessions:
+        counts[session.provider] = counts.get(session.provider, 0) + 1
     return counts
 
 
 def _current_archive_scenarios(conn: sqlite3.Connection) -> tuple[ArchiveScenario, ...]:
-    rows = conn.execute("SELECT conversation_id FROM conversations ORDER BY conversation_id").fetchall()
-    return tuple(ArchiveScenario(name=str(row["conversation_id"])) for row in rows)
+    rows = conn.execute("SELECT origin, native_id FROM sessions ORDER BY session_id").fetchall()
+    from polylogue.api.archive import _provider_for_archive_origin
+
+    scenarios: list[ArchiveScenario] = []
+    for row in rows:
+        # native_id is ``ext-<resolved_session_id>``; recover the raw id
+        # so the rebuilt scenario re-derives the same archive session id.
+        native_id = str(row["native_id"])
+        raw_id = native_id[len("ext-") :] if native_id.startswith("ext-") else native_id
+        provider = str(_provider_for_archive_origin(str(row["origin"])))
+        scenarios.append(ArchiveScenario(name=raw_id, provider=provider))
+    return tuple(scenarios)
 
 
 __all__ = [

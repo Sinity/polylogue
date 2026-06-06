@@ -31,10 +31,10 @@ Every `docs/plans/*.yaml` manifest is enforced by a lint in `devtools verify`.
 
 ## Major Decisions
 
-### Schema versioning: fresh-first, no migration chains
-- **Chosen**: `SCHEMA_VERSION` constant is the authority. Mismatch = rejected. Explicit reviewed in-place upgrade scripts for transitions.
-- **Rejected**: Alembic/migration chains — complexity, partial state risk, forward/reverse migration burden.
-- **Constraint**: Single SQLite file, WAL mode, operator owns the upgrade.
+### Schema versioning: fresh-first, no in-place upgrade chains
+- **Chosen**: `SCHEMA_VERSION` constant is the authority. Mismatch = rejected. Schema bumps define the new canonical DDL and document the re-ingest/rebuild expectation.
+- **Rejected**: Alembic/in-place upgrade chains — complexity, partial state risk, forward/reverse upgrade burden.
+- **Constraint**: Archive SQLite file set, WAL mode, operator owns the rebuild trigger when a tier is rejected.
 
 ### Content hash: idempotent by SHA-256 over NFC-normalized payload
 - **Chosen**: Hash over title, timestamps, messages, attachments, content blocks. Excludes user metadata (tags, summaries, notes).
@@ -51,7 +51,7 @@ Every `docs/plans/*.yaml` manifest is enforced by a lint in `devtools verify`.
 - **Rejected**: Path-based storage — no automatic dedup.
 - **Constraint**: Link counting for GC, unreferenced blobs need explicit cleanup.
 
-### Daemon convergence: explicit stages, no implicit migration
+### Daemon convergence: explicit stages, no implicit storage upgrade
 - **Chosen**: Daemon runs named convergence stages (FTS repair, insight refresh, embedding) on a schedule.
 - **Rejected**: Event-driven cascade — harder to reason about, harder to test.
 - **Constraint**: Local HTTP API is read-only by default; write/mutation requires explicit role.

@@ -1,7 +1,7 @@
 """Claude AI (web) provider-specific typed models.
 
 These models match the Claude AI export format exactly.
-Derived from schema package: polylogue/schemas/providers/claude-ai/versions/v1/elements/conversation_document.schema.json.gz
+Derived from schema package: polylogue/schemas/providers/claude-ai/versions/v1/elements/session_document.schema.json.gz
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ ClaudeAIObject: TypeAlias = dict[str, object]
 
 
 class ClaudeAIChatMessage(BaseModel):
-    """A single message in a Claude AI conversation."""
+    """A single message in a Claude AI session."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -95,16 +95,16 @@ class ClaudeAIChatMessage(BaseModel):
         return []
 
 
-class ClaudeAIConversation(BaseModel):
-    """A complete Claude AI conversation export."""
+class ClaudeAISession(BaseModel):
+    """A complete Claude AI session export."""
 
     model_config = ConfigDict(extra="allow")
 
     uuid: str
-    """Conversation UUID."""
+    """Session UUID."""
 
     name: str
-    """Conversation name/title."""
+    """Session name/title."""
 
     created_at: str
     """Creation timestamp."""
@@ -113,17 +113,17 @@ class ClaudeAIConversation(BaseModel):
     """Last update timestamp."""
 
     chat_messages: list[ClaudeAIChatMessage] = Field(default_factory=list)
-    """Messages in the conversation."""
+    """Messages in the session."""
 
     account: ClaudeAIObject | None = None
     """Account information."""
 
     summary: str | None = None
-    """Conversation summary (if generated)."""
+    """Session summary (if generated)."""
 
     @property
     def title(self) -> str:
-        """Get conversation title."""
+        """Get session title."""
         return self.name
 
     @property

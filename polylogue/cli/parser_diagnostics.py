@@ -6,7 +6,7 @@ human-readable explanation of how the parser routed the current invocation:
 - which token was treated as a subcommand (if any),
 - which tokens were captured as query terms (and fell through to query-first
   dispatch),
-- which verb (if any) was applied to the matched conversations.
+- which verb (if any) was applied to the matched sessions.
 
 The output goes to stderr so it never contaminates stdout pipelines (JSON
 output, exports, etc.).
@@ -57,7 +57,7 @@ def emit_parser_decision(
         line("no registered subcommand matched leading positional token(s).")
         line(f"interpreting as search query: {_format_tokens(query_terms)}")
         if verb is not None:
-            line(f"verb applied to matched conversations: {verb!r}")
+            line(f"verb applied to matched sessions: {verb!r}")
         else:
             line("no verb supplied; default render selected for the matched set.")
         line(

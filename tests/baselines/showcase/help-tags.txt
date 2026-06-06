@@ -1,15 +1,19 @@
-Usage: polylogue tags [OPTIONS]
+Usage: polylogue tags [OPTIONS] [SESSION_ID]
 
-  List all tags with conversation counts.
+  List all tags with session counts, or add/remove tags.
 
   Examples:
-      polylogue tags                  # List all tags
-      polylogue tags -p claude-ai     # Tags for Claude conversations only
-      polylogue tags --format json    # Machine-readable output
-      polylogue tags -n 10            # Top 10 tags
+      polylogue tags                         # List all tags
+      polylogue tags -p claude-ai            # Tags for Claude sessions only
+      polylogue tags --format json           # Machine-readable output
+      polylogue tags -n 10                   # Top 10 tags
+      polylogue tags conv:abc --add-tag tps  # Add a tag
+      polylogue tags conv:abc --rm-tag tps   # Remove a tag
 
 Options:
   -p, --provider TEXT  Filter tags by provider
   -f, --format [json]  Output format
   -n, --count INTEGER  Show top N tags
+  --add-tag TEXT       Add a tag to the given session
+  --remove-tag TEXT    Remove a tag from the given session
   -h, --help           Show this message and exit.

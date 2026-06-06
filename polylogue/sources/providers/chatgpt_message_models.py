@@ -56,7 +56,7 @@ class ChatGPTContent(BaseModel):
 
 
 class ChatGPTMessage(BaseModel):
-    """A single ChatGPT message within a conversation node."""
+    """A single ChatGPT message within a session node."""
 
     model_config = ConfigDict(extra="allow")
 

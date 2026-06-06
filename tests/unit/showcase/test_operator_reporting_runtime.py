@@ -130,7 +130,7 @@ def test_generate_qa_summary_uses_provided_session_and_all_branches(tmp_path: ob
                     "unknown_records": 0,
                     "decode_errors": 0,
                     "package_versions": {"v1": 2},
-                    "element_kinds": {"conversation_document": 3},
+                    "element_kinds": {"session_document": 3},
                     "resolution_reasons": {"supported": 3},
                 }
             }
@@ -146,7 +146,7 @@ def test_generate_qa_summary_uses_provided_session_and_all_branches(tmp_path: ob
     assert "Schema Audit: PASS" in summary
     assert "Artifact Proof: contract_backed=3, unsupported=1, non_parseable=0, unknown=0, decode_errors=0" in summary
     assert "Packages: v1=2" in summary
-    assert "Elements: conversation_document=3" in summary
+    assert "Elements: session_document=3" in summary
     assert "Reasons: supported=3" in summary
     assert "Exercises: 3/4 passed, 1 failed, 0 skipped (1.2s)" in summary
     assert "Invariants: 5 pass, 1 fail, 2 skip" in summary

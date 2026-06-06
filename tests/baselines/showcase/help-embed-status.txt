@@ -1,0 +1,9 @@
+Usage: polylogue embed status [OPTIONS]
+
+  Show embedding coverage and freshness.
+
+Options:
+  -f, --format [text|json]
+  --detail                  Include exact pending-message, freshness, model,
+                            and retrieval-band accounting.
+  -h, --help                Show this message and exit.

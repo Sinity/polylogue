@@ -50,7 +50,7 @@ async def save_messages(
     data = [
         (
             r.message_id,
-            r.conversation_id,
+            r.session_id,
             r.provider_message_id,
             r.role,
             r.text,

@@ -13,7 +13,7 @@ Owns:
   ``build_library_payload``) consumed by ``daemon/http.py``.
 
 The substrate exposes ``attachments`` per message via the
-``conversation_from_records`` hydrator (an ``AttachmentRecord`` with
+``session_from_records`` hydrator (an ``AttachmentRecord`` with
 ``mime_type``, ``size_bytes``, ``path``, and ``provider_meta``). This
 slice surfaces that record as a typed envelope plus an MK3 state token
 derived purely from substrate fields — no new storage columns are
@@ -120,7 +120,7 @@ def classify_state(
 def attachment_to_envelope(
     attachment: Any,
     *,
-    conversation_id: str,
+    session_id: str,
     message_id: str | None = None,
 ) -> dict[str, object]:
     """Build the per-attachment envelope shape returned by the daemon.
@@ -146,7 +146,7 @@ def attachment_to_envelope(
     )
     return {
         "attachment_id": aid,
-        "conversation_id": conversation_id,
+        "session_id": session_id,
         "message_id": str(message_id) if message_id is not None else None,
         "name": _attachment_name(attachment),
         "mime_type": mime_type if isinstance(mime_type, str) else None,
@@ -160,20 +160,20 @@ def attachment_to_envelope(
 class LibraryEntry:
     """One row in the attachment-library listing.
 
-    Carries the envelope plus the conversation context needed for the
+    Carries the envelope plus the session context needed for the
     anchor link back to the source message in the reader.
     """
 
     envelope: dict[str, object]
-    conversation_title: str
-    provider: str | None
+    session_title: str
+    origin: str | None
     message_anchor: str | None
 
     def to_dict(self) -> dict[str, object]:
         return {
             **self.envelope,
-            "conversation_title": self.conversation_title,
-            "provider": self.provider,
+            "session_title": self.session_title,
+            "origin": self.origin,
             "message_anchor": self.message_anchor,
         }
 
@@ -184,7 +184,7 @@ def build_library_payload(
     total: int,
 ) -> dict[str, object]:
     """Wrap a sequence of library entries in the envelope shape consumed
-    by the ``/a`` page bootstrap. Grouping by conversation happens
+    by the ``/a`` page bootstrap. Grouping by session happens
     client-side so the server contract stays a flat list."""
 
     items = [entry.to_dict() for entry in entries]
@@ -252,7 +252,7 @@ ATTACHMENT_CSS = r"""
 #     above the message body (called from ``renderMessageBlocks`` via
 #     the optional ``_polyAttachmentStripHtml`` hook).
 #   - ``_polyAttachmentInspectorHtml(c)`` — render the Attachments
-#     inspector tab body for a selected conversation.
+#     inspector tab body for a selected session.
 #   - ``initAttachmentLibrary()`` — bootstrap for the ``/a`` route.
 ATTACHMENT_JS = r"""
 // MK3 reader attachment product surface (#1199).
@@ -315,7 +315,7 @@ function _polyAttachmentInspectorHtml(c) {
   if (!c || !Array.isArray(c.attachments)) return '';
   var atts = c.attachments;
   if (!atts.length) {
-    return '<div class="inspector-empty">No attachments in this conversation.</div>';
+    return '<div class="inspector-empty">No attachments in this session.</div>';
   }
   var rows = atts.map(function(att) {
     var name = att.name || att.attachment_id || 'attachment';
@@ -356,7 +356,7 @@ var _POLY_ATTACHMENT_LIBRARY_STATE = {
   items: [],
   filterMime: '',
   filterState: '',
-  filterConversation: ''
+  filterSession: ''
 };
 
 function _polyAttachmentLibraryFilters() {
@@ -364,7 +364,7 @@ function _polyAttachmentLibraryFilters() {
   return s.items.filter(function(it) {
     if (s.filterMime && (it.mime_type || '').indexOf(s.filterMime) === -1) return false;
     if (s.filterState && it.state !== s.filterState) return false;
-    if (s.filterConversation && it.conversation_id !== s.filterConversation) return false;
+    if (s.filterSession && it.session_id !== s.filterSession) return false;
     return true;
   });
 }
@@ -383,13 +383,13 @@ function _polyAttachmentLibraryRender() {
     return;
   }
   emptyEl.style.display = 'none';
-  // Group by conversation.
+  // Group by session.
   var groups = {};
   var order = [];
   items.forEach(function(item) {
-    var cid = item.conversation_id;
+    var cid = item.session_id;
     if (!groups[cid]) {
-      groups[cid] = {title: item.conversation_title, provider: item.provider, items: []};
+      groups[cid] = {title: item.session_title, origin: item.origin, items: []};
       order.push(cid);
     }
     groups[cid].items.push(item);
@@ -418,7 +418,7 @@ function _polyAttachmentLibraryRender() {
       +     '<a href="/c/' + encodeURIComponent(cid) + '">'
       +     (g.title || cid).replace(/[<&]/g, function(c) { return c === '<' ? '&lt;' : '&amp;'; })
       +     '</a>'
-      +     '<span class="att-provider">' + (g.provider || '') + '</span>'
+      +     '<span class="att-origin">' + (g.origin || '') + '</span>'
       +   '</div>'
       +   rows
       + '</div>';
@@ -429,7 +429,7 @@ function _polyAttachmentLibraryRender() {
 function _polyAttachmentLibraryWireFilters() {
   var mime = document.getElementById('att-filter-mime');
   var state = document.getElementById('att-filter-state');
-  var conv = document.getElementById('att-filter-conversation');
+  var conv = document.getElementById('att-filter-session');
   if (mime) mime.addEventListener('input', function(e) {
     _POLY_ATTACHMENT_LIBRARY_STATE.filterMime = e.target.value.trim();
     _polyAttachmentLibraryRender();
@@ -439,7 +439,7 @@ function _polyAttachmentLibraryWireFilters() {
     _polyAttachmentLibraryRender();
   });
   if (conv) conv.addEventListener('input', function(e) {
-    _POLY_ATTACHMENT_LIBRARY_STATE.filterConversation = e.target.value.trim();
+    _POLY_ATTACHMENT_LIBRARY_STATE.filterSession = e.target.value.trim();
     _polyAttachmentLibraryRender();
   });
 }
@@ -498,7 +498,7 @@ main { padding: 16px 24px; max-width: 1100px; }
   padding: 6px 8px; border-bottom: 1px solid var(--border); font-weight: 600; }
 .att-group-title a { color: var(--text); text-decoration: none; }
 .att-group-title a:hover { color: var(--accent); }
-.att-provider { color: var(--text-dim); font-weight: 400; font-size: 11px; font-family: var(--font-mono); }
+.att-origin { color: var(--text-dim); font-weight: 400; font-size: 11px; font-family: var(--font-mono); }
 .att-row { display: grid; grid-template-columns: 1fr 1fr 100px;
   gap: 12px; padding: 6px 8px; align-items: center;
   border-bottom: 1px solid var(--panel-subtle);
@@ -536,8 +536,8 @@ main { padding: 16px 24px; max-width: 1100px; }
     <option value="too-large">too-large</option>
     <option value="quarantined">quarantined</option>
   </select>
-  <label for="att-filter-conversation">conversation</label>
-  <input id="att-filter-conversation" type="text" placeholder="conversation id">
+  <label for="att-filter-session">session</label>
+  <input id="att-filter-session" type="text" placeholder="session id">
 </div>
 <main>
   <div id="att-empty"></div>

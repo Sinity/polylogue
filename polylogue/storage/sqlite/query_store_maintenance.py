@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.queries import raw as raw_queries
 
 
@@ -81,17 +81,17 @@ class SQLiteQueryStoreMaintenanceMixin:
         async with self._connection_factory() as conn:
             return await raw_queries.get_known_source_mtimes(conn)
 
-    async def get_raw_records_for_conversation(
+    async def get_raw_records_for_session(
         self,
-        conversation_id: str,
+        session_id: str,
         *,
         limit: int = 50,
         offset: int = 0,
-    ) -> tuple[list[RawConversationRecord], int]:
+    ) -> tuple[list[RawSessionRecord], int]:
         async with self._connection_factory() as conn:
-            return await raw_queries.get_raw_records_for_conversation(
+            return await raw_queries.get_raw_records_for_session(
                 conn,
-                conversation_id,
+                session_id,
                 limit=limit,
                 offset=offset,
             )

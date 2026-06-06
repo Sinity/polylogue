@@ -1,7 +1,7 @@
-"""Topology-level abstractions (parent/child edge graph across conversations).
+"""Topology-level abstractions (parent/child edge graph across sessions).
 
-Distinct from per-conversation ``branch_type`` (which is a single column on
-``conversations``): the topology edge surface persists every parent reference
+Distinct from per-session ``branch_type`` (which is a single column on
+``sessions``): the topology edge surface persists every parent reference
 emitted by a parser as a typed row, including references whose parent has not
 yet been ingested (#1258 / #866 slice A).
 """

@@ -7,10 +7,10 @@ from polylogue.archive.message.roles import normalize_role
 from .base_models import (
     ParsedAttachment,
     ParsedContentBlock,
-    ParsedConversation,
     ParsedMessage,
     ParsedProviderEvent,
-    RawConversationData,
+    ParsedSession,
+    RawSessionData,
 )
 from .base_support import (
     attachment_from_meta,
@@ -22,9 +22,9 @@ __all__ = [
     "ParsedContentBlock",
     "ParsedMessage",
     "ParsedAttachment",
-    "ParsedConversation",
+    "ParsedSession",
     "ParsedProviderEvent",
-    "RawConversationData",
+    "RawSessionData",
     "normalize_role",
     "content_blocks_from_segments",
     "extract_messages_from_list",

@@ -46,10 +46,10 @@ def mock_env_rich() -> MagicMock:
 
 
 @pytest.fixture
-def mock_conversation() -> MagicMock:
+def mock_session() -> MagicMock:
     conv = MagicMock()
     conv.id = "conv-123"
-    conv.title = "Test Conversation"
+    conv.title = "Test Session"
     return conv
 
 
@@ -61,14 +61,14 @@ _MOCK_MESSAGES: list[MessageRow] = [
 
 def _embedding_status_payload(
     *,
-    total_conversations: int = 0,
-    embedded_conversations: int = 0,
+    total_sessions: int = 0,
+    embedded_sessions: int = 0,
     embedded_messages: int = 0,
-    pending_conversations: int = 0,
+    pending_sessions: int = 0,
     retrieval_bands: dict[str, dict[str, object]] | None = None,
 ) -> dict[str, object]:
-    status = "empty" if total_conversations == 0 else "none" if embedded_conversations == 0 else "partial"
-    if total_conversations > 0 and pending_conversations == 0 and embedded_conversations > 0:
+    status = "empty" if total_sessions == 0 else "none" if embedded_sessions == 0 else "partial"
+    if total_sessions > 0 and pending_sessions == 0 and embedded_sessions > 0:
         status = "complete"
     return {
         "config_enabled": False,
@@ -78,17 +78,17 @@ def _embedding_status_payload(
         "configured_dimension": 1024,
         "monthly_cost_cap_usd": 5.0,
         "status": status,
-        "total_conversations": total_conversations,
-        "embedded_conversations": embedded_conversations,
+        "total_sessions": total_sessions,
+        "embedded_sessions": embedded_sessions,
         "embedded_messages": embedded_messages,
-        "pending_conversations": pending_conversations,
+        "pending_sessions": pending_sessions,
         "pending_messages": None,
         "pending_messages_exact": False,
         "embedding_coverage_percent": round(
-            embedded_conversations / total_conversations * 100,
+            embedded_sessions / total_sessions * 100,
             1,
         )
-        if total_conversations
+        if total_sessions
         else 0.0,
         "retrieval_ready": embedded_messages > 0,
         "freshness_status": status,
@@ -103,10 +103,10 @@ def _embedding_status_payload(
         "total_estimated_cost_usd": 0.0,
         "latest_catchup_run": None,
         "next_action": {
-            "code": "archive_empty" if total_conversations == 0 else "set_voyage_key",
-            "command": None if total_conversations == 0 else "polylogue embed enable --voyage-api-key ...",
-            "reason": "Archive contains no conversations to embed."
-            if total_conversations == 0
+            "code": "archive_empty" if total_sessions == 0 else "set_voyage_key",
+            "command": None if total_sessions == 0 else "polylogue embed enable --voyage-api-key ...",
+            "reason": "Archive contains no sessions to embed."
+            if total_sessions == 0
             else "Semantic retrieval needs a Voyage API key before embedding can run.",
         },
     }
@@ -122,9 +122,9 @@ def mock_repository() -> MagicMock:
 
 
 @pytest.fixture
-def mock_repository_async(mock_conversation: MagicMock) -> MagicMock:
+def mock_repository_async(mock_session: MagicMock) -> MagicMock:
     repo = MagicMock()
-    repo.view = AsyncMock(return_value=mock_conversation)
+    repo.view = AsyncMock(return_value=mock_session)
     repo.get_messages = AsyncMock(return_value=_MOCK_MESSAGES)
     return repo
 
@@ -149,10 +149,10 @@ class TestShowEmbeddingStats:
         with patch(
             "polylogue.cli.shared.embed_stats.embedding_status_payload",
             return_value=_embedding_status_payload(
-                total_conversations=int(query_results[0][0]),
-                embedded_conversations=int(query_results[1][0]),
+                total_sessions=int(query_results[0][0]),
+                embedded_sessions=int(query_results[1][0]),
                 embedded_messages=int(query_results[2][0]),
-                pending_conversations=int(query_results[3][0]),
+                pending_sessions=int(query_results[3][0]),
             ),
         ):
             show_embedding_stats(mock_env)
@@ -166,7 +166,7 @@ class TestShowEmbeddingStats:
     def test_show_stats_embedding_status_missing(self, mock_env: MagicMock, capsys: pytest.CaptureFixture[str]) -> None:
         with patch(
             "polylogue.cli.shared.embed_stats.embedding_status_payload",
-            return_value=_embedding_status_payload(total_conversations=100, pending_conversations=100),
+            return_value=_embedding_status_payload(total_sessions=100, pending_sessions=100),
         ):
             show_embedding_stats(mock_env)
 
@@ -177,10 +177,10 @@ class TestShowEmbeddingStats:
         with patch(
             "polylogue.cli.shared.embed_stats.embedding_status_payload",
             return_value=_embedding_status_payload(
-                total_conversations=100,
-                embedded_conversations=40,
+                total_sessions=100,
+                embedded_sessions=40,
                 embedded_messages=200,
-                pending_conversations=60,
+                pending_sessions=60,
                 retrieval_bands={
                     "transcript_embeddings": {"ready": False, "status": "partial"},
                     "evidence_retrieval": {"ready": True, "status": "ready"},
@@ -191,8 +191,8 @@ class TestShowEmbeddingStats:
 
         payload = json.loads(capsys.readouterr().out)
         assert payload["status"] == "partial"
-        assert payload["embedded_conversations"] == 40
-        assert payload["pending_conversations"] == 60
+        assert payload["embedded_sessions"] == 40
+        assert payload["pending_sessions"] == 60
         assert payload["retrieval_ready"] is True
         assert payload["retrieval_bands"]["evidence_retrieval"]["ready"] is True
 
@@ -208,7 +208,7 @@ class TestEmbedSingle:
         assert "Embedding 2 messages" in captured.out
         assert "✓ Embedded" in captured.out
 
-    def testembed_single_conversation_not_found(self, mock_env: MagicMock, mock_repository_async: MagicMock) -> None:
+    def testembed_single_session_not_found(self, mock_env: MagicMock, mock_repository_async: MagicMock) -> None:
         mock_repository_async.view = AsyncMock(return_value=None)
         with pytest.raises(click.Abort):
             embed_single(mock_env, mock_repository_async, MagicMock(), "nonexistent")
@@ -233,10 +233,10 @@ class TestEmbedBatch:
     @pytest.mark.parametrize(
         ("num_convs", "limit", "rebuild", "expected_output"),
         [
-            (0, None, False, "All conversations are already embedded"),
-            (2, None, False, "Embedding 2 conversations"),
-            (3, 2, False, "Embedding 2 conversations"),
-            (3, None, True, "Embedding 3 conversations"),
+            (0, None, False, "All sessions are already embedded"),
+            (2, None, False, "Embedding 2 sessions"),
+            (3, 2, False, "Embedding 2 sessions"),
+            (3, None, True, "Embedding 3 sessions"),
         ],
     )
     def testembed_batch_variants(
@@ -251,7 +251,7 @@ class TestEmbedBatch:
     ) -> None:
         mock_env.ui.console = MagicMock()
         mock_vec_provider = MagicMock()
-        convs = [{"conversation_id": f"conv-{i}", "title": f"Test {i}"} for i in range(1, num_convs + 1)]
+        convs = [{"session_id": f"conv-{i}", "title": f"Test {i}"} for i in range(1, num_convs + 1)]
 
         with patch("polylogue.storage.sqlite.connection.open_connection") as mock_open:
             mock_conn = MagicMock()
@@ -261,7 +261,7 @@ class TestEmbedBatch:
             if limit is None:
                 embed_batch(mock_env, mock_repository, mock_vec_provider, rebuild=rebuild)
             else:
-                embed_batch(mock_env, mock_repository, mock_vec_provider, max_conversations=limit, rebuild=rebuild)
+                embed_batch(mock_env, mock_repository, mock_vec_provider, max_sessions=limit, rebuild=rebuild)
 
         assert expected_output in capsys.readouterr().out
 
@@ -283,9 +283,9 @@ class TestEmbedBatch:
             side_effect=[[{"message_id": "m1"}], ValueError("Embed failed"), [{"message_id": "m3"}]]
         )
         convs = [
-            {"conversation_id": "conv-1", "title": "Test 1"},
-            {"conversation_id": "conv-2", "title": "Test 2"},
-            {"conversation_id": "conv-3", "title": "Test 3"},
+            {"session_id": "conv-1", "title": "Test 1"},
+            {"session_id": "conv-2", "title": "Test 2"},
+            {"session_id": "conv-3", "title": "Test 3"},
         ]
         with patch("polylogue.storage.sqlite.connection.open_connection") as mock_open:
             mock_conn = MagicMock()
@@ -326,7 +326,7 @@ class TestEmbedBatchRichMode:
         else:
             mock_repository.backend.queries.get_messages = AsyncMock(return_value=messages_side_effect)
 
-        convs = [{"conversation_id": f"conv-{i}", "title": f"Test {i}"} for i in range(1, num_convs + 1)]
+        convs = [{"session_id": f"conv-{i}", "title": f"Test {i}"} for i in range(1, num_convs + 1)]
         with patch("polylogue.storage.sqlite.connection.open_connection") as mock_open:
             mock_conn = MagicMock()
             mock_conn.execute.return_value.fetchmany.side_effect = [convs, []]

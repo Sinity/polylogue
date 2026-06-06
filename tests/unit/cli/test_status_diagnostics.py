@@ -14,6 +14,7 @@ from polylogue.cli.commands.status_diagnostics import (
     diagnose_first_run,
     diagnostic_payload,
 )
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 
 
 def _set_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Path]:
@@ -29,6 +30,16 @@ def _set_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Pat
     data_home = tmp_path / "xdg-data" / "polylogue"
     config_home = tmp_path / "xdg-config" / "polylogue"
     return data_home, config_home
+
+
+def _create_index_db(data_home: Path, *, user_version: int = INDEX_SCHEMA_VERSION) -> Path:
+    data_home.mkdir(parents=True, exist_ok=True)
+    db = data_home / "index.db"
+    conn = sqlite3.connect(db)
+    conn.execute(f"PRAGMA user_version = {user_version}")
+    conn.commit()
+    conn.close()
+    return db
 
 
 class TestDiagnoseNoArchive:
@@ -50,37 +61,48 @@ class TestDiagnoseNoArchive:
 class TestDiagnoseSchemaMismatch:
     def test_schema_mismatch(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         data_home, _ = _set_xdg(monkeypatch, tmp_path)
-        data_home.mkdir(parents=True, exist_ok=True)
-        db = data_home / "polylogue.db"
-        conn = sqlite3.connect(db)
-        conn.execute("PRAGMA user_version = 99")
-        conn.commit()
-        conn.close()
+        _create_index_db(data_home, user_version=99)
         diag = diagnose_first_run(daemon_alive=False)
         assert diag.kind == "schema_mismatch"
         assert "99" in diag.headline
         assert "polylogue reset" in diag.next_action
 
     def test_schema_match_returns_none_for_this_probe(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        from polylogue.storage.sqlite.schema_ddl import SCHEMA_VERSION
-
         data_home, _ = _set_xdg(monkeypatch, tmp_path)
-        data_home.mkdir(parents=True, exist_ok=True)
-        db = data_home / "polylogue.db"
-        conn = sqlite3.connect(db)
-        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-        conn.commit()
-        conn.close()
+        _create_index_db(data_home)
         diag = diagnose_first_run(daemon_alive=False)
         # Schema matches; whatever else is returned, it must not be a schema mismatch.
         assert diag.kind != "schema_mismatch"
+
+    def test_archive_tiers_index_ignores_unsupported_single_file_db(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+
+        data_home, config_home = _set_xdg(monkeypatch, tmp_path)
+        data_home.mkdir(parents=True, exist_ok=True)
+        retired = sqlite3.connect(data_home / "polylogue.db")
+        retired.execute("PRAGMA user_version = 99")
+        retired.commit()
+        retired.close()
+        archive = sqlite3.connect(data_home / "index.db")
+        archive.execute(f"PRAGMA user_version = {INDEX_SCHEMA_VERSION}")
+        archive.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+        archive.commit()
+        archive.close()
+        config_home.mkdir(parents=True, exist_ok=True)
+        (config_home / "polylogue.toml").write_text('[sources]\nroots = ["/some/path"]\n')
+
+        diag = diagnose_first_run(daemon_alive=False)
+
+        assert diag.kind != "schema_mismatch"
+        assert diag.kind == "no_daemon"
 
 
 class TestDiagnoseLockedDb:
     def test_locked_db(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         data_home, _ = _set_xdg(monkeypatch, tmp_path)
-        data_home.mkdir(parents=True, exist_ok=True)
-        db = data_home / "polylogue.db"
+        db = _create_index_db(data_home)
 
         def _raise_locked(*args: object, **kwargs: object) -> sqlite3.Connection:
             raise sqlite3.OperationalError("database is locked")
@@ -95,10 +117,8 @@ class TestDiagnoseLockedDb:
 class TestDiagnoseStalePidfile:
     def test_stale_pidfile_dead_pid(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         data_home, _ = _set_xdg(monkeypatch, tmp_path)
-        data_home.mkdir(parents=True, exist_ok=True)
-        db = data_home / "polylogue.db"
         # Healthy db so we reach the pidfile probe.
-        sqlite3.connect(db).close()
+        _create_index_db(data_home)
         archive = data_home  # archive_root() defaults to data_home() with no env override
         archive.mkdir(parents=True, exist_ok=True)
         # Use a PID we can be confident is dead.
@@ -109,8 +129,7 @@ class TestDiagnoseStalePidfile:
 
     def test_stale_pidfile_unreadable(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         data_home, _ = _set_xdg(monkeypatch, tmp_path)
-        data_home.mkdir(parents=True, exist_ok=True)
-        sqlite3.connect(data_home / "polylogue.db").close()
+        _create_index_db(data_home)
         archive = data_home  # archive_root() defaults to data_home() with no env override
         archive.mkdir(parents=True, exist_ok=True)
         (archive / "daemon.pid").write_text("not-a-number")
@@ -119,8 +138,7 @@ class TestDiagnoseStalePidfile:
 
     def test_pidfile_skipped_when_daemon_alive(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         data_home, _ = _set_xdg(monkeypatch, tmp_path)
-        data_home.mkdir(parents=True, exist_ok=True)
-        sqlite3.connect(data_home / "polylogue.db").close()
+        _create_index_db(data_home)
         archive = data_home  # archive_root() defaults to data_home() with no env override
         archive.mkdir(parents=True, exist_ok=True)
         (archive / "daemon.pid").write_text("99999999\n")
@@ -131,8 +149,7 @@ class TestDiagnoseStalePidfile:
 class TestDiagnoseNoSources:
     def test_no_sources_when_config_empty(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         data_home, config_home = _set_xdg(monkeypatch, tmp_path)
-        data_home.mkdir(parents=True, exist_ok=True)
-        sqlite3.connect(data_home / "polylogue.db").close()
+        _create_index_db(data_home)
         config_home.mkdir(parents=True, exist_ok=True)
         (config_home / "polylogue.toml").write_text("[sources]\nroots = []\n")
         diag = diagnose_first_run(daemon_alive=False)
@@ -141,8 +158,7 @@ class TestDiagnoseNoSources:
 
     def test_no_sources_when_config_missing(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         data_home, _ = _set_xdg(monkeypatch, tmp_path)
-        data_home.mkdir(parents=True, exist_ok=True)
-        sqlite3.connect(data_home / "polylogue.db").close()
+        _create_index_db(data_home)
         diag = diagnose_first_run(daemon_alive=False)
         assert diag.kind == "no_sources"
 
@@ -150,8 +166,25 @@ class TestDiagnoseNoSources:
 class TestDiagnoseNoDaemon:
     def test_no_daemon_when_db_healthy(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         data_home, config_home = _set_xdg(monkeypatch, tmp_path)
+        _create_index_db(data_home)
+        config_home.mkdir(parents=True, exist_ok=True)
+        (config_home / "polylogue.toml").write_text('[sources]\nroots = ["/some/path"]\n')
+        diag = diagnose_first_run(daemon_alive=False)
+        assert diag.kind == "no_daemon"
+        assert "polylogued run" in diag.next_action
+
+    def test_no_daemon_when_index_exists_without_polylogue_db(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+
+        data_home, config_home = _set_xdg(monkeypatch, tmp_path)
         data_home.mkdir(parents=True, exist_ok=True)
-        sqlite3.connect(data_home / "polylogue.db").close()
+        conn = sqlite3.connect(data_home / "index.db")
+        conn.execute(f"PRAGMA user_version = {INDEX_SCHEMA_VERSION}")
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+        conn.commit()
+        conn.close()
         config_home.mkdir(parents=True, exist_ok=True)
         (config_home / "polylogue.toml").write_text('[sources]\nroots = ["/some/path"]\n')
         diag = diagnose_first_run(daemon_alive=False)
@@ -162,8 +195,7 @@ class TestDiagnoseNoDaemon:
 class TestDiagnoseMissingOptionalDep:
     def test_missing_sqlite_vec(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         data_home, config_home = _set_xdg(monkeypatch, tmp_path)
-        data_home.mkdir(parents=True, exist_ok=True)
-        sqlite3.connect(data_home / "polylogue.db").close()
+        _create_index_db(data_home)
         config_home.mkdir(parents=True, exist_ok=True)
         (config_home / "polylogue.toml").write_text('[sources]\nroots = ["/x"]\n')
         # Force find_spec("sqlite_vec") → None.
@@ -185,8 +217,7 @@ class TestDiagnoseMissingOptionalDep:
 class TestHealthy:
     def test_healthy(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         data_home, config_home = _set_xdg(monkeypatch, tmp_path)
-        data_home.mkdir(parents=True, exist_ok=True)
-        sqlite3.connect(data_home / "polylogue.db").close()
+        _create_index_db(data_home)
         config_home.mkdir(parents=True, exist_ok=True)
         (config_home / "polylogue.toml").write_text('[sources]\nroots = ["/x"]\n')
         # Pretend sqlite_vec is installed.

@@ -10,7 +10,7 @@ from typing import TypeAlias
 
 from polylogue.logging import get_logger
 
-from ..base import ParsedConversation
+from ..base import ParsedSession
 
 logger = get_logger(__name__)
 
@@ -143,10 +143,10 @@ def _looks_like_git_branch(value: str) -> bool:
     return any(stripped.startswith(prefix) for prefix in _GIT_BRANCH_PREFIXES)
 
 
-def enrich_conversation_from_index(
-    conv: ParsedConversation,
+def enrich_session_from_index(
+    conv: ParsedSession,
     index_entry: SessionIndexEntry,
-) -> ParsedConversation:
+) -> ParsedSession:
     title = conv.title
     title_source = "original"
     if (
@@ -188,7 +188,7 @@ def enrich_conversation_from_index(
 __all__ = [
     "SessionIndexEntry",
     "_looks_like_git_branch",
-    "enrich_conversation_from_index",
+    "enrich_session_from_index",
     "find_sessions_index",
     "parse_sessions_index",
 ]

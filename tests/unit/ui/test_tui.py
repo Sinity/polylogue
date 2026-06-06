@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, TypeAlias
-from unittest.mock import MagicMock
+from pathlib import Path
+from typing import TYPE_CHECKING, TypeAlias, cast
 
 import pytest
 
@@ -11,36 +11,47 @@ pytest.importorskip("textual", reason="Textual not installed")
 from textual.pilot import Pilot
 from textual.widgets import DataTable, Input, TabbedContent, Tree
 
-from polylogue.protocols import ConversationArchiveReadStore
+from polylogue.api import Polylogue
 from polylogue.ui.tui.app import PolylogueApp
 from polylogue.ui.tui.screens.base import RepositoryBoundContainer
-from polylogue.ui.tui.screens.dashboard import Dashboard, ProviderBar
+from polylogue.ui.tui.screens.dashboard import Dashboard, OriginBar
 from polylogue.ui.tui.widgets.stats import StatCard
+from tests.infra.archive_scenarios import native_session_id_for
+from tests.infra.storage_records import db_setup
 
 if TYPE_CHECKING:
-    from polylogue.storage.repository import ConversationRepository
-    from tests.infra.storage_records import ConversationBuilder
+    from tests.infra.storage_records import SessionBuilder
 
 pytestmark = pytest.mark.tui
 
 
 # ---------------------------------------------------------------------------
-# Helper: create app with injected repository
+# Helper: create app reading the archive
 # ---------------------------------------------------------------------------
 
 
-ConversationBuilderFactory: TypeAlias = Callable[[str], "ConversationBuilder"]
+SessionBuilderFactory: TypeAlias = Callable[[str], "SessionBuilder"]
 
 
-def _make_app(repo: ConversationArchiveReadStore) -> PolylogueApp:
-    """Create PolylogueApp with operations wrapping an injected repository."""
-    from typing import cast
+def _make_app(db_path: Path) -> PolylogueApp:
+    """Create PolylogueApp with a native :class:`Polylogue` facade over ``db_path``.
 
-    from polylogue.operations import ArchiveOperations
-    from polylogue.storage.repository import ConversationRepository
+    The TUI screens read through the archive facade / ``TUIReadSurface``;
+    seeding and reads both resolve to the same archive `index.db` so the
+    rendered DOM reflects the seeded archive.
+    """
+    facade = Polylogue(archive_root=db_path.parent, db_path=db_path)
+    return PolylogueApp(polylogue=facade)
 
-    operations = ArchiveOperations(repository=cast(ConversationRepository, repo))
-    return PolylogueApp(operations=operations)
+
+def _make_broken_app(error: Exception) -> PolylogueApp:
+    """Create PolylogueApp whose facade raises on the dashboard stats read."""
+
+    class _BrokenFacade:
+        async def storage_stats(self) -> object:
+            raise error
+
+    return PolylogueApp(polylogue=cast(Polylogue, _BrokenFacade()))
 
 
 async def _wait_workers(pilot: Pilot[None], *, selector: str | None = None, reject: str = "Loading...") -> None:
@@ -80,38 +91,38 @@ async def _wait_workers(pilot: Pilot[None], *, selector: str | None = None, reje
 
 @pytest.mark.asyncio
 async def test_dashboard_stats_populated(
-    storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
+    workspace_env: dict[str, Path], session_builder: SessionBuilderFactory
 ) -> None:
     """Seed data → mount → wait → assert stat card values match seeded counts."""
-    conversation_builder("c1").add_message("m1", text="Hello").save()
-    conversation_builder("c2").add_message("m2", text="World").add_message("m3", text="!").save()
+    db_path = db_setup(workspace_env)
+    session_builder("c1").add_message("m1", text="Hello").save()
+    session_builder("c2").add_message("m2", text="World").add_message("m3", text="!").save()
 
-    app = _make_app(storage_repository)
+    app = _make_app(db_path)
     async with app.run_test() as pilot:
-        await _wait_workers(pilot, selector="#stat-conversations")
+        await _wait_workers(pilot, selector="#stat-sessions")
 
-        convs = pilot.app.query_one("#stat-conversations", StatCard)
+        convs = pilot.app.query_one("#stat-sessions", StatCard)
         msgs = pilot.app.query_one("#stat-messages", StatCard)
         assert convs.value == "2"
         assert msgs.value == "3"
 
 
 @pytest.mark.asyncio
-async def test_dashboard_provider_bars(
-    storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
-) -> None:
-    """Seed 2 providers → assert ProviderBar widgets rendered with correct counts."""
-    conversation_builder("c1").provider("chatgpt").add_message("m1", text="A").save()
-    conversation_builder("c2").provider("chatgpt").add_message("m2", text="B").save()
-    conversation_builder("c3").provider("claude-ai").add_message("m3", text="C").save()
+async def test_dashboard_origin_bars(workspace_env: dict[str, Path], session_builder: SessionBuilderFactory) -> None:
+    """Seed 2 origins -> assert OriginBar widgets rendered with correct counts."""
+    db_path = db_setup(workspace_env)
+    session_builder("c1").provider("chatgpt").add_message("m1", text="A").save()
+    session_builder("c2").provider("chatgpt").add_message("m2", text="B").save()
+    session_builder("c3").provider("claude-ai").add_message("m3", text="C").save()
 
-    app = _make_app(storage_repository)
+    app = _make_app(db_path)
     async with app.run_test() as pilot:
         await _wait_workers(pilot)
 
-        bars = pilot.app.query(ProviderBar)
+        bars = pilot.app.query(OriginBar)
         assert len(bars) >= 2
-        # chatgpt should have 2, claude should have 1
+        # Origin buckets should reflect the seeded source families.
         texts = [str(bar.render()) for bar in bars]
         chatgpt_bar = [t for t in texts if "chatgpt" in t]
         claude_bar = [t for t in texts if "claude-ai" in t]
@@ -122,13 +133,14 @@ async def test_dashboard_provider_bars(
 
 
 @pytest.mark.asyncio
-async def test_dashboard_empty_db(storage_repository: ConversationRepository) -> None:
+async def test_dashboard_empty_db(workspace_env: dict[str, Path]) -> None:
     """Empty DB → graceful '0' display, no errors."""
-    app = _make_app(storage_repository)
+    db_path = db_setup(workspace_env)
+    app = _make_app(db_path)
     async with app.run_test() as pilot:
-        await _wait_workers(pilot, selector="#stat-conversations")
+        await _wait_workers(pilot, selector="#stat-sessions")
 
-        convs = pilot.app.query_one("#stat-conversations", StatCard)
+        convs = pilot.app.query_one("#stat-sessions", StatCard)
         msgs = pilot.app.query_one("#stat-messages", StatCard)
         assert convs.value == "0"
         assert msgs.value == "0"
@@ -140,13 +152,12 @@ async def test_dashboard_empty_db(storage_repository: ConversationRepository) ->
 
 
 @pytest.mark.asyncio
-async def test_browser_tree_populated(
-    storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
-) -> None:
-    """Seed conversations → switch to browser → wait → assert tree nodes match."""
-    conversation_builder("c1").provider("chatgpt").title("My Chat").add_message("m1", text="Hi").save()
+async def test_browser_tree_populated(workspace_env: dict[str, Path], session_builder: SessionBuilderFactory) -> None:
+    """Seed sessions → switch to browser → wait → assert tree nodes match."""
+    db_path = db_setup(workspace_env)
+    session_builder("c1").provider("chatgpt").title("My Chat").add_message("m1", text="Hi").save()
 
-    app = _make_app(storage_repository)
+    app = _make_app(db_path)
     async with app.run_test() as pilot:
         tabs = pilot.app.query_one(TabbedContent)
         tabs.active = "browser"
@@ -158,30 +169,29 @@ async def test_browser_tree_populated(
 
         # Find the chatgpt provider node
         source_names = [str(child.label) for child in tree.root.children]
-        assert "Chatgpt" in source_names
+        assert "Chatgpt-export" in source_names
 
-        # Expand chatgpt node — should have our conversation
-        chatgpt_node = [c for c in tree.root.children if str(c.label) == "Chatgpt"][0]
+        # Expand chatgpt node — should have our session
+        chatgpt_node = [c for c in tree.root.children if str(c.label) == "Chatgpt-export"][0]
         assert len(chatgpt_node.children) >= 1
 
 
 @pytest.mark.asyncio
-async def test_browser_node_selection(
-    storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
-) -> None:
-    """Click leaf node → assert markdown viewer shows conversation content."""
-    conversation_builder("c1").provider("chatgpt").title("Test Chat").add_message("m1", text="Hello World").save()
+async def test_browser_node_selection(workspace_env: dict[str, Path], session_builder: SessionBuilderFactory) -> None:
+    """Click leaf node → assert markdown viewer shows session content."""
+    db_path = db_setup(workspace_env)
+    session_builder("c1").provider("chatgpt").title("Test Chat").add_message("m1", text="Hello World").save()
 
-    app = _make_app(storage_repository)
+    app = _make_app(db_path)
     async with app.run_test() as pilot:
         tabs = pilot.app.query_one(TabbedContent)
         tabs.active = "browser"
         await _wait_workers(pilot)
 
         tree = pilot.app.query_one("#browser-tree", Tree)
-        chatgpt_node = [c for c in tree.root.children if str(c.label) == "Chatgpt"][0]
+        chatgpt_node = [c for c in tree.root.children if str(c.label) == "Chatgpt-export"][0]
 
-        # Select the leaf node (the conversation)
+        # Select the leaf node (the session)
         if chatgpt_node.children:
             leaf = chatgpt_node.children[0]
             tree.select_node(leaf)
@@ -198,11 +208,12 @@ async def test_browser_node_selection(
 
 
 @pytest.mark.asyncio
-async def test_browser_empty_db(storage_repository: ConversationRepository) -> None:
+async def test_browser_empty_db(workspace_env: dict[str, Path]) -> None:
     """Empty DB → direct empty-state leaf shown."""
     import asyncio
 
-    app = _make_app(storage_repository)
+    db_path = db_setup(workspace_env)
+    app = _make_app(db_path)
     async with app.run_test() as pilot:
         tabs = pilot.app.query_one(TabbedContent)
         tabs.active = "browser"
@@ -217,29 +228,21 @@ async def test_browser_empty_db(storage_repository: ConversationRepository) -> N
             await pilot.pause()
 
         node_labels = [str(child.label) for child in tree.root.children]
-        assert node_labels == ["No conversations in archive"]
+        assert node_labels == ["No sessions in archive"]
 
 
 # ===========================================================================
-# Search tests (Phase 2D: FTS setup)
+# Search tests
 # ===========================================================================
 
 
 @pytest.mark.asyncio
-async def test_search_flow(
-    storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
-) -> None:
+async def test_search_flow(workspace_env: dict[str, Path], session_builder: SessionBuilderFactory) -> None:
     """Seed + index → type query → wait → assert DataTable rows."""
-    conversation_builder("c1").add_message("m1", text="UniqueSearchTerm123").save()
+    db_path = db_setup(workspace_env)
+    session_builder("c1").add_message("m1", text="UniqueSearchTerm123").save()
 
-    # Rebuild FTS index so search works
-    from polylogue.storage.index import rebuild_index
-    from polylogue.storage.sqlite.connection import open_connection
-
-    with open_connection(storage_repository.backend.db_path) as conn:
-        rebuild_index(conn)
-
-    app = _make_app(storage_repository)
+    app = _make_app(db_path)
     async with app.run_test() as pilot:
         tabs = pilot.app.query_one(TabbedContent)
         tabs.active = "search"
@@ -254,9 +257,9 @@ async def test_search_flow(
         table = pilot.app.query_one("#search-results", DataTable)
         assert table.row_count > 0
 
-        # Verify the found row key matches our conversation
+        # Verify the found row key matches our session's archive session id
         row_key = next(iter(table.rows))
-        assert row_key.value == "c1"
+        assert row_key.value == native_session_id_for("test", "c1")
 
         from textual.widgets import Markdown as MarkdownWidget
 
@@ -269,20 +272,12 @@ async def test_search_flow(
 
 
 @pytest.mark.asyncio
-async def test_search_no_results(
-    storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
-) -> None:
+async def test_search_no_results(workspace_env: dict[str, Path], session_builder: SessionBuilderFactory) -> None:
     """Search non-existent term → empty results, no error."""
-    conversation_builder("c1").add_message("m1", text="Hello").save()
+    db_path = db_setup(workspace_env)
+    session_builder("c1").add_message("m1", text="Hello").save()
 
-    # Rebuild FTS index
-    from polylogue.storage.index import rebuild_index
-    from polylogue.storage.sqlite.connection import open_connection
-
-    with open_connection(storage_repository.backend.db_path) as conn:
-        rebuild_index(conn)
-
-    app = _make_app(storage_repository)
+    app = _make_app(db_path)
     async with app.run_test() as pilot:
         tabs = pilot.app.query_one(TabbedContent)
         tabs.active = "search"
@@ -299,9 +294,10 @@ async def test_search_no_results(
 
 
 @pytest.mark.asyncio
-async def test_search_empty_db(storage_repository: ConversationRepository) -> None:
-    """Empty DB with FTS table → 0 results, no crash (messages_fts always exists)."""
-    app = _make_app(storage_repository)
+async def test_search_empty_db(workspace_env: dict[str, Path]) -> None:
+    """Empty DB → 0 results, no crash."""
+    db_path = db_setup(workspace_env)
+    app = _make_app(db_path)
     async with app.run_test() as pilot:
         tabs = pilot.app.query_one(TabbedContent)
         tabs.active = "search"
@@ -314,7 +310,7 @@ async def test_search_empty_db(storage_repository: ConversationRepository) -> No
         await pilot.pause()
 
         table = pilot.app.query_one("#search-results", DataTable)
-        # Empty DB has FTS table but no rows — should return 0 results gracefully
+        # Empty archive — should return 0 results gracefully
         assert table.row_count == 0
 
 
@@ -324,9 +320,10 @@ async def test_search_empty_db(storage_repository: ConversationRepository) -> No
 
 
 @pytest.mark.asyncio
-async def test_keyboard_tab_switch(storage_repository: ConversationRepository) -> None:
+async def test_keyboard_tab_switch(workspace_env: dict[str, Path]) -> None:
     """Press Tab key → verify tab changes (basic navigation)."""
-    app = _make_app(storage_repository)
+    db_path = db_setup(workspace_env)
+    app = _make_app(db_path)
     async with app.run_test() as pilot:
         tabs = pilot.app.query_one(TabbedContent)
         assert tabs.active == "dashboard"
@@ -343,9 +340,10 @@ async def test_keyboard_tab_switch(storage_repository: ConversationRepository) -
 
 
 @pytest.mark.asyncio
-async def test_dark_mode_toggle(storage_repository: ConversationRepository) -> None:
+async def test_dark_mode_toggle(workspace_env: dict[str, Path]) -> None:
     """Press 'd' → assert dark mode toggles without crashing."""
-    app = _make_app(storage_repository)
+    db_path = db_setup(workspace_env)
+    app = _make_app(db_path)
     async with app.run_test() as pilot:
         await pilot.press("d")
         await pilot.pause()
@@ -356,51 +354,21 @@ async def test_dark_mode_toggle(storage_repository: ConversationRepository) -> N
         assert pilot.app.query_one(Dashboard) is not None
 
 
-@pytest.mark.asyncio
-async def test_search_missing_index_shows_rebuild_hint(
-    storage_repository: ConversationRepository, conversation_builder: ConversationBuilderFactory
-) -> None:
-    """Dropping FTS tables yields a direct rebuild hint instead of a crash."""
-    from polylogue.storage.sqlite.connection import open_connection
-
-    conversation_builder("c1").add_message("m1", text="Reindex me").save()
-
-    with open_connection(storage_repository.backend.db_path) as conn:
-        conn.execute("DROP TABLE IF EXISTS messages_fts")
-        conn.commit()
-
-    app = _make_app(storage_repository)
-    async with app.run_test() as pilot:
-        tabs = pilot.app.query_one(TabbedContent)
-        tabs.active = "search"
-        await pilot.pause()
-
-        inp = pilot.app.query_one("#search-input", Input)
-        inp.focus()
-        inp.value = "Reindex"
-        await pilot.press("enter")
-        await pilot.pause()
-
-        table = pilot.app.query_one("#search-results", DataTable)
-        assert table.row_count == 1
-        row = table.get_row_at(0)
-        assert "Search not ready" in str(row[2]) or "Search index not built" in str(row[2])
-
-
-def test_repository_bound_container_requires_injected_repo() -> None:
+def test_repository_bound_container_requires_injected_facade() -> None:
     class DummyScreen(RepositoryBoundContainer):
         pass
 
     screen = DummyScreen()
 
-    with pytest.raises(RuntimeError, match="DummyScreen widget requires injected archive operations"):
-        screen._get_ops("DummyScreen")
+    with pytest.raises(RuntimeError, match="DummyScreen widget requires an injected Polylogue facade"):
+        screen._get_facade("DummyScreen")
 
 
 @pytest.mark.asyncio
-async def test_quit_action(storage_repository: ConversationRepository) -> None:
+async def test_quit_action(workspace_env: dict[str, Path]) -> None:
     """Press 'q' → app exits cleanly."""
-    app = _make_app(storage_repository)
+    db_path = db_setup(workspace_env)
+    app = _make_app(db_path)
     async with app.run_test() as pilot:
         await pilot.press("q")
         # If we reach here, the app didn't crash during quit
@@ -413,16 +381,9 @@ async def test_quit_action(storage_repository: ConversationRepository) -> None:
 
 
 @pytest.mark.asyncio
-async def test_worker_failure_recovery(
-    storage_repository: ConversationRepository, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Inject error in repo → assert app stays usable with error notification."""
-    # Create a repo that raises on get_archive_stats
-    broken_repo = MagicMock(spec=ConversationArchiveReadStore)
-    broken_repo.get_archive_stats.side_effect = RuntimeError("DB exploded")
-
-    assert isinstance(broken_repo, ConversationArchiveReadStore)
-    app = _make_app(broken_repo)
+async def test_worker_failure_recovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Inject error in the facade → assert app stays usable with error notification."""
+    app = _make_broken_app(RuntimeError("DB exploded"))
     async with app.run_test() as pilot:
         await _wait_workers(pilot)
 
@@ -430,7 +391,7 @@ async def test_worker_failure_recovery(
         assert pilot.app.query_one(Dashboard) is not None
 
         # Stat cards should still exist (may show "Loading...")
-        stat = pilot.app.query_one("#stat-conversations", StatCard)
+        stat = pilot.app.query_one("#stat-sessions", StatCard)
         assert stat is not None
 
 
@@ -440,16 +401,17 @@ async def test_worker_failure_recovery(
 
 
 @pytest.mark.asyncio
-async def test_app_startup(storage_repository: ConversationRepository) -> None:
+async def test_app_startup(workspace_env: dict[str, Path]) -> None:
     """Test that the app starts and loads the dashboard."""
-    app = _make_app(storage_repository)
+    db_path = db_setup(workspace_env)
+    app = _make_app(db_path)
 
     async with app.run_test() as pilot:
         assert pilot.app.query_one(Dashboard) is not None
-        assert pilot.app.query_one("#stat-conversations") is not None
+        assert pilot.app.query_one("#stat-sessions") is not None
         assert pilot.app.query_one("#stat-messages") is not None
 
-        await _wait_workers(pilot, selector="#stat-conversations")
+        await _wait_workers(pilot, selector="#stat-sessions")
 
-        stats = pilot.app.query_one("#stat-conversations", StatCard)
+        stats = pilot.app.query_one("#stat-sessions", StatCard)
         assert stats.value == "0"

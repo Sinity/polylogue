@@ -39,7 +39,7 @@ DB column ``source_name``             Canonical source-family column — renamed
 CLI ``--provider`` / ``--exclude-provider``
                                      Public source-family filter (alias-aware).
 MCP ``provider`` param               Same as CLI — source-family filter.
-``ConversationSummaryPayload.provider``
+``SessionSummaryPayload.provider``
                                      Public surface field; carries source-family token.
 Provider-wire schemas under          Lab/provider scope (OpenAI/Google/Anthropic) —
   ``schemas/providers/``             describes raw export shapes, not ingestion sources.
@@ -50,7 +50,7 @@ Key alias rules
 ---------------
 
 - ``aistudio`` canonicalizes to ``gemini`` at the storage/enum layer
-  (Google AI Studio exports are Gemini-provider conversations) but
+  (Google AI Studio exports are Gemini-provider sessions) but
   remains a distinct *source family* for watcher discovery and source
   name display.
 - ``gemini-cli`` is a separate runtime/schema token from ``gemini``

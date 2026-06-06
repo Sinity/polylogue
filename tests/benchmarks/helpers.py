@@ -8,7 +8,7 @@ from pathlib import Path
 from sqlite3 import Connection
 from typing import Protocol, TypeVar
 
-from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
 
@@ -23,7 +23,7 @@ class BenchmarkFixture(Protocol):
 class BenchAsyncStore:
     loop: asyncio.AbstractEventLoop
     backend: SQLiteBackend
-    repository: ConversationRepository
+    repository: SessionRepository
 
     def run(self, awaitable: Awaitable[T]) -> T:
         return self.loop.run_until_complete(awaitable)
@@ -34,7 +34,7 @@ def open_bench_store(db_path: Path) -> Iterator[BenchAsyncStore]:
     """Open a benchmark backend/repository pair without touching private APIs."""
     loop = asyncio.new_event_loop()
     backend = SQLiteBackend(db_path=db_path)
-    repository = ConversationRepository(backend=backend)
+    repository = SessionRepository(backend=backend)
     store = BenchAsyncStore(loop=loop, backend=backend, repository=repository)
     try:
         yield store

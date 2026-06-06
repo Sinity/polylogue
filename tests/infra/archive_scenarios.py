@@ -1,33 +1,55 @@
 """Declarative archive scenarios for verification harnesses.
 
 These helpers keep tests focused on semantic expectations instead of repeating
-conversation-builder, repository, and SQL plumbing in every suite.
+session-builder, repository, and SQL plumbing in every suite.
 """
 
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeAlias
 
+from polylogue.api import Polylogue
+from polylogue.core.enums import ContentBlockType, Role
 from polylogue.core.json import JSONDocument, JSONValue, json_document, loads, require_json_document
-from polylogue.storage.hydrators import conversation_from_records
-from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.runtime import AttachmentRecord, ContentBlockRecord, ConversationRecord, MessageRecord
-from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.storage.sqlite.queries.mappers_archive import (
-    _row_to_content_block,
-    _row_to_conversation,
-    _row_to_message,
-)
-from polylogue.types import AttachmentId, ConversationId, MessageId
-from tests.infra.semantic_facts import ConversationFacts
-from tests.infra.storage_records import ConversationBuilder, JSONRecord, db_setup
+from polylogue.storage.hydrators import session_from_records
+from polylogue.storage.runtime import AttachmentRecord, ContentBlockRecord, MessageRecord, SessionRecord
+from polylogue.types import AttachmentId, ContentHash, MessageId, SessionId
+from tests.infra.semantic_facts import SessionFacts
+from tests.infra.storage_records import JSONRecord, SessionBuilder, db_setup
 
 ScenarioProvider: TypeAlias = str
 _FIXTURE_TIMESTAMP = "2026-01-01T00:00:00+00:00"
+
+
+@contextmanager
+def open_index_db(db_path: Path) -> Iterator[sqlite3.Connection]:
+    """Open the ``index.db`` for direct read access."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def native_session_id_for(provider: str, session_id: str) -> str:
+    """Native ``<origin>:<native_id>`` session id for a seeded scenario.
+
+    Mirrors ``SessionBuilder.native_session_id``: the builder seeds each
+    session with ``provider_session_id = "ext-<session_id>"``
+    and the origin derived from ``provider``.
+    """
+    from polylogue.core.identity_law import session_id as archive_session_id
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.types import Provider
+
+    origin = origin_from_provider(Provider.from_string(provider))
+    return archive_session_id(origin.value, f"ext-{session_id}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,13 +135,13 @@ class ArchiveScenarioSeed:
     """Result of seeding one archive scenario."""
 
     scenario: ArchiveScenario
-    conversation_id: str
+    session_id: str
 
-    def facts_from_connection(self, conn: sqlite3.Connection) -> ConversationFacts:
+    def facts_from_connection(self, conn: sqlite3.Connection) -> SessionFacts:
         return self.scenario.facts_from_connection(conn)
 
-    async def facts_from_repository(self, repository: ConversationRepository) -> ConversationFacts:
-        return await self.scenario.facts_from_repository(repository)
+    async def facts_from_archive(self, archive: Polylogue) -> SessionFacts:
+        return await self.scenario.facts_from_archive(archive)
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,22 +150,27 @@ class ArchiveScenario:
 
     name: str
     provider: ScenarioProvider = "test"
-    title: str = "Test Conversation"
+    title: str = "Test Session"
     messages: Sequence[ScenarioMessage] = field(default_factory=tuple)
-    conversation_id: str | None = None
+    session_id: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
     metadata: JSONRecord | None = None
 
     @property
-    def resolved_conversation_id(self) -> str:
-        return self.conversation_id or self.name
+    def resolved_session_id(self) -> str:
+        return self.session_id or self.name
+
+    @property
+    def native_session_id(self) -> str:
+        """Native ``<origin>:ext-<id>`` session id this scenario seeds under."""
+        return native_session_id_for(self.provider, self.resolved_session_id)
 
     def seed(self, db_path: Path) -> ArchiveScenarioSeed:
         """Persist the scenario into ``db_path`` through the standard builder."""
         timestamp = self.created_at or _default_timestamp()
         builder = (
-            ConversationBuilder(db_path, self.resolved_conversation_id)
+            SessionBuilder(db_path, self.resolved_session_id)
             .provider(self.provider)
             .title(self.title)
             .created_at(timestamp)
@@ -172,74 +199,88 @@ class ArchiveScenario:
                     provider_meta=attachment.provider_meta,
                 )
         builder.save()
-        # Tags are stored in the normalized ``tags`` / ``conversation_tags`` M2M
-        # tables, not by reading ``metadata.tags`` at query time. The legacy
-        # json-to-m2m backfill was removed with the migration chain (#1212);
-        # scenarios that want seed tags must populate the canonical tables.
+        # Native user tags live in ``user.db`` ``session_tags`` keyed by the
+        # generated session id with ``tag_source = 'user'``. Seed them through
+        # the same archive primitive (``ArchiveStore.add_user_tags``) the public
+        # tag API uses, rather than the retired legacy ``tags`` /
+        # ``session_tags`` M2M tables.
         metadata_tags = self.metadata.get("tags") if self.metadata else None
         if isinstance(metadata_tags, list):
-            import sqlite3
+            from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-            with sqlite3.connect(db_path) as tag_conn:
-                for tag_name in metadata_tags:
-                    if not isinstance(tag_name, str):
-                        continue
-                    tag_conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag_name,))
-                    tag_conn.execute(
-                        """
-                        INSERT OR IGNORE INTO conversation_tags (conversation_id, tag_id)
-                        SELECT ?, id FROM tags WHERE name = ?
-                        """,
-                        (self.resolved_conversation_id, tag_name),
-                    )
-                tag_conn.commit()
-        return ArchiveScenarioSeed(scenario=self, conversation_id=self.resolved_conversation_id)
+            tag_values = tuple(tag for tag in metadata_tags if isinstance(tag, str))
+            if tag_values:
+                with ArchiveStore(_archive_root_for_index_db(db_path)) as archive:
+                    archive.add_user_tags((self.native_session_id,), tag_values)
+        return ArchiveScenarioSeed(scenario=self, session_id=self.resolved_session_id)
 
-    def facts_from_connection(self, conn: sqlite3.Connection) -> ConversationFacts:
+    def facts_from_connection(self, conn: sqlite3.Connection) -> SessionFacts:
         """Read scenario facts directly from storage records."""
         conv_record, msg_records, attachment_records = self.records_from_connection(conn)
-        return ConversationFacts.from_records(conv_record, msg_records, attachment_records)
+        return SessionFacts.from_records(conv_record, msg_records, attachment_records)
 
-    def hydrated_facts_from_connection(self, conn: sqlite3.Connection) -> ConversationFacts:
+    def hydrated_facts_from_connection(self, conn: sqlite3.Connection) -> SessionFacts:
         """Hydrate storage records and extract domain-level scenario facts."""
         conv_record, msg_records, attachment_records = self.records_from_connection(conn)
-        return ConversationFacts.from_domain_conversation(
-            conversation_from_records(conv_record, msg_records, attachment_records)
-        )
+        return SessionFacts.from_domain_session(session_from_records(conv_record, msg_records, attachment_records))
 
     def records_from_connection(
         self,
         conn: sqlite3.Connection,
-    ) -> tuple[ConversationRecord, list[MessageRecord], list[AttachmentRecord]]:
-        """Read scenario storage records from a SQLite connection."""
-        conv_row = conn.execute(
-            "SELECT * FROM conversations WHERE conversation_id = ?",
-            (self.resolved_conversation_id,),
+    ) -> tuple[SessionRecord, list[MessageRecord], list[AttachmentRecord]]:
+        """Read scenario storage records from an archive `index.db` connection.
+
+        Reads the archive ``sessions`` / ``messages`` / ``blocks`` tables
+        directly (keyed by the generated session id) and projects them into
+        the storage-record shape consumed by ``SessionFacts.from_records``.
+        """
+        session_id = self.native_session_id
+        session_row = conn.execute(
+            "SELECT session_id, origin, title FROM sessions WHERE session_id = ?",
+            (session_id,),
         ).fetchone()
-        if conv_row is None:
-            raise AssertionError(f"Scenario conversation {self.resolved_conversation_id!r} was not seeded")
-        conv_record = _row_to_conversation(conv_row)
+        if session_row is None:
+            raise AssertionError(f"Scenario session {self.resolved_session_id!r} was not seeded")
+        conv_record = SessionRecord(
+            session_id=SessionId(session_id),
+            provider_session_id=f"ext-{self.resolved_session_id}",
+            source_name=self.provider,
+            title=session_row["title"],
+            content_hash=ContentHash(session_id),
+        )
         msg_rows = conn.execute(
-            "SELECT * FROM messages WHERE conversation_id = ? ORDER BY sort_key, message_id",
-            (self.resolved_conversation_id,),
+            """
+            SELECT message_id, role, position, word_count, has_tool_use, has_thinking
+            FROM messages
+            WHERE session_id = ?
+            ORDER BY position, variant_index
+            """,
+            (session_id,),
         ).fetchall()
-        content_blocks_by_message = _content_blocks_by_message(conn, self.resolved_conversation_id)
+        content_blocks_by_message = _content_blocks_by_message(conn, session_id)
         msg_records = [
-            _row_to_message(row).model_copy(
-                update={"content_blocks": content_blocks_by_message.get(str(row["message_id"]), [])}
+            MessageRecord(
+                message_id=MessageId(row["message_id"]),
+                session_id=SessionId(session_id),
+                source_name=self.provider,
+                role=Role(str(row["role"])),
+                text=_message_text(content_blocks_by_message.get(str(row["message_id"]), [])),
+                content_hash=ContentHash(str(row["message_id"])),
+                word_count=int(row["word_count"] or 0),
+                has_tool_use=int(row["has_tool_use"] or 0),
+                has_thinking=int(row["has_thinking"] or 0),
+                content_blocks=content_blocks_by_message.get(str(row["message_id"]), []),
             )
             for row in msg_rows
         ]
-        attachment_records = _attachment_records_for_conversation(conn, self.resolved_conversation_id)
+        attachment_records = _attachment_records_for_session(conn, session_id)
         return conv_record, msg_records, attachment_records
 
-    async def facts_from_repository(self, repository: ConversationRepository) -> ConversationFacts:
-        conversation = await repository.get(self.resolved_conversation_id)
-        if conversation is None:
-            raise AssertionError(
-                f"Scenario conversation {self.resolved_conversation_id!r} not found through repository"
-            )
-        return ConversationFacts.from_domain_conversation(conversation)
+    async def facts_from_archive(self, archive: Polylogue) -> SessionFacts:
+        session = await archive.get_session(self.native_session_id)
+        if session is None:
+            raise AssertionError(f"Scenario session {self.resolved_session_id!r} not found through facade")
+        return SessionFacts.from_domain_session(session)
 
 
 def _default_timestamp() -> str:
@@ -262,12 +303,18 @@ def _content_block_payloads(blocks: Sequence[ScenarioContentBlock]) -> list[JSON
     return payloads
 
 
-def _attachment_records_for_conversation(conn: sqlite3.Connection, conversation_id: str) -> list[AttachmentRecord]:
+def _message_text(blocks: Sequence[ContentBlockRecord]) -> str | None:
+    """Concatenate text-block content the way archive hydration does."""
+    texts = [block.text for block in blocks if block.type == "text" and block.text]
+    return "\n".join(texts) if texts else None
+
+
+def _attachment_records_for_session(conn: sqlite3.Connection, session_id: str) -> list[AttachmentRecord]:
     rows = conn.execute(
         """
         SELECT
             a.attachment_id,
-            ar.conversation_id,
+            ar.session_id,
             ar.message_id,
             a.mime_type,
             a.size_bytes,
@@ -275,40 +322,59 @@ def _attachment_records_for_conversation(conn: sqlite3.Connection, conversation_
             a.provider_meta
         FROM attachment_refs ar
         JOIN attachments a ON a.attachment_id = ar.attachment_id
-        WHERE ar.conversation_id = ?
+        WHERE ar.session_id = ?
         ORDER BY ar.message_id, a.attachment_id
         """,
-        (conversation_id,),
+        (session_id,),
     ).fetchall()
-    return [_attachment_record_from_row(row) for row in rows]
+    return [_attachment_record_from_row(row, session_id) for row in rows]
 
 
-def _content_blocks_by_message(conn: sqlite3.Connection, conversation_id: str) -> dict[str, list[ContentBlockRecord]]:
+def _content_blocks_by_message(conn: sqlite3.Connection, session_id: str) -> dict[str, list[ContentBlockRecord]]:
     rows = conn.execute(
         """
-        SELECT *
-        FROM content_blocks
-        WHERE conversation_id = ?
-        ORDER BY message_id, block_index
+        SELECT message_id, position, block_type, text, tool_name, tool_id, tool_input, semantic_type, metadata
+        FROM blocks
+        WHERE session_id = ?
+        ORDER BY message_id, position
         """,
-        (conversation_id,),
+        (session_id,),
     ).fetchall()
     blocks_by_message: dict[str, list[ContentBlockRecord]] = {}
     for row in rows:
-        blocks_by_message.setdefault(str(row["message_id"]), []).append(_row_to_content_block(row))
+        message_id = str(row["message_id"])
+        # ``ContentBlockRecord.tool_input`` carries the serialized JSON string
+        # exactly as the native ``blocks.tool_input`` column stores it.
+        tool_input = row["tool_input"] if isinstance(row["tool_input"], str) else None
+        raw_metadata = row["metadata"]
+        metadata = raw_metadata if isinstance(raw_metadata, str) and raw_metadata not in ("", "{}") else None
+        block = ContentBlockRecord(
+            block_id=f"{message_id}:{row['position']}",
+            message_id=MessageId(message_id),
+            session_id=SessionId(session_id),
+            block_index=int(row["position"]),
+            type=ContentBlockType(str(row["block_type"])),
+            text=row["text"],
+            tool_name=row["tool_name"],
+            tool_id=row["tool_id"],
+            tool_input=tool_input,
+            semantic_type=row["semantic_type"],
+            metadata=metadata,
+        )
+        blocks_by_message.setdefault(message_id, []).append(block)
     return blocks_by_message
 
 
-def _attachment_record_from_row(row: sqlite3.Row) -> AttachmentRecord:
+def _attachment_record_from_row(row: sqlite3.Row, session_id: str) -> AttachmentRecord:
     raw_provider_meta = row["provider_meta"]
     provider_meta: JSONRecord | None = None
-    if isinstance(raw_provider_meta, str) and raw_provider_meta:
+    if isinstance(raw_provider_meta, str) and raw_provider_meta and raw_provider_meta != "{}":
         provider_meta = {}
         for key, value in json_document(loads(raw_provider_meta)).items():
             provider_meta[key] = value
     return AttachmentRecord(
         attachment_id=AttachmentId(row["attachment_id"]),
-        conversation_id=ConversationId(row["conversation_id"]),
+        session_id=SessionId(session_id),
         message_id=MessageId(row["message_id"]) if row["message_id"] is not None else None,
         mime_type=row["mime_type"],
         size_bytes=row["size_bytes"],
@@ -332,9 +398,24 @@ def seed_workspace_scenarios(
     return db_path, seed_archive_scenarios(db_path, scenarios)
 
 
-def repository_for_scenario_db(db_path: Path) -> ConversationRepository:
-    """Open a repository over a scenario database."""
-    return ConversationRepository(backend=SQLiteBackend(db_path=db_path))
+def _archive_root_for_index_db(db_path: Path) -> Path:
+    """Archive root for an ``.../index.db`` scenario database path."""
+    return db_path.parent
+
+
+def archive_for_scenario_db(db_path: Path) -> Polylogue:
+    """Open the native ``Polylogue`` facade over a scenario ``index.db``.
+
+    The archive facade is the repository surface in the archive: it
+    exposes ``get_session`` / ``list_sessions`` / ``add_tag`` /
+    ``list_tags`` / ``delete_session`` over ``index.db``.
+    """
+    return Polylogue(archive_root=_archive_root_for_index_db(db_path), db_path=db_path)
+
+
+# Stable name kept for scenario consumers: the "repository" is the native
+# Polylogue facade over index.db.
+repository_for_scenario_db = archive_for_scenario_db
 
 
 __all__ = [
@@ -343,6 +424,9 @@ __all__ = [
     "ScenarioAttachment",
     "ScenarioContentBlock",
     "ScenarioMessage",
+    "archive_for_scenario_db",
+    "native_session_id_for",
+    "open_index_db",
     "repository_for_scenario_db",
     "seed_archive_scenarios",
     "seed_workspace_scenarios",

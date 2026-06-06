@@ -13,13 +13,13 @@ from polylogue.storage.sqlite.queries.message_query_reads import (
     get_messages_paginated,
     iter_messages,
 )
-from tests.infra.storage_records import make_conversation, make_message
+from tests.infra.storage_records import make_message, make_session
 
 
 @pytest.mark.asyncio
 async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(tmp_path: Path) -> None:
     backend = SQLiteBackend(db_path=tmp_path / "messages.db")
-    conv = make_conversation("conv-message-reads", title="Message Reads")
+    conv = make_session("conv-message-reads", title="Message Reads")
     messages = [
         make_message(
             "msg-summary",
@@ -67,14 +67,14 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
     ]
 
     async with backend.transaction():
-        await backend.save_conversation_record(conv)
+        await backend.save_session_record(conv)
         await backend.save_messages(messages)
 
     async with backend.connection() as conn:
         await conn.executemany(
             """
             INSERT OR REPLACE INTO content_blocks
-            (block_id, message_id, conversation_id, block_index, type, text)
+            (block_id, message_id, session_id, block_index, type, text)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             [
@@ -87,8 +87,8 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
 
         assert await get_messages_batch(conn, []) == ({}, [])
 
-        by_conversation, all_messages = await get_messages_batch(conn, ["conv-message-reads", "missing"])
-        assert [message.message_id for message in by_conversation["conv-message-reads"]] == [
+        by_session, all_messages = await get_messages_batch(conn, ["conv-message-reads", "missing"])
+        assert [message.message_id for message in by_session["conv-message-reads"]] == [
             "msg-summary",
             "msg-summary-2",
             "msg-tool",
@@ -98,13 +98,13 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
 
         since = parse_timestamp("2026-01-01T00:00:03Z")
         assert since is not None
-        filtered_by_conversation, filtered_messages = await get_messages_batch(
+        filtered_by_session, filtered_messages = await get_messages_batch(
             conn,
             ["conv-message-reads", "missing"],
             sort_key_since=since.timestamp(),
             message_role=(Role.USER,),
         )
-        assert [message.message_id for message in filtered_by_conversation["conv-message-reads"]] == ["msg-user"]
+        assert [message.message_id for message in filtered_by_session["conv-message-reads"]] == ["msg-user"]
         assert [message.message_id for message in filtered_messages] == ["msg-user"]
         assert [message.message_id for message in all_messages] == [
             "msg-summary",

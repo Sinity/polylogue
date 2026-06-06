@@ -87,7 +87,7 @@ async def _read_schema_ready(backend: SQLiteBackend) -> bool:
         if not row or row[0] <= 0:
             return False
 
-        cursor = await conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversations'")
+        cursor = await conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'")
         return await cursor.fetchone() is not None
 
 
@@ -463,17 +463,17 @@ class SQLiteBackend(
 
     # -- Derived stats (formerly SQLiteDerivedStatsMixin) --------------------
 
-    async def upsert_conversation_stats(
+    async def upsert_session_stats(
         self,
-        conversation_id: str,
+        session_id: str,
         source_name: str,
         messages: list[MessageRecord],
     ) -> None:
-        """Upsert precomputed per-conversation aggregate stats."""
+        """Upsert precomputed per-session aggregate stats."""
         async with self._get_connection() as conn:
-            await stats_q.upsert_conversation_stats(
+            await stats_q.upsert_session_stats(
                 conn,
-                conversation_id,
+                session_id,
                 source_name,
                 messages,
                 self._transaction_depth,
@@ -483,28 +483,17 @@ class SQLiteBackend(
 
     async def replace_action_events(
         self,
-        conversation_id: str,
+        session_id: str,
         records: list[ActionEventRecord],
     ) -> None:
-        """Replace durable action-event rows for one conversation."""
+        """Replace durable action-event rows for one session."""
         async with self._get_connection() as conn:
             await action_events_q.replace_action_events(
                 conn,
-                conversation_id,
+                session_id,
                 records,
                 self._transaction_depth,
             )
-
-    async def get_action_events(self, conversation_id: str) -> list[ActionEventRecord]:
-        """Get durable action-event rows for one conversation."""
-        return await self.queries.get_action_events(conversation_id)
-
-    async def get_action_events_batch(
-        self,
-        conversation_ids: list[str],
-    ) -> dict[str, list[ActionEventRecord]]:
-        """Get durable action-event rows for multiple conversations."""
-        return await self.queries.get_action_events_batch(conversation_ids)
 
     # -- Derived insights (formerly SQLiteDerivedInsightsMixin) --------------
 
@@ -522,28 +511,28 @@ class SQLiteBackend(
 
     async def replace_session_work_events(
         self,
-        conversation_id: str,
+        session_id: str,
         records: list[SessionWorkEventRecord],
     ) -> None:
-        """Replace durable work-event rows for one conversation."""
+        """Replace durable work-event rows for one session."""
         async with self._get_connection() as conn:
             await session_insight_timelines_q.replace_session_work_events(
                 conn,
-                conversation_id,
+                session_id,
                 records,
                 self._transaction_depth,
             )
 
     async def replace_session_phases(
         self,
-        conversation_id: str,
+        session_id: str,
         records: list[SessionPhaseRecord],
     ) -> None:
-        """Replace durable phase rows for one conversation."""
+        """Replace durable phase rows for one session."""
         async with self._get_connection() as conn:
             await session_insight_timelines_q.replace_session_phases(
                 conn,
-                conversation_id,
+                session_id,
                 records,
                 self._transaction_depth,
             )

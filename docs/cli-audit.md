@@ -9,19 +9,19 @@ sub-issues filed from this audit.
 
 ### Query Verbs
 
-These act on the matched conversation set after filter chain evaluation.
+These act on the matched session set after filter chain evaluation.
 Registered in `polylogue/cli/verb_names.py` and `polylogue/cli/query_verbs.py`.
 
 | Command | Recommendation | Rationale |
 |---------|---------------|-----------|
 | `list` | **Keep** | Canonical listing verb. Already the default. |
 | `count` | **Keep** | Single integer output, useful for scripting. Distinct from `stats`. |
-| `stats` | **Keep** | Aggregate breakdowns by provider/month/year/tool/repo. Distinct from `count`. |
-| `open` | **Keep** | Opens conversation in daemon web reader. Clear action verb. |
+| `stats` | **Keep** | Aggregate breakdowns by origin/month/year/tool/repo. Distinct from `count`. |
+| `open` | **Keep** | Opens session in daemon web reader. Clear action verb. |
 | `show` | **Deprecate** | Overlaps with `list`. Bare query mode already shows full content; `list` with `--format` covers structured output. `show` adds a third path for the same operation. |
-| `select` | **Deprecate** | Narrow use case (pick one field from one conversation). `list --format json \| jq` or `--json` covers this. |
+| `select` | **Deprecate** | Narrow use case (pick one field from one session). `list --format json \| jq` or `--json` covers this. |
 | `recent` | **Keep** | Convenience wrapper: `--latest --sort date`. High usage, worth the alias. |
-| `messages` | **Keep** | Lists messages, not conversations. Distinct operation. |
+| `messages` | **Keep** | Lists messages, not sessions. Distinct operation. |
 | `raw` | **Keep** | Raw archive payloads. Debugging surface, no overlap. |
 | `delete` | **Keep** | Write operation, clear intent, irreversible. |
 | `bulk-export` | **Rename to `export bulk`** | Overlaps with `export` top-level command. Merge under `export` group as `export bulk`. |
@@ -45,10 +45,10 @@ Registered in `polylogue/cli/click_command_registration.py`.
 | `completions` | Configuration | **Keep** | Shell completion setup. Standard CLI pattern. |
 | `dashboard` | Configuration | **Keep** | Open local dashboard. Could be `open --dashboard` but separate command is discoverable. |
 | `tutorial` | Configuration | **Keep** | Interactive first-run walkthrough. Onboarding. |
-| `export` | Context | **Keep (expand)** | Export conversations. Currently flat; absorb `bulk-export` as `export bulk`. |
+| `export` | Context | **Keep (expand)** | Export sessions. Currently flat; absorb `bulk-export` as `export bulk`. |
 | `context` | Context | **Keep (expand)** | Context Composer. Currently has `compose` subcommand only. Absorb `context-pack` as `context pack`. |
 | `context-pack` | Context | **Merge into `context`** | Build a context pack for agent analysis. Duplicate noun with `context`. Merge as `context pack`. |
-| `resume` | Insights | **Keep (expand)** | Resume from recent conversation context. Absorb `resume-candidates` as `resume --candidates` or `resume candidates`. |
+| `resume` | Insights | **Keep (expand)** | Resume from recent session context. Absorb `resume-candidates` as `resume --candidates` or `resume candidates`. |
 | `resume-candidates` | Insights | **Merge into `resume`** | Rank resume candidates. Thin convenience over `resume`. Merge as `resume candidates` or `resume --candidates`. |
 | `correlate` | Insights | **Keep** | Git commit/GitHub ref correlation. Distinct capability. |
 | `facets` | Insights | **Keep** | Scoped/global facet aggregates. Distinct capability. |
@@ -81,7 +81,7 @@ Registered in `polylogue/cli/click_command_registration.py`.
 | `tags` | **Keep (rename to `tag-rollups`)** | Session-tag rollup insights. Current name `tags` collides with top-level `tags` command. |
 | `threads` | **Keep** | Work-thread insights. Aggregate. |
 | `timeline` | **Keep** | Per-session timeline. Session-level. |
-| `tool-usage` | **Keep** | Per-tool per-provider rollups. Analytics. |
+| `tool-usage` | **Keep** | Per-tool per-origin rollups. Analytics. |
 | `work-events` | **Keep** | Work-event insights. Session-level. |
 
 Rename `insights tags` to `insights tag-rollups` to resolve collision with `polylogue tags`.
@@ -142,8 +142,8 @@ Rename `insights tags` to `insights tag-rollups` to resolve collision with `poly
 
 | Subcommand | Recommendation | Notes |
 |-----------|---------------|-------|
-| `annotations` | **Keep** | Conversation and message annotations. |
-| `marks` | **Keep** | Conversation and message marks. |
+| `annotations` | **Keep** | Session and message annotations. |
+| `marks` | **Keep** | Session and message marks. |
 | `recall-packs` | **Keep** | Recall packs with target evidence. |
 | `saved-views` | **Keep** | Saved query views. |
 | `workspaces` | **Keep** | Durable reader workspaces. |
@@ -224,13 +224,13 @@ insights tool-usage   insights work-events
 **Aggregate** (cross-session rollups):
 - `threads` — work-thread insights
 - `tag-rollups` — session-tag rollup insights (renamed from `tags`)
-- `coverage` — archive coverage buckets by provider/day/week
+- `coverage` — archive coverage buckets by origin/day/week
 - `debt` — archive debt and maintenance readiness
 
 **Analytics** (cost and tool metrics):
 - `costs` — session-level cost estimates
-- `cost-rollups` — provider/model cost rollups
-- `tool-usage` — per-tool per-provider rollups
+- `cost-rollups` — origin/model cost rollups
+- `tool-usage` — per-tool per-origin rollups
 
 **Admin** (status, export, audit):
 - `status` — insight materialization coverage
@@ -271,7 +271,7 @@ Per acceptance criterion 5 of #1681:
    stderr listing the replacement, then delegate to the new implementation.
    The old name continues to work.
 2. **Removal release** (next minor): The old alias raises "unknown command"
-   with a migration hint.
+   with a rebuild hint.
 3. **Implementation pattern**: A `DeprecatingCommand` wrapper (similar to
    `_LazyCommand`) that prints the warning on first invocation.
 
@@ -350,7 +350,7 @@ broken JSON output. 78 commands are covered as of 2026-05-28.
 | Gap | Detail | Issue |
 |-----|--------|-------|
 | Root `--json` doesn't propagate to all query verbs | `polylogue --json list` produces plain text, not JSON. The root `--json` sets `output_format` in the root context but query verbs with their own `--format` option do not inherit it. Use the per-verb `--format json` flag as a workaround. | #1689 |
-| `recent` hardcodes invalid sort field | `recent_verb` passes `sort="updated_at"` which is rejected by `ConversationQuerySpec`. The `--json` test excludes `recent` until this is fixed. | Pre-existing |
+| `recent` hardcodes invalid sort field | `recent_verb` passes `sort="updated_at"` which is rejected by `SessionQuerySpec`. The `--json` test excludes `recent` until this is fixed. | Pre-existing |
 | `count` has no `--format` flag | The `count` verb always emits a bare integer; there is no way to request a JSON envelope. | #1689 |
 | Deeply-nested groups (`user-state`, `blackboard`) don't dispatch through lazy wrappers | Commands registered as `_LazyCommand` but implemented as Click groups don't dispatch subcommands through the lazy wrapper. | #1725 |
 | No `--json` test for mutation commands | `delete`, `reset`, `ingest`, `backup` are excluded from the parametrized test because they modify state. They should still accept `--json`/`--machine` without crashing. | #1689 |

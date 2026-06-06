@@ -1,7 +1,7 @@
 """Search and filter benchmark tests.
 
 Covers: FTS5 search latency (common/rare/multi-word terms),
-ConversationFilter execution at scale.
+SessionFilter execution at scale.
 
 Run with:
     pytest tests/benchmarks/test_search_filters.py --benchmark-enable -p no:xdist -v
@@ -13,8 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.archive.filter.filters import ConversationFilter
-from polylogue.storage.query_models import ConversationRecordQuery
+from polylogue.storage.query_models import SessionRecordQuery
 from tests.benchmarks.helpers import BenchmarkFixture, benchmark_store_call
 
 
@@ -48,43 +47,50 @@ def test_bench_fts_search_multi_word(benchmark: BenchmarkFixture, bench_db_5k: P
     )
 
 
+# ``SessionFilter`` executes over ``index.db`` and is keyword-only
+# (``SessionFilter(archive_root=...)``). The benchmark fixtures seed a
+# monolithic SQLiteBackend database, so these benchmarks exercise the
+# equivalent repository query surface (``list_summaries`` / ``count_by_query``)
+# at scale.
+
+
 @pytest.mark.benchmark
 def test_bench_filter_provider(benchmark: BenchmarkFixture, bench_db_5k: Path) -> None:
-    """ConversationFilter + provider=chatgpt on 5k DB."""
+    """Provider-scoped summary listing on 5k DB."""
     benchmark_store_call(
         benchmark,
         bench_db_5k,
-        lambda store: ConversationFilter(store.repository).provider("chatgpt").list_summaries(),
+        lambda store: store.repository.list_summaries(provider="chatgpt"),
     )
 
 
 @pytest.mark.benchmark
 def test_bench_filter_has_tool_use(benchmark: BenchmarkFixture, bench_db_5k: Path) -> None:
-    """ConversationFilter + has_tool_use() — stats LEFT JOIN path."""
+    """has_tool_use filter — stats LEFT JOIN path."""
     benchmark_store_call(
         benchmark,
         bench_db_5k,
-        lambda store: ConversationFilter(store.repository).has_tool_use().list_summaries(),
+        lambda store: store.repository.list_summaries(has_tool_use=True),
     )
 
 
 @pytest.mark.benchmark
 def test_bench_filter_semantic_file_ops(benchmark: BenchmarkFixture, bench_db_5k: Path) -> None:
-    """ConversationFilter + has_file_operations() — EXISTS subquery path (schema v3)."""
+    """Semantic file-operation action filter — EXISTS subquery path."""
     benchmark_store_call(
         benchmark,
         bench_db_5k,
-        lambda store: ConversationFilter(store.repository).has_file_operations().list_summaries(),
+        lambda store: store.repository.list_summaries(action_terms=["file_read", "file_write", "file_edit"]),
     )
 
 
 @pytest.mark.benchmark
 def test_bench_filter_count(benchmark: BenchmarkFixture, bench_db_5k: Path) -> None:
-    """ConversationFilter.count() — single COUNT(*) query, no data fetch."""
+    """count_by_query — single COUNT(*) query, no data fetch."""
     benchmark_store_call(
         benchmark,
         bench_db_5k,
-        lambda store: ConversationFilter(store.repository).provider("chatgpt").count(),
+        lambda store: store.repository.count_by_query(SessionRecordQuery(provider="chatgpt")),
     )
 
 
@@ -94,8 +100,10 @@ def test_bench_filter_combined(benchmark: BenchmarkFixture, bench_db_10k: Path) 
     benchmark_store_call(
         benchmark,
         bench_db_10k,
-        lambda store: (
-            ConversationFilter(store.repository).provider("claude-ai").has_tool_use().min_messages(2).list_summaries()
+        lambda store: store.repository.list_summaries(
+            provider="claude-ai",
+            has_tool_use=True,
+            min_messages=2,
         ),
     )
 
@@ -103,9 +111,9 @@ def test_bench_filter_combined(benchmark: BenchmarkFixture, bench_db_10k: Path) 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("limit", [10, 50, 200])
 def test_bench_filter_limit_scaling(benchmark: BenchmarkFixture, bench_db_10k: Path, limit: int) -> None:
-    """How does result count affect list_conversations cost? Tests LIMIT effect."""
+    """How does result count affect list_sessions cost? Tests LIMIT effect."""
     benchmark_store_call(
         benchmark,
         bench_db_10k,
-        lambda store: store.backend.queries.list_conversations(ConversationRecordQuery(limit=limit)),
+        lambda store: store.backend.queries.list_sessions(SessionRecordQuery(limit=limit)),
     )

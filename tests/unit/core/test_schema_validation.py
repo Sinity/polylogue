@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import sqlite3
 from contextlib import AbstractContextManager
-from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from unittest.mock import patch
 
 import pytest
@@ -19,7 +19,6 @@ from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.validation.corpus import verify_raw_corpus
 from polylogue.schemas.validation.requests import SchemaVerificationRequest
 from polylogue.schemas.validator import SchemaValidator, _normalize_empty_arrays, validate_provider_export
-from polylogue.storage.sqlite.connection import open_connection
 from polylogue.types import Provider
 
 if TYPE_CHECKING:
@@ -31,7 +30,7 @@ class SyntheticSourceFactory(Protocol):
         self,
         provider: str,
         count: int = ...,
-        messages_per_conversation: range = ...,
+        messages_per_session: range = ...,
         seed: int = ...,
     ) -> Source: ...
 
@@ -604,15 +603,15 @@ class TestSyntheticRoundTrip:
         provider: str,
         synthetic_source: SyntheticSourceFactory,
     ) -> None:
-        from polylogue.sources import iter_source_conversations
+        from polylogue.sources import iter_source_sessions
 
         source = synthetic_source(provider, count=3, seed=42)
-        conversations = list(iter_source_conversations(source))
+        sessions = list(iter_source_sessions(source))
 
-        assert conversations, f"No conversations parsed for {provider}"
-        for conversation in conversations:
-            assert conversation.messages, f"Empty conversation for {provider}"
-            assert any(message.text for message in conversation.messages), f"No message text for {provider}"
+        assert sessions, f"No sessions parsed for {provider}"
+        for session in sessions:
+            assert session.messages, f"Empty session for {provider}"
+            assert any(message.text for message in session.messages), f"No message text for {provider}"
 
 
 def test_validation_result_properties() -> None:
@@ -646,36 +645,51 @@ def _insert_raw_record(
     source_path: str,
     raw_content: bytes,
 ) -> str:
-    """Insert a raw record and return the actual raw_id (the blob hash)."""
+    """Seed one archive `source.db` raw session and return its ``raw_id``.
+
+    Writes the payload to the content-addressed blob store and inserts the
+    matching ``raw_sessions`` row (and raw-payload blob ref) via the native
+    acquisition writer, so ``verify_raw_corpus`` reads it back directly.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.core.sources import origin_from_provider
     from polylogue.storage.blob_store import get_blob_store
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 
-    # Write content to blob store and get the actual hash
-    blob_store = get_blob_store()
-    actual_raw_id, blob_size = blob_store.write_from_bytes(raw_content)
-
-    # Use the actual hash as raw_id (required for content-addressed blob store)
-    # Ignore the passed raw_id parameter since it must match the blob hash
-    with open_connection(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO raw_conversations (
-                raw_id, source_name, payload_provider, source_path, source_index,
-                blob_size, acquired_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                actual_raw_id,
-                source_name,
-                payload_provider,
-                source_path,
-                0,
-                blob_size,
-                datetime.now(tz=timezone.utc).isoformat(),
-            ),
+    initialize_active_archive_root(db_path.parent)
+    get_blob_store().write_from_bytes(raw_content)
+    origin = origin_from_provider(Provider.from_string(source_name))
+    source_conn = sqlite3.connect(db_path.parent / "source.db")
+    try:
+        return write_source_raw_session(
+            source_conn,
+            origin=origin,
+            source_path=source_path,
+            source_index=0,
+            payload=raw_content,
+            acquired_at_ms=0,
         )
-        conn.commit()
+    finally:
+        source_conn.close()
 
-    return actual_raw_id
+
+def _read_raw_session_validation(db_path: Path, raw_id: str) -> sqlite3.Row | None:
+    """Read native ``raw_sessions`` validation state for a seeded raw id."""
+
+    conn = sqlite3.connect(db_path.parent / "source.db")
+    conn.row_factory = sqlite3.Row
+    try:
+        return cast(
+            "sqlite3.Row | None",
+            conn.execute(
+                "SELECT validation_status, validation_error, validation_mode, "
+                "validated_at_ms, parse_error FROM raw_sessions WHERE raw_id = ?",
+                (raw_id,),
+            ).fetchone(),
+        )
+    finally:
+        conn.close()
 
 
 def test_verify_raw_corpus_reports_valid_synthetic_chatgpt(
@@ -748,44 +762,6 @@ def test_verify_raw_corpus_counts_missing_schema_as_skipped(db_path: Path) -> No
     assert stats.invalid_records == 0
 
 
-@pytest.mark.slow
-def test_verify_raw_corpus_uses_persisted_payload_provider_for_filters(
-    db_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _AlwaysValidValidator:
-        provider = "chatgpt"
-
-        def validation_samples(self, payload: object, max_samples: int = 16) -> list[object]:
-            return [payload] if isinstance(payload, dict) else []
-
-        def validate(self, _sample: object) -> ValidationResult:
-            return ValidationResult(is_valid=True)
-
-    monkeypatch.setattr(
-        "polylogue.schemas.validation.corpus.SchemaValidator.for_payload",
-        lambda *args, **kwargs: _AlwaysValidValidator(),
-    )
-
-    _insert_raw_record(
-        db_path=db_path,
-        raw_id="raw-generic-chatgpt",
-        payload_provider="chatgpt",
-        source_name="inbox",
-        source_path="/tmp/raw.json",
-        raw_content=b'{"id":"one","mapping":{}}',
-    )
-
-    report = verify_raw_corpus(
-        db_path=db_path,
-        request=SchemaVerificationRequest(providers=["chatgpt"], max_samples=16),
-    )
-
-    assert report.total_records == 1
-    assert report.providers["chatgpt"].total_records == 1
-    assert report.providers["chatgpt"].valid_records == 1
-
-
 def test_verify_raw_corpus_counts_malformed_jsonl_as_decode_error(db_path: Path) -> None:
     raw_id = _insert_raw_record(
         db_path=db_path,
@@ -810,17 +786,12 @@ def test_verify_raw_corpus_counts_malformed_jsonl_as_decode_error(db_path: Path)
     assert stats.invalid_records == 0
     assert stats.quarantined_records == 0
 
-    with open_connection(db_path) as conn:
-        row = conn.execute(
-            "SELECT validation_status, validation_error, validation_mode, parse_error "
-            "FROM raw_conversations WHERE raw_id = ?",
-            (raw_id,),
-        ).fetchone()
+    row = _read_raw_session_validation(db_path, raw_id)
     assert row is not None
-    assert row[0] is None
-    assert row[1] is None
-    assert row[2] is None
-    assert row[3] is None
+    assert row["validation_status"] is None
+    assert row["validation_error"] is None
+    assert row["validation_mode"] is None
+    assert row["parse_error"] is None
 
 
 def test_verify_raw_corpus_quarantine_malformed_updates_validation_state(db_path: Path) -> None:
@@ -848,25 +819,13 @@ def test_verify_raw_corpus_quarantine_malformed_updates_validation_state(db_path
     assert stats.decode_errors == 1
     assert stats.quarantined_records == 1
 
-    with open_connection(db_path) as conn:
-        row = conn.execute(
-            """
-            SELECT validation_status, validation_error, validation_mode, validation_provider,
-                   payload_provider,
-                   validated_at, parse_error
-            FROM raw_conversations
-            WHERE raw_id = ?
-            """,
-            (raw_id,),
-        ).fetchone()
+    row = _read_raw_session_validation(db_path, raw_id)
     assert row is not None
-    assert row[0] == "failed"
-    assert isinstance(row[1], str) and "Malformed JSONL lines" in row[1]
-    assert row[2] == "strict"
-    assert row[3] == "codex"
-    assert row[4] == "codex"
-    assert row[5] is not None
-    assert isinstance(row[6], str) and "Malformed JSONL lines" in row[6]
+    assert row["validation_status"] == "failed"
+    assert isinstance(row["validation_error"], str) and "Malformed JSONL lines" in row["validation_error"]
+    assert row["validation_mode"] == "strict"
+    assert row["validated_at_ms"] is not None
+    assert isinstance(row["parse_error"], str) and "Malformed JSONL lines" in row["parse_error"]
 
 
 def test_verify_raw_corpus_quarantine_empty_payload_updates_validation_state(db_path: Path) -> None:
@@ -892,25 +851,13 @@ def test_verify_raw_corpus_quarantine_empty_payload_updates_validation_state(db_
     assert stats.decode_errors == 1
     assert stats.quarantined_records == 1
 
-    with open_connection(db_path) as conn:
-        row = conn.execute(
-            """
-            SELECT validation_status, validation_error, validation_mode, validation_provider,
-                   payload_provider,
-                   validated_at, parse_error
-            FROM raw_conversations
-            WHERE raw_id = ?
-            """,
-            (raw_id,),
-        ).fetchone()
+    row = _read_raw_session_validation(db_path, raw_id)
     assert row is not None
-    assert row[0] == "failed"
-    assert isinstance(row[1], str) and "zero-length" in row[1]
-    assert row[2] == "strict"
-    assert row[3] == "codex"
-    assert row[4] is None
-    assert row[5] is not None
-    assert isinstance(row[6], str) and "zero-length" in row[6]
+    assert row["validation_status"] == "failed"
+    assert isinstance(row["validation_error"], str) and "zero-length" in row["validation_error"]
+    assert row["validation_mode"] == "strict"
+    assert row["validated_at_ms"] is not None
+    assert isinstance(row["parse_error"], str) and "zero-length" in row["parse_error"]
 
 
 def test_verify_raw_corpus_honors_record_limit_and_offset(

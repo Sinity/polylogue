@@ -10,7 +10,7 @@ from polylogue.cli.shared.types import AppEnv
 
 
 @click.command("facets")
-@click.option("--provider", "-p", "provider", default=None, help="Filter to this provider")
+@click.option("--origin", "-o", "origin", default=None, help="Filter to this origin")
 @click.option("--tag", "-t", "tag", default=None, help="Filter to this tag")
 @click.option(
     "--query",
@@ -37,7 +37,7 @@ from polylogue.cli.shared.types import AppEnv
 @click.pass_obj
 def facets_command(
     env: AppEnv,
-    provider: str | None,
+    origin: str | None,
     tag: str | None,
     query: str | None,
     output_format: str,
@@ -46,29 +46,29 @@ def facets_command(
     """Show scoped and global facet aggregates.
 
     With no filters the scoped and global counts are identical. When
-    ``--provider``, ``--tag``, or ``--query`` narrows the view, the
+    ``--origin``, ``--tag``, or ``--query`` narrows the view, the
     scoped buckets describe the filtered slice while the global
     buckets describe the whole archive (#1269 / slice D of #873).
 
     \b
     Examples:
         polylogue facets                           # Global counts only
-        polylogue facets -p chatgpt                # Scoped to ChatGPT
+        polylogue facets -o chatgpt-export         # Scoped to ChatGPT exports
         polylogue facets -t draft -f json          # JSON, scoped to "draft"
         polylogue facets -q "vector store" --no-idf
     """
     from polylogue.api.sync.bridge import run_coroutine_sync
-    from polylogue.archive.query.spec import ConversationQuerySpec
+    from polylogue.archive.query.spec import SessionQuerySpec
 
     params: dict[str, object] = {}
-    if provider:
-        params["provider"] = provider
+    if origin:
+        params["origin"] = origin
     if tag:
         params["tag"] = tag
     if query:
         params["query"] = query
 
-    spec = ConversationQuerySpec.from_params(params) if params else None
+    spec = SessionQuerySpec.from_params(params) if params else None
 
     response = run_coroutine_sync(env.polylogue.facets(spec, include_idf=not no_idf))
 
@@ -79,18 +79,14 @@ def facets_command(
     del env  # printed via click.echo for backend-agnostic output
     scope_label = "scoped" if response.scoped_to_query else "global"
     click.echo(f"Facets ({scope_label}):")
-    click.echo(
-        f"  scoped:   {response.scoped.total_conversations} conversations, {response.scoped.total_messages} messages"
-    )
-    click.echo(
-        f"  global:   {response.global_.total_conversations} conversations, {response.global_.total_messages} messages"
-    )
+    click.echo(f"  scoped:   {response.scoped.total_sessions} sessions, {response.scoped.total_messages} messages")
+    click.echo(f"  global:   {response.global_.total_sessions} sessions, {response.global_.total_messages} messages")
     click.echo("")
-    click.echo("Providers (scoped / global):")
-    keys = sorted(set(response.scoped.providers) | set(response.global_.providers))
+    click.echo("Origins (scoped / global):")
+    keys = sorted(set(response.scoped.origins) | set(response.global_.origins))
     for key in keys:
-        s = response.scoped.providers.get(key, 0)
-        g = response.global_.providers.get(key, 0)
+        s = response.scoped.origins.get(key, 0)
+        g = response.global_.origins.get(key, 0)
         click.echo(f"  {key:24s} {s:>6d} / {g:>6d}")
     if response.scoped.tags or response.global_.tags:
         click.echo("")

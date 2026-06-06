@@ -24,7 +24,7 @@ from polylogue.storage.action_events.rebuild_runtime import (
     valid_action_event_source_ids_sync,
 )
 from polylogue.storage.fts.fts_lifecycle import repair_fts_index_sync
-from polylogue.storage.index import rebuild_index, update_index_for_conversations
+from polylogue.storage.index import rebuild_index, update_index_for_sessions
 from tests.benchmarks.helpers import (
     BenchmarkFixture,
     benchmark_connection_call,
@@ -90,12 +90,12 @@ def test_bench_fts_rebuild_5k(benchmark: BenchmarkFixture, bench_db_5k: Path) ->
 @pytest.mark.benchmark
 @pytest.mark.parametrize("n", [1, 10, 50])
 def test_bench_fts_incremental_update(benchmark: BenchmarkFixture, bench_db_5k: Path, n: int) -> None:
-    """update_index_for_conversations() for 1, 10, 50 conversations."""
+    """update_index_for_sessions() for 1, 10, 50 sessions."""
     ids = [f"bench-conv-{i:05d}" for i in range(n)]
     benchmark_connection_call(
         benchmark,
         bench_db_5k,
-        lambda conn: update_index_for_conversations(ids, conn),
+        lambda conn: update_index_for_sessions(ids, conn),
     )
 
 
@@ -108,7 +108,7 @@ def test_bench_action_event_repair_rebuild(benchmark: BenchmarkFixture, bench_db
         conn.execute("DELETE FROM action_events")
         conn.execute("DELETE FROM action_events_fts")
         conn.commit()
-        rebuilt = rebuild_action_event_read_model_sync(conn, conversation_ids=targets or None)
+        rebuilt = rebuild_action_event_read_model_sync(conn, session_ids=targets or None)
         if targets:
             repair_fts_index_sync(conn, targets)
         conn.commit()
@@ -143,7 +143,7 @@ def test_bench_hash_payload(benchmark: BenchmarkFixture, depth: int) -> None:
 @pytest.mark.benchmark
 @pytest.mark.parametrize("n", [100, 500])
 def test_bench_prepare_cache_load(benchmark: BenchmarkFixture, bench_db_5k: Path, n: int) -> None:
-    """PrepareCache.load() — bulk-loads N existing conversations in 2 queries."""
+    """PrepareCache.load() — bulk-loads N existing sessions in 2 queries."""
     cids = {f"bench-conv-{i:05d}" for i in range(n)}
     benchmark_store_call(
         benchmark,

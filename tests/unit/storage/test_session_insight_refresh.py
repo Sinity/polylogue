@@ -13,12 +13,12 @@ from polylogue.storage.insights.session.rebuild import (
     rebuild_session_insights_sync,
 )
 from polylogue.storage.insights.session.refresh import (
-    _apply_session_insight_conversation_updates_async,
+    _apply_session_insight_session_updates_async,
     _refresh_thread_roots_async,
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
-from tests.infra.storage_records import make_conversation, make_message, store_records
+from tests.infra.storage_records import make_message, make_session, store_records
 
 
 def _chunk_metric(chunk_observation: object, key: str) -> float:
@@ -28,13 +28,13 @@ def _chunk_metric(chunk_observation: object, key: str) -> float:
 
 
 @pytest.mark.asyncio
-async def test_apply_session_insight_conversation_updates_async_batches_hydrated_conversations(
+async def test_apply_session_insight_session_updates_async_batches_hydrated_sessions(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "refresh.db"
     with open_connection(db_path) as conn:
         store_records(
-            conversation=make_conversation("conv-refresh", title="Refresh Test"),
+            session=make_session("conv-refresh", title="Refresh Test"),
             messages=[
                 make_message("conv-refresh:msg-1", "conv-refresh", text="Need help with batching"),
                 make_message(
@@ -51,7 +51,7 @@ async def test_apply_session_insight_conversation_updates_async_batches_hydrated
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        update = await _apply_session_insight_conversation_updates_async(
+        update = await _apply_session_insight_session_updates_async(
             conn,
             ["conv-refresh"],
             transaction_depth=1,
@@ -74,20 +74,20 @@ async def test_session_insight_refresh_materializes_logical_session_identity(
 ) -> None:
     db_path = tmp_path / "logical-session.db"
     with open_connection(db_path) as conn:
-        for conversation_id, parent_id in (("root", None), ("continuation", "root"), ("fork", "continuation")):
+        for session_id, parent_id in (("root", None), ("continuation", "root"), ("fork", "continuation")):
             store_records(
-                conversation=make_conversation(
-                    conversation_id,
+                session=make_session(
+                    session_id,
                     source_name="claude-code",
-                    title=conversation_id,
-                    parent_conversation_id=parent_id,
+                    title=session_id,
+                    parent_session_id=parent_id,
                     updated_at="2026-05-25T10:00:00+00:00",
                 ),
                 messages=[
                     make_message(
-                        f"{conversation_id}:msg-1",
-                        conversation_id,
-                        text=f"{conversation_id} logical identity test",
+                        f"{session_id}:msg-1",
+                        session_id,
+                        text=f"{session_id} logical identity test",
                         timestamp="2026-05-25T10:00:00+00:00",
                     )
                 ],
@@ -98,7 +98,7 @@ async def test_session_insight_refresh_materializes_logical_session_identity(
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        await _apply_session_insight_conversation_updates_async(
+        await _apply_session_insight_session_updates_async(
             conn,
             ["root", "continuation", "fork"],
             transaction_depth=1,
@@ -106,7 +106,7 @@ async def test_session_insight_refresh_materializes_logical_session_identity(
         )
         await refresh_async_provider_day_aggregates(
             conn,
-            {("claude-code", "2026-05-25")},
+            {("claude-code-session", "2026-05-25")},
             transaction_depth=1,
         )
         await conn.commit()
@@ -114,18 +114,18 @@ async def test_session_insight_refresh_materializes_logical_session_identity(
     with open_connection(db_path) as conn:
         profile_rows = conn.execute(
             """
-            SELECT conversation_id, logical_conversation_id
+            SELECT session_id, logical_session_id
             FROM session_profiles
-            ORDER BY conversation_id
+            ORDER BY session_id
             """
         ).fetchall()
         tag_rollup = conn.execute(
             """
-            SELECT conversation_count, logical_session_count, logical_conversation_ids_json
+            SELECT session_count, logical_session_count, logical_session_ids_json
             FROM session_tag_rollups
-            WHERE source_name = 'claude-code'
+            WHERE source_name = 'claude-code-session'
               AND bucket_day = '2026-05-25'
-              AND tag = 'provider:claude-code'
+              AND tag = 'origin:claude-code-session'
             """
         ).fetchone()
 
@@ -135,19 +135,19 @@ async def test_session_insight_refresh_materializes_logical_session_identity(
         ("root", "root"),
     }
     assert tag_rollup is not None
-    assert int(tag_rollup["conversation_count"]) == 3
+    assert int(tag_rollup["session_count"]) == 3
     assert int(tag_rollup["logical_session_count"]) == 1
-    assert json.loads(tag_rollup["logical_conversation_ids_json"]) == ["root"]
+    assert json.loads(tag_rollup["logical_session_ids_json"]) == ["root"]
 
 
 @pytest.mark.asyncio
-async def test_apply_session_insight_conversation_updates_async_counts_provider_event_compactions(
+async def test_apply_session_insight_session_updates_async_counts_provider_event_compactions(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "refresh-provider-events.db"
     with open_connection(db_path) as conn:
         store_records(
-            conversation=make_conversation("conv-provider-event", source_name="codex", title="Compaction Test"),
+            session=make_session("conv-provider-event", source_name="codex", title="Compaction Test"),
             messages=[
                 make_message(
                     "conv-provider-event:msg-1",
@@ -162,7 +162,7 @@ async def test_apply_session_insight_conversation_updates_async_counts_provider_
             """
             INSERT INTO provider_events (
                 event_id,
-                conversation_id,
+                session_id,
                 source_name,
                 event_index,
                 event_type,
@@ -191,7 +191,7 @@ async def test_apply_session_insight_conversation_updates_async_counts_provider_
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        update = await _apply_session_insight_conversation_updates_async(
+        update = await _apply_session_insight_session_updates_async(
             conn,
             ["conv-provider-event"],
             transaction_depth=1,
@@ -202,7 +202,7 @@ async def test_apply_session_insight_conversation_updates_async_counts_provider_
     assert update.counts.profiles == 1
     with open_connection(db_path) as conn:
         row = conn.execute(
-            "SELECT evidence_payload_json FROM session_profiles WHERE conversation_id = ?",
+            "SELECT evidence_payload_json FROM session_profiles WHERE session_id = ?",
             ("conv-provider-event",),
         ).fetchone()
 
@@ -211,13 +211,13 @@ async def test_apply_session_insight_conversation_updates_async_counts_provider_
 
 
 @pytest.mark.asyncio
-async def test_apply_session_insight_conversation_updates_async_uses_provider_events_for_terminal_state(
+async def test_apply_session_insight_session_updates_async_uses_provider_events_for_terminal_state(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "refresh-provider-terminal.db"
     with open_connection(db_path) as conn:
         store_records(
-            conversation=make_conversation(
+            session=make_session(
                 "conv-provider-terminal",
                 source_name="codex",
                 title="Terminal Test",
@@ -237,7 +237,7 @@ async def test_apply_session_insight_conversation_updates_async_uses_provider_ev
             """
             INSERT INTO provider_events (
                 event_id,
-                conversation_id,
+                session_id,
                 source_name,
                 event_index,
                 event_type,
@@ -259,7 +259,7 @@ async def test_apply_session_insight_conversation_updates_async_uses_provider_ev
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        await _apply_session_insight_conversation_updates_async(
+        await _apply_session_insight_session_updates_async(
             conn,
             ["conv-provider-terminal"],
             transaction_depth=1,
@@ -269,11 +269,11 @@ async def test_apply_session_insight_conversation_updates_async_uses_provider_ev
 
     with open_connection(db_path) as conn:
         row = conn.execute(
-            "SELECT evidence_payload_json FROM session_profiles WHERE conversation_id = ?",
+            "SELECT evidence_payload_json FROM session_profiles WHERE session_id = ?",
             ("conv-provider-terminal",),
         ).fetchone()
         latency_row = conn.execute(
-            "SELECT stuck_tool_count FROM session_latency_profiles WHERE conversation_id = ?",
+            "SELECT stuck_tool_count FROM session_latency_profiles WHERE session_id = ?",
             ("conv-provider-terminal",),
         ).fetchone()
 
@@ -289,7 +289,7 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
     db_path = tmp_path / "refresh-sync-targeted.db"
     with open_connection(db_path) as conn:
         store_records(
-            conversation=make_conversation(
+            session=make_session(
                 "conv-chatgpt-a",
                 source_name="chatgpt",
                 title="ChatGPT A",
@@ -308,7 +308,7 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
             conn=conn,
         )
         store_records(
-            conversation=make_conversation(
+            session=make_session(
                 "conv-claude-a",
                 source_name="claude-ai",
                 title="Claude A",
@@ -329,14 +329,14 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
         rebuild_session_insights_sync(conn)
         conn.execute(
             "UPDATE session_tag_rollups SET search_text = ? WHERE source_name = ?",
-            ("sentinel tag untouched", "claude-ai"),
+            ("sentinel tag untouched", "claude-ai-export"),
         )
         conn.execute(
             "UPDATE work_threads SET search_text = ? WHERE thread_id = ?",
             ("sentinel thread untouched", "conv-claude-a"),
         )
         store_records(
-            conversation=make_conversation(
+            session=make_session(
                 "conv-chatgpt-b",
                 source_name="chatgpt",
                 title="ChatGPT B",
@@ -354,12 +354,12 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
             attachments=[],
             conn=conn,
         )
-        counts = rebuild_session_insights_sync(conn, conversation_ids=["conv-chatgpt-b"])
+        counts = rebuild_session_insights_sync(conn, session_ids=["conv-chatgpt-b"])
         tag_rows = conn.execute(
             """
-            SELECT source_name, bucket_day, conversation_count, search_text
+            SELECT source_name, bucket_day, session_count, search_text
             FROM session_tag_rollups
-            WHERE tag = 'provider:' || source_name
+            WHERE tag = 'origin:' || source_name
             ORDER BY source_name, bucket_day
             """
         ).fetchall()
@@ -369,22 +369,24 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
         ).fetchone()
 
     assert counts.profiles == 1
-    assert [(row["source_name"], row["bucket_day"], row["conversation_count"]) for row in tag_rows] == [
-        ("chatgpt", "2026-04-02", 2),
-        ("claude-ai", "2026-04-03", 1),
+    assert [(row["source_name"], row["bucket_day"], row["session_count"]) for row in tag_rows] == [
+        ("chatgpt-export", "2026-04-02", 2),
+        ("claude-ai-export", "2026-04-03", 1),
     ]
-    assert [row["search_text"] for row in tag_rows if row["source_name"] == "claude-ai"] == ["sentinel tag untouched"]
+    assert [row["search_text"] for row in tag_rows if row["source_name"] == "claude-ai-export"] == [
+        "sentinel tag untouched"
+    ]
     assert claude_thread is not None
     assert claude_thread["search_text"] == "sentinel thread untouched"
 
 
-def test_session_insight_rebuild_fills_profile_time_from_conversation_timestamp(
+def test_session_insight_rebuild_fills_profile_time_from_session_timestamp(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "profile-time-fallback.db"
     with open_connection(db_path) as conn:
         store_records(
-            conversation=make_conversation(
+            session=make_session(
                 "conv-codex-untimestamped",
                 source_name="codex",
                 title="Codex untimestamped messages",
@@ -414,7 +416,7 @@ def test_session_insight_rebuild_fills_profile_time_from_conversation_timestamp(
             """
             SELECT first_message_at, last_message_at, canonical_session_date, evidence_payload_json
             FROM session_profiles
-            WHERE conversation_id = ?
+            WHERE session_id = ?
             """,
             ("conv-codex-untimestamped",),
         ).fetchone()
@@ -425,14 +427,14 @@ def test_session_insight_rebuild_fills_profile_time_from_conversation_timestamp(
     assert row["canonical_session_date"] == "2026-05-12"
     evidence = json.loads(row["evidence_payload_json"])
     assert evidence["timestamp_coverage"] == "none"
-    assert evidence["timestamp_source"] == "conversation_timestamp_fallback"
+    assert evidence["timestamp_source"] == "session_timestamp_fallback"
 
 
 def test_session_insight_rebuild_materializes_message_token_costs(tmp_path: Path) -> None:
     db_path = tmp_path / "profile-token-costs.db"
     with open_connection(db_path) as conn:
         store_records(
-            conversation=make_conversation(
+            session=make_session(
                 "conv-token-costs",
                 source_name="claude-code",
                 title="Token costs",
@@ -466,7 +468,7 @@ def test_session_insight_rebuild_materializes_message_token_costs(tmp_path: Path
                 cost_provenance,
                 per_model_cost_json
             FROM session_profiles
-            WHERE conversation_id = ?
+            WHERE session_id = ?
             """,
             ("conv-token-costs",),
         ).fetchone()
@@ -483,11 +485,11 @@ def test_session_insight_rebuild_materializes_message_token_costs(tmp_path: Path
     assert per_model[0]["provider_model_name"] == "claude-sonnet-4-5"
 
 
-def test_session_insight_rebuild_preserves_conversation_provider_cost(tmp_path: Path) -> None:
+def test_session_insight_rebuild_preserves_session_provider_cost(tmp_path: Path) -> None:
     db_path = tmp_path / "profile-provider-cost.db"
     with open_connection(db_path) as conn:
         store_records(
-            conversation=make_conversation(
+            session=make_session(
                 "conv-provider-cost",
                 source_name="claude-code",
                 title="Provider cost",
@@ -513,7 +515,7 @@ def test_session_insight_rebuild_preserves_conversation_provider_cost(tmp_path: 
             """
             SELECT total_cost_usd, total_duration_ms, cost_provenance, per_model_cost_json
             FROM session_profiles
-            WHERE conversation_id = ?
+            WHERE session_id = ?
             """,
             ("conv-provider-cost",),
         ).fetchone()
@@ -530,7 +532,7 @@ def test_session_insight_load_skips_plain_text_blocks(tmp_path: Path) -> None:
     db_path = tmp_path / "refresh-block-filter.db"
     with open_connection(db_path) as conn:
         store_records(
-            conversation=make_conversation("conv-blocks", source_name="codex", title="Block Filter"),
+            session=make_session("conv-blocks", source_name="codex", title="Block Filter"),
             messages=[
                 make_message(
                     "conv-blocks:msg-1",
@@ -565,7 +567,7 @@ def test_session_insight_load_includes_provider_events_for_profile_classifiers(t
     db_path = tmp_path / "refresh-provider-event-load.db"
     with open_connection(db_path) as conn:
         store_records(
-            conversation=make_conversation("conv-provider-event-load", source_name="codex", title="Event Load"),
+            session=make_session("conv-provider-event-load", source_name="codex", title="Event Load"),
             messages=[
                 make_message(
                     "conv-provider-event-load:msg-1",
@@ -580,7 +582,7 @@ def test_session_insight_load_includes_provider_events_for_profile_classifiers(t
             """
             INSERT INTO provider_events (
                 event_id,
-                conversation_id,
+                session_id,
                 source_name,
                 event_index,
                 event_type,
@@ -599,7 +601,7 @@ def test_session_insight_load_includes_provider_events_for_profile_classifiers(t
             ),
         )
         batch = load_sync_batch(conn, ["conv-provider-event-load"])
-        hydrated = batch.provider_events_by_conversation["conv-provider-event-load"]
+        hydrated = batch.provider_events_by_session["conv-provider-event-load"]
 
     assert [event.event_type for event in hydrated] == ["function_call"]
 
@@ -610,7 +612,7 @@ def test_session_insight_load_bounds_large_text_payloads(tmp_path: Path) -> None
     large_tool_output = "o" * (_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS + 100)
     with open_connection(db_path) as conn:
         store_records(
-            conversation=make_conversation("conv-large-text", source_name="codex", title="Large Text"),
+            session=make_session("conv-large-text", source_name="codex", title="Large Text"),
             messages=[
                 make_message(
                     "conv-large-text:msg-1",
@@ -639,18 +641,18 @@ def test_targeted_session_insight_rebuild_splits_large_message_batches(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "rebuild-message-budget.db"
-    conversation_ids: list[str] = []
+    session_ids: list[str] = []
     with open_connection(db_path) as conn:
         for index in range(3):
-            conversation_id = f"conv-rebuild-budget-{index:02d}"
-            conversation_ids.append(conversation_id)
+            session_id = f"conv-rebuild-budget-{index:02d}"
+            session_ids.append(session_id)
             store_records(
-                conversation=make_conversation(conversation_id, title=f"Rebuild Budget {index:02d}"),
+                session=make_session(session_id, title=f"Rebuild Budget {index:02d}"),
                 messages=[
                     make_message(
-                        f"{conversation_id}:msg-1",
-                        conversation_id,
-                        text=f"Message for {conversation_id}",
+                        f"{session_id}:msg-1",
+                        session_id,
+                        text=f"Message for {session_id}",
                     )
                 ],
                 attachments=[],
@@ -658,8 +660,8 @@ def test_targeted_session_insight_rebuild_splits_large_message_batches(
             )
         conn.executemany(
             """
-            INSERT OR REPLACE INTO conversation_stats (
-                conversation_id,
+            INSERT OR REPLACE INTO session_stats (
+                session_id,
                 source_name,
                 message_count,
                 word_count,
@@ -683,7 +685,7 @@ def test_targeted_session_insight_rebuild_splits_large_message_batches(
 
         counts = rebuild_session_insights_sync(
             conn,
-            conversation_ids=conversation_ids,
+            session_ids=session_ids,
             page_size=10,
             progress_callback=record_progress,
         )
@@ -693,22 +695,22 @@ def test_targeted_session_insight_rebuild_splits_large_message_batches(
 
 
 @pytest.mark.asyncio
-async def test_apply_session_insight_conversation_updates_async_preserves_thread_roots_for_children(
+async def test_apply_session_insight_session_updates_async_preserves_thread_roots_for_children(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "refresh-thread.db"
     with open_connection(db_path) as conn:
         store_records(
-            conversation=make_conversation("conv-root", title="Root"),
+            session=make_session("conv-root", title="Root"),
             messages=[make_message("conv-root:msg-1", "conv-root", text="Root message")],
             attachments=[],
             conn=conn,
         )
         store_records(
-            conversation=make_conversation(
+            session=make_session(
                 "conv-child",
                 title="Child",
-                parent_conversation_id="conv-root",
+                parent_session_id="conv-root",
             ),
             messages=[make_message("conv-child:msg-1", "conv-child", text="Child message")],
             attachments=[],
@@ -718,7 +720,7 @@ async def test_apply_session_insight_conversation_updates_async_preserves_thread
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        update = await _apply_session_insight_conversation_updates_async(
+        update = await _apply_session_insight_session_updates_async(
             conn,
             ["conv-root", "conv-child"],
             transaction_depth=1,
@@ -731,22 +733,22 @@ async def test_apply_session_insight_conversation_updates_async_preserves_thread
 
 
 @pytest.mark.asyncio
-async def test_apply_session_insight_conversation_updates_async_uses_small_default_chunks(
+async def test_apply_session_insight_session_updates_async_uses_small_default_chunks(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "refresh-default-chunks.db"
-    conversation_ids: list[str] = []
+    session_ids: list[str] = []
     with open_connection(db_path) as conn:
         for index in range(11):
-            conversation_id = f"conv-{index:02d}"
-            conversation_ids.append(conversation_id)
+            session_id = f"conv-{index:02d}"
+            session_ids.append(session_id)
             store_records(
-                conversation=make_conversation(conversation_id, title=f"Conversation {index:02d}"),
+                session=make_session(session_id, title=f"Session {index:02d}"),
                 messages=[
                     make_message(
-                        f"{conversation_id}:msg-1",
-                        conversation_id,
-                        text=f"Message for {conversation_id}",
+                        f"{session_id}:msg-1",
+                        session_id,
+                        text=f"Message for {session_id}",
                     )
                 ],
                 attachments=[],
@@ -756,37 +758,37 @@ async def test_apply_session_insight_conversation_updates_async_uses_small_defau
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        update = await _apply_session_insight_conversation_updates_async(
+        update = await _apply_session_insight_session_updates_async(
             conn,
-            conversation_ids,
+            session_ids,
             transaction_depth=1,
         )
 
     assert update.counts.profiles == 11
     assert len(update.chunk_observations) == 2
-    assert update.chunk_observations[0].conversation_count == 10
+    assert update.chunk_observations[0].session_count == 10
     assert update.chunk_observations[0].estimated_message_count == 10
-    assert update.chunk_observations[1].conversation_count == 1
+    assert update.chunk_observations[1].session_count == 1
     assert update.chunk_observations[1].estimated_message_count == 1
 
 
 @pytest.mark.asyncio
-async def test_apply_session_insight_conversation_updates_async_splits_large_message_batches(
+async def test_apply_session_insight_session_updates_async_splits_large_message_batches(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "refresh-message-budget.db"
-    conversation_ids: list[str] = []
+    session_ids: list[str] = []
     with open_connection(db_path) as conn:
         for index in range(3):
-            conversation_id = f"conv-budget-{index:02d}"
-            conversation_ids.append(conversation_id)
+            session_id = f"conv-budget-{index:02d}"
+            session_ids.append(session_id)
             store_records(
-                conversation=make_conversation(conversation_id, title=f"Budget {index:02d}"),
+                session=make_session(session_id, title=f"Budget {index:02d}"),
                 messages=[
                     make_message(
-                        f"{conversation_id}:msg-1",
-                        conversation_id,
-                        text=f"Message for {conversation_id}",
+                        f"{session_id}:msg-1",
+                        session_id,
+                        text=f"Message for {session_id}",
                     )
                 ],
                 attachments=[],
@@ -794,8 +796,8 @@ async def test_apply_session_insight_conversation_updates_async_splits_large_mes
             )
         conn.executemany(
             """
-            INSERT OR REPLACE INTO conversation_stats (
-                conversation_id,
+            INSERT OR REPLACE INTO session_stats (
+                session_id,
                 source_name,
                 message_count,
                 word_count,
@@ -813,28 +815,28 @@ async def test_apply_session_insight_conversation_updates_async_splits_large_mes
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        update = await _apply_session_insight_conversation_updates_async(
+        update = await _apply_session_insight_session_updates_async(
             conn,
-            conversation_ids,
+            session_ids,
             transaction_depth=1,
         )
 
     assert update.counts.profiles == 3
     assert len(update.chunk_observations) == 2
-    assert update.chunk_observations[0].conversation_count == 1
+    assert update.chunk_observations[0].session_count == 1
     assert update.chunk_observations[0].estimated_message_count == 4_000
-    assert update.chunk_observations[1].conversation_count == 2
+    assert update.chunk_observations[1].session_count == 2
     assert update.chunk_observations[1].estimated_message_count == 4_100
 
 
 @pytest.mark.asyncio
-async def test_apply_session_insight_conversation_updates_async_clears_deleted_conversations(
+async def test_apply_session_insight_session_updates_async_clears_deleted_sessions(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "refresh-delete.db"
     with open_connection(db_path) as conn:
         store_records(
-            conversation=make_conversation("conv-stale", title="Stale"),
+            session=make_session("conv-stale", title="Stale"),
             messages=[make_message("conv-stale:msg-1", "conv-stale", text="Before delete")],
             attachments=[],
             conn=conn,
@@ -843,7 +845,7 @@ async def test_apply_session_insight_conversation_updates_async_clears_deleted_c
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        first_update = await _apply_session_insight_conversation_updates_async(
+        first_update = await _apply_session_insight_session_updates_async(
             conn,
             ["conv-stale"],
             transaction_depth=1,
@@ -854,12 +856,12 @@ async def test_apply_session_insight_conversation_updates_async_clears_deleted_c
     assert first_update.counts.profiles == 1
 
     with open_connection(db_path) as conn:
-        conn.execute("DELETE FROM messages WHERE conversation_id = ?", ("conv-stale",))
-        conn.execute("DELETE FROM conversations WHERE conversation_id = ?", ("conv-stale",))
+        conn.execute("DELETE FROM messages WHERE session_id = ?", ("conv-stale",))
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", ("conv-stale",))
         conn.commit()
 
     async with backend.connection() as conn:
-        second_update = await _apply_session_insight_conversation_updates_async(
+        second_update = await _apply_session_insight_session_updates_async(
             conn,
             ["conv-stale"],
             transaction_depth=1,
@@ -872,15 +874,15 @@ async def test_apply_session_insight_conversation_updates_async_clears_deleted_c
 
     with open_connection(db_path) as conn:
         profile_count = conn.execute(
-            "SELECT COUNT(*) FROM session_profiles WHERE conversation_id = ?",
+            "SELECT COUNT(*) FROM session_profiles WHERE session_id = ?",
             ("conv-stale",),
         ).fetchone()[0]
         work_event_count = conn.execute(
-            "SELECT COUNT(*) FROM session_work_events WHERE conversation_id = ?",
+            "SELECT COUNT(*) FROM session_work_events WHERE session_id = ?",
             ("conv-stale",),
         ).fetchone()[0]
         phase_count = conn.execute(
-            "SELECT COUNT(*) FROM session_phases WHERE conversation_id = ?",
+            "SELECT COUNT(*) FROM session_phases WHERE session_id = ?",
             ("conv-stale",),
         ).fetchone()[0]
 
@@ -896,32 +898,32 @@ async def test_refresh_thread_roots_async_batches_root_rebuilds(
     db_path = tmp_path / "refresh-thread-roots.db"
     with open_connection(db_path) as conn:
         store_records(
-            conversation=make_conversation("conv-root-a", title="Root A"),
+            session=make_session("conv-root-a", title="Root A"),
             messages=[make_message("conv-root-a:msg-1", "conv-root-a", text="Root A message")],
             attachments=[],
             conn=conn,
         )
         store_records(
-            conversation=make_conversation(
+            session=make_session(
                 "conv-child-a",
                 title="Child A",
-                parent_conversation_id="conv-root-a",
+                parent_session_id="conv-root-a",
             ),
             messages=[make_message("conv-child-a:msg-1", "conv-child-a", text="Child A message")],
             attachments=[],
             conn=conn,
         )
         store_records(
-            conversation=make_conversation("conv-root-b", title="Root B"),
+            session=make_session("conv-root-b", title="Root B"),
             messages=[make_message("conv-root-b:msg-1", "conv-root-b", text="Root B message")],
             attachments=[],
             conn=conn,
         )
         store_records(
-            conversation=make_conversation(
+            session=make_session(
                 "conv-child-b",
                 title="Child B",
-                parent_conversation_id="conv-root-b",
+                parent_session_id="conv-root-b",
             ),
             messages=[make_message("conv-child-b:msg-1", "conv-child-b", text="Child B message")],
             attachments=[],
@@ -931,7 +933,7 @@ async def test_refresh_thread_roots_async_batches_root_rebuilds(
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        update = await _apply_session_insight_conversation_updates_async(
+        update = await _apply_session_insight_session_updates_async(
             conn,
             ["conv-root-a", "conv-child-a", "conv-root-b", "conv-child-b"],
             transaction_depth=1,
@@ -968,7 +970,7 @@ async def test_refresh_async_provider_day_aggregates_batches_multiple_groups(
     db_path = tmp_path / "refresh-provider-day-groups.db"
     with open_connection(db_path) as conn:
         store_records(
-            conversation=make_conversation(
+            session=make_session(
                 "conv-chatgpt-a",
                 source_name="chatgpt",
                 title="ChatGPT A",
@@ -987,7 +989,7 @@ async def test_refresh_async_provider_day_aggregates_batches_multiple_groups(
             conn=conn,
         )
         store_records(
-            conversation=make_conversation(
+            session=make_session(
                 "conv-chatgpt-b",
                 source_name="chatgpt",
                 title="ChatGPT B",
@@ -1006,7 +1008,7 @@ async def test_refresh_async_provider_day_aggregates_batches_multiple_groups(
             conn=conn,
         )
         store_records(
-            conversation=make_conversation(
+            session=make_session(
                 "conv-claude-a",
                 source_name="claude-ai",
                 title="Claude A",
@@ -1028,7 +1030,7 @@ async def test_refresh_async_provider_day_aggregates_batches_multiple_groups(
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        update = await _apply_session_insight_conversation_updates_async(
+        update = await _apply_session_insight_session_updates_async(
             conn,
             ["conv-chatgpt-a", "conv-chatgpt-b", "conv-claude-a"],
             transaction_depth=1,
@@ -1044,14 +1046,14 @@ async def test_refresh_async_provider_day_aggregates_batches_multiple_groups(
     with open_connection(db_path) as conn:
         tag_rows = conn.execute(
             """
-            SELECT source_name, bucket_day, conversation_count
+            SELECT source_name, bucket_day, session_count
             FROM session_tag_rollups
-            WHERE tag = 'provider:' || source_name
+            WHERE tag = 'origin:' || source_name
             ORDER BY source_name, bucket_day
             """
         ).fetchall()
 
-    assert [(row["source_name"], row["bucket_day"], row["conversation_count"]) for row in tag_rows] == [
-        ("chatgpt", "2026-04-02", 2),
-        ("claude-ai", "2026-04-03", 1),
+    assert [(row["source_name"], row["bucket_day"], row["session_count"]) for row in tag_rows] == [
+        ("chatgpt-export", "2026-04-02", 2),
+        ("claude-ai-export", "2026-04-03", 1),
     ]

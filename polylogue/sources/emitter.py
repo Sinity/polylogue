@@ -1,4 +1,4 @@
-"""Conversation emitter — parses a binary stream and yields (raw, conv) tuples."""
+"""Session emitter — parses a binary stream and yields (raw, conv) tuples."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from .cursor import _ParseContext
 from .decoder_json import JsonValue
 from .decoders import _iter_json_stream
 from .dispatch import GROUP_PROVIDERS, detect_provider, parse_payload
-from .parsers.base import ParsedConversation, RawConversationData
+from .parsers.base import ParsedSession, RawSessionData
 
 if TYPE_CHECKING:
     from polylogue.schemas.packages import SchemaResolution
@@ -58,7 +58,7 @@ class _ResolvedPayload:
     schema_resolution: SchemaResolution | None
 
 
-class _ConversationEmitter:
+class _SessionEmitter:
     """Parse a binary stream and yield ``(raw, conv)`` tuples.
 
     Unifies the grouped-JSONL, individual-items, and raw-capture logic
@@ -80,8 +80,8 @@ class _ConversationEmitter:
         stream_name: str,
         *,
         pre_read_bytes: bytes | None = None,
-        precomputed_raw: RawConversationData | None = None,
-    ) -> Iterable[tuple[RawConversationData | None, ParsedConversation]]:
+        precomputed_raw: RawSessionData | None = None,
+    ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
         """Parse a stream and yield ``(raw, conv)`` tuples.
 
         Args:
@@ -121,10 +121,10 @@ class _ConversationEmitter:
         stream_name: str,
         pre_read_bytes: bytes | None,
         *,
-        precomputed_raw: RawConversationData | None = None,
+        precomputed_raw: RawSessionData | None = None,
         precomputed_payloads: list[JsonValue] | None = None,
-    ) -> Iterable[tuple[RawConversationData | None, ParsedConversation]]:
-        """Grouped JSONL: entire file = one conversation."""
+    ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
+        """Grouped JSONL: entire file = one session."""
         if precomputed_raw is not None:
             raw_bytes = None
         elif self._ctx.capture_raw and pre_read_bytes is None:
@@ -143,7 +143,7 @@ class _ConversationEmitter:
 
         raw_data = precomputed_raw or (self._make_raw(raw_bytes) if raw_bytes else None)
         resolved = self._resolve_payload(payloads)
-        if not resolved.artifact.parse_as_conversation:
+        if not resolved.artifact.parse_as_session:
             return
         for conv in parse_payload(
             resolved.provider,
@@ -160,8 +160,8 @@ class _ConversationEmitter:
         stream_name: str,
         *,
         pre_read_bytes: bytes | None = None,
-    ) -> Iterable[tuple[RawConversationData | None, ParsedConversation]]:
-        """Individual items: each payload = one conversation."""
+    ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
+        """Individual items: each payload = one session."""
         unpack = not (stream_name.lower().endswith(".json") and self._ctx.should_group)
 
         # If caller pre-read the whole file, use that as one raw capture
@@ -179,17 +179,17 @@ class _ConversationEmitter:
         payloads: Iterable[JsonValue],
         *,
         stream_name: str,
-        whole_file_raw: RawConversationData | None = None,
-    ) -> Iterable[tuple[RawConversationData | None, ParsedConversation]]:
+        whole_file_raw: RawSessionData | None = None,
+    ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
         source_index = 0
         for payload in payloads:
             try:
                 resolved = self._resolve_payload(payload)
-                if not resolved.artifact.parse_as_conversation:
+                if not resolved.artifact.parse_as_session:
                     continue
 
                 if whole_file_raw is not None:
-                    raw_data: RawConversationData | None = whole_file_raw
+                    raw_data: RawSessionData | None = whole_file_raw
                 elif self._ctx.capture_raw:
                     raw_bytes = json_dumps_bytes(payload)
                     raw_data = self._make_raw(
@@ -274,7 +274,7 @@ class _ConversationEmitter:
         handle: IO[bytes],
         state: _PreparedJsonlState,
         *,
-        precomputed_raw: RawConversationData | None,
+        precomputed_raw: RawSessionData | None,
     ) -> tuple[IO[bytes], bytes | None]:
         grouped_bytes = state.pre_read_bytes
         grouped_handle: IO[bytes] = state.sniff_handle
@@ -295,8 +295,8 @@ class _ConversationEmitter:
         stream_name: str,
         *,
         pre_read_bytes: bytes | None,
-        precomputed_raw: RawConversationData | None,
-    ) -> Iterable[tuple[RawConversationData | None, ParsedConversation]]:
+        precomputed_raw: RawSessionData | None,
+    ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
         state = self._prepare_jsonl_state(handle, pre_read_bytes=pre_read_bytes)
         if (
             state.pre_read_bytes is None
@@ -398,11 +398,11 @@ class _ConversationEmitter:
         *,
         source_index: int | None = None,
         provider_override: Provider | None = None,
-    ) -> RawConversationData | None:
-        """Construct ``RawConversationData``, or ``None`` if no bytes."""
+    ) -> RawSessionData | None:
+        """Construct ``RawSessionData``, or ``None`` if no bytes."""
         if raw_bytes is None or not self._ctx.capture_raw:
             return None
-        return RawConversationData(
+        return RawSessionData(
             raw_bytes=raw_bytes,
             source_path=self._ctx.source_path_str,
             source_index=source_index,
@@ -412,17 +412,17 @@ class _ConversationEmitter:
 
     def _maybe_enrich(
         self,
-        conv: ParsedConversation,
+        conv: ParsedSession,
         provider: Provider | None = None,
-    ) -> ParsedConversation:
+    ) -> ParsedSession:
         """Apply provider-specific enrichment via assembly layer."""
         p = provider or self._ctx.provider_hint
         spec = get_assembly_spec(p)
         if spec is not None:
-            return spec.enrich_conversation(conv, self._ctx.sidecar_data)
+            return spec.enrich_session(conv, self._ctx.sidecar_data)
         return conv
 
 
 __all__ = [
-    "_ConversationEmitter",
+    "_SessionEmitter",
 ]

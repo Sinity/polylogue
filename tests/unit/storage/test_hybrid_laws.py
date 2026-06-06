@@ -13,7 +13,7 @@ from hypothesis import strategies as st
 
 from polylogue.storage.search_providers.hybrid import (
     HybridSearchProvider,
-    _resolve_ranked_conversation_ids,
+    _resolve_ranked_session_ids,
     create_hybrid_provider,
     reciprocal_rank_fusion,
 )
@@ -38,22 +38,22 @@ def _make_providers(
 
 
 def _messages_db(msg_to_conv: dict[str, str]) -> sqlite3.Connection:
-    """In-memory SQLite with messages + conversations tables for search_conversations tests.
+    """In-memory SQLite with messages + sessions tables for search_sessions tests.
 
     Passes the connection directly to open_connection — which accepts
     sqlite3.Connection and yields it as-is (connection.py:123-126).
     """
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    conn.execute("CREATE TABLE messages (message_id TEXT, conversation_id TEXT)")
-    conn.execute("CREATE TABLE conversations (conversation_id TEXT, source_name TEXT)")
+    conn.execute("CREATE TABLE messages (message_id TEXT, session_id TEXT)")
+    conn.execute("CREATE TABLE sessions (session_id TEXT, source_name TEXT)")
     conn.executemany(
         "INSERT INTO messages VALUES (?, ?)",
         list(msg_to_conv.items()),
     )
     for conv_id in set(msg_to_conv.values()):
         conn.execute(
-            "INSERT INTO conversations VALUES (?, 'chatgpt')",
+            "INSERT INTO sessions VALUES (?, 'chatgpt')",
             (conv_id,),
         )
     conn.commit()
@@ -284,12 +284,12 @@ def test_search_scored_returns_scores_descending() -> None:
 
 
 # ---------------------------------------------------------------------------
-# HybridSearchProvider.search_conversations laws
+# HybridSearchProvider.search_sessions laws
 # ---------------------------------------------------------------------------
 
 
-def test_search_conversations_deduplicates() -> None:
-    """Multiple message hits from the same conversation produce a single conversation result."""
+def test_search_sessions_deduplicates() -> None:
+    """Multiple message hits from the same session produce a single session result."""
     fts, vec = _make_providers()
     provider = HybridSearchProvider(fts, vec)
     # Two messages (msg1, msg2) map to conv_A; msg3 maps to conv_B
@@ -297,43 +297,43 @@ def test_search_conversations_deduplicates() -> None:
     fts.db_path = conn
 
     _stub_search_scored(provider, [("msg1", 0.9), ("msg2", 0.8), ("msg3", 0.7)])
-    result = provider.search_conversations("test", limit=10)
+    result = provider.search_sessions("test", limit=10)
     assert result == ["conv_A", "conv_B"]
     assert result.count("conv_A") == 1, "conv_A must appear only once"
 
 
-def test_search_conversations_empty_results_skips_db_lookup() -> None:
+def test_search_sessions_empty_results_skips_db_lookup() -> None:
     """No message hits should return early without opening a DB connection."""
     fts, vec = _make_providers()
     provider = HybridSearchProvider(fts, vec)
     _stub_search_scored(provider, [])
 
     with patch("polylogue.storage.search_providers.hybrid.open_connection") as open_conn:
-        assert provider.search_conversations("test", limit=10) == []
+        assert provider.search_sessions("test", limit=10) == []
         open_conn.assert_not_called()
 
 
-def test_search_conversations_respects_limit() -> None:
-    """search_conversations never returns more than limit conversations."""
+def test_search_sessions_respects_limit() -> None:
+    """search_sessions never returns more than limit sessions."""
     fts, vec = _make_providers()
     provider = HybridSearchProvider(fts, vec)
     conn = _messages_db({f"msg{i}": f"conv_{i}" for i in range(10)})
     fts.db_path = conn
 
     _stub_search_scored(provider, [(f"msg{i}", 1.0 - i * 0.05) for i in range(10)])
-    result = provider.search_conversations("test", limit=3)
+    result = provider.search_sessions("test", limit=3)
     assert len(result) <= 3
 
 
-def test_search_conversations_provider_filter() -> None:
-    """Provider filter excludes conversations from other providers."""
+def test_search_sessions_provider_filter() -> None:
+    """Provider filter excludes sessions from other providers."""
     fts, vec = _make_providers()
     provider = HybridSearchProvider(fts, vec)
 
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    conn.execute("CREATE TABLE messages (message_id TEXT, conversation_id TEXT)")
-    conn.execute("CREATE TABLE conversations (conversation_id TEXT, source_name TEXT)")
+    conn.execute("CREATE TABLE messages (message_id TEXT, session_id TEXT)")
+    conn.execute("CREATE TABLE sessions (session_id TEXT, source_name TEXT)")
     conn.executemany(
         "INSERT INTO messages VALUES (?, ?)",
         [
@@ -342,7 +342,7 @@ def test_search_conversations_provider_filter() -> None:
         ],
     )
     conn.executemany(
-        "INSERT INTO conversations VALUES (?, ?)",
+        "INSERT INTO sessions VALUES (?, ?)",
         [
             ("conv_chatgpt", "chatgpt"),
             ("conv_claude", "claude-ai"),
@@ -352,7 +352,7 @@ def test_search_conversations_provider_filter() -> None:
     fts.db_path = conn
 
     _stub_search_scored(provider, [("msg1", 0.9), ("msg2", 0.8)])
-    result = provider.search_conversations("test", limit=10, providers=["chatgpt"])
+    result = provider.search_sessions("test", limit=10, providers=["chatgpt"])
     assert "conv_chatgpt" in result
     assert "conv_claude" not in result
 
@@ -362,24 +362,24 @@ def test_search_conversations_provider_filter() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_search_conversations_limit_zero_returns_empty() -> None:
-    """search_conversations with limit=0 must return [], not one result."""
+def test_search_sessions_limit_zero_returns_empty() -> None:
+    """search_sessions with limit=0 must return [], not one result."""
     fts, vec = _make_providers()
     provider = HybridSearchProvider(fts, vec)
     conn = _messages_db({"msg1": "conv_A", "msg2": "conv_B"})
     fts.db_path = conn
 
     _stub_search_scored(provider, [("msg1", 0.9), ("msg2", 0.8)])
-    result = provider.search_conversations("test", limit=0)
+    result = provider.search_sessions("test", limit=0)
     assert result == [], f"limit=0 must return empty list, got {result}"
 
 
-def test_resolve_ranked_conversation_ids_short_circuits_empty_inputs() -> None:
+def test_resolve_ranked_session_ids_short_circuits_empty_inputs() -> None:
     """Internal ranked resolver should not hit SQL for empty or nonpositive inputs."""
     conn = MagicMock()
 
     assert (
-        _resolve_ranked_conversation_ids(
+        _resolve_ranked_session_ids(
             conn,
             message_results=[],
             limit=5,
@@ -388,7 +388,7 @@ def test_resolve_ranked_conversation_ids_short_circuits_empty_inputs() -> None:
         == []
     )
     assert (
-        _resolve_ranked_conversation_ids(
+        _resolve_ranked_session_ids(
             conn,
             message_results=[("msg1", 0.9)],
             limit=0,
@@ -400,11 +400,11 @@ def test_resolve_ranked_conversation_ids_short_circuits_empty_inputs() -> None:
     conn.execute.assert_not_called()
 
 
-def test_search_conversations_empty_providers_equivalent_to_none() -> None:
-    """providers=[] and providers=None are both treated as 'no filter' (all conversations).
+def test_search_sessions_empty_providers_equivalent_to_none() -> None:
+    """providers=[] and providers=None are both treated as 'no filter' (all sessions).
 
     The guard `if providers:` is falsy for both None and [], so an empty list
-    does NOT mean 'empty allowlist'. Both values include all conversations.
+    does NOT mean 'empty allowlist'. Both values include all sessions.
     This is intentional — callers have no reason to pass providers=[] expecting
     zero results.
     """
@@ -414,13 +414,13 @@ def test_search_conversations_empty_providers_equivalent_to_none() -> None:
     fts.db_path = conn
 
     _stub_search_scored(provider, [("msg1", 0.9)])
-    result_empty_list = provider.search_conversations("test", limit=10, providers=[])
-    result_none = provider.search_conversations("test", limit=10, providers=None)
+    result_empty_list = provider.search_sessions("test", limit=10, providers=[])
+    result_none = provider.search_sessions("test", limit=10, providers=None)
     # Both must behave identically — no filter applied
     assert result_empty_list == result_none == ["conv_A"]
 
 
-def test_search_conversations_orphan_message_ids_skipped() -> None:
+def test_search_sessions_orphan_message_ids_skipped() -> None:
     """Message IDs returned by search but absent from the DB are gracefully skipped."""
     fts, vec = _make_providers()
     provider = HybridSearchProvider(fts, vec)
@@ -429,7 +429,7 @@ def test_search_conversations_orphan_message_ids_skipped() -> None:
     fts.db_path = conn
 
     _stub_search_scored(provider, [("msg1", 0.9), ("msg2", 0.8), ("msg3", 0.7)])
-    result = provider.search_conversations("test", limit=10)
+    result = provider.search_sessions("test", limit=10)
     assert result == ["conv_B"], "Orphan message IDs must be silently skipped"
 
 

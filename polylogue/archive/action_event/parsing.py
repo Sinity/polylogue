@@ -90,7 +90,7 @@ def build_tool_calls_from_content_blocks(
             "block_id": block.get("block_id"),
             "block_index": block.get("block_index"),
             "message_id": block.get("message_id"),
-            "conversation_id": block.get("conversation_id"),
+            "session_id": block.get("session_id"),
             "type": block.get("type"),
             "tool_name": name,
             "tool_id": tool_id,

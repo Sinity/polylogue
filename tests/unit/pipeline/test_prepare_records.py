@@ -11,17 +11,17 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.pipeline.prepare import prepare_records
-from polylogue.pipeline.prepare_models import PersistedConversationResult
+from polylogue.pipeline.prepare_models import PersistedSessionResult
 from polylogue.pipeline.services.validation import ValidationService
 from polylogue.schemas import ValidationResult
-from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation, ParsedMessage, ParsedProviderEvent
-from polylogue.storage.repository import ConversationRepository
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedProviderEvent, ParsedSession
+from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.types import Provider
 
 
-def _prepare_fields(result: PersistedConversationResult) -> tuple[str, dict[str, int], bool]:
-    return result.conversation_id, result.counts, result.content_changed
+def _prepare_fields(result: PersistedSessionResult) -> tuple[str, dict[str, int], bool]:
+    return result.session_id, result.counts, result.content_changed
 
 
 @pytest.fixture
@@ -32,19 +32,19 @@ async def async_backend(test_db: Path) -> AsyncIterator[SQLiteBackend]:
 
 
 @pytest.fixture
-async def test_repository(async_backend: SQLiteBackend) -> ConversationRepository:
-    return ConversationRepository(backend=async_backend)
+async def test_repository(async_backend: SQLiteBackend) -> SessionRepository:
+    return SessionRepository(backend=async_backend)
 
 
-async def test_prepare_records_new_conversation(
+async def test_prepare_records_new_session(
     async_backend: SQLiteBackend,
-    test_repository: ConversationRepository,
+    test_repository: SessionRepository,
     tmp_path: Path,
 ) -> None:
-    conversation = ParsedConversation(
+    session = ParsedSession(
         source_name=Provider.UNKNOWN,
-        provider_conversation_id="new-conv-1",
-        title="New Conversation",
+        provider_session_id="new-conv-1",
+        title="New Session",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         messages=[
@@ -58,9 +58,9 @@ async def test_prepare_records_new_conversation(
         attachments=[],
     )
 
-    conversation_id, counts, changed = _prepare_fields(
+    session_id, counts, changed = _prepare_fields(
         await prepare_records(
-            conversation,
+            session,
             "test-source",
             archive_root=tmp_path / "archive",
             backend=async_backend,
@@ -68,21 +68,21 @@ async def test_prepare_records_new_conversation(
         )
     )
 
-    assert counts["conversations"] == 1
+    assert counts["sessions"] == 1
     assert counts["messages"] == 1
-    assert counts["skipped_conversations"] == 0
+    assert counts["skipped_sessions"] == 0
     assert changed is False
-    assert conversation_id == "unknown:new-conv-1"
+    assert session_id == "unknown:new-conv-1"
 
 
 async def test_prepare_records_persists_provider_events(
     async_backend: SQLiteBackend,
-    test_repository: ConversationRepository,
+    test_repository: SessionRepository,
     tmp_path: Path,
 ) -> None:
-    conversation = ParsedConversation(
+    session = ParsedSession(
         source_name=Provider.CODEX,
-        provider_conversation_id="conv-events",
+        provider_session_id="conv-events",
         title="Provider events",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
@@ -105,9 +105,9 @@ async def test_prepare_records_persists_provider_events(
         attachments=[],
     )
 
-    conversation_id, counts, _ = _prepare_fields(
+    session_id, counts, _ = _prepare_fields(
         await prepare_records(
-            conversation,
+            session,
             "test-source",
             archive_root=tmp_path / "archive",
             backend=async_backend,
@@ -123,30 +123,30 @@ async def test_prepare_records_persists_provider_events(
                 SELECT pe.event_type, tc.cwd, pe.source_message_id
                 FROM provider_events pe
                 JOIN provider_event_turn_contexts tc ON tc.event_id = pe.event_id
-                WHERE pe.conversation_id = ?
+                WHERE pe.session_id = ?
                 """,
-                (conversation_id,),
+                (session_id,),
             )
         ).fetchone()
     assert row is not None
     assert row["event_type"] == "turn_context"
     assert row["cwd"] == "/repo/polylogue"
-    assert row["source_message_id"] == f"{conversation_id}:msg-1"
-    stored = await test_repository.get(conversation_id)
+    assert row["source_message_id"] == f"{session_id}:msg-1"
+    stored = await test_repository.get(session_id)
     assert stored is not None
     assert [event.event_type for event in stored.provider_events] == ["turn_context"]
     assert stored.provider_events[0].payload == {"cwd": "/repo/polylogue"}
-    assert str(stored.provider_events[0].source_message_id) == f"{conversation_id}:msg-1"
+    assert str(stored.provider_events[0].source_message_id) == f"{session_id}:msg-1"
 
 
 async def test_prepare_records_projects_provider_events_without_raw_payload_json(
     async_backend: SQLiteBackend,
-    test_repository: ConversationRepository,
+    test_repository: SessionRepository,
     tmp_path: Path,
 ) -> None:
-    conversation = ParsedConversation(
+    session = ParsedSession(
         source_name=Provider.CODEX,
-        provider_conversation_id="conv-event-raw",
+        provider_session_id="conv-event-raw",
         title="Provider event raw",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
@@ -168,9 +168,9 @@ async def test_prepare_records_projects_provider_events_without_raw_payload_json
         ],
     )
 
-    conversation_id, counts, _ = _prepare_fields(
+    session_id, counts, _ = _prepare_fields(
         await prepare_records(
-            conversation,
+            session,
             "test-source",
             archive_root=tmp_path / "archive",
             backend=async_backend,
@@ -189,9 +189,9 @@ async def test_prepare_records_projects_provider_events_without_raw_payload_json
                 SELECT tc.call_id, tc.output_chars, tc.has_output_body
                 FROM provider_events pe
                 JOIN provider_event_tool_calls tc ON tc.event_id = pe.event_id
-                WHERE pe.conversation_id = ?
+                WHERE pe.session_id = ?
                 """,
-                (conversation_id,),
+                (session_id,),
             )
         ).fetchone()
 
@@ -201,7 +201,7 @@ async def test_prepare_records_projects_provider_events_without_raw_payload_json
     assert detail["output_chars"] == 100_000
     assert detail["has_output_body"] == 1
 
-    stored = await test_repository.get(conversation_id)
+    stored = await test_repository.get(session_id)
     assert stored is not None
     assert stored.provider_events[0].payload == {
         "call_id": "call-1",
@@ -211,15 +211,15 @@ async def test_prepare_records_projects_provider_events_without_raw_payload_json
     }
 
 
-async def test_prepare_records_unchanged_conversation_skips(
+async def test_prepare_records_unchanged_session_skips(
     async_backend: SQLiteBackend,
-    test_repository: ConversationRepository,
+    test_repository: SessionRepository,
     tmp_path: Path,
 ) -> None:
-    conversation = ParsedConversation(
+    session = ParsedSession(
         source_name=Provider.UNKNOWN,
-        provider_conversation_id="conv-1",
-        title="Test Conversation",
+        provider_session_id="conv-1",
+        title="Test Session",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         messages=[
@@ -238,7 +238,7 @@ async def test_prepare_records_unchanged_conversation_skips(
 
     first_id, first_counts, _ = _prepare_fields(
         await prepare_records(
-            conversation,
+            session,
             "test-source",
             archive_root=archive_root,
             backend=async_backend,
@@ -247,7 +247,7 @@ async def test_prepare_records_unchanged_conversation_skips(
     )
     second_id, second_counts, changed = _prepare_fields(
         await prepare_records(
-            conversation,
+            session,
             "test-source",
             archive_root=archive_root,
             backend=async_backend,
@@ -255,24 +255,24 @@ async def test_prepare_records_unchanged_conversation_skips(
         )
     )
 
-    assert first_counts["conversations"] == 1
+    assert first_counts["sessions"] == 1
     assert second_id == first_id
     # Idempotent re-ingest: archive content unchanged, but row_graph_hash
     # may differ for cosmetic substrate fields (#943 cost columns), so the
     # write-counter can be 0 (skipped) or 1 (rewrote same row).
-    assert second_counts["conversations"] in (0, 1)
+    assert second_counts["sessions"] in (0, 1)
     assert changed is False
 
 
 async def test_prepare_records_detects_changed_content(
     async_backend: SQLiteBackend,
-    test_repository: ConversationRepository,
+    test_repository: SessionRepository,
     tmp_path: Path,
 ) -> None:
-    original = ParsedConversation(
+    original = ParsedSession(
         source_name=Provider.UNKNOWN,
-        provider_conversation_id="conv-1",
-        title="Test Conversation",
+        provider_session_id="conv-1",
+        title="Test Session",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         messages=[
@@ -285,10 +285,10 @@ async def test_prepare_records_detects_changed_content(
         ],
         attachments=[],
     )
-    modified = ParsedConversation(
+    modified = ParsedSession(
         source_name=Provider.UNKNOWN,
-        provider_conversation_id="conv-1",
-        title="Test Conversation",
+        provider_session_id="conv-1",
+        title="Test Session",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         messages=[
@@ -330,12 +330,12 @@ async def test_prepare_records_detects_changed_content(
 
 async def test_prepare_records_creates_message_records(
     async_backend: SQLiteBackend,
-    test_repository: ConversationRepository,
+    test_repository: SessionRepository,
     tmp_path: Path,
 ) -> None:
-    conversation = ParsedConversation(
+    session = ParsedSession(
         source_name=Provider.UNKNOWN,
-        provider_conversation_id="conv-1",
+        provider_session_id="conv-1",
         title="Test",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
@@ -351,9 +351,9 @@ async def test_prepare_records_creates_message_records(
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    conversation_id, counts, _ = _prepare_fields(
+    session_id, counts, _ = _prepare_fields(
         await prepare_records(
-            conversation,
+            session,
             "test-source",
             archive_root=archive_root,
             backend=async_backend,
@@ -361,14 +361,12 @@ async def test_prepare_records_creates_message_records(
         )
     )
 
-    assert counts["conversations"] == 1
+    assert counts["sessions"] == 1
     assert counts["messages"] == 2
     async with async_backend.connection() as conn:
         rows = list(
             await (
-                await conn.execute(
-                    "SELECT message_id, role FROM messages WHERE conversation_id = ?", (conversation_id,)
-                )
+                await conn.execute("SELECT message_id, role FROM messages WHERE session_id = ?", (session_id,))
             ).fetchall()
         )
     assert len(rows) == 2
@@ -376,12 +374,12 @@ async def test_prepare_records_creates_message_records(
 
 async def test_prepare_records_handles_empty_provider_message_ids(
     async_backend: SQLiteBackend,
-    test_repository: ConversationRepository,
+    test_repository: SessionRepository,
     tmp_path: Path,
 ) -> None:
-    conversation = ParsedConversation(
+    session = ParsedSession(
         source_name=Provider.UNKNOWN,
-        provider_conversation_id="conv-1",
+        provider_session_id="conv-1",
         title="Test",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
@@ -397,9 +395,9 @@ async def test_prepare_records_handles_empty_provider_message_ids(
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    conversation_id, counts, _ = _prepare_fields(
+    session_id, counts, _ = _prepare_fields(
         await prepare_records(
-            conversation,
+            session,
             "test-source",
             archive_root=archive_root,
             backend=async_backend,
@@ -411,8 +409,8 @@ async def test_prepare_records_handles_empty_provider_message_ids(
     async with async_backend.connection() as conn:
         rows = await (
             await conn.execute(
-                "SELECT provider_message_id FROM messages WHERE conversation_id = ? ORDER BY rowid",
-                (conversation_id,),
+                "SELECT provider_message_id FROM messages WHERE session_id = ? ORDER BY rowid",
+                (session_id,),
             )
         ).fetchall()
     provider_ids = [row["provider_message_id"] for row in rows]
@@ -422,13 +420,13 @@ async def test_prepare_records_handles_empty_provider_message_ids(
 
 async def test_prepare_records_stores_source_metadata(
     async_backend: SQLiteBackend,
-    test_repository: ConversationRepository,
+    test_repository: SessionRepository,
     tmp_path: Path,
 ) -> None:
 
-    conversation = ParsedConversation(
+    session = ParsedSession(
         source_name=Provider.CHATGPT,
-        provider_conversation_id="ext-1",
+        provider_session_id="ext-1",
         title="Test",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
@@ -439,9 +437,9 @@ async def test_prepare_records_stores_source_metadata(
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    conversation_id, _, _ = _prepare_fields(
+    session_id, _, _ = _prepare_fields(
         await prepare_records(
-            conversation,
+            session,
             "my-export",
             archive_root=archive_root,
             backend=async_backend,
@@ -452,8 +450,8 @@ async def test_prepare_records_stores_source_metadata(
     async with async_backend.connection() as conn:
         row = await (
             await conn.execute(
-                "SELECT provider_meta FROM conversations WHERE conversation_id = ?",
-                (conversation_id,),
+                "SELECT provider_meta FROM sessions WHERE session_id = ?",
+                (session_id,),
             )
         ).fetchone()
     assert row is not None
@@ -463,12 +461,12 @@ async def test_prepare_records_stores_source_metadata(
 
 async def test_prepare_records_backfills_structured_blocks_from_provider_meta(
     async_backend: SQLiteBackend,
-    test_repository: ConversationRepository,
+    test_repository: SessionRepository,
     tmp_path: Path,
 ) -> None:
-    conversation = ParsedConversation(
+    session = ParsedSession(
         source_name=Provider.GEMINI,
-        provider_conversation_id="gemini-structured-1",
+        provider_session_id="gemini-structured-1",
         title="Structured Gemini",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
@@ -503,9 +501,9 @@ async def test_prepare_records_backfills_structured_blocks_from_provider_meta(
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    conversation_id, counts, _ = _prepare_fields(
+    session_id, counts, _ = _prepare_fields(
         await prepare_records(
-            conversation,
+            session,
             "drive-export",
             archive_root=archive_root,
             backend=async_backend,
@@ -521,16 +519,16 @@ async def test_prepare_records_backfills_structured_blocks_from_provider_meta(
                 SELECT m.provider_message_id, cb.type, cb.text
                 FROM content_blocks cb
                 JOIN messages m ON m.message_id = cb.message_id
-                WHERE cb.conversation_id = ?
+                WHERE cb.session_id = ?
                 ORDER BY m.provider_message_id, cb.block_index
                 """,
-                (conversation_id,),
+                (session_id,),
             )
         ).fetchall()
         message_rows = await (
             await conn.execute(
-                "SELECT provider_message_id, text, has_thinking FROM messages WHERE conversation_id = ? ORDER BY provider_message_id",
-                (conversation_id,),
+                "SELECT provider_message_id, text, has_thinking FROM messages WHERE session_id = ? ORDER BY provider_message_id",
+                (session_id,),
             )
         ).fetchall()
 
@@ -548,12 +546,12 @@ async def test_prepare_records_backfills_structured_blocks_from_provider_meta(
 
 async def test_prepare_records_multiple_messages_get_unique_hashes(
     async_backend: SQLiteBackend,
-    test_repository: ConversationRepository,
+    test_repository: SessionRepository,
     tmp_path: Path,
 ) -> None:
-    conversation = ParsedConversation(
+    session = ParsedSession(
         source_name=Provider.UNKNOWN,
-        provider_conversation_id="conv-1",
+        provider_session_id="conv-1",
         title="Test",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
@@ -569,9 +567,9 @@ async def test_prepare_records_multiple_messages_get_unique_hashes(
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    conversation_id, _, _ = _prepare_fields(
+    session_id, _, _ = _prepare_fields(
         await prepare_records(
-            conversation,
+            session,
             "test-source",
             archive_root=archive_root,
             backend=async_backend,
@@ -583,8 +581,8 @@ async def test_prepare_records_multiple_messages_get_unique_hashes(
         rows = list(
             await (
                 await conn.execute(
-                    "SELECT content_hash FROM messages WHERE conversation_id = ? ORDER BY provider_message_id",
-                    (conversation_id,),
+                    "SELECT content_hash FROM messages WHERE session_id = ? ORDER BY provider_message_id",
+                    (session_id,),
                 )
             ).fetchall()
         )
@@ -594,12 +592,12 @@ async def test_prepare_records_multiple_messages_get_unique_hashes(
 
 async def test_prepare_records_with_attachments(
     async_backend: SQLiteBackend,
-    test_repository: ConversationRepository,
+    test_repository: SessionRepository,
     tmp_path: Path,
 ) -> None:
-    conversation = ParsedConversation(
+    session = ParsedSession(
         source_name=Provider.UNKNOWN,
-        provider_conversation_id="conv-1",
+        provider_session_id="conv-1",
         title="Test",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
@@ -622,9 +620,9 @@ async def test_prepare_records_with_attachments(
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    conversation_id, counts, _ = _prepare_fields(
+    session_id, counts, _ = _prepare_fields(
         await prepare_records(
-            conversation,
+            session,
             "test-source",
             archive_root=archive_root,
             backend=async_backend,
@@ -639,8 +637,8 @@ async def test_prepare_records_with_attachments(
                 await conn.execute(
                     "SELECT ar.*, a.mime_type FROM attachment_refs ar "
                     "JOIN attachments a ON ar.attachment_id = a.attachment_id "
-                    "WHERE ar.conversation_id = ?",
-                    (conversation_id,),
+                    "WHERE ar.session_id = ?",
+                    (session_id,),
                 )
             ).fetchall()
         )
@@ -650,7 +648,7 @@ async def test_prepare_records_with_attachments(
 
 async def test_prepare_records_rolls_back_attachment_move_on_save_failure(
     async_backend: SQLiteBackend,
-    test_repository: ConversationRepository,
+    test_repository: SessionRepository,
     tmp_path: Path,
 ) -> None:
     uploads = tmp_path / "uploads"
@@ -658,9 +656,9 @@ async def test_prepare_records_rolls_back_attachment_move_on_save_failure(
     source_file = uploads / "document.pdf"
     source_file.write_bytes(b"pdf bytes")
 
-    conversation = ParsedConversation(
+    session = ParsedSession(
         source_name=Provider.UNKNOWN,
-        provider_conversation_id="conv-rollback",
+        provider_session_id="conv-rollback",
         title="Rollback",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
@@ -687,7 +685,7 @@ async def test_prepare_records_rolls_back_attachment_move_on_save_failure(
     with patch("polylogue.pipeline.prepare.save_bundle", new=AsyncMock(side_effect=RuntimeError("save failed"))):
         with pytest.raises(RuntimeError, match="save failed"):
             await prepare_records(
-                conversation,
+                session,
                 "test-source",
                 archive_root=archive_root,
                 backend=async_backend,
@@ -700,12 +698,12 @@ async def test_prepare_records_rolls_back_attachment_move_on_save_failure(
 
 async def test_prepare_records_returns_typed_result(
     async_backend: SQLiteBackend,
-    test_repository: ConversationRepository,
+    test_repository: SessionRepository,
     tmp_path: Path,
 ) -> None:
-    conversation = ParsedConversation(
+    session = ParsedSession(
         source_name=Provider.UNKNOWN,
-        provider_conversation_id="conv-1",
+        provider_session_id="conv-1",
         title="Test",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
@@ -714,21 +712,21 @@ async def test_prepare_records_returns_typed_result(
     )
 
     result = await prepare_records(
-        conversation,
+        session,
         "test-source",
         archive_root=tmp_path / "archive",
         backend=async_backend,
         repository=test_repository,
     )
 
-    assert isinstance(result.conversation_id, str)
+    assert isinstance(result.session_id, str)
     assert isinstance(result.counts, dict)
     assert isinstance(result.content_changed, bool)
     required_keys = {
-        "conversations",
+        "sessions",
         "messages",
         "attachments",
-        "skipped_conversations",
+        "skipped_sessions",
         "skipped_messages",
         "skipped_attachments",
     }
@@ -770,7 +768,7 @@ class TestValidationService:
         )
         service = ValidationService(backend=MagicMock())
         service.repository = MagicMock()
-        service.repository.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
+        service.repository.get_raw_sessions_batch = AsyncMock(return_value=[raw_record])
         service.repository.mark_raw_validated = AsyncMock()
         service.repository.mark_raw_parsed = AsyncMock()
 
@@ -816,7 +814,7 @@ class TestValidationService:
         )
         service = ValidationService(backend=MagicMock())
         service.repository = MagicMock()
-        service.repository.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
+        service.repository.get_raw_sessions_batch = AsyncMock(return_value=[raw_record])
         service.repository.mark_raw_validated = AsyncMock()
         service.repository.mark_raw_parsed = AsyncMock()
 
@@ -870,7 +868,7 @@ class TestValidationService:
         ]
         service = ValidationService(backend=MagicMock())
         service.repository = MagicMock()
-        service.repository.get_raw_conversations_batch = AsyncMock(return_value=raw_artifacts)
+        service.repository.get_raw_sessions_batch = AsyncMock(return_value=raw_artifacts)
         service.repository.mark_raw_validated = AsyncMock()
         callback = MagicMock()
 
@@ -906,13 +904,13 @@ class TestValidationService:
             raw_id=raw_id,
             raw_content=raw_content,  # Keep for backwards compatibility in mocks
             source_name="inbox-source",
-            source_path="/tmp/conversations.json",
+            source_path="/tmp/sessions.json",
             payload_provider=None,
             blob_size=blob_size,
         )
         service = ValidationService(backend=MagicMock())
         service.repository = MagicMock()
-        service.repository.get_raw_conversations_batch = AsyncMock(return_value=[raw_record])
+        service.repository.get_raw_sessions_batch = AsyncMock(return_value=[raw_record])
         service.repository.mark_raw_validated = AsyncMock()
         service.repository.mark_raw_parsed = AsyncMock()
 

@@ -1,0 +1,46 @@
+Usage: polylogue maintenance run [OPTIONS]
+
+  Run (or dry-run) maintenance backfill operations.
+
+  Executes targeted rebuilds using existing repair infrastructure. Per-target
+  failures are isolated: one failing target does not abort the remaining work.
+  Use --operation-id together with --resume to pick up an interrupted
+  operation from its last checkpoint.
+
+Options:
+  --target [session_insights|action_event_read_model|dangling_fts|message_type_backfill|message_embeddings|wal_checkpoint|orphaned_messages|orphaned_content_blocks|empty_sessions|orphaned_attachments|orphaned_blobs|superseded_raw_snapshots]
+                                  Limit maintenance to named targets such as
+                                  session_insights, action_event_read_model,
+                                  dangling_fts, message_type_backfill,
+                                  message_embeddings, wal_checkpoint,
+                                  orphaned_messages, orphaned_content_blocks,
+                                  empty_sessions, orphaned_attachments,
+                                  orphaned_blobs, or superseded_raw_snapshots
+  --dry-run                       Preview what would happen without executing
+  --operation-id TEXT             Reuse a previous operation id to resume an
+                                  interrupted run; omit to mint a fresh uuid
+                                  for a new operation.
+  --resume TEXT                   Explicit resume cursor (e.g. 'target:2').
+                                  When omitted and --operation-id matches a
+                                  persisted state file, the cursor is loaded
+                                  automatically.
+  --output-format [plain|json]    Output format. ``json`` emits the shared
+                                  MaintenanceOperationEnvelope.  [default:
+                                  plain]
+  --session-id TEXT               Restrict scope to one or more session ids
+                                  (repeatable).
+  -p, --provider TEXT             Restrict scope to one provider name.
+  --source-family TEXT            Restrict scope to one source family (e.g.
+                                  claude-code-session).
+  --source-root TEXT              Restrict scope to one source runtime root
+                                  (e.g. ~/.claude/projects).
+  --raw-artifact TEXT             Restrict scope to one raw artifact id.
+  --since TEXT                    Inclusive ISO-8601 lower bound of the time
+                                  range.
+  --until TEXT                    Inclusive ISO-8601 upper bound of the time
+                                  range.
+  --failure-kind TEXT             Restrict scope to attempts that failed with
+                                  one kind.
+  --parser-version TEXT           Restrict scope to one parser/materializer
+                                  version.
+  -h, --help                      Show this message and exit.

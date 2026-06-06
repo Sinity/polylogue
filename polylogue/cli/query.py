@@ -1,132 +1,34 @@
-"""Query execution entrypoint, routing, planning, and shared helpers for the query-first CLI."""
+"""Query execution entrypoint for the query-first CLI (only)."""
 
 from __future__ import annotations
 
-import inspect
-from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar, overload
+from typing import TYPE_CHECKING
 
 import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.archive.query.spec import QuerySpecError
-from polylogue.cli.query_contracts import (
-    QueryAction,
-    QueryExecutionPlan,
-    QueryMutationSpec,
-    QueryOutputSpec,
-    QueryParams,
-    QueryPlanError,
-    QueryRoute,
-    build_query_execution_plan,
-    coerce_query_spec,
-    describe_query_filters,
-    resolve_query_route,
-    result_date,
-    result_id,
-    result_provider,
-    result_title,
-)
-from polylogue.cli.query_feedback import emit_no_results
+from polylogue.cli.query_contracts import QueryExecutionPlan, QueryParams
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
-from polylogue.core.json import JSONDocument
 from polylogue.logging import get_logger
-from polylogue.surfaces.payloads import ConversationListRowPayload, SearchCursor
 
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
-    from polylogue.archive.filter.filters import ConversationFilter
-    from polylogue.archive.models import Conversation, ConversationSummary
-    from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
-    from polylogue.archive.query.search_hits import ConversationSearchHit
-    from polylogue.archive.query.spec import ConversationQuerySpec
+    from polylogue.archive.models import Session
     from polylogue.config import Config
-    from polylogue.protocols import (
-        ConversationArchiveStatsStore,
-        ConversationQueryRuntimeStore,
-        TagStore,
-        VectorProvider,
-    )
-    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-
-    class QueryExecutionStore(ConversationArchiveStatsStore, ConversationQueryRuntimeStore, TagStore, Protocol):
-        """Repository surface needed by query execution and grouped stats helpers."""
-
-        @property
-        def backend(self) -> SQLiteBackend: ...
-
-
-_T = TypeVar("_T")
-
-
-class ShowStatsCallback(Protocol):
-    def __call__(self, env: AppEnv, *, verbose: bool = False) -> None: ...
-
-
-@overload
-async def _resolve_maybe_awaitable(value: Awaitable[_T]) -> _T: ...
-
-
-@overload
-async def _resolve_maybe_awaitable(value: _T) -> _T: ...
-
-
-async def _resolve_maybe_awaitable(value: Awaitable[_T] | _T) -> _T:
-    if inspect.isawaitable(value):
-        return await value
-    return value
-
-
-def no_results(
-    env: AppEnv,
-    params: QueryParams,
-    *,
-    diagnostics: QueryMissDiagnostics | None = None,
-    exit_code: int | None = 2,
-) -> None:
-    """Emit the canonical query no-results message."""
-    emit_no_results(
-        env,
-        selection=coerce_query_spec(params),
-        diagnostics=diagnostics,
-        output_format=str(params.get("output_format") or "text"),
-        exit_code=exit_code,
-    )
-
-
-def summary_to_dict(summary: ConversationSummary, message_count: int) -> JSONDocument:
-    return ConversationListRowPayload.from_summary(
-        summary,
-        message_count=message_count,
-    ).selected()
-
-
-# ---------------------------------------------------------------------------
-# Query frontdoor
-# ---------------------------------------------------------------------------
-#
-# The query-first arg splitter lives in the lightweight ``query_group`` module
-# (``_split_query_mode_args`` and helpers) so ``parse_args`` can route without
-# importing this heavy module. A drifted duplicate previously lived here; it
-# was dead (only referenced among its own helpers) and has been removed (#1749).
+    from polylogue.protocols import VectorProvider
 
 
 def handle_query_mode(
     ctx: click.Context,
     *,
-    show_stats: ShowStatsCallback,
+    show_stats: object | None = None,
 ) -> None:
-    """Handle query mode: display stats or perform search."""
+    """Handle query mode: run the archive query executor."""
     env: AppEnv = ctx.obj
     request = RootModeRequest.from_context(ctx)
-
-    if request.should_show_stats():
-        show_stats(env, verbose=request.verbose)
-        return
-
     execute_query_request(env, request)
 
 
@@ -136,11 +38,11 @@ def handle_query_mode(
 from polylogue.cli.query_group import QueryFirstGroupBase  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Query execution (original query.py)
+# Query execution
 # ---------------------------------------------------------------------------
 
 
-def project_query_results(results: list[Conversation], plan: QueryExecutionPlan) -> list[Conversation]:
+def project_query_results(results: list[Session], plan: QueryExecutionPlan) -> list[Session]:
     """Apply post-selection transforms consistently before final output."""
     from polylogue.cli import query_actions as _query_actions
 
@@ -149,20 +51,10 @@ def project_query_results(results: list[Conversation], plan: QueryExecutionPlan)
         projected = _query_actions.apply_transform(projected, plan.output.transform)
     message_roles = plan.output.effective_message_roles()
     if message_roles:
-        projected = [conversation.with_roles(message_roles) for conversation in projected]
+        projected = [session.with_roles(message_roles) for session in projected]
     if plan.output.filters_content():
-        projected = [conversation.with_content_projection(plan.output.content_projection) for conversation in projected]
+        projected = [session.with_content_projection(plan.output.content_projection) for session in projected]
     return projected
-
-
-def execute_query(env: AppEnv, params: QueryParams) -> None:
-    """Execute a query-mode command."""
-    execute_query_request(env, RootModeRequest.from_params(params))
-
-
-def execute_query_request(env: AppEnv, request: RootModeRequest) -> None:
-    """Execute a typed root-mode request."""
-    run_coroutine_sync(async_execute_query_request(env, request))
 
 
 def _create_query_vector_provider(config: Config, *, db_path: Path | None = None) -> VectorProvider | None:
@@ -178,143 +70,14 @@ def _create_query_vector_provider(config: Config, *, db_path: Path | None = None
         return None
 
 
-def _stats_dimension(plan: QueryExecutionPlan) -> str:
-    return plan.stats_dimension or "all"
+def execute_query_request(env: AppEnv, request: RootModeRequest) -> None:
+    """Execute a typed root-mode request (path)."""
+    run_coroutine_sync(async_execute_query_request(env, request))
 
 
-async def _envelope_total(repo: QueryExecutionStore, plan: QueryExecutionPlan) -> int | None:
-    """Compute the matching-conversation count for the JSON search envelope.
-
-    The CLI search-hit JSON envelope reports ``total`` like every other read
-    surface (#1749). The count is only computed for ``--format json`` so the
-    rich/text output paths do not pay an extra count query.
-    """
-    if plan.output.output_format != "json":
-        return None
-    return await plan.selection.count(repo)
-
-
-def _archive_embedding_retrieval_ready(archive_stats: object) -> bool:
-    retrieval_ready = getattr(archive_stats, "retrieval_ready", None)
-    if isinstance(retrieval_ready, bool):
-        return retrieval_ready
-    embedded_messages = int(getattr(archive_stats, "embedded_messages", 0) or 0)
-    stale_messages = int(getattr(archive_stats, "stale_embedding_messages", 0) or 0)
-    return max(embedded_messages - stale_messages, 0) > 0
-
-
-def _archive_embedding_readiness_status(archive_stats: object) -> str:
-    status = getattr(archive_stats, "embedding_readiness_status", None)
-    if isinstance(status, str) and status:
-        return status
-    return "ready" if _archive_embedding_retrieval_ready(archive_stats) else "none"
-
-
-async def _diagnose_query_miss(
-    repo: QueryExecutionStore,
-    selection: ConversationQuerySpec,
-    *,
-    config: Config,
-) -> QueryMissDiagnostics:
-    from polylogue.archive.query.miss_diagnostics import diagnose_query_miss
-
-    return await diagnose_query_miss(repo, selection, config=config)
-
-
-async def _observe_query_operation(
-    repo: QueryExecutionStore,
-    plan: QueryExecutionPlan,
-    route: QueryRoute,
-    operation: Awaitable[_T],
-) -> _T:
-    from polylogue.cli.query_progress import (
-        build_query_slow_notice,
-        observe_slow_query,
-        should_emit_slow_query_notes,
-    )
-
-    return await observe_slow_query(
-        operation,
-        enabled=should_emit_slow_query_notes(plan.output),
-        notice_factory=lambda: build_query_slow_notice(repo, plan.selection, route=route.value),
-    )
-
-
-def _decode_cursor_or_none(token: str | None) -> SearchCursor | None:
-    """Decode a CLI ``--cursor`` token, or return ``None`` when absent.
-
-    Returns the decoded :class:`SearchCursor` so :func:`format_search_envelope`
-    can trim hits up to the anchor before emitting the JSON envelope. Errors
-    are surfaced by :func:`_search_hits_for_execution_plan`; this helper
-    intentionally swallows them here so JSON formatting never raises after
-    the fetch has succeeded.
-    """
-    if not token:
-        return None
-    try:
-        from polylogue.surfaces.payloads import decode_search_cursor
-
-        return decode_search_cursor(token)
-    except Exception:
-        return None
-
-
-async def _search_hits_for_execution_plan(
-    repo: QueryExecutionStore,
-    plan: QueryExecutionPlan,
-    *,
-    vector_provider: VectorProvider | None,
-) -> list[ConversationSearchHit] | None:
-    from dataclasses import replace
-
-    from polylogue.archive.query.search_hits import plan_has_search_hit_evidence, search_hits_for_plan
-    from polylogue.surfaces.payloads import InvalidSearchCursorError, decode_search_cursor
-
-    selection = plan.selection
-    decoded_cursor = None
-    if selection.cursor:
-        try:
-            decoded_cursor = decode_search_cursor(selection.cursor)
-        except InvalidSearchCursorError as exc:
-            import click as _click
-
-            raise _click.UsageError(f"invalid --cursor: {exc}") from exc
-    if decoded_cursor is not None:
-        # Push the underlying fetch past the anchor and over-fetch one
-        # extra page so the post-fetch keyset trim cannot starve the
-        # response. The envelope builder drops anything sorting at or
-        # before the cursor anchor and then truncates to the requested
-        # limit (#1268).
-        effective_limit = (selection.limit or 50) * 2
-        selection = replace(selection, offset=decoded_cursor.r, limit=effective_limit)
-    query_plan = selection.to_plan(vector_provider=vector_provider)
-    if not plan_has_search_hit_evidence(query_plan):
-        return None
-    return await search_hits_for_plan(query_plan, repo)
-
-
-async def _semantic_stats_summaries(
-    repo: QueryExecutionStore,
-    filter_chain: ConversationFilter,
-) -> list[ConversationSummary] | None:
-    if filter_chain.can_use_summaries():
-        return await filter_chain.list_summaries()
-
-    query_plan = filter_chain.build_query_plan()
-    if await _resolve_maybe_awaitable(query_plan.can_use_action_event_stats_with(repo)) is not True:
-        return None
-    return await repo.list_summaries_by_query(query_plan.record_query.with_limit(query_plan.limit))
-
-
-async def _profile_stats_summaries(
-    repo: QueryExecutionStore,
-    filter_chain: ConversationFilter,
-) -> list[ConversationSummary]:
-    if filter_chain.can_use_summaries():
-        return await filter_chain.list_summaries()
-
-    query_plan = filter_chain.build_query_plan()
-    return await repo.list_summaries_by_query(query_plan.record_query.with_limit(query_plan.limit))
+def execute_query(env: AppEnv, params: QueryParams) -> None:
+    """Execute a query-mode command from raw params."""
+    execute_query_request(env, RootModeRequest.from_params(params))
 
 
 async def async_execute_query(env: AppEnv, params: QueryParams) -> None:
@@ -322,455 +85,19 @@ async def async_execute_query(env: AppEnv, params: QueryParams) -> None:
     await async_execute_query_request(env, RootModeRequest.from_params(params))
 
 
-async def _maybe_elevate_to_hybrid(
-    plan: QueryExecutionPlan,
-    *,
-    vector_provider: VectorProvider | None,
-    repo: QueryExecutionStore,
-) -> QueryExecutionPlan:
-    """Promote ``retrieval_lane='auto'`` to ``'hybrid'`` when the archive has
-    embeddings and a vector provider is wired.
-
-    This makes hybrid the default search experience once the embedding
-    pipeline is activated and populated (#1217). Pure-FTS lookups stay on
-    the fast dialogue path: hybrid only kicks in when an FTS query is
-    actually present. The ``--lexical`` flag (``retrieval_lane=dialogue``)
-    forces FTS-only and is never overridden.
-    """
-    from dataclasses import replace
-
-    selection = plan.selection
-    if selection.retrieval_lane != "auto":
-        return plan
-    # Only promote when there's an FTS query to fuse against vectors.
-    if not (selection.query_terms or selection.contains_terms):
-        return plan
-    if vector_provider is None:
-        return plan
-    archive_stats = await repo.get_archive_stats()
-    if not _archive_embedding_retrieval_ready(archive_stats):
-        return plan
-    return replace(plan, selection=replace(selection, retrieval_lane="hybrid"))
-
-
-async def _execute_query_plan(
-    env: AppEnv,
-    params: QueryParams,
-    *,
-    config: Config,
-    repo: QueryExecutionStore,
-    plan: QueryExecutionPlan,
-) -> None:
-    vector_provider: VectorProvider | None = None
-    if plan.selection.similar_text:
-        archive_stats = await repo.get_archive_stats()
-        if not _archive_embedding_retrieval_ready(archive_stats):
-            status = _archive_embedding_readiness_status(archive_stats)
-            click.echo(
-                "Error: --similar/--semantic requires retrieval-ready embeddings "
-                f"(current status: {status}). Run `polylogue embed status`, then "
-                "`polylogue embed backfill` or let polylogued converge after enabling embeddings.",
-                err=True,
-            )
-            raise SystemExit(1)
-        vector_provider = _create_query_vector_provider(config, db_path=repo.backend.db_path)
-        if vector_provider is None:
-            click.echo(
-                "Error: --similar/--semantic requires vector search support, but vector provider initialization failed or embeddings are disabled. Run `polylogue embed status`, then `polylogue embed enable` if needed.",
-                err=True,
-            )
-            raise SystemExit(1)
-    else:
-        vector_provider = _create_query_vector_provider(config, db_path=repo.backend.db_path)
-        plan = await _maybe_elevate_to_hybrid(plan, vector_provider=vector_provider, repo=repo)
-
-    try:
-        filter_chain = plan.selection.build_filter(
-            repo,
-            vector_provider=vector_provider,
-        )
-    except QuerySpecError as exc:
-        if exc.field in {"since", "until"}:
-            click.echo(f"Error: Cannot parse date: '{exc.value}'", err=True)
-            click.echo(
-                "Hint: use ISO format (2025-01-15), relative ('yesterday', 'last week'), or month (2025-01)",
-                err=True,
-            )
-        else:
-            click.echo(f"Error: invalid {exc.field}: '{exc.value}'", err=True)
-        raise SystemExit(1) from exc
-
-    route = resolve_query_route(plan, can_use_summaries=filter_chain.can_use_summaries())
-
-    handler = _route_handlers.get(route)
-    if handler is not None:
-        await handler(env, params, config=config, repo=repo, plan=plan, filter_chain=filter_chain)
-        return
-
-    # Default: full conversation list + output
-    await _handle_default(env, params, config=config, repo=repo, plan=plan, filter_chain=filter_chain)
-
-
-# ---------------------------------------------------------------------------
-# Route handlers (extracted from _execute_query_plan, each independently testable)
-# ---------------------------------------------------------------------------
-
-_RouteHandler = Callable[..., Awaitable[None]]
-
-
-async def _handle_count(
-    env: AppEnv,
-    params: QueryParams,
-    *,
-    config: Config,
-    repo: QueryExecutionStore,
-    plan: QueryExecutionPlan,
-    filter_chain: Any,
-) -> None:
-    click.echo(await _observe_query_operation(repo, plan, QueryRoute.COUNT, filter_chain.count()))
-
-
-async def _handle_summary_list(
-    env: AppEnv,
-    params: QueryParams,
-    *,
-    config: Config,
-    repo: QueryExecutionStore,
-    plan: QueryExecutionPlan,
-    filter_chain: Any,
-) -> None:
-    from polylogue.cli import query_output as _query_output
-
-    vector_provider = _create_query_vector_provider(config, db_path=repo.backend.db_path)
-    search_hits = await _observe_query_operation(
-        repo,
-        plan,
-        QueryRoute.SUMMARY_LIST,
-        _search_hits_for_execution_plan(repo, plan, vector_provider=vector_provider),
-    )
-    if search_hits is not None:
-        if not search_hits:
-            summary_diagnostics = await _diagnose_query_miss(repo, plan.selection, config=config)
-            no_results(env, params, diagnostics=summary_diagnostics)
-        await _query_output.output_search_hits(
-            env,
-            search_hits,
-            plan.output,
-            repo,
-            total=await _envelope_total(repo, plan),
-            cursor=_decode_cursor_or_none(plan.selection.cursor),
-        )
-        return
-
-    summary_results = await _observe_query_operation(repo, plan, QueryRoute.SUMMARY_LIST, filter_chain.list_summaries())
-    if not summary_results:
-        summary_diagnostics = await _diagnose_query_miss(repo, plan.selection, config=config)
-        no_results(env, params, diagnostics=summary_diagnostics)
-    await _query_output._output_summary_list(env, summary_results, plan.output, repo)
-
-
-async def _handle_stream(
-    env: AppEnv,
-    params: QueryParams,
-    *,
-    config: Config,
-    repo: QueryExecutionStore,
-    plan: QueryExecutionPlan,
-    filter_chain: Any,
-) -> None:
-    from polylogue.cli import query_actions as _query_actions
-    from polylogue.cli import query_output as _query_output
-
-    full_id = await _query_actions.resolve_stream_target(repo, filter_chain, plan.selection)
-    if plan.output.transform is not None:
-        click.echo("Warning: --transform is ignored in --stream mode (messages are streamed individually).", err=True)
-    if any(target.kind != "stdout" for target in plan.output.destinations):
-        click.echo(
-            f"Warning: --output {','.join(plan.output.destination_labels())} is ignored in --stream mode (output goes to stdout).",
-            err=True,
-        )
-    message_limit_param = params.get("limit")
-    message_limit = message_limit_param if isinstance(message_limit_param, int) else None
-    await _query_output.stream_conversation(
-        env,
-        repo,
-        full_id,
-        output_format=plan.output.stream_format(),
-        dialogue_only=plan.output.dialogue_only,
-        message_roles=plan.output.effective_message_roles(),
-        content_projection=plan.output.content_projection if plan.output.filters_content() else None,
-        message_limit=message_limit,
-    )
-
-
-async def _handle_stats_sql(
-    env: AppEnv,
-    params: QueryParams,
-    *,
-    config: Config,
-    repo: QueryExecutionStore,
-    plan: QueryExecutionPlan,
-    filter_chain: Any,
-) -> None:
-    from polylogue.cli import query_output as _query_output
-
-    await _observe_query_operation(
-        repo,
-        plan,
-        QueryRoute.STATS_SQL,
-        _query_output.output_stats_sql(
-            env,
-            filter_chain,
-            repo,
-            selection=plan.selection,
-            output_format=plan.output.output_format,
-        ),
-    )
-
-
-async def _handle_summary_stats(
-    env: AppEnv,
-    params: QueryParams,
-    *,
-    config: Config,
-    repo: QueryExecutionStore,
-    plan: QueryExecutionPlan,
-    filter_chain: Any,
-) -> None:
-    from polylogue.cli import query_output as _query_output
-
-    summaries = await _observe_query_operation(repo, plan, QueryRoute.SUMMARY_STATS, filter_chain.list_summaries())
-    msg_counts = await repo.get_message_counts_batch([str(summary.id) for summary in summaries])
-    _query_output.output_stats_by_summaries(
-        env,
-        summaries,
-        msg_counts,
-        _stats_dimension(plan),
-        selection=plan.selection,
-        output_format=plan.output.output_format,
-    )
-
-
-async def _handle_open(
-    env: AppEnv,
-    params: QueryParams,
-    *,
-    config: Config,
-    repo: QueryExecutionStore,
-    plan: QueryExecutionPlan,
-    filter_chain: Any,
-) -> None:
-    from polylogue.cli import query_output as _query_output
-
-    if filter_chain.can_use_summaries():
-        open_results: Sequence[Conversation | ConversationSummary] = await _observe_query_operation(
-            repo,
-            plan,
-            QueryRoute.OPEN,
-            filter_chain.list_summaries(),
-        )
-    else:
-        open_results = await _observe_query_operation(repo, plan, QueryRoute.OPEN, filter_chain.list())
-    open_diagnostics = await _diagnose_query_miss(repo, plan.selection, config=config) if not open_results else None
-    _query_output._open_result(env, open_results, plan.output, selection=plan.selection, diagnostics=open_diagnostics)
-
-
-async def _handle_modify(
-    env: AppEnv,
-    params: QueryParams,
-    *,
-    config: Config,
-    repo: QueryExecutionStore,
-    plan: QueryExecutionPlan,
-    filter_chain: Any,
-) -> None:
-    from polylogue.cli import query_actions as _query_actions
-
-    route = resolve_query_route(plan, can_use_summaries=filter_chain.can_use_summaries())
-    if route == QueryRoute.SUMMARY_MODIFY:
-        matched_results = await _observe_query_operation(repo, plan, route, filter_chain.list_summaries())
-    else:
-        matched_results = await _observe_query_operation(repo, plan, route, filter_chain.list())
-    await _query_actions.apply_modifiers(env, matched_results, plan.mutation, repo)
-
-
-async def _handle_delete(
-    env: AppEnv,
-    params: QueryParams,
-    *,
-    config: Config,
-    repo: QueryExecutionStore,
-    plan: QueryExecutionPlan,
-    filter_chain: Any,
-) -> None:
-    from polylogue.cli import query_actions as _query_actions
-
-    route = resolve_query_route(plan, can_use_summaries=filter_chain.can_use_summaries())
-    if route == QueryRoute.SUMMARY_DELETE:
-        matched_results = await _observe_query_operation(repo, plan, route, filter_chain.list_summaries())
-    else:
-        matched_results = await _observe_query_operation(repo, plan, route, filter_chain.list())
-    await _query_actions.delete_conversations(env, matched_results, plan.mutation, repo)
-
-
-async def _handle_stats_by(
-    env: AppEnv,
-    params: QueryParams,
-    *,
-    config: Config,
-    repo: QueryExecutionStore,
-    plan: QueryExecutionPlan,
-    filter_chain: Any,
-) -> None:
-    from polylogue.cli import query_output as _query_output
-
-    dim = _stats_dimension(plan)
-    # Semantic dimension (action, tool) — try search-first path
-    if dim in {"action", "tool"}:
-        semantic_summaries = await _observe_query_operation(
-            repo,
-            plan,
-            QueryRoute.STATS_BY,
-            _semantic_stats_summaries(repo, filter_chain),
-        )
-        if semantic_summaries is not None:
-            await _query_output.output_stats_by_semantic_summaries(
-                env,
-                semantic_summaries,
-                repo,
-                dim,
-                selection=plan.selection,
-                output_format=plan.output.output_format,
-            )
-            return
-
-    # Profile dimension (repo, work-kind) — profile-backed path
-    if dim in {"repo", "work-kind"}:
-        summaries = await _observe_query_operation(
-            repo,
-            plan,
-            QueryRoute.STATS_BY,
-            _profile_stats_summaries(repo, filter_chain),
-        )
-        await _query_output.output_stats_by_profile_summaries(
-            env,
-            summaries,
-            repo,
-            dim,
-            selection=plan.selection,
-            output_format=plan.output.output_format,
-        )
-        return
-
-    # Generic fallback
-    conversation_results = await _observe_query_operation(repo, plan, QueryRoute.STATS_BY, filter_chain.list())
-    projected_results = project_query_results(conversation_results, plan)
-    _query_output._output_stats_by(
-        env,
-        projected_results,
-        dim,
-        selection=plan.selection,
-        output_format=plan.output.output_format,
-    )
-
-
-async def _handle_default(
-    env: AppEnv,
-    params: QueryParams,
-    *,
-    config: Config,
-    repo: QueryExecutionStore,
-    plan: QueryExecutionPlan,
-    filter_chain: Any,
-) -> None:
-    from polylogue.cli import query_output as _query_output
-
-    vector_provider = _create_query_vector_provider(config, db_path=repo.backend.db_path)
-    conversation_results = await _observe_query_operation(
-        repo, plan, resolve_query_route(plan, can_use_summaries=filter_chain.can_use_summaries()), filter_chain.list()
-    )
-    projected_results = project_query_results(conversation_results, plan)
-    output_diagnostics = (
-        await _diagnose_query_miss(repo, plan.selection, config=config) if not projected_results else None
-    )
-    if output_diagnostics is None and (plan.output.list_mode or len(projected_results) > 1):
-        search_hits = await _search_hits_for_execution_plan(repo, plan, vector_provider=vector_provider)
-        if search_hits is not None:
-            await _query_output.output_search_hits(
-                env,
-                search_hits,
-                plan.output,
-                repo,
-                total=await _envelope_total(repo, plan),
-                cursor=_decode_cursor_or_none(plan.selection.cursor),
-            )
-            return
-    _query_output.output_results(
-        env,
-        projected_results,
-        plan.output,
-        selection=plan.selection,
-        diagnostics=output_diagnostics,
-    )
-
-
-_route_handlers: dict[QueryRoute, _RouteHandler] = {
-    QueryRoute.COUNT: _handle_count,
-    QueryRoute.SUMMARY_LIST: _handle_summary_list,
-    QueryRoute.STREAM: _handle_stream,
-    QueryRoute.STATS_SQL: _handle_stats_sql,
-    QueryRoute.SUMMARY_STATS: _handle_summary_stats,
-    QueryRoute.OPEN: _handle_open,
-    QueryRoute.MODIFY: _handle_modify,
-    QueryRoute.SUMMARY_MODIFY: _handle_modify,
-    QueryRoute.DELETE: _handle_delete,
-    QueryRoute.SUMMARY_DELETE: _handle_delete,
-    QueryRoute.STATS_BY: _handle_stats_by,
-}
-
-
 async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> None:
-    """Async core of query execution over a typed request."""
-    from polylogue.cli.shared.helpers import fail, load_effective_config
-    from polylogue.config import ConfigError
+    """Async core of query execution."""
+    from polylogue.cli.archive_query import execute_archive_query
 
-    params = request.query_params()
-
-    try:
-        config = load_effective_config(env)
-    except ConfigError as exc:
-        fail("query", str(exc))
-
-    repo: QueryExecutionStore = env.repository
-
-    try:
-        plan = build_query_execution_plan(params)
-    except QueryPlanError as exc:
-        click.echo(f"Error: {exc}", err=True)
-        raise SystemExit(1) from exc
-
-    await _execute_query_plan(env, params, config=config, repo=repo, plan=plan)
+    execute_archive_query(env, request)
 
 
 __all__ = [
-    "QueryAction",
-    "QueryExecutionPlan",
     "QueryFirstGroupBase",
-    "QueryMutationSpec",
-    "QueryOutputSpec",
-    "QueryPlanError",
-    "QueryRoute",
-    "build_query_execution_plan",
-    "coerce_query_spec",
-    "describe_query_filters",
+    "async_execute_query",
+    "async_execute_query_request",
     "execute_query",
     "execute_query_request",
     "handle_query_mode",
-    "no_results",
-    "resolve_query_route",
-    "result_date",
-    "result_id",
-    "result_provider",
-    "result_title",
-    "summary_to_dict",
+    "project_query_results",
 ]

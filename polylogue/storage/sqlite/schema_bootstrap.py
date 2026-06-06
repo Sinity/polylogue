@@ -1,15 +1,14 @@
 """Canonical schema bootstrap for sync and async SQLite backends.
 
-Polylogue has no schema migration chain. The runtime knows exactly one
-schema shape — the canonical DDL in :mod:`polylogue.storage.sqlite.schema_ddl`
-at version :data:`SCHEMA_VERSION`. Bootstrap classifies an opened database
-into three cases:
+Polylogue has no in-place schema upgrade chain. The runtime knows exactly one
+schema shape: the canonical DDL in :mod:`polylogue.storage.sqlite.schema_ddl`
+at version :data:`SCHEMA_VERSION`. Bootstrap accepts only:
 
 * ``current_version == 0`` (a brand-new file) — create fresh.
 * ``current_version == SCHEMA_VERSION`` — open as-is.
-* anything else — reject as incompatible. The operator re-ingests from
-  source; the runtime never patches an out-of-band shape into the canonical
-  one.
+* anything else — refuse to open the file as an archive. The operator moves it
+  aside and rebuilds from source; the runtime never patches an out-of-band
+  shape into the canonical one.
 
 The minimal :class:`SchemaSnapshot`/:func:`decide_schema_bootstrap` surface
 is retained so the daemon health check and read-only open paths can classify
@@ -57,9 +56,8 @@ def schema_version_mismatch_message(current_version: int) -> str:
             "database before opening it."
         )
     return (
-        f"Database schema version {current_version} is incompatible with expected version {SCHEMA_VERSION}. "
-        "Polylogue has no in-place schema upgrade path: move the database aside and rebuild it from source "
-        "with `polylogue reset --database && polylogued run`."
+        f"Database schema version {current_version} is not the expected archive version {SCHEMA_VERSION}. "
+        "Move the database aside and rebuild it from source with `polylogue reset --database && polylogued run`."
     )
 
 

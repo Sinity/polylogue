@@ -1,0 +1,316 @@
+"""Archive helpers shared by MCP tools and resources."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, TypedDict
+
+from polylogue.archive.query.spec import parse_query_date
+from polylogue.paths import archive_file_set_index_available_for_paths, archive_file_set_root_for_paths
+from polylogue.surfaces.payloads import TargetRefPayload, reader_anchor
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from polylogue.archive.query.spec import SessionQuerySpec
+    from polylogue.config import Config
+    from polylogue.mcp.payloads import (
+        MCPMessagePayload,
+        MCPMessagesListPayload,
+        MCPPaginatedQueryResultPayload,
+        MCPSessionSummaryPayload,
+    )
+    from polylogue.storage.sqlite.archive_tiers.archive import (
+        ArchiveSessionSearchHit,
+        ArchiveSessionSummary,
+        ArchiveStore,
+    )
+    from polylogue.storage.sqlite.archive_tiers.write import ArchiveMessageRow, ArchiveSessionEnvelope
+    from polylogue.surfaces.payloads import SearchEnvelope, SessionSearchHitPayload
+
+
+def _real_path(value: object) -> Path | None:
+    return value if isinstance(value, Path) else None
+
+
+class ArchiveQueryFilters(TypedDict):
+    origin: str | None
+    origins: tuple[str, ...]
+    excluded_origins: tuple[str, ...]
+    tags: tuple[str, ...]
+    excluded_tags: tuple[str, ...]
+    repo_names: tuple[str, ...]
+    has_types: tuple[str, ...]
+    has_tool_use: bool
+    has_thinking: bool
+    has_paste: bool
+    tool_terms: tuple[str, ...]
+    excluded_tool_terms: tuple[str, ...]
+    action_terms: tuple[str, ...]
+    excluded_action_terms: tuple[str, ...]
+    action_sequence: tuple[str, ...]
+    action_text_terms: tuple[str, ...]
+    referenced_paths: tuple[str, ...]
+    cwd_prefix: str | None
+    typed_only: bool
+    message_type: str | None
+    title: str | None
+    min_messages: int | None
+    max_messages: int | None
+    min_words: int | None
+    since_ms: int | None
+    until_ms: int | None
+    since_session_id: str | None
+
+
+def active_archive_root(config: Config) -> Path | None:
+    """Return the archive root that owns the active archive index."""
+    archive_root = _real_path(config.archive_root)
+    db_anchor = _real_path(config.db_path)
+    if archive_root is None or db_anchor is None:
+        return None
+    return archive_file_set_root_for_paths(archive_root_path=archive_root, db_anchor=db_anchor)
+
+
+def archive_index_active_paths(
+    *,
+    archive_root: Path,
+    db_anchor_path: Path,
+) -> bool:
+    """Path-oriented variant for call sites that do not carry Config."""
+    if not isinstance(archive_root, Path):
+        return False
+    return archive_file_set_index_available_for_paths(archive_root_path=archive_root, db_anchor=db_anchor_path)
+
+
+def archive_query_filters(spec: SessionQuerySpec) -> ArchiveQueryFilters:
+    """Translate the shared query spec into archive index filter kwargs."""
+    return {
+        "origin": None,
+        "origins": spec.origins,
+        "excluded_origins": spec.excluded_origins,
+        "tags": spec.tags,
+        "excluded_tags": spec.excluded_tags,
+        "repo_names": spec.repo_names,
+        "has_types": spec.has_types,
+        "has_tool_use": spec.filter_has_tool_use,
+        "has_thinking": spec.filter_has_thinking,
+        "has_paste": spec.filter_has_paste,
+        "tool_terms": spec.tool_terms,
+        "excluded_tool_terms": spec.excluded_tool_terms,
+        "action_terms": spec.action_terms,
+        "excluded_action_terms": spec.excluded_action_terms,
+        "action_sequence": spec.action_sequence,
+        "action_text_terms": spec.action_text_terms,
+        "referenced_paths": spec.referenced_path,
+        "cwd_prefix": spec.cwd_prefix,
+        "typed_only": spec.typed_only,
+        "message_type": spec.message_type,
+        "title": spec.title,
+        "min_messages": spec.min_messages,
+        "max_messages": spec.max_messages,
+        "min_words": spec.min_words,
+        "since_ms": _date_ms(spec.since),
+        "until_ms": _date_ms(spec.until),
+        "since_session_id": spec.since_session_id,
+    }
+
+
+def archive_summary_payload(summary: ArchiveSessionSummary) -> MCPSessionSummaryPayload:
+    """Project an archive session summary into the generic MCP summary shape."""
+    from polylogue.mcp.payloads import MCPSessionSummaryPayload
+
+    session_id = summary.session_id
+    return MCPSessionSummaryPayload(
+        id=session_id,
+        origin=summary.origin,
+        title=summary.title or "(untitled)",
+        message_count=summary.message_count,
+        target_ref=TargetRefPayload.session(session_id),
+        anchor=reader_anchor("session", session_id),
+        created_at=_parse_archive_datetime(summary.created_at),
+        updated_at=_parse_archive_datetime(summary.updated_at),
+    )
+
+
+def archive_message_payload(message: ArchiveMessageRow, *, session_id: str) -> MCPMessagePayload:
+    """Project one archive message into the generic MCP message shape."""
+    from polylogue.mcp.payloads import MCPMessagePayload
+
+    text = "\n\n".join(block.text for block in message.blocks if block.text)
+    content_blocks: list[dict[str, object]] = [
+        {
+            "type": block.block_type,
+            "text": block.text or "",
+            "block_id": block.block_id,
+            **({"tool_name": block.tool_name} if block.tool_name else {}),
+            **({"tool_id": block.tool_id} if block.tool_id else {}),
+            **({"semantic_type": block.semantic_type} if block.semantic_type else {}),
+        }
+        for block in message.blocks
+    ]
+    return MCPMessagePayload(
+        id=message.message_id,
+        role=message.role,
+        text=text,
+        target_ref=TargetRefPayload.message(session_id=session_id, message_id=message.message_id),
+        anchor=reader_anchor("message", message.message_id),
+        timestamp=_parse_archive_datetime(message.occurred_at),
+        message_type=message.message_type,
+        content_blocks=content_blocks,
+        branch_index=message.variant_index,
+        has_paste=message.has_paste,
+        has_tool_use=message.has_tool_use,
+        has_thinking=message.has_thinking,
+    )
+
+
+def archive_session_list_payload(
+    archive: ArchiveStore,
+    spec: SessionQuerySpec,
+    *,
+    default_limit: int = 10,
+) -> MCPPaginatedQueryResultPayload:
+    """Build the generic MCP list-sessions envelope from the archive."""
+    from polylogue.mcp.payloads import MCPPaginatedQueryResultPayload
+
+    limit = spec.limit or default_limit
+    offset = max(0, spec.offset)
+    filters = archive_query_filters(spec)
+    summaries = archive.list_summaries(
+        limit=limit,
+        offset=offset,
+        sort=_sort_value(spec.sort),
+        reverse=spec.reverse,
+        sample=bool(spec.sample),
+        **filters,
+    )
+    total = archive.count_sessions(**filters)
+    next_offset = offset + len(summaries) if len(summaries) == limit and offset + limit < total else None
+    return MCPPaginatedQueryResultPayload(
+        items=tuple(archive_summary_payload(summary) for summary in summaries),
+        total=total,
+        limit=limit,
+        offset=offset,
+        next_offset=next_offset,
+    )
+
+
+def archive_search_payload(
+    archive: ArchiveStore,
+    spec: SessionQuerySpec,
+    *,
+    query: str,
+    limit: int,
+    offset: int,
+    retrieval_lane: str,
+    sort: str | None,
+) -> SearchEnvelope:
+    """Build the generic MCP search envelope from archive block search."""
+    from polylogue.surfaces.payloads import build_search_envelope
+
+    filters = archive_query_filters(spec)
+    hits = archive.search_summaries(
+        query,
+        limit=limit,
+        offset=offset,
+        sort=_sort_value(spec.sort),
+        reverse=spec.reverse,
+        **filters,
+    )
+    return build_search_envelope(
+        tuple(archive_search_hit_payload(hit, archive=archive) for hit in hits),
+        total=len(hits),
+        limit=limit,
+        offset=offset,
+        query=query,
+        retrieval_lane=retrieval_lane,
+        sort=sort,
+    )
+
+
+def archive_messages_payload(
+    session: ArchiveSessionEnvelope,
+    *,
+    roles: Sequence[str] = (),
+    message_type: str | None = None,
+    limit: int,
+    offset: int,
+) -> MCPMessagesListPayload:
+    """Build the generic MCP message-list envelope from an archive session."""
+    from polylogue.mcp.payloads import MCPMessagesListPayload
+
+    role_filter = frozenset(roles)
+    messages = [
+        message
+        for message in session.messages
+        if (not role_filter or message.role in role_filter)
+        and (message_type is None or message.message_type == message_type)
+    ]
+    page = messages[offset : offset + limit]
+    return MCPMessagesListPayload(
+        session_id=session.session_id,
+        messages=tuple(archive_message_payload(message, session_id=session.session_id) for message in page),
+        total=len(messages),
+        limit=limit,
+        offset=offset,
+    )
+
+
+def archive_search_hit_payload(hit: ArchiveSessionSearchHit, *, archive: ArchiveStore) -> SessionSearchHitPayload:
+    """Project an archive FTS hit into the generic search-hit payload."""
+    from polylogue.surfaces.payloads import (
+        SessionSearchHitPayload,
+        SessionSearchMatchPayload,
+        reader_message_actions,
+    )
+
+    summary = archive.read_summary(hit.session_id)
+    return SessionSearchHitPayload(
+        session=archive_summary_payload(summary),
+        match=SessionSearchMatchPayload(
+            rank=hit.rank,
+            retrieval_lane="dialogue",
+            match_surface="message",
+            target_ref=TargetRefPayload.message(session_id=hit.session_id, message_id=hit.message_id),
+            anchor=reader_anchor("message", hit.message_id),
+            actions=reader_message_actions(),
+            message_id=hit.message_id,
+            snippet=hit.snippet,
+            score=None,
+            score_kind=None,
+        ),
+    )
+
+
+def _date_ms(value: str | None) -> int | None:
+    parsed = parse_query_date("date", value)
+    return int(parsed.timestamp() * 1000) if parsed is not None else None
+
+
+def _parse_archive_datetime(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _sort_value(sort: object) -> str | None:
+    if sort is None:
+        return None
+    value = getattr(sort, "value", sort)
+    return str(value)
+
+
+__all__ = [
+    "ArchiveQueryFilters",
+    "active_archive_root",
+    "archive_index_active_paths",
+    "archive_session_list_payload",
+    "archive_message_payload",
+    "archive_messages_payload",
+    "archive_query_filters",
+    "archive_search_hit_payload",
+    "archive_search_payload",
+    "archive_summary_payload",
+]

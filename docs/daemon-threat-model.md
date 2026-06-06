@@ -27,7 +27,7 @@ redaction, `/api/sources` paths, and `OPTIONS` handling, see
 
 | Asset | Sensitivity | Exposure |
 |-------|------------|----------|
-| Conversation content (messages, titles, timestamps) | High — personal AI chat history | Read API |
+| Session content (messages, titles, timestamps) | High — personal AI chat history | Read API |
 | User metadata (tags, summaries, notes) | Medium — user-curated | Read + Write API |
 | Session identity (provider, dates, durations) | Low — operational metadata | Read API |
 | Raw artifacts (JSONL payloads) | High — contains full session data | Filesystem only |
@@ -74,11 +74,11 @@ The MCP server has three roles:
 | Role | Capabilities |
 |------|-------------|
 | `read` | Query, search, list, get, stats, insights — all safe operations |
-| `write` | Tag management, metadata mutations, conversation deletion |
+| `write` | Tag management, metadata mutations, session deletion |
 | `admin` | Maintenance operations, index rebuilds, insight refresh |
 
 ## Future Considerations
 
 - **Unix socket**: Could replace loopback TCP for stronger access control (file permissions on the socket).
 - **Read-only mode**: Could open the SQLite database in read-only mode for the HTTP API, with a separate write connection for ingest.
-- **Secrets in conversations**: API keys and tokens that appear in conversation text are stored as-is. A future redaction layer could strip these.
+- **Secrets in sessions**: API keys and tokens that appear in session text are stored as-is. A future redaction layer could strip these.

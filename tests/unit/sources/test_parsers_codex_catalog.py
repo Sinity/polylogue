@@ -7,7 +7,7 @@ parser → transform → save → hydrate pipeline against Codex session
 envelopes from ``parsers/codex.py``.
 
 Coverage targets the surfaces called out in issue #1184: title (Codex
-has no native title — fallback is the conversation id), model
+has no title — fallback is the session id), model
 identification, role normalization across ``user``/``assistant``/
 ``developer``/``system``, content-block kinds (text, tool_use,
 tool_result), and ascending timestamp ordering.
@@ -240,7 +240,7 @@ _CODEX_METADATA_CATALOG: list[CatalogCase] = [
         },
     ),
     (
-        "multi-turn conversation preserves ordering",
+        "multi-turn session preserves ordering",
         lambda: [
             _session_meta("sess-multi", timestamp="2024-06-01T09:00:00Z"),
             _user_message("q1", timestamp="2024-06-01T09:00:01Z", msg_id="m1"),
@@ -292,12 +292,11 @@ def _assert_roundtrip(
         roundtrip = parse_and_transform_payload("codex", raw_bytes, workspace_env["archive_root"], unique_id=label)
         hydrated = save_transform_and_hydrate(roundtrip.transform, conn)
 
-    # Conversation id from session_meta (or first-line id for direct format).
+    # Session id from session_meta (or first-line id for direct format).
     expected_conv_id = expectations.get("conv_id")
     if expected_conv_id is not None:
-        assert roundtrip.parsed.provider_conversation_id == expected_conv_id, (
-            f"[{label}] conversation id: expected {expected_conv_id!r}, got "
-            f"{roundtrip.parsed.provider_conversation_id!r}"
+        assert roundtrip.parsed.provider_session_id == expected_conv_id, (
+            f"[{label}] session id: expected {expected_conv_id!r}, got {roundtrip.parsed.provider_session_id!r}"
         )
 
     messages = list(hydrated.messages)

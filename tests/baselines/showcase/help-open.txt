@@ -1,7 +1,7 @@
 Usage: polylogue open [OPTIONS] [TARGET_TERMS]...
 
-  Open matched conversation in the daemon web reader.
+  Open matched session in the daemon web reader.
 
 Options:
   --print-url  Print the matched daemon web URL instead of opening it
-  -h, --help   Show this message and exit.
+  --help       Show this message and exit.

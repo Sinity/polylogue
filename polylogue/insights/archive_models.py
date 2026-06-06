@@ -81,7 +81,7 @@ class SessionEvidencePayload(ArchiveInsightModel):
     tags: tuple[str, ...] = ()
     is_continuation: bool = False
     parent_id: str | None = None
-    logical_conversation_id: str | None = None
+    logical_session_id: str | None = None
     thinking_duration_ms: int = 0
     output_duration_ms: int = 0
     tool_duration_ms: int = 0
@@ -246,7 +246,7 @@ def _date_provenance(canonical_session_date: str | None, start_time: str | None,
 
 
 class WorkThreadMemberEvidencePayload(ArchiveInsightModel):
-    conversation_id: str
+    session_id: str
     parent_id: str | None = None
     role: str
     depth: int = 0

@@ -15,12 +15,12 @@ from polylogue.storage.runtime.store_constants import (
     SESSION_INFERENCE_VERSION,
     SESSION_INSIGHT_MATERIALIZER_VERSION,
 )
-from polylogue.types import ConversationId
+from polylogue.types import SessionId
 
 
 class SessionWorkEventRecord(BaseModel):
     event_id: str
-    conversation_id: ConversationId
+    session_id: SessionId
     materializer_version: int = SESSION_INSIGHT_MATERIALIZER_VERSION
     materialized_at: str
     source_updated_at: str | None = None
@@ -49,7 +49,7 @@ class SessionWorkEventRecord(BaseModel):
 
     @field_validator(
         "event_id",
-        "conversation_id",
+        "session_id",
         "materialized_at",
         "source_name",
         "heuristic_label",
@@ -66,7 +66,7 @@ class SessionWorkEventRecord(BaseModel):
 
 class SessionPhaseRecord(BaseModel):
     phase_id: str
-    conversation_id: ConversationId
+    session_id: SessionId
     materializer_version: int = SESSION_INSIGHT_MATERIALIZER_VERSION
     materialized_at: str
     source_updated_at: str | None = None
@@ -95,7 +95,7 @@ class SessionPhaseRecord(BaseModel):
 
     @field_validator(
         "phase_id",
-        "conversation_id",
+        "session_id",
         "materialized_at",
         "source_name",
         "kind",

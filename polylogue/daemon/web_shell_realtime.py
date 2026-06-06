@@ -9,11 +9,11 @@ Topic vocabulary and selective-subscription policy:
 
 * Legacy opaque kinds (``ingestion_batch`` / ``ingest`` / ``reset`` /
   ``operation``) stay on the wire so older consumers keep working.
-* Granular kinds (``conversation.appended`` / ``conversation.updated`` /
+* Granular kinds (``session.appended`` / ``session.updated`` /
   ``message.appended`` / ``insight.updated`` / ``progress.update`` /
   ``progress.complete``) split the channel by topic.
-* The list view subscribes to legacy + ``conversation.*`` + ``progress.*``.
-  The conversation view additionally subscribes to ``message.appended``
+* The list view subscribes to legacy + ``session.*`` + ``progress.*``.
+  The session view additionally subscribes to ``message.appended``
   and ``insight.updated`` so it can live-tail without polling.
 * ``snapshot`` is the coalesced backpressure frame; clients react by
   refetching the materialised view and skipping row-level animations.
@@ -24,8 +24,8 @@ from __future__ import annotations
 REALTIME_JS = r"""
 // --- Realtime channel (#1204) -------------------------------------------
 // Subscribe to /api/events (SSE) when available, scoped by current view:
-//   * list view subscribes to conversation.* and the legacy batch kinds
-//   * conversation view also subscribes to message.appended + insight.updated
+//   * list view subscribes to session.* and the legacy batch kinds
+//   * session view also subscribes to message.appended + insight.updated
 //   * progress.update / progress.complete are always streamed so the
 //     status chip and #1218 watch-mode consumer can advance their UIs
 // EventSource handles reconnects automatically; on persistent failure we
@@ -45,8 +45,8 @@ var realtime = {
 // for selective subscription URL construction.
 var REALTIME_LEGACY_KINDS = ['ingestion_batch', 'ingest', 'reset', 'operation'];
 var REALTIME_GRANULAR_KINDS = [
-  'conversation.appended',
-  'conversation.updated',
+  'session.appended',
+  'session.updated',
   'message.appended',
   'insight.updated',
   'progress.update',
@@ -57,11 +57,11 @@ var REALTIME_GRANULAR_KINDS = [
 function realtimeKindsForView() {
   // Always include legacy kinds so existing consumers keep working;
   // granular kinds are scoped by current view to reduce wakeups on a
-  // slow link. The conversation view subscribes to message.appended
+  // slow link. The session view subscribes to message.appended
   // and insight.updated for live tail.
   var kinds = REALTIME_LEGACY_KINDS.slice();
-  kinds.push('conversation.appended');
-  kinds.push('conversation.updated');
+  kinds.push('session.appended');
+  kinds.push('session.updated');
   kinds.push('progress.update');
   kinds.push('progress.complete');
   kinds.push('snapshot');
@@ -90,7 +90,7 @@ function scheduleRefresh() {
   if (realtime.refreshTimer) return;
   realtime.refreshTimer = setTimeout(function() {
     realtime.refreshTimer = null;
-    loadConversations({animateNewIds: realtime.pendingAnimateIds || null});
+    loadSessions({animateNewIds: realtime.pendingAnimateIds || null});
     realtime.pendingAnimateIds = null;
     loadFacets();
     loadStatus();
@@ -98,7 +98,7 @@ function scheduleRefresh() {
 }
 
 function flagAppendedRow(convId) {
-  // Mark a conversation row for the fade-in animation on next render.
+  // Mark a session row for the fade-in animation on next render.
   if (!convId) return;
   realtime.pendingAnimateIds = realtime.pendingAnimateIds || {};
   realtime.pendingAnimateIds[convId] = true;
@@ -125,15 +125,15 @@ function animateAppendedMessage(messageEl) {
   setTimeout(function() { messageEl.classList.remove('message-appended'); }, 1800);
 }
 
-function liveTailCurrentConversation(payload) {
-  // Reload messages for the current conversation if the event targets
+function liveTailCurrentSession(payload) {
+  // Reload messages for the current session if the event targets
   // it, or reload unconditionally when the event is unscoped. Newly
   // rendered messages get the appended animation.
   if (!state || !state.selectedConvId) return;
-  var convId = payload && payload.payload && payload.payload.conversation_id;
+  var convId = payload && payload.payload && payload.payload.session_id;
   if (convId && convId !== state.selectedConvId) return;
-  // Reuse selectConversation to refresh the message list; mark new ones.
-  selectConversation(state.selectedConvId, false, {liveTail: true});
+  // Reuse selectSession to refresh the message list; mark new ones.
+  selectSession(state.selectedConvId, false, {liveTail: true});
 }
 
 function handleRealtimeEvent(payload) {
@@ -145,13 +145,13 @@ function handleRealtimeEvent(payload) {
   var data = payload.payload || {};
   switch (kind) {
     case 'message.appended':
-      liveTailCurrentConversation(payload);
+      liveTailCurrentSession(payload);
       return;
-    case 'conversation.appended':
-    case 'conversation.updated':
-      if (data && data.conversation_id) {
-        flagAppendedRow(data.conversation_id);
-        maybeAnimateExistingRow(data.conversation_id);
+    case 'session.appended':
+    case 'session.updated':
+      if (data && data.session_id) {
+        flagAppendedRow(data.session_id);
+        maybeAnimateExistingRow(data.session_id);
       }
       scheduleRefresh();
       return;
@@ -248,7 +248,7 @@ function startRealtimeChannel() {
 
 function restartRealtimeForView() {
   // Reopen the SSE channel with an updated ?kinds= subscription when the
-  // user switches between list and conversation views. The conversation
+  // user switches between list and session views. The session
   // view adds message.appended + insight.updated; switching back removes
   // them so we don't fire live-tail handlers for a dormant view.
   if (!realtime.source) return;

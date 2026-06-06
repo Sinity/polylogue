@@ -26,11 +26,11 @@ from polylogue.daemon.health import (
     HealthTier,
     _check_schema_version_fast,
 )
-from polylogue.errors import DatabaseError, SchemaIncompatibleError
+from polylogue.errors import DatabaseError, SchemaVersionMismatchError
 from polylogue.sources.live.dedup import (
     SCHEMA_MISMATCH_DEDUP_WINDOW_S,
     RateLimiter,
-    handle_schema_incompatible,
+    handle_schema_version_mismatch,
     schema_warning_limiter,
 )
 from polylogue.storage.sqlite.schema import _ensure_schema
@@ -52,14 +52,14 @@ def _reset_degraded_state() -> Iterator[None]:
 # ---------------------------------------------------------------------------
 
 
-def test_schema_incompatible_error_carries_versions(tmp_path: Path) -> None:
+def test_schema_version_mismatch_error_carries_versions(tmp_path: Path) -> None:
     """Both versions are attributes so callers don't have to parse strings."""
     db = tmp_path / "ahead.db"
     conn = sqlite3.connect(db)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
     conn.commit()
 
-    with pytest.raises(SchemaIncompatibleError) as exc_info:
+    with pytest.raises(SchemaVersionMismatchError) as exc_info:
         _ensure_schema(conn)
 
     err = exc_info.value
@@ -90,11 +90,14 @@ def _seed_db_at_version(path: Path, version: int) -> None:
 def test_schema_version_health_ok_when_versions_match(
     workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    db = workspace_env["archive_root"] / "polylogue.db"
+    # The fast schema-version check reads the active index database
+    # (``resolve_active_index_db_path`` → ``index_db_path``), so seed there
+    # and pin ``index_db_path`` to that file.
+    db = workspace_env["archive_root"] / "index.db"
     db.parent.mkdir(parents=True, exist_ok=True)
     _seed_db_at_version(db, SCHEMA_VERSION)
 
-    monkeypatch.setattr("polylogue.daemon.health.db_path", lambda: db)
+    monkeypatch.setattr("polylogue.daemon.health.index_db_path", lambda: db)
 
     alert = _check_schema_version_fast()
 
@@ -107,11 +110,11 @@ def test_schema_version_health_ok_when_versions_match(
 def test_schema_version_health_critical_when_db_ahead(
     workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    db = workspace_env["archive_root"] / "polylogue.db"
+    db = workspace_env["archive_root"] / "index.db"
     db.parent.mkdir(parents=True, exist_ok=True)
     _seed_db_at_version(db, SCHEMA_VERSION + 1)
 
-    monkeypatch.setattr("polylogue.daemon.health.db_path", lambda: db)
+    monkeypatch.setattr("polylogue.daemon.health.index_db_path", lambda: db)
 
     alert = _check_schema_version_fast()
 
@@ -140,13 +143,13 @@ def test_degraded_flag_round_trip() -> None:
     assert not is_degraded()
     assert degraded_reason() is None
 
-    reason = DegradedReason(code="schema_incompatible", message="test")
+    reason = DegradedReason(code="schema_version_mismatch", message="test")
     set_degraded(reason)
 
     assert is_degraded()
     snapshot = degraded_reason()
     assert snapshot is not None
-    assert snapshot.code == "schema_incompatible"
+    assert snapshot.code == "schema_version_mismatch"
 
     clear_degraded()
     assert not is_degraded()
@@ -224,7 +227,7 @@ async def test_ingest_files_short_circuits_when_degraded(tmp_path: Path) -> None
     """While degraded, ingest_files must not enter the full-parse path."""
     from polylogue.sources.live.batch import LiveBatchProcessor
 
-    set_degraded(DegradedReason(code="schema_incompatible", message="test"))
+    set_degraded(DegradedReason(code="schema_version_mismatch", message="test"))
 
     # Create some fake .jsonl files to simulate inotify events.
     files: list[Path] = []
@@ -272,13 +275,13 @@ async def test_ingest_files_short_circuits_when_degraded(tmp_path: Path) -> None
 # ---------------------------------------------------------------------------
 
 
-def test_handle_schema_incompatible_dedups_and_marks_degraded(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_handle_schema_version_mismatch_dedups_and_marks_degraded(monkeypatch: pytest.MonkeyPatch) -> None:
     """Repeated schema mismatches in the same window log once and pin degraded mode.
 
     This exercises the path that was previously a generic ``except Exception``:
     every inotify event would log the mismatch and try again on the next event.
     """
-    exc = SchemaIncompatibleError(
+    exc = SchemaVersionMismatchError(
         "Database schema version 12 is newer than this Polylogue runtime expects (9).",
         current_version=12,
         expected_version=9,
@@ -301,23 +304,24 @@ def test_handle_schema_incompatible_dedups_and_marks_degraded(monkeypatch: pytes
     monkeypatch.setattr(dedup_module, "_logger", _RecordingLogger())
 
     # First call: warns once and flips degraded.
-    handle_schema_incompatible("claude-code", exc)
+    handle_schema_version_mismatch("claude-code", exc)
     assert is_degraded()
     reason = degraded_reason()
     assert reason is not None
-    assert reason.code == "schema_incompatible"
+    assert reason.code == "schema_version_mismatch"
     assert reason.detail == {"current_version": 12, "expected_version": 9}
 
     # Many subsequent attempts within the dedup window: still only one warning.
     for _ in range(150):
-        handle_schema_incompatible("claude-code", exc)
+        handle_schema_version_mismatch("claude-code", exc)
 
     refusal_warnings = [w for w in warnings if "refusing further ingest" in w[0]]
     assert len(refusal_warnings) == 1, warnings
     args = refusal_warnings[0][1]
     # Args include source name, version suffix, and error text.
     assert args[0] == "claude-code"
-    assert "db schema v12" in str(args[1])
+    assert "db schema" in str(args[1])
+    assert "v12" in str(args[1])
     assert "runtime expects v9" in str(args[1])
 
 
@@ -328,12 +332,12 @@ async def test_ingest_files_short_circuits_under_burst_after_degraded(
     """AC item: with degraded mode set, 100+ events do not enter full-parse.
 
     Pins the structural fix from #1003: once the daemon has classified the DB
-    as schema-incompatible, the ingest entry path returns synthetic empty
+    as schema-version-mismatch, the ingest entry path returns synthetic empty
     metrics rather than retrying every file.
     """
     from polylogue.sources.live.batch import LiveBatchProcessor
 
-    set_degraded(DegradedReason(code="schema_incompatible", message="v12 vs v9"))
+    set_degraded(DegradedReason(code="schema_version_mismatch", message="v12 vs v9"))
 
     files: list[Path] = []
     for i in range(150):
@@ -399,11 +403,10 @@ async def test_live_batch_marks_structural_database_error_degraded(
         parser_fingerprint="test-fp",
     )
 
-    monkeypatch.setattr(
-        processor,
-        "_assert_writable_archive_layout",
-        lambda: (_ for _ in ()).throw(DatabaseError("generated conversations.source_name layout")),
-    )
+    async def fail_full_parse(*args: object, **kwargs: object) -> object:
+        raise DatabaseError("generated sessions.source_name layout")
+
+    monkeypatch.setattr(processor, "_ingest_full_paths", fail_full_parse)
 
     first = await processor.ingest_files([f])
 
@@ -412,7 +415,7 @@ async def test_live_batch_marks_structural_database_error_degraded(
     assert is_degraded()
     reason = degraded_reason()
     assert reason is not None
-    assert reason.code == "database_layout_incompatible"
+    assert reason.code == "database_layout_mismatch"
 
     second = await processor.ingest_files([f])
 

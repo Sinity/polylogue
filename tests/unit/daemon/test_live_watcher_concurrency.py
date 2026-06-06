@@ -7,7 +7,7 @@ Pins the documented expectations for ``CursorStore``:
   fingerprint must not advance the cursor backward.
 - Concurrent batch-convergence threads racing on the same source path
   end with the cursor at the largest observed offset — never below.
-- Idempotent ``raw_conversations`` upserts (the daemon's
+- Idempotent ``raw_sessions`` upserts (the daemon's
   ``INSERT OR REPLACE``/dedupe-by-raw_id contract) tolerate concurrent
   re-ingestion of the same source without producing duplicate rows.
 """
@@ -91,7 +91,7 @@ def test_concurrent_cursor_writers_never_regress(tmp_path: Path) -> None:
 
 
 def test_idempotent_raw_upsert_under_concurrent_ingest(tmp_path: Path) -> None:
-    """``raw_conversations`` has ``raw_id`` PRIMARY KEY; concurrent ingest of identical raw_id must converge to one row.
+    """``raw_sessions`` has ``raw_id`` PRIMARY KEY; concurrent ingest of identical raw_id must converge to one row.
 
     This is the contract that prevents the daemon from creating duplicate
     raw rows when two convergence cycles race on the same file.
@@ -99,7 +99,7 @@ def test_idempotent_raw_upsert_under_concurrent_ingest(tmp_path: Path) -> None:
     db_path = tmp_path / "raw.db"
     conn = sqlite3.connect(str(db_path))
     conn.execute(
-        """CREATE TABLE raw_conversations (
+        """CREATE TABLE raw_sessions (
             raw_id TEXT PRIMARY KEY,
             source_name TEXT NOT NULL,
             source_path TEXT NOT NULL,
@@ -119,7 +119,7 @@ def test_idempotent_raw_upsert_under_concurrent_ingest(tmp_path: Path) -> None:
             try:
                 for _ in range(30):
                     local.execute(
-                        "INSERT OR IGNORE INTO raw_conversations "
+                        "INSERT OR IGNORE INTO raw_sessions "
                         "(raw_id, source_name, source_path, blob_size, acquired_at) "
                         "VALUES (?, 'claude', ?, 1, '2024-01-01')",
                         (raw_id, f"x-{label}"),
@@ -140,7 +140,7 @@ def test_idempotent_raw_upsert_under_concurrent_ingest(tmp_path: Path) -> None:
     conn = sqlite3.connect(str(db_path))
     try:
         count = conn.execute(
-            "SELECT COUNT(*) FROM raw_conversations WHERE raw_id = ?",
+            "SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?",
             (raw_id,),
         ).fetchone()[0]
     finally:

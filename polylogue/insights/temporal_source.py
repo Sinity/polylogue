@@ -17,13 +17,13 @@ value?".
 Recognized values:
 
 - ``provider_ts``: a timestamp the upstream provider attached to the
-  conversation, message, or event (e.g. ChatGPT ``update_time``, Claude
+  session, message, or event (e.g. ChatGPT ``update_time``, Claude
   message ``created_at``). The strongest signal — anchored to provider
   wall-clock semantics.
 - ``hook_event_ts``: a timestamp captured by a session-lifecycle hook
   script at the moment the event fired (``SessionStart``,
   ``PreToolUse``, etc.). High fidelity for events the provider does not
-  natively timestamp.
+  directly timestamp.
 - ``sort_key``: the message sort key carried by the archive substrate.
   Used when the only chronological signal available is the per-message
   sort key (e.g. legacy imports where wall-clock was lost).
@@ -64,10 +64,10 @@ TEMPORAL_SOURCE_VALUES: frozenset[TemporalSource] = frozenset(get_args(TemporalS
 
 
 def classify_profile_hwm_source(updated_at: datetime | None) -> TemporalSource:
-    """Classify the temporal source of a per-conversation insight HWM.
+    """Classify the temporal source of a per-session insight HWM.
 
-    Per-conversation insight rows (session profiles, work events,
-    phases) derive their HWM from the conversation's ``updated_at``,
+    Per-session insight rows (session profiles, work events,
+    phases) derive their HWM from the session's ``updated_at``,
     which comes from the provider parser. When the provider supplied an
     explicit timestamp this is ``provider_ts``; otherwise the
     materialization has nothing source-anchored to record and falls
@@ -99,7 +99,7 @@ def classify_aggregate_hwm_source(source_updates: list[str]) -> TemporalSource:
 
     Aggregates (day summaries, tag rollups) compute their HWM as the
     max over the per-session ``updated_at`` values that contributed.
-    Each input is itself a ``provider_ts`` (per the per-conversation
+    Each input is itself a ``provider_ts`` (per the per-session
     classifier above), so the max is also ``provider_ts``.
     """
 

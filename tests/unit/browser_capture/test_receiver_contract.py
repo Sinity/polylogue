@@ -19,6 +19,7 @@ from polylogue.browser_capture.models import (
 from polylogue.browser_capture.receiver import (
     write_capture_envelope,
 )
+from polylogue.sources.parsers.browser_capture import parse as parse_browser_capture
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -200,6 +201,19 @@ class TestReceiverAcceptsValidPayload:
         payload = _valid_payload("not-a-real-provider", "bad-session")
         envelope = BrowserCaptureEnvelope.model_validate(payload)
         assert envelope.provider.value == "unknown"
+
+    def test_parser_populates_archive_message_contract(self) -> None:
+        payload = _valid_payload()
+        assert isinstance(payload["session"], dict)
+        payload["session"]["model"] = "gpt-4o"
+        parsed = parse_browser_capture(payload, "fallback-id")
+
+        assert [message.position for message in parsed.messages] == [0, 1]
+        assert [message.variant_index for message in parsed.messages] == [0, 0]
+        assert [message.is_active_path for message in parsed.messages] == [True, True]
+        assert [message.is_active_leaf for message in parsed.messages] == [False, True]
+        assert [message.model_name for message in parsed.messages] == ["gpt-4o", "gpt-4o"]
+        assert parsed.active_leaf_message_provider_id == "a1"
 
 
 # ---------------------------------------------------------------------------

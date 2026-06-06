@@ -7,9 +7,9 @@ from typing import TypedDict
 
 
 class LiveFullIngestMetricKwargs(TypedDict):
-    ingested_conversation_count: int
+    ingested_session_count: int
     ingested_message_count: int
-    changed_conversation_count: int
+    changed_session_count: int
     wal_bytes_before_checkpoint_max: int
     wal_bytes_after_checkpoint_max: int
     wal_checkpointed_pages_total: int
@@ -41,9 +41,9 @@ class LiveBatchMetrics:
     parse_time_s: float
     convergence_time_s: float
     total_time_s: float
-    ingested_conversation_count: int = 0
+    ingested_session_count: int = 0
     ingested_message_count: int = 0
-    changed_conversation_count: int = 0
+    changed_session_count: int = 0
     wal_bytes_before_checkpoint_max: int = 0
     wal_bytes_after_checkpoint_max: int = 0
     wal_checkpointed_pages_total: int = 0
@@ -89,9 +89,9 @@ class LiveBatchMetrics:
             "archive_bytes_before": self.archive_bytes_before,
             "archive_bytes_after": self.archive_bytes_after,
             "archive_write_bytes_delta": self.archive_write_bytes_delta,
-            "ingested_conversation_count": self.ingested_conversation_count,
+            "ingested_session_count": self.ingested_session_count,
             "ingested_message_count": self.ingested_message_count,
-            "changed_conversation_count": self.changed_conversation_count,
+            "changed_session_count": self.changed_session_count,
             "wal_bytes_before_checkpoint_max": self.wal_bytes_before_checkpoint_max,
             "wal_bytes_after_checkpoint_max": self.wal_bytes_after_checkpoint_max,
             "wal_checkpointed_pages_total": self.wal_checkpointed_pages_total,
@@ -119,9 +119,9 @@ class LiveBatchMetrics:
 class LiveFullIngestAggregate:
     """Aggregated full-ingest counters folded into one live batch."""
 
-    ingested_conversation_count: int = 0
+    ingested_session_count: int = 0
     ingested_message_count: int = 0
-    changed_conversation_count: int = 0
+    changed_session_count: int = 0
     wal_bytes_before_checkpoint_max: int = 0
     wal_bytes_after_checkpoint_max: int = 0
     wal_checkpointed_pages_total: int = 0
@@ -131,9 +131,9 @@ class LiveFullIngestAggregate:
     wal_checkpoint_errors: list[str] = field(default_factory=list)
 
     def add(self, result: object) -> None:
-        self.ingested_conversation_count += int(getattr(result, "ingested_conversation_count", 0))
+        self.ingested_session_count += int(getattr(result, "ingested_session_count", 0))
         self.ingested_message_count += int(getattr(result, "ingested_message_count", 0))
-        self.changed_conversation_count += int(getattr(result, "changed_conversation_count", 0))
+        self.changed_session_count += int(getattr(result, "changed_session_count", 0))
         self.wal_bytes_before_checkpoint_max = max(
             self.wal_bytes_before_checkpoint_max,
             int(getattr(result, "wal_bytes_before_checkpoint", 0)),
@@ -153,9 +153,9 @@ class LiveFullIngestAggregate:
 
     def to_metric_kwargs(self) -> LiveFullIngestMetricKwargs:
         return {
-            "ingested_conversation_count": self.ingested_conversation_count,
+            "ingested_session_count": self.ingested_session_count,
             "ingested_message_count": self.ingested_message_count,
-            "changed_conversation_count": self.changed_conversation_count,
+            "changed_session_count": self.changed_session_count,
             "wal_bytes_before_checkpoint_max": self.wal_bytes_before_checkpoint_max,
             "wal_bytes_after_checkpoint_max": self.wal_bytes_after_checkpoint_max,
             "wal_checkpointed_pages_total": self.wal_checkpointed_pages_total,

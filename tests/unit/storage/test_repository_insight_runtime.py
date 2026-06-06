@@ -128,7 +128,7 @@ async def test_repository_insight_thread_and_timeline_reads_build_typed_queries(
         assert await repo.get_session_work_events("conv-1") == ["event:event-record"]
         assert await repo.get_session_phases("conv-1") == ["phase:phase-record"]
         assert await repo.list_session_work_events(
-            conversation_id="conv-1",
+            session_id="conv-1",
             provider="claude-code",
             since="2026-01-01",
             until="2026-01-02",
@@ -141,7 +141,7 @@ async def test_repository_insight_thread_and_timeline_reads_build_typed_queries(
         ) == ["event:event-record"]
         assert await repo.list_session_work_event_records(query="editor") == ["event-record"]
         assert await repo.list_session_phases(
-            conversation_id="conv-1",
+            session_id="conv-1",
             provider="claude-code",
             since="2026-01-01",
             until="2026-01-02",
@@ -157,7 +157,7 @@ async def test_repository_insight_thread_and_timeline_reads_build_typed_queries(
     assert work_thread_query.query == "repo"
 
     timeline_query = queries._list_session_work_events_query.await_args_list[0].args[0]
-    assert timeline_query.conversation_id == "conv-1"
+    assert timeline_query.session_id == "conv-1"
     assert timeline_query.provider == "claude-code"
     assert timeline_query.heuristic_label == "implementation"
     assert timeline_query.session_date_since == "2026-01-01"
@@ -226,7 +226,7 @@ async def test_repository_raw_forwards_query_and_mutation_calls() -> None:
 
     with (
         patch(
-            "polylogue.storage.repository.raw.repository_raw.raw_queries.save_raw_conversation",
+            "polylogue.storage.repository.raw.repository_raw.raw_queries.save_raw_session",
             new=AsyncMock(return_value=True),
         ) as mock_save_raw,
         patch(
@@ -234,7 +234,7 @@ async def test_repository_raw_forwards_query_and_mutation_calls() -> None:
             new=AsyncMock(return_value=True),
         ) as mock_save_artifact,
         patch(
-            "polylogue.storage.repository.raw.repository_raw.raw_queries.get_raw_conversation",
+            "polylogue.storage.repository.raw.repository_raw.raw_queries.get_raw_session",
             new=AsyncMock(return_value="raw-record"),
         ) as mock_get_raw,
         patch(
@@ -259,7 +259,7 @@ async def test_repository_raw_forwards_query_and_mutation_calls() -> None:
             new=AsyncMock(return_value=4),
         ) as mock_reset_validation,
         patch(
-            "polylogue.storage.repository.raw.repository_raw.raw_queries.get_raw_conversations_batch",
+            "polylogue.storage.repository.raw.repository_raw.raw_queries.get_raw_sessions_batch",
             new=AsyncMock(return_value=["a"]),
         ) as mock_batch,
         patch(
@@ -267,17 +267,17 @@ async def test_repository_raw_forwards_query_and_mutation_calls() -> None:
             new=AsyncMock(return_value=[("a", 12)]),
         ) as mock_blob_sizes,
         patch(
-            "polylogue.storage.repository.raw.repository_raw.raw_queries.get_raw_conversation_states",
+            "polylogue.storage.repository.raw.repository_raw.raw_queries.get_raw_session_states",
             new=AsyncMock(return_value={"a": "state"}),
         ) as mock_states,
         patch(
-            "polylogue.storage.repository.raw.repository_raw.raw_queries.get_raw_conversation_count",
+            "polylogue.storage.repository.raw.repository_raw.raw_queries.get_raw_session_count",
             new=AsyncMock(return_value=9),
         ) as mock_count,
     ):
-        assert await repo.save_raw_conversation("record") is True
+        assert await repo.save_raw_session("record") is True
         assert await repo.save_artifact_observation("artifact") is True
-        assert await repo.get_raw_conversation("raw-1") == "raw-record"
+        assert await repo.get_raw_session("raw-1") == "raw-record"
         await repo.update_raw_state("raw-1", state="state-update")
         await repo.mark_raw_parsed("raw-1", error="boom", payload_provider="chatgpt")
         await repo.mark_raw_validated(
@@ -292,10 +292,10 @@ async def test_repository_raw_forwards_query_and_mutation_calls() -> None:
         assert await repo.get_known_source_mtimes() == {"inbox": "1"}
         assert await repo.reset_parse_status(provider="chatgpt", source_names=["inbox"]) == 3
         assert await repo.reset_validation_status(provider="chatgpt", source_names=["inbox"]) == 4
-        assert await repo.get_raw_conversations_batch(["raw-1"]) == ["a"]
+        assert await repo.get_raw_sessions_batch(["raw-1"]) == ["a"]
         assert await repo.get_raw_blob_sizes(["raw-1"]) == [("a", 12)]
-        assert await repo.get_raw_conversation_states(["raw-1"]) == {"a": "state"}
-        assert await repo.get_raw_conversation_count("chatgpt") == 9
+        assert await repo.get_raw_session_states(["raw-1"]) == {"a": "state"}
+        assert await repo.get_raw_session_count("chatgpt") == 9
 
     mock_save_raw.assert_awaited_once_with(conn, "record", 7)
     mock_save_artifact.assert_awaited_once_with(conn, "artifact", 7)
@@ -345,7 +345,7 @@ async def test_repository_raw_streams_iterators() -> None:
 
     with (
         patch(
-            "polylogue.storage.repository.raw.repository_raw.raw_queries.iter_raw_conversations",
+            "polylogue.storage.repository.raw.repository_raw.raw_queries.iter_raw_sessions",
             return_value=_aiter(["raw-a", "raw-b"]),
         ) as mock_iter_raw,
         patch(
@@ -353,7 +353,7 @@ async def test_repository_raw_streams_iterators() -> None:
             return_value=_aiter([("raw-a", 1), ("raw-b", 2)]),
         ) as mock_iter_headers,
     ):
-        conversations = [record async for record in repo.iter_raw_conversations(provider="chatgpt", limit=2)]
+        sessions = [record async for record in repo.iter_raw_sessions(provider="chatgpt", limit=2)]
         headers = [
             header
             async for header in repo.iter_raw_headers(
@@ -366,7 +366,7 @@ async def test_repository_raw_streams_iterators() -> None:
             )
         ]
 
-    assert conversations == ["raw-a", "raw-b"]
+    assert sessions == ["raw-a", "raw-b"]
     assert headers == [("raw-a", 1), ("raw-b", 2)]
     mock_iter_raw.assert_called_once_with(conn, provider="chatgpt", limit=2)
     mock_iter_headers.assert_called_once_with(

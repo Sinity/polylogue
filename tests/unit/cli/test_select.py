@@ -10,11 +10,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from polylogue.archive.conversation.models import ConversationSummary
 from polylogue.archive.query.spec import QuerySpecError
+from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.select import (
-    SelectConversationRow,
+    SelectSessionRow,
     _parse_fzf_output,
     async_run_select,
     choose_select_row,
@@ -22,31 +22,32 @@ from polylogue.cli.select import (
     select_row_from_result,
 )
 from polylogue.cli.shared.types import AppEnv
-from polylogue.types import ConversationId, Provider
+from polylogue.core.enums import Origin
+from polylogue.types import SessionId
 
 
-def _row(index: int = 1) -> SelectConversationRow:
-    return SelectConversationRow(
-        conversation_id=f"conv-{index}",
-        provider="claude-code",
-        title=f"Conversation {index}",
+def _row(index: int = 1) -> SelectSessionRow:
+    return SelectSessionRow(
+        session_id=f"conv-{index}",
+        origin="claude-code-session",
+        title=f"Session {index}",
         date="2026-05-02",
     )
 
 
 def test_select_row_from_summary_uses_query_result_display_contract() -> None:
-    summary = ConversationSummary(
-        id=ConversationId("conv-select"),
-        provider=Provider.CODEX,
+    summary = SessionSummary(
+        id=SessionId("conv-select"),
+        origin=Origin.CODEX_SESSION,
         title="Selector Contract",
         updated_at=datetime(2026, 5, 2, tzinfo=timezone.utc),
     )
 
     row = select_row_from_result(summary)
 
-    assert row == SelectConversationRow(
-        conversation_id="conv-select",
-        provider="codex",
+    assert row == SelectSessionRow(
+        session_id="conv-select",
+        origin="codex-session",
         title="Selector Contract",
         date="2026-05-02",
     )
@@ -56,12 +57,12 @@ def test_render_select_row_outputs_requested_field() -> None:
     row = _row()
 
     assert render_select_row(row, "id") == "conv-1"
-    assert render_select_row(row, "title") == "Conversation 1"
-    assert render_select_row(row, "provider") == "claude-code"
+    assert render_select_row(row, "title") == "Session 1"
+    assert render_select_row(row, "origin") == "claude-code-session"
     assert json.loads(render_select_row(row, "json")) == {
         "id": "conv-1",
-        "provider": "claude-code",
-        "title": "Conversation 1",
+        "origin": "claude-code-session",
+        "title": "Session 1",
         "date": "2026-05-02",
     }
 
@@ -112,7 +113,7 @@ def test_choose_select_row_prefers_fzf_then_falls_back_to_ui() -> None:
         patch("polylogue.cli.select._choose_with_fzf", return_value=None),
     ):
         assert choose_select_row(env, rows) == rows[0]
-        ui.choose.assert_called_once_with("Select conversation", [row.label for row in rows])
+        ui.choose.assert_called_once_with("Select session", [row.label for row in rows])
 
 
 def test_parse_fzf_output_returns_selected_id() -> None:
@@ -126,7 +127,7 @@ async def test_async_run_select_distinguishes_empty_results_from_cancel(capsys: 
     request = RootModeRequest.from_params({})
 
     with (
-        patch("polylogue.cli.select.select_conversation_rows", AsyncMock(return_value=[_row()])),
+        patch("polylogue.cli.select.select_session_rows", AsyncMock(return_value=[_row()])),
         patch("polylogue.cli.select.choose_select_row", return_value=None),
     ):
         with pytest.raises(SystemExit) as exc_info:
@@ -134,11 +135,11 @@ async def test_async_run_select_distinguishes_empty_results_from_cancel(capsys: 
     assert exc_info.value.code == 1
     assert "Selection cancelled." in capsys.readouterr().err
 
-    with patch("polylogue.cli.select.select_conversation_rows", AsyncMock(return_value=[])):
+    with patch("polylogue.cli.select.select_session_rows", AsyncMock(return_value=[])):
         with pytest.raises(SystemExit) as exc_info:
             await async_run_select(env, request, limit=10, print_field="id")
     assert exc_info.value.code == 2
-    assert "No conversations matched." in capsys.readouterr().err
+    assert "No sessions matched." in capsys.readouterr().err
 
 
 @pytest.mark.asyncio
@@ -147,7 +148,7 @@ async def test_async_run_select_formats_query_errors(capsys: pytest.CaptureFixtu
     request = RootModeRequest.from_params({})
 
     with patch(
-        "polylogue.cli.select.select_conversation_rows",
+        "polylogue.cli.select.select_session_rows",
         AsyncMock(side_effect=QuerySpecError("since", "bogus")),
     ):
         with pytest.raises(SystemExit) as exc_info:

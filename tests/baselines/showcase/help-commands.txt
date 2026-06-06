@@ -1,0 +1,6 @@
+Usage: polylogue commands [OPTIONS]
+
+  List available polylogue commands grouped by category (#1681).
+
+Options:
+  -h, --help  Show this message and exit.

@@ -38,8 +38,8 @@ class SessionPhaseDocument(TypedDict):
 
 
 class SessionProfileDocument(TypedDict):
-    conversation_id: str
-    provider: str
+    session_id: str
+    origin: str
     title: str | None
     inferred_topic: str | None
     inferred_topic_source: str
@@ -81,7 +81,7 @@ class SessionProfileDocument(TypedDict):
     terminal_state_confidence: float
     terminal_state_evidence: dict[str, object]
     cost_is_estimated: bool
-    logical_conversation_id: str | None
+    logical_session_id: str | None
     compaction_count: int
     thread_id: str | None
     continuation_depth: int
@@ -105,7 +105,7 @@ class SessionProfileDocument(TypedDict):
 
 
 class WorkThreadMemberEvidenceDocument(TypedDict):
-    conversation_id: str
+    session_id: str
     parent_id: str | None
     role: str
     depth: int

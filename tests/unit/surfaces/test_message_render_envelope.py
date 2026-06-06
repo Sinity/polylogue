@@ -1,12 +1,12 @@
-"""``MessageRenderEnvelope`` contract for ``ConversationMessagePayload`` (#1487).
+"""``MessageRenderEnvelope`` contract for ``SessionMessagePayload`` (#1487).
 
-Pins the unified envelope every reader path emits — conversation detail,
+Pins the unified envelope every reader path emits — session detail,
 paginated message windows, MCP ``get_messages``, future bulk export. The
 contract enumerates which fields must be present (with their defaults)
 and asserts that a roundtrip through ``Message`` populates every typed
 slot from the canonical Message model.
 
-If a new field is added to ``ConversationMessagePayload``, this test
+If a new field is added to ``SessionMessagePayload``, this test
 must learn about it (the field list is exhaustively checked). That
 prevents the divergence the issue worried about — detail emitting one
 field set, paginated emitting another.
@@ -24,13 +24,13 @@ from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.surfaces.payloads import (
-    ConversationMessagePayload,
     ReaderActionAvailabilityPayload,
+    SessionMessagePayload,
     TargetRefPayload,
 )
 
 # The canonical envelope field set. Adding a new field to
-# ``ConversationMessagePayload`` requires extending this list — that's
+# ``SessionMessagePayload`` requires extending this list — that's
 # the point: the contract should know about every emitted field so
 # downstream surfaces never silently drop one.
 _ENVELOPE_FIELDS: tuple[str, ...] = (
@@ -88,14 +88,14 @@ def _build_message(**overrides: object) -> Message:
 
 
 def test_envelope_field_set_is_exhaustive() -> None:
-    """``ConversationMessagePayload`` field set matches the canonical envelope.
+    """``SessionMessagePayload`` field set matches the canonical envelope.
 
     The contract is exact equality — extra fields would silently widen
     the surface; missing fields would silently drop one. Either case
     requires updating ``_ENVELOPE_FIELDS`` deliberately.
     """
-    assert set(ConversationMessagePayload.model_fields) == set(_ENVELOPE_FIELDS), (
-        "ConversationMessagePayload field set drifted from the canonical envelope. "
+    assert set(SessionMessagePayload.model_fields) == set(_ENVELOPE_FIELDS), (
+        "SessionMessagePayload field set drifted from the canonical envelope. "
         "Update tests/unit/surfaces/test_message_render_envelope.py:_ENVELOPE_FIELDS "
         "to match, and verify the detail and paginated message endpoints both emit "
         "the new field."
@@ -104,7 +104,7 @@ def test_envelope_field_set_is_exhaustive() -> None:
 
 def test_envelope_minimal_construction_uses_default_envelope_fields() -> None:
     """The minimum required kwargs are id/role/text; everything else has a default."""
-    payload = ConversationMessagePayload(id="m1", role="user", text="hi")
+    payload = SessionMessagePayload(id="m1", role="user", text="hi")
 
     assert payload.target_ref is None
     assert payload.anchor is None
@@ -132,14 +132,14 @@ def test_envelope_minimal_construction_uses_default_envelope_fields() -> None:
 
 def test_from_message_propagates_branch_lineage_state() -> None:
     msg = _build_message(branch_index=3, parent_id="m-parent")
-    payload = ConversationMessagePayload.from_message(msg, conversation_id="c1")
+    payload = SessionMessagePayload.from_message(msg, session_id="c1")
     assert payload.branch_index == 3
     assert payload.parent_id == "m-parent"
 
 
 def test_from_message_propagates_content_flags() -> None:
     msg = _build_message(has_paste=True, has_tool_use=True, has_thinking=True)
-    payload = ConversationMessagePayload.from_message(msg, conversation_id="c1")
+    payload = SessionMessagePayload.from_message(msg, session_id="c1")
     assert payload.has_paste is True
     assert payload.has_tool_use is True
     assert payload.has_thinking is True
@@ -153,7 +153,7 @@ def test_from_message_propagates_usage_and_model() -> None:
         cache_write_tokens=2,
         model_name="claude-sonnet-4-6",
     )
-    payload = ConversationMessagePayload.from_message(msg, conversation_id="c1")
+    payload = SessionMessagePayload.from_message(msg, session_id="c1")
     assert payload.input_tokens == 10
     assert payload.output_tokens == 20
     assert payload.cache_read_tokens == 5
@@ -163,11 +163,11 @@ def test_from_message_propagates_usage_and_model() -> None:
 
 def test_from_message_carries_explicit_raw_and_source_refs() -> None:
     """``raw_id``/``source_path`` are caller-supplied because they live on
-    the conversation, not the message."""
+    the session, not the message."""
     msg = _build_message()
-    payload = ConversationMessagePayload.from_message(
+    payload = SessionMessagePayload.from_message(
         msg,
-        conversation_id="c1",
+        session_id="c1",
         raw_id="raw-sha256-abc",
         source_path="/home/user/.claude/projects/p/c1.jsonl",
     )
@@ -175,17 +175,17 @@ def test_from_message_carries_explicit_raw_and_source_refs() -> None:
     assert payload.source_path == "/home/user/.claude/projects/p/c1.jsonl"
 
 
-def test_from_message_carries_target_ref_when_conversation_id_supplied() -> None:
+def test_from_message_carries_target_ref_when_session_id_supplied() -> None:
     msg = _build_message()
-    payload = ConversationMessagePayload.from_message(msg, conversation_id="c1")
-    assert payload.target_ref == TargetRefPayload.message(conversation_id="c1", message_id="m1")
+    payload = SessionMessagePayload.from_message(msg, session_id="c1")
+    assert payload.target_ref == TargetRefPayload.message(session_id="c1", message_id="m1")
     assert payload.anchor == "message-m1"
 
 
-def test_from_message_omits_target_ref_when_no_conversation_id() -> None:
-    """Without ``conversation_id`` the message can't be deep-linked."""
+def test_from_message_omits_target_ref_when_no_session_id() -> None:
+    """Without ``session_id`` the message can't be deep-linked."""
     msg = _build_message()
-    payload = ConversationMessagePayload.from_message(msg)
+    payload = SessionMessagePayload.from_message(msg)
     assert payload.target_ref is None
     # Anchor stays present because it only needs the message id.
     assert payload.anchor == "message-m1"
@@ -199,11 +199,11 @@ def test_from_message_omits_target_ref_when_no_conversation_id() -> None:
 def test_construction_with_only_legacy_fields_still_works() -> None:
     """The roundtrip pattern from ``test_reader_target_ref_and_action_payloads_roundtrip``
     in tests/unit/daemon/test_web_reader.py must still construct cleanly."""
-    payload = ConversationMessagePayload(
+    payload = SessionMessagePayload(
         id="m-c1",
         role="user",
         text="Hello reader",
-        target_ref=TargetRefPayload.message(conversation_id="c1", message_id="m-c1"),
+        target_ref=TargetRefPayload.message(session_id="c1", message_id="m-c1"),
         anchor="message-m-c1",
         actions={"annotate": ReaderActionAvailabilityPayload(enabled=True)},
     )
@@ -222,7 +222,7 @@ def test_minimal_payload_serializes_compactly_with_exclude_none() -> None:
     crowding the JSON. Defaults that are False/0/() must still appear so
     the contract is observable; only the optional ``None`` defaults are
     omitted under ``exclude_none``."""
-    payload = ConversationMessagePayload(id="m1", role="user", text="hi")
+    payload = SessionMessagePayload(id="m1", role="user", text="hi")
     blob = json.loads(payload.to_json(exclude_none=True))
 
     # Required: typed envelope fields are observable (the test would
@@ -248,7 +248,7 @@ def test_minimal_payload_serializes_compactly_with_exclude_none() -> None:
 def test_envelope_rejects_unknown_fields() -> None:
     """``extra="forbid"`` on SurfacePayloadModel keeps the contract closed."""
     with pytest.raises(ValidationError):
-        ConversationMessagePayload(  # type: ignore[call-arg]
+        SessionMessagePayload(  # type: ignore[call-arg]
             id="m1",
             role="user",
             text="hi",

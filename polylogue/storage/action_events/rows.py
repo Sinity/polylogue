@@ -1,24 +1,22 @@
-"""Canonical materialization and hydration for durable action-event rows."""
+"""Canonical materialization for durable action-event rows."""
 
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from polylogue.archive.action_event.action_events import (
-    ActionEvent,
     build_action_events,
     build_tool_calls_from_content_blocks,
 )
-from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.storage.runtime import (
     ACTION_EVENT_MATERIALIZER_VERSION,
     ActionEventRecord,
     ContentBlockRecord,
-    ConversationRecord,
     MessageRecord,
+    SessionRecord,
 )
 from polylogue.types import Provider
 
@@ -37,55 +35,17 @@ def _timestamp_to_iso(value: datetime | None) -> str | None:
     return value.isoformat()
 
 
-def _record_message_provider(conversation: ConversationRecord) -> Provider:
-    return Provider.from_string(conversation.source_name)
-
-
-def hydrate_action_event(record: ActionEventRecord) -> ActionEvent:
-    """Hydrate an in-memory canonical ActionEvent from a durable row."""
-    timestamp = None
-    if record.timestamp:
-        normalized = record.timestamp.replace("Z", "+00:00")
-        try:
-            timestamp = datetime.fromisoformat(normalized)
-        except ValueError:
-            timestamp = None
-    provider = Provider.from_string(record.source_name) if record.source_name else None
-    return ActionEvent(
-        event_id=record.event_id,
-        message_id=str(record.message_id),
-        timestamp=timestamp,
-        sequence_index=record.sequence_index,
-        kind=ToolCategory(record.action_kind),
-        tool_name=record.tool_name or record.normalized_tool_name,
-        tool_id=record.tool_id,
-        provider=provider,
-        affected_paths=tuple(record.affected_paths),
-        cwd_path=record.cwd_path,
-        branch_names=tuple(record.branch_names),
-        command=record.command,
-        query=record.query_text,
-        url=record.url,
-        output_text=record.output_text,
-        search_text=record.search_text,
-        raw={
-            "source_block_id": record.source_block_id,
-            "source_name": record.source_name,
-        },
-    )
-
-
-def hydrate_action_events(records: Iterable[ActionEventRecord]) -> tuple[ActionEvent, ...]:
-    return tuple(hydrate_action_event(record) for record in records)
+def _record_message_provider(session: SessionRecord) -> Provider:
+    return Provider.from_string(session.source_name)
 
 
 def build_action_event_records(
-    conversation: ConversationRecord,
+    session: SessionRecord,
     messages: Sequence[MessageRecord],
 ) -> list[ActionEventRecord]:
-    """Build canonical durable action-event rows for one conversation."""
+    """Build canonical durable action-event rows for one session."""
     records: list[ActionEventRecord] = []
-    provider = _record_message_provider(conversation)
+    provider = _record_message_provider(session)
 
     for message in messages:
         if not message.content_blocks:
@@ -101,14 +61,14 @@ def build_action_event_records(
             records.append(
                 ActionEventRecord(
                     event_id=event.event_id,
-                    conversation_id=conversation.conversation_id,
+                    session_id=session.session_id,
                     message_id=message.message_id,
                     materializer_version=ACTION_EVENT_MATERIALIZER_VERSION,
                     source_block_id=event.raw.get("block_id") if isinstance(event.raw, dict) else None,
                     timestamp=_timestamp_to_iso(event.timestamp),
                     sort_key=message.sort_key,
                     sequence_index=event.sequence_index,
-                    source_name=conversation.source_name,
+                    source_name=session.source_name,
                     action_kind=event.kind.value,
                     tool_name=event.tool_name,
                     normalized_tool_name=event.normalized_tool_name,
@@ -130,7 +90,7 @@ def _content_block_mapping(block: ContentBlockRecord) -> dict[str, object]:
     payload: dict[str, object] = {
         "block_id": block.block_id,
         "message_id": str(block.message_id),
-        "conversation_id": str(block.conversation_id),
+        "session_id": str(block.session_id),
         "block_index": block.block_index,
         "type": block.type.value,
     }
@@ -166,6 +126,4 @@ def attach_blocks_to_messages(
 __all__ = [
     "attach_blocks_to_messages",
     "build_action_event_records",
-    "hydrate_action_event",
-    "hydrate_action_events",
 ]

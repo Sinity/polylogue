@@ -1,13 +1,15 @@
-"""Benchmark: measure content_blocks FTS trigger work per incremental block insert.
+"""Benchmark: measure blocks FTS trigger work per incremental block insert.
 
-#1606 — the content_blocks FTS triggers re-project the entire message text
-(4-leg UNION ALL over messages.text + all content_blocks fields) on every
-single-block INSERT. For a message with N blocks inserted incrementally,
-total trigger work is 1+2+…+N = O(N²).
+#1606 — the legacy ``content_blocks`` FTS triggers re-projected the entire
+message text (4-leg UNION ALL over messages.text + all content_blocks fields)
+on every single-block INSERT, giving O(N²) total trigger work for a message
+with N blocks inserted incrementally.
 
-This test measures the wall-time growth curve for incremental vs batch
-insertion and asserts the documented O(N²) behavior exists (so future
-optimizations have a measured baseline).
+The archive replaces ``content_blocks`` with the archive `blocks`
+table whose ``blocks_fts_ai`` trigger projects only the inserted row's columns
+(O(1) per insert). This test measures the wall-time growth curve for
+incremental vs batch insertion against the archive `blocks` table and asserts
+the per-insert work stays flat.
 """
 
 from __future__ import annotations
@@ -19,20 +21,34 @@ from pathlib import Path
 import pytest
 
 
-def _timed_insert(conn: sqlite3.Connection, block_index: int) -> float:
-    """Insert one content_block row, return elapsed wall time in seconds."""
+def _resolve_bench_message(conn: sqlite3.Connection) -> tuple[str, str, int]:
+    """Return (message_id, session_id, next_position) for the seeded message.
+
+    The seeded message already owns one text block at position 0, so
+    incremental inserts begin one past the highest existing block position.
+    """
+    row = conn.execute("SELECT message_id, session_id FROM messages LIMIT 1").fetchone()
+    assert row is not None, "seeded session has no message"
+    next_position = int(
+        conn.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM blocks WHERE message_id = ?",
+            (row[0],),
+        ).fetchone()[0]
+    )
+    return row[0], row[1], next_position
+
+
+def _timed_insert(conn: sqlite3.Connection, message_id: str, session_id: str, position: int) -> float:
+    """Insert one archive `blocks` row, return elapsed wall time in seconds."""
     start = time.perf_counter()
     conn.execute(
-        """INSERT INTO content_blocks(block_id, message_id, conversation_id,
-           block_index, type, text, tool_name, tool_id, tool_input, metadata,
-           semantic_type)
-        VALUES (?, ?, ?, ?, 'text', ?, '', '', '', '', '')""",
+        """INSERT INTO blocks(message_id, session_id, position, block_type, text)
+        VALUES (?, ?, ?, 'text', ?)""",
         (
-            f"block-{block_index}",
-            "msg-bench",
-            "conv-bench",
-            block_index,
-            f"block {block_index} text content for fts indexing benchmark",
+            message_id,
+            session_id,
+            position,
+            f"block {position} text content for fts indexing benchmark",
         ),
     )
     conn.commit()
@@ -42,23 +58,28 @@ def _timed_insert(conn: sqlite3.Connection, block_index: int) -> float:
 @pytest.mark.slow
 def test_content_blocks_fts_trigger_growth_is_subquadratic(tmp_path: Path) -> None:
     """Insert 200 blocks incrementally; per-block time must not grow linearly."""
-    from tests.infra.storage_records import ConversationBuilder
+    from tests.infra.storage_records import SessionBuilder
 
     block_counts = (20, 50, 100, 200)
     means: dict[int, float] = {}
 
     for n in block_counts:
-        db_path = tmp_path / f"incr_{n}.db"
+        # SessionBuilder writes the archive `index.db` into the db_path's
+        # parent directory, so isolate each tier under its own subdirectory.
+        root = tmp_path / f"incr_{n}"
+        root.mkdir()
+        db_path = root / "index.db"
         (
-            ConversationBuilder(db_path, "conv-bench")
+            SessionBuilder(db_path, "conv-bench")
             .provider("test")
             .add_message("msg-bench", role="user", text="initial message text")
             .save()
         )
         conn = sqlite3.connect(str(db_path))
+        message_id, session_id, base_position = _resolve_bench_message(conn)
         times: list[float] = []
         for i in range(n):
-            elapsed = _timed_insert(conn, i)
+            elapsed = _timed_insert(conn, message_id, session_id, base_position + i)
             times.append(elapsed)
         conn.close()
         means[n] = sum(times) / len(times)
@@ -76,32 +97,32 @@ def test_content_blocks_fts_trigger_growth_is_subquadratic(tmp_path: Path) -> No
 @pytest.mark.slow
 def test_content_blocks_batch_insert_is_linear(tmp_path: Path) -> None:
     """Bulk-inserting N blocks scales linearly — comparison baseline."""
-    from tests.infra.storage_records import ConversationBuilder
+    from tests.infra.storage_records import SessionBuilder
 
     block_counts = (20, 50, 100, 200)
     timings: dict[int, float] = {}
 
     for n in block_counts:
-        db_path = tmp_path / f"batch_{n}.db"
+        root = tmp_path / f"batch_{n}"
+        root.mkdir()
+        db_path = root / "index.db"
         (
-            ConversationBuilder(db_path, "conv-bench")
+            SessionBuilder(db_path, "conv-bench")
             .provider("test")
             .add_message("msg-bench", role="user", text="initial message text")
             .save()
         )
         conn = sqlite3.connect(str(db_path))
+        message_id, session_id, base_position = _resolve_bench_message(conn)
         start = time.perf_counter()
         conn.executemany(
-            """INSERT INTO content_blocks(block_id, message_id, conversation_id,
-               block_index, type, text, tool_name, tool_id, tool_input, metadata,
-               semantic_type)
-            VALUES (?, ?, ?, ?, 'text', ?, '', '', '', '', '')""",
+            """INSERT INTO blocks(message_id, session_id, position, block_type, text)
+            VALUES (?, ?, ?, 'text', ?)""",
             [
                 (
-                    f"block-{i}",
-                    "msg-bench",
-                    "conv-bench",
-                    i,
+                    message_id,
+                    session_id,
+                    base_position + i,
                     f"block {i} text content",
                 )
                 for i in range(n)

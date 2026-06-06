@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from json import dumps as json_dumps
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,7 @@ def record_attempt_progress(
     current_source: str | None = None,
     current_path: Path | None = None,
     error: str | None = None,
+    stage_payload: dict[str, object] | None = None,
     stage_timings_s: dict[str, float] | None = None,
     stale_cursor_write_count: int | None = None,
 ) -> None:
@@ -63,6 +65,7 @@ def record_attempt_progress(
         current_source=current_source,
         current_path=current_path,
         error=error,
+        stage_payload=stage_payload,
         rss_current_mb=rss_current_mb,
         rss_peak_self_mb=rss_peak_self_mb,
         rss_peak_children_mb=rss_peak_children_mb,
@@ -115,22 +118,37 @@ def record_attempt_progress(
     )
 
 
-def conversation_ids_for_source_path(cursor: Any, path: Path) -> tuple[str, ...]:
+def session_ids_for_source_path(path: Path, *, archive_root: Path | None = None) -> tuple[str, ...]:
+    if archive_root is None:
+        return ()
+    return _schema_archive_session_ids_for_source_path(archive_root, path)
+
+
+def _schema_archive_session_ids_for_source_path(archive_root: Path, path: Path) -> tuple[str, ...]:
+    index_db = archive_root / "index.db"
+    source_db = archive_root / "source.db"
+    if not index_db.exists() or not source_db.exists():
+        return ()
     try:
-        with cursor._connect() as conn:
+        conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+        try:
+            conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
             rows = conn.execute(
                 """
-                SELECT DISTINCT c.conversation_id
-                FROM conversations AS c
-                JOIN raw_conversations AS r ON r.raw_id = c.raw_id
+                SELECT s.session_id
+                FROM sessions AS s
+                JOIN source_tier.raw_sessions AS r ON r.raw_id = s.raw_id
                 WHERE r.source_path = ?
-                ORDER BY c.conversation_id
+                ORDER BY s.sort_key_ms DESC, s.created_at_ms DESC, s.session_id
                 """,
                 (str(path),),
             ).fetchall()
-    except Exception:
+            conn.execute("DETACH DATABASE source_tier")
+        finally:
+            conn.close()
+    except sqlite3.Error:
         return ()
     return tuple(str(row[0]) for row in rows if row[0])
 
 
-__all__ = ["conversation_ids_for_source_path", "record_attempt_progress"]
+__all__ = ["session_ids_for_source_path", "record_attempt_progress"]

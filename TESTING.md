@@ -63,7 +63,7 @@ see [docs/test-quality-workflows.md](docs/test-quality-workflows.md).
 tests/
 ├── conftest.py              # Root fixtures (workspace_env, tmp paths)
 ├── infra/                   # Shared infrastructure
-│   ├── storage_records.py   # ConversationBuilder, make_message, db_setup
+│   ├── storage_records.py   # SessionBuilder, make_message, db_setup
 │   ├── tables.py            # Parametrize tables
 │   └── strategies/          # Hypothesis strategies (schema-driven payloads)
 ├── unit/                    # Fast tests (~95% of suite)
@@ -87,11 +87,11 @@ tests/
 root in `tmp_path`. Disables schema validation by default. Most tests
 that touch storage or pipeline use this.
 
-**`ConversationBuilder`** (`infra/storage_records.py`): Fluent builder for
+**`SessionBuilder`** (`infra/storage_records.py`): Fluent builder for
 populating a test database. Chain `.title()`, `.provider()`, `.message()`, etc.
 and call `.build()` to persist.
 
-**`make_message()` / `make_conversation()`** (`infra/storage_records.py`):
+**`make_message()` / `make_session()`** (`infra/storage_records.py`):
 Quick factories for creating model instances without database setup.
 
 **`corpus_seeded_db`** (`infra/corpus_fixtures.py`): Pre-populated database

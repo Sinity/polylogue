@@ -1,16 +1,16 @@
 # Claude with Thinking
 
-Provider: claude-ai
-Conversation ID: golden-claude-thinking
+Origin: claude-ai-export
+Session ID: claude-ai-export:ext-golden-claude-thinking
 
 ## user
-_Timestamp: 2024-01-15T10:00:00Z_
+_Timestamp: 2024-01-15T10:00:00+00:00_
 
 What is 2+2?
 
 
 ## assistant
-_Timestamp: 2024-01-15T10:00:05Z_
+_Timestamp: 2024-01-15T10:00:05+00:00_
 
 <thinking>
 This is a simple arithmetic question. 2+2 equals 4.

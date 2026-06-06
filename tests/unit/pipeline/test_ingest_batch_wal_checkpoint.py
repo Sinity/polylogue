@@ -9,7 +9,7 @@ import pytest
 import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 from polylogue.pipeline.services.ingest_batch import _process_ingest_batch_sync
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.storage.sqlite.wal_checkpoint import WalCheckpointObservation, maybe_checkpoint_wal
 
@@ -23,7 +23,7 @@ def test_process_ingest_batch_sync_records_wal_checkpoint_observation(
     blob_root = tmp_path / "blob"
     source_path = tmp_path / "raw.jsonl"
     source_path.write_text("{}", encoding="utf-8")
-    raw_record = RawConversationRecord(
+    raw_record = RawSessionRecord(
         raw_id="raw-wal",
         source_name="codex",
         source_path=str(source_path),
@@ -34,7 +34,7 @@ def test_process_ingest_batch_sync_records_wal_checkpoint_observation(
     with open_connection(db_path) as conn:
         conn.execute(
             """
-            INSERT INTO raw_conversations
+            INSERT INTO raw_sessions
                 (raw_id, payload_provider, source_name, source_path, blob_size, acquired_at)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
@@ -50,7 +50,7 @@ def test_process_ingest_batch_sync_records_wal_checkpoint_observation(
         conn.commit()
 
     def fake_ingest_record(
-        record: RawConversationRecord,
+        record: RawSessionRecord,
         archive_root_str: str,
         validation_mode: str,
         measure_ingest_result_size: bool,
@@ -58,7 +58,7 @@ def test_process_ingest_batch_sync_records_wal_checkpoint_observation(
         blob_root_str: str | None,
     ) -> IngestRecordResult:
         del record, archive_root_str, validation_mode, measure_ingest_result_size, blob_root_str
-        return IngestRecordResult(raw_id=raw_record.raw_id, conversations=[])
+        return IngestRecordResult(raw_id=raw_record.raw_id, sessions=[])
 
     def fake_checkpoint(db: Path, *, reason: str, **_: object) -> WalCheckpointObservation:
         assert db == db_path

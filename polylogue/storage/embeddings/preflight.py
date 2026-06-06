@@ -16,8 +16,8 @@ from pathlib import Path
 class PreflightReport:
     """Cost preflight numbers for the configured archive."""
 
-    total_conversations: int
-    pending_conversations: int
+    total_sessions: int
+    pending_sessions: int
     pending_messages: int
     estimated_tokens: int
     estimated_cost_usd: float
@@ -25,7 +25,7 @@ class PreflightReport:
     dimension: int
     cost_cap_usd: float
     windowed: bool = False
-    max_conversations: int | None = None
+    max_sessions: int | None = None
     max_messages: int | None = None
     max_cost_usd: float | None = None
 
@@ -63,7 +63,7 @@ def read_pending_message_count(
     db_path: Path,
     *,
     rebuild: bool = False,
-    max_conversations: int | None = None,
+    max_sessions: int | None = None,
     max_messages: int | None = None,
 ) -> tuple[int, int, int]:
     """Return ``(total_convs, pending_convs, pending_messages)``.
@@ -74,19 +74,28 @@ def read_pending_message_count(
     """
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
+    index_db = _archive_index_path(db_path)
+    if index_db is not None and _is_archive_index(index_db):
+        return _read_archive_pending_message_count(
+            index_db,
+            rebuild=rebuild,
+            max_sessions=max_sessions,
+            max_messages=max_messages,
+        )
+
     if not db_path.exists():
         return 0, 0, 0
 
     conn = open_readonly_connection(db_path)
     try:
-        total = int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0])
-        if max_conversations is not None or max_messages is not None:
-            from polylogue.api import select_pending_embedding_conversation_window
+        total = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+        if max_sessions is not None or max_messages is not None:
+            from polylogue.api import select_pending_embedding_session_window
 
-            pending = select_pending_embedding_conversation_window(
+            pending = select_pending_embedding_session_window(
                 conn,
                 rebuild=rebuild,
-                max_conversations=max_conversations,
+                max_sessions=max_sessions,
                 max_messages=max_messages,
             )
             return total, len(pending), sum(item.message_count for item in pending)
@@ -98,10 +107,10 @@ def read_pending_message_count(
             pending_convs = int(
                 conn.execute(
                     """
-                    SELECT COUNT(*) FROM conversations c
+                    SELECT COUNT(*) FROM sessions c
                     LEFT JOIN embedding_status e
-                      ON c.conversation_id = e.conversation_id
-                    WHERE e.conversation_id IS NULL OR e.needs_reindex = 1
+                      ON c.session_id = e.session_id
+                    WHERE e.session_id IS NULL OR e.needs_reindex = 1
                     """
                 ).fetchone()[0]
             )
@@ -109,10 +118,10 @@ def read_pending_message_count(
                 conn.execute(
                     """
                     SELECT COUNT(*) FROM messages m
-                    JOIN conversations c ON c.conversation_id = m.conversation_id
+                    JOIN sessions c ON c.session_id = m.session_id
                     LEFT JOIN embedding_status e
-                      ON c.conversation_id = e.conversation_id
-                    WHERE e.conversation_id IS NULL OR e.needs_reindex = 1
+                      ON c.session_id = e.session_id
+                    WHERE e.session_id IS NULL OR e.needs_reindex = 1
                     """
                 ).fetchone()[0]
             )
@@ -125,11 +134,142 @@ def read_pending_message_count(
     return total, pending_convs, pending_messages
 
 
+def _archive_index_path(db_path: Path) -> Path | None:
+    if db_path.name == "index.db":
+        return db_path if db_path.exists() else None
+    index_db = db_path.with_name("index.db")
+    if index_db.exists():
+        return index_db
+    from polylogue.paths import archive_root
+
+    configured_index_db = archive_root() / "index.db"
+    return configured_index_db if configured_index_db.exists() else None
+
+
+def _read_archive_pending_message_count(
+    index_db: Path,
+    *,
+    rebuild: bool = False,
+    max_sessions: int | None = None,
+    max_messages: int | None = None,
+) -> tuple[int, int, int]:
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    conn = open_readonly_connection(index_db)
+    try:
+        if not _table_exists(conn, "sessions"):
+            return 0, 0, 0
+        embeddings_db = index_db.with_name("embeddings.db")
+        if embeddings_db.exists():
+            conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
+            status_table = "embeddings.embedding_status"
+        else:
+            status_table = ""
+        total = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+        if max_sessions is not None or max_messages is not None:
+            pending = _select_archive_pending_window(
+                conn,
+                status_table=status_table,
+                rebuild=rebuild,
+                max_sessions=max_sessions,
+                max_messages=max_messages,
+            )
+            return total, len(pending), sum(item[1] for item in pending)
+        if rebuild or not status_table:
+            pending_convs = total
+            pending_messages = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+            return total, pending_convs, pending_messages
+        pending_convs = int(
+            conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM sessions s
+                LEFT JOIN {status_table} e ON e.session_id = s.session_id
+                WHERE e.session_id IS NULL OR e.needs_reindex = 1
+                """
+            ).fetchone()[0]
+        )
+        pending_messages = int(
+            conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM messages m
+                JOIN sessions s ON s.session_id = m.session_id
+                LEFT JOIN {status_table} e ON e.session_id = s.session_id
+                WHERE e.session_id IS NULL OR e.needs_reindex = 1
+                """
+            ).fetchone()[0]
+        )
+    finally:
+        conn.close()
+    return total, pending_convs, pending_messages
+
+
+def _is_archive_index(path: Path) -> bool:
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    try:
+        conn = open_readonly_connection(path)
+    except sqlite3.Error:
+        return False
+    try:
+        return _table_exists(conn, "sessions")
+    finally:
+        conn.close()
+
+
+def _select_archive_pending_window(
+    conn: sqlite3.Connection,
+    *,
+    status_table: str,
+    rebuild: bool,
+    max_sessions: int | None,
+    max_messages: int | None,
+) -> list[tuple[str, int]]:
+    pending: list[tuple[str, int]] = []
+    message_total = 0
+    where_clause = "1 = 1" if rebuild or not status_table else "(e.session_id IS NULL OR e.needs_reindex = 1)"
+    join_clause = f"LEFT JOIN {status_table} e ON e.session_id = s.session_id" if status_table else ""
+    cursor = conn.execute(
+        f"""
+        SELECT s.session_id, s.message_count
+        FROM sessions s
+        {join_clause}
+        WHERE {where_clause}
+        ORDER BY s.sort_key_ms IS NULL, s.sort_key_ms, s.session_id
+        """
+    )
+    while True:
+        rows = cursor.fetchmany(500)
+        if not rows:
+            break
+        for row in rows:
+            session_id = str(row[0])
+            message_count = int(row[1] or 0)
+            if max_sessions is not None and len(pending) >= max_sessions:
+                return pending
+            if max_messages is not None and pending and message_total + message_count > max_messages:
+                return pending
+            pending.append((session_id, message_count))
+            message_total += message_count
+            if max_messages is not None and message_total >= max_messages:
+                return pending
+    return pending
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
 def build_preflight_report(
     db_path: Path,
     *,
     rebuild: bool = False,
-    max_conversations: int | None = None,
+    max_sessions: int | None = None,
     max_messages: int | None = None,
     max_cost_usd: float | None = None,
 ) -> PreflightReport:
@@ -145,33 +285,33 @@ def build_preflight_report(
     total, pending, pending_messages = read_pending_message_count(
         db_path,
         rebuild=rebuild,
-        max_conversations=max_conversations,
+        max_sessions=max_sessions,
         max_messages=effective_max_messages,
     )
     estimated_tokens = pending_messages * ESTIMATED_TOKENS_PER_MESSAGE
     estimated_cost = estimated_tokens * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
     return PreflightReport(
-        total_conversations=total,
-        pending_conversations=pending,
+        total_sessions=total,
+        pending_sessions=pending,
         pending_messages=pending_messages,
         estimated_tokens=estimated_tokens,
         estimated_cost_usd=estimated_cost,
         model=cfg.embedding_model,
         dimension=cfg.embedding_dimension,
         cost_cap_usd=cfg.embedding_max_cost_usd,
-        windowed=max_conversations is not None or max_messages is not None or max_cost_usd is not None,
-        max_conversations=max_conversations,
+        windowed=max_sessions is not None or max_messages is not None or max_cost_usd is not None,
+        max_sessions=max_sessions,
         max_messages=effective_max_messages,
         max_cost_usd=max_cost_usd,
     )
 
 
 def preflight_backfill_args(report: PreflightReport) -> list[str] | None:
-    if report.pending_conversations <= 0:
+    if report.pending_sessions <= 0:
         return None
     args = ["embed", "backfill", "--yes"]
-    if report.max_conversations is not None:
-        args.extend(["--max-conversations", str(report.max_conversations)])
+    if report.max_sessions is not None:
+        args.extend(["--max-sessions", str(report.max_sessions)])
     if report.max_messages is not None:
         args.extend(["--max-messages", str(report.max_messages)])
     if report.max_cost_usd is not None:
@@ -187,8 +327,8 @@ def preflight_payload(report: PreflightReport) -> dict[str, object]:
 
     backfill_args = preflight_backfill_args(report)
     return {
-        "total_conversations": report.total_conversations,
-        "pending_conversations": report.pending_conversations,
+        "total_sessions": report.total_sessions,
+        "pending_sessions": report.pending_sessions,
         "pending_messages": report.pending_messages,
         "estimated_tokens": report.estimated_tokens,
         "estimated_cost_usd": report.estimated_cost_usd,
@@ -197,7 +337,7 @@ def preflight_payload(report: PreflightReport) -> dict[str, object]:
         "monthly_cost_cap_usd": report.cost_cap_usd,
         "effective_cost_cap_usd": effective_cost_cap(report.cost_cap_usd, report.max_cost_usd),
         "windowed": report.windowed,
-        "max_conversations": report.max_conversations,
+        "max_sessions": report.max_sessions,
         "max_messages": report.max_messages,
         "max_cost_usd": report.max_cost_usd,
         "pricing": {

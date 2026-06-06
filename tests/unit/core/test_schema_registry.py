@@ -197,14 +197,14 @@ class TestClusterManifest:
             last_seen="2026-03-01",
             dominant_keys=["a", "b"],
             confidence=0.8,
-            artifact_kind="conversation_document",
+            artifact_kind="session_document",
             promoted_package_version="v2",
         )
         manifest = ClusterManifest(
             provider="test",
             clusters=[cluster],
             generated_at="2026-03-15T00:00:00Z",
-            artifact_counts={"conversation_document": 50},
+            artifact_counts={"session_document": 50},
             default_version="v2",
         )
         d = manifest.to_dict()
@@ -527,7 +527,7 @@ class TestPackageEvidenceRoundtrip:
         assert package.first_seen == "2026-01-01T00:00:00+00:00"
         assert package.last_seen == "2026-01-01T00:00:00+00:00"
 
-        element = package.element("conversation_document")
+        element = package.element("session_document")
         assert element is not None
         assert element.first_seen == "2026-01-01T00:00:00+00:00"
         assert element.last_seen == "2026-01-02T00:00:00+00:00"
@@ -545,8 +545,8 @@ class TestManifestVersionSelection:
         manifest = ClusterManifest(
             provider="chatgpt",
             artifact_counts={
-                "conversation_document": 10,
-                "subagent_conversation_stream": 5,
+                "session_document": 10,
+                "subagent_session_stream": 5,
             },
             default_version="v1",
             clusters=[
@@ -556,7 +556,7 @@ class TestManifestVersionSelection:
                     sample_count=10,
                     first_seen="2026-01-01T00:00:00Z",
                     last_seen="2026-01-01T00:00:00Z",
-                    artifact_kind="conversation_document",
+                    artifact_kind="session_document",
                     profile_tokens=["field:mapping", "shape:mapping:object", "anchor:mapping"],
                     promoted_package_version="v1",
                 ),
@@ -566,7 +566,7 @@ class TestManifestVersionSelection:
                     sample_count=5,
                     first_seen="2026-01-01T00:00:00Z",
                     last_seen="2026-01-01T00:00:00Z",
-                    artifact_kind="subagent_conversation_stream",
+                    artifact_kind="subagent_session_stream",
                     profile_tokens=["bucket:type:user", "field:type:user:message"],
                     promoted_package_version="v2",
                 ),

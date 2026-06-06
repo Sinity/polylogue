@@ -40,6 +40,7 @@ from polylogue.daemon.health import (
     _check_disk_space_fast,
     _check_embedding_coverage_expensive,
     _check_fts_readiness_medium,
+    _check_fts_trigger_drift_fast,
     _check_insight_freshness_medium,
     _check_raw_failures_medium,
     _check_repeated_stage_failures_medium,
@@ -49,8 +50,11 @@ from polylogue.daemon.health import (
     _check_wal_size_fast,
 )
 from polylogue.daemon.live_ingest_attempt_models import LiveIngestAttemptSummary
-from polylogue.paths import archive_root, db_path
+from polylogue.paths import archive_root, index_db_path
 from polylogue.storage.blob_integrity import BlobIntegrityFinding, BlobIntegrityReport
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -172,7 +176,7 @@ def test_wal_size_ok_when_no_wal_file(
 def test_wal_size_error_when_oversized(
     workspace_env: dict[str, Path],
 ) -> None:
-    dbf = db_path()
+    dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
     wal = dbf.with_suffix(".db-wal")
     # Use sparse write to allocate > 200 MB cheaply on tmpfs.
@@ -234,13 +238,12 @@ def test_schema_version_ok_when_db_absent(
     assert "no database yet" in alert.message
 
 
-def test_schema_version_critical_on_incompatible_version(
+def test_schema_version_critical_when_archive_version_differs(
     workspace_env: dict[str, Path],
 ) -> None:
-    dbf = db_path()
+    dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
-    # Write a DB whose user_version is far beyond runtime SCHEMA_VERSION,
-    # ensuring decide_schema_bootstrap classifies it as version_mismatch.
+    # Write a DB whose user_version is far beyond runtime SCHEMA_VERSION.
     conn = sqlite3.connect(str(dbf))
     try:
         conn.execute("PRAGMA user_version = 99999")
@@ -251,7 +254,7 @@ def test_schema_version_critical_on_incompatible_version(
     alert = _check_schema_version_fast()
     assert alert.severity == HealthSeverity.CRITICAL
     assert alert.consecutive_failures == 1
-    assert "incompatible" in alert.message.lower()
+    assert "schema v99999 is not runtime" in alert.message.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +265,7 @@ def test_schema_version_critical_on_incompatible_version(
 def test_fts_readiness_ok(
     workspace_env: dict[str, Path],
 ) -> None:
-    dbf = db_path()
+    dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
     _init_messages_db(dbf)
     alert = _check_fts_readiness_medium()
@@ -273,7 +276,7 @@ def test_fts_readiness_ok(
 def test_fts_readiness_error_when_large_gap(
     workspace_env: dict[str, Path],
 ) -> None:
-    dbf = db_path()
+    dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
     # 100 messages, 0 FTS rows → gap = 100 (100%), well above 10% ERROR threshold.
     _init_messages_db(dbf, message_rows=100, fts_rows=0)
@@ -288,7 +291,7 @@ def test_fts_readiness_counts_docsize_not_virtual_table(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Production status must not count the FTS5 virtual table directly."""
-    dbf = db_path()
+    dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
     _init_messages_db(dbf, message_rows=3, fts_rows=3)
 
@@ -323,17 +326,33 @@ def test_fts_readiness_counts_docsize_not_virtual_table(
     assert any("messages_fts_docsize" in query for query in queries)
 
 
+def test_fts_trigger_drift_checks_archive_blocks_triggers(
+    workspace_env: dict[str, Path],
+) -> None:
+    dbf = index_db_path()
+    dbf.parent.mkdir(parents=True, exist_ok=True)
+    initialize_archive_database(dbf, ArchiveTier.INDEX)
+    with sqlite3.connect(dbf) as conn:
+        conn.execute("DROP TRIGGER blocks_fts_ad")
+        conn.commit()
+
+    alert = _check_fts_trigger_drift_fast()
+
+    assert alert.severity == HealthSeverity.CRITICAL
+    assert "blocks_fts_ad" in alert.message
+
+
 def test_fts_readiness_does_not_accept_stats_when_messages_drift(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    dbf = db_path()
+    dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
     _init_messages_db(dbf, message_rows=999, fts_rows=3)
     conn = sqlite3.connect(str(dbf))
     try:
-        conn.execute("CREATE TABLE conversation_stats (conversation_id TEXT PRIMARY KEY, message_count INTEGER)")
-        conn.execute("INSERT INTO conversation_stats VALUES ('c1', 3)")
+        conn.execute("CREATE TABLE session_stats (session_id TEXT PRIMARY KEY, message_count INTEGER)")
+        conn.execute("INSERT INTO session_stats VALUES ('c1', 3)")
         conn.commit()
     finally:
         conn.close()
@@ -349,7 +368,7 @@ def test_fts_readiness_does_not_accept_stats_when_messages_drift(
             normalized = " ".join(sql.split()).lower()
             queries.append(normalized)
             if normalized == "select count(*) from messages":
-                raise AssertionError("health status must use conversation_stats when available")
+                raise AssertionError("health status must use session_stats when available")
             return self._inner.execute(sql, *args, **kwargs)
 
         def close(self) -> None:
@@ -373,13 +392,13 @@ def test_fts_readiness_does_not_accept_stats_when_messages_drift(
 def test_fts_readiness_flags_stale_extra_rows(
     workspace_env: dict[str, Path],
 ) -> None:
-    dbf = db_path()
+    dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
     _init_messages_db(dbf, message_rows=3, fts_rows=5)
     conn = sqlite3.connect(str(dbf))
     try:
-        conn.execute("CREATE TABLE conversation_stats (conversation_id TEXT PRIMARY KEY, message_count INTEGER)")
-        conn.execute("INSERT INTO conversation_stats VALUES ('c1', 3)")
+        conn.execute("CREATE TABLE session_stats (session_id TEXT PRIMARY KEY, message_count INTEGER)")
+        conn.execute("INSERT INTO session_stats VALUES ('c1', 3)")
         conn.commit()
     finally:
         conn.close()
@@ -520,7 +539,7 @@ def _init_live_ingest_attempt(dbf: Path, *, total: int, failed: int) -> None:
 def test_repeated_stage_failures_ok(
     workspace_env: dict[str, Path],
 ) -> None:
-    dbf = db_path()
+    dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
     _init_live_ingest_attempt(dbf, total=5, failed=0)
     alert = _check_repeated_stage_failures_medium()
@@ -530,13 +549,63 @@ def test_repeated_stage_failures_ok(
 def test_repeated_stage_failures_error_when_many_recent_failures(
     workspace_env: dict[str, Path],
 ) -> None:
-    dbf = db_path()
+    dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
     _init_live_ingest_attempt(dbf, total=10, failed=5)
     alert = _check_repeated_stage_failures_medium()
     assert alert.severity == HealthSeverity.ERROR
     assert alert.consecutive_failures == 1
     assert "recent attempts failed" in alert.message
+
+
+def test_repeated_stage_failures_reads_ops_tier_without_polylogue_db(
+    workspace_env: dict[str, Path],
+) -> None:
+    dbf = index_db_path()
+    ops_db = dbf.with_name("ops.db")
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(ops_db) as conn:
+        for i in range(5):
+            record_ingest_attempt(
+                conn,
+                attempt_id=f"failed-{i}",
+                status="failed",
+                phase="convergence",
+                started_at_ms=1_770_000_000_000 + i,
+                error_message="boom",
+            )
+
+    alert = _check_repeated_stage_failures_medium()
+
+    assert alert.severity == HealthSeverity.ERROR
+    assert "5/5 recent attempts failed" in alert.message
+    assert "phase=convergence: boom" in alert.message
+
+
+def test_repeated_stage_failures_prefers_populated_archive_ops(
+    workspace_env: dict[str, Path],
+) -> None:
+    dbf = index_db_path()
+    dbf.parent.mkdir(parents=True, exist_ok=True)
+    _init_live_ingest_attempt(dbf, total=5, failed=0)
+    ops_db = dbf.with_name("ops.db")
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(ops_db) as conn:
+        for i in range(3):
+            record_ingest_attempt(
+                conn,
+                attempt_id=f"failed-{i}",
+                status="failed",
+                phase="parse",
+                started_at_ms=1_770_000_000_000 + i,
+                error_message="v1 boom",
+            )
+
+    alert = _check_repeated_stage_failures_medium()
+
+    assert alert.severity == HealthSeverity.ERROR
+    assert "3/3 recent attempts failed" in alert.message
+    assert "v1 boom" in alert.message
 
 
 # ---------------------------------------------------------------------------
@@ -549,7 +618,7 @@ def test_db_integrity_ok_degraded_and_recovery(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    dbf = db_path()
+    dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
     # Create a valid empty DB so the real PRAGMA integrity_check executes.
     sqlite3.connect(str(dbf)).close()

@@ -17,8 +17,8 @@ This module pins the *operational* contracts of the daemon HTTP surface:
    fields (``daemon_liveness``, ``fts_readiness.fts_ready``,
    ``health.overall_status``, ``convergence`` debt counts) instead of
    raw exceptions or free-form messages.
-4. Per-conversation reader endpoints expose only the requested
-   conversation — adjacent rows are never leaked through ``id``,
+4. Per-session reader endpoints expose only the requested
+   session — adjacent rows are never leaked through ``id``,
    ``title``, ``messages``, or ``raw`` fields.
 5. Every authored ``OperationSpec`` declares the minimum fields the
    verification catalog and control-plane surfaces rely on (name,
@@ -148,6 +148,15 @@ def _capture_responses(handler: DaemonAPIHandler) -> tuple[MagicMock, MagicMock]
     return send_error, send_json
 
 
+def _init_archive(archive_root: Path) -> None:
+    """Bootstrap the archive root so read endpoints open
+    existing files rather than creating them on first access."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    archive_root.mkdir(parents=True, exist_ok=True)
+    ArchiveStore(archive_root).close()
+
+
 def _archive_state_hash(archive_root: Path) -> str:
     """Cheap fingerprint of the archive directory tree.
 
@@ -269,9 +278,16 @@ class TestStatusReadOnlyContract:
         would be caught here.
         """
         archive_root = workspace_env["archive_root"]
-        archive_root.mkdir(parents=True, exist_ok=True)
+        _init_archive(archive_root)
         # Seed a marker file so the hash is non-empty.
         (archive_root / "marker.txt").write_text("seed")
+
+        # Warm the read path once so any lazy WAL/SHM sidecar files for the
+        # archive tiers materialize before the snapshot — the contract is that
+        # *repeated* status reads do not mutate archive content.
+        warm = _make_handler("GET", "/api/status")
+        _capture_responses(warm)
+        warm.do_GET()
 
         before = _archive_state_hash(archive_root)
 
@@ -289,8 +305,12 @@ class TestStatusReadOnlyContract:
         workspace_env: dict[str, Path],
     ) -> None:
         archive_root = workspace_env["archive_root"]
-        archive_root.mkdir(parents=True, exist_ok=True)
+        _init_archive(archive_root)
         (archive_root / "marker.txt").write_text("seed")
+
+        warm = _make_handler("GET", "/api/health")
+        _capture_responses(warm)
+        warm.do_GET()
         before = _archive_state_hash(archive_root)
 
         for _ in range(3):
@@ -437,7 +457,7 @@ SECRET_ENV_NAMES = ("VOYAGE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
 
 @pytest.mark.contract
 class TestPrivacyContract:
-    """Daemon HTTP surface never leaks secrets or adjacent conversations."""
+    """Daemon HTTP surface never leaks secrets or adjacent sessions."""
 
     def test_status_payload_does_not_leak_secrets(
         self,
@@ -510,56 +530,36 @@ class TestPrivacyContract:
 
         assert sentinel not in WEB_SHELL_HTML
 
-    def test_get_conversation_does_not_leak_adjacent_conversations(
+    def test_get_session_does_not_leak_adjacent_sessions(
         self,
         workspace_env: dict[str, Path],
     ) -> None:
-        """``GET /api/conversations/<id>`` returns only the requested row.
+        """``GET /api/sessions/<id>`` returns only the requested row.
 
-        Seeds three conversations (``c1``, ``c2``, ``c3``), requests
+        Seeds three sessions (``c1``, ``c2``, ``c3``), requests
         ``c1``, and asserts the serialized payload mentions ``c1``
         identifiers but not ``c2``/``c3``.
         """
-        import sqlite3
+        from tests.infra.storage_records import SessionBuilder, db_setup
 
-        from polylogue.paths import db_path
-        from polylogue.storage.sqlite.schema_ddl_archive import (
-            ARCHIVE_STORAGE_DDL,
-            MESSAGE_FTS_DDL,
-            RECALL_PACKS_DDL,
-            SAVED_VIEWS_DDL,
-            USER_ANNOTATIONS_DDL,
-            USER_MARKS_DDL,
-        )
+        dbp = db_setup(workspace_env)
+        c1_session_id = ""
+        for cid, title, msg_text in [
+            ("c1", "First session", "Alpha content here"),
+            ("c2", "Second session SECRET-C2", "Beta content SECRET-C2"),
+            ("c3", "Third session SECRET-C3", "Gamma content SECRET-C3"),
+        ]:
+            builder = (
+                SessionBuilder(dbp, cid)
+                .provider("claude-code")
+                .title(title)
+                .add_message(message_id=f"m-{cid}", role="user", text=msg_text)
+            )
+            builder.save()
+            if cid == "c1":
+                c1_session_id = builder.native_session_id()
 
-        dbp = db_path()
-        dbp.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(dbp))
-        try:
-            conn.executescript(ARCHIVE_STORAGE_DDL)
-            conn.executescript(MESSAGE_FTS_DDL)
-            conn.executescript(USER_MARKS_DDL)
-            conn.executescript(USER_ANNOTATIONS_DDL)
-            conn.executescript(SAVED_VIEWS_DDL)
-            conn.executescript(RECALL_PACKS_DDL)
-            for cid, title, msg_text in [
-                ("c1", "First conversation", "Alpha content here"),
-                ("c2", "Second conversation SECRET-C2", "Beta content SECRET-C2"),
-                ("c3", "Third conversation SECRET-C3", "Gamma content SECRET-C3"),
-            ]:
-                conn.execute(
-                    "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, title, content_hash, version) VALUES(?,?,?,?,?,?)",
-                    (cid, "claude-code", f"p-{cid}", title, f"hash-{cid}", 1),
-                )
-                conn.execute(
-                    "INSERT INTO messages(message_id, conversation_id, role, text, source_name, content_hash, version) VALUES(?,?,?,?,?,?,?)",
-                    (f"m-{cid}", cid, "user", msg_text, "claude-code", f"mhash-{cid}", 1),
-                )
-            conn.commit()
-        finally:
-            conn.close()
-
-        handler = _make_handler("GET", "/api/conversations/c1")
+        handler = _make_handler("GET", f"/api/sessions/{c1_session_id}")
         send_error, send_json = _capture_responses(handler)
         handler.do_GET()
 
@@ -571,8 +571,8 @@ class TestPrivacyContract:
         assert "c1" in serialized
         assert "Alpha content here" in serialized
         # ...adjacent rows are not leaked.
-        for forbidden in ("SECRET-C2", "SECRET-C3", "Second conversation", "Third conversation"):
-            assert forbidden not in serialized, f"adjacent conversation data leaked: {forbidden!r}"
+        for forbidden in ("SECRET-C2", "SECRET-C3", "Second session", "Third session"):
+            assert forbidden not in serialized, f"adjacent session data leaked: {forbidden!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -580,7 +580,7 @@ class TestPrivacyContract:
 # ---------------------------------------------------------------------------
 
 
-# Runtime operation names are kebab-case (``acquire-raw-conversations``).
+# Runtime operation names are kebab-case (``acquire-raw-sessions``).
 # Declared scenario/benchmark entries are namespaced (``benchmark.query.foo``).
 _RUNTIME_NAME_RE = re.compile(r"^[a-z][a-z0-9\-]*$")
 _DECLARED_NAME_RE = re.compile(r"^[a-z][a-z0-9\-]*(\.[a-z][a-z0-9\-]*)*$")

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from polylogue.rendering.renderers.html import render_conversation_html
+from polylogue.rendering.renderers.html import render_session_html
 from tests.infra.builders import make_conv, make_msg
 
 
-def test_render_conversation_html_keeps_messages_with_structured_blocks_only() -> None:
+def test_render_session_html_keeps_messages_with_structured_blocks_only() -> None:
     """Structured blocks should keep a message renderable even when text is empty."""
-    conversation = make_conv(
+    session = make_conv(
         messages=[
             make_msg(
                 id="m1",
@@ -25,7 +25,7 @@ def test_render_conversation_html_keeps_messages_with_structured_blocks_only() -
         ]
     )
 
-    html = render_conversation_html(conversation)
+    html = render_session_html(session)
 
     assert "hello from blocks" in html
     assert "code-block" in html

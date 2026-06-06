@@ -1,6 +1,6 @@
 """Semantic fact extraction for cross-surface agreement testing.
 
-Normalizes conversations, query results, and insights into stable
+Normalizes sessions, query results, and insights into stable
 semantic fact tuples so tests can compare meaning rather than formatting.
 """
 
@@ -11,14 +11,34 @@ from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
-from polylogue.archive.models import Conversation
-from polylogue.archive.semantic.facts import build_conversation_semantic_facts
+from polylogue.archive.models import Session
+from polylogue.archive.semantic.facts import build_session_semantic_facts
+from polylogue.core.enums import Origin
 from polylogue.core.json import JSONDocument, json_document_list
-from polylogue.storage.runtime import AttachmentRecord, ConversationRecord, MessageRecord
+from polylogue.core.sources import provider_from_origin
+from polylogue.storage.runtime import AttachmentRecord, MessageRecord, SessionRecord
+from polylogue.types import Provider
 
 
 def _string_value(value: object) -> str:
     return value if isinstance(value, str) else ""
+
+
+def _provider_token(token: str) -> str:
+    """Canonicalize a provider-or-origin token to its provider token.
+
+    The cross-surface oracle compares provenance in provider-token vocabulary
+    (matching storage ``source_name`` and the archive reverse projection). The
+    domain model and semantic facts now expose origin tokens, so origin
+    inputs are reversed to their canonical provider (#1743 transition).
+    """
+    if not token:
+        return ""
+    try:
+        origin = Origin(token)
+    except ValueError:
+        return str(Provider.from_string(token))
+    return str(provider_from_origin(origin))
 
 
 def _optional_string(value: object) -> str | None:
@@ -31,10 +51,10 @@ def _content_blocks(message: JSONDocument) -> list[JSONDocument]:
 
 
 @dataclass(frozen=True)
-class ConversationFacts:
-    """Stable semantic facts about a conversation, independent of surface."""
+class SessionFacts:
+    """Stable semantic facts about a session, independent of surface."""
 
-    conversation_id: str
+    session_id: str
     provider: str
     title: str | None
     message_count: int
@@ -49,14 +69,14 @@ class ConversationFacts:
     word_count: int = 0
 
     @classmethod
-    def from_domain_conversation(cls, conv: Conversation) -> ConversationFacts:
-        """Extract facts from a domain Conversation object."""
+    def from_domain_session(cls, conv: Session) -> SessionFacts:
+        """Extract facts from a domain Session object."""
         messages = list(conv.messages)
-        semantic = build_conversation_semantic_facts(conv)
+        semantic = build_session_semantic_facts(conv)
         roles = Counter(str(m.role) for m in messages)
         return cls(
-            conversation_id=semantic.conversation_id,
-            provider=semantic.provider,
+            session_id=semantic.session_id,
+            provider=_provider_token(str(semantic.origin)),
             title=conv.title,
             message_count=semantic.total_messages,
             role_multiset=dict(roles),
@@ -71,7 +91,7 @@ class ConversationFacts:
         )
 
     @classmethod
-    def from_json_payload(cls, payload: JSONDocument) -> ConversationFacts:
+    def from_json_payload(cls, payload: JSONDocument) -> SessionFacts:
         """Extract facts from a CLI JSON output payload."""
         messages = json_document_list(payload.get("messages"))
         roles = Counter(_string_value(message.get("role")) or "unknown" for message in messages)
@@ -84,8 +104,12 @@ class ConversationFacts:
         )
         has_attachments = any(bool(message.get("attachments")) for message in messages)
         return cls(
-            conversation_id=_string_value(payload.get("id")) or _string_value(payload.get("conversation_id")),
-            provider=_string_value(payload.get("provider")) or _string_value(payload.get("source_name")),
+            session_id=_string_value(payload.get("id")) or _string_value(payload.get("session_id")),
+            provider=_provider_token(
+                _string_value(payload.get("provider"))
+                or _string_value(payload.get("origin"))
+                or _string_value(payload.get("source_name"))
+            ),
             title=_optional_string(payload.get("title")),
             message_count=len(messages),
             role_multiset=dict(roles),
@@ -103,18 +127,18 @@ class ConversationFacts:
     @classmethod
     def from_records(
         cls,
-        conv_record: ConversationRecord,
+        conv_record: SessionRecord,
         msg_records: list[MessageRecord],
         attachment_records: Sequence[AttachmentRecord] = (),
-    ) -> ConversationFacts:
-        """Extract facts from storage records (ConversationRecord + MessageRecords)."""
+    ) -> SessionFacts:
+        """Extract facts from storage records (SessionRecord + MessageRecords)."""
         roles = Counter(str(m.role) for m in msg_records)
         text_roles = Counter(str(m.role) for m in msg_records if (m.text or "").strip())
         has_tool_use = any(m.has_tool_use for m in msg_records)
         has_thinking = any(m.has_thinking for m in msg_records)
         return cls(
-            conversation_id=str(conv_record.conversation_id),
-            provider=str(conv_record.source_name),
+            session_id=str(conv_record.session_id),
+            provider=_provider_token(str(conv_record.source_name)),
             title=conv_record.title,
             message_count=len(msg_records),
             role_multiset=dict(roles),
@@ -131,7 +155,7 @@ class ConversationFacts:
     def comparable_core(self) -> tuple[object, ...]:
         """Facts stable across record, hydrated, and surface representations."""
         return (
-            self.conversation_id,
+            self.session_id,
             self.provider,
             self.title,
             self.message_count,
@@ -146,60 +170,69 @@ class ConversationFacts:
         )
 
 
-def assert_same_conversation_facts(*facts: ConversationFacts) -> None:
-    """Assert all supplied conversation facts agree on archive semantics."""
+def assert_same_session_facts(*facts: SessionFacts) -> None:
+    """Assert all supplied session facts agree on archive semantics."""
     if len(facts) < 2:
         return
     expected = facts[0].comparable_core()
     mismatches = [fact for fact in facts[1:] if fact.comparable_core() != expected]
-    assert not mismatches, f"Conversation facts disagree: expected={facts[0]!r} mismatches={mismatches!r}"
+    assert not mismatches, f"Session facts disagree: expected={facts[0]!r} mismatches={mismatches!r}"
 
 
 @dataclass(frozen=True)
 class ArchiveFacts:
     """Aggregate facts about the archive, independent of surface."""
 
-    total_conversations: int
+    total_sessions: int
     provider_counts: dict[str, int]
     total_messages: int
-    conversation_ids: tuple[str, ...] = ()
+    session_ids: tuple[str, ...] = ()
 
     @classmethod
     def from_db_connection(cls, conn: sqlite3.Connection) -> ArchiveFacts:
-        total_convs = int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0])
-        provider_rows = conn.execute(
-            "SELECT source_name, COUNT(*) as cnt FROM conversations GROUP BY source_name"
-        ).fetchall()
-        provider_counts = {str(row["source_name"]): int(row["cnt"]) for row in provider_rows}
+        """Aggregate archive facts from a ``index.db``.
+
+        Reads archive `sessions` / ``messages``. The provider is recovered
+        from the session ``origin`` so the per-provider counts agree with the
+        domain ``Session.provider`` projection used by the facade surface.
+        """
+        from polylogue.api.archive import _provider_for_archive_origin
+
+        total_convs = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+        provider_rows = conn.execute("SELECT origin, COUNT(*) as cnt FROM sessions GROUP BY origin").fetchall()
+        provider_counts: dict[str, int] = {}
+        for row in provider_rows:
+            provider = str(_provider_for_archive_origin(str(row["origin"])))
+            provider_counts[provider] = provider_counts.get(provider, 0) + int(row["cnt"])
         total_msgs = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
-        conversation_ids = tuple(
-            str(row["conversation_id"])
-            for row in conn.execute("SELECT conversation_id FROM conversations ORDER BY conversation_id").fetchall()
+        session_ids = tuple(
+            str(row["session_id"])
+            for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id").fetchall()
         )
         return cls(
-            total_conversations=total_convs,
+            total_sessions=total_convs,
             provider_counts=provider_counts,
             total_messages=total_msgs,
-            conversation_ids=conversation_ids,
+            session_ids=session_ids,
         )
 
     @classmethod
-    def from_conversations(cls, conversations: Iterable[Conversation]) -> ArchiveFacts:
-        conversations = tuple(conversations)
-        provider_counts = Counter(str(conversation.provider) for conversation in conversations)
+    def from_sessions(cls, sessions: Iterable[Session]) -> ArchiveFacts:
+        sessions = tuple(sessions)
+        provider_counts = Counter(_provider_token(str(session.origin)) for session in sessions)
         return cls(
-            total_conversations=len(conversations),
+            total_sessions=len(sessions),
             provider_counts=dict(provider_counts),
-            total_messages=sum(len(conversation.messages) for conversation in conversations),
-            conversation_ids=tuple(sorted(str(conversation.id) for conversation in conversations)),
+            total_messages=sum(len(session.messages) for session in sessions),
+            session_ids=tuple(sorted(str(session.id) for session in sessions)),
         )
 
     def comparable_core(self) -> tuple[object, ...]:
         return (
-            self.total_conversations,
+            self.total_sessions,
             self.provider_counts,
             self.total_messages,
-            self.conversation_ids,
+            self.session_ids,
         )
 
 
@@ -214,7 +247,7 @@ def assert_same_archive_facts(*facts: ArchiveFacts) -> None:
 
 __all__ = [
     "ArchiveFacts",
-    "ConversationFacts",
+    "SessionFacts",
     "assert_same_archive_facts",
-    "assert_same_conversation_facts",
+    "assert_same_session_facts",
 ]

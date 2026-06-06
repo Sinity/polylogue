@@ -16,22 +16,21 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from polylogue.surfaces.payloads import (
-    ConversationSearchHitPayload,
     InvalidSearchCursorError,
     QueryMissDiagnosticsPayload,
     SearchEnvelope,
+    SessionSearchHitPayload,
     build_search_envelope,
     decode_search_cursor,
     search_cursor_lane_matches_request,
 )
 
 if TYPE_CHECKING:
-    from polylogue.archive.query.spec import ConversationQuerySpec
-    from polylogue.operations import ArchiveOperations
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.api import Polylogue
+    from polylogue.archive.query.spec import SessionQuerySpec
 
 
-def _search_query_text(spec: ConversationQuerySpec) -> str:
+def _search_query_text(spec: SessionQuerySpec) -> str:
     plan = spec.to_plan()
     if plan.fts_terms:
         return " ".join(plan.fts_terms)
@@ -41,9 +40,8 @@ def _search_query_text(spec: ConversationQuerySpec) -> str:
 
 
 async def build_search_envelope_for_spec(
-    operations: ArchiveOperations,
-    repository: ConversationRepository,
-    spec: ConversationQuerySpec,
+    facade: Polylogue,
+    spec: SessionQuerySpec,
     *,
     limit: int | None = None,
     offset: int | None = None,
@@ -51,7 +49,7 @@ async def build_search_envelope_for_spec(
 ) -> SearchEnvelope:
     """Build a :class:`SearchEnvelope` from an already-normalized query spec.
 
-    Daemon HTTP accepts the full ``ConversationQuerySpec`` filter surface,
+    Daemon HTTP accepts the full ``SessionQuerySpec`` filter surface,
     while the public Python API exposes a smaller keyword facade. Keeping the
     cursor, diagnostics, and hit-payload assembly here prevents those surfaces
     from drifting while still letting each caller own parameter parsing.
@@ -67,7 +65,7 @@ async def build_search_envelope_for_spec(
     fetch_spec = spec
     if decoded_cursor is not None:
         # Advance the SQL fetch past the cursor anchor; the builder will drop
-        # any straggler rows whose (score, conversation_id) sort at or before
+        # any straggler rows whose (score, session_id) sort at or before
         # the anchor under the lane's natural ordering.
         fetch_spec = replace(
             spec,
@@ -76,15 +74,15 @@ async def build_search_envelope_for_spec(
             cursor=spec.cursor,
         )
 
-    hits = await operations.search_conversation_hits(fetch_spec)
-    total = await spec.count(repository)
+    hits = await facade.search_session_hits(fetch_spec)
+    total = await spec.count(facade.config)
     diagnostics_payload: QueryMissDiagnosticsPayload | None = None
     if not hits and spec.has_filters():
         with suppress(Exception):
-            raw_diag = await operations.diagnose_query_miss(spec)
+            raw_diag = await facade.diagnose_query_miss(spec)
             diagnostics_payload = QueryMissDiagnosticsPayload.from_diagnostics(raw_diag)
     hit_payloads = [
-        ConversationSearchHitPayload.from_search_hit(hit, message_count=hit.summary.message_count) for hit in hits
+        SessionSearchHitPayload.from_search_hit(hit, message_count=hit.summary.message_count) for hit in hits
     ]
     resolved_lane = hits[0].retrieval_lane if hits else spec.retrieval_lane
     return build_search_envelope(
@@ -101,13 +99,12 @@ async def build_search_envelope_for_spec(
 
 
 async def build_archive_search_envelope(
-    operations: ArchiveOperations,
-    repository: ConversationRepository,
+    facade: Polylogue,
     *,
     query: str,
     limit: int = 50,
     offset: int = 0,
-    provider: str | None = None,
+    origin: str | None = None,
     since: str | None = None,
     until: str | None = None,
     retrieval_lane: str = "auto",
@@ -127,12 +124,12 @@ async def build_archive_search_envelope(
     lane returns the contiguous successor page even if the archive has
     grown between requests.
     """
-    from polylogue.archive.query.spec import ConversationQuerySpec
+    from polylogue.archive.query.spec import SessionQuerySpec
 
-    spec = ConversationQuerySpec.from_params(
+    spec = SessionQuerySpec.from_params(
         {
             "query": query,
-            "provider": provider,
+            "origin": origin,
             "since": since,
             "until": until,
             "retrieval_lane": retrieval_lane,
@@ -144,8 +141,7 @@ async def build_archive_search_envelope(
         strict=True,
     )
     return await build_search_envelope_for_spec(
-        operations,
-        repository,
+        facade,
         spec,
         limit=limit,
         offset=offset,

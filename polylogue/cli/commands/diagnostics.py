@@ -7,7 +7,7 @@ from datetime import timedelta
 import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.archive.query.spec import ConversationQuerySpec
+from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
 
@@ -18,30 +18,30 @@ def diagnostics_group() -> None:
 
 
 @diagnostics_group.command("pace")
-@click.argument("conversation_id", required=False)
-@click.option("--limit", "-l", "-n", type=int, default=10, help="Number of recent conversations to analyze")
+@click.argument("session_id", required=False)
+@click.option("--limit", "-l", "-n", type=int, default=10, help="Number of recent sessions to analyze")
 @click.option("--threshold", type=int, default=60, help="Gap threshold in seconds for classification")
 @click.pass_context
 def pace_command(
     ctx: click.Context,
-    conversation_id: str | None,
+    session_id: str | None,
     limit: int,
     threshold: int,
 ) -> None:
-    """Show inter-turn gap analysis for one or more conversations."""
+    """Show inter-turn gap analysis for one or more sessions."""
     env: AppEnv = ctx.obj
-    run_coroutine_sync(_pace(env, conversation_id, limit, threshold))
+    run_coroutine_sync(_pace(env, session_id, limit, threshold))
 
 
-async def _pace(env: AppEnv, conversation_id: str | None, limit: int, threshold: int) -> None:
-    if conversation_id:
-        spec = ConversationQuerySpec(conversation_id=conversation_id, limit=1)
-        convs = await spec.list(env.repository)
+async def _pace(env: AppEnv, session_id: str | None, limit: int, threshold: int) -> None:
+    if session_id:
+        spec = SessionQuerySpec(session_id=session_id, limit=1)
+        convs = await spec.list(env.config)
         if not convs:
-            fail("pace", f"No conversation matching '{conversation_id}'")
+            fail("pace", f"No session matching '{session_id}'")
     else:
-        spec = ConversationQuerySpec(sort="date", limit=limit)
-        convs = await spec.list(env.repository)
+        spec = SessionQuerySpec(sort="date", limit=limit)
+        convs = await spec.list(env.config)
 
     for conv in convs:
         msgs = conv.messages
@@ -90,31 +90,31 @@ async def _pace(env: AppEnv, conversation_id: str | None, limit: int, threshold:
 
 
 @diagnostics_group.command("turns")
-@click.argument("conversation_id", required=False)
+@click.argument("session_id", required=False)
 @click.option("--limit", "-l", "-n", type=int, default=20, help="Max turns to show")
 @click.pass_context
-def turns_command(ctx: click.Context, conversation_id: str | None, limit: int) -> None:
-    """Show per-turn cost and duration for one conversation.
+def turns_command(ctx: click.Context, session_id: str | None, limit: int) -> None:
+    """Show per-turn cost and duration for one session.
 
-    The conversation id may be omitted when a root filter like ``--latest`` or
-    ``--provider`` narrows the archive to a single match (#1642).
+    The session id may be omitted when a root filter like ``--latest`` or
+    ``--origin`` narrows the archive to a single match (#1642).
     """
     from polylogue.cli.shared.insight_command_contracts import find_root_params
-    from polylogue.cli.shared.latest_resolver import resolve_conversation_id_from_root_params
+    from polylogue.cli.shared.latest_resolver import resolve_session_id_from_root_params
 
     env: AppEnv = ctx.obj
-    if conversation_id is None:
-        conversation_id = resolve_conversation_id_from_root_params(dict(find_root_params(ctx)))
-        if not conversation_id:
-            fail("turns", "turns requires a conversation ID (positional or --latest/--provider)")
-    run_coroutine_sync(_turns(env, conversation_id, limit))
+    if session_id is None:
+        session_id = resolve_session_id_from_root_params(dict(find_root_params(ctx)))
+        if not session_id:
+            fail("turns", "turns requires a session ID (positional or --latest/--origin)")
+    run_coroutine_sync(_turns(env, session_id, limit))
 
 
-async def _turns(env: AppEnv, conversation_id: str, limit: int) -> None:
-    spec = ConversationQuerySpec(conversation_id=conversation_id, limit=1)
-    convs = await spec.list(env.repository)
+async def _turns(env: AppEnv, session_id: str, limit: int) -> None:
+    spec = SessionQuerySpec(session_id=session_id, limit=1)
+    convs = await spec.list(env.config)
     if not convs:
-        fail("turns", f"No conversation matching '{conversation_id}'")
+        fail("turns", f"No session matching '{session_id}'")
     conv = convs[0]
     msgs = conv.messages
 
@@ -148,30 +148,29 @@ async def _turns(env: AppEnv, conversation_id: str, limit: int) -> None:
 
 
 @diagnostics_group.command("tools")
-@click.option("--provider", "-p", help="Filter by provider")
+@click.option("--origin", help="Filter by origin")
 @click.option("--limit", "-l", "-n", type=int, default=20, help="Max tools to show")
 @click.pass_context
-def tools_command(ctx: click.Context, provider: str | None, limit: int) -> None:
-    """Show top tools by invocation count across filtered conversations."""
+def tools_command(ctx: click.Context, origin: str | None, limit: int) -> None:
+    """Show top tools by invocation count across filtered sessions."""
     env: AppEnv = ctx.obj
-    run_coroutine_sync(_tools(env, provider, limit))
+    run_coroutine_sync(_tools(env, origin, limit))
 
 
-async def _tools(env: AppEnv, provider: str | None, limit: int) -> None:
+async def _tools(env: AppEnv, origin: str | None, limit: int) -> None:
     from collections import Counter
 
-    # Get recent conversations and aggregate their action events
-    spec = ConversationQuerySpec(sort="date", limit=100)
-    if provider:
-        from polylogue.types import Provider
+    # Get recent sessions and aggregate their action events
+    spec = SessionQuerySpec(sort="date", limit=100)
+    if origin:
+        spec = SessionQuerySpec(sort="date", limit=100, origins=(origin,))
+    convs = await spec.list_summaries(env.config)
 
-        spec = ConversationQuerySpec(sort="date", limit=100, providers=(Provider.from_string(provider),))
-    convs = await spec.list_summaries(env.repository)
-
+    poly = env.polylogue
     tool_counts: Counter[str] = Counter()
     for summary in convs:
         try:
-            events = await env.repository.get_action_events(str(summary.id))
+            events = await poly.get_action_events(str(summary.id))
             for evt in events:
                 name = getattr(evt, "normalized_tool_name", None) or getattr(evt, "tool_name", None)
                 if name:
@@ -183,7 +182,7 @@ async def _tools(env: AppEnv, provider: str | None, limit: int) -> None:
         env.ui.console.print("No tool invocations found.")
         return
 
-    env.ui.console.print(f"\n[bold]Top tools by invocation count[/bold] (across {len(convs)} conversations)")
+    env.ui.console.print(f"\n[bold]Top tools by invocation count[/bold] (across {len(convs)} sessions)")
     env.ui.console.print(f"{'tool':40s}  {'count':>6s}")
     env.ui.console.print("-" * 50)
     for name, cnt in tool_counts.most_common(limit):

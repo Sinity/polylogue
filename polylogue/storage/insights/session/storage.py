@@ -29,8 +29,8 @@ SqlValue = str | int | float | None
 SqlBindings = tuple[SqlValue, ...]
 
 _SESSION_PROFILE_BASE_COLUMNS = (
-    "conversation_id",
-    "logical_conversation_id",
+    "session_id",
+    "logical_session_id",
     "materializer_version",
     "materialized_at",
     "source_updated_at",
@@ -95,7 +95,7 @@ _SESSION_PROFILE_PAYLOAD_COLUMNS = (
     "inference_family",
 )
 _SESSION_LATENCY_PROFILE_COLUMNS = (
-    "conversation_id",
+    "session_id",
     "materializer_version",
     "materialized_at",
     "source_updated_at",
@@ -120,7 +120,7 @@ _SESSION_LATENCY_PROFILE_COLUMNS = (
 )
 _SESSION_WORK_EVENT_BASE_COLUMNS = (
     "event_id",
-    "conversation_id",
+    "session_id",
     "materializer_version",
     "materialized_at",
     "source_updated_at",
@@ -151,7 +151,7 @@ _TIMELINE_PAYLOAD_COLUMNS = (
 )
 _SESSION_PHASE_BASE_COLUMNS = (
     "phase_id",
-    "conversation_id",
+    "session_id",
     "materializer_version",
     "materialized_at",
     "source_updated_at",
@@ -205,13 +205,13 @@ def _delete_where_in(conn: sqlite3.Connection, table: str, column: str, values: 
         conn.execute(f"DELETE FROM {table} WHERE {column} IN ({placeholders})", chunk)
 
 
-def _with_legacy_payload_column(
+def _with_fallback_payload_column(
     base_columns: tuple[str, ...],
     payload_columns: tuple[str, ...],
     *,
-    has_legacy_payload: bool,
+    has_fallback_payload: bool,
 ) -> tuple[str, ...]:
-    if has_legacy_payload:
+    if has_fallback_payload:
         return base_columns + ("payload_json",) + payload_columns
     return base_columns + payload_columns
 
@@ -220,23 +220,23 @@ def _compose_bindings(
     base_values: Sequence[SqlValue],
     payload_values: Sequence[SqlValue],
     *,
-    has_legacy_payload: bool,
-    legacy_payload_json: str | None,
+    has_fallback_payload: bool,
+    fallback_payload_json: str | None,
 ) -> SqlBindings:
     values = list(base_values)
-    if has_legacy_payload:
-        values.append(legacy_payload_json)
+    if has_fallback_payload:
+        values.append(fallback_payload_json)
     values.extend(payload_values)
     return tuple(values)
 
 
-def _legacy_profile_payload_json(record: SessionProfileRecord) -> str | None:
+def _fallback_profile_payload_json(record: SessionProfileRecord) -> str | None:
     return _json_or_none(
         {
             **record.evidence_payload.model_dump(mode="json"),
             **record.inference_payload.model_dump(mode="json"),
-            "conversation_id": str(record.conversation_id),
-            "logical_conversation_id": str(record.logical_conversation_id),
+            "session_id": str(record.session_id),
+            "logical_session_id": str(record.logical_session_id),
             "provider": record.source_name,
             "title": record.title,
         }
@@ -245,23 +245,23 @@ def _legacy_profile_payload_json(record: SessionProfileRecord) -> str | None:
 
 def session_profile_insert_columns(
     *,
-    has_legacy_payload: bool,
+    has_fallback_payload: bool,
 ) -> tuple[str, ...]:
-    return _with_legacy_payload_column(
+    return _with_fallback_payload_column(
         _SESSION_PROFILE_BASE_COLUMNS,
         _SESSION_PROFILE_PAYLOAD_COLUMNS,
-        has_legacy_payload=has_legacy_payload,
+        has_fallback_payload=has_fallback_payload,
     )
 
 
 def session_profile_insert_values(
     record: SessionProfileRecord,
     *,
-    has_legacy_payload: bool,
+    has_fallback_payload: bool,
 ) -> SqlBindings:
     base_values: list[SqlValue] = [
-        record.conversation_id,
-        record.logical_conversation_id,
+        record.session_id,
+        record.logical_session_id,
         record.materializer_version,
         record.materialized_at,
         record.source_updated_at,
@@ -328,14 +328,14 @@ def session_profile_insert_values(
     return _compose_bindings(
         base_values,
         payload_values,
-        has_legacy_payload=has_legacy_payload,
-        legacy_payload_json=_legacy_profile_payload_json(record),
+        has_fallback_payload=has_fallback_payload,
+        fallback_payload_json=_fallback_profile_payload_json(record),
     )
 
 
 def session_latency_profile_insert_values(record: SessionLatencyProfileRecord) -> SqlBindings:
     return (
-        record.conversation_id,
+        record.session_id,
         record.materializer_version,
         record.materialized_at,
         record.source_updated_at,
@@ -360,7 +360,7 @@ def session_latency_profile_insert_values(record: SessionLatencyProfileRecord) -
     )
 
 
-def _legacy_timeline_payload_json(
+def _fallback_timeline_payload_json(
     evidence_payload: BaseModel,
     inference_payload: BaseModel,
 ) -> str | None:
@@ -374,23 +374,23 @@ def _legacy_timeline_payload_json(
 
 def session_work_event_insert_columns(
     *,
-    has_legacy_payload: bool,
+    has_fallback_payload: bool,
 ) -> tuple[str, ...]:
-    return _with_legacy_payload_column(
+    return _with_fallback_payload_column(
         _SESSION_WORK_EVENT_BASE_COLUMNS,
         _TIMELINE_PAYLOAD_COLUMNS,
-        has_legacy_payload=has_legacy_payload,
+        has_fallback_payload=has_fallback_payload,
     )
 
 
 def session_work_event_insert_values(
     record: SessionWorkEventRecord,
     *,
-    has_legacy_payload: bool,
+    has_fallback_payload: bool,
 ) -> SqlBindings:
     base_values: list[SqlValue] = [
         record.event_id,
-        record.conversation_id,
+        record.session_id,
         record.materializer_version,
         record.materialized_at,
         record.source_updated_at,
@@ -422,30 +422,30 @@ def session_work_event_insert_values(
     return _compose_bindings(
         base_values,
         payload_values,
-        has_legacy_payload=has_legacy_payload,
-        legacy_payload_json=_legacy_timeline_payload_json(record.evidence_payload, record.inference_payload),
+        has_fallback_payload=has_fallback_payload,
+        fallback_payload_json=_fallback_timeline_payload_json(record.evidence_payload, record.inference_payload),
     )
 
 
 def session_phase_insert_columns(
     *,
-    has_legacy_payload: bool,
+    has_fallback_payload: bool,
 ) -> tuple[str, ...]:
-    return _with_legacy_payload_column(
+    return _with_fallback_payload_column(
         _SESSION_PHASE_BASE_COLUMNS,
         _TIMELINE_PAYLOAD_COLUMNS,
-        has_legacy_payload=has_legacy_payload,
+        has_fallback_payload=has_fallback_payload,
     )
 
 
 def session_phase_insert_values(
     record: SessionPhaseRecord,
     *,
-    has_legacy_payload: bool,
+    has_fallback_payload: bool,
 ) -> SqlBindings:
     base_values: list[SqlValue] = [
         record.phase_id,
-        record.conversation_id,
+        record.session_id,
         record.materializer_version,
         record.materialized_at,
         record.source_updated_at,
@@ -477,8 +477,8 @@ def session_phase_insert_values(
     return _compose_bindings(
         base_values,
         payload_values,
-        has_legacy_payload=has_legacy_payload,
-        legacy_payload_json=_legacy_timeline_payload_json(record.evidence_payload, record.inference_payload),
+        has_fallback_payload=has_fallback_payload,
+        fallback_payload_json=_fallback_timeline_payload_json(record.evidence_payload, record.inference_payload),
     )
 
 
@@ -520,9 +520,9 @@ def session_tag_rollup_insert_values(record: SessionTagRollupRecord) -> SqlBindi
         record.input_high_water_mark,
         record.input_high_water_mark_source,
         record.input_row_count,
-        record.conversation_count,
+        record.session_count,
         record.logical_session_count,
-        _json_array_or_none(record.logical_conversation_ids),
+        _json_array_or_none(record.logical_session_ids),
         record.explicit_count,
         record.auto_count,
         _json_or_none(record.repo_breakdown),
@@ -536,12 +536,12 @@ def session_tag_rollup_insert_values(record: SessionTagRollupRecord) -> SqlBindi
 
 
 def replace_session_profile_sync(conn: sqlite3.Connection, record: SessionProfileRecord) -> None:
-    conn.execute("DELETE FROM session_profiles WHERE conversation_id = ?", (record.conversation_id,))
-    has_legacy_payload = table_has_column(conn, "session_profiles", "payload_json")
-    columns = session_profile_insert_columns(has_legacy_payload=has_legacy_payload)
+    conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (record.session_id,))
+    has_fallback_payload = table_has_column(conn, "session_profiles", "payload_json")
+    columns = session_profile_insert_columns(has_fallback_payload=has_fallback_payload)
     conn.execute(
         build_insert_sql("session_profiles", columns),
-        session_profile_insert_values(record, has_legacy_payload=has_legacy_payload),
+        session_profile_insert_values(record, has_fallback_payload=has_fallback_payload),
     )
 
 
@@ -551,12 +551,12 @@ def replace_session_profiles_bulk_sync(
 ) -> None:
     if not records:
         return
-    _delete_where_in(conn, "session_profiles", "conversation_id", [record.conversation_id for record in records])
-    has_legacy_payload = table_has_column(conn, "session_profiles", "payload_json")
-    columns = session_profile_insert_columns(has_legacy_payload=has_legacy_payload)
+    _delete_where_in(conn, "session_profiles", "session_id", [record.session_id for record in records])
+    has_fallback_payload = table_has_column(conn, "session_profiles", "payload_json")
+    columns = session_profile_insert_columns(has_fallback_payload=has_fallback_payload)
     conn.executemany(
         build_insert_sql("session_profiles", columns),
-        [session_profile_insert_values(record, has_legacy_payload=has_legacy_payload) for record in records],
+        [session_profile_insert_values(record, has_fallback_payload=has_fallback_payload) for record in records],
     )
 
 
@@ -566,9 +566,7 @@ def replace_session_latency_profiles_bulk_sync(
 ) -> None:
     if not records:
         return
-    _delete_where_in(
-        conn, "session_latency_profiles", "conversation_id", [record.conversation_id for record in records]
-    )
+    _delete_where_in(conn, "session_latency_profiles", "session_id", [record.session_id for record in records])
     conn.executemany(
         build_insert_sql("session_latency_profiles", _SESSION_LATENCY_PROFILE_COLUMNS),
         [session_latency_profile_insert_values(record) for record in records],
@@ -582,65 +580,65 @@ def replace_session_latency_profiles_bulk_sync(
 
 def replace_session_work_events_sync(
     conn: sqlite3.Connection,
-    conversation_id: str,
+    session_id: str,
     records: Sequence[SessionWorkEventRecord],
 ) -> None:
-    conn.execute("DELETE FROM session_work_events WHERE conversation_id = ?", (conversation_id,))
+    conn.execute("DELETE FROM session_work_events WHERE session_id = ?", (session_id,))
     if records:
-        has_legacy_payload = table_has_column(conn, "session_work_events", "payload_json")
-        columns = session_work_event_insert_columns(has_legacy_payload=has_legacy_payload)
+        has_fallback_payload = table_has_column(conn, "session_work_events", "payload_json")
+        columns = session_work_event_insert_columns(has_fallback_payload=has_fallback_payload)
         conn.executemany(
             build_insert_sql("session_work_events", columns),
-            [session_work_event_insert_values(record, has_legacy_payload=has_legacy_payload) for record in records],
+            [session_work_event_insert_values(record, has_fallback_payload=has_fallback_payload) for record in records],
         )
 
 
 def replace_session_work_events_bulk_sync(
     conn: sqlite3.Connection,
-    records_by_conversation: Mapping[str, Sequence[SessionWorkEventRecord]],
+    records_by_session: Mapping[str, Sequence[SessionWorkEventRecord]],
 ) -> None:
-    if not records_by_conversation:
+    if not records_by_session:
         return
-    _delete_where_in(conn, "session_work_events", "conversation_id", tuple(records_by_conversation))
-    records = [record for conversation_records in records_by_conversation.values() for record in conversation_records]
+    _delete_where_in(conn, "session_work_events", "session_id", tuple(records_by_session))
+    records = [record for session_records in records_by_session.values() for record in session_records]
     if records:
-        has_legacy_payload = table_has_column(conn, "session_work_events", "payload_json")
-        columns = session_work_event_insert_columns(has_legacy_payload=has_legacy_payload)
+        has_fallback_payload = table_has_column(conn, "session_work_events", "payload_json")
+        columns = session_work_event_insert_columns(has_fallback_payload=has_fallback_payload)
         conn.executemany(
             build_insert_sql("session_work_events", columns),
-            [session_work_event_insert_values(record, has_legacy_payload=has_legacy_payload) for record in records],
+            [session_work_event_insert_values(record, has_fallback_payload=has_fallback_payload) for record in records],
         )
 
 
 def replace_session_phases_sync(
     conn: sqlite3.Connection,
-    conversation_id: str,
+    session_id: str,
     records: Sequence[SessionPhaseRecord],
 ) -> None:
-    conn.execute("DELETE FROM session_phases WHERE conversation_id = ?", (conversation_id,))
+    conn.execute("DELETE FROM session_phases WHERE session_id = ?", (session_id,))
     if records:
-        has_legacy_payload = table_has_column(conn, "session_phases", "payload_json")
-        columns = session_phase_insert_columns(has_legacy_payload=has_legacy_payload)
+        has_fallback_payload = table_has_column(conn, "session_phases", "payload_json")
+        columns = session_phase_insert_columns(has_fallback_payload=has_fallback_payload)
         conn.executemany(
             build_insert_sql("session_phases", columns),
-            [session_phase_insert_values(record, has_legacy_payload=has_legacy_payload) for record in records],
+            [session_phase_insert_values(record, has_fallback_payload=has_fallback_payload) for record in records],
         )
 
 
 def replace_session_phases_bulk_sync(
     conn: sqlite3.Connection,
-    records_by_conversation: Mapping[str, Sequence[SessionPhaseRecord]],
+    records_by_session: Mapping[str, Sequence[SessionPhaseRecord]],
 ) -> None:
-    if not records_by_conversation:
+    if not records_by_session:
         return
-    _delete_where_in(conn, "session_phases", "conversation_id", tuple(records_by_conversation))
-    records = [record for conversation_records in records_by_conversation.values() for record in conversation_records]
+    _delete_where_in(conn, "session_phases", "session_id", tuple(records_by_session))
+    records = [record for session_records in records_by_session.values() for record in session_records]
     if records:
-        has_legacy_payload = table_has_column(conn, "session_phases", "payload_json")
-        columns = session_phase_insert_columns(has_legacy_payload=has_legacy_payload)
+        has_fallback_payload = table_has_column(conn, "session_phases", "payload_json")
+        columns = session_phase_insert_columns(has_fallback_payload=has_fallback_payload)
         conn.executemany(
             build_insert_sql("session_phases", columns),
-            [session_phase_insert_values(record, has_legacy_payload=has_legacy_payload) for record in records],
+            [session_phase_insert_values(record, has_fallback_payload=has_fallback_payload) for record in records],
         )
 
 
@@ -753,9 +751,9 @@ def replace_session_tag_rollup_rows_sync(
                     "input_high_water_mark",
                     "input_high_water_mark_source",
                     "input_row_count",
-                    "conversation_count",
+                    "session_count",
                     "logical_session_count",
-                    "logical_conversation_ids_json",
+                    "logical_session_ids_json",
                     "explicit_count",
                     "auto_count",
                     "repo_breakdown_json",

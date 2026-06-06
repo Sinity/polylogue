@@ -1,0 +1,9 @@
+Usage: polylogue recent [OPTIONS]
+
+  List the most recently updated sessions.
+
+Options:
+  -n, --limit INTEGER  Maximum sessions to list.  [default: 10]
+  -p, --provider TEXT  Filter by provider.
+  -f, --format TEXT    Output format: json, ndjson, yaml, csv.
+  --help               Show this message and exit.

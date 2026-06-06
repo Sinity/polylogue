@@ -9,7 +9,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, cast
 
-from polylogue.paths import db_path as default_db_path
+from polylogue.paths import active_index_db_path as default_db_path
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 REPORT_VERSION = 1

@@ -98,9 +98,9 @@ class OperationCatalog:
 
 RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec(
-        name="acquire-raw-conversations",
+        name="acquire-raw-sessions",
         kind=OperationKind.MATERIALIZATION,
-        description="Traverse configured sources, detect provider-shaped payloads, and persist raw conversation records plus artifact observations.",
+        description="Traverse configured sources, detect provider-shaped payloads, and persist raw session records plus artifact observations.",
         consumes=("configured_sources", "source_payload_stream"),
         produces=("raw_validation_state", "artifact_observation_rows"),
         path_targets=("source-acquisition-loop",),
@@ -148,16 +148,16 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="ingest-archive-runtime",
         kind=OperationKind.MATERIALIZATION,
         description=(
-            "Decode, validate, parse, transform, and persist raw conversations into the durable archive runtime tables."
+            "Decode, validate, parse, transform, and persist raw sessions into the durable archive runtime tables."
         ),
         consumes=("raw_validation_state", "validation_backlog", "parse_backlog"),
-        produces=("raw_validation_state", "archive_conversation_rows"),
+        produces=("raw_validation_state", "archive_session_rows"),
         path_targets=("raw-archive-ingest-loop",),
         code_refs=(
             "polylogue.pipeline.services.parsing_workflow.parse_from_raw",
             "polylogue.pipeline.prepare.prepare_records",
             "polylogue.pipeline.prepare.persist_prepared_bundle",
-            "polylogue.storage.repository.archive.writes.conversations.save_via_backend",
+            "polylogue.storage.repository.archive.writes.sessions.save_via_backend",
             "polylogue.storage.repository.raw.repository_raw.RepositoryRawMixin.mark_raw_validated",
             "polylogue.storage.repository.raw.repository_raw.RepositoryRawMixin.mark_raw_parsed",
         ),
@@ -171,7 +171,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Build or repair lexical message FTS rows from persisted archive messages.",
         consumes=("message_source_rows",),
         produces=("message_fts",),
-        path_targets=("message-fts-readiness-loop", "conversation-query-loop"),
+        path_targets=("message-fts-readiness-loop", "session-query-loop"),
         code_refs=(
             "polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync",
             "polylogue.storage.fts.fts_lifecycle.repair_fts_index_sync",
@@ -184,8 +184,8 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec(
         name="materialize-transcript-embeddings",
         kind=OperationKind.MATERIALIZATION,
-        description="Build or refresh transcript embedding metadata, conversation status rows, and semantic vector entries from archive conversations.",
-        consumes=("archive_conversation_rows",),
+        description="Build or refresh transcript embedding metadata, session status rows, and semantic vector entries from archive sessions.",
+        consumes=("archive_session_rows",),
         produces=("embedding_metadata_rows", "embedding_status_rows", "message_embedding_vectors"),
         path_targets=("embedding-materialization-loop",),
         code_refs=(
@@ -213,16 +213,16 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead", "DbWrite"),
     ),
     OperationSpec(
-        name="query-conversations",
+        name="query-sessions",
         kind=OperationKind.QUERY,
-        description="Resolve conversation-level query and search results from archive retrieval plans.",
+        description="Resolve session-level query and search results from archive retrieval plans.",
         consumes=("message_fts",),
-        produces=("conversation_query_results",),
-        path_targets=("conversation-query-loop",),
+        produces=("session_query_results",),
+        path_targets=("session-query-loop",),
         code_refs=(
-            "polylogue.operations.archive.ArchiveSearchMixin.query_conversations",
-            "polylogue.operations.archive.ArchiveSearchMixin.search",
-            "polylogue.archive.query.plan_execution",
+            "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.list_summaries",
+            "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.search_summaries",
+            "polylogue.archive.query.archive_execution",
         ),
         surfaces=("query", "facade", "mcp"),
         previewable=True,
@@ -247,8 +247,8 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec(
         name="materialize-session-insights",
         kind=OperationKind.MATERIALIZATION,
-        description="Build durable session-insight rows and their trigger-maintained FTS projections from archive conversations.",
-        consumes=("session_insight_source_conversations",),
+        description="Build durable session-insight rows and their trigger-maintained FTS projections from archive sessions.",
+        consumes=("session_insight_source_sessions",),
         produces=(
             "session_profile_rows",
             "session_work_event_rows",
@@ -263,7 +263,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         path_targets=("session-insight-repair-loop",),
         code_refs=(
             "polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync",
-            "polylogue.storage.insights.session.refresh.refresh_session_insights_for_conversation_async",
+            "polylogue.storage.insights.session.refresh.refresh_session_insights_for_session_async",
         ),
         surfaces=("daemon", "insights", "doctor", "repair"),
         mutates_state=True,
@@ -335,7 +335,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         produces=("session_profile_results",),
         path_targets=("session-profile-query-loop",),
         code_refs=(
-            "polylogue.operations.archive.ArchiveInsightMixin.list_session_profile_insights",
+            "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.list_session_profile_insights",
             "polylogue.cli.commands.insights",
         ),
         surfaces=("insights", "facade", "mcp"),
@@ -350,7 +350,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         produces=("session_work_event_results",),
         path_targets=("session-work-event-query-loop",),
         code_refs=(
-            "polylogue.operations.archive.ArchiveInsightMixin.list_session_work_event_insights",
+            "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.list_session_work_event_insights",
             "polylogue.cli.commands.insights",
         ),
         surfaces=("insights", "facade", "mcp"),
@@ -365,7 +365,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         produces=("session_phase_results",),
         path_targets=("session-phase-query-loop",),
         code_refs=(
-            "polylogue.operations.archive.ArchiveInsightMixin.list_session_phase_insights",
+            "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.list_session_phase_insights",
             "polylogue.cli.commands.insights",
         ),
         surfaces=("insights", "facade", "mcp"),
@@ -380,7 +380,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         produces=("work_thread_results",),
         path_targets=("work-thread-query-loop",),
         code_refs=(
-            "polylogue.operations.archive.ArchiveInsightMixin.list_work_thread_insights",
+            "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.list_work_thread_insights",
             "polylogue.cli.commands.insights",
         ),
         surfaces=("insights", "facade", "mcp"),
@@ -395,7 +395,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         produces=("session_tag_rollup_results",),
         path_targets=("session-tag-rollup-query-loop",),
         code_refs=(
-            "polylogue.operations.archive.ArchiveInsightMixin.list_session_tag_rollup_insights",
+            "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.list_session_tag_rollup_insights",
             "polylogue.cli.commands.insights",
         ),
         surfaces=("insights", "facade", "mcp"),
@@ -410,7 +410,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         produces=("session_insight_status_results",),
         path_targets=("session-insight-status-query-loop",),
         code_refs=(
-            "polylogue.operations.archive.ArchiveStatsMixin.get_session_insight_status",
+            "polylogue.api.archive.PolylogueArchiveMixin.get_session_insight_status",
             "polylogue.cli.commands.insights",
         ),
         surfaces=("insights", "facade", "mcp"),
@@ -421,11 +421,11 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="query-archive-coverage",
         kind=OperationKind.QUERY,
         description="Resolve provider, day, or week archive coverage rollups from durable archive and session-profile rows.",
-        consumes=("archive_conversation_rows", "session_profile_rows"),
+        consumes=("archive_session_rows", "session_profile_rows"),
         produces=("archive_coverage_results",),
         path_targets=("archive-coverage-query-loop",),
         code_refs=(
-            "polylogue.operations.archive.ArchiveInsightMixin.list_archive_coverage_insights",
+            "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.list_archive_coverage_insights",
             "polylogue.cli.commands.insights",
             "polylogue.cli.shared.helper_summary",
         ),
@@ -441,7 +441,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         produces=("tool_usage_results",),
         path_targets=("tool-usage-query-loop",),
         code_refs=(
-            "polylogue.operations.archive.ArchiveInsightMixin.list_tool_usage_insights",
+            "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.list_tool_usage_insights",
             "polylogue.cli.commands.insights",
         ),
         surfaces=("insights", "facade", "mcp"),
@@ -456,7 +456,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         produces=("archive_debt_results",),
         path_targets=("archive-debt-query-loop",),
         code_refs=(
-            "polylogue.operations.archive.ArchiveInsightDebtMixin.list_archive_debt_insights",
+            "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.list_archive_debt_insights",
             "polylogue.cli.commands.insights",
         ),
         surfaces=("insights", "facade", "mcp", "maintenance"),
@@ -526,9 +526,9 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec(
         name="mutate-add-tag",
         kind=OperationKind.MAINTENANCE,
-        description="Add a tag to one conversation. Idempotent — returns unchanged when the tag is already present.",
-        consumes=("conversation_metadata",),
-        produces=("conversation_tags",),
+        description="Add a tag to one session. Idempotent — returns unchanged when the tag is already present.",
+        consumes=("session_metadata",),
+        produces=("session_tags",),
         path_targets=("tag-mutation-loop",),
         code_refs=(
             "polylogue.storage.repository.archive.repository_writes.RepositoryWriteMixin.add_tag",
@@ -543,9 +543,9 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec(
         name="mutate-remove-tag",
         kind=OperationKind.MAINTENANCE,
-        description="Remove a tag from one conversation. Idempotent — returns not-found when the tag is absent.",
-        consumes=("conversation_tags",),
-        produces=("conversation_tags",),
+        description="Remove a tag from one session. Idempotent — returns not-found when the tag is absent.",
+        consumes=("session_tags",),
+        produces=("session_tags",),
         path_targets=("tag-mutation-loop",),
         code_refs=(
             "polylogue.storage.repository.archive.repository_writes.RepositoryWriteMixin.remove_tag",
@@ -558,15 +558,15 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead", "DbWrite"),
     ),
     OperationSpec(
-        name="mutate-bulk-tag-conversations",
+        name="mutate-bulk-tag-sessions",
         kind=OperationKind.MAINTENANCE,
-        description="Apply tags to multiple conversations in one transaction. Returns affected and skipped counts.",
-        consumes=("conversation_tags",),
-        produces=("conversation_tags",),
+        description="Apply tags to multiple sessions in one transaction. Returns affected and skipped counts.",
+        consumes=("session_tags",),
+        produces=("session_tags",),
         path_targets=("tag-mutation-loop",),
         code_refs=(
             "polylogue.storage.repository.archive.repository_writes.RepositoryWriteMixin.bulk_add_tags",
-            "polylogue.mcp.server_mutation_tools.bulk_tag_conversations",
+            "polylogue.mcp.server_mutation_tools.bulk_tag_sessions",
         ),
         surfaces=("mcp", "api"),
         mutates_state=True,
@@ -576,9 +576,9 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec(
         name="mutate-set-metadata",
         kind=OperationKind.MAINTENANCE,
-        description="Set a metadata key on one conversation. Idempotent — returns unchanged when the value matches.",
-        consumes=("conversation_metadata",),
-        produces=("conversation_metadata",),
+        description="Set a metadata key on one session. Idempotent — returns unchanged when the value matches.",
+        consumes=("session_metadata",),
+        produces=("session_metadata",),
         path_targets=("metadata-mutation-loop",),
         code_refs=(
             "polylogue.storage.repository.archive.repository_writes.RepositoryWriteMixin.update_metadata",
@@ -593,9 +593,9 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec(
         name="mutate-delete-metadata",
         kind=OperationKind.MAINTENANCE,
-        description="Delete a metadata key from one conversation. Idempotent — returns not-found when the key is absent.",
-        consumes=("conversation_metadata",),
-        produces=("conversation_metadata",),
+        description="Delete a metadata key from one session. Idempotent — returns not-found when the key is absent.",
+        consumes=("session_metadata",),
+        produces=("session_metadata",),
         path_targets=("metadata-mutation-loop",),
         code_refs=(
             "polylogue.storage.repository.archive.repository_writes.RepositoryWriteMixin.delete_metadata",
@@ -607,16 +607,16 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead", "DbWrite"),
     ),
     OperationSpec(
-        name="mutate-delete-conversation",
+        name="mutate-delete-session",
         kind=OperationKind.MAINTENANCE,
-        description="Permanently delete one conversation and all associated data. Guarded by a confirm flag on all surfaces.",
-        consumes=("archive_conversation_rows",),
-        produces=("archive_deleted_conversation",),
-        path_targets=("conversation-delete-loop",),
+        description="Permanently delete one session and all associated data. Guarded by a confirm flag on all surfaces.",
+        consumes=("archive_session_rows",),
+        produces=("archive_deleted_session",),
+        path_targets=("session-delete-loop",),
         code_refs=(
-            "polylogue.storage.repository.archive.writes.conversations.delete_conversation_via_backend",
-            "polylogue.api.archive.PolylogueArchiveMixin.delete_conversation",
-            "polylogue.mcp.server_mutation_tools.delete_conversation",
+            "polylogue.storage.repository.archive.writes.sessions.delete_session_via_backend",
+            "polylogue.api.archive.PolylogueArchiveMixin.delete_session",
+            "polylogue.mcp.server_mutation_tools.delete_session",
         ),
         surfaces=("facade", "cli", "mcp", "daemon"),
         mutates_state=True,
@@ -678,7 +678,7 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec(
         name="benchmark.query.search-filters",
         kind=OperationKind.BENCHMARK,
-        description="Measure the canonical FTS and ConversationFilter query benchmark domain.",
+        description="Measure the canonical FTS and SessionFilter query benchmark domain.",
         surfaces=("benchmark-campaign",),
         previewable=True,
         effects=("DbRead",),

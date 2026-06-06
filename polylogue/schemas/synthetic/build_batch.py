@@ -15,7 +15,7 @@ from polylogue.schemas.synthetic.models import (
 )
 from polylogue.schemas.synthetic.relations import RelationConstraintSolver
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
-from polylogue.schemas.synthetic.showcase import _SHOWCASE_THEMES, ConversationTheme
+from polylogue.schemas.synthetic.showcase import _SHOWCASE_THEMES, SessionTheme
 from polylogue.schemas.synthetic.wire_formats import WireFormat
 
 
@@ -33,7 +33,7 @@ class _SyntheticBatchContext(Protocol):
         n_messages: int,
         rng: random.Random,
         *,
-        theme: ConversationTheme | None = None,
+        theme: SessionTheme | None = None,
     ) -> list[dict[str, JSONValue]]: ...
 
     def _generate_tree_json(
@@ -41,7 +41,7 @@ class _SyntheticBatchContext(Protocol):
         n_messages: int,
         rng: random.Random,
         *,
-        theme: ConversationTheme | None = None,
+        theme: SessionTheme | None = None,
     ) -> dict[str, JSONValue]: ...
 
     def _generate_linear_json(
@@ -49,7 +49,7 @@ class _SyntheticBatchContext(Protocol):
         n_messages: int,
         rng: random.Random,
         *,
-        theme: ConversationTheme | None = None,
+        theme: SessionTheme | None = None,
     ) -> dict[str, JSONValue]: ...
 
     def _generate_from_schema(self, schema: SchemaRecord, rng: random.Random) -> JSONValue: ...
@@ -78,7 +78,7 @@ def _as_json_value(value: object) -> JSONValue:
 def generate_batch(
     self: _SyntheticBatchContext,
     count: int = 5,
-    messages_per_conversation: range = range(3, 15),
+    messages_per_session: range = range(3, 15),
     seed: int | None = None,
     style: str = "default",
 ) -> SyntheticGenerationBatch:
@@ -89,9 +89,9 @@ def generate_batch(
     for _ in range(count):
         self._relation_solver = RelationConstraintSolver(self.schema)
         self._semantic_gen = None
-        n_messages = rng.choice(messages_per_conversation)
+        n_messages = rng.choice(messages_per_session)
         theme = rng.choice(_SHOWCASE_THEMES) if resolved_style == "showcase" else None
-        data = _generate_conversation(self, n_messages, rng, theme=theme)
+        data = _generate_session(self, n_messages, rng, theme=theme)
         if resolved_style == "tool-heavy":
             data = _add_tool_heavy_blocks(self.provider, data)
         artifacts.append(
@@ -175,12 +175,12 @@ def _record_role(provider: str, record: dict[str, JSONValue]) -> str | None:
     return role if isinstance(role, str) else None
 
 
-def _generate_conversation(
+def _generate_session(
     self: _SyntheticBatchContext,
     n_messages: int,
     rng: random.Random,
     *,
-    theme: ConversationTheme | None = None,
+    theme: SessionTheme | None = None,
 ) -> JSONValue:
     wf = self.wire_format
     if wf.encoding == "jsonl":
@@ -216,7 +216,7 @@ def _role_cycle(self: _SyntheticBatchContext) -> list[str]:
 
 
 __all__ = [
-    "_generate_conversation",
+    "_generate_session",
     "_role_cycle",
     "generate_batch",
 ]

@@ -6,15 +6,15 @@ fails if the surface drifts out of compliance with the Protocol.
 
 Usage::
 
-    from polylogue.api.contracts import ConversationListSurface, assert_implements
+    from polylogue.api.contracts import SessionListSurface, assert_implements
 
     class MyAPIListAdapter:
-        async def list_conversations(
-            self, spec: ConversationQuerySpec
-        ) -> ConversationListResponse:
+        async def list_sessions(
+            self, spec: SessionQuerySpec
+        ) -> SessionListResponse:
             ...
 
-    assert_implements(MyAPIListAdapter, ConversationListSurface)
+    assert_implements(MyAPIListAdapter, SessionListSurface)
 
 The function is a no-op at runtime; its sole purpose is to materialize the
 ``isinstance``/``issubclass``-style conformance check for the type

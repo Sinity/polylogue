@@ -2,7 +2,7 @@
 
 Schema elements under `schemas/providers/<provider>/` carry
 `x-polylogue-semantic-role` annotations that describe the semantic
-role of each JSON path (e.g., `message_role`, `conversation_title`,
+role of each JSON path (e.g., `message_role`, `session_title`,
 `message_timestamp`).
 
 ## Review process

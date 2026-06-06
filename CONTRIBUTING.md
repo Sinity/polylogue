@@ -91,10 +91,10 @@ serve history.
 
 ## Schema-Touching Changes
 
-Polylogue has no schema migration chain. A PR that bumps
+Polylogue has no in-place schema upgrade chain. A PR that bumps
 `SCHEMA_VERSION` or otherwise changes the canonical SQLite shape is
-not a migration — it is a deletes-then-defines edit of `SCHEMA_DDL`.
-The PR body must replace the usual "migration plan" section with a
+not an in-place storage upgrade — it is a deletes-then-defines edit of `SCHEMA_DDL`.
+The PR body must replace any upgrade-path section with a
 **re-ingest plan**:
 
 - which user-visible archive operation triggers re-acquisition from

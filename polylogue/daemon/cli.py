@@ -92,14 +92,50 @@ def _enable_faulthandler_if_supported() -> None:
         faulthandler.enable()
 
 
+def _active_index_db_path() -> Path:
+    """Return the currently active archive database for daemon maintenance."""
+    from polylogue.paths import active_index_db_path
+
+    return active_index_db_path()
+
+
+def _heartbeat_counts(db: Path) -> tuple[int, int, str]:
+    """Return session and message counts for the current archive."""
+    from polylogue.storage.sqlite.connection_profile import open_connection
+
+    conn = open_connection(db, timeout=5.0)
+    try:
+        tables = {
+            str(row[0])
+            for row in conn.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'table'
+                  AND name IN ('sessions', 'sessions', 'messages')
+                """
+            ).fetchall()
+        }
+        if "sessions" in tables:
+            n_sessions = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] or 0)
+            n_messages = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] or 0)
+            return n_sessions, n_messages, "sessions"
+        if "sessions" in tables:
+            n_sessions = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] or 0)
+            n_messages = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] or 0)
+            return n_sessions, n_messages, "sessions"
+        return 0, 0, "sessions" if db.name == "index.db" else "sessions"
+    finally:
+        conn.close()
+
+
 async def _periodic_wal_checkpoint() -> None:
     """Run WAL checkpoint every 5 minutes to keep the WAL file bounded."""
-    from polylogue.paths import db_path
     from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_wal
 
-    db = db_path()
     while True:
         await asyncio.sleep(300)
+        db = _active_index_db_path()
         if not db.exists():
             continue
         try:
@@ -137,26 +173,19 @@ async def _periodic_status_snapshot_refresh() -> None:
 
 async def _periodic_heartbeat() -> None:
     """Log daemon heartbeat with archive stats every 15 minutes."""
-    from polylogue.paths import db_path
-    from polylogue.storage.sqlite.connection_profile import open_connection
-
-    db = db_path()
     while True:
         await asyncio.sleep(900)  # 15 minutes
+        db = _active_index_db_path()
         if not db.exists():
             continue
         try:
-            conn = open_connection(db, timeout=5.0)
-            try:
-                n_conv = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
-                n_msg = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-                logger.info(
-                    "daemon heartbeat: %d conversations, %d messages indexed",
-                    n_conv,
-                    n_msg,
-                )
-            finally:
-                conn.close()
+            n_sessions, n_messages, noun = await asyncio.to_thread(_heartbeat_counts, db)
+            logger.info(
+                "daemon heartbeat: %d %s, %d messages indexed",
+                n_sessions,
+                noun,
+                n_messages,
+            )
         except Exception:
             logger.warning("daemon: heartbeat query failed", exc_info=True)
 
@@ -171,12 +200,11 @@ async def _periodic_db_optimize() -> None:
     considers planner-stat maintenance; otherwise a large archive can pay
     broad read IO at the exact moment live catch-up already needs the disk.
     """
-    from polylogue.paths import db_path
     from polylogue.storage.sqlite.connection_profile import open_connection
 
-    db = db_path()
     while True:
         await asyncio.sleep(86_400)  # 24 hours; no startup optimize.
+        db = _active_index_db_path()
         if not db.exists():
             continue
         try:
@@ -200,10 +228,9 @@ def _sweep_orphaned_blob_leases_sync() -> None:
     startup counterpart to ``CursorStore._mark_interrupted_attempts`` for
     ``live_ingest_attempt``.
     """
-    from polylogue.paths import db_path
     from polylogue.storage.blob_gc import sweep_orphaned_blob_leases
 
-    db = db_path()
+    db = _active_index_db_path()
     if not db.exists():
         return
     try:
@@ -221,9 +248,7 @@ async def _sweep_orphaned_blob_leases() -> None:
 
 async def _periodic_convergence_check(sources: tuple[WatchSource, ...]) -> None:
     """Periodically retry recorded derived convergence debt."""
-    from polylogue.paths import db_path
-
-    db = db_path()
+    db = _active_index_db_path()
     while True:
         await asyncio.sleep(_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS)
         if not db.exists():
@@ -252,24 +277,22 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
     due_debt = [
         debt
         for debt in cursor.list_convergence_debt(limit=limit)
-        if debt.subject_type in {"source_path", "conversation_id"} and _debt_retry_due(debt, now=now)
+        if debt.subject_type in {"source_path", "session_id"} and _debt_retry_due(debt, now=now)
     ]
     if not due_debt:
         return 0
-    conversation_ids = tuple(
-        dict.fromkeys(debt.subject_id for debt in due_debt if debt.subject_type == "conversation_id")
-    )
+    session_ids = tuple(dict.fromkeys(debt.subject_id for debt in due_debt if debt.subject_type == "session_id"))
     paths = tuple(dict.fromkeys([Path(debt.subject_id) for debt in due_debt if debt.subject_type == "source_path"]))
-    if not paths and not conversation_ids:
+    if not paths and not session_ids:
         return 0
     converger = DaemonConverger(stages=make_default_convergence_stages(db), max_workers=2)
     path_states, _path_timings = converger.converge_batch(paths)
-    conversation_states, _conversation_timings = converger.converge_conversations(conversation_ids)
+    session_states, _session_timings = converger.converge_sessions(session_ids)
     retried = 0
     for debt in due_debt:
         subject_states: list[object | None]
-        if debt.subject_type == "conversation_id":
-            subject_states = [conversation_states.get(debt.subject_id)]
+        if debt.subject_type == "session_id":
+            subject_states = [session_states.get(debt.subject_id)]
         else:
             subject_states = [path_states.get(Path(debt.subject_id))]
         converged = all(state is not None and bool(getattr(state, "converged", False)) for state in subject_states)
@@ -385,13 +408,13 @@ def _emit_live_batch_event(kind: str, payload: dict[str, object]) -> None:
     The legacy ``ingestion_batch`` kind is preserved verbatim for existing
     consumers (status views, polling fallback). When the batch payload
     carries succeeded counts we additionally emit per-topic events
-    (``conversation.appended`` / ``message.appended``) so the reader can
+    (``session.appended`` / ``message.appended``) so the reader can
     subscribe selectively and animate just-touched rows.
     """
     from polylogue.daemon.events import (
-        emit_conversation_appended,
         emit_daemon_event,
         emit_message_appended,
+        emit_session_appended,
     )
 
     emit_daemon_event(kind, payload=payload)
@@ -410,13 +433,13 @@ def _emit_live_batch_event(kind: str, payload: dict[str, object]) -> None:
     # payload carries today. Emit one aggregate granular event per batch;
     # source-level fan-out can be added once the metrics payload exposes
     # per-source success counts (deferred — tracked under #1204 follow-ups).
-    emit_conversation_appended(
+    emit_session_appended(
         source_name=None,
         succeeded_file_count=succeeded,
         failed_file_count=failed,
     )
     emit_message_appended(
-        conversation_id=None,
+        session_id=None,
         source_name=None,
         appended_count=succeeded,
     )
@@ -487,7 +510,7 @@ async def run_daemon_services(
         )
         set_degraded(
             DegradedReason(
-                code="schema_incompatible",
+                code="schema_version_mismatch",
                 message=schema_alert.message,
                 detail={"check_name": schema_alert.check_name},
             )
@@ -552,9 +575,8 @@ async def run_daemon_services(
         # refresh derived state after successful writes.
         from polylogue.daemon.convergence import DaemonConverger
         from polylogue.daemon.convergence_stages import make_default_convergence_stages
-        from polylogue.paths import db_path
 
-        _db = db_path()
+        _db = _active_index_db_path()
 
         if not watcher_blocked:
             converger = DaemonConverger(

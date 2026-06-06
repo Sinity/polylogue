@@ -43,8 +43,8 @@ def _typed_payload_columns(mode: str, *names: str) -> dict[str, object]:
 
 
 @pytest.mark.parametrize("typed_payload_mode", ["missing", "empty"], ids=["missing-columns", "empty-columns"])
-def test_row_to_session_profile_record_falls_back_to_legacy_payloads(typed_payload_mode: str) -> None:
-    legacy_payload = {
+def test_row_to_session_profile_record_falls_back_to_fallback_payloads(typed_payload_mode: str) -> None:
+    fallback_payload = {
         "created_at": "2026-04-10T09:00:00+00:00",
         "updated_at": "2026-04-10T09:05:00+00:00",
         "first_message_at": "2026-04-10T09:00:00+00:00",
@@ -84,17 +84,17 @@ def test_row_to_session_profile_record_falls_back_to_legacy_payloads(typed_paylo
     }
     row = _make_row(
         {
-            "conversation_id": "conv-profile-legacy",
+            "session_id": "conv-profile-fallback",
             "materialized_at": "2026-04-10T09:06:00+00:00",
             "source_name": "claude-code",
-            "title": "Legacy Profile",
+            "title": "Fallback Profile",
             "message_count": 12,
             "repo_paths_json": json.dumps(["/workspace/polylogue/app.py", "/workspace/polylogue/tests.py"]),
             "repo_names_json": json.dumps(["polylogue"]),
             "tags_json": json.dumps(["urgent"]),
             "auto_tags_json": json.dumps(["bugfix"]),
-            "search_text": "legacy profile search text",
-            "payload_json": json.dumps(legacy_payload),
+            "search_text": "fallback profile search text",
+            "payload_json": json.dumps(fallback_payload),
             **_typed_payload_columns(
                 typed_payload_mode,
                 "evidence_payload_json",
@@ -106,17 +106,17 @@ def test_row_to_session_profile_record_falls_back_to_legacy_payloads(typed_paylo
 
     record = _row_to_session_profile_record(row)
 
-    assert str(record.conversation_id) == "conv-profile-legacy"
+    assert str(record.session_id) == "conv-profile-fallback"
     assert record.source_name == "claude-code"
-    assert record.title == "Legacy Profile"
+    assert record.title == "Fallback Profile"
     assert record.repo_paths == ("/workspace/polylogue/app.py", "/workspace/polylogue/tests.py")
-    assert record.search_text == "legacy profile search text"
+    assert record.search_text == "fallback profile search text"
 
     assert record.evidence_payload.created_at == "2026-04-10T09:00:00+00:00"
     assert record.evidence_payload.tool_categories == {"read": 2, "edit": 1}
     assert record.inference_payload.support_level == "strong"
     assert record.inference_payload.auto_tags == ("bugfix",)
-    assert record.enrichment_payload.intent_summary == "Legacy Profile"
+    assert record.enrichment_payload.intent_summary == "Fallback Profile"
     assert record.enrichment_payload.support_signals == ("user_turns", "action_events")
     assert record.enrichment_payload.input_band_summary == {
         "user_turns": 0,
@@ -127,7 +127,7 @@ def test_row_to_session_profile_record_falls_back_to_legacy_payloads(typed_paylo
     }
 
 
-def test_row_to_session_profile_record_normalizes_legacy_typed_inference_events() -> None:
+def test_row_to_session_profile_record_normalizes_fallback_typed_inference_events() -> None:
     inference_payload = {
         "repo_names": [],
         "work_event_count": 1,
@@ -159,16 +159,16 @@ def test_row_to_session_profile_record_normalizes_legacy_typed_inference_events(
     }
     row = _make_row(
         {
-            "conversation_id": "conv-profile-typed-legacy",
+            "session_id": "conv-profile-typed-fallback",
             "materialized_at": "2026-05-07T09:06:00+00:00",
             "source_name": "codex",
-            "title": "Typed legacy profile",
+            "title": "Typed fallback profile",
             "message_count": 3,
             "repo_paths_json": "[]",
             "repo_names_json": "[]",
             "tags_json": "[]",
             "auto_tags_json": json.dumps(["provider:codex"]),
-            "search_text": "typed legacy profile search text",
+            "search_text": "typed fallback profile search text",
             "payload_json": "{}",
             "evidence_payload_json": "{}",
             "inference_payload_json": json.dumps(inference_payload),
@@ -183,8 +183,8 @@ def test_row_to_session_profile_record_normalizes_legacy_typed_inference_events(
 
 
 @pytest.mark.parametrize("typed_payload_mode", ["missing", "empty"], ids=["missing-columns", "empty-columns"])
-def test_row_to_session_work_event_record_falls_back_to_legacy_payloads(typed_payload_mode: str) -> None:
-    legacy_payload = {
+def test_row_to_session_work_event_record_falls_back_to_fallback_payloads(typed_payload_mode: str) -> None:
+    fallback_payload = {
         "start_index": 3,
         "end_index": 7,
         "start_time": "2026-04-11T10:00:00+00:00",
@@ -198,26 +198,26 @@ def test_row_to_session_work_event_record_falls_back_to_legacy_payloads(typed_pa
     }
     row = _make_row(
         {
-            "event_id": "event-legacy",
-            "conversation_id": "conv-event-legacy",
+            "event_id": "event-fallback",
+            "session_id": "conv-event-fallback",
             "materialized_at": "2026-04-11T10:05:00+00:00",
             "source_name": "claude-code",
             "event_index": 1,
             "heuristic_label": "file_edit",
             "summary": "Patched the failing test path",
-            "search_text": "legacy work event search text",
-            "payload_json": json.dumps(legacy_payload),
+            "search_text": "fallback work event search text",
+            "payload_json": json.dumps(fallback_payload),
             **_typed_payload_columns(typed_payload_mode, "evidence_payload_json", "inference_payload_json"),
         }
     )
 
     record = _row_to_session_work_event_record(row)
 
-    assert record.event_id == "event-legacy"
-    assert str(record.conversation_id) == "conv-event-legacy"
+    assert record.event_id == "event-fallback"
+    assert str(record.session_id) == "conv-event-fallback"
     assert record.heuristic_label == "file_edit"
     assert record.summary == "Patched the failing test path"
-    assert record.search_text == "legacy work event search text"
+    assert record.search_text == "fallback work event search text"
 
     assert record.evidence_payload.start_index == 3
     assert record.evidence_payload.duration_ms == 240000
@@ -231,8 +231,8 @@ def test_row_to_session_work_event_record_falls_back_to_legacy_payloads(typed_pa
 
 
 @pytest.mark.parametrize("typed_payload_mode", ["missing", "empty"], ids=["missing-columns", "empty-columns"])
-def test_row_to_session_phase_record_falls_back_to_legacy_payloads(typed_payload_mode: str) -> None:
-    legacy_payload = {
+def test_row_to_session_phase_record_falls_back_to_fallback_payloads(typed_payload_mode: str) -> None:
+    fallback_payload = {
         "start_time": "2026-04-12T11:00:00+00:00",
         "end_time": "2026-04-12T11:06:00+00:00",
         "canonical_session_date": "2026-04-12",
@@ -246,24 +246,24 @@ def test_row_to_session_phase_record_falls_back_to_legacy_payloads(typed_payload
     }
     row = _make_row(
         {
-            "phase_id": "phase-legacy",
-            "conversation_id": "conv-phase-legacy",
+            "phase_id": "phase-fallback",
+            "session_id": "conv-phase-fallback",
             "materialized_at": "2026-04-12T11:07:00+00:00",
             "source_name": "claude-code",
             "phase_index": 0,
             "kind": "implementation",
-            "search_text": "legacy phase search text",
-            "payload_json": json.dumps(legacy_payload),
+            "search_text": "fallback phase search text",
+            "payload_json": json.dumps(fallback_payload),
             **_typed_payload_columns(typed_payload_mode, "evidence_payload_json", "inference_payload_json"),
         }
     )
 
     record = _row_to_session_phase_record(row)
 
-    assert record.phase_id == "phase-legacy"
-    assert str(record.conversation_id) == "conv-phase-legacy"
+    assert record.phase_id == "phase-fallback"
+    assert str(record.session_id) == "conv-phase-fallback"
     assert record.kind == "implementation"
-    assert record.search_text == "legacy phase search text"
+    assert record.search_text == "fallback phase search text"
 
     assert record.evidence_payload.message_range == (2, 8)
     assert record.evidence_payload.tool_counts == {"read": 1, "edit": 1}

@@ -6,6 +6,6 @@ Options:
   -h, --help  Show this message and exit.
 
 Commands:
-  pace   Show inter-turn gap analysis for one or more conversations.
-  tools  Show top tools by invocation count across filtered conversations.
-  turns  Show per-turn cost and duration for one conversation.
+  pace   Show inter-turn gap analysis for one or more sessions.
+  tools  Show top tools by invocation count across filtered sessions.
+  turns  Show per-turn cost and duration for one session.

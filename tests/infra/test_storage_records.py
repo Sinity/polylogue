@@ -10,7 +10,7 @@ from typing import Literal
 
 import pytest
 
-from tests.infra.storage_records import make_conversation, make_message, store_records
+from tests.infra.storage_records import make_message, make_session, store_records
 
 
 def test_store_records_commits_within_lock(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -47,25 +47,25 @@ def test_store_records_commits_within_lock(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(storage_helpers, "_WRITE_LOCK", lock)
     monkeypatch.setattr(storage_helpers, "connection_context", fake_connection_context)
-    monkeypatch.setattr(storage_helpers, "upsert_conversation", lambda *_: True)
+    monkeypatch.setattr(storage_helpers, "upsert_session", lambda *_: True)
     monkeypatch.setattr(storage_helpers, "upsert_message", lambda *_: True)
     monkeypatch.setattr(storage_helpers, "upsert_attachment", lambda *_: True)
     monkeypatch.setattr(storage_helpers, "_prune_attachment_refs", lambda *_: None)
     # The in-memory test connection has no schema, so suppress the stats
     # upsert that store_records now performs to mirror production.
-    monkeypatch.setattr(storage_helpers, "_upsert_conversation_stats_sync", lambda *_, **__: None)
+    monkeypatch.setattr(storage_helpers, "_upsert_session_stats_sync", lambda *_, **__: None)
     # Same for the identity-preserving user-state repoint pass (#1114): the
     # in-memory test DB has no user_marks / user_annotations tables.
     monkeypatch.setattr(storage_helpers, "_repoint_user_state_by_identity_sync", lambda *_, **__: None)
 
     result = storage_helpers.store_records(
-        conversation=make_conversation("test:1", title="Test", content_hash="abc123"),
+        session=make_session("test:1", title="Test", content_hash="abc123"),
         messages=[make_message("test:1:msg1", "test:1", text="Hello")],
         attachments=[],
         conn=conn,
     )
 
-    assert result["conversations"] == 1
+    assert result["sessions"] == 1
     assert result["messages"] == 1
     assert conn.commit_states == [True]
     conn.close()
@@ -81,7 +81,7 @@ def test_concurrent_store_records_no_deadlock(workspace_env: Mapping[str, Path])
 
     def store_one(idx: int) -> dict[str, int]:
         return store_records(
-            conversation=make_conversation(f"test:{idx}", title=f"Test {idx}", content_hash=f"hash{idx}"),
+            session=make_session(f"test:{idx}", title=f"Test {idx}", content_hash=f"hash{idx}"),
             messages=[make_message(f"test:{idx}:msg1", f"test:{idx}", text=f"Hello {idx}")],
             attachments=[],
         )
@@ -91,7 +91,7 @@ def test_concurrent_store_records_no_deadlock(workspace_env: Mapping[str, Path])
         results = [future.result(timeout=30) for future in futures]
 
     assert len(results) == 10
-    assert all(result["conversations"] == 1 for result in results)
+    assert all(result["sessions"] == 1 for result in results)
 
 
 def test_make_message_rejects_non_json_provider_meta() -> None:

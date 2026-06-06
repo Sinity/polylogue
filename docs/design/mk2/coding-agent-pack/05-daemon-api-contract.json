@@ -20,7 +20,7 @@
       "must_not_expose": [
         "mcp",
         "watch after polylogued live replacement",
-        "browser-capture serve after daemon receiver migration",
+        "browser-capture serve after daemon receiver move",
         "products after derived replacement"
       ]
     },

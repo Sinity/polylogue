@@ -26,8 +26,8 @@ class Message(MessageRuntimeMixin, BaseModel):
     branch_index: int = 0
     # Stats projected from the storage layer so reader surfaces can
     # render fold/paste indicators without re-deriving them. See #1201
-    # (paste rendering) and the conversation-level flags in
-    # ``polylogue.surfaces.payloads.ConversationFlagsPayload``. Word
+    # (paste rendering) and the session-level flags in
+    # ``polylogue.surfaces.payloads.SessionFlagsPayload``. Word
     # count remains derived (``MessageRuntimeMixin.word_count``).
     has_tool_use: bool = False
     has_thinking: bool = False

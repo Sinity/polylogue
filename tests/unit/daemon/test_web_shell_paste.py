@@ -12,6 +12,7 @@ Covers:
 
 from __future__ import annotations
 
+from polylogue.daemon.web_shell_attachments import LibraryEntry, build_library_payload
 from polylogue.daemon.web_shell_paste import (
     PasteBrowserEntry,
     build_paste_browser_payload,
@@ -106,9 +107,9 @@ def test_snippet_for_paste_truncates_long_lines() -> None:
 
 def test_build_paste_browser_payload_envelope_shape() -> None:
     entry = PasteBrowserEntry(
-        conversation_id="c1",
-        conversation_title="t1",
-        provider="claude-ai",
+        session_id="c1",
+        session_title="t1",
+        origin="claude-ai-export",
         message_id="m1",
         message_anchor="message-m1",
         role="user",
@@ -122,10 +123,35 @@ def test_build_paste_browser_payload_envelope_shape() -> None:
     assert payload["total"] == 1
     items = payload["items"]
     assert isinstance(items, list)
-    assert items[0]["conversation_id"] == "c1"
+    assert items[0]["session_id"] == "c1"
+    assert items[0]["origin"] == "claude-ai-export"
+    assert "provider" not in items[0]
     assert items[0]["has_diff"] is True
     assert items[0]["message_anchor"] == "message-m1"
     assert items[0]["paste_spans"][0]["kind"] == "diff"
+
+
+def test_build_attachment_library_payload_uses_origin() -> None:
+    entry = LibraryEntry(
+        envelope={
+            "attachment_id": "att-1",
+            "session_id": "c1",
+            "message_id": "m1",
+            "name": "note.txt",
+            "mime_type": "text/plain",
+            "size_bytes": 12,
+            "path": None,
+            "state": "available",
+        },
+        session_title="t1",
+        origin="claude-ai-export",
+        message_anchor="message-m1",
+    )
+    payload = build_library_payload([entry], total=1)
+    items = payload["items"]
+    assert isinstance(items, list)
+    assert items[0]["origin"] == "claude-ai-export"
+    assert "provider" not in items[0]
 
 
 def test_render_paste_browser_page_inlines_js_and_dom_targets() -> None:

@@ -5,7 +5,7 @@
 Polylogue provides an MCP (Model Context Protocol) server for integration with Claude Desktop, Claude Code, and other MCP clients.
 
 **Primary use case**: Claude Code's `/history` command can use Polylogue to
-search past sessions semantically and retrieve archived conversations directly.
+search past sessions semantically and retrieve archived sessions directly.
 
 ## Starting the Server
 
@@ -49,9 +49,9 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 
 | Tool | Description |
 |------|-------------|
-| `search` | Search conversations by text query with optional provider/date filters; returns conversation summaries plus match rank, lane, surface, message id, and snippet evidence. Drive/Gemini provider attachment ids and stored `provider_id`, `id`, `fileId`, or `driveId` metadata return `match_surface=attachment` hits. |
-| `list_conversations` | List recent conversations, optionally filtered |
-| `get_conversation` | Get a single conversation by ID (supports prefix matching) |
+| `search` | Search sessions by text query with optional provider/date filters; returns session summaries plus match rank, lane, surface, message id, and snippet evidence. Drive/Gemini provider attachment ids and stored `provider_id`, `id`, `fileId`, or `driveId` metadata return `match_surface=attachment` hits. |
+| `list_sessions` | List recent sessions, optionally filtered |
+| `get_session` | Get a single session by ID (supports prefix matching) |
 | `stats` | Archive statistics: totals, provider breakdown, database size |
 
 ## Available Resources
@@ -59,14 +59,14 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 | Resource | Description |
 |----------|-------------|
 | `polylogue://stats` | Archive statistics |
-| `polylogue://conversations` | List all conversations (up to 1000) |
-| `polylogue://conversation/{id}` | Single conversation content |
+| `polylogue://sessions` | List all sessions (up to 1000) |
+| `polylogue://session/{id}` | Single session content |
 
 ## Available Prompts
 
 | Prompt | Description |
 |--------|-------------|
-| `analyze_errors` | Analyze error patterns and solutions across conversations |
+| `analyze_errors` | Analyze error patterns and solutions across sessions |
 | `summarize_week` | Summarize key insights from the past week |
 | `extract_code` | Extract and organize code snippets by language |
 

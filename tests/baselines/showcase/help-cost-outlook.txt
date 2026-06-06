@@ -1,0 +1,18 @@
+Usage: polylogue cost outlook [OPTIONS]
+
+  Project the current billing cycle for a subscription plan.
+
+  Emits the typed ``CycleOutlook`` payload from #1137: cycle window, burn
+  rate, projected total, quota pressure, overage rows, coverage, and
+  confidence. Subscription-equivalent and API-equivalent figures are never
+  merged into a single unlabelled ``cost`` number.
+
+Options:
+  --plan TEXT                     Subscription plan name (e.g. claude-pro,
+                                  claude-max-5x, chatgpt-plus).  [required]
+  --method [linear|trailing-7d-mean|eom-naive]
+                                  Projection method to use for cycle
+                                  extrapolation.
+  -f, --format [plain|json]       Output format. JSON is the canonical
+                                  contract.
+  -h, --help                      Show this message and exit.

@@ -109,6 +109,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools schema-audit` | Run committed provider schema package quality checks. |
 | `devtools schema-generate` | Generate provider schema packages and optional evidence clusters. |
 | `devtools schema-promote` | Promote a schema evidence cluster into a registered package version. |
+| `devtools self-verify` | Capture and compare archive golden-master envelopes for schema rewrites. |
 | `devtools test` | Run a focused pytest selection through the managed harness. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
 | `devtools verify-ci-workflows` | Verify CI workflow files reference locally-known devtools commands and existing paths. |
@@ -120,7 +121,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify-manifests` | Verify internal consistency across all docs/plans/*.yaml manifest files. |
 | `devtools verify-provider-meta-policy` | Enforce the provider_meta classification policy declared in docs/plans/provider-meta-policy.yaml. |
 | `devtools verify-schema-roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
-| `devtools verify-schema-upgrade-lane` | Verify any in-place schema upgrade helper has a paired driving test under tests/unit/storage/migrations/ (#1302). |
+| `devtools verify-schema-upgrade-lane` | Reject in-place storage schema upgrade helpers (#1302). |
 | `devtools verify-slos` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
 | `devtools verify-test-clock-hygiene` | Verify test files use the frozen_clock fixture instead of reading the host wall clock (#1300). |
 | `devtools verify-test-coverage-contracts` | Verify every production module >150 AST lines has a matching test file or exemption. |

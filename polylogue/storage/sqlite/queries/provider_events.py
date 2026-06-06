@@ -52,110 +52,110 @@ def _provider_event_select_sql(where_clause: str) -> str:
     return f"""
 {_PROVIDER_EVENT_SELECT}
             {where_clause}
-            ORDER BY pe.conversation_id, pe.event_index
+            ORDER BY pe.session_id, pe.event_index
             """
 
 
 def _provider_event_compaction_count_sql(placeholders: str) -> str:
     return f"""
-            SELECT conversation_id, COUNT(*) AS compaction_count
+            SELECT session_id, COUNT(*) AS compaction_count
             FROM provider_events
-            WHERE conversation_id IN ({placeholders})
+            WHERE session_id IN ({placeholders})
               AND event_type = 'compaction'
-            GROUP BY conversation_id
+            GROUP BY session_id
             """
 
 
 async def get_provider_events(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
 ) -> list[ProviderEventRecord]:
-    query = _provider_event_select_sql("WHERE pe.conversation_id = ?").replace(
-        "ORDER BY pe.conversation_id, pe.event_index",
+    query = _provider_event_select_sql("WHERE pe.session_id = ?").replace(
+        "ORDER BY pe.session_id, pe.event_index",
         "ORDER BY pe.event_index",
     )
-    rows = await (await conn.execute(query, (conversation_id,))).fetchall()
+    rows = await (await conn.execute(query, (session_id,))).fetchall()
     return [_row_to_provider_event(row) for row in rows]
 
 
 async def get_provider_events_batch(
     conn: aiosqlite.Connection,
-    conversation_ids: Sequence[str],
+    session_ids: Sequence[str],
 ) -> dict[str, list[ProviderEventRecord]]:
-    if not conversation_ids:
+    if not session_ids:
         return {}
-    placeholders = ", ".join("?" for _ in conversation_ids)
-    query = _provider_event_select_sql(f"WHERE pe.conversation_id IN ({placeholders})")
-    rows = await (await conn.execute(query, tuple(conversation_ids))).fetchall()
-    result: dict[str, list[ProviderEventRecord]] = {conversation_id: [] for conversation_id in conversation_ids}
+    placeholders = ", ".join("?" for _ in session_ids)
+    query = _provider_event_select_sql(f"WHERE pe.session_id IN ({placeholders})")
+    rows = await (await conn.execute(query, tuple(session_ids))).fetchall()
+    result: dict[str, list[ProviderEventRecord]] = {session_id: [] for session_id in session_ids}
     for row in rows:
         record = _row_to_provider_event(row)
-        result.setdefault(str(record.conversation_id), []).append(record)
+        result.setdefault(str(record.session_id), []).append(record)
     return result
 
 
 async def get_provider_event_compaction_counts(
     conn: aiosqlite.Connection,
-    conversation_ids: Sequence[str],
+    session_ids: Sequence[str],
 ) -> dict[str, int]:
-    if not conversation_ids:
+    if not session_ids:
         return {}
-    placeholders = ", ".join("?" for _ in conversation_ids)
+    placeholders = ", ".join("?" for _ in session_ids)
     query = _provider_event_compaction_count_sql(placeholders)
-    rows = await (await conn.execute(query, tuple(conversation_ids))).fetchall()
-    result = dict.fromkeys(conversation_ids, 0)
+    rows = await (await conn.execute(query, tuple(session_ids))).fetchall()
+    result = dict.fromkeys(session_ids, 0)
     for row in rows:
-        result[str(row["conversation_id"])] = int(row["compaction_count"] or 0)
+        result[str(row["session_id"])] = int(row["compaction_count"] or 0)
     return result
 
 
 def sync_provider_events_batch(
     conn: sqlite3.Connection,
-    conversation_ids: Sequence[str],
+    session_ids: Sequence[str],
 ) -> dict[str, list[ProviderEventRecord]]:
-    if not conversation_ids:
+    if not session_ids:
         return {}
-    placeholders = ", ".join("?" for _ in conversation_ids)
-    query = _provider_event_select_sql(f"WHERE pe.conversation_id IN ({placeholders})")
-    rows = conn.execute(query, tuple(conversation_ids)).fetchall()
+    placeholders = ", ".join("?" for _ in session_ids)
+    query = _provider_event_select_sql(f"WHERE pe.session_id IN ({placeholders})")
+    rows = conn.execute(query, tuple(session_ids)).fetchall()
     result: dict[str, list[ProviderEventRecord]] = defaultdict(list)
-    for conversation_id in conversation_ids:
-        result.setdefault(conversation_id, [])
+    for session_id in session_ids:
+        result.setdefault(session_id, [])
     for row in rows:
         record = _row_to_provider_event(row)
-        result[str(record.conversation_id)].append(record)
+        result[str(record.session_id)].append(record)
     return dict(result)
 
 
 def sync_provider_event_compaction_counts(
     conn: sqlite3.Connection,
-    conversation_ids: Sequence[str],
+    session_ids: Sequence[str],
 ) -> dict[str, int]:
-    if not conversation_ids:
+    if not session_ids:
         return {}
-    placeholders = ", ".join("?" for _ in conversation_ids)
+    placeholders = ", ".join("?" for _ in session_ids)
     query = _provider_event_compaction_count_sql(placeholders)
-    rows = conn.execute(query, tuple(conversation_ids)).fetchall()
-    result = dict.fromkeys(conversation_ids, 0)
+    rows = conn.execute(query, tuple(session_ids)).fetchall()
+    result = dict.fromkeys(session_ids, 0)
     for row in rows:
-        result[str(row["conversation_id"])] = int(row["compaction_count"] or 0)
+        result[str(row["session_id"])] = int(row["compaction_count"] or 0)
     return result
 
 
 async def replace_provider_events(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
     records: list[ProviderEventRecord],
     transaction_depth: int,
 ) -> None:
-    await conn.execute("DELETE FROM provider_events WHERE conversation_id = ?", (conversation_id,))
+    await conn.execute("DELETE FROM provider_events WHERE session_id = ?", (session_id,))
     for record in records:
         projection = project_provider_event_payload(record.event_type, record.payload)
         await conn.execute(
             _PROVIDER_EVENT_INSERT_SQL,
             (
                 record.event_id,
-                record.conversation_id,
+                record.session_id,
                 record.source_name,
                 record.event_index,
                 record.event_type,

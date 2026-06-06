@@ -1,8 +1,8 @@
-Usage: polylogue select [OPTIONS] [[conversation]]
+Usage: polylogue select [OPTIONS] [[session]]
 
-  Select one matched conversation and print a field.
+  Select one matched session and print a field.
 
 Options:
   --print [id|title|provider|json]
-  -n, --limit INTEGER             Max candidates to offer
-  -h, --help                      Show this message and exit.
+  -l, -n, --limit INTEGER         Max candidates to offer
+  --help                          Show this message and exit.

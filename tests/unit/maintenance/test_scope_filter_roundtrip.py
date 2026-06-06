@@ -33,7 +33,7 @@ from polylogue.maintenance.scope import MaintenanceScopeFilter
 
 _EXPECTED_DIMENSIONS = frozenset(
     {
-        "conversation_ids",
+        "session_ids",
         "provider",
         "source_family",
         "source_root",
@@ -57,7 +57,7 @@ class TestScopeFilterDictShape:
 
     def test_to_dict_lists_every_dimension_for_populated_filter(self) -> None:
         full = MaintenanceScopeFilter(
-            conversation_ids=("c1", "c2"),
+            session_ids=("c1", "c2"),
             provider="claude",
             source_family="claude-code-session",
             source_root=Path("/data/claude"),
@@ -80,7 +80,7 @@ class TestScopeFilterDictShape:
         would crash the daemon HTTP response or the MCP envelope.
         """
         full = MaintenanceScopeFilter(
-            conversation_ids=("c1",),
+            session_ids=("c1",),
             source_root=Path("/data"),
             time_range=(
                 datetime(2026, 1, 1, tzinfo=timezone.utc),
@@ -100,8 +100,8 @@ class TestScopeFilterRoundTrip:
         "filter_kwargs",
         [
             {},
-            {"conversation_ids": ("c1",)},
-            {"conversation_ids": ("c1", "c2", "c3")},
+            {"session_ids": ("c1",)},
+            {"session_ids": ("c1", "c2", "c3")},
             {"provider": "claude"},
             {"source_family": "claude-code-session"},
             {"source_root": Path("/data/claude")},
@@ -115,7 +115,7 @@ class TestScopeFilterRoundTrip:
             {"failure_kind": "ValidationError"},
             {"parser_version": "v3"},
             {
-                "conversation_ids": ("c1", "c2"),
+                "session_ids": ("c1", "c2"),
                 "provider": "claude",
                 "source_family": "claude-code-session",
                 "source_root": Path("/data"),
@@ -136,7 +136,7 @@ class TestScopeFilterRoundTrip:
 
     def test_double_round_trip_is_idempotent(self) -> None:
         original = MaintenanceScopeFilter(
-            conversation_ids=("c1",),
+            session_ids=("c1",),
             provider="claude",
             source_root=Path("/data"),
             time_range=(
@@ -188,7 +188,7 @@ def _scope_filter_kwargs(draw: Any) -> dict[str, Any]:
     """
     kwargs: dict[str, Any] = {}
     if draw(st.booleans()):
-        kwargs["conversation_ids"] = tuple(draw(st.lists(_ASCII_TEXT, min_size=1, max_size=4, unique=True)))
+        kwargs["session_ids"] = tuple(draw(st.lists(_ASCII_TEXT, min_size=1, max_size=4, unique=True)))
     if draw(st.booleans()):
         kwargs["provider"] = draw(_ASCII_TEXT)
     if draw(st.booleans()):

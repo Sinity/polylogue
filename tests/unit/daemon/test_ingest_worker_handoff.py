@@ -1,6 +1,6 @@
 """Ingest worker handoff invariants under shutdown (#1182).
 
-Pins the documented contract for ``live_ingest_attempt`` rows:
+Pins the documented contract for archive ``ops.db.ingest_attempts`` rows:
 
 - ``begin_ingest_attempt`` persists a durable row with status
   ``running`` before any work starts; the row survives process death.
@@ -25,10 +25,10 @@ from polylogue.sources.live.cursor import CursorStore
 
 
 def _attempt_rows(db_path: Path) -> list[sqlite3.Row]:
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path.with_name("ops.db")))
     conn.row_factory = sqlite3.Row
     try:
-        return list(conn.execute("SELECT attempt_id, status, phase, error FROM live_ingest_attempt"))
+        return list(conn.execute("SELECT attempt_id, status, phase, error_message FROM ingest_attempts"))
     finally:
         conn.close()
 
@@ -46,7 +46,7 @@ def test_begin_attempt_persists_running_row(tmp_path: Path) -> None:
 
 
 def test_simulated_sigkill_recovered_by_next_open(tmp_path: Path) -> None:
-    """A ``running`` row left by a killed daemon is marked ``abandoned`` on next open.
+    """A ``running`` row left by a killed daemon is marked ``interrupted`` on next open.
 
     This is the only mechanism that prevents the daemon from leaking
     ``running`` rows across restarts.
@@ -64,11 +64,11 @@ def test_simulated_sigkill_recovered_by_next_open(tmp_path: Path) -> None:
     rows = _attempt_rows(db)
     assert len(rows) == 1
     assert rows[0]["attempt_id"] == attempt_id
-    assert rows[0]["status"] == "abandoned", (
-        "live_ingest_attempt row left in 'running' after restart — the SIGKILL recovery path no longer runs"
+    assert rows[0]["status"] == "interrupted", (
+        "ingest_attempts row left in 'running' after restart — the SIGKILL recovery path no longer runs"
     )
     assert rows[0]["phase"] == "interrupted"
-    assert rows[0]["error"] is not None
+    assert rows[0]["error_message"] is not None
 
 
 def test_finished_attempt_is_not_remarked_on_reopen(tmp_path: Path) -> None:
@@ -139,10 +139,10 @@ def test_handoff_under_shutdown_preserves_in_flight_row(tmp_path: Path) -> None:
     store.update_ingest_attempt(attempt_id, phase="parsing")
 
     # Independent reader (e.g. status endpoint) sees the in-flight row.
-    conn = sqlite3.connect(str(db))
+    conn = sqlite3.connect(str(db.with_name("ops.db")))
     try:
         row = conn.execute(
-            "SELECT status, phase FROM live_ingest_attempt WHERE attempt_id = ?",
+            "SELECT status, phase FROM ingest_attempts WHERE attempt_id = ?",
             (attempt_id,),
         ).fetchone()
     finally:

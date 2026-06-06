@@ -17,17 +17,17 @@ from tests.unit.mcp.test_tool_contracts import _inference_provenance, _provenanc
 
 
 def _make_profile(
-    conversation_id: str,
+    session_id: str,
     source_name: str = "claude-code",
     workflow_shape: str = "agentic_loop",
     terminal_state: str = "resolved",
 ) -> SessionProfileInsight:
     """Build a minimal session profile for aggregate testing."""
     return SessionProfileInsight(
-        conversation_id=conversation_id,
-        logical_conversation_id=conversation_id,
+        session_id=session_id,
+        logical_session_id=session_id,
         source_name=source_name,
-        title=f"Session {conversation_id}",
+        title=f"Session {session_id}",
         provenance=_provenance(),
         semantic_tier="merged",
         evidence=SessionEvidencePayload(message_count=5),
@@ -71,8 +71,8 @@ async def test_aggregate_by_workflow_shape_unknown_when_null_inference(
     mcp_server: MCPServerUnderTest,
 ) -> None:
     profile = SessionProfileInsight(
-        conversation_id="c-null",
-        logical_conversation_id="c-null",
+        session_id="c-null",
+        logical_session_id="c-null",
         source_name="codex",
         provenance=_provenance(),
         semantic_tier="merged",
@@ -127,11 +127,11 @@ async def test_aggregate_by_terminal_state(mcp_server: MCPServerUnderTest) -> No
     }
 
 
-# ── GROUP BY provider ────────────────────────────────────────────────
+# ── GROUP BY origin ──────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_aggregate_by_provider(mcp_server: MCPServerUnderTest) -> None:
+async def test_aggregate_by_origin(mcp_server: MCPServerUnderTest) -> None:
     with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
         mock_poly = make_polylogue_mock()
         mock_poly.list_session_profile_insights = AsyncMock(
@@ -147,26 +147,26 @@ async def test_aggregate_by_provider(mcp_server: MCPServerUnderTest) -> None:
 
         raw = await invoke_surface_async(
             mcp_server._tool_manager._tools["aggregate_sessions"].fn,
-            group_by="provider",
+            group_by="origin",
         )
 
     payload = json.loads(raw)
-    assert payload["group_by"] == "provider"
+    assert payload["group_by"] == "origin"
     assert payload["total_sessions"] == 5
     assert payload["buckets"] == {
-        "claude-code": 3,
-        "chatgpt": 1,
-        "codex": 1,
+        "claude-code-session": 3,
+        "chatgpt-export": 1,
+        "codex-session": 1,
     }
 
 
 @pytest.mark.asyncio
-async def test_aggregate_by_provider_unknown_when_empty_source(
+async def test_aggregate_by_origin_unknown_when_empty_source(
     mcp_server: MCPServerUnderTest,
 ) -> None:
     profile = SessionProfileInsight(
-        conversation_id="c-unk",
-        logical_conversation_id="c-unk",
+        session_id="c-unk",
+        logical_session_id="c-unk",
         source_name="",
         provenance=_provenance(),
         semantic_tier="merged",
@@ -181,7 +181,7 @@ async def test_aggregate_by_provider_unknown_when_empty_source(
 
         raw = await invoke_surface_async(
             mcp_server._tool_manager._tools["aggregate_sessions"].fn,
-            group_by="provider",
+            group_by="origin",
         )
 
     payload = json.loads(raw)

@@ -126,7 +126,7 @@ def test_attachment_from_doc_contract(doc: object, expected_id: str | None, expe
                 assert attachment.provider_meta[key] == value
 
 
-def test_parse_chunked_prompt_preserves_core_conversation_metadata() -> None:
+def test_parse_chunked_prompt_preserves_core_session_metadata() -> None:
     payload: JSONDocument = {
         "id": "gemini-conv",
         "displayName": "Gemini Session",
@@ -135,7 +135,13 @@ def test_parse_chunked_prompt_preserves_core_conversation_metadata() -> None:
         "chunkedPrompt": {
             "chunks": [
                 {"id": "msg-user", "role": "user", "text": "Question"},
-                {"id": "msg-model", "role": "model", "text": "Answer"},
+                {
+                    "id": "msg-model",
+                    "role": "model",
+                    "text": "Answer",
+                    "model": "gemini-2.5-pro",
+                    "durationMs": 1500,
+                },
             ]
         },
     }
@@ -143,7 +149,7 @@ def test_parse_chunked_prompt_preserves_core_conversation_metadata() -> None:
     result = parse_chunked_prompt("gemini", payload, "fallback-id")
 
     assert result.source_name == "gemini"
-    assert result.provider_conversation_id == "gemini-conv"
+    assert result.provider_session_id == "gemini-conv"
     assert result.title == "Gemini Session"
     assert result.provider_meta == {"title_source": "imported:displayName"}
     assert result.created_at == "2024-01-15T10:30:00Z"
@@ -151,6 +157,13 @@ def test_parse_chunked_prompt_preserves_core_conversation_metadata() -> None:
     assert [message.provider_message_id for message in result.messages] == ["msg-user", "msg-model"]
     assert [message.role for message in result.messages] == ["user", "assistant"]
     assert [message.text for message in result.messages] == ["Question", "Answer"]
+    assert [message.position for message in result.messages] == [0, 1]
+    assert [message.variant_index for message in result.messages] == [0, 0]
+    assert [message.is_active_path for message in result.messages] == [True, True]
+    assert [message.is_active_leaf for message in result.messages] == [False, True]
+    assert result.active_leaf_message_provider_id == "msg-model"
+    assert result.messages[1].model_name == "gemini-2.5-pro"
+    assert result.messages[1].duration_ms == 1500
 
 
 def test_parse_chunked_prompt_records_fallback_title_source() -> None:
@@ -273,6 +286,8 @@ def test_parse_chunked_prompt_preserves_attachment_only_chunks_and_chunk_timesta
         "2024-01-15T10:32:00Z",
     ]
     assert [message.text for message in result.messages] == [None, None, None]
+    assert [message.position for message in result.messages] == [0, 1, 2]
+    assert result.active_leaf_message_provider_id == "msg-video"
     assert result.created_at == "2024-01-15T10:30:00Z"
     assert result.updated_at == "2024-01-15T10:32:00Z"
     assert [block.type for block in result.messages[0].content_blocks] == ["document"]

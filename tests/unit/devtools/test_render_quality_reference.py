@@ -130,7 +130,7 @@ def test_build_document_includes_live_registry_sections() -> None:
             ScenarioProjectionEntry(
                 source_kind=ScenarioProjectionSourceKind.INFERRED_CORPUS_SCENARIO,
                 name="chatgpt:v1",
-                description=("Compiled inferred corpus scenario for chatgpt v1 across 1 corpus variant(s)."),
+                description=("Compiled inferred corpus scenario for chatgpt archive across 1 corpus variant(s)."),
                 origin="compiled.inferred-corpus-scenario",
                 tags=("inferred", "schema", "synthetic", "scenario"),
                 source_payload=CorpusSpec.for_provider(

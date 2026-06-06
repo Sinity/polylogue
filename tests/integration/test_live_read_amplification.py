@@ -8,9 +8,9 @@ Pins three scenarios against the steady-state contract:
 - ``S2`` mtime-drift catch-up: a file whose mtime changed but whose content
   did NOT (e.g. backup tool touched it) should not trigger a full-file
   ``fingerprint_file`` call at the watcher stage.
-- ``S3`` subagent append: a subagent file whose ``provider_conversation_id``
+- ``S3`` subagent append: a subagent file whose ``provider_session_id``
   is ``<parent_session>:agent-<id>`` and whose stem differs from the
-  conversation id should still take the append path on subsequent batches,
+  session id should still take the append path on subsequent batches,
   not fall back to full re-ingest.
 
 These tests *fail loudly* if the amplification is present and become
@@ -115,30 +115,30 @@ def processor(tmp_path: Path) -> Iterator[tuple[LiveBatchProcessor, Path, Path]]
 
 
 def _seed_initial_ingest(proc: LiveBatchProcessor, path: Path, *, session_id: str = "session-abc") -> None:
-    """Run a first full ingest so the cursor + raw_conversations are populated.
+    """Run a first full ingest so the cursor + raw_sessions are populated.
 
-    For Claude Code tests we also seed a ``conversations`` row so that
-    ``_existing_provider_conversation_id`` returns the expected value.
+    For Claude Code tests we also seed a ``sessions`` row so that
+    ``_existing_provider_session_id`` returns the expected value.
     """
     import asyncio
 
     asyncio.run(proc.ingest_files([path], emit_event=False))
-    # Seed the conversations row that ``_existing_provider_conversation_id``
+    # Seed the sessions row that ``_existing_provider_session_id``
     # queries — the mocked ingest pipeline doesn't write it.
     with proc._cursor._connect() as conn:
         from polylogue.storage.sqlite.schema import _ensure_schema
 
         _ensure_schema(conn)
         row = conn.execute(
-            "SELECT raw_id FROM raw_conversations WHERE source_path = ? ORDER BY acquired_at DESC LIMIT 1",
+            "SELECT raw_id FROM raw_sessions WHERE source_path = ? ORDER BY acquired_at DESC LIMIT 1",
             (str(path),),
         ).fetchone()
-        assert row is not None, "first ingest must produce a raw_conversations row"
+        assert row is not None, "first ingest must produce a raw_sessions row"
         raw_id = row[0]
         conn.execute(
             """
-            INSERT OR REPLACE INTO conversations
-                (conversation_id, source_name, provider_conversation_id, title,
+            INSERT OR REPLACE INTO sessions
+                (session_id, source_name, provider_session_id, title,
                  content_hash, version, raw_id, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -322,7 +322,7 @@ class TestMtimeDriftCatchUp:
 
 
 class TestSubagentAppendDoesNotFullReread:
-    """Subagent files have ``provider_conversation_id = <parent>:agent-<id>``
+    """Subagent files have ``provider_session_id = <parent>:agent-<id>``
     and a path stem that differs from both. Subsequent appends with
     ``sessionId = <parent>`` lines should take the append path via the
     ``existing_id.startswith(f"{session_id}:")`` branch.
@@ -338,7 +338,7 @@ class TestSubagentAppendDoesNotFullReread:
         proc, root, _ = processor
         parent_session = "parent-session-xyz"
         subagent_id = f"{parent_session}:agent-007"
-        # The on-disk stem is unrelated to the conversation id — that's
+        # The on-disk stem is unrelated to the session id — that's
         # the realistic subagent case.
         path = root / "agent-007.jsonl"
         _write_jsonl(

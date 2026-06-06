@@ -1,7 +1,7 @@
 """Per-hit why-this-matched evidence wiring (#1267, slice B of #873).
 
 Pins that ``matched_terms`` and ``score_components`` actually flow through
-the substrate-side search paths into ``ConversationSearchHit`` / the
+the substrate-side search paths into ``SessionSearchHit`` / the
 ``SearchEnvelope``:
 
 - FTS-only (dialogue lane): tokenized query terms + ``bm25_raw`` component
@@ -16,20 +16,21 @@ from datetime import datetime, timezone
 
 import pytest
 
-from polylogue.archive.conversation.models import ConversationSummary
 from polylogue.archive.query.search_hits import (
     _hybrid_score_components,
-    conversation_search_hit_from_summary,
+    session_search_hit_from_summary,
 )
+from polylogue.archive.session.domain_models import SessionSummary
+from polylogue.core.enums import Origin
 from polylogue.storage.search.query_support import extract_match_terms
-from polylogue.surfaces.payloads import ConversationSearchHitPayload
-from polylogue.types import ConversationId, Provider
+from polylogue.surfaces.payloads import SessionSearchHitPayload
+from polylogue.types import SessionId
 
 
-def _summary(conversation_id: str = "chatgpt:hit") -> ConversationSummary:
-    return ConversationSummary(
-        id=ConversationId(conversation_id),
-        provider=Provider.CHATGPT,
+def _summary(session_id: str = "chatgpt:hit") -> SessionSummary:
+    return SessionSummary(
+        id=SessionId(session_id),
+        origin=Origin.CHATGPT_EXPORT,
         title="Sample",
         created_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
     )
@@ -72,7 +73,7 @@ class TestDialogueExplanation:
     def test_dialogue_hit_surfaces_matched_terms_and_bm25_component(self) -> None:
         terms = extract_match_terms("refactor schema")
         score = -7.42
-        hit = conversation_search_hit_from_summary(
+        hit = session_search_hit_from_summary(
             _summary(),
             rank=1,
             retrieval_lane="dialogue",
@@ -84,7 +85,7 @@ class TestDialogueExplanation:
             score_components={"bm25_raw": score},
             score_kind="bm25",
         )
-        payload = ConversationSearchHitPayload.from_search_hit(hit)
+        payload = SessionSearchHitPayload.from_search_hit(hit)
         match = payload.match
         assert match.retrieval_lane == "dialogue"
         assert match.score_kind == "bm25"
@@ -130,7 +131,7 @@ class TestHybridExplanation:
     def test_hybrid_hit_round_trips_through_envelope_payload(self) -> None:
         lane_info: dict[str, int | None] = {"text": 1, "vector": 2}
         components, fused = _hybrid_score_components(lane_info)
-        hit = conversation_search_hit_from_summary(
+        hit = session_search_hit_from_summary(
             _summary("chatgpt:hybrid"),
             rank=1,
             retrieval_lane="hybrid",
@@ -142,7 +143,7 @@ class TestHybridExplanation:
             score_components=components,
             score_kind="rrf",
         )
-        payload = ConversationSearchHitPayload.from_search_hit(hit)
+        payload = SessionSearchHitPayload.from_search_hit(hit)
         match = payload.match
         assert match.score_kind == "rrf"
         # Both lane decompositions survived envelope serialization.
@@ -159,7 +160,7 @@ class TestSemanticExplanation:
     language probe rather than tokenized FTS terms."""
 
     def test_semantic_hit_carries_vector_distance_score_kind(self) -> None:
-        hit = conversation_search_hit_from_summary(
+        hit = session_search_hit_from_summary(
             _summary("chatgpt:semantic"),
             rank=1,
             retrieval_lane="semantic",
@@ -171,7 +172,7 @@ class TestSemanticExplanation:
             score_components={},
             score_kind="vector_distance",
         )
-        payload = ConversationSearchHitPayload.from_search_hit(hit)
+        payload = SessionSearchHitPayload.from_search_hit(hit)
         assert payload.match.score_kind == "vector_distance"
         assert payload.match.score == 0.0421
         assert payload.match.matched_terms == ("how does the daemon converge",)
@@ -182,7 +183,7 @@ class TestAttachmentExplanation:
     single term and no numeric score."""
 
     def test_attachment_hit_carries_identifier_and_null_score_kind(self) -> None:
-        hit = conversation_search_hit_from_summary(
+        hit = session_search_hit_from_summary(
             _summary("chatgpt:attach"),
             rank=1,
             retrieval_lane="attachment",
@@ -194,7 +195,7 @@ class TestAttachmentExplanation:
             score_components={},
             score_kind=None,
         )
-        payload = ConversationSearchHitPayload.from_search_hit(hit)
+        payload = SessionSearchHitPayload.from_search_hit(hit)
         assert payload.match.score_kind is None
         assert payload.match.score is None
         assert payload.match.matched_terms == ("file-abc123",)

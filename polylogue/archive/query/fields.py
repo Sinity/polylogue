@@ -7,22 +7,23 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Literal, Protocol, TypeAlias, cast
 
-from polylogue.storage.query_models import ConversationRecordQuery
-from polylogue.types import Provider
+from polylogue.core.enums import Origin
+from polylogue.core.sources import provider_from_origin
+from polylogue.storage.query_models import SessionRecordQuery
 
 PresenceCheck = Callable[[object], bool]
 DescriptionRenderer = Callable[[object], str]
 StorageValue = Callable[[object], object]
-_ReplaceRecordQuery: Callable[..., ConversationRecordQuery] = replace
+_ReplaceRecordQuery: Callable[..., SessionRecordQuery] = replace
 SqlPushdownValue: TypeAlias = str | int | bool | list[str]
 SqlPushdownParams: TypeAlias = dict[str, SqlPushdownValue]
 CompletionSource: TypeAlias = Literal[
     "action",
     "action_sequence",
-    "conversation_id",
+    "session_id",
     "cwd_prefix",
     "message_type",
-    "provider",
+    "origin",
     "repo",
     "retrieval_lane",
     "tag",
@@ -31,7 +32,7 @@ CompletionSource: TypeAlias = Literal[
 
 
 class _ProviderScopedPlan(Protocol):
-    providers: tuple[Provider | str, ...]
+    origins: tuple[str, ...]
 
 
 def _truthy(value: object) -> bool:
@@ -78,14 +79,6 @@ def _join_space(value: object) -> str:
 
 def _join_arrow(value: object) -> str:
     return " -> ".join(str(item) for item in _as_tuple(value))
-
-
-def _provider_values(value: object) -> tuple[str, ...]:
-    return tuple(str(Provider.from_string(cast(str | Provider | None, item))) for item in _as_tuple(value))
-
-
-def _join_providers(value: object) -> str:
-    return ", ".join(_provider_values(value))
 
 
 def _isoformat(value: object) -> str:
@@ -376,29 +369,29 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         mcp_names=("exclude_tool",),
     ),
     QueryFieldDescriptor(
-        name="providers",
-        spec_attr="providers",
-        plan_attr="providers",
-        spec_description=_label("provider", _join_providers),
-        plan_description=_label("provider", _join_providers),
-        completion_source="provider",
-        completion_label="provider",
-        mcp_names=("provider",),
-        api_names=("provider", "source"),
+        name="origins",
+        spec_attr="origins",
+        plan_attr="origins",
+        spec_description=_label("origin", _join_comma),
+        plan_description=_label("origin", _join_comma),
+        completion_source="origin",
+        completion_label="origin",
+        mcp_names=("origin",),
+        api_names=("origin",),
     ),
     QueryFieldDescriptor(
-        name="excluded_providers",
-        spec_attr="excluded_providers",
-        plan_attr="excluded_providers",
-        spec_description=_label("exclude provider", _join_providers),
-        plan_description=_label("exclude provider", _join_providers),
+        name="excluded_origins",
+        spec_attr="excluded_origins",
+        plan_attr="excluded_origins",
+        spec_description=_label("exclude origin", _join_comma),
+        plan_description=_label("exclude origin", _join_comma),
         requires_post_filter=True,
         blocks_sql_count=True,
         blocks_action_event_stats=True,
         blocks_simple_message_hit=True,
-        completion_source="provider",
-        completion_label="provider",
-        mcp_names=("exclude_provider",),
+        completion_source="origin",
+        completion_label="origin",
+        mcp_names=("exclude_origin",),
     ),
     QueryFieldDescriptor(
         name="repo_names",
@@ -607,17 +600,17 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         mcp_names=("until",),
     ),
     QueryFieldDescriptor(
-        name="conversation_id",
-        spec_attr="conversation_id",
-        plan_attr="conversation_id",
+        name="session_id",
+        spec_attr="session_id",
+        plan_attr="session_id",
         spec_active=_not_none,
         plan_active=_not_none,
         spec_description=_label("id"),
         plan_description=_label("id"),
         blocks_sql_count=True,
         blocks_simple_message_hit=True,
-        completion_source="conversation_id",
-        completion_label="conversation",
+        completion_source="session_id",
+        completion_label="session",
         mcp_names=("conv_id",),
     ),
     QueryFieldDescriptor(
@@ -768,8 +761,8 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         selection_filter=True,
         requires_post_filter=True,
         blocks_sql_count=True,
-        completion_source="conversation_id",
-        completion_label="conversation",
+        completion_source="session_id",
+        completion_label="session",
         mcp_names=("since_session", "since_session_id"),
     ),
     QueryFieldDescriptor(
@@ -845,13 +838,16 @@ def has_message_content_type_filter(plan: object) -> bool:
 
 
 def provider_scope_for_plan(plan: _ProviderScopedPlan) -> tuple[str | None, tuple[str, ...]]:
-    values = _provider_values(plan.providers)
+    # The plan filters on origin tokens internally; the legacy record-query /
+    # source_name read path still keys on provider tokens, so project back here
+    # (#1743 — removed once that path moves onto the origin column in Phase 2).
+    values = tuple(provider_from_origin(Origin.from_string(token)).value for token in plan.origins)
     provider = values[0] if len(values) == 1 else None
     provider_group = values if len(values) > 1 else ()
     return provider, provider_group
 
 
-def conversation_record_query_for_plan(plan: object) -> ConversationRecordQuery:
+def session_record_query_for_plan(plan: object) -> SessionRecordQuery:
     provider, providers = provider_scope_for_plan(cast(_ProviderScopedPlan, plan))
     changes: dict[str, object] = {}
     for descriptor in QUERY_FIELD_DESCRIPTORS:
@@ -859,7 +855,7 @@ def conversation_record_query_for_plan(plan: object) -> ConversationRecordQuery:
             continue
         changes[descriptor.record_attr] = descriptor.storage_plan_value(plan)
     return _ReplaceRecordQuery(
-        ConversationRecordQuery(provider=provider, providers=providers),
+        SessionRecordQuery(provider=provider, providers=providers),
         **changes,
     )
 
@@ -921,7 +917,7 @@ __all__ = [
     "SqlPushdownValue",
     "active_plan_field_names",
     "api_query_field_names",
-    "conversation_record_query_for_plan",
+    "session_record_query_for_plan",
     "describe_plan_fields",
     "describe_spec_fields",
     "describe_spec_selection_fields",

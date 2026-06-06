@@ -1,7 +1,7 @@
 """Tests for semantic value generation, wire formats, corpus generation, and roundtrips.
 
 Verifies that SemanticValueGenerator produces role-appropriate values for
-message_body, message_role, message_timestamp, and conversation_title
+message_body, message_role, message_timestamp, and session_title
 semantic roles, and that _text_for_role handles all known roles correctly.
 
 Also validates wire format configuration, corpus generation contracts, and
@@ -65,7 +65,7 @@ class SyntheticSourceFactory(Protocol):
         self,
         provider: str,
         count: int = 1,
-        messages_per_conversation: range = range(4, 12),
+        messages_per_session: range = range(4, 12),
         seed: int = 42,
     ) -> Source: ...
 
@@ -210,15 +210,15 @@ class TestSemanticValueGeneratorBasics:
         assert gen.turn_index == 2
 
 
-class TestSyntheticConversationEnvelope:
-    def test_chatgpt_tree_generation_produces_clean_conversation_id(self) -> None:
+class TestSyntheticSessionEnvelope:
+    def test_chatgpt_tree_generation_produces_clean_session_id(self) -> None:
         corpus = SyntheticCorpus.for_provider("chatgpt")
-        payload = json.loads(corpus.generate(count=1, seed=42, messages_per_conversation=range(3, 4))[0])
+        payload = json.loads(corpus.generate(count=1, seed=42, messages_per_session=range(3, 4))[0])
 
-        conversation_id = payload.get("id")
-        assert isinstance(conversation_id, str)
-        assert conversation_id
-        assert " " not in conversation_id
+        session_id = payload.get("id")
+        assert isinstance(session_id, str)
+        assert session_id
+        assert " " not in session_id
 
     def test_synthetic_corpus_from_spec_reuses_schema_selection(self) -> None:
         spec = CorpusSpec.for_provider(
@@ -428,14 +428,14 @@ class TestSemanticTimestamp:
 
 
 # ---------------------------------------------------------------------------
-# SemanticValueGenerator.try_generate — conversation_title
+# SemanticValueGenerator.try_generate — session_title
 # ---------------------------------------------------------------------------
 
 
 class TestSemanticTitle:
     def test_generates_title_string(self) -> None:
         gen = SemanticValueGenerator(random.Random(0))
-        schema = _schema({"x-polylogue-semantic-role": "conversation_title"})
+        schema = _schema({"x-polylogue-semantic-role": "session_title"})
         handled, value = gen.try_generate(schema)
         assert handled is True
         assert isinstance(value, str)
@@ -444,7 +444,7 @@ class TestSemanticTitle:
     def test_themed_title_uses_theme(self) -> None:
         theme = _SHOWCASE_THEMES[0]
         gen = SemanticValueGenerator(random.Random(0), theme=theme)
-        schema = _schema({"x-polylogue-semantic-role": "conversation_title"})
+        schema = _schema({"x-polylogue-semantic-role": "session_title"})
         handled, value = gen.try_generate(schema)
         assert handled is True
         assert value == theme.title
@@ -453,7 +453,7 @@ class TestSemanticTitle:
         gen = SemanticValueGenerator(random.Random(42))
         schema = _schema(
             {
-                "x-polylogue-semantic-role": "conversation_title",
+                "x-polylogue-semantic-role": "session_title",
                 "x-polylogue-values": ["Alpha", "Beta", "Gamma"],
             }
         )
@@ -463,7 +463,7 @@ class TestSemanticTitle:
 
     def test_title_without_theme_or_values_picks_showcase_theme(self) -> None:
         gen = SemanticValueGenerator(random.Random(42))
-        schema = _schema({"x-polylogue-semantic-role": "conversation_title"})
+        schema = _schema({"x-polylogue-semantic-role": "session_title"})
         handled, value = gen.try_generate(schema)
         assert handled is True
         known_titles = {t.title for t in _SHOWCASE_THEMES}
@@ -572,17 +572,17 @@ class TestCorpusParseRoundtrip:
     @pytest.mark.parametrize("provider", sorted(PROVIDER_WIRE_FORMATS.keys()))
     def test_generated_data_parses(self, provider: str, synthetic_source: SyntheticSourceFactory) -> None:
         """Synthetic data for each provider round-trips through parser."""
-        from polylogue.sources import iter_source_conversations
+        from polylogue.sources import iter_source_sessions
 
         try:
             source = synthetic_source(provider, count=2, seed=42)
         except FileNotFoundError:
             pytest.skip(f"No schema available for {provider}")
 
-        convos = list(iter_source_conversations(source))
-        assert len(convos) > 0, f"No conversations parsed for {provider}"
+        convos = list(iter_source_sessions(source))
+        assert len(convos) > 0, f"No sessions parsed for {provider}"
         for conv in convos:
-            assert len(conv.messages) > 0, f"Empty conversation for {provider}"
+            assert len(conv.messages) > 0, f"Empty session for {provider}"
 
 
 # =============================================================================
@@ -618,7 +618,7 @@ class TestSeedDeterminism:
 
 
 class TestMessageCountContract:
-    """Generated conversations respect the message count range."""
+    """Generated sessions respect the message count range."""
 
     @pytest.mark.parametrize("provider", sorted(SyntheticCorpus.available_providers() or ["chatgpt"]))
     def test_generate_count_matches_requested(self, provider: str) -> None:
@@ -649,7 +649,7 @@ class TestMessageCountContract:
             pytest.skip("No schemas available")
 
         corpus = SyntheticCorpus.for_provider(available[0])
-        batch = corpus.generate_batch(count=2, seed=7, messages_per_conversation=range(4, 5))
+        batch = corpus.generate_batch(count=2, seed=7, messages_per_session=range(4, 5))
         assert len(batch.artifacts) == 2
         assert batch.report.generated_count == 2
         assert batch.report.provider == corpus.provider
@@ -661,20 +661,20 @@ class TestParseRoundtrip:
     """Synthetic data round-trips through the actual provider parsers."""
 
     @pytest.mark.parametrize("provider", sorted(SyntheticCorpus.available_providers() or ["chatgpt"]))
-    def test_synthetic_parses_to_conversations(self, provider: str, synthetic_source: SyntheticSourceFactory) -> None:
-        """Synthetic corpus for each provider parses into valid conversations."""
-        from polylogue.sources import iter_source_conversations
+    def test_synthetic_parses_to_sessions(self, provider: str, synthetic_source: SyntheticSourceFactory) -> None:
+        """Synthetic corpus for each provider parses into valid sessions."""
+        from polylogue.sources import iter_source_sessions
 
         try:
             source = synthetic_source(provider, count=2, seed=42)
         except FileNotFoundError:
             pytest.skip(f"No schema for {provider}")
 
-        convos = list(iter_source_conversations(source))
-        assert len(convos) > 0, f"No conversations parsed for {provider}"
+        convos = list(iter_source_sessions(source))
+        assert len(convos) > 0, f"No sessions parsed for {provider}"
 
         for conv in convos:
-            assert len(conv.messages) > 0, f"Empty conversation for {provider}"
+            assert len(conv.messages) > 0, f"Empty session for {provider}"
             # At least one message should have non-empty text
             assert any(m.text for m in conv.messages), f"No message text for {provider}"
 
@@ -724,45 +724,45 @@ class TestSyntheticRoundtrip:
     @pytest.mark.parametrize("provider", _available_providers())
     def test_roundtrip_produces_messages(self, provider: str) -> None:
         corpus = SyntheticCorpus.for_provider(provider)
-        results = corpus.generate(count=3, seed=42, messages_per_conversation=range(4, 8))
+        results = corpus.generate(count=3, seed=42, messages_per_session=range(4, 8))
         assert len(results) == 3
 
         runtime_provider = _SCHEMA_TO_RUNTIME_PROVIDER.get(provider, provider)
 
         for i, raw in enumerate(results):
             payload = _deserialize_for_parser(provider, raw)
-            conversations = parse_payload(runtime_provider, payload, f"synth-{provider}-{i}")
-            assert len(conversations) >= 1, (
-                f"Provider {provider}: parse_payload returned no conversations for synthetic data (index {i})"
+            sessions = parse_payload(runtime_provider, payload, f"synth-{provider}-{i}")
+            assert len(sessions) >= 1, (
+                f"Provider {provider}: parse_payload returned no sessions for synthetic data (index {i})"
             )
-            conv = conversations[0]
-            assert len(conv.messages) > 0, f"Provider {provider}: parsed conversation has no messages (index {i})"
+            conv = sessions[0]
+            assert len(conv.messages) > 0, f"Provider {provider}: parsed session has no messages (index {i})"
 
     @pytest.mark.parametrize("provider", _available_providers())
     def test_parsed_messages_have_roles(self, provider: str) -> None:
         corpus = SyntheticCorpus.for_provider(provider)
-        [raw] = corpus.generate(count=1, seed=7, messages_per_conversation=range(5, 6))
+        [raw] = corpus.generate(count=1, seed=7, messages_per_session=range(5, 6))
 
         runtime_provider = _SCHEMA_TO_RUNTIME_PROVIDER.get(provider, provider)
         payload = _deserialize_for_parser(provider, raw)
-        conversations = parse_payload(runtime_provider, payload, f"synth-{provider}")
-        assert conversations
+        sessions = parse_payload(runtime_provider, payload, f"synth-{provider}")
+        assert sessions
 
-        for msg in conversations[0].messages:
+        for msg in sessions[0].messages:
             assert msg.role is not None
             assert str(msg.role) != ""
 
     @pytest.mark.parametrize("provider", _available_providers())
     def test_parsed_messages_have_text_content(self, provider: str) -> None:
         corpus = SyntheticCorpus.for_provider(provider)
-        [raw] = corpus.generate(count=1, seed=99, messages_per_conversation=range(4, 5))
+        [raw] = corpus.generate(count=1, seed=99, messages_per_session=range(4, 5))
 
         runtime_provider = _SCHEMA_TO_RUNTIME_PROVIDER.get(provider, provider)
         payload = _deserialize_for_parser(provider, raw)
-        conversations = parse_payload(runtime_provider, payload, f"synth-{provider}")
-        assert conversations
+        sessions = parse_payload(runtime_provider, payload, f"synth-{provider}")
+        assert sessions
 
-        messages_with_text = [m for m in conversations[0].messages if m.text]
+        messages_with_text = [m for m in sessions[0].messages if m.text]
         assert len(messages_with_text) > 0, f"Provider {provider}: no messages have text content"
 
 
@@ -784,7 +784,7 @@ class TestSyntheticDeterminism:
         corpus = SyntheticCorpus.for_provider(provider)
         result_a = corpus.generate(count=2, seed=1)
         result_b = corpus.generate(count=2, seed=2)
-        # At least one conversation should differ
+        # At least one session should differ
         assert result_a != result_b
 
 
@@ -801,16 +801,16 @@ class TestSyntheticEdgeCases:
         assert result == []
 
     @pytest.mark.parametrize("provider", _available_providers())
-    def test_single_message_conversation(self, provider: str) -> None:
-        """A conversation with exactly 1 message should still parse."""
+    def test_single_message_session(self, provider: str) -> None:
+        """A session with exactly 1 message should still parse."""
         corpus = SyntheticCorpus.for_provider(provider)
-        [raw] = corpus.generate(count=1, seed=55, messages_per_conversation=range(1, 2))
+        [raw] = corpus.generate(count=1, seed=55, messages_per_session=range(1, 2))
 
         runtime_provider = _SCHEMA_TO_RUNTIME_PROVIDER.get(provider, provider)
         payload = _deserialize_for_parser(provider, raw)
-        conversations = parse_payload(runtime_provider, payload, f"synth-{provider}")
-        assert len(conversations) >= 1
-        assert len(conversations[0].messages) >= 1
+        sessions = parse_payload(runtime_provider, payload, f"synth-{provider}")
+        assert len(sessions) >= 1
+        assert len(sessions[0].messages) >= 1
 
 
 # ---------------------------------------------------------------------------
@@ -837,8 +837,8 @@ class TestProviderAvailability:
 
         fake_package = _FakePackage(
             version="v2",
-            default_element_kind="conversation_record_stream",
-            available_elements={"conversation_record_stream"},
+            default_element_kind="session_record_stream",
+            available_elements={"session_record_stream"},
         )
         fake_schema = _schema({"type": "object"})
         fake_registry = _FakeRegistry(
@@ -850,12 +850,12 @@ class TestProviderAvailability:
         corpus = SyntheticCorpus.for_provider(
             "chatgpt",
             version="v2",
-            element_kind="conversation_record_stream",
+            element_kind="session_record_stream",
         )
 
         assert isinstance(corpus, SyntheticCorpus)
         assert fake_registry.package_calls == [("chatgpt", "v2")]
-        assert fake_registry.element_schema_calls == [("chatgpt", "v2", "conversation_record_stream")]
+        assert fake_registry.element_schema_calls == [("chatgpt", "v2", "session_record_stream")]
         assert corpus.schema == fake_schema
 
     def test_for_provider_rejects_unknown_element_when_package_exists(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -863,7 +863,7 @@ class TestProviderAvailability:
 
         fake_package = _FakePackage(
             version="v2",
-            default_element_kind="conversation_record_stream",
+            default_element_kind="session_record_stream",
             available_elements=set(),
         )
         fake_registry = _FakeRegistry(package=fake_package)
@@ -882,7 +882,7 @@ class TestProviderAvailability:
         monkeypatch.setattr(synthetic_core, "SchemaRegistry", lambda: fake_registry)
 
         with pytest.raises(ValueError):
-            SyntheticCorpus.for_provider("chatgpt", element_kind="conversation_record_stream")
+            SyntheticCorpus.for_provider("chatgpt", element_kind="session_record_stream")
 
 
 # ---------------------------------------------------------------------------
@@ -898,7 +898,7 @@ class TestShowcaseStyleRoundtrip:
         results = corpus.generate(
             count=2,
             seed=42,
-            messages_per_conversation=range(4, 8),
+            messages_per_session=range(4, 8),
             style="showcase",
         )
         assert len(results) == 2
@@ -907,6 +907,6 @@ class TestShowcaseStyleRoundtrip:
 
         for i, raw in enumerate(results):
             payload = _deserialize_for_parser(provider, raw)
-            conversations = parse_payload(runtime_provider, payload, f"showcase-{provider}-{i}")
-            assert len(conversations) >= 1
-            assert len(conversations[0].messages) > 0
+            sessions = parse_payload(runtime_provider, payload, f"showcase-{provider}-{i}")
+            assert len(sessions) >= 1
+            assert len(sessions[0].messages) > 0

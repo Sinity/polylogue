@@ -9,9 +9,7 @@ from typing import Final
 
 from hypothesis import strategies as st
 
-from polylogue.storage.index import rebuild_index
-from polylogue.storage.sqlite.connection import open_connection
-from tests.infra.storage_records import ConversationBuilder
+from tests.infra.storage_records import SessionBuilder
 
 _PROVIDERS: Final[tuple[str, ...]] = ("claude-ai", "chatgpt", "codex", "claude-code")
 _ROLES: Final[tuple[str, ...]] = ("user", "assistant", "system")
@@ -33,10 +31,10 @@ class MessageSpec:
 
 
 @dataclass(frozen=True)
-class ConversationSpec:
-    """Generated conversation fixture for storage/repository laws."""
+class SessionSpec:
+    """Generated session fixture for storage/repository laws."""
 
-    conversation_id: str
+    session_id: str
     provider: str
     title: str
     created_at: str
@@ -56,9 +54,9 @@ class TitleSearchSpec:
 
 @dataclass(frozen=True)
 class TagAssignmentSpec:
-    """Generated tag distribution over a conversation graph."""
+    """Generated tag distribution over a session graph."""
 
-    conversations: tuple[ConversationSpec, ...]
+    sessions: tuple[SessionSpec, ...]
     tag_sequences: tuple[tuple[str, ...], ...]
 
 
@@ -78,17 +76,17 @@ def message_spec_strategy(draw: st.DrawFn) -> MessageSpec:
 
 
 @st.composite
-def conversation_graph_strategy(
+def session_graph_strategy(
     draw: st.DrawFn,
     *,
-    min_conversations: int = 1,
-    max_conversations: int = 6,
+    min_sessions: int = 1,
+    max_sessions: int = 6,
     max_messages: int = 4,
-) -> tuple[ConversationSpec, ...]:
-    """Generate a small acyclic conversation graph with stable ordering."""
-    count = draw(st.integers(min_value=min_conversations, max_value=max_conversations))
+) -> tuple[SessionSpec, ...]:
+    """Generate a small acyclic session graph with stable ordering."""
+    count = draw(st.integers(min_value=min_sessions, max_value=max_sessions))
     base = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    specs: list[ConversationSpec] = []
+    specs: list[SessionSpec] = []
 
     for index in range(count):
         slug = draw(st.text(alphabet="abcdefghijklmnopqrstuvwxyz0123456789", min_size=3, max_size=8))
@@ -107,8 +105,8 @@ def conversation_graph_strategy(
             )
         )
         specs.append(
-            ConversationSpec(
-                conversation_id=f"conv-{index}-{slug}",
+            SessionSpec(
+                session_id=f"conv-{index}-{slug}",
                 provider=draw(st.sampled_from(_PROVIDERS)),
                 title=draw(
                     st.text(alphabet=_TITLE_ALPHABET, min_size=1, max_size=32).filter(lambda value: value.strip() != "")
@@ -146,18 +144,18 @@ def literal_title_search_strategy(draw: st.DrawFn) -> TitleSearchSpec:
 def tag_assignment_strategy(
     draw: st.DrawFn,
     *,
-    min_conversations: int = 1,
-    max_conversations: int = 6,
+    min_sessions: int = 1,
+    max_sessions: int = 6,
 ) -> TagAssignmentSpec:
-    """Generate a conversation graph plus per-conversation tag sequences."""
-    conversations = draw(
-        conversation_graph_strategy(
-            min_conversations=min_conversations,
-            max_conversations=max_conversations,
+    """Generate a session graph plus per-session tag sequences."""
+    sessions = draw(
+        session_graph_strategy(
+            min_sessions=min_sessions,
+            max_sessions=max_sessions,
         )
     )
     tag_sequences = []
-    for _ in conversations:
+    for _ in sessions:
         tags = tuple(
             draw(
                 st.lists(
@@ -169,21 +167,20 @@ def tag_assignment_strategy(
         )
         tag_sequences.append(tags)
     return TagAssignmentSpec(
-        conversations=conversations,
+        sessions=sessions,
         tag_sequences=tuple(tag_sequences),
     )
 
 
-def expected_sorted_ids(specs: tuple[ConversationSpec, ...]) -> list[str]:
+def expected_sorted_ids(specs: tuple[SessionSpec, ...]) -> list[str]:
     """Return repository/backend default sort order for the generated graph."""
     return [
-        spec.conversation_id
-        for spec in sorted(specs, key=lambda spec: (spec.updated_at, spec.conversation_id), reverse=True)
+        spec.session_id for spec in sorted(specs, key=lambda spec: (spec.updated_at, spec.session_id), reverse=True)
     ]
 
 
-def root_index(specs: tuple[ConversationSpec, ...], index: int) -> int:
-    """Resolve the root conversation index for a generated node."""
+def root_index(specs: tuple[SessionSpec, ...], index: int) -> int:
+    """Resolve the root session index for a generated node."""
     current = index
     while specs[current].parent_index is not None:
         parent_index = specs[current].parent_index
@@ -192,10 +189,10 @@ def root_index(specs: tuple[ConversationSpec, ...], index: int) -> int:
     return current
 
 
-def expected_tree_ids(specs: tuple[ConversationSpec, ...], index: int) -> set[str]:
-    """Return the full tree rooted at the conversation containing index."""
+def expected_tree_ids(specs: tuple[SessionSpec, ...], index: int) -> set[str]:
+    """Return the full tree rooted at the session containing index."""
     expected_root = root_index(specs, index)
-    return {spec.conversation_id for position, spec in enumerate(specs) if root_index(specs, position) == expected_root}
+    return {spec.session_id for position, spec in enumerate(specs) if root_index(specs, position) == expected_root}
 
 
 def shortest_unique_prefix(ids: tuple[str, ...], target_id: str) -> str:
@@ -208,31 +205,31 @@ def shortest_unique_prefix(ids: tuple[str, ...], target_id: str) -> str:
 
 
 def expected_tag_counts(spec: TagAssignmentSpec, provider: str | None = None) -> dict[str, int]:
-    """Count tags by distinct conversation, optionally restricted to one provider."""
+    """Count tags by distinct session, optionally restricted to one provider."""
     counts: dict[str, int] = {}
-    for conversation, tags in zip(spec.conversations, spec.tag_sequences, strict=True):
-        if provider is not None and conversation.provider != provider:
+    for session, tags in zip(spec.sessions, spec.tag_sequences, strict=True):
+        if provider is not None and session.provider != provider:
             continue
         for tag in set(tags):
             counts[tag] = counts.get(tag, 0) + 1
     return counts
 
 
-def seed_conversation_graph(db_path: Path, specs: tuple[ConversationSpec, ...]) -> None:
+def seed_session_graph(db_path: Path, specs: tuple[SessionSpec, ...]) -> None:
     """Persist a generated graph through the same test builder path as other suites."""
     for spec in specs:
         builder = (
-            ConversationBuilder(db_path, spec.conversation_id)
+            SessionBuilder(db_path, spec.session_id)
             .provider(spec.provider)
             .title(spec.title)
             .created_at(spec.created_at)
             .updated_at(spec.updated_at)
         )
         if spec.parent_index is not None:
-            builder.parent_conversation(specs[spec.parent_index].conversation_id)
+            builder.parent_session(specs[spec.parent_index].session_id)
         for message_index, message in enumerate(spec.messages):
             builder.add_message(
-                f"{spec.conversation_id}-m{message_index}",
+                f"{spec.session_id}-m{message_index}",
                 role=message.role,
                 text=message.text,
                 has_tool_use=int(message.has_tool_use),
@@ -240,5 +237,10 @@ def seed_conversation_graph(db_path: Path, specs: tuple[ConversationSpec, ...]) 
             )
         builder.save()
 
-    with open_connection(db_path) as conn:
-        rebuild_index(conn)
+    # The archive ArchiveStore write maintains block FTS via triggers and resolves
+    # parent/topology edges on save; refresh the FTS index explicitly so any
+    # bulk-suspended triggers are reconciled before tree/law assertions read.
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with ArchiveStore(db_path.parent) as archive:
+        archive.rebuild_index()

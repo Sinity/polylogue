@@ -53,7 +53,7 @@ API.
   intent/outcome summaries plus `enrichment.support_level` /
   `enrichment.confidence`. Profiles missing an `inference` payload
   should be treated as evidence-only.
-- Consumer-facing fields: `conversation_id`, `provider_name`, `title`,
+- Consumer-facing fields: `session_id`, `provider_name`, `title`,
   `semantic_tier`, `evidence`, `inference`, `enrichment`,
   `provenance`, `inference_provenance`, `enrichment_provenance`.
 
@@ -72,7 +72,7 @@ API.
   local file/tool/text signals. It is not the session-level workflow taxonomy;
   consumers that need whole-session semantics should use
   `session_profiles.workflow_shape` and `session_profiles.terminal_state`.
-- Consumer-facing fields: `event_id`, `conversation_id`,
+- Consumer-facing fields: `event_id`, `session_id`,
   `provider_name`, `event_index`, `evidence`, `inference`.
 
 ### `session_phases` — Session Phases
@@ -86,7 +86,7 @@ API.
   timing and tool counts. Inference payload carries the phase-kind
   classification with a confidence score; `inference.fallback_inference`
   flags heuristic fallback rows.
-- Consumer-facing fields: `phase_id`, `conversation_id`,
+- Consumer-facing fields: `phase_id`, `session_id`,
   `provider_name`, `phase_index`, `evidence`, `inference`.
 
 ### `work_threads` — Work Threads
@@ -113,7 +113,7 @@ API.
   Auto-tag rows derive from probabilistic enrichment; explicit-tag
   rows are direct evidence. Inspect `explicit_count` vs `auto_count`
   for rigor.
-- Consumer-facing fields: `tag`, `conversation_count`,
+- Consumer-facing fields: `tag`, `session_count`,
   `explicit_count`, `auto_count`, `provider_breakdown`,
   `repo_breakdown`.
 

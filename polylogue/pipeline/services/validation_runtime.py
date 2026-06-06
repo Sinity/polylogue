@@ -10,7 +10,7 @@ from polylogue.core.common import format_malformed_jsonl_error as _format_malfor
 from polylogue.logging import get_logger
 from polylogue.schemas.validator import SchemaValidator
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.runtime import RawSessionRecord
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 logger = get_logger(__name__)
@@ -19,7 +19,7 @@ logger = get_logger(__name__)
 ValidationCounts = dict[str, int]
 
 
-def _normalize_payload_provider(raw_record: RawConversationRecord) -> str | None:
+def _normalize_payload_provider(raw_record: RawSessionRecord) -> str | None:
     stored_payload_provider = getattr(raw_record, "payload_provider", None)
     if not isinstance(stored_payload_provider, str):
         return None
@@ -42,7 +42,7 @@ def _initial_counts() -> ValidationCounts:
 
 def _build_validation_envelope(
     raw_source: Path,
-    raw_record: RawConversationRecord,
+    raw_record: RawSessionRecord,
     payload_provider: str | None,
 ) -> RawPayloadEnvelope:
     return build_raw_payload_envelope(
@@ -84,7 +84,7 @@ class _ValidationOutcome:
 
 
 def _validate_record_sync(
-    raw_record: RawConversationRecord,
+    raw_record: RawSessionRecord,
     validation_mode: ValidationMode,
     blob_root_str: str,
 ) -> _ValidationOutcome:
@@ -135,7 +135,7 @@ def _validate_record_sync(
     if not envelope.artifact.schema_eligible:
         return _ValidationOutcome(
             validation_status=ValidationStatus.SKIPPED,
-            validation_error=f"Artifact excluded from conversation schema inference: {envelope.artifact.kind.value}",
+            validation_error=f"Artifact excluded from session schema inference: {envelope.artifact.kind.value}",
             parse_error=None,
             parseable=False,
             canonical_provider=canonical_provider,

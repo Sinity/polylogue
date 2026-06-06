@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Polylogue CLI for AI chat archives"
 readme = "README.md"
 license = {text = "MIT"}
-keywords = ["ai", "chatgpt", "claude", "conversation", "archive", "llm"]
+keywords = ["ai", "chatgpt", "claude", "session", "archive", "llm"]
 authors = [{ name = "Sinity" }]
 classifiers = [
   "Development Status :: 4 - Beta",

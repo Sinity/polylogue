@@ -10,19 +10,19 @@ Why a separate substrate
 
 Maintenance failures are operationally distinct from ingest failures:
 
-* ingest failures land in ``raw_conversations.parse_error`` /
-  ``raw_conversations.validation_status`` because they describe the
+* ingest failures land in ``raw_sessions.parse_error`` /
+  ``raw_sessions.validation_status`` because they describe the
   state of a *row* in the archive — the raw acquisition exists but
   could not be parsed or validated;
 * maintenance failures describe an *attempt* to repair or replay
   archive state. They do not always correspond to a single
-  ``raw_conversations`` row (e.g. a session-insight rebuild that fails
-  on one ``conversation_id``), and they carry a maintenance-specific
+  ``raw_sessions`` row (e.g. a session-insight rebuild that fails
+  on one ``session_id``), and they carry a maintenance-specific
   ``operation_id`` that should be visible to operators.
 
 The two #1198 design alternatives were:
 
-A. Extend ``raw_conversations.validation_status`` to a third value
+A. Extend ``raw_sessions.validation_status`` to a third value
    ``"maintenance_failed"``. Reuses existing daemon read paths but
    conflates two semantically different failure surfaces and forces a
    schema-version bump for every existing archive.
@@ -33,8 +33,8 @@ B. Persist routed failures to a small append-only JSONL file under
 We chose (B). The maintenance state directory already exists
 (``polylogue/maintenance/replay.py:_STATE_DIRNAME``) and is the
 canonical location for resume cursors and operation snapshots. A
-single JSONL file fits cleanly there and avoids any schema migration,
-which is important because Polylogue intentionally has no migration
+single JSONL file fits cleanly there and avoids any schema rebuild,
+which is important because Polylogue intentionally has no in-place schema upgrade
 chain — a schema bump forces every operator to rebuild their archive.
 
 The file is **bounded**: writes append, and reads cap the returned
@@ -52,10 +52,9 @@ Every routed sample passes through redaction at construction time:
   using the same heuristic as :class:`RawFailureSample` so the daemon
   surface never exposes operator filesystem layout;
 * ``locator`` is preserved verbatim because it is already a typed,
-  short identifier (e.g. ``target:session_insights`` or
-  ``target:source_replay:source:claude-code:artifact:42:<path>``); a
-  separate pass strips absolute path segments out of the locator's
-  trailing ``:path`` segment for the same reason.
+  short identifier (e.g. ``target:session_insights``); a separate
+  pass strips absolute path segments out of any trailing ``:path``
+  segment for the same reason.
 
 Raw message bodies and blob bytes are never routed through this
 surface — only the bounded ``FailureSample.message`` from the planner
@@ -134,13 +133,11 @@ def _redact_paths(text: str) -> str:
 def _redact_locator(locator: str) -> str:
     """Redact absolute paths embedded in a ``target:...`` locator string.
 
-    Locators emitted by :mod:`polylogue.maintenance.replay` for the
-    ``source_replay`` target embed a source path in the final segment
-    (``target:source_replay:source:<name>:artifact:<idx>:<path>``).
-    The redactor walks that suffix and strips any absolute path —
-    unconditionally for the locator form, because the
-    ``artifact:<idx>:`` suffix would otherwise look like a URL host
-    separator and prevent path-aware redaction.
+    Some locators emitted by :mod:`polylogue.maintenance.replay` embed
+    an absolute path in a trailing segment. The redactor strips any
+    absolute path unconditionally for the locator form, because a
+    structured colon-separated suffix would otherwise look like a URL
+    host separator and prevent path-aware redaction.
     """
     # Always replace the first absolute path token in the locator
     # suffix. The URL/host heuristic used for free-form messages is

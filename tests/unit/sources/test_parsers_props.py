@@ -29,10 +29,10 @@ from polylogue.config import Source
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.schemas.synthetic import SyntheticCorpus
-from polylogue.sources import iter_source_conversations
+from polylogue.sources import iter_source_sessions
 from polylogue.sources.parsers import chatgpt, claude, codex, drive
 from polylogue.sources.parsers.base import (
-    ParsedConversation,
+    ParsedSession,
     attachment_from_meta,
     extract_messages_from_list,
 )
@@ -108,23 +108,23 @@ def _payload_title(payload: ParserPayload) -> str:
     return str(document.get("title") or document.get("name") or "fallback")
 
 
-def _parse_chatgpt(payload: ParserPayload) -> ParsedConversation:
+def _parse_chatgpt(payload: ParserPayload) -> ParsedSession:
     return chatgpt.parse(json_document(payload), "fallback")
 
 
-def _parse_claude_ai(payload: ParserPayload) -> ParsedConversation:
+def _parse_claude_ai(payload: ParserPayload) -> ParsedSession:
     return claude.parse_ai(json_document(payload), "fallback")
 
 
-def _parse_claude_code(payload: ParserPayload) -> ParsedConversation:
+def _parse_claude_code(payload: ParserPayload) -> ParsedSession:
     return claude.parse_code(_payload_sequence(payload), "fallback")
 
 
-def _parse_codex(payload: ParserPayload) -> ParsedConversation:
+def _parse_codex(payload: ParserPayload) -> ParsedSession:
     return codex.parse(_payload_sequence(payload), "fallback")
 
 
-def _parse_gemini(payload: ParserPayload) -> ParsedConversation:
+def _parse_gemini(payload: ParserPayload) -> ParsedSession:
     return drive.parse_chunked_prompt("gemini", json_document(payload), "fallback")
 
 
@@ -132,23 +132,23 @@ def _parse_gemini(payload: ParserPayload) -> ParsedConversation:
 class ParserCase:
     name: str
     strategy: SearchStrategy[ParserPayload]
-    parse: Callable[[ParserPayload], ParsedConversation]
+    parse: Callable[[ParserPayload], ParsedSession]
     looks_like: Callable[[ParserPayload], bool]
     expected_provider: str
     message_cap: Callable[[ParserPayload], int]
     id_oracle: Callable[[ParserPayload], str] | None = None
     title_oracle: Callable[[ParserPayload], str] | None = None
-    extra_assertion: Callable[[ParserPayload, ParsedConversation], None] | None = None
+    extra_assertion: Callable[[ParserPayload, ParsedSession], None] | None = None
 
 
-def _assert_claude_code_cleanup(_payload: ParserPayload, result: ParsedConversation) -> None:
+def _assert_claude_code_cleanup(_payload: ParserPayload, result: ParsedSession) -> None:
     for message in result.messages:
         assert message.provider_meta is None
         assert isinstance(message.content_blocks, list)
         assert message.timestamp is None or isinstance(message.timestamp, str)
 
 
-def _assert_codex_text_recovery(payload: ParserPayload, result: ParsedConversation) -> None:
+def _assert_codex_text_recovery(payload: ParserPayload, result: ParsedSession) -> None:
     if not result.messages:
         return
     for message in result.messages:
@@ -236,13 +236,13 @@ def test_provider_parser_contract(case: ParserCase, data: st.DataObject) -> None
     payload = data.draw(case.strategy)
     result = case.parse(payload)
 
-    assert isinstance(result, ParsedConversation)
+    assert isinstance(result, ParsedSession)
     assert result.source_name == case.expected_provider
     assert len(result.messages) <= case.message_cap(payload)
     assert all(message.role in {"user", "assistant", "system", "tool", "message"} for message in result.messages)
 
     if case.id_oracle is not None:
-        assert result.provider_conversation_id == case.id_oracle(payload)
+        assert result.provider_session_id == case.id_oracle(payload)
     if case.title_oracle is not None:
         assert result.title == case.title_oracle(payload)
     if case.extra_assertion is not None:
@@ -403,10 +403,10 @@ def test_attachment_extraction_preserves_metadata(attachment_meta: AttachmentMet
 
 
 @pytest.fixture(params=sorted(SyntheticCorpus.available_providers()) or ["chatgpt"])
-def provider_conversations(
+def provider_sessions(
     request: pytest.FixtureRequest,
     synthetic_source: Callable[..., object],
-) -> tuple[str, list[ParsedConversation]]:
+) -> tuple[str, list[ParsedSession]]:
     """Parse synthetic data for each available provider."""
     provider = str(request.param)
     try:
@@ -416,9 +416,9 @@ def provider_conversations(
     if not isinstance(source, Source):
         raise TypeError(f"expected Source, got {type(source).__name__}")
 
-    convos = list(iter_source_conversations(source))
+    convos = list(iter_source_sessions(source))
     if not convos:
-        pytest.skip(f"No conversations parsed for {provider}")
+        pytest.skip(f"No sessions parsed for {provider}")
 
     return provider, convos
 
@@ -428,12 +428,12 @@ class TestTimestampParseability:
 
     def test_message_timestamps_are_parseable(
         self: object,
-        provider_conversations: tuple[str, list[ParsedConversation]],
+        provider_sessions: tuple[str, list[ParsedSession]],
     ) -> None:
         """Every message with a timestamp has a parseable value."""
         from polylogue.core.timestamps import parse_timestamp
 
-        provider, convos = provider_conversations
+        provider, convos = provider_sessions
         for conv in convos:
             for msg in conv.messages:
                 if msg.timestamp is not None and isinstance(msg.timestamp, str):
@@ -441,35 +441,34 @@ class TestTimestampParseability:
                     # or a string that parse_timestamp can handle
                     parsed = parse_timestamp(msg.timestamp)
                     assert parsed is not None, (
-                        f"{provider}: unparseable timestamp {msg.timestamp!r} "
-                        f"in conversation {conv.provider_conversation_id}"
+                        f"{provider}: unparseable timestamp {msg.timestamp!r} in session {conv.provider_session_id}"
                     )
 
 
-class TestConversationIdUniqueness:
-    """Parsed conversations should have unique IDs within a provider."""
+class TestSessionIdUniqueness:
+    """Parsed sessions should have unique IDs within a provider."""
 
-    def test_conversation_ids_are_unique(
+    def test_session_ids_are_unique(
         self: object,
-        provider_conversations: tuple[str, list[ParsedConversation]],
+        provider_sessions: tuple[str, list[ParsedSession]],
     ) -> None:
-        """No duplicate provider_conversation_id within one parse run."""
-        provider, convos = provider_conversations
-        ids = [c.provider_conversation_id for c in convos]
+        """No duplicate provider_session_id within one parse run."""
+        provider, convos = provider_sessions
+        ids = [c.provider_session_id for c in convos]
         assert len(ids) == len(set(ids)), (
-            f"{provider}: duplicate conversation IDs: {[cid for cid in ids if ids.count(cid) > 1]}"
+            f"{provider}: duplicate session IDs: {[cid for cid in ids if ids.count(cid) > 1]}"
         )
 
 
 class TestMessageOrderConsistency:
-    """Messages within a conversation should maintain insertion order."""
+    """Messages within a session should maintain insertion order."""
 
     def test_messages_have_consistent_roles(
         self: object,
-        provider_conversations: tuple[str, list[ParsedConversation]],
+        provider_sessions: tuple[str, list[ParsedSession]],
     ) -> None:
         """Messages alternate between user-like and assistant-like roles."""
-        provider, convos = provider_conversations
+        provider, convos = provider_sessions
         user_roles = {"user", "human"}
         assistant_roles = {"assistant", "model"}
 
@@ -480,20 +479,18 @@ class TestMessageOrderConsistency:
             roles = {m.role for m in conv.messages}
             has_user = bool(roles & user_roles)
             has_assistant = bool(roles & assistant_roles)
-            assert has_user or has_assistant, (
-                f"{provider}: conversation has no user or assistant messages, roles: {roles}"
-            )
+            assert has_user or has_assistant, f"{provider}: session has no user or assistant messages, roles: {roles}"
 
 
 class TestNonEmptyContent:
-    """Parsed conversations should have meaningful content."""
+    """Parsed sessions should have meaningful content."""
 
     def test_at_least_one_message_has_text(
         self: object,
-        provider_conversations: tuple[str, list[ParsedConversation]],
+        provider_sessions: tuple[str, list[ParsedSession]],
     ) -> None:
-        """Every conversation has at least one message with non-empty text."""
-        provider, convos = provider_conversations
+        """Every session has at least one message with non-empty text."""
+        provider, convos = provider_sessions
         for conv in convos:
             texts = [m.text for m in conv.messages if m.text]
-            assert len(texts) > 0, f"{provider}: conversation {conv.provider_conversation_id} has no messages with text"
+            assert len(texts) > 0, f"{provider}: session {conv.provider_session_id} has no messages with text"

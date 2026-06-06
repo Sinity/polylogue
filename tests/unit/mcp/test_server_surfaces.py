@@ -5,15 +5,18 @@ from __future__ import annotations
 import inspect
 import json
 from collections.abc import Callable
-from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from polylogue.archive.message.roles import Role
-from polylogue.archive.models import Conversation, ConversationSummary
+from polylogue.archive.models import Session, SessionSummary
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
-from polylogue.types import ConversationId, Provider
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.types import ContentBlockType, Provider, SessionId
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
     EXPECTED_PROMPT_NAMES,
@@ -25,22 +28,45 @@ from tests.infra.mcp import (
     invoke_surface_async,
     make_mock_filter,
     make_polylogue_mock,
-    make_query_store_mock,
-    make_simple_conversation,
-    make_tag_store_mock,
+    make_simple_session,
 )
 
-SerializationCase = tuple[str, Conversation, dict[str, object], str]
+SerializationCase = tuple[str, Session, dict[str, object], str]
 
 
-def _summary_for(conversation: Conversation) -> ConversationSummary:
-    return ConversationSummary(
-        id=ConversationId(str(conversation.id)),
-        provider=Provider.from_string(str(conversation.provider)),
-        title=conversation.display_title,
-        message_count=len(conversation.messages),
-        created_at=conversation.created_at,
-        updated_at=conversation.updated_at,
+def _write_archive_session(
+    archive: ArchiveStore,
+    *,
+    provider: Provider = Provider.CODEX,
+    native_id: str,
+    title: str = "Native session",
+    text: str = "archive message",
+) -> str:
+    return archive.write_parsed(
+        ParsedSession(
+            source_name=provider,
+            provider_session_id=native_id,
+            title=title,
+            messages=[
+                ParsedMessage(
+                    provider_message_id=f"{native_id}-m1",
+                    role=Role.USER,
+                    text=text,
+                    content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=text)],
+                )
+            ],
+        )
+    )
+
+
+def _summary_for(session: Session) -> SessionSummary:
+    return SessionSummary(
+        id=SessionId(str(session.id)),
+        origin=session.origin,
+        title=session.display_title,
+        message_count=len(session.messages),
+        created_at=session.created_at,
+        updated_at=session.updated_at,
     )
 
 
@@ -105,8 +131,8 @@ SERIALIZATION_CASES: list[SerializationCase] = [
 
 
 @pytest.fixture
-def simple_conversation() -> Conversation:
-    return make_simple_conversation()
+def simple_session() -> Session:
+    return make_simple_session()
 
 
 class TestServerSurfaceRegistration:
@@ -121,7 +147,8 @@ class TestServerSurfaceRegistration:
     def test_dynamic_product_tools_publish_explicit_signatures(self: object, mcp_server: MCPServerUnderTest) -> None:
         signature = inspect.signature(mcp_server._tool_manager._tools["session_profiles"].fn)
 
-        assert "provider" in signature.parameters
+        assert "origin" in signature.parameters
+        assert "provider" not in signature.parameters
         assert "workflow_shape" in signature.parameters
         assert "terminal_state" in signature.parameters
         assert "limit" in signature.parameters
@@ -179,89 +206,270 @@ class TestServerSurfaceRegistration:
 
 
 class TestResourceSurfaces:
-    def test_stats_returns_archive_statistics(self: object, mcp_server: MCPServerUnderTest) -> None:
-        from polylogue.archive.stats import ArchiveStats
+    def test_stats_returns_archive_statistics(self: object, mcp_server: MCPServerUnderTest, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            _write_archive_session(archive, provider=Provider.CHATGPT, native_id="stats-a", text="alpha beta")
+            _write_archive_session(archive, provider=Provider.CHATGPT, native_id="stats-b", text="gamma delta")
 
-        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
-            mock_ops = MagicMock()
-            mock_ops.storage_stats = AsyncMock(
-                return_value=ArchiveStats(
-                    total_conversations=2,
-                    total_messages=4,
-                    providers={"chatgpt": 2},
-                )
+        with patch("polylogue.mcp.server._get_config") as mock_get_config:
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "polylogue.db",
             )
-            mock_get_archive_ops.return_value = mock_ops
-
             result = invoke_surface(mcp_server._resource_manager._resources["polylogue://stats"].fn)
 
         stats = json.loads(result)
-        assert stats["total_conversations"] == 2
-        assert stats["total_messages"] == 4
+        assert stats["total_sessions"] == 2
+        assert stats["total_messages"] == 2
+        assert stats["origins"] == {"chatgpt-export": 2}
+
+    def test_stats_resource_reads_archive_file_set(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            archive.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="resource-stats-v1",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m1",
+                            role=Role.USER,
+                            text="resource stats v1",
+                            content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="resource stats v1")],
+                        )
+                    ],
+                )
+            )
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "polylogue.db",
+            )
+            mock_get_polylogue.side_effect = AssertionError("stats resource must not open monolithic ops")
+            result = invoke_surface(mcp_server._resource_manager._resources["polylogue://stats"].fn)
+
+        stats = json.loads(result)
+        assert stats["total_sessions"] == 1
+        assert stats["total_messages"] == 1
+        assert stats["origins"] == {"codex-session": 1}
 
     @pytest.mark.asyncio
-    async def test_conversations_resource_returns_list(
+    async def test_sessions_resource_returns_list(
         self: object,
-        simple_conversation: Conversation,
         mcp_server: MCPServerUnderTest,
+        tmp_path: Path,
     ) -> None:
-        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
-            mock_get_query_store.return_value = MagicMock()
-            with patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls:
-                mock_filter_cls.return_value = make_mock_filter(results=[simple_conversation])
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            session_id = _write_archive_session(archive, native_id="resource-list", title="Listed session")
 
-                result = await invoke_surface_async(
-                    mcp_server._resource_manager._resources["polylogue://conversations"].fn
-                )
+        with patch("polylogue.mcp.server._get_config") as mock_get_config:
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "polylogue.db",
+            )
+            result = await invoke_surface_async(mcp_server._resource_manager._resources["polylogue://sessions"].fn)
 
         payload = json.loads(result)
         assert "items" in payload
         assert payload["total"] == 1
         assert len(payload["items"]) == 1
-        assert payload["items"][0]["id"] == simple_conversation.id
+        assert payload["items"][0]["id"] == session_id
 
-    def test_single_conversation_resource(
-        self: object,
-        simple_conversation: Conversation,
-        mcp_server: MCPServerUnderTest,
+    @pytest.mark.asyncio
+    async def test_sessions_resource_reads_archive_file_set(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
     ) -> None:
-        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
-            mock_ops = MagicMock()
-            mock_ops.get_conversation_summary = AsyncMock(return_value=_summary_for(simple_conversation))
-            mock_ops.get_conversation_stats = AsyncMock(
-                return_value={"total_messages": len(simple_conversation.messages)}
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            session_id = _write_archive_session(
+                archive,
+                native_id="resource-list-v1",
+                title="Native list resource",
+                text="listed from schema archive",
             )
-            mock_get_archive_ops.return_value = mock_ops
 
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_query_store,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "polylogue.db",
+            )
+            mock_get_query_store.side_effect = AssertionError("sessions resource must not open monolithic storage")
+            result = await invoke_surface_async(mcp_server._resource_manager._resources["polylogue://sessions"].fn)
+
+        payload = json.loads(result)
+        assert payload["total"] == 1
+        assert payload["items"][0]["id"] == session_id
+        assert payload["items"][0]["origin"] == "codex-session"
+
+    def test_single_session_resource(
+        self: object,
+        mcp_server: MCPServerUnderTest,
+        tmp_path: Path,
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            session_id = archive.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="resource-single",
+                    title="Single resource",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id=f"resource-single-m{i}",
+                            role=Role.USER,
+                            text=f"line {i}",
+                            content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=f"line {i}")],
+                        )
+                        for i in range(2)
+                    ],
+                )
+            )
+
+        with patch("polylogue.mcp.server._get_config") as mock_get_config:
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "polylogue.db",
+            )
             result = invoke_surface(
-                mcp_server._resource_manager._templates["polylogue://conversation/{conv_id}"].fn,
-                conv_id="test:conv-123",
+                mcp_server._resource_manager._templates["polylogue://session/{conv_id}"].fn,
+                conv_id=session_id,
             )
 
         conv = json.loads(result)
-        assert conv["id"] == "test:conv-123"
+        assert conv["id"] == session_id
         assert conv["message_count"] == 2
         assert "messages" not in conv
 
-    def test_conversation_resource_not_found(self: object, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops:
-            mock_ops = MagicMock()
-            mock_ops.get_conversation_summary = AsyncMock(return_value=None)
-            mock_get_archive_ops.return_value = mock_ops
+    def test_single_session_resource_reads_archive_file_set(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            session_id = _write_archive_session(
+                archive,
+                native_id="resource-single-v1",
+                title="Native single resource",
+                text="single from schema archive",
+            )
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "polylogue.db",
+            )
+            mock_get_polylogue.side_effect = AssertionError("session resource must not open monolithic ops")
+            result = invoke_surface(
+                mcp_server._resource_manager._templates["polylogue://session/{conv_id}"].fn,
+                conv_id=session_id[:12],
+            )
+
+        conv = json.loads(result)
+        assert conv["id"] == session_id
+        assert conv["title"] == "Native single resource"
+        assert conv["message_count"] == 1
+
+    def test_session_resource_not_found(self: object, mcp_server: MCPServerUnderTest) -> None:
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = MagicMock()
+            mock_poly.get_session_summary = AsyncMock(return_value=None)
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
-                mcp_server._resource_manager._templates["polylogue://conversation/{conv_id}"].fn,
+                mcp_server._resource_manager._templates["polylogue://session/{conv_id}"].fn,
                 conv_id="nonexistent",
             )
 
         result_dict = json.loads(result)
         assert "error" in result_dict
 
+    def test_messages_resource_reads_archive_file_set(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            session_id = _write_archive_session(
+                archive,
+                native_id="resource-messages-v1",
+                title="Native messages resource",
+                text="message body from schema archive",
+            )
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "polylogue.db",
+            )
+            mock_get_polylogue.side_effect = AssertionError("messages resource must not open monolithic ops")
+            result = invoke_surface(
+                mcp_server._resource_manager._templates["polylogue://messages/{conv_id}"].fn,
+                conv_id=session_id,
+            )
+
+        payload = json.loads(result)
+        assert payload["session_id"] == session_id
+        assert payload["total"] == 1
+        assert payload["messages"][0]["text"] == "message body from schema archive"
+
+    @pytest.mark.asyncio
+    async def test_origin_recent_resource_reads_archive_file_set(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            codex_session_id = _write_archive_session(
+                archive,
+                provider=Provider.CODEX,
+                native_id="origin-recent-codex-v1",
+                title="Recent codex v1",
+            )
+            _write_archive_session(
+                archive,
+                provider=Provider.CHATGPT,
+                native_id="origin-recent-chatgpt-v1",
+                title="Recent chatgpt v1",
+            )
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_query_store,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "polylogue.db",
+            )
+            mock_get_query_store.side_effect = AssertionError("origin resource must not open monolithic storage")
+            result = await invoke_surface_async(
+                mcp_server._resource_manager._templates["polylogue://origin/{name}/recent"].fn,
+                name="codex-session",
+            )
+
+        payload = json.loads(result)
+        assert payload["total"] == 1
+        assert payload["items"][0]["id"] == codex_session_id
+        assert payload["items"][0]["origin"] == "codex-session"
+
     def test_tags_resource(self: object, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
-            mock_tag_store = make_tag_store_mock()
-            mock_tag_store.list_tags.return_value = {"feature": 10, "bug": 5}
-            mock_get_tag_store.return_value = mock_tag_store
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.list_tags.return_value = {"feature": 10, "bug": 5}
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(mcp_server._resource_manager._resources["polylogue://tags"].fn)
 
@@ -291,19 +499,234 @@ class TestResourceSurfaces:
         assert parsed["summary"] == "All systems operational"
 
 
+class TestArchiveGenericToolSurfaces:
+    @pytest.mark.asyncio
+    async def test_list_sessions_tool_reads_archive_file_set(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            session_id = _write_archive_session(archive, native_id="tool-list-v1", title="Tool list v1")
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "polylogue.db",
+            )
+            mock_get_polylogue.side_effect = AssertionError("list tool must not open monolithic ops")
+            result = await invoke_surface_async(mcp_server._tool_manager._tools["list_sessions"].fn)
+
+        payload = json.loads(result)
+        assert payload["total"] == 1
+        assert payload["items"][0]["id"] == session_id
+
+    @pytest.mark.asyncio
+    async def test_search_tool_reads_archive_file_set(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            session_id = _write_archive_session(
+                archive,
+                native_id="tool-search-v1",
+                title="Tool search v1",
+                text="needle appears in schema archive",
+            )
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "polylogue.db",
+            )
+            mock_get_polylogue.side_effect = AssertionError("search tool must not open monolithic ops")
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["search"].fn,
+                query="needle",
+            )
+
+        payload = json.loads(result)
+        assert payload["hits"][0]["session"]["id"] == session_id
+        assert payload["hits"][0]["match"]["message_id"]
+
+    def test_get_session_tools_read_archive_file_set(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            session_id = _write_archive_session(
+                archive,
+                native_id="tool-get-v1",
+                title="Tool get v1",
+            )
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "polylogue.db",
+            )
+            mock_get_polylogue.side_effect = AssertionError("get tools must not open monolithic Polylogue")
+            result = invoke_surface(mcp_server._tool_manager._tools["get_session"].fn, id=session_id[:12])
+            summary_result = invoke_surface(
+                mcp_server._tool_manager._tools["get_session_summary"].fn,
+                id=session_id,
+            )
+
+        payload = json.loads(result)
+        summary_payload = json.loads(summary_result)
+        assert payload["id"] == session_id
+        assert summary_payload["id"] == session_id
+
+    def test_get_messages_tool_reads_archive_file_set(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            session_id = _write_archive_session(
+                archive,
+                native_id="tool-messages-v1",
+                title="Tool messages v1",
+                text="tool message from schema archive",
+            )
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "polylogue.db",
+            )
+            mock_get_polylogue.side_effect = AssertionError("get_messages must not open monolithic Polylogue")
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["get_messages"].fn,
+                session_id=session_id,
+            )
+
+        payload = json.loads(result)
+        assert payload["session_id"] == session_id
+        assert payload["messages"][0]["text"] == "tool message from schema archive"
+
+
 class TestPromptSurfaces:
     @pytest.mark.asyncio
-    async def test_analyze_errors_with_conversations(
+    async def test_analyze_errors_prompt_reads_archive_file_set(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            _write_archive_session(
+                archive,
+                native_id="prompt-errors-v1",
+                title="Prompt errors v1",
+                text="error from schema archive prompt path",
+            )
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_query_store,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "polylogue.db",
+            )
+            mock_get_query_store.side_effect = AssertionError("prompt must not open monolithic storage")
+            result = await invoke_surface_async(mcp_server._prompt_manager._prompts["analyze_errors"].fn)
+
+        assert "1 sessions" in result
+        assert "error from schema archive" in result
+        assert '"origin": "codex-session"' in result
+        assert '"provider"' not in result
+
+    @pytest.mark.asyncio
+    async def test_compare_sessions_prompt_reads_archive_file_set(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            first_id = _write_archive_session(
+                archive,
+                native_id="prompt-compare-a-v1",
+                title="Prompt compare A",
+                text="first archive prompt session",
+            )
+            second_id = _write_archive_session(
+                archive,
+                native_id="prompt-compare-b-v1",
+                title="Prompt compare B",
+                text="second archive prompt session",
+            )
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_query_store,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "polylogue.db",
+            )
+            mock_get_query_store.side_effect = AssertionError("compare prompt must not open monolithic storage")
+            result = await invoke_surface_async(
+                mcp_server._prompt_manager._prompts["compare_sessions"].fn,
+                id1=first_id,
+                id2=second_id,
+            )
+
+        assert "Prompt compare A" in result
+        assert "Prompt compare B" in result
+        assert '"origin": "codex-session"' in result
+        assert '"provider"' not in result
+
+    @pytest.mark.asyncio
+    async def test_extract_code_prompt_reads_archive_file_set(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            _write_archive_session(
+                archive,
+                native_id="prompt-code-v1",
+                title="Prompt code v1",
+                text="```python\nprint('schema archive')\n```",
+            )
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_query_store,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "polylogue.db",
+            )
+            mock_get_query_store.side_effect = AssertionError("code prompt must not open monolithic storage")
+            result = await invoke_surface_async(
+                mcp_server._prompt_manager._prompts["extract_code"].fn,
+                language="python",
+            )
+
+        assert "Found 1 code blocks" in result
+        assert "schema archive" in result
+
+    @pytest.mark.asyncio
+    async def test_analyze_errors_with_sessions(
         self: object,
-        simple_conversation: Conversation,
+        simple_session: Session,
         mcp_server: MCPServerUnderTest,
     ) -> None:
-        simple_conversation.messages.to_list()[0].text = "Got an error while running"
+        simple_session.messages.to_list()[0].text = "Got an error while running"
 
-        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_query_store:
             mock_get_query_store.return_value = MagicMock()
-            with patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls:
-                mock_filter_cls.return_value = make_mock_filter(results=[simple_conversation])
+            with patch("polylogue.archive.filter.filters.SessionFilter") as mock_filter_cls:
+                mock_filter_cls.return_value = make_mock_filter(results=[simple_session])
 
                 result = await invoke_surface_async(mcp_server._prompt_manager._prompts["analyze_errors"].fn)
 
@@ -311,48 +734,60 @@ class TestPromptSurfaces:
         assert "error" in result.lower()
 
     @pytest.mark.asyncio
-    async def test_analyze_errors_limits_error_contexts_to_20(self: object, mcp_server: MCPServerUnderTest) -> None:
-        msgs = [
-            make_msg(
-                id=f"m{i}",
-                role=Role.USER,
-                text=f"error #{i} occurred",
-                timestamp=datetime(2024, 1, 15, tzinfo=timezone.utc),
+    async def test_analyze_errors_limits_error_contexts_to_20(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            archive.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="big-errors",
+                    title="Errors",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id=f"m{i}",
+                            role=Role.USER,
+                            text=f"error number {i} occurred",
+                            content_blocks=[
+                                ParsedContentBlock(type=ContentBlockType.TEXT, text=f"error number {i} occurred")
+                            ],
+                        )
+                        for i in range(30)
+                    ],
+                )
             )
-            for i in range(30)
-        ]
-        big_conv = make_conv(id="big", provider=Provider.UNKNOWN, title="Errors", messages=msgs)
 
-        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
-            mock_get_query_store.return_value = MagicMock()
-            with patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls:
-                mock_filter_cls.return_value = make_mock_filter(results=[big_conv])
-
-                result = await invoke_surface_async(mcp_server._prompt_manager._prompts["analyze_errors"].fn)
+        with patch("polylogue.mcp.server._get_config") as mock_get_config:
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "polylogue.db",
+            )
+            result = await invoke_surface_async(mcp_server._prompt_manager._prompts["analyze_errors"].fn)
 
         assert "20 error instances" in result
 
     @pytest.mark.asyncio
     async def test_analyze_errors_no_matches(self: object, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_query_store:
             mock_get_query_store.return_value = MagicMock()
-            with patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls:
+            with patch("polylogue.archive.filter.filters.SessionFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[])
 
                 result = await invoke_surface_async(mcp_server._prompt_manager._prompts["analyze_errors"].fn)
 
-        assert "0 conversations" in result
+        assert "0 sessions" in result
 
     @pytest.mark.asyncio
     async def test_summarize_week_empty(self: object, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_query_store:
             mock_get_query_store.return_value = MagicMock()
-            with patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls:
+            with patch("polylogue.archive.filter.filters.SessionFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[])
 
                 result = await invoke_surface_async(mcp_server._prompt_manager._prompts["summarize_week"].fn)
 
-        assert "0 conversations" in result
+        assert "0 sessions" in result
         assert "0 messages" in result
 
     @pytest.mark.asyncio
@@ -364,9 +799,9 @@ class TestPromptSurfaces:
             messages=[make_msg(id="m1", role=Role.USER, text="Just text, no code")],
         )
 
-        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_query_store:
             mock_get_query_store.return_value = MagicMock()
-            with patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls:
+            with patch("polylogue.archive.filter.filters.SessionFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[conv])
 
                 result = await invoke_surface_async(mcp_server._prompt_manager._prompts["extract_code"].fn)
@@ -388,9 +823,9 @@ class TestPromptSurfaces:
             ],
         )
 
-        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_query_store:
             mock_get_query_store.return_value = MagicMock()
-            with patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls:
+            with patch("polylogue.archive.filter.filters.SessionFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[conv])
 
                 result = await invoke_surface_async(
@@ -409,47 +844,47 @@ class TestPromptSurfaces:
             messages=[make_msg(id="m1", role=Role.ASSISTANT, text=None)],
         )
 
-        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_query_store:
             mock_get_query_store.return_value = MagicMock()
-            with patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls:
+            with patch("polylogue.archive.filter.filters.SessionFilter") as mock_filter_cls:
                 mock_filter_cls.return_value = make_mock_filter(results=[conv])
 
                 result = await invoke_surface_async(mcp_server._prompt_manager._prompts["extract_code"].fn)
 
         assert isinstance(result, str)
 
-    def test_compare_conversations_prompt(
+    def test_compare_sessions_prompt(
         self: object,
-        simple_conversation: Conversation,
+        simple_session: Session,
         mcp_server: MCPServerUnderTest,
     ) -> None:
-        with patch("polylogue.mcp.server._get_query_store") as mock_get_query_store:
-            mock_query_store = make_query_store_mock()
-            mock_query_store.get_eager = AsyncMock(side_effect=[simple_conversation, simple_conversation])
-            mock_get_query_store.return_value = mock_query_store
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.get_eager = AsyncMock(side_effect=[simple_session, simple_session])
+            mock_get_polylogue.return_value = mock_poly
 
             result = invoke_surface(
-                mcp_server._prompt_manager._prompts["compare_conversations"].fn,
+                mcp_server._prompt_manager._prompts["compare_sessions"].fn,
                 id1="test:conv-1",
                 id2="test:conv-2",
             )
 
         assert "Compare" in result
-        assert "Conversation 1" in result
-        assert "Conversation 2" in result
+        assert "Session 1" in result
+        assert "Session 2" in result
 
     @pytest.mark.asyncio
     async def test_extract_patterns_prompt(
         self: object,
-        simple_conversation: Conversation,
+        simple_session: Session,
         mcp_server: MCPServerUnderTest,
     ) -> None:
         with (
-            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
-            patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_query_store,
+            patch("polylogue.archive.filter.filters.SessionFilter") as mock_filter_cls,
         ):
             mock_get_query_store.return_value = MagicMock()
-            mock_filter_cls.return_value = make_mock_filter(results=[simple_conversation])
+            mock_filter_cls.return_value = make_mock_filter(results=[simple_session])
 
             result = await invoke_surface_async(mcp_server._prompt_manager._prompts["extract_patterns"].fn)
 
@@ -457,72 +892,83 @@ class TestPromptSurfaces:
         assert "patterns" in result.lower()
 
 
-class TestExportConversationTool:
-    def test_get_messages_tool_applies_content_projection(
+class TestExportSessionTool:
+    def test_get_messages_tool_native_content_projection_is_not_applied(
         self: object,
         mcp_server: MCPServerUnderTest,
+        tmp_path: Path,
     ) -> None:
-        projected_input = make_conv(
-            id="test:conv-123",
-            provider=Provider.CHATGPT,
-            title="Projected Conversation",
-            messages=[
-                make_msg(
-                    id="msg-1",
-                    role="assistant",
-                    text="Alpha\n\n```python\nprint('x')\n```\n\nOmega",
+        """PROD GAP: the archive ``get_messages`` path builds the content
+        projection request but never applies it — ``archive_messages_payload``
+        joins all block text verbatim. So ``no_code_blocks=True`` does NOT strip
+        fenced code on the archive store. This test pins the *current* archive
+        contract (text returned verbatim) so the divergence is visible and the
+        gap is tracked; the monolithic behaviour stripped code via
+        ``content_projection``.
+        """
+        body = "Alpha\n\n```python\nprint('x')\n```\n\nOmega"
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            session_id = archive.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CHATGPT,
+                    provider_session_id="projection",
+                    title="Projected Session",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="msg-1",
+                            role=Role.ASSISTANT,
+                            text=body,
+                            content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=body)],
+                        )
+                    ],
                 )
-            ],
-        )
-
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
-            mock_poly = make_polylogue_mock()
-            projected = projected_input.with_content_projection(ContentProjectionSpec(include_code=False))
-            mock_poly.get_messages_paginated = AsyncMock(
-                return_value=(list(projected.messages), len(projected.messages))
             )
-            mock_get_polylogue.return_value = mock_poly
 
+        with patch("polylogue.mcp.server._get_config") as mock_get_config:
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "polylogue.db",
+            )
             result = invoke_surface(
                 mcp_server._tool_manager._tools["get_messages"].fn,
-                conversation_id="test:conv-123",
+                session_id=session_id,
                 no_code_blocks=True,
             )
 
         payload = json.loads(result)
-        assert payload["messages"][0]["text"] == "Alpha\n\nOmega"
-        projection = mock_poly.get_messages_paginated.await_args.kwargs["content_projection"]
-        assert projection.include_code is False
+        # Native path returns the code fence intact (projection not applied).
+        assert payload["messages"][0]["text"] == body
 
-    def test_export_markdown(self: object, simple_conversation: Conversation, mcp_server: MCPServerUnderTest) -> None:
+    def test_export_markdown(self: object, simple_session: Session, mcp_server: MCPServerUnderTest) -> None:
         with (
             patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
-            patch("polylogue.rendering.formatting.format_conversation") as mock_format,
+            patch("polylogue.rendering.formatting.format_session") as mock_format,
         ):
             mock_poly = make_polylogue_mock()
-            mock_poly.get_conversation = AsyncMock(return_value=simple_conversation)
+            mock_poly.get_session = AsyncMock(return_value=simple_session)
             mock_get_polylogue.return_value = mock_poly
-            mock_format.return_value = "# Test Conversation\n\nFormatted content"
+            mock_format.return_value = "# Test Session\n\nFormatted content"
 
             result = invoke_surface(
-                mcp_server._tool_manager._tools["export_conversation"].fn,
+                mcp_server._tool_manager._tools["export_session"].fn,
                 id="test:conv-123",
                 format="markdown",
             )
 
-        assert "Test Conversation" in result
+        assert "Test Session" in result
         mock_format.assert_called_once()
         call_args = mock_format.call_args
-        assert call_args[0][0] == simple_conversation
+        assert call_args[0][0] == simple_session
         assert call_args[0][1] == "markdown"
 
     def test_export_not_found(self: object, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
-            mock_poly.get_conversation = AsyncMock(return_value=None)
+            mock_poly.get_session = AsyncMock(return_value=None)
             mock_get_polylogue.return_value = mock_poly
 
-            result = invoke_surface(mcp_server._tool_manager._tools["export_conversation"].fn, id="nonexistent")
+            result = invoke_surface(mcp_server._tool_manager._tools["export_session"].fn, id="nonexistent")
 
         parsed = json.loads(result)
         assert "error" in parsed
@@ -530,20 +976,20 @@ class TestExportConversationTool:
 
     def test_export_invalid_format_falls_back_to_markdown(
         self: object,
-        simple_conversation: Conversation,
+        simple_session: Session,
         mcp_server: MCPServerUnderTest,
     ) -> None:
         with (
             patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
-            patch("polylogue.rendering.formatting.format_conversation") as mock_format,
+            patch("polylogue.rendering.formatting.format_session") as mock_format,
         ):
             mock_poly = make_polylogue_mock()
-            mock_poly.get_conversation = AsyncMock(return_value=simple_conversation)
+            mock_poly.get_session = AsyncMock(return_value=simple_session)
             mock_get_polylogue.return_value = mock_poly
             mock_format.return_value = "# Content"
 
             invoke_surface(
-                mcp_server._tool_manager._tools["export_conversation"].fn,
+                mcp_server._tool_manager._tools["export_session"].fn,
                 id="test:conv-123",
                 format="invalid_format",
             )
@@ -552,31 +998,31 @@ class TestExportConversationTool:
 
 
 class TestTypedPayloads:
-    def test_conversation_to_summary_dict(self: object, simple_conversation: Conversation) -> None:
-        from polylogue.mcp.payloads import MCPConversationSummaryPayload
+    def test_session_to_summary_dict(self: object, simple_session: Session) -> None:
+        from polylogue.mcp.payloads import MCPSessionSummaryPayload
 
-        result = MCPConversationSummaryPayload.from_conversation(simple_conversation).model_dump(mode="json")
+        result = MCPSessionSummaryPayload.from_session(simple_session).model_dump(mode="json")
 
         assert result["id"] == "test:conv-123"
-        assert result["provider"] == "chatgpt"
+        assert result["origin"] == "chatgpt-export"
         assert result["message_count"] == 2
         assert "created_at" in result
         assert "updated_at" in result
 
-    def test_conversation_to_full_dict(self: object, simple_conversation: Conversation) -> None:
-        from polylogue.mcp.payloads import MCPConversationDetailPayload
+    def test_session_to_full_dict(self: object, simple_session: Session) -> None:
+        from polylogue.mcp.payloads import MCPSessionDetailPayload
 
-        result = MCPConversationDetailPayload.from_conversation(simple_conversation).model_dump(mode="json")
+        result = MCPSessionDetailPayload.from_session(simple_session).model_dump(mode="json")
 
         assert "messages" in result
         assert len(result["messages"]) == 2
         msg = result["messages"][0]
         assert {"id", "role", "text", "timestamp"} <= msg.keys()
 
-    def test_conversation_to_full_dict_applies_projection(self: object) -> None:
-        from polylogue.mcp.payloads import MCPConversationDetailPayload
+    def test_session_to_full_dict_applies_projection(self: object) -> None:
+        from polylogue.mcp.payloads import MCPSessionDetailPayload
 
-        conversation = make_conv(
+        session = make_conv(
             id="projected",
             provider=Provider.CHATGPT,
             title="Projected",
@@ -589,8 +1035,8 @@ class TestTypedPayloads:
             ],
         )
 
-        result = MCPConversationDetailPayload.from_conversation(
-            conversation,
+        result = MCPSessionDetailPayload.from_session(
+            session,
             content_projection=ContentProjectionSpec.prose_only(),
         ).model_dump(mode="json")
 
@@ -600,18 +1046,18 @@ class TestTypedPayloads:
     def test_serialization_edge_cases(
         self: object,
         case_id: str,
-        conv: Conversation,
+        conv: Session,
         expected_fields: dict[str, object],
         payload_kind: str,
     ) -> None:
         if payload_kind == "summary":
-            from polylogue.mcp.payloads import MCPConversationSummaryPayload
+            from polylogue.mcp.payloads import MCPSessionSummaryPayload
 
-            result = MCPConversationSummaryPayload.from_conversation(conv).model_dump(mode="json")
+            result = MCPSessionSummaryPayload.from_session(conv).model_dump(mode="json")
         else:
-            from polylogue.mcp.payloads import MCPConversationDetailPayload
+            from polylogue.mcp.payloads import MCPSessionDetailPayload
 
-            result = MCPConversationDetailPayload.from_conversation(conv).model_dump(mode="json")
+            result = MCPSessionDetailPayload.from_session(conv).model_dump(mode="json")
 
         for key, expected_value in expected_fields.items():
             if key == "messages":

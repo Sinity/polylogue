@@ -7,10 +7,12 @@ import json
 import os
 import random
 import shutil
+import sqlite3
 import subprocess
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -42,7 +44,7 @@ from devtools.pipeline_probe.staging import (
 from polylogue.config import Config, Source
 from polylogue.core.json import JSONDocument, is_json_document, loads, require_json_document
 from polylogue.core.metrics import PipelineMetrics
-from polylogue.paths import blob_store_root, db_path
+from polylogue.paths import active_index_db_path, blob_store_root
 from polylogue.pipeline.run_stages import execute_index_stage, execute_materialize_stage
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.scenarios import (
@@ -51,14 +53,16 @@ from polylogue.scenarios import (
 )
 from polylogue.showcase.workspace import VerificationWorkspace, create_verification_workspace
 from polylogue.storage.blob_store import BlobStore, reset_blob_store
-from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.repository import SessionRepository
+from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite import SQLiteBackend, create_backend
+from polylogue.storage.sqlite.archive_tiers.archive import _provider_for_origin
 from polylogue.storage.sqlite.connection import (
     _build_provider_scope_filter,
     _build_source_scope_filter,
     open_connection,
 )
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.queries.raw_state import EFFECTIVE_RAW_PROVIDER_SQL
 from polylogue.types import Provider
 
@@ -144,7 +148,7 @@ def _workspace_for_request(request: PipelineProbeRequest) -> VerificationWorkspa
     return create_verification_workspace(workdir, prefix="polylogue-pipeline-probe-")
 
 
-def _effective_source_name(record: RawConversationRecord) -> str:
+def _effective_source_name(record: RawSessionRecord) -> str:
     payload_provider = record.payload_provider
     if isinstance(payload_provider, Provider):
         return payload_provider.value
@@ -153,11 +157,11 @@ def _effective_source_name(record: RawConversationRecord) -> str:
     return record.source_name or ""
 
 
-def _source_bucket_name(record: RawConversationRecord) -> str:
+def _source_bucket_name(record: RawSessionRecord) -> str:
     return record.source_name or "<unknown>"
 
 
-def _normalize_record_for_replay(record: RawConversationRecord) -> RawConversationRecord:
+def _normalize_record_for_replay(record: RawSessionRecord) -> RawSessionRecord:
     """Reset parse/validation state so a copied raw row behaves like post-acquire input."""
     return record.model_copy(
         update={
@@ -173,12 +177,101 @@ def _normalize_record_for_replay(record: RawConversationRecord) -> RawConversati
     )
 
 
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def _ms_to_iso(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, int | float | str | bytes | bytearray):
+        return None
+    try:
+        return datetime.fromtimestamp(int(value) / 1000, tz=UTC).isoformat()
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def _fetch_archive_file_set_candidates(
+    *,
+    db_path: Path,
+    provider_filters: list[str],
+    source_filters: list[str],
+) -> list[RawSessionRecord] | None:
+    if not db_path.exists():
+        return None
+    conn = open_readonly_connection(db_path)
+    try:
+        if not _table_exists(conn, "raw_sessions"):
+            return None
+        rows = conn.execute(
+            """
+            SELECT raw_id, origin, source_path, source_index, blob_hash, blob_size,
+                   acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error,
+                   validated_at_ms, validation_status, validation_error,
+                   validation_drift_count, validation_mode, detection_warnings_json
+            FROM raw_sessions
+            ORDER BY acquired_at_ms DESC, raw_id ASC
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    provider_filter_set = {Provider.from_string(value).value for value in provider_filters}
+    source_filter_set = set(source_filters)
+    records: list[RawSessionRecord] = []
+    for row in rows:
+        origin = str(row[1])
+        provider = _provider_for_origin(origin)
+        source_path = str(row[2])
+        if provider_filter_set and provider.value not in provider_filter_set:
+            continue
+        if source_filter_set and origin not in source_filter_set and provider.value not in source_filter_set:
+            continue
+        blob_hash = bytes(row[4]).hex()
+        acquired_at = _ms_to_iso(row[6]) or "1970-01-01T00:00:00+00:00"
+        records.append(
+            RawSessionRecord(
+                raw_id=blob_hash,
+                payload_provider=provider,
+                source_name=provider.value,
+                source_path=source_path,
+                source_index=int(row[3] or 0),
+                blob_size=int(row[5] or 0),
+                acquired_at=acquired_at,
+                file_mtime=_ms_to_iso(row[7]),
+                parsed_at=_ms_to_iso(row[8]),
+                parse_error=row[9],
+                validated_at=_ms_to_iso(row[10]),
+                validation_status=row[11],
+                validation_error=row[12],
+                validation_drift_count=int(row[13] or 0),
+                validation_provider=provider,
+                validation_mode=row[14],
+                detection_warnings=row[15],
+            )
+        )
+    return records
+
+
 def _fetch_archive_candidates(
     *,
     db_path: Path,
     provider_filters: list[str],
     source_filters: list[str],
-) -> list[RawConversationRecord]:
+) -> list[RawSessionRecord]:
+    archive_file_set_records = _fetch_archive_file_set_candidates(
+        db_path=db_path,
+        provider_filters=provider_filters,
+        source_filters=source_filters,
+    )
+    if archive_file_set_records is not None:
+        return archive_file_set_records
+
     where_clauses: list[str] = []
     params: list[str] = []
 
@@ -198,19 +291,26 @@ def _fetch_archive_candidates(
         where_clauses.append(source_predicate)
         params.extend(source_params)
 
-    sql = "SELECT * FROM raw_conversations"
+    sql = "SELECT * FROM raw_sessions"
     if where_clauses:
         sql += f" WHERE {' AND '.join(where_clauses)}"
     sql += " ORDER BY acquired_at DESC, raw_id ASC"
 
     with open_connection(db_path) as conn:
         cursor = conn.execute(sql, tuple(params))
-        return [RawConversationRecord.model_validate(dict(row)) for row in cursor.fetchall()]
+        return [RawSessionRecord.model_validate(dict(row)) for row in cursor.fetchall()]
 
 
-def _raw_conversation_count(db_path: Path) -> int:
+def _raw_session_count(db_path: Path) -> int:
+    archive_file_set_records = _fetch_archive_file_set_candidates(
+        db_path=db_path,
+        provider_filters=[],
+        source_filters=[],
+    )
+    if archive_file_set_records is not None:
+        return len(archive_file_set_records)
     with open_connection(db_path) as conn:
-        row = conn.execute("SELECT COUNT(*) FROM raw_conversations").fetchone()
+        row = conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()
     return int(row[0]) if row else 0
 
 
@@ -231,19 +331,19 @@ def _empty_archive_manifest_error(
     qualifier_suffix = f" with {' '.join(qualifier)}" if qualifier else ""
 
     if candidate_count == 0:
-        message = f"archive-subset probe found no raw conversations in {source_db}{qualifier_suffix}"
+        message = f"archive-subset probe found no raw sessions in {source_db}{qualifier_suffix}"
     else:
         message = (
-            f"archive-subset probe found {candidate_count} candidate raw conversations in {source_db}{qualifier_suffix}, "
+            f"archive-subset probe found {candidate_count} candidate raw sessions in {source_db}{qualifier_suffix}, "
             f"but all {missing_blob_count} matching blobs were missing under {source_blob_root}"
         )
 
     sibling_db = source_db.with_name(f"{source_db.name}_")
     if candidate_count == 0 and sibling_db.exists():
-        sibling_count = _raw_conversation_count(sibling_db)
+        sibling_count = _raw_session_count(sibling_db)
         if sibling_count > 0:
             message += (
-                f"; sibling archive {sibling_db} contains {sibling_count} raw conversations. "
+                f"; sibling archive {sibling_db} contains {sibling_count} raw sessions. "
                 f"Pass --source-db {sibling_db} if that is the intended source archive."
             )
     return message
@@ -251,18 +351,18 @@ def _empty_archive_manifest_error(
 
 def _sample_provider_records(
     *,
-    records: list[RawConversationRecord],
+    records: list[RawSessionRecord],
     sample_size: int,
     rng: random.Random,
-) -> list[RawConversationRecord]:
-    source_buckets: dict[str, list[RawConversationRecord]] = {}
+) -> list[RawSessionRecord]:
+    source_buckets: dict[str, list[RawSessionRecord]] = {}
     for record in records:
         source_buckets.setdefault(_source_bucket_name(record), []).append(record)
 
     for bucket in source_buckets.values():
         rng.shuffle(bucket)
 
-    selected: list[RawConversationRecord] = []
+    selected: list[RawSessionRecord] = []
     active_sources = list(source_buckets)
     while active_sources and len(selected) < sample_size:
         rng.shuffle(active_sources)
@@ -280,7 +380,7 @@ def _sample_provider_records(
     return selected
 
 
-def _provider_counts(records: list[RawConversationRecord]) -> dict[str, int]:
+def _provider_counts(records: list[RawSessionRecord]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for record in records:
         provider = _effective_source_name(record)
@@ -288,7 +388,7 @@ def _provider_counts(records: list[RawConversationRecord]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
-def _source_counts(records: list[RawConversationRecord]) -> dict[str, int]:
+def _source_counts(records: list[RawSessionRecord]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for record in records:
         source_name = _source_bucket_name(record)
@@ -374,7 +474,7 @@ def _archive_manifest_from_payload(payload: JSONDocument) -> ArchiveManifest:
     }
 
 
-def _raw_record_payload(record: RawConversationRecord) -> JSONDocument:
+def _raw_record_payload(record: RawSessionRecord) -> JSONDocument:
     return require_json_document(record.model_dump(mode="json"), context="archive subset raw record")
 
 
@@ -396,12 +496,12 @@ def _build_archive_manifest(
     candidates_with_blobs = [record for record in candidate_records if source_blob_store.exists(record.raw_id)]
     missing_blob_count = len(candidate_records) - len(candidates_with_blobs)
 
-    by_provider: dict[str, list[RawConversationRecord]] = {}
+    by_provider: dict[str, list[RawSessionRecord]] = {}
     for record in candidates_with_blobs:
         by_provider.setdefault(_effective_source_name(record), []).append(record)
 
     rng = random.Random(seed)
-    sampled_records: list[RawConversationRecord] = []
+    sampled_records: list[RawSessionRecord] = []
     sampled_by_provider: dict[str, int] = {}
     available_by_provider: dict[str, int] = {}
     for source_name in sorted(by_provider):
@@ -470,7 +570,7 @@ def _resolve_archive_manifest(
             manifest["source_db"] = str(source_db.resolve())
         return manifest
 
-    resolved_source_db = (source_db or db_path()).resolve()
+    resolved_source_db = (source_db or active_index_db_path()).resolve()
     resolved_source_blob_root = (source_blob_root or blob_store_root()).resolve()
     return _build_archive_manifest(
         source_db=resolved_source_db,
@@ -482,17 +582,17 @@ def _resolve_archive_manifest(
     )
 
 
-class _RawConversationStore(Protocol):
-    async def save_raw_conversation(self, record: RawConversationRecord) -> bool: ...
+class _RawSessionStore(Protocol):
+    async def save_raw_session(self, record: RawSessionRecord) -> bool: ...
 
 
 async def _seed_archive_subset(
     *,
     manifest: ArchiveManifest,
-    repository: _RawConversationStore,
+    repository: _RawSessionStore,
     target_blob_store: BlobStore,
 ) -> ArchiveSubsetSampleSummary:
-    records = [RawConversationRecord.model_validate(record_payload) for record_payload in manifest["records"]]
+    records = [RawSessionRecord.model_validate(record_payload) for record_payload in manifest["records"]]
     source_blob_root = Path(str(manifest["source_blob_root"])).resolve()
     source_blob_store = BlobStore(source_blob_root)
     copied_records = 0
@@ -507,7 +607,7 @@ async def _seed_archive_subset(
             destination_blob_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_blob_path, destination_blob_path)
             copied_blob_bytes += destination_blob_path.stat().st_size
-        await repository.save_raw_conversation(_normalize_record_for_replay(record))
+        await repository.save_raw_session(_normalize_record_for_replay(record))
         copied_records += 1
 
     return {
@@ -531,12 +631,12 @@ async def _run_probe_pipeline(
     stage_sequence: list[str] | None,
     source_names: list[str] | None,
     backend: SQLiteBackend | None = None,
-    repository: ConversationRepository | None = None,
+    repository: SessionRepository | None = None,
 ) -> tuple[JSONDocument, JSONDocument]:
     owns_backend = backend is None
     active_backend = backend or create_backend(db_path=config.db_path)
     owns_repository = repository is None
-    active_repository = repository or ConversationRepository(backend=active_backend)
+    active_repository = repository or SessionRepository(backend=active_backend)
     metrics = PipelineMetrics()
     started = time.perf_counter()
     indexed = False
@@ -785,7 +885,7 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
         with _isolated_env(workspace):
             db_path_val = config.db_path
             backend = create_backend(db_path=db_path_val)
-            repository = ConversationRepository(backend=backend)
+            repository = SessionRepository(backend=backend)
             try:
                 target_blob_store = BlobStore(blob_store_root())
                 sample_summary = await _seed_archive_subset(
@@ -844,7 +944,7 @@ __all__ = [
     "_normalize_record_for_replay",
     "_probe_stage_sequence",
     "_provider_counts",
-    "_raw_conversation_count",
+    "_raw_session_count",
     "_run_probe_pipeline",
     "_safe_git_commit",
     "_safe_git_worktree_dirty",

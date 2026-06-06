@@ -48,7 +48,7 @@ async def save_content_blocks(
             (
                 record.block_id,
                 record.message_id,
-                record.conversation_id,
+                record.session_id,
                 record.block_index,
                 record.type,
                 record.text,

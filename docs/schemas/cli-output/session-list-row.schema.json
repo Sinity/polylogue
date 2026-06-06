@@ -1,0 +1,336 @@
+{
+  "$defs": {
+    "ReaderActionAvailabilityPayload": {
+      "additionalProperties": false,
+      "description": "Per-target reader action availability with explicit disabled reason.\n\nReader actions surface seven distinct states (see :data:`ReaderActionState`)\nso the UI can render \"disabled because X\" / \"loading\" / \"dangerous\"\nwithout conflating them under a single boolean (#1488). ``enabled``\nis kept as a back-compat alias derived from ``state`` so existing\ncall sites that only know about enabled/disabled continue to work.",
+      "properties": {
+        "disabled_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Disabled Reason"
+        },
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "inspect_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inspect Path"
+        },
+        "repair_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Repair Path"
+        },
+        "state": {
+          "default": "enabled",
+          "enum": [
+            "enabled",
+            "disabled",
+            "partial",
+            "dangerous",
+            "loading",
+            "target",
+            "unavailable"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "title": "ReaderActionAvailabilityPayload",
+      "type": "object"
+    },
+    "SessionFlagsPayload": {
+      "additionalProperties": false,
+      "description": "Boolean flags summarizing session content characteristics.",
+      "properties": {
+        "has_paste": {
+          "default": false,
+          "title": "Has Paste",
+          "type": "boolean"
+        },
+        "has_thinking": {
+          "default": false,
+          "title": "Has Thinking",
+          "type": "boolean"
+        },
+        "has_tool_use": {
+          "default": false,
+          "title": "Has Tool Use",
+          "type": "boolean"
+        }
+      },
+      "title": "SessionFlagsPayload",
+      "type": "object"
+    },
+    "TargetRefPayload": {
+      "additionalProperties": false,
+      "description": "Stable reader target reference for selectable archive objects.",
+      "properties": {
+        "block_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Index"
+        },
+        "identity_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Identity Key"
+        },
+        "message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message Id"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "target_id": {
+          "title": "Target Id",
+          "type": "string"
+        },
+        "target_type": {
+          "enum": [
+            "session",
+            "message"
+          ],
+          "title": "Target Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_type",
+        "target_id"
+      ],
+      "title": "TargetRefPayload",
+      "type": "object"
+    }
+  },
+  "$id": "https://polylogue.dev/schemas/cli-output/session-list-row.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One row of `polylogue list --format json` output. The list verb emits an array of these objects; the `ndjson` format emits one per line as results stream.\n\nGenerated from `polylogue.surfaces.payloads.SessionListRowPayload` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "properties": {
+    "actions": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ReaderActionAvailabilityPayload"
+      },
+      "title": "Actions",
+      "type": "object"
+    },
+    "anchor": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Anchor"
+    },
+    "created_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Created At"
+    },
+    "cwd_display": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cwd Display"
+    },
+    "date": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Date"
+    },
+    "flags": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SessionFlagsPayload"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "message_count": {
+      "default": 0,
+      "title": "Message Count",
+      "type": "integer"
+    },
+    "messages": {
+      "default": 0,
+      "title": "Messages",
+      "type": "integer"
+    },
+    "origin": {
+      "title": "Origin",
+      "type": "string"
+    },
+    "repo": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Repo"
+    },
+    "summary": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Summary"
+    },
+    "tags": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Tags",
+      "type": "array"
+    },
+    "target_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TargetRefPayload"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    },
+    "updated_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Updated At"
+    },
+    "words": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Words"
+    }
+  },
+  "required": [
+    "id",
+    "origin",
+    "title"
+  ],
+  "title": "Session List Row",
+  "type": "object",
+  "x-polylogue-cli-surfaces": [
+    "polylogue list --format json",
+    "polylogue list --format ndjson",
+    "polylogue list --format yaml"
+  ],
+  "x-polylogue-source-model": "SessionListRowPayload"
+}

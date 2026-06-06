@@ -20,7 +20,7 @@ from polylogue.version import VersionInfo, _get_embedded_build_info, _get_git_in
     "name",
     [
         "ArchiveStats",
-        "Conversation",
+        "Session",
         "Message",
         "Polylogue",
         "PolylogueError",

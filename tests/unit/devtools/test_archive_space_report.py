@@ -16,12 +16,12 @@ def _seed_db(path: Path) -> None:
     try:
         conn.executescript(
             """
-            CREATE TABLE raw_conversations(raw_id TEXT PRIMARY KEY, blob_size INTEGER NOT NULL);
-            CREATE TABLE conversations(conversation_id TEXT PRIMARY KEY, provider_meta TEXT);
-            CREATE TABLE messages(message_id TEXT PRIMARY KEY, conversation_id TEXT, text TEXT);
-            CREATE INDEX idx_messages_conversation ON messages(conversation_id);
-            INSERT INTO raw_conversations VALUES ('raw-1', 100);
-            INSERT INTO conversations VALUES ('c1', '{"source":"test"}');
+            CREATE TABLE raw_sessions(raw_id TEXT PRIMARY KEY, blob_size INTEGER NOT NULL);
+            CREATE TABLE sessions(session_id TEXT PRIMARY KEY, provider_meta TEXT);
+            CREATE TABLE messages(message_id TEXT PRIMARY KEY, session_id TEXT, text TEXT);
+            CREATE INDEX idx_messages_session ON messages(session_id);
+            INSERT INTO raw_sessions VALUES ('raw-1', 100);
+            INSERT INTO sessions VALUES ('c1', '{"source":"test"}');
             INSERT INTO messages VALUES ('m1', 'c1', 'hello');
             """
         )
@@ -46,7 +46,7 @@ def test_build_space_report_groups_dbstat_objects(tmp_path: Path) -> None:
     assert "index" in categories
     objects = report["objects"]
     assert isinstance(objects, list)
-    assert any(item["name"] == "raw_conversations" for item in objects)
+    assert any(item["name"] == "raw_sessions" for item in objects)
 
 
 def test_missing_database_reports_error(tmp_path: Path) -> None:

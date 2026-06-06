@@ -145,9 +145,9 @@ class TestIterJsonStream:
         assert items[0] == {"a": 1}
         assert items[1] == {"b": 2}
 
-    def test_conversations_wrapper(self) -> None:
-        """{"conversations": [...]} is unpacked into individual items."""
-        content = json.dumps({"conversations": [{"id": "c1"}, {"id": "c2"}]}).encode("utf-8")
+    def test_sessions_wrapper(self) -> None:
+        """{"sessions": [...]} is unpacked into individual items."""
+        content = json.dumps({"sessions": [{"id": "c1"}, {"id": "c2"}]}).encode("utf-8")
         handle = io.BytesIO(content)
         items = list(_iter_json_stream(handle, "test.json"))
         assert len(items) == 2
@@ -244,13 +244,13 @@ class TestZipEntryValidator:
             zip_path=Path("claude.zip"),
         )
         entries_in = [
-            self._make_zip_info("conversations.json", file_size=5000, compress_size=500),
+            self._make_zip_info("sessions.json", file_size=5000, compress_size=500),
             self._make_zip_info("settings.json", file_size=1000, compress_size=100),
             self._make_zip_info("account.json", file_size=1000, compress_size=100),
         ]
         entries_out = list(validator.filter_entries(entries_in))
         assert [entry.filename for entry in entries_out] == [
-            "conversations.json",
+            "sessions.json",
             "settings.json",
             "account.json",
         ]
@@ -291,7 +291,7 @@ class TestZipEntryValidator:
             cursor_state=None,
             zip_path=Path("test.zip"),
         )
-        normal_entry = self._make_zip_info("conversations.json", file_size=50000, compress_size=5000)
+        normal_entry = self._make_zip_info("sessions.json", file_size=50000, compress_size=5000)
         entries = list(validator.filter_entries([normal_entry]))
         assert len(entries) == 1
 

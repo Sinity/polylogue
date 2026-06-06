@@ -34,6 +34,29 @@ on push, but the default baseline must pass before the PR is opened.
 Do not treat CI as the first verification pass. Anticipate failures
 locally.
 
+### Inner-loop verification — use testmon, never blanket-run
+
+The default verification path is `devtools verify`, which uses **pytest-testmon
+affected-selection** ("pymon"): it runs only the tests whose dependency graph
+touches your changed files, finishing in seconds-to-minutes. This is the normal
+way to check a change. For a single target while iterating, use
+`devtools test <file>` or `devtools test -k <expr>`.
+
+Anti-pattern (do NOT do this): `devtools test tests/unit/<dir>` over whole
+directories, or blanket `pytest tests/unit ...`. Running broad directories is
+effectively the full suite — it takes well over an hour and burns the budget to
+re-confirm tests your change never touched. A behavior-preserving refactor that
+is mypy-green needs only its testmon-affected set, not the whole tree.
+
+- mypy `--strict` is the primary net for type/identifier refactors; trust it.
+- `devtools verify` (testmon) is the behavioral net for the affected slice.
+- Reserve a full run (`devtools verify --all`) for harness/dependency changes or
+  a final pre-PR diagnostic — not the inner loop.
+
+If `devtools verify` reports failures in files your change did not touch and
+that testmon did not select for your diff, classify them as pre-existing or
+flaky (re-run the exact node) before assuming they are yours.
+
 ### PR body discipline
 
 The PR template requires sections: Summary, Problem, Solution,
@@ -162,10 +185,10 @@ serve history.
 
 ## Schema-Touching Changes
 
-Polylogue has no schema migration chain. A PR that bumps
+Polylogue has no in-place schema upgrade chain. A PR that bumps
 `SCHEMA_VERSION` or otherwise changes the canonical SQLite shape is
-not a migration — it is a deletes-then-defines edit of `SCHEMA_DDL`.
-The PR body must replace the usual "migration plan" section with a
+not an in-place storage upgrade — it is a deletes-then-defines edit of `SCHEMA_DDL`.
+The PR body must replace any upgrade-path section with a
 **re-ingest plan**:
 
 - which user-visible archive operation triggers re-acquisition from
@@ -427,7 +450,7 @@ see [docs/test-quality-workflows.md](docs/test-quality-workflows.md).
 tests/
 ├── conftest.py              # Root fixtures (workspace_env, tmp paths)
 ├── infra/                   # Shared infrastructure
-│   ├── storage_records.py   # ConversationBuilder, make_message, db_setup
+│   ├── storage_records.py   # SessionBuilder, make_message, db_setup
 │   ├── tables.py            # Parametrize tables
 │   └── strategies/          # Hypothesis strategies (schema-driven payloads)
 ├── unit/                    # Fast tests (~95% of suite)
@@ -451,11 +474,11 @@ tests/
 root in `tmp_path`. Disables schema validation by default. Most tests
 that touch storage or pipeline use this.
 
-**`ConversationBuilder`** (`infra/storage_records.py`): Fluent builder for
+**`SessionBuilder`** (`infra/storage_records.py`): Fluent builder for
 populating a test database. Chain `.title()`, `.provider()`, `.message()`, etc.
 and call `.build()` to persist.
 
-**`make_message()` / `make_conversation()`** (`infra/storage_records.py`):
+**`make_message()` / `make_session()`** (`infra/storage_records.py`):
 Quick factories for creating model instances without database setup.
 
 **`corpus_seeded_db`** (`infra/corpus_fixtures.py`): Pre-populated database
@@ -564,7 +587,7 @@ For the target shape, guardrails, and architectural decision log, see
 [Architecture Spine](architecture-spine.md). For current sequencing and active
 workstreams, see [Execution Plan](execution-plan.md).
 
-Polylogue is a local archive for AI conversations. The system has four rings:
+Polylogue is a local archive for AI sessions. The system has four rings:
 
 1. archive substrate
 2. derived read models
@@ -666,56 +689,52 @@ convergence stages.
 
 `detect_provider()` calls each parser's `looks_like()` in order.
 
-## Dual Vocabulary Period: Provider and Source
+## Provider and Origin Vocabulary
 
-The codebase is in a transition between two overlapping vocabularies
-for conversation origins:
+The codebase has two origin-related vocabularies with different scopes:
 
-- **`Provider`** (`polylogue/types.py`): the legacy enum carried by
-  every public surface — `provider_name` storage column, CLI
-  `--provider` filter, MCP `provider` parameter, daemon facet labels.
+- **`Provider`** (`polylogue/types.py`): the provider-wire enum used by
+  provider-wire parsing, provider schema packages, and some internal storage
+  adapters. It previously leaked into public surfaces such as the CLI
+  `--provider` filter, MCP `provider` parameter, and daemon facet labels.
   Mixes lab identity (OpenAI, Anthropic, Google), product/runtime
   identity (Claude Code, Codex), and source-family identity
   (claude-code-session vs claude-ai-export) into one token. See the
   vocabulary table in `polylogue/core/provider_identity.py` for the
   detailed conflation surface.
-- **`Source`** (`polylogue/core/sources.py`): the source-centered
-  replacement. A `Source` is an immutable dataclass with three fields
-  — `family` (e.g. `claude-code-session`), `runtime_root` (e.g.
-  `~/.claude/projects`), and `originating_lab` (e.g. `anthropic`).
-  Every `Provider` has a canonical `Source` via
-  `provider_to_source(Provider) -> Source`; `source_to_provider`
-  performs the reverse lookup.
+- **`Origin`** (`polylogue/core/enums.py`): the public source-origin token
+  carried by query surfaces and archive read payloads, such as
+  `claude-code-session`, `claude-ai-export`, and `chatgpt-export`.
+  Public filters use `origin`; internal bridges still map origins to
+  canonical provider tokens where older storage/insight contracts have not
+  been renamed yet.
+- **`Source`** (`polylogue/core/sources.py`): the richer source-centered
+  identity used for runtime roots and lab attribution. A `Source` is an
+  immutable dataclass with `family`, `runtime_root`, and `originating_lab`.
 
-This PR introduces only the typed `Source` surface alongside the
-existing `Provider` enum. **It does not rename any storage column,
-CLI flag, MCP parameter, or public field**: those renames are
-deliberately staged into later PRs so each one can land with a
-focused review and migration plan. The two vocabularies coexist for
-the duration of the transition.
+The primary CLI/MCP/API/daemon read surfaces use origin vocabulary. `Provider`
+remains only for raw export, schema-package, and provider-metadata boundaries.
+The remaining internal provider-token adapters are cleanup targets, not an
+alternate archive mode.
 
-Planned migration sequencing (each is a separate later PR under
-#1022):
+Cleanup sequencing:
 
-1. CLI/MCP/API surfaces gain `source` parameter aliases that accept
-   source-family tokens; the existing `provider` parameter stays as a
-   compatibility alias.
-2. Internal callers switch from `Provider` to `Source` at boundaries
-   where lab identity and runtime identity need to be distinguished
+1. Internal callers switch from provider-token filters to origin filters at
+   boundaries where lab identity and runtime identity need to be distinguished
    (e.g. analytics, cost rollups, source-discovery).
-3. Storage column `provider_name` either stays as a physical-schema
-   compatibility artifact (documented as legacy) or is renamed via an
-   explicit schema-version transition.
-4. Provider-wire schemas under `schemas/providers/` are retained as
+2. Storage columns that still carry provider-token names are either renamed in
+   the canonical DDL or kept only where their contract is provider-wire.
+3. Provider-wire schemas under `schemas/providers/` are retained as
    lab/provider-scope artifacts — they describe raw export shapes and
    stay keyed by lab/product, not by source family.
 
-Anti-goal: a half-renamed surface where some flags say `provider` and
-others say `source`. Each surface flips wholesale or not at all.
+Anti-goal: provider wording on source-origin public filters or payloads.
+Provider remains valid only where the contract is truly provider-wire,
+schema-package, provider metadata, or embedding-provider terminology.
 
 ## Antigravity Language-Server Export Path
 
-Antigravity persists its conversation transcripts as opaque non-protobuf
+Antigravity persists its session transcripts as opaque non-protobuf
 `conversations/*.pb` and `implicit/*.pb` blobs that cannot be statically
 decoded. The installed Antigravity language server binary
 (`language_server_linux_x64`) exposes two endpoints over a local HTTP loopback
@@ -723,7 +742,7 @@ port that together form the supported export surface:
 
 | Endpoint | Purpose |
 |----------|---------|
-| `/exa.language_server_pb.LanguageServerService/SearchConversations` | Returns cascade IDs, titles, workspace names, snippets, and `lastModifiedTime` for stored conversations. |
+| `/exa.language_server_pb.LanguageServerService/SearchConversations` | Returns cascade IDs, titles, workspace names, snippets, and `lastModifiedTime` for stored sessions. |
 | `/exa.language_server_pb.LanguageServerService/ConvertTrajectoryToMarkdown` | Returns a complete Markdown export for a given cascade ID — user inputs, planner responses, tool/command events. |
 
 The adapter lives in `polylogue/sources/parsers/antigravity.py`:
@@ -736,7 +755,7 @@ The adapter lives in `polylogue/sources/parsers/antigravity.py`:
   `POLYLOGUE_ANTIGRAVITY_LANGUAGE_SERVER` env var, `$PATH`, then the highest
   matching `/nix/store/*-antigravity-*` extension bundle.
 - `iter_language_server_exports(root)` drives `SearchConversations` and
-  `ConvertTrajectoryToMarkdown` and yields `ParsedConversation` objects through
+  `ConvertTrajectoryToMarkdown` and yields `ParsedSession` objects through
   `parse_markdown_export()`.
 
 The ingest path is layered in `polylogue/sources/source_parsing.py`: when the
@@ -744,22 +763,23 @@ source is `antigravity` and a `conversations/` subdirectory exists, the
 language-server export runs first; any `AntigravityExportError` (binary not
 found, connection failure, malformed response) is logged and the source falls
 back to the existing brain-artifact metadata walk. Both paths emit normalized
-`Provider.ANTIGRAVITY` conversations.
+`Provider.ANTIGRAVITY` sessions.
 
 ## Key Abstractions
 
 | Abstraction | Location | Role |
 |-------------|----------|------|
 | `Polylogue` | `facade.py` | Async entry point. Wraps storage + search + pipeline. |
-| `ConversationRepository` | `storage/repository/__init__.py` | Mixin-composed async repository (9 mixins: archive reads/writes, action reads, insight readers for profile/timeline/thread/summary, raw, vectors). |
+| `SessionRepository` | `storage/repository/__init__.py` | Mixin-composed async repository (9 mixins: archive reads/writes, action reads, insight readers for profile/timeline/thread/summary, raw, vectors). |
 | `SearchProvider` protocol | `protocols.py` | FTS5 and Hybrid (RRF fusion) implementations. |
-| `ConversationFilter` | `archive/filter/filters.py` | Fluent filter chain used by CLI, MCP, and facade. |
+| `SessionFilter` | `archive/filter/filters.py` | Fluent filter chain used by CLI, MCP, and facade. |
 | `Session Insights` | `storage/insights/session/` | Materialized read models: profiles, work events, phases, threads, aggregates. |
-| `ContentHash` | `pipeline/ids.py` | SHA-256 over NFC-normalized conversation payload. Title, timestamps, messages, attachments are hashed. User metadata (tags, summaries) is excluded — editable metadata doesn't trigger re-import. |
-| `Provider` enum | `types.py` | Legacy source identifier — 9 known providers + UNKNOWN. Public surfaces still flow through this enum during the dual-vocabulary period. |
-| `Source` dataclass | `core/sources.py` | Source-centered identity (`family`, `runtime_root`, `originating_lab`). Parallel to `Provider`; see "Dual Vocabulary Period" above. |
-| `TopologyEdgeRecord` | `archive/topology/edge.py` | Typed cross-conversation parent reference. Persisted in `topology_edges` even when the parent has not yet been ingested (#1258) so out-of-order ingest and sidechain/subagent edges are durable. Closed `TopologyEdgeType` / `TopologyEdgeStatus` enums centralize the vocabulary. |
-| Logical Session ID | `session_profiles.logical_conversation_id` | Materialized root conversation for continuation/fork/subagent lineages. Rollups expose `logical_session_count` alongside physical `conversation_count`, and `get_logical_session()` returns the compact read-pull lineage envelope. |
+| `ContentHash` | `pipeline/ids.py` | SHA-256 over NFC-normalized session payload. Title, timestamps, messages, attachments are hashed. User metadata (tags, summaries) is excluded — editable metadata doesn't trigger re-import. |
+| `Provider` enum | `types.py` | Legacy/provider-wire identifier used by parsers, schemas, provider metadata, and compatibility bridges. |
+| `Origin` enum | `core/enums.py` | Public source-origin identity used by query/read surfaces and archive payloads. |
+| `Source` dataclass | `core/sources.py` | Source-centered identity (`family`, `runtime_root`, `originating_lab`) used for runtime roots and lab attribution. |
+| `TopologyEdgeRecord` | `archive/topology/edge.py` | Typed cross-session parent reference. Persisted in `topology_edges` even when the parent has not yet been ingested (#1258) so out-of-order ingest and sidechain/subagent edges are durable. Closed `TopologyEdgeType` / `TopologyEdgeStatus` enums centralize the vocabulary. |
+| Logical Session ID | `session_profiles.logical_session_id` | Materialized root session for continuation/fork/subagent lineages. Rollups expose `logical_session_count` alongside physical `session_count`, and `get_logical_session()` returns the compact read-pull lineage envelope. |
 
 ## Artifact Taxonomy
 
@@ -767,9 +787,9 @@ Acquired files are classified by `ArtifactKind` before ingestion:
 
 | Kind | Description |
 |------|-------------|
-| `conversation_document` | A single conversation (Claude Code JSONL, ChatGPT JSON) |
-| `conversation_record_stream` | Stream of conversation events |
-| `subagent_conversation_stream` | Sidechain sub-agent conversation |
+| `session_document` | A single session (Claude Code JSONL, ChatGPT JSON) |
+| `session_record_stream` | Stream of session events |
+| `subagent_session_stream` | Sidechain sub-agent session |
 | `agent_sidecar_meta` | Session metadata (history.jsonl, sessions-index.json) |
 | `session_index` | Provider-level session index |
 | `bridge_pointer` | Pointer from a parent session to a sub-agent session |
@@ -813,7 +833,7 @@ Vector embeddings for semantic search, powered by Voyage AI (`voyage-4`,
   FTS5 + vector via Reciprocal Rank Fusion
 - **Integration**: Daemon-side post-ingest and ambient catch-up embedding is
   opt-in via `embedding_enabled = true` in `polylogue.toml` with a valid
-  `voyage_api_key`. When enabled, the daemon drains pending conversations in
+  `voyage_api_key`. When enabled, the daemon drains pending sessions in
   bounded windows and records catch-up progress; when disabled, no embedding
   provider calls are made ([#1503](https://github.com/Sinity/polylogue/issues/1503)).
 
@@ -825,13 +845,13 @@ The `polylogue embed` group is the operator-facing onboarding surface:
 |---------|---------|
 | `polylogue embed preflight` | Count pending messages + Voyage cost estimate without contacting the provider. |
 | `polylogue embed enable` (alias `activate`) | Verify `sqlite-vec`, capture the Voyage key, print the cost preflight, and on confirmation persist `[embedding] enabled = true` (and the API key unless `--no-store-key`) into the user `polylogue.toml`. |
-| `polylogue embed backfill` | Run a bounded, resumable embedding batch with per-conversation cost feedback; honours `embedding_max_cost_usd` as a soft cap and persists run progress. |
+| `polylogue embed backfill` | Run a bounded, resumable embedding batch with per-session cost feedback; honours `embedding_max_cost_usd` as a soft cap and persists run progress. |
 | `polylogue embed disable` | Flip `embedding.enabled = false` without dropping existing embeddings — previously-embedded messages remain queryable via `--similar`. |
 | `polylogue embed status` | Coverage / freshness / configured model+cap / latest catch-up / next-action snapshot via `embedding_status_payload`. Use `--detail` for exact pending-message and retrieval-band accounting. |
 
 The CLI orchestrates substrate primitives under
-`polylogue.storage.embeddings` (`iter_pending_conversations`,
-`embed_conversation_sync`, `embedding_catchup_runs`) and the cost constants
+`polylogue.storage.embeddings` (`iter_pending_sessions`,
+`embed_session_sync`, `embedding_catchup_runs`) and the cost constants
 `ESTIMATED_TOKENS_PER_MESSAGE` / `VOYAGE_4_COST_PER_1M_TOKENS` from
 `polylogue.storage.search_providers.sqlite_vec_support`.
 
@@ -872,10 +892,10 @@ attachments, exports):
 
 ## Database
 
-- Single SQLite file, WAL mode.
-- Schema is fresh-first: version mismatches are rejected unless an explicit,
-  reviewed in-place upgrade exists for that exact transition. `SCHEMA_VERSION`
-  lives in `storage/sqlite/schema_ddl.py`.
+- Archive SQLite file set, WAL mode.
+- Schema is fresh-first: version mismatches are rejected and the affected tier
+  is rebuilt from source/user evidence. `SCHEMA_VERSION` lives in
+  `storage/sqlite/schema_ddl.py`.
 - FTS5 with `unicode61` tokenizer (no porter stemmer in this SQLite build).
 
 ## Placement Rules
@@ -924,7 +944,7 @@ debugging landmarks. For the conceptual system shape, see
 | Invariant | Enforced in |
 | --- | --- |
 | Archive writes are idempotent by content hash | `pipeline/ids.py`, `pipeline/prepare_enrichment.py` |
-| Content hash excludes user metadata (tags, summaries) | `pipeline/ids.py:conversation_content_hash()` |
+| Content hash excludes user metadata (tags, summaries) | `pipeline/ids.py:session_content_hash()` |
 | Content hash uses NFC normalization | `core/hashing.py:hash_text()` |
 | Async SQLite is the primary runtime; sync SQLite exists for CLI, schema tooling, and batch-ingest write paths | `storage/sqlite/async_sqlite.py`, `storage/sqlite/connection.py`, `pipeline/services/ingest_batch.py` |
 | SQLite read/write tuning is profile-driven, not backend-local | `storage/sqlite/connection_profile.py` |
@@ -995,7 +1015,7 @@ Run `devtools render-all` to update the generated catalog in
 
 ## Schema Versioning Model
 
-Polylogue has no schema migration chain. The runtime knows exactly one
+Polylogue has no in-place schema upgrade chain. The runtime knows exactly one
 schema shape:
 
 - `SCHEMA_VERSION` constant in `storage/sqlite/schema_ddl.py` is the
@@ -1014,55 +1034,87 @@ schema shape:
   archive.
 - Schema bumps are deletes-then-defines, never deltas. A schema change
   is a single PR that edits `schema_ddl*.py`, bumps `SCHEMA_VERSION`,
-  and documents the re-ingest expectation. No migration helpers are
+  and documents the re-ingest expectation. No upgrade helpers are
   added for the bump.
 - Provider schemas (the parsing/validation surface, distinct from the
   storage schema) are still regenerated fresh via
   `devtools schema-generate` and promoted via `devtools schema-promote`.
 
-This design intentionally rejects migration-chain complexity (no
-Alembic, no forward/reverse migrations, no partially-applied migration
+This design intentionally rejects in-place upgrade-chain complexity (no
+Alembic, no forward/reverse upgrade scripts, no partially-applied upgrade
 states, no `_apply_version_upgrade_plan` rollback windows) at the cost
 of requiring users with out-of-band archives to re-ingest. The recent
 session-loss audit (`MEMORY.md` § Claude Session Loss Incident
-2026-03-21) confirmed that no relevant legacy DB instances exist in
+2026-03-21) confirmed that no relevant retired single-file DB instances exist in
 practice, so the trade is decisively in favour of the simpler runtime.
+
+## Archive Activation
+
+The archive file set is split by durability class:
+
+- `source.db` stores raw acquisition rows and source evidence that
+  rebuildable projections depend on.
+- `index.db` stores the parsed session/message/block tree, FTS/search
+  indexes, graph/topology rows, and derived insight read models.
+- `embeddings.db` stores vector rows, embedding status, and embedding
+  catch-up metadata; it is rebuildable, but expensive.
+- `user.db` stores irreplaceable human input such as marks,
+  annotations, corrections, user tags, session metadata, saved views,
+  recall packs, workspaces, and blackboard notes.
+- `ops.db` stores disposable daemon telemetry such as ingest cursors,
+  attempts, convergence debt, stage events, embedding catch-up runs,
+  and OTLP spans.
+
+The operator flow is explicit:
+
+```bash
+polylogue maintenance archive-plan
+polylogue maintenance archive-init --yes
+polylogued run
+polylogue maintenance archive-read --limit 20
+```
+
+`archive-init` bootstraps the archive file set. The daemon and explicit
+ingest paths populate `source.db` and `index.db` directly from source
+artifacts; they do not copy rows out of a retired `polylogue.db`. Root
+query commands route through the archive adapter by default when the
+active `index.db` exists.
 
 ## Topology Edges (#1258)
 
 `topology_edges` persists every parent reference asserted by a parser as a
 typed row, including references whose parent has not yet been ingested
 (out-of-order ingestion) or has been hard-deleted. The pre-existing fast
-path (`conversations.parent_conversation_id` set when the parent is in the
+path (`sessions.parent_session_id` set when the parent is in the
 prepare cache) is unchanged; the topology table is an additional durable
 record that always carries the original provider-native parent id.
 
-- **Identity:** `(src_conversation_id, dst_provider_native_id, edge_type)`
+- **Identity:** `(src_session_id, dst_provider_native_id, edge_type)`
   with `UNIQUE`. Re-ingesting the same child is idempotent.
 - **Closed enums:** `polylogue/archive/topology/edge.py` defines
   `TopologyEdgeType` (continuation / sidechain / subagent / branch / fork /
   resume / repaired) and `TopologyEdgeStatus` (unresolved / resolved /
   repaired). Slice A emits `unresolved` and `resolved` only.
-- **Resolve:** every conversation save runs
-  `resolve_topology_edges_for_conversation` so that an out-of-order child's
+- **Resolve:** every session save runs
+  `resolve_topology_edges_for_session` so that an out-of-order child's
   edge flips to `resolved` the moment its parent's native id appears in
-  `conversations`.
+  `sessions`.
 - **Hash boundary:** topology edges are derived per ingest and are NOT part
-  of `conversations.content_hash` — mirrors the same boundary as
+  of `sessions.content_hash` — mirrors the same boundary as
   `user_corrections` (#1131) and the blob lease tables.
 
 ## Logical Session Identity (#866)
 
-`session_profiles.logical_conversation_id` materializes the resolved root of a
-conversation's parent chain. For a root conversation it equals
-`conversation_id`; for continuations, forks, sidechains, and subagents it points
-at the root conversation that represents the logical work session.
+`session_profiles.logical_session_id` materializes the resolved root of a
+session's parent chain. For a root session it equals
+`session_id`; for continuations, forks, sidechains, and subagents it points
+at the root session that represents the logical work session.
 
-Day summaries and tag rollups retain `conversation_count` as the physical
-conversation count and add `logical_session_count` plus
-`logical_conversation_ids_json` so weekly and cross-provider reducers can count
+Day summaries and tag rollups retain `session_count` as the physical
+session count and add `logical_session_count` plus
+`logical_session_ids_json` so weekly and cross-provider reducers can count
 logical sessions without re-walking parent pointers. The Python API exposes
-`get_logical_session(conversation_id)` as the compact read-pull envelope for
+`get_logical_session(session_id)` as the compact read-pull envelope for
 agents and MCP callers; `get_session_topology` remains the full graph view.
 
 ## Learning Corrections (Feedback Loop)
@@ -1070,14 +1122,14 @@ agents and MCP callers; `get_session_topology` remains the full graph view.
 User corrections are stored in `user_corrections` and live outside the
 content-hash boundary by construction (#1131):
 
-- Keyed by `(conversation_id, insight_kind)` — at most one correction of
+- Keyed by `(session_id, insight_kind)` — at most one correction of
   each kind per session, so deterministic rebuilds always produce the
   same merged insight output.
 - Recognized kinds (closed `CorrectionKind` enum):
   `tag_reject`, `tag_accept`, `summary_override`. New kinds are an
   explicit code change.
 - Recording or removing a correction never touches
-  `conversations.content_hash`. The hash invariant is asserted by
+  `sessions.content_hash`. The hash invariant is asserted by
   `tests/unit/insights/test_feedback.py`.
 - Insight materialization paths consult corrections after computing
   heuristic suggestions. Auto-tag and summary merge helpers live in
@@ -1159,15 +1211,15 @@ reader contention clears, the next periodic pass shrinks the WAL.
 
 Archive writes are idempotent by content hash:
 
-- SHA-256 over NFC-normalized (Unicode Normalization Form C) conversation
+- SHA-256 over NFC-normalized (Unicode Normalization Form C) session
   payload
 - Hashed fields: title, timestamps, messages, attachments, content blocks
 - Excluded from hash: user metadata (tags, summaries, notes) — editing these
   does not trigger re-import
-- Hash is computed in `pipeline/ids.py:conversation_content_hash()` and stored
-  as `content_hash` on conversations
-- On re-ingest, if the content hash matches, the conversation is skipped
-  (idempotency). If it differs, the conversation is updated and dependent
+- Hash is computed in `pipeline/ids.py:session_content_hash()` and stored
+  as `content_hash` on sessions
+- On re-ingest, if the content hash matches, the session is skipped
+  (idempotency). If it differs, the session is updated and dependent
   insights are rebuilt.
 
 ## FTS5 Model
@@ -1210,7 +1262,7 @@ Content-addressed blob storage for large binary data:
 - **Linking**: `artifact_observations.link_group_key` groups related blobs
   (e.g., all blobs belonging to one session). The blob store itself
   (`polylogue/storage/blob_store.py`) is a pure content-addressed store with
-  no notion of grouping; conversation-to-blob association is recorded as
+  no notion of grouping; session-to-blob association is recorded as
   rows in `artifact_observations` keyed by `raw_id` with a shared
   `link_group_key`. (There is no separate `blob_links` table; the name is a
   historical alias for this row-group view of `artifact_observations`.)
@@ -1223,14 +1275,14 @@ Content-addressed blob storage for large binary data:
 invariants combined:
 
 1. **DB reference check** — `_still_referenced` queries
-   `raw_conversations` for the blob's `raw_id`. If a raw record points at
+   `raw_sessions` for the blob's `raw_id`. If a raw record points at
    the blob, GC skips it. This is the snapshot/mark-and-sweep view of
    "this blob is in active use right now."
 2. **Pending lease check** — `_has_active_lease` queries
    `pending_blob_refs` for an in-flight operation that has *announced*
    it intends to reference the blob but hasn't committed yet. If a write
    path acquired a lease but its transaction hasn't yet inserted the
-   `raw_conversations` row, the snapshot check alone would
+   `raw_sessions` row, the snapshot check alone would
    misclassify the blob as orphan and delete it.
 
 The lease tables (`pending_blob_refs`, `gc_generations`) are therefore
@@ -1246,7 +1298,7 @@ calls `acquire_blob_leases(db_path, blob_hashes, operation_id)` on a
 separate immediate-commit connection so the lease is visible to a
 concurrent GC before the main transaction commits, then calls
 `release_operation_leases(conn, operation_id)` after the commit so
-the blob is now durably referenced by `raw_conversations` and the
+the blob is now durably referenced by `raw_sessions` and the
 lease can drop.
 
 The acquire/release pair is wrapped in `try/finally` keyed by
@@ -1304,11 +1356,15 @@ The report has a stable top-level shape carrying its `report_version`,
 - `convergence_stage_timings` — min/max/sum/mean parse/convergence/read-
   amplification stats over completed attempts.
 - `boundary_table_counts` — row counts for the daemon-relevant tables
-  (`raw_conversations`, `conversations`, `messages`, `content_blocks`,
+  (`raw_sessions`, `sessions`, `messages`, `content_blocks`,
   `artifact_observations`, `messages_fts_docsize`, `action_events`,
   `action_events_fts_docsize`, `message_embeddings`, `session_profile`,
   `live_ingest_attempt`, `live_convergence_debt`, `pending_blob_refs`).
   Missing tables surface as `-1` rather than crashing the probe.
+- `archive_tiers` — archive inventory for `source.db`,
+  `index.db`, `embeddings.db`, `user.db`, and `ops.db`: file presence,
+  durability/backup policy, `PRAGMA user_version`, `PRAGMA quick_check`,
+  missing backup-required tiers, and cheap table counts per tier.
 - `blob_lease_state` — pending lease count, distinct lease operations,
   oldest `acquired_at`. See the lease/GC concurrency model above.
 - `gc_state` — high-water `gc_generations` row, `last_completed_at`,
@@ -1321,8 +1377,11 @@ The report has a stable top-level shape carrying its `report_version`,
 - `daemon_resource_signal` — RSS / cgroup memory / worker-progress fields
   pulled from the most recent `live_ingest_attempt` row (these are the
   only daemon-RSS signals readable without IPC).
-- `source_path_churn`, `convergence_debt`, `query_plans` — pre-existing
-  read amplification, debt-by-stage, and hot-query EXPLAIN evidence.
+- `source_path_churn`, `convergence_debt`, `query_plans` — source-path
+  churn/read amplification, debt-by-stage, and hot-query EXPLAIN evidence.
+  On archives, churn is read across `source.db.raw_sessions`
+  and `index.db.sessions` so full-vs-append raw rows and unmaterialized raw
+  payloads stay visible without a legacy `raw_sessions` table.
 
 The compare mode refuses incompatible `report_version` inputs loudly and
 requires both inputs to be `ok: True`.  Numeric fields produce
@@ -1351,6 +1410,15 @@ semantic-search catch-up is visible in normal daemon dashboards without
 running an operator CLI command. Missing tables degrade to zero samples
 rather than 5xx-ing, so a fresh archive still emits the discovery
 skeleton.
+
+Archive layout observability is emitted on the same scrape. The
+`polylogue_archive_storage_layout` gauge mirrors `polylogue paths`
+with bounded labels for `archive_missing`, `archive_partial`, and
+`archive_complete`; `polylogue_archive_tier_count` and
+`polylogue_archive_blocker_count` provide compact alerting
+totals; the per-tier, per-blocker, and `active_tier_role` gauges give
+the drilldown needed to tell whether the daemon is anchored on the
+normal `index.db` path and which split-file tier is missing or stale.
 
 Polylogue does not depend on `prometheus_client`; the exposition format
 is hand-rolled. The OTLP HTTP receiver from #1224's ambitious-move
@@ -1491,6 +1559,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools schema-audit` | Run committed provider schema package quality checks. |
 | `devtools schema-generate` | Generate provider schema packages and optional evidence clusters. |
 | `devtools schema-promote` | Promote a schema evidence cluster into a registered package version. |
+| `devtools self-verify` | Capture and compare archive golden-master envelopes for schema rewrites. |
 | `devtools test` | Run a focused pytest selection through the managed harness. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR. |
 | `devtools verify-ci-workflows` | Verify CI workflow files reference locally-known devtools commands and existing paths. |
@@ -1502,7 +1571,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify-manifests` | Verify internal consistency across all docs/plans/*.yaml manifest files. |
 | `devtools verify-provider-meta-policy` | Enforce the provider_meta classification policy declared in docs/plans/provider-meta-policy.yaml. |
 | `devtools verify-schema-roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
-| `devtools verify-schema-upgrade-lane` | Verify any in-place schema upgrade helper has a paired driving test under tests/unit/storage/migrations/ (#1302). |
+| `devtools verify-schema-upgrade-lane` | Reject in-place storage schema upgrade helpers (#1302). |
 | `devtools verify-slos` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
 | `devtools verify-test-clock-hygiene` | Verify test files use the frozen_clock fixture instead of reading the host wall clock (#1300). |
 | `devtools verify-test-coverage-contracts` | Verify every production module >150 AST lines has a matching test file or exemption. |

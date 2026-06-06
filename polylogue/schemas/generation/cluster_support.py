@@ -11,17 +11,17 @@ from polylogue.schemas.observation import ProviderConfig, profile_similarity
 _PROFILE_CORE_MIN_RATIO = 0.5
 _PROFILE_MAX_TOKENS = 128
 _PROFILE_SIMILARITY_THRESHOLDS = {
-    "conversation_document": 0.86,
-    "conversation_record_stream": 0.8,
-    "subagent_conversation_stream": 0.8,
+    "session_document": 0.86,
+    "session_record_stream": 0.8,
+    "subagent_session_stream": 0.8,
 }
 
 
 def _artifact_priority(artifact_kind: str) -> int:
     priorities = {
-        "conversation_document": 120,
-        "conversation_record_stream": 120,
-        "subagent_conversation_stream": 90,
+        "session_document": 120,
+        "session_record_stream": 120,
+        "subagent_session_stream": 90,
     }
     return priorities.get(artifact_kind, 0)
 
@@ -195,20 +195,20 @@ def _refine_coarse_clusters(
 def _update_cluster_reservoir(
     acc: _ClusterAccumulator,
     sample: Mapping[str, object],
-    conversation_id: str | None,
+    session_id: str | None,
     *,
     reservoir_size: int,
 ) -> None:
     acc.schema_sample_count += 1
     if len(acc.reservoir_samples) < reservoir_size:
         acc.reservoir_samples.append(sample)
-        acc.reservoir_conv_ids.append(conversation_id)
+        acc.reservoir_conv_ids.append(session_id)
         return
 
     slot = acc.rng.randint(0, acc.schema_sample_count - 1)
     if slot < reservoir_size:
         acc.reservoir_samples[slot] = sample
-        acc.reservoir_conv_ids[slot] = conversation_id
+        acc.reservoir_conv_ids[slot] = session_id
 
 
 __all__ = [

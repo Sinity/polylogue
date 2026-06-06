@@ -1,6 +1,6 @@
-"""Per-conversation embedding similarity read surface (#1123).
+"""Per-session embedding similarity read surface (#1123).
 
-Surfaces "find similar conversations" through the embedding pipeline
+Surfaces "find similar sessions" through the embedding pipeline
 established by #828. The pipeline is dormant by default — most archives
 have no embedded messages — so this module's job is as much about
 explicit absent-state rendering as it is about ranked results.
@@ -17,30 +17,32 @@ Contract:
   (``sqlite-vec`` not installed, or the ``message_embeddings`` table
   does not exist yet), the endpoint returns ``status="unavailable"``
   with the specific reason instead of pretending to return zero hits.
-- When the source conversation has no embedded messages (the common
+- When the source session has no embedded messages (the common
   case while a backlog is catching up), the endpoint returns
   ``status="not_embedded"`` with an empty result list. The caller
-  should render the "this conversation is not yet embedded" state.
+  should render the "this session is not yet embedded" state.
 - Otherwise the endpoint returns ``status="ready"`` with a ranked list
-  of conversation hits. Each hit carries a numeric ``score`` (cosine
+  of session hits. Each hit carries a numeric ``score`` (cosine
   similarity in ``[0, 1]``, higher is more similar) and a coarse
   ``confidence`` chip key (``q-canonical`` / ``q-estimated`` /
   ``q-heuristic``) derived from the score band.
 
 The endpoint reads only from existing tables — no API key is required to
-serve a similarity lookup, because the source conversation already has
+serve a similarity lookup, because the source session already has
 its vectors stored. This is the property that lets the reader expose
 "find similar" without dragging the embedding provider back online.
 """
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Final
 
 from polylogue.config import load_polylogue_config
-from polylogue.paths import db_path
+from polylogue.paths import active_index_db_path
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 # Hard server-side cap on requested result count. A pathological client
@@ -49,7 +51,7 @@ SIMILAR_RESULTS_MAX: Final[int] = 50
 SIMILAR_RESULTS_DEFAULT: Final[int] = 10
 
 # Per-source-message neighbor fanout used to grow the candidate pool
-# before deduplicating to conversations. Picked so the worst case
+# before deduplicating to sessions. Picked so the worst case
 # (``limit=SIMILAR_RESULTS_MAX``) still completes in a single small
 # ``MATCH`` per source message.
 _PER_MESSAGE_K: Final[int] = 20
@@ -57,9 +59,9 @@ _PER_MESSAGE_K: Final[int] = 20
 
 @dataclass(frozen=True)
 class SimilarHit:
-    """One ranked similar-conversation row."""
+    """One ranked similar-session row."""
 
-    conversation_id: str
+    session_id: str
     score: float
     confidence: str
     title: str | None
@@ -102,17 +104,25 @@ def _empty_envelope(status: str, *, reason: str | None) -> dict[str, object]:
     return {
         "status": status,
         "reason": reason,
-        "conversation_id": None,
+        "session_id": None,
         "source_embedded_messages": 0,
         "limit": SIMILAR_RESULTS_DEFAULT,
         "results": [],
     }
 
 
-def _fetch_conversation_exists(conn: sqlite3.Connection, conversation_id: str) -> bool:
+def _fetch_session_exists(conn: sqlite3.Connection, session_id: str) -> bool:
     row = conn.execute(
-        "SELECT 1 FROM conversations WHERE conversation_id = ?",
-        (conversation_id,),
+        "SELECT 1 FROM sessions WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    return row is not None
+
+
+def _fetch_archive_session_exists(conn: sqlite3.Connection, session_id: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sessions WHERE session_id = ?",
+        (session_id,),
     ).fetchone()
     return row is not None
 
@@ -124,9 +134,9 @@ def _vec_table_exists(conn: sqlite3.Connection) -> bool:
 
 def _source_message_embeddings(
     conn: sqlite3.Connection,
-    conversation_id: str,
+    session_id: str,
 ) -> list[tuple[str, bytes]]:
-    """Return ``(message_id, embedding_blob)`` rows for the source conversation.
+    """Return ``(message_id, embedding_blob)`` rows for the source session.
 
     The blob is returned exactly as stored in ``message_embeddings`` so
     it can be passed back into a ``vec0`` ``MATCH`` clause without any
@@ -137,9 +147,24 @@ def _source_message_embeddings(
         """
         SELECT message_id, embedding
         FROM message_embeddings
-        WHERE conversation_id = ?
+        WHERE session_id = ?
         """,
-        (conversation_id,),
+        (session_id,),
+    ).fetchall()
+    return [(str(row[0]), bytes(row[1])) for row in rows]
+
+
+def _source_archive_message_embeddings(
+    conn: sqlite3.Connection,
+    session_id: str,
+) -> list[tuple[str, bytes]]:
+    rows = conn.execute(
+        """
+        SELECT message_id, embedding
+        FROM message_embeddings
+        WHERE session_id = ?
+        """,
+        (session_id,),
     ).fetchall()
     return [(str(row[0]), bytes(row[1])) for row in rows]
 
@@ -150,7 +175,7 @@ def _knn_for_embedding(
     *,
     k: int,
 ) -> list[tuple[str, str, float]]:
-    """Run a single ``MATCH`` and return ``(message_id, conversation_id, distance)``.
+    """Run a single ``MATCH`` and return ``(message_id, session_id, distance)``.
 
     The vec0 column ``distance`` here is L2 distance over the indexed
     embeddings. Cosine similarity is recovered downstream once a row's
@@ -159,7 +184,26 @@ def _knn_for_embedding(
 
     rows = conn.execute(
         """
-        SELECT message_id, conversation_id, distance
+        SELECT message_id, session_id, distance
+        FROM message_embeddings
+        WHERE embedding MATCH ?
+          AND k = ?
+        ORDER BY distance
+        """,
+        (embedding_blob, k),
+    ).fetchall()
+    return [(str(row[0]), str(row[1]), float(row[2])) for row in rows]
+
+
+def _archive_knn_for_embedding(
+    conn: sqlite3.Connection,
+    embedding_blob: bytes,
+    *,
+    k: int,
+) -> list[tuple[str, str, float]]:
+    rows = conn.execute(
+        """
+        SELECT message_id, session_id, distance
         FROM message_embeddings
         WHERE embedding MATCH ?
           AND k = ?
@@ -191,11 +235,11 @@ def _l2_to_cosine_similarity(distance: float) -> float:
 def _aggregate_hits(
     per_message_results: list[list[tuple[str, str, float]]],
     *,
-    self_conversation_id: str,
+    self_session_id: str,
 ) -> dict[str, dict[str, float | int]]:
-    """Collapse per-message KNN lists into per-conversation aggregates.
+    """Collapse per-message KNN lists into per-session aggregates.
 
-    Each candidate conversation keeps its best (closest) distance seen
+    Each candidate session keeps its best (closest) distance seen
     across all source messages. The matched-message count records how
     many source messages picked it as a neighbor — a coarse but useful
     "this isn't a one-off accidental hit" signal exposed to the reader.
@@ -205,7 +249,7 @@ def _aggregate_hits(
     for hits in per_message_results:
         seen_in_this_source: set[str] = set()
         for _msg_id, conv_id, distance in hits:
-            if conv_id == self_conversation_id:
+            if conv_id == self_session_id:
                 continue
             entry = aggregates.setdefault(
                 conv_id,
@@ -219,20 +263,44 @@ def _aggregate_hits(
     return aggregates
 
 
-def _hydrate_conversation_metadata(
+def _hydrate_session_metadata(
     conn: sqlite3.Connection,
-    conversation_ids: list[str],
+    session_ids: list[str],
 ) -> dict[str, tuple[str | None, str | None]]:
-    if not conversation_ids:
+    if not session_ids:
         return {}
-    placeholders = ",".join("?" * len(conversation_ids))
+    placeholders = ",".join("?" * len(session_ids))
     rows = conn.execute(
         f"""
-        SELECT conversation_id, title, source_name
-        FROM conversations
-        WHERE conversation_id IN ({placeholders})
+        SELECT session_id, title, source_name
+        FROM sessions
+        WHERE session_id IN ({placeholders})
         """,
-        tuple(conversation_ids),
+        tuple(session_ids),
+    ).fetchall()
+    return {
+        str(row[0]): (
+            (str(row[1]) if row[1] is not None else None),
+            (str(row[2]) if row[2] is not None else None),
+        )
+        for row in rows
+    }
+
+
+def _hydrate_archive_session_metadata(
+    conn: sqlite3.Connection,
+    session_ids: list[str],
+) -> dict[str, tuple[str | None, str | None]]:
+    if not session_ids:
+        return {}
+    placeholders = ",".join("?" * len(session_ids))
+    rows = conn.execute(
+        f"""
+        SELECT session_id, title, origin
+        FROM sessions
+        WHERE session_id IN ({placeholders})
+        """,
+        tuple(session_ids),
     ).fetchall()
     return {
         str(row[0]): (
@@ -253,106 +321,87 @@ def _clamp_limit(requested: int | None) -> int:
     return requested
 
 
-def build_similar_payload(
-    conversation_id: str,
+def _archive_index_path_for() -> str | None:
+    path = active_index_db_path()
+    if path.name != "index.db":
+        path = path.with_name("index.db")
+    if path.exists():
+        return str(path)
+    return None
+
+
+def _build_archive_similar_payload(
+    index_db: str,
+    session_id: str,
     *,
-    limit: int | None = None,
+    bounded_limit: int,
+    disabled_reason: str | None,
 ) -> dict[str, object] | None:
-    """Assemble the JSON payload for ``GET /api/conversations/{id}/similar``.
-
-    Returns ``None`` when the conversation does not exist so the caller
-    can emit a 404. Returns a structured envelope in every other case;
-    "no results" is never silent.
-
-    The envelope ``status`` field is one of:
-
-    - ``"disabled"`` — embeddings not enabled or no Voyage API key.
-    - ``"unavailable"`` — embeddings are enabled but the ``vec0`` table
-      or the ``sqlite-vec`` extension is missing.
-    - ``"not_embedded"`` — the source conversation has no message
-      vectors stored yet (waiting on the embedding pipeline).
-    - ``"ready"`` — ranked similar conversations are attached under
-      ``results``. ``results`` may still be empty if no other
-      conversation shares an embedded neighbor.
-    """
-
-    bounded_limit = _clamp_limit(limit)
-    cfg = load_polylogue_config()
-    disabled_reason = _disabled_reason(
-        embedding_enabled=bool(cfg.embedding_enabled),
-        voyage_api_key=cfg.voyage_api_key,
-    )
-
-    dbf = db_path()
-    if not dbf.exists():
-        # Treat a missing database the same as a missing conversation —
-        # the route layer turns this into 404. The reader will never see
-        # this branch in practice once the archive has been bootstrapped.
-        return None
-
-    conn = sqlite3.connect(str(dbf))
+    conn: sqlite3.Connection | None = None
+    index_conn = sqlite3.connect(index_db)
     try:
-        conn.row_factory = sqlite3.Row
-        if not _fetch_conversation_exists(conn, conversation_id):
+        index_conn.row_factory = sqlite3.Row
+        if not _fetch_archive_session_exists(index_conn, session_id):
             return None
 
         if disabled_reason is not None:
             envelope = _empty_envelope("disabled", reason=disabled_reason)
-            envelope["conversation_id"] = conversation_id
+            envelope["session_id"] = session_id
             envelope["limit"] = bounded_limit
             return envelope
 
+        embeddings_db = Path(index_db).with_name("embeddings.db")
+        if not embeddings_db.exists():
+            envelope = _empty_envelope("unavailable", reason="vec0_table_missing")
+            envelope["session_id"] = session_id
+            envelope["limit"] = bounded_limit
+            return envelope
+        conn = sqlite3.connect(str(embeddings_db))
+        conn.row_factory = sqlite3.Row
         if not _vec_table_exists(conn):
             envelope = _empty_envelope("unavailable", reason="vec0_table_missing")
-            envelope["conversation_id"] = conversation_id
+            envelope["session_id"] = session_id
             envelope["limit"] = bounded_limit
             return envelope
 
         loaded, _ext_error = try_load_sqlite_vec(conn)
         if not loaded:
             envelope = _empty_envelope("unavailable", reason="sqlite_vec_not_loaded")
-            envelope["conversation_id"] = conversation_id
+            envelope["session_id"] = session_id
             envelope["limit"] = bounded_limit
             return envelope
 
-        source_rows = _source_message_embeddings(conn, conversation_id)
+        source_rows = _source_archive_message_embeddings(conn, session_id)
         if not source_rows:
             envelope = _empty_envelope("not_embedded", reason=None)
-            envelope["conversation_id"] = conversation_id
+            envelope["session_id"] = session_id
             envelope["limit"] = bounded_limit
             return envelope
 
-        # Cap source fanout to avoid issuing a thousand MATCH queries
-        # for a giant conversation. Twenty representative messages is
-        # enough to populate the candidate pool with good recall for
-        # the reader's top-N display.
         per_message_results: list[list[tuple[str, str, float]]] = []
         for _msg_id, embedding in source_rows[:_PER_MESSAGE_K]:
-            per_message_results.append(_knn_for_embedding(conn, embedding, k=_PER_MESSAGE_K))
+            per_message_results.append(_archive_knn_for_embedding(conn, embedding, k=_PER_MESSAGE_K))
 
         aggregates = _aggregate_hits(
             per_message_results,
-            self_conversation_id=conversation_id,
+            self_session_id=session_id,
         )
-
         ranked = sorted(
             aggregates.items(),
             key=lambda item: (item[1]["best_distance"], item[0]),
         )[:bounded_limit]
-
-        metadata = _hydrate_conversation_metadata(
-            conn,
-            [conv_id for conv_id, _ in ranked],
+        metadata = _hydrate_archive_session_metadata(
+            index_conn,
+            [session_id for session_id, _ in ranked],
         )
-
         hits: list[dict[str, object]] = []
-        for conv_id, agg in ranked:
+        for session_id, agg in ranked:
             distance = float(agg["best_distance"])
             score = _l2_to_cosine_similarity(distance)
-            title, source_name = metadata.get(conv_id, (None, None))
+            title, source_name = metadata.get(session_id, (None, None))
             hits.append(
                 {
-                    "conversation_id": conv_id,
+                    "session_id": session_id,
                     "score": round(score, 4),
                     "distance": round(distance, 4),
                     "confidence": _confidence_for_score(score),
@@ -365,7 +414,139 @@ def build_similar_payload(
         return {
             "status": "ready",
             "reason": None,
-            "conversation_id": conversation_id,
+            "session_id": session_id,
+            "source_embedded_messages": len(source_rows),
+            "limit": bounded_limit,
+            "results": hits,
+        }
+    finally:
+        if conn is not None:
+            with contextlib.suppress(sqlite3.Error):
+                conn.close()
+        index_conn.close()
+
+
+def build_similar_payload(
+    session_id: str,
+    *,
+    limit: int | None = None,
+) -> dict[str, object] | None:
+    """Assemble the JSON payload for ``GET /api/sessions/{id}/similar``.
+
+    Returns ``None`` when the session does not exist so the caller
+    can emit a 404. Returns a structured envelope in every other case;
+    "no results" is never silent.
+
+    The envelope ``status`` field is one of:
+
+    - ``"disabled"`` — embeddings not enabled or no Voyage API key.
+    - ``"unavailable"`` — embeddings are enabled but the ``vec0`` table
+      or the ``sqlite-vec`` extension is missing.
+    - ``"not_embedded"`` — the source session has no message
+      vectors stored yet (waiting on the embedding pipeline).
+    - ``"ready"`` — ranked similar sessions are attached under
+      ``results``. ``results`` may still be empty if no other
+      session shares an embedded neighbor.
+    """
+
+    bounded_limit = _clamp_limit(limit)
+    cfg = load_polylogue_config()
+    disabled_reason = _disabled_reason(
+        embedding_enabled=bool(cfg.embedding_enabled),
+        voyage_api_key=cfg.voyage_api_key,
+    )
+
+    dbf = active_index_db_path()
+    index_db = _archive_index_path_for()
+    if index_db is not None:
+        return _build_archive_similar_payload(
+            index_db,
+            session_id,
+            bounded_limit=bounded_limit,
+            disabled_reason=disabled_reason,
+        )
+    if not dbf.exists():
+        # Treat a missing database the same as a missing session —
+        # the route layer turns this into 404. The reader will never see
+        # this branch in practice once the archive has been bootstrapped.
+        return None
+
+    conn = sqlite3.connect(str(dbf))
+    try:
+        conn.row_factory = sqlite3.Row
+        if not _fetch_session_exists(conn, session_id):
+            return None
+
+        if disabled_reason is not None:
+            envelope = _empty_envelope("disabled", reason=disabled_reason)
+            envelope["session_id"] = session_id
+            envelope["limit"] = bounded_limit
+            return envelope
+
+        if not _vec_table_exists(conn):
+            envelope = _empty_envelope("unavailable", reason="vec0_table_missing")
+            envelope["session_id"] = session_id
+            envelope["limit"] = bounded_limit
+            return envelope
+
+        loaded, _ext_error = try_load_sqlite_vec(conn)
+        if not loaded:
+            envelope = _empty_envelope("unavailable", reason="sqlite_vec_not_loaded")
+            envelope["session_id"] = session_id
+            envelope["limit"] = bounded_limit
+            return envelope
+
+        source_rows = _source_message_embeddings(conn, session_id)
+        if not source_rows:
+            envelope = _empty_envelope("not_embedded", reason=None)
+            envelope["session_id"] = session_id
+            envelope["limit"] = bounded_limit
+            return envelope
+
+        # Cap source fanout to avoid issuing a thousand MATCH queries
+        # for a giant session. Twenty representative messages is
+        # enough to populate the candidate pool with good recall for
+        # the reader's top-N display.
+        per_message_results: list[list[tuple[str, str, float]]] = []
+        for _msg_id, embedding in source_rows[:_PER_MESSAGE_K]:
+            per_message_results.append(_knn_for_embedding(conn, embedding, k=_PER_MESSAGE_K))
+
+        aggregates = _aggregate_hits(
+            per_message_results,
+            self_session_id=session_id,
+        )
+
+        ranked = sorted(
+            aggregates.items(),
+            key=lambda item: (item[1]["best_distance"], item[0]),
+        )[:bounded_limit]
+
+        metadata = _hydrate_session_metadata(
+            conn,
+            [conv_id for conv_id, _ in ranked],
+        )
+
+        hits: list[dict[str, object]] = []
+        for conv_id, agg in ranked:
+            distance = float(agg["best_distance"])
+            score = _l2_to_cosine_similarity(distance)
+            title, source_name = metadata.get(conv_id, (None, None))
+            hits.append(
+                {
+                    "session_id": conv_id,
+                    "score": round(score, 4),
+                    "distance": round(distance, 4),
+                    "confidence": _confidence_for_score(score),
+                    "title": title,
+                    "source_name": source_name,
+                    "matched_message_count": int(agg["matched_messages"]),
+                }
+            )
+
+        return {
+            "status": "ready",
+            "reason": None,
+            "session_id": session_id,
             "source_embedded_messages": len(source_rows),
             "limit": bounded_limit,
             "results": hits,

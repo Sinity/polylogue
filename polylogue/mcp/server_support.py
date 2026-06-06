@@ -12,19 +12,16 @@ from polylogue.archive.query.spec import clamp_query_limit
 from polylogue.errors import (
     EmbeddingRetrievalNotReadyError,
     PolylogueError,
-    SchemaIncompatibleError,
+    SchemaVersionMismatchError,
 )
 from polylogue.logging import get_logger
 from polylogue.mcp.payloads import MCPErrorPayload, MCPFencedCodeBlock
-from polylogue.operations import ArchiveOperations
-from polylogue.protocols import ConversationQueryRuntimeStore, TagStore
 from polylogue.services import RuntimeServices, build_runtime_services
 from polylogue.surfaces.payloads import serialize_surface_payload
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
     from polylogue.config import Config
-    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
 _runtime_services: RuntimeServices | None = None
@@ -51,11 +48,7 @@ class ServerCallbacks:
     safe_call: Callable[[str, Callable[[], str]], str]
     async_safe_call: Callable[[str, Callable[[], Awaitable[str]]], Awaitable[str]]
     error_json: ErrorJSONSerializer
-    get_query_store: Callable[[], ConversationQueryRuntimeStore]
-    get_tag_store: Callable[[], TagStore]
-    get_backend: Callable[[], SQLiteBackend]
     get_config: Callable[[], Config]
-    get_archive_ops: Callable[[], ArchiveOperations]
     get_polylogue: Callable[[], Polylogue]
     extract_fenced_code: FencedCodeExtractor
     role: MCPRole
@@ -114,7 +107,7 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
 
     Categorization:
 
-    * :class:`SchemaIncompatibleError` → ``code="schema_incompatible"`` with
+    * :class:`SchemaVersionMismatchError` → ``code="schema_version_mismatch"`` with
       ``current_version``/``expected_version`` populated so MCP clients can
       render the same actionable operator message ``readiness_check`` does
       (#1611).
@@ -125,10 +118,10 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
       deliberately not included so the surface cannot leak credentials, file
       paths, or other internal state.
     """
-    if isinstance(exc, SchemaIncompatibleError):
+    if isinstance(exc, SchemaVersionMismatchError):
         payload = MCPErrorPayload(
             error=str(exc),
-            code="schema_incompatible",
+            code="schema_version_mismatch",
             detail=type(exc).__name__,
             tool=fn_name,
             current_version=exc.current_version,
@@ -232,21 +225,6 @@ def _get_runtime_services() -> RuntimeServices:
     return _runtime_services
 
 
-def _get_query_store() -> ConversationQueryRuntimeStore:
-    """Return the MCP query/runtime store from the configured runtime services."""
-    return _get_runtime_services().get_repository()
-
-
-def _get_tag_store() -> TagStore:
-    """Return the MCP tag/metadata store from the configured runtime services."""
-    return _get_runtime_services().get_repository()
-
-
-def _get_backend() -> SQLiteBackend:
-    """Return the configured backend for maintenance surfaces."""
-    return _get_runtime_services().get_backend()
-
-
 def _get_config() -> Config:
     """Return the MCP config from the configured runtime services."""
     return _get_runtime_services().get_config()
@@ -267,12 +245,9 @@ __all__ = [
     "_clamp_limit",
     "_error_json",
     "_extract_fenced_code",
-    "_get_backend",
     "_get_config",
     "_get_polylogue",
-    "_get_query_store",
     "_get_runtime_services",
-    "_get_tag_store",
     "_json_payload",
     "_safe_call",
     "_set_runtime_services",

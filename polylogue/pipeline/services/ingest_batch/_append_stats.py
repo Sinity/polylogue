@@ -1,4 +1,4 @@
-"""Append-only conversation stats helpers."""
+"""Append-only session stats helpers."""
 
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ def existing_message_signatures(conn: sqlite3.Connection, message_ids: Sequence[
 
 def upsert_stats_for_append(
     conn: sqlite3.Connection,
-    conversation_id: str,
+    session_id: str,
     source_name: str,
     changed_messages: Sequence[MessageTuple],
     existing_messages: dict[str, MessageSignature],
@@ -60,11 +60,11 @@ def upsert_stats_for_append(
     full_recount: FullStatsRecount,
 ) -> None:
     current = conn.execute(
-        "SELECT 1 FROM conversation_stats WHERE conversation_id = ?",
-        (conversation_id,),
+        "SELECT 1 FROM session_stats WHERE session_id = ?",
+        (session_id,),
     ).fetchone()
     if current is None:
-        full_recount(conn, conversation_id, source_name)
+        full_recount(conn, session_id, source_name)
         return
     if not changed_messages:
         return
@@ -119,7 +119,7 @@ def upsert_stats_for_append(
 
     conn.execute(
         """
-        UPDATE conversation_stats
+        UPDATE session_stats
         SET source_name = ?,
             message_count = message_count + ?,
             word_count = word_count + ?,
@@ -132,7 +132,7 @@ def upsert_stats_for_append(
             tool_msg_count = tool_msg_count + ?,
             user_word_count = user_word_count + ?,
             assistant_word_count = assistant_word_count + ?
-        WHERE conversation_id = ?
+        WHERE session_id = ?
         """,
         (
             source_name,
@@ -147,7 +147,7 @@ def upsert_stats_for_append(
             tool_msg_delta,
             user_word_delta,
             assistant_word_delta,
-            conversation_id,
+            session_id,
         ),
     )
 

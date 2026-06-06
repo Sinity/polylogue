@@ -37,10 +37,10 @@ class TestVersionNumbering:
 
     def test_successive_registrations_increment(self, registry: SchemaRegistry) -> None:
         schema = {"type": "object", "properties": {"id": {"type": "string"}}}
-        v1 = registry.register_schema("test-prov", schema)
+        archive = registry.register_schema("test-prov", schema)
         v2 = registry.register_schema("test-prov", schema)
         v3 = registry.register_schema("test-prov", schema)
-        assert v1 == "v1"
+        assert archive == "v1"
         assert v2 == "v2"
         assert v3 == "v3"
 
@@ -77,7 +77,7 @@ class TestListVersions:
         assert versions == ["v1", "v2", "v3", "v4", "v5"]
 
     def test_list_versions_numeric_sort_not_lexicographic(self, registry: SchemaRegistry) -> None:
-        """v10 should sort after v9, not after v1."""
+        """v10 should sort after v9, not after archive."""
         schema = {"type": "object", "properties": {"x": {"type": "string"}}}
         for _ in range(12):
             registry.register_schema("sort-prov", schema)
@@ -93,9 +93,9 @@ class TestListVersions:
 
 class TestGetSchema:
     def test_get_specific_version(self, registry: SchemaRegistry) -> None:
-        schema_v1 = {"type": "object", "properties": {"a": {"type": "string"}}}
+        archive = {"type": "object", "properties": {"a": {"type": "string"}}}
         schema_v2 = {"type": "object", "properties": {"a": {"type": "string"}, "b": {"type": "integer"}}}
-        registry.register_schema("get-prov", schema_v1)
+        registry.register_schema("get-prov", archive)
         registry.register_schema("get-prov", schema_v2)
 
         retrieved = registry.get_schema("get-prov", version="v1")
@@ -103,13 +103,13 @@ class TestGetSchema:
         retrieved_properties = retrieved.get("properties")
         assert isinstance(retrieved_properties, dict)
         assert "a" in retrieved_properties
-        # v1 should NOT have "b"
+        # archive should NOT have "b"
         assert "b" not in retrieved_properties
 
     def test_get_latest_returns_most_recent(self, registry: SchemaRegistry) -> None:
-        schema_v1 = {"type": "object", "properties": {"old": {"type": "string"}}}
+        archive = {"type": "object", "properties": {"old": {"type": "string"}}}
         schema_v2 = {"type": "object", "properties": {"old": {"type": "string"}, "new": {"type": "number"}}}
-        registry.register_schema("lat-prov", schema_v1)
+        registry.register_schema("lat-prov", archive)
         registry.register_schema("lat-prov", schema_v2)
 
         latest = registry.get_schema("lat-prov", version="latest")
@@ -139,7 +139,7 @@ class TestMetadataInjection:
         registry.register_schema("meta-prov", schema)
         stored = registry.get_schema("meta-prov", version="v1")
         assert stored is not None
-        assert stored["$id"] == "polylogue://schemas/meta-prov/v1/conversation_document"
+        assert stored["$id"] == "polylogue://schemas/meta-prov/v1/session_document"
 
     def test_register_injects_version_number(self, registry: SchemaRegistry) -> None:
         schema = {"type": "object", "properties": {"x": {"type": "string"}}}
@@ -184,9 +184,9 @@ class TestVersionBumpBehavior:
     """
 
     def test_structural_change_bumps_version(self, registry: SchemaRegistry) -> None:
-        schema_v1 = {"type": "object", "properties": {"a": {"type": "string"}}}
+        archive = {"type": "object", "properties": {"a": {"type": "string"}}}
         schema_v2 = {"type": "object", "properties": {"a": {"type": "string"}, "b": {"type": "number"}}}
-        registry.register_schema("str-prov", schema_v1)
+        registry.register_schema("str-prov", archive)
         v2 = registry.register_schema("str-prov", schema_v2)
         assert v2 == "v2"
 
@@ -195,9 +195,9 @@ class TestVersionBumpBehavior:
         assert "b" in diff.added_properties
 
     def test_type_mutation_detected_on_version_bump(self, registry: SchemaRegistry) -> None:
-        schema_v1 = {"type": "object", "properties": {"count": {"type": "integer"}}}
+        archive = {"type": "object", "properties": {"count": {"type": "integer"}}}
         schema_v2 = {"type": "object", "properties": {"count": {"type": "number"}}}
-        registry.register_schema("typ-prov", schema_v1)
+        registry.register_schema("typ-prov", archive)
         registry.register_schema("typ-prov", schema_v2)
 
         diff = registry.compare_versions("typ-prov", "v1", "v2")
@@ -207,7 +207,7 @@ class TestVersionBumpBehavior:
 
     def test_annotation_only_change_still_creates_version(self, registry: SchemaRegistry) -> None:
         """Register schemas that differ only in x-polylogue-* annotations."""
-        schema_v1 = {
+        archive = {
             "type": "object",
             "properties": {"msg": {"type": "string"}},
         }
@@ -215,7 +215,7 @@ class TestVersionBumpBehavior:
             "type": "object",
             "properties": {"msg": {"type": "string", "x-polylogue-semantic-role": "message_body"}},
         }
-        registry.register_schema("ann-prov", schema_v1)
+        registry.register_schema("ann-prov", archive)
         v2 = registry.register_schema("ann-prov", schema_v2)
         assert v2 == "v2"
 
@@ -238,12 +238,12 @@ class TestVersionBumpBehavior:
         assert diff.summary() == "no changes"
 
     def test_property_removal_detected(self, registry: SchemaRegistry) -> None:
-        schema_v1 = {
+        archive = {
             "type": "object",
             "properties": {"a": {"type": "string"}, "b": {"type": "integer"}, "c": {"type": "boolean"}},
         }
         schema_v2 = {"type": "object", "properties": {"a": {"type": "string"}}}
-        registry.register_schema("rem-prov", schema_v1)
+        registry.register_schema("rem-prov", archive)
         registry.register_schema("rem-prov", schema_v2)
 
         diff = registry.compare_versions("rem-prov", "v1", "v2")

@@ -1,8 +1,8 @@
 """Storage-side derivation of the session topology read model.
 
 The topology graph is derived on demand from the canonical archive tables
-(``conversations.parent_conversation_id`` + ``branch_type`` +
-``conversations.provider_meta``). No new DDL is required: the durable
+(``sessions.parent_session_id`` + ``branch_type`` +
+``sessions.provider_meta``). No new DDL is required: the durable
 edge data is already persisted at ingest time through the parent
 resolution in ``polylogue.pipeline.prepare_enrichment`` and parsed
 ``BranchType`` values.

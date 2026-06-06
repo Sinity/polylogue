@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
-from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
+from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
+from polylogue.core.timestamps import parse_timestamp
 from polylogue.types import ContentBlockType, Provider
 
 
@@ -45,13 +46,18 @@ class ParsedMessage(BaseModel):
     role: Role
     text: str | None = None
     timestamp: str | None = None
+    occurred_at_ms: int | None = None
     content_blocks: list[ParsedContentBlock] = Field(default_factory=list)
     message_type: MessageType = MessageType.MESSAGE
     # Optional transient parser metadata for direct parser consumers.
-    # Canonical persistence uses content_blocks for messages and provider_meta for conversations/attachments.
+    # Canonical persistence uses content_blocks for messages and provider_meta for sessions/attachments.
     provider_meta: dict[str, object] | None = None
     parent_message_provider_id: str | None = None
+    position: int | None = None
     branch_index: int = 0
+    variant_index: int | None = None
+    is_active_path: bool | None = None
+    is_active_leaf: bool | None = None
     # Token usage flows through from provider raw records to MaterializedMessage.
     # Parsers populate when the raw record carries usage info; otherwise None.
     # Materialization writes these into the messages table, where they drive
@@ -63,6 +69,8 @@ class ParsedMessage(BaseModel):
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     model_name: str | None = None
+    model_effort: str | None = None
+    duration_ms: int | None = None
 
     @field_validator("role", mode="before")
     @classmethod
@@ -75,6 +83,21 @@ class ParsedMessage(BaseModel):
     @classmethod
     def coerce_message_type(cls, v: object) -> MessageType:
         return MessageType.normalize(v)
+
+    @field_validator("occurred_at_ms", "position", "variant_index", "duration_ms")
+    @classmethod
+    def non_negative_optional_int(cls, value: int | None) -> int | None:
+        if value is not None and value < 0:
+            raise ValueError("parser contract integer fields cannot be negative")
+        return value
+
+    @model_validator(mode="after")
+    def derive_occurred_at_ms(self) -> ParsedMessage:
+        if self.occurred_at_ms is None and self.timestamp:
+            parsed = parse_timestamp(self.timestamp)
+            if parsed is not None:
+                self.occurred_at_ms = int(parsed.timestamp() * 1000)
+        return self
 
 
 class ParsedAttachment(BaseModel):
@@ -137,17 +160,18 @@ class ParsedProviderEvent(BaseModel):
     )
 
 
-class ParsedConversation(BaseModel):
+class ParsedSession(BaseModel):
     source_name: Provider
-    provider_conversation_id: str
+    provider_session_id: str
     title: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
     messages: list[ParsedMessage]
+    active_leaf_message_provider_id: str | None = None
     attachments: list[ParsedAttachment] = Field(default_factory=list)
     provider_meta: dict[str, object] | None = None
     provider_events: list[ParsedProviderEvent] = Field(default_factory=list)
-    parent_conversation_provider_id: str | None = None
+    parent_session_provider_id: str | None = None
     branch_type: BranchType | None = None
     # Universal session-context semantics graduated out of provider_meta.
     # Parsers populate both these typed fields and the corresponding provider_meta
@@ -171,8 +195,8 @@ class ParsedConversation(BaseModel):
         return Provider.from_string(str(v) if v is not None else "unknown")
 
 
-class RawConversationData(BaseModel):
-    """Container for raw conversation bytes with metadata.
+class RawSessionData(BaseModel):
+    """Container for raw session bytes with metadata.
 
     When ``blob_hash`` is set, the content has been written to the blob
     store and ``raw_bytes`` may be empty (only a detection prefix was

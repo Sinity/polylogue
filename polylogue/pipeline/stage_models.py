@@ -9,7 +9,7 @@ from polylogue.pipeline.payload_types import AcquireDiagnostics
 from polylogue.types import Provider, ValidationStatus
 
 if TYPE_CHECKING:
-    from polylogue.sources.parsers.base import ParsedConversation
+    from polylogue.sources.parsers.base import ParsedSession
 
 
 def _empty_acquire_diagnostics() -> AcquireDiagnostics:
@@ -91,10 +91,10 @@ class ValidateResult:
 
 
 @dataclass(frozen=True, slots=True)
-class ParsedConversationArtifact:
-    """One parsed conversation associated with its raw source artifact."""
+class ParsedSessionArtifact:
+    """One parsed session associated with its raw source artifact."""
 
-    conversation: ParsedConversation
+    session: ParsedSession
     source_name: str
     raw_id: str
     payload_provider: Provider | str | None
@@ -102,7 +102,7 @@ class ParsedConversationArtifact:
 
 __all__ = [
     "AcquireResult",
-    "ParsedConversationArtifact",
+    "ParsedSessionArtifact",
     "ValidateResult",
     "ValidatedRawRecord",
 ]

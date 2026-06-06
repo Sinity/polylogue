@@ -17,8 +17,8 @@ from tests.unit.mcp.test_tool_contracts import _inference_provenance, _provenanc
 
 def _profile() -> SessionProfileInsight:
     return SessionProfileInsight(
-        conversation_id="conv-1",
-        logical_conversation_id="conv-1",
+        session_id="conv-1",
+        logical_session_id="conv-1",
         source_name="claude-code",
         title="Profiled Session",
         semantic_tier="merged",
@@ -42,7 +42,7 @@ def _profile() -> SessionProfileInsight:
 
 def _latency_profile() -> SessionLatencyProfileInsight:
     return SessionLatencyProfileInsight(
-        conversation_id="conv-1",
+        session_id="conv-1",
         source_name="claude-code",
         title="Profiled Session",
         provenance=_provenance(),
@@ -69,11 +69,11 @@ async def test_workflow_shape_distribution_groups_materialized_profiles(
 
         raw = await invoke_surface_async(
             mcp_server._tool_manager._tools["workflow_shape_distribution"].fn,
-            group_by="provider",
+            group_by="origin",
         )
 
     payload = json.loads(raw)
-    assert payload["buckets"]["claude-code"]["agentic_loop"] == 1
+    assert payload["buckets"]["claude-code-session"]["agentic_loop"] == 1
 
 
 @pytest.mark.asyncio
@@ -94,6 +94,7 @@ async def test_find_abandoned_sessions_filters_and_cites_terminal_evidence(
 
     payload = json.loads(raw)
     assert payload["total"] == 1
+    assert payload["items"][0]["origin"] == "claude-code-session"
     assert payload["items"][0]["terminal_state"] == "question_left"
     assert payload["items"][0]["evidence"] == {"message_id": "u1"}
 
@@ -109,11 +110,12 @@ async def test_session_latency_profile_returns_materialized_latency(
 
         raw = await invoke_surface_async(
             mcp_server._tool_manager._tools["session_latency_profile"].fn,
-            conversation_id="conv-1",
+            session_id="conv-1",
         )
 
     payload = json.loads(raw)
     assert payload["insight_kind"] == "session_latency_profile"
+    assert payload["origin"] == "claude-code-session"
     assert payload["latency"]["median_tool_call_ms"] == 120_000
 
 
@@ -155,4 +157,5 @@ async def test_find_stuck_sessions_returns_latency_profiles(
 
     payload = json.loads(raw)
     assert payload["total"] == 1
+    assert payload["items"][0]["origin"] == "claude-code-session"
     assert payload["items"][0]["latency"]["stuck_tool_count"] == 1

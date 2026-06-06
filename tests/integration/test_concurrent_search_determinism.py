@@ -1,7 +1,7 @@
 """Integration test: search result determinism under concurrent writes (#1734).
 
 Asserts that FTS5 queries during live ingest return stable results for
-already-ingested conversations — monotonic growth, no regression, no
+already-ingested sessions — monotonic growth, no regression, no
 OperationalError or corrupt index errors.
 """
 
@@ -26,18 +26,18 @@ def test_search_results_monotonic_under_concurrent_writes(workspace_env: None, t
 
     # Seed initial data
     conn = open_connection(db_path)
-    conn.execute("INSERT INTO conversations (id, source_name, sort_key) VALUES ('c1', 'test', 1.0)")
-    conn.execute("INSERT INTO conversations (id, source_name, sort_key) VALUES ('c2', 'test', 2.0)")
+    conn.execute("INSERT INTO sessions (id, source_name, sort_key) VALUES ('c1', 'test', 1.0)")
+    conn.execute("INSERT INTO sessions (id, source_name, sort_key) VALUES ('c2', 'test', 2.0)")
     conn.execute(
-        "INSERT INTO messages (id, conversation_id, source_name, role, text, sort_key) "
+        "INSERT INTO messages (id, session_id, source_name, role, text, sort_key) "
         "VALUES ('m1', 'c1', 'test', 'user', 'hello world', 1.0)"
     )
     conn.execute(
-        "INSERT INTO messages (id, conversation_id, source_name, role, text, sort_key) "
+        "INSERT INTO messages (id, session_id, source_name, role, text, sort_key) "
         "VALUES ('m2', 'c2', 'test', 'user', 'another test message', 2.0)"
     )
     conn.execute(
-        "INSERT INTO messages_fts(messages_fts, rowid, message_id, conversation_id, text) "
+        "INSERT INTO messages_fts(messages_fts, rowid, message_id, session_id, text) "
         "VALUES ('rebuild', NULL, NULL, NULL, NULL)"
     )
     conn.commit()
@@ -71,16 +71,16 @@ def test_search_results_monotonic_under_concurrent_writes(workspace_env: None, t
                 mid = f"m{i + 3}"
                 cid = f"c{i + 3}"
                 wconn.execute(
-                    "INSERT INTO conversations (id, source_name, sort_key) VALUES (?, 'test', ?)",
+                    "INSERT INTO sessions (id, source_name, sort_key) VALUES (?, 'test', ?)",
                     (cid, float(i + 3)),
                 )
                 wconn.execute(
-                    "INSERT INTO messages (id, conversation_id, source_name, role, text, sort_key) "
+                    "INSERT INTO messages (id, session_id, source_name, role, text, sort_key) "
                     "VALUES (?, ?, 'test', 'user', ?, ?)",
                     (mid, cid, f"hello concurrent message {i}", float(i + 3)),
                 )
                 wconn.execute(
-                    "INSERT INTO messages_fts(messages_fts, rowid, message_id, conversation_id, text) "
+                    "INSERT INTO messages_fts(messages_fts, rowid, message_id, session_id, text) "
                     "VALUES ('rebuild', NULL, NULL, NULL, NULL)"
                 )
                 wconn.commit()

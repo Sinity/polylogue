@@ -61,38 +61,36 @@ async def ensure_index(backend: SQLiteBackend) -> None:
 async def rebuild_index(
     backend: SQLiteBackend,
     *,
-    conversation_ids: list[str] | None = None,
+    session_ids: list[str] | None = None,
     phase_count: int | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> None:
     """Rebuild the entire FTS5 index from persisted message rows."""
-    conversation_id_list = (
-        conversation_ids
-        if conversation_ids is not None
-        else [conversation_id async for conversation_id in backend.iter_conversation_ids()]
+    session_id_list = (
+        session_ids if session_ids is not None else [session_id async for session_id in backend.iter_session_ids()]
     )
     async with backend.connection() as conn:
-        action_targets = await _action_event_repair_targets(conn, conversation_id_list)
+        action_targets = await _action_event_repair_targets(conn, session_id_list)
         action_target_count = len(action_targets)
         del phase_count
-        phase_total = len(conversation_id_list) + action_target_count
+        phase_total = len(session_id_list) + action_target_count
         if action_targets:
             if progress_callback is not None:
                 progress_callback(0, desc=f"Indexing: action events 0/{phase_total:,}")
             await rebuild_action_event_read_model_async(
                 conn,
-                conversation_ids=action_targets,
+                session_ids=action_targets,
                 progress_callback=progress_callback,
                 progress_desc=(_action_progress_desc_factory(phase_total) if progress_callback is not None else None),
             )
-        if progress_callback is not None and conversation_id_list:
+        if progress_callback is not None and session_id_list:
             progress_callback(
                 0,
                 desc=f"Indexing: full-text search {action_target_count:,}/{phase_total:,}",
             )
         await rebuild_fts_index_async(
             conn,
-            conversation_ids=conversation_id_list,
+            session_ids=session_id_list,
             progress_callback=progress_callback,
             progress_desc=(
                 _fts_progress_desc_factory(offset=action_target_count, phase_total=phase_total)
@@ -104,38 +102,38 @@ async def rebuild_index(
     invalidate_search_cache()
 
 
-async def update_index_for_conversations(
-    conversation_ids: Iterable[str] | AsyncIterable[str],
+async def update_index_for_sessions(
+    session_ids: Iterable[str] | AsyncIterable[str],
     backend: SQLiteBackend,
     *,
     phase_count: int | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> None:
-    """Repair FTS rows for the provided conversations from persisted message rows."""
-    conversation_id_list = [conversation_id async for conversation_id in _iter_ids(conversation_ids)]
-    changed = bool(conversation_id_list)
+    """Repair FTS rows for the provided sessions from persisted message rows."""
+    session_id_list = [session_id async for session_id in _iter_ids(session_ids)]
+    changed = bool(session_id_list)
     async with backend.connection() as conn:
-        action_targets = await _action_event_repair_targets(conn, conversation_id_list)
+        action_targets = await _action_event_repair_targets(conn, session_id_list)
         action_target_count = len(action_targets)
         del phase_count
-        phase_total = len(conversation_id_list) + action_target_count
+        phase_total = len(session_id_list) + action_target_count
         if action_targets:
             if progress_callback is not None:
                 progress_callback(0, desc=f"Indexing: action events 0/{phase_total:,}")
             await rebuild_action_event_read_model_async(
                 conn,
-                conversation_ids=action_targets,
+                session_ids=action_targets,
                 progress_callback=progress_callback,
                 progress_desc=(_action_progress_desc_factory(phase_total) if progress_callback is not None else None),
             )
-        if progress_callback is not None and conversation_id_list:
+        if progress_callback is not None and session_id_list:
             progress_callback(
                 0,
                 desc=f"Indexing: full-text search {action_target_count:,}/{phase_total:,}",
             )
         await repair_fts_index_async(
             conn,
-            conversation_id_list,
+            session_id_list,
             progress_callback=progress_callback,
             progress_desc=(
                 _fts_progress_desc_factory(offset=action_target_count, phase_total=phase_total)
@@ -176,15 +174,15 @@ def _fts_progress_desc_factory(*, offset: int, phase_total: int) -> Callable[[in
 
 async def _action_event_repair_targets(
     conn: aiosqlite.Connection,
-    conversation_id_list: list[str],
+    session_id_list: list[str],
 ) -> list[str]:
-    if not conversation_id_list:
+    if not session_id_list:
         return []
     candidate_ids = await action_event_repair_candidates_async(conn)
     if not candidate_ids:
         return []
-    allowed = set(conversation_id_list)
-    return [conversation_id for conversation_id in candidate_ids if conversation_id in allowed]
+    allowed = set(session_id_list)
+    return [session_id for session_id in candidate_ids if session_id in allowed]
 
 
 async def index_status(backend: SQLiteBackend) -> IndexStatus:
@@ -216,14 +214,14 @@ class IndexService:
 
     async def update_index(
         self,
-        conversation_ids: Iterable[str] | AsyncIterable[str],
+        session_ids: Iterable[str] | AsyncIterable[str],
         *,
         progress_callback: ProgressCallback | None = None,
     ) -> bool:
-        """Update the search index for specific conversations.
+        """Update the search index for specific sessions.
 
         Args:
-            conversation_ids: Conversation IDs to index
+            session_ids: Session IDs to index
 
         Returns:
             True if indexing succeeded, False otherwise
@@ -232,16 +230,16 @@ class IndexService:
             logger.error("Cannot update index without a backend")
             return False
 
-        conversation_id_list = [conversation_id async for conversation_id in _iter_ids(conversation_ids)]
+        session_id_list = [session_id async for session_id in _iter_ids(session_ids)]
         try:
             if progress_callback is None:
-                await update_index_for_conversations(
-                    conversation_id_list,
+                await update_index_for_sessions(
+                    session_id_list,
                     self.backend,
                 )
             else:
-                await update_index_for_conversations(
-                    conversation_id_list,
+                await update_index_for_sessions(
+                    session_id_list,
                     self.backend,
                     progress_callback=progress_callback,
                 )
@@ -265,16 +263,16 @@ class IndexService:
             return False
 
         try:
-            conversation_id_list = [conversation_id async for conversation_id in self.backend.iter_conversation_ids()]
+            session_id_list = [session_id async for session_id in self.backend.iter_session_ids()]
             if progress_callback is None:
                 await rebuild_index(
                     self.backend,
-                    conversation_ids=conversation_id_list,
+                    session_ids=session_id_list,
                 )
             else:
                 await rebuild_index(
                     self.backend,
-                    conversation_ids=conversation_id_list,
+                    session_ids=session_id_list,
                     progress_callback=progress_callback,
                 )
             return True

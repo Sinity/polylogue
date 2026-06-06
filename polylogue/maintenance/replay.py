@@ -56,10 +56,6 @@ from polylogue.maintenance.planner import (
     MaintenanceScope,
 )
 from polylogue.maintenance.scope import MaintenanceScopeFilter
-from polylogue.maintenance.source_replay import (
-    ArtifactFailure,
-    repair_source_replay,
-)
 from polylogue.maintenance.targets import (
     MAINTENANCE_TARGET_NAMES,
     MaintenanceTargetSpec,
@@ -70,7 +66,7 @@ from polylogue.storage.repair import (
     offline_maintenance_blockers,
     repair_action_event_read_model,
     repair_dangling_fts,
-    repair_empty_conversations,
+    repair_empty_sessions,
     repair_message_type_backfill,
     repair_orphaned_attachments,
     repair_orphaned_blobs,
@@ -79,13 +75,6 @@ from polylogue.storage.repair import (
     repair_session_insights,
     repair_wal_checkpoint,
 )
-
-#: Name of the source-replay target. Resolved via the catalog like any
-#: other target, but its dispatch path is special-cased because it
-#: needs (a) the scope filter to narrow which sources to re-acquire and
-#: (b) a per-artifact resume cursor instead of the default per-target
-#: cursor.
-SOURCE_REPLAY_TARGET: Final[str] = "source_replay"
 
 logger = get_logger(__name__)
 
@@ -132,16 +121,9 @@ _REPLAY_DISPATCH: Final[dict[str, _RepairFn]] = {
     "wal_checkpoint": repair_wal_checkpoint,
     "orphaned_messages": repair_orphaned_messages,
     "orphaned_content_blocks": repair_orphaned_content_blocks,
-    "empty_conversations": repair_empty_conversations,
+    "empty_sessions": repair_empty_sessions,
     "orphaned_attachments": repair_orphaned_attachments,
     "orphaned_blobs": repair_orphaned_blobs,
-    # ``source_replay`` is handled by a dedicated branch in
-    # :func:`_run_one_target` because it needs the typed scope filter and
-    # the per-artifact resume cursor. The sentinel value here only exists
-    # so :func:`supported_replay_targets` advertises the target and so
-    # the unsupported-target guard in :func:`_run_one_target` does not
-    # fire. The value is never invoked.
-    SOURCE_REPLAY_TARGET: repair_session_insights,
 }
 
 
@@ -163,25 +145,9 @@ class UnsupportedReplayTargetError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-#: Sub-cursor segment marking the per-artifact resume index inside a
-#: target-level cursor (AC: "Resume cursor advances per-artifact within
-#: a source root, not just per-target"). A cursor of
-#: ``"target:2:artifact:9182"`` means "resume at target index 2, and
-#: inside that target, skip the first 9182 artifacts".
-_CURSOR_ARTIFACT_SEGMENT: Final[str] = "artifact"
-
-
-def _encode_cursor(next_target_index: int, *, artifact_index: int | None = None) -> str:
-    """Encode the next target index (and optional artifact index) as an opaque string.
-
-    The optional ``artifact_index`` is only attached when non-zero so
-    targets without per-artifact iteration round-trip through the
-    legacy ``target:N`` form (and existing state files keep parsing).
-    """
-    base = f"{_CURSOR_TARGET_PREFIX}{next_target_index}"
-    if artifact_index is None or artifact_index <= 0:
-        return base
-    return f"{base}:{_CURSOR_ARTIFACT_SEGMENT}:{artifact_index}"
+def _encode_cursor(next_target_index: int) -> str:
+    """Encode the next target index as an opaque ``target:N`` string."""
+    return f"{_CURSOR_TARGET_PREFIX}{next_target_index}"
 
 
 def _decode_cursor(cursor: str | None, *, total_targets: int) -> int:
@@ -190,8 +156,7 @@ def _decode_cursor(cursor: str | None, *, total_targets: int) -> int:
     Returns ``0`` for an absent or empty cursor (fresh run) and
     ``total_targets`` (i.e. "all done") for :data:`CURSOR_DONE`. Any
     malformed cursor falls back to ``0`` so a corrupt state file can
-    never silently skip work. Per-artifact sub-cursors are stripped
-    here — use :func:`_decode_artifact_cursor` to recover them.
+    never silently skip work.
     """
     if cursor is None or cursor == "":
         return 0
@@ -212,28 +177,6 @@ def _decode_cursor(cursor: str | None, *, total_targets: int) -> int:
     if index > total_targets:
         return total_targets
     return index
-
-
-def _decode_artifact_cursor(cursor: str | None) -> int:
-    """Return the per-artifact resume index encoded in ``cursor``, or 0.
-
-    Recognized form: ``target:N:artifact:K``. Any other shape (including
-    legacy ``target:N`` and :data:`CURSOR_DONE`) yields ``0``.
-    """
-    if cursor is None or cursor == "" or cursor == CURSOR_DONE:
-        return 0
-    if not cursor.startswith(_CURSOR_TARGET_PREFIX):
-        return 0
-    parts = cursor[len(_CURSOR_TARGET_PREFIX) :].split(":")
-    # parts is ["<target_idx>", "artifact", "<K>"] when artifact set.
-    if len(parts) < 3 or parts[1] != _CURSOR_ARTIFACT_SEGMENT:
-        return 0
-    try:
-        artifact = int(parts[2])
-    except ValueError:
-        logger.warning("replay_cursor_invalid_artifact_index", cursor=cursor)
-        return 0
-    return max(0, artifact)
 
 
 # ---------------------------------------------------------------------------
@@ -341,11 +284,6 @@ class _ReplayState:
     results: list[JSONDocument] = field(default_factory=list)
     failures: list[FailureSample] = field(default_factory=list)
     repaired_total: int = 0
-    #: Next per-artifact index to attempt for the currently-running
-    #: target. Only meaningful when the target supports per-artifact
-    #: iteration (currently :data:`SOURCE_REPLAY_TARGET`); other targets
-    #: leave it at 0.
-    artifact_resume_index: int = 0
 
     def progress_for(self, target: str, processed: int) -> ReplayProgress:
         return ReplayProgress(
@@ -445,7 +383,7 @@ def execute_replay(
         started_at = datetime.now(timezone.utc).isoformat()
         return BackfillOperation(
             operation_id=op_id,
-            kind=BackfillKind.SOURCE_REPLAY if SOURCE_REPLAY_TARGET in resolved_names else BackfillKind.DERIVED_REBUILD,
+            kind=BackfillKind.DERIVED_REBUILD,
             targets=resolved_names,
             status=BackfillStatus.FAILED,
             progress=0.0,
@@ -467,7 +405,6 @@ def execute_replay(
                 resume_cursor = cursor_value
 
     start_index = _decode_cursor(resume_cursor, total_targets=len(resolved_names))
-    start_artifact_index = _decode_artifact_cursor(resume_cursor)
     state = _ReplayState(
         operation_id=op_id,
         targets=resolved_names,
@@ -486,17 +423,12 @@ def execute_replay(
     for index in range(start_index, len(resolved_names)):
         spec = resolved_specs[index]
         target_name = spec.name
-        # The per-artifact cursor only applies to the first resumed
-        # target. Once that target completes, the executor moves on to
-        # the next target with a fresh 0 artifact cursor.
-        artifact_resume = start_artifact_index if index == start_index else 0
         _run_one_target(
             state,
             spec,
             config,
             dry_run=dry_run,
             scope_filter=effective_filter,
-            resume_artifact_index=artifact_resume,
         )
         # Advance the cursor *after* the target completes (success or
         # failure). On failure we still advance so the next resume does
@@ -504,7 +436,6 @@ def execute_replay(
         # samples; the bounded sample list already records the problem.
         next_index = index + 1
         state.cursor = CURSOR_DONE if next_index == len(resolved_names) else _encode_cursor(next_index)
-        state.artifact_resume_index = 0
         if persist_state:
             _checkpoint_state(
                 config=config,
@@ -531,10 +462,9 @@ def execute_replay(
         failure_samples=len(state.failures),
     )
 
-    kind = BackfillKind.SOURCE_REPLAY if SOURCE_REPLAY_TARGET in resolved_names else BackfillKind.DERIVED_REBUILD
     final = BackfillOperation(
         operation_id=op_id,
-        kind=kind,
+        kind=BackfillKind.DERIVED_REBUILD,
         targets=resolved_names,
         status=status,
         progress=progress,
@@ -570,19 +500,6 @@ def execute_replay(
     return final
 
 
-def _artifact_failure_to_sample(failure: ArtifactFailure) -> FailureSample:
-    """Project a per-artifact failure onto the planner's bounded sample envelope."""
-
-    return FailureSample(
-        kind=failure.kind,
-        locator=(
-            f"target:{SOURCE_REPLAY_TARGET}:source:{failure.source_name}:"
-            f"artifact:{failure.artifact_index}:{failure.source_path}"
-        ),
-        message=failure.message,
-    )
-
-
 def _record_failure(
     state: _ReplayState,
     sample: FailureSample,
@@ -616,7 +533,6 @@ def _run_one_target(
     *,
     dry_run: bool,
     scope_filter: MaintenanceScopeFilter,
-    resume_artifact_index: int = 0,
 ) -> None:
     """Execute one target, recording success or a typed failure sample."""
 
@@ -640,36 +556,14 @@ def _run_one_target(
         return
 
     try:
-        if target_name == SOURCE_REPLAY_TARGET:
-            # SOURCE_REPLAY has a dedicated execution path because it
-            # consumes the typed scope filter to choose which sources to
-            # iterate, supports per-artifact resume, and surfaces
-            # per-artifact failures individually rather than aborting
-            # the entire target on the first bad file.
-            outcome = repair_source_replay(
-                config,
-                dry_run,
-                scope_filter=scope_filter,
-                resume_artifact_index=resume_artifact_index,
-            )
-            result = outcome.result
-            for failure in outcome.failures:
-                _record_failure(
-                    state,
-                    _artifact_failure_to_sample(failure),
-                    target=target_name,
-                    config=config,
-                )
-            if outcome.last_artifact_index >= 0:
-                state.artifact_resume_index = outcome.last_artifact_index + 1
-        elif target_name == "session_insights" and scope_filter.conversation_ids is not None:
+        if target_name == "session_insights" and scope_filter.session_ids is not None:
             # The session-insights repair fn understands a narrowed
-            # conversation-id scope natively; forward it so a one-session
+            # session-id scope directly; forward it so a one-session
             # plan only touches that one session's insights.
             result = repair_session_insights(
                 config,
                 dry_run,
-                conversation_ids=scope_filter.conversation_ids,
+                session_ids=scope_filter.session_ids,
             )
         else:
             result = repair_fn(config, dry_run)
@@ -783,10 +677,9 @@ def _build_in_progress_snapshot(
         progress = processed / total if total > 0 else 0.0
         completed_at = None
 
-    kind = BackfillKind.SOURCE_REPLAY if SOURCE_REPLAY_TARGET in state.targets else BackfillKind.DERIVED_REBUILD
     return BackfillOperation(
         operation_id=operation_id,
-        kind=kind,
+        kind=BackfillKind.DERIVED_REBUILD,
         targets=state.targets,
         status=status,
         progress=progress,
@@ -804,7 +697,6 @@ def _build_in_progress_snapshot(
 __all__ = [
     "CURSOR_DONE",
     "MAINTENANCE_TARGET_NAMES",
-    "SOURCE_REPLAY_TARGET",
     "MaintenanceScopeFilter",
     "ProgressCallback",
     "ReplayProgress",

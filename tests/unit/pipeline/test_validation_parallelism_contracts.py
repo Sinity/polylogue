@@ -37,7 +37,7 @@ from polylogue.pipeline.services.validation_runtime import (
     _ValidationOutcome,
 )
 from polylogue.pipeline.stage_models import ValidateResult
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.runtime import RawSessionRecord
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 # ---------------------------------------------------------------------------
@@ -73,8 +73,8 @@ def _claude_payload(title: str = "hello") -> bytes:
     return orjson.dumps(body)
 
 
-def _make_record(raw_id: str, *, payload: bytes) -> RawConversationRecord:
-    return RawConversationRecord(
+def _make_record(raw_id: str, *, payload: bytes) -> RawSessionRecord:
+    return RawSessionRecord(
         raw_id=raw_id,
         source_name=Provider.CLAUDE_AI.value,
         source_path=f"/synthetic/{raw_id}.json",
@@ -91,9 +91,9 @@ class RecordingStore:
         self.parsed_calls: list[tuple[str, str | None]] = []
         self._lock = asyncio.Lock()
 
-    async def get_raw_conversations_batch(
+    async def get_raw_sessions_batch(
         self, raw_ids: list[str]
-    ) -> list[RawConversationRecord]:  # pragma: no cover - unused here
+    ) -> list[RawSessionRecord]:  # pragma: no cover - unused here
         raise NotImplementedError
 
     async def mark_raw_validated(
@@ -205,8 +205,8 @@ class TestValidateRecordSyncDeterminism:
 # ---------------------------------------------------------------------------
 
 
-def _seed_records(blob_root: Path, count: int) -> list[RawConversationRecord]:
-    records: list[RawConversationRecord] = []
+def _seed_records(blob_root: Path, count: int) -> list[RawSessionRecord]:
+    records: list[RawSessionRecord] = []
     for index in range(count):
         payload = _claude_payload(f"conv-{index:04d}")
         digest = _write_blob(blob_root, payload)

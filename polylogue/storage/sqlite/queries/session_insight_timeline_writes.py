@@ -39,13 +39,13 @@ async def _table_has_column(conn: aiosqlite.Connection, table: str, column: str)
 
 async def replace_session_work_events(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
     records: list[SessionWorkEventRecord],
     transaction_depth: int,
 ) -> None:
     await replace_session_work_events_bulk(
         conn,
-        [conversation_id],
+        [session_id],
         records,
         transaction_depth,
     )
@@ -53,33 +53,33 @@ async def replace_session_work_events(
 
 async def replace_session_work_events_bulk(
     conn: aiosqlite.Connection,
-    conversation_ids: Sequence[str],
+    session_ids: Sequence[str],
     records: Sequence[SessionWorkEventRecord],
     transaction_depth: int,
 ) -> None:
-    has_legacy_payload = await _table_has_column(conn, "session_work_events", "payload_json") if records else False
-    columns = session_work_event_insert_columns(has_legacy_payload=has_legacy_payload)
+    has_fallback_payload = await _table_has_column(conn, "session_work_events", "payload_json") if records else False
+    columns = session_work_event_insert_columns(has_fallback_payload=has_fallback_payload)
     await replace_insight_rows(
         conn,
         table="session_work_events",
-        id_column="conversation_id",
-        id_values=conversation_ids,
+        id_column="session_id",
+        id_values=session_ids,
         columns=columns,
         records=records,
-        extractor=lambda r: session_work_event_insert_values(r, has_legacy_payload=has_legacy_payload),
+        extractor=lambda r: session_work_event_insert_values(r, has_fallback_payload=has_fallback_payload),
         transaction_depth=transaction_depth,
     )
 
 
 async def replace_session_phases(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
     records: list[SessionPhaseRecord],
     transaction_depth: int,
 ) -> None:
     await replace_session_phases_bulk(
         conn,
-        [conversation_id],
+        [session_id],
         records,
         transaction_depth,
     )
@@ -87,19 +87,19 @@ async def replace_session_phases(
 
 async def replace_session_phases_bulk(
     conn: aiosqlite.Connection,
-    conversation_ids: Sequence[str],
+    session_ids: Sequence[str],
     records: Sequence[SessionPhaseRecord],
     transaction_depth: int,
 ) -> None:
-    has_legacy_payload = await _table_has_column(conn, "session_phases", "payload_json") if records else False
-    columns = session_phase_insert_columns(has_legacy_payload=has_legacy_payload)
+    has_fallback_payload = await _table_has_column(conn, "session_phases", "payload_json") if records else False
+    columns = session_phase_insert_columns(has_fallback_payload=has_fallback_payload)
     await replace_insight_rows(
         conn,
         table="session_phases",
-        id_column="conversation_id",
-        id_values=conversation_ids,
+        id_column="session_id",
+        id_values=session_ids,
         columns=columns,
         records=records,
-        extractor=lambda r: session_phase_insert_values(r, has_legacy_payload=has_legacy_payload),
+        extractor=lambda r: session_phase_insert_values(r, has_fallback_payload=has_fallback_payload),
         transaction_depth=transaction_depth,
     )

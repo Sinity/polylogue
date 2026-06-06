@@ -6,20 +6,20 @@ from collections.abc import Callable
 
 from polylogue.core.json import JSONDocument
 from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
-from polylogue.storage.sqlite.queries import conversations as conversations_q
+from polylogue.storage.sqlite.queries import sessions as sessions_q
 
 
 async def metadata_read_modify_write(
     backend: RepositoryBackendProtocol,
-    conversation_id: str,
+    session_id: str,
     mutator: Callable[[JSONDocument], bool],
 ) -> bool:
     async with backend.transaction(), backend.connection() as conn:
-        current = await conversations_q.get_metadata(conn, conversation_id)
+        current = await sessions_q.get_metadata(conn, session_id)
         if mutator(current):
-            await conversations_q.update_metadata_raw(
+            await sessions_q.update_metadata_raw(
                 conn,
-                conversation_id,
+                session_id,
                 current,
             )
             return True

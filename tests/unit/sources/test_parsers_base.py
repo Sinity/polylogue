@@ -191,6 +191,10 @@ def test_extract_messages_from_chat_messages_preserves_structured_segments_and_a
     )
     assert [block.type for block in messages[0].content_blocks] == ["thinking", "tool_result", "code"]
     assert messages[0].content_blocks[2].metadata == {"language": "python"}
+    assert [message.position for message in messages] == [0, 1]
+    assert [message.variant_index for message in messages] == [0, 0]
+    assert [message.is_active_path for message in messages] == [True, True]
+    assert [message.is_active_leaf for message in messages] == [False, True]
     assert len(attachments) == 1
     assert attachments[0].provider_attachment_id == "att-1"
     assert attachments[0].mime_type == "application/pdf"
@@ -216,6 +220,45 @@ def test_parse_ai_variants(conv_data: dict[str, object], expected: int | str, de
         assert len(result.messages) == expected, f"Failed {desc}"
     elif isinstance(expected, str):
         assert result.title == expected, f"Failed {desc}"
+
+
+def test_parse_ai_archive_contract_fields() -> None:
+    payload: dict[str, object] = {
+        "uuid": "conv-ai-v1",
+        "name": "Claude AI archive contract",
+        "created_at": "2025-01-01T00:00:00Z",
+        "updated_at": "2025-01-01T00:00:02Z",
+        "chat_messages": [
+            {
+                "uuid": "ai-user-1",
+                "sender": "human",
+                "text": "hello",
+                "created_at": "2025-01-01T00:00:01Z",
+            },
+            {
+                "uuid": "ai-assistant-1",
+                "sender": "assistant",
+                "text": "hello back",
+                "created_at": "2025-01-01T00:00:02Z",
+                "model": "claude-3-5-sonnet",
+                "effort": "standard",
+                "durationMs": 2500,
+            },
+        ],
+    }
+
+    result = parse_ai(payload, "fallback-id")
+
+    assert [message.position for message in result.messages] == [0, 1]
+    assert [message.variant_index for message in result.messages] == [0, 0]
+    assert [message.is_active_path for message in result.messages] == [True, True]
+    assert [message.is_active_leaf for message in result.messages] == [False, True]
+    assert result.active_leaf_message_provider_id == "ai-assistant-1"
+    assistant = result.messages[1]
+    assert assistant.model_name == "claude-3-5-sonnet"
+    assert assistant.model_effort == "standard"
+    assert assistant.duration_ms == 2500
+    assert assistant.occurred_at_ms == 1_735_689_602_000
 
 
 # PARSE CODE - CONSOLIDATED
@@ -247,6 +290,46 @@ def test_parse_code_variants(messages: list[object], expected: int | str, desc: 
         assert len(result.messages) == expected, f"Failed {desc}"
     elif result.messages:
         assert result.messages[0].role == expected, f"Failed {desc}"
+
+
+def test_parse_code_archive_contract_fields() -> None:
+    payload: list[object] = [
+        {
+            "type": "user",
+            "uuid": "code-user-1",
+            "sessionId": "code-session-1",
+            "timestamp": "2025-01-01T00:00:01Z",
+            "durationMs": 25,
+            "message": {"role": "user", "content": "hello"},
+        },
+        {
+            "type": "assistant",
+            "uuid": "code-assistant-1",
+            "sessionId": "code-session-1",
+            "timestamp": "2025-01-01T00:00:02Z",
+            "durationMs": 100,
+            "message": {
+                "role": "assistant",
+                "model": "claude-sonnet-4",
+                "effort": "high",
+                "content": [{"type": "text", "text": "hello back"}],
+            },
+        },
+    ]
+
+    result = parse_code(payload, "fallback-id")
+
+    assert [message.position for message in result.messages] == [0, 1]
+    assert [message.variant_index for message in result.messages] == [0, 0]
+    assert [message.is_active_path for message in result.messages] == [True, True]
+    assert [message.is_active_leaf for message in result.messages] == [False, True]
+    assert result.active_leaf_message_provider_id == "code-assistant-1"
+    assistant = result.messages[1]
+    assert assistant.model_name == "claude-sonnet-4"
+    assert assistant.model_effort == "high"
+    assert assistant.duration_ms == 100
+    assert result.provider_meta is not None
+    assert result.provider_meta["total_duration_ms"] == 125
 
 
 # =============================================================================
@@ -660,7 +743,7 @@ def test_seeded_messages_have_expected_role_and_text_shapes(seeded_db: Path, pro
         """
         SELECT m.message_id, m.role, m.text
         FROM messages m
-        JOIN conversations c ON m.conversation_id = c.conversation_id
+        JOIN sessions c ON m.session_id = c.session_id
         WHERE c.source_name = ?
         LIMIT 20
         """,
@@ -685,7 +768,7 @@ def test_seeded_claude_code_tool_use_blocks_have_names(seeded_db: Path) -> None:
         SELECT cb.type, cb.tool_name, cb.semantic_type
         FROM content_blocks cb
         JOIN messages m ON cb.message_id = m.message_id
-        JOIN conversations c ON m.conversation_id = c.conversation_id
+        JOIN sessions c ON m.session_id = c.session_id
         WHERE c.source_name = 'claude-code' AND cb.type = 'tool_use'
         LIMIT 100
         """
@@ -762,7 +845,7 @@ def test_claude_code_cost_usd_non_numeric_string() -> None:
         },
     ]
 
-    # Should not crash and should produce a valid ParsedConversation
+    # Should not crash and should produce a valid ParsedSession
     # The parser uses _safe_float() which returns 0.0 for non-numeric strings
     result = parse_code(payload, "test-session")
     assert result is not None
@@ -911,31 +994,31 @@ def test_parse_payload_recursion_depth_limit() -> None:
     """Test that deeply nested payloads don't cause stack overflow."""
     from polylogue.sources.dispatch import parse_payload
 
-    # Build a deeply nested payload with conversations key at depth > 10
+    # Build a deeply nested payload with sessions key at depth > 10
     # Start with depth 12 (exceeds MAX_PARSE_DEPTH=10)
     # Construct the deeply nested structure step by step
     payload = {
-        "conversations": [
+        "sessions": [
             {
-                "conversations": [
+                "sessions": [
                     {
-                        "conversations": [
+                        "sessions": [
                             {
-                                "conversations": [
+                                "sessions": [
                                     {
-                                        "conversations": [
+                                        "sessions": [
                                             {
-                                                "conversations": [
+                                                "sessions": [
                                                     {
-                                                        "conversations": [
+                                                        "sessions": [
                                                             {
-                                                                "conversations": [
+                                                                "sessions": [
                                                                     {
-                                                                        "conversations": [
+                                                                        "sessions": [
                                                                             {
-                                                                                "conversations": [
+                                                                                "sessions": [
                                                                                     {
-                                                                                        "conversations": [
+                                                                                        "sessions": [
                                                                                             {
                                                                                                 "id": "nested",
                                                                                                 "mapping": {},
@@ -964,10 +1047,10 @@ def test_parse_payload_recursion_depth_limit() -> None:
     }
 
     # Should return a list (not crash on deep recursion)
-    # The recursion limit prevents infinite loops but still returns an empty conversation
+    # The recursion limit prevents infinite loops but still returns an empty session
     result = parse_payload("chatgpt", payload, "test-deep")
     assert isinstance(result, list)
-    # Deep nesting with empty mapping produces no conversations or empty conversations
+    # Deep nesting with empty mapping produces no sessions or empty sessions
     assert all(len(c.messages) == 0 for c in result)
 
 
@@ -977,9 +1060,9 @@ def test_parse_payload_shallow_nesting_succeeds() -> None:
 
     # Build a nested payload at depth 5 (within MAX_PARSE_DEPTH=10)
     payload = {
-        "conversations": [
+        "sessions": [
             {
-                "conversations": [
+                "sessions": [
                     {
                         "mapping": {
                             "node1": {
@@ -1204,12 +1287,12 @@ def test_extract_file_changes_truncates_long_content() -> None:
         (
             {
                 "type": "summary",
-                "message": {"content": "Summary of the conversation so far..."},
+                "message": {"content": "Summary of the session so far..."},
                 "timestamp": 1704067200,
             },
             True,
         ),
-        ({"type": "summary", "message": {"content": [{"type": "text", "text": "Conversation summary here"}]}}, True),
+        ({"type": "summary", "message": {"content": [{"type": "text", "text": "Session summary here"}]}}, True),
         ({"type": "user", "message": {"content": "Hello"}}, False),
     ],
     ids=["summary-text", "summary-blocks", "non-summary"],
@@ -1248,7 +1331,7 @@ def test_parse_code_semantic_projection_contract() -> None:
         },
         {
             "type": "summary",
-            "message": {"content": "Summary of conversation"},
+            "message": {"content": "Summary of session"},
             "timestamp": 1704067201000,
         },
         {
@@ -1278,7 +1361,7 @@ def test_parse_code_semantic_projection_contract() -> None:
     first_types = [block.type for block in result.messages[0].content_blocks]
     assert "thinking" in first_types and "tool_use" in first_types
     assert result.messages[1].message_type.value == "summary"
-    assert result.messages[1].text == "Summary of conversation"
+    assert result.messages[1].text == "Summary of session"
     bash_blocks = [block for block in result.messages[2].content_blocks if block.tool_name == "Bash"]
     assert len(bash_blocks) == 1
     assert bash_blocks[0].tool_input is not None

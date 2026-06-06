@@ -9,9 +9,9 @@ from polylogue.types import Provider
 
 
 class ArtifactKind(StrEnum):
-    CONVERSATION_DOCUMENT = "conversation_document"
-    CONVERSATION_RECORD_STREAM = "conversation_record_stream"
-    SUBAGENT_CONVERSATION_STREAM = "subagent_conversation_stream"
+    SESSION_DOCUMENT = "session_document"
+    SESSION_RECORD_STREAM = "session_record_stream"
+    SUBAGENT_SESSION_STREAM = "subagent_session_stream"
     AGENT_SIDECAR_META = "agent_sidecar_meta"
     SESSION_INDEX = "session_index"
     BRIDGE_POINTER = "bridge_pointer"
@@ -26,7 +26,7 @@ class ArtifactClassification:
 
     provider: Provider
     kind: ArtifactKind
-    parse_as_conversation: bool
+    parse_as_session: bool
     schema_eligible: bool
     default_priority: int
     reason: str

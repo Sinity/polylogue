@@ -10,22 +10,14 @@ and ``polylogue/api/`` and asserts that none of them import from
 Allow-list:
 
 * ``polylogue/api/__init__.py`` — exposes ``Polylogue`` and must wire
-  ``ConversationRepository`` as a typed property (the API IS the
+  ``SessionRepository`` as a typed property (the API IS the
   archive seam).
-* ``polylogue/api/archive.py`` — declares a ``ConversationRepository``
+* ``polylogue/api/archive.py`` — declares a ``SessionRepository``
   type alias inside a ``TYPE_CHECKING`` block for the mixin protocol.
 * ``polylogue/api/ingest.py`` — typed property for ingest-path callers.
-* ``polylogue/api/user_state_resolver.py`` — accepts ``ConversationRepository``
-  as a typed parameter via TYPE_CHECKING for non-conversation/message
-  user-state target validation (#1113).
 * ``polylogue/cli/shared/types.py`` — typed property exposed to CLI
   commands that legitimately need the repository handle while the
-  remaining bypasses are migrated.
-* ``polylogue/mcp/server.py`` — the MCP server bootstraps the repository
-  injection seam.
-* ``polylogue/mcp/server_context_tools.py`` — casts the query store to
-  ``ConversationRepository`` for advanced read shapes not yet exposed
-  via ``ArchiveOperations`` (TYPE_CHECKING only).
+  remaining bypasses are moved.
 
 This list should shrink over time; do not add new entries without
 filing a follow-up issue.
@@ -51,11 +43,7 @@ ALLOWED: frozenset[Path] = frozenset(
         REPO_ROOT / "polylogue" / "api" / "__init__.py",
         REPO_ROOT / "polylogue" / "api" / "archive.py",
         REPO_ROOT / "polylogue" / "api" / "ingest.py",
-        REPO_ROOT / "polylogue" / "api" / "search_envelope_builder.py",
-        REPO_ROOT / "polylogue" / "api" / "user_state_resolver.py",
         REPO_ROOT / "polylogue" / "cli" / "shared" / "types.py",
-        REPO_ROOT / "polylogue" / "mcp" / "server.py",
-        REPO_ROOT / "polylogue" / "mcp" / "server_context_tools.py",
     }
 )
 
@@ -93,7 +81,7 @@ def test_surface_module_does_not_import_storage_repository(path: Path) -> None:
     relative = path.relative_to(REPO_ROOT)
     pytest.fail(
         f"{relative} imports from {FORBIDDEN_PREFIX}: {sorted(set(hits))}. "
-        "Route through polylogue.operations.ArchiveOperations or Polylogue facade "
+        "Route through the Polylogue facade "
         "instead, or add an explicit allow-list entry with a follow-up issue."
     )
 

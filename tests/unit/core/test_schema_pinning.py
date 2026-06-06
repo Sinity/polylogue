@@ -73,7 +73,7 @@ def test_apply_pins_marks_confirmed_nodes_and_suppresses_rejected_annotations() 
             },
             "anyOf": [
                 {
-                    "x-polylogue-semantic-role": "conversation_title",
+                    "x-polylogue-semantic-role": "session_title",
                 }
             ],
         },
@@ -84,7 +84,7 @@ def test_apply_pins_marks_confirmed_nodes_and_suppresses_rejected_annotations() 
             PinDecision(path=".role", role="message_role", action="confirm"),
             PinDecision(path=".body", role="message_body", action="reject"),
             PinDecision(path=".messages[]", role="message_container", action="confirm"),
-            PinDecision(path=".anyOf[0]", role="conversation_title", action="confirm"),
+            PinDecision(path=".anyOf[0]", role="session_title", action="confirm"),
         ],
     )
 

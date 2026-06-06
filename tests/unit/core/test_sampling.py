@@ -130,7 +130,7 @@ class TestLoadSamplesFromDb:
         from unittest.mock import patch
 
         fake_path = Path("/nonexistent/fake/db.db")
-        with patch("polylogue.schemas.sampling.archive_db_path", return_value=fake_path):
+        with patch("polylogue.schemas.sampling.index_db_path", return_value=fake_path):
             result = load_samples_from_db("chatgpt")
             assert result == []
 
@@ -142,7 +142,7 @@ class TestLoadSamplesFromDb:
             [
                 {
                     "uuid": "conv-1",
-                    "name": "Conversation",
+                    "name": "Session",
                     "summary": "Summary",
                     "created_at": "2026-01-01T00:00:00Z",
                     "updated_at": "2026-01-01T00:05:00Z",
@@ -160,7 +160,7 @@ class TestLoadSamplesFromDb:
         with open_connection(db) as conn:
             conn.execute(
                 """
-                INSERT INTO raw_conversations (
+                INSERT INTO raw_sessions (
                     raw_id, source_name, payload_provider, source_name, source_path,
                     source_index, blob_size, acquired_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -170,7 +170,7 @@ class TestLoadSamplesFromDb:
                     "claude-ai",
                     "claude-ai",
                     "claude-ai",
-                    "/tmp/conversations.json",
+                    "/tmp/sessions.json",
                     0,
                     blob_size,
                     datetime.now(tz=timezone.utc).isoformat(),
@@ -207,7 +207,7 @@ class TestLoadSamplesFromDb:
         with open_connection(db) as conn:
             conn.execute(
                 """
-                INSERT INTO raw_conversations (
+                INSERT INTO raw_sessions (
                     raw_id, source_name, payload_provider, source_name, source_path,
                     source_index, blob_size, acquired_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)

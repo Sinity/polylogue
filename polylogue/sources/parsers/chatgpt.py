@@ -6,7 +6,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.types import ContentBlockType, Provider
 
-from .base import ParsedAttachment, ParsedContentBlock, ParsedConversation, ParsedMessage
+from .base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 
 
 def _coerce_float(value: object) -> float | None:
@@ -26,18 +26,13 @@ def _coerce_float(value: object) -> float | None:
     return None
 
 
-def _resolve_active_path_ids(mapping: Mapping[str, object], current_node: str | None) -> list[str]:
-    """Resolve the node ids to emit, in order, from a ChatGPT message graph.
+def _active_path_node_ids(mapping: Mapping[str, object], current_node: str | None) -> list[str]:
+    """Return the active ChatGPT path from root to ``current_node``.
 
-    When ``current_node`` is present (every real ChatGPT export carries it), walk
-    parent pointers up from it — the active leaf the user last saw — to the root,
-    then reverse. Only this active path is emitted, so abandoned regeneration and
-    edit branches are not flattened into sibling messages (#1744).
-
-    When ``current_node`` is absent (synthetic fixtures, malformed exports), fall
-    back to the original all-nodes-in-insertion-order behavior. That path has no
-    way to know which branch was active, so preserving every node is the
-    lossless choice; downstream sorting by ``create_time`` still applies.
+    ChatGPT exports preserve regenerated and edited branches in ``mapping`` and
+    use ``current_node`` only to identify the leaf the user last saw. The v1
+    parser contract keeps every branch and carries the active path explicitly
+    instead of using it as a lossy filter (#1743).
     """
     if current_node and current_node in mapping:
         path: list[str] = []
@@ -51,7 +46,23 @@ def _resolve_active_path_ids(mapping: Mapping[str, object], current_node: str | 
         path.reverse()
         return path
 
-    return list(mapping.keys())
+    return []
+
+
+def _non_negative_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return int(value) if value >= 0 else None
+    if isinstance(value, str):
+        try:
+            parsed = int(value)
+        except ValueError:
+            return None
+        return parsed if parsed >= 0 else None
+    return None
 
 
 def _extract_content_text(content: Mapping[str, object]) -> str:
@@ -94,8 +105,10 @@ def extract_messages_from_mapping(
 ) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
     entries: list[tuple[float | None, int, ParsedMessage]] = []
     attachments: list[ParsedAttachment] = []
-    path_ids = _resolve_active_path_ids(mapping, current_node)
-    for idx, node_id in enumerate(path_ids, start=1):
+    active_path_ids = _active_path_node_ids(mapping, current_node)
+    active_path_id_set = set(active_path_ids)
+    emitted_by_node_id: dict[str, str] = {}
+    for idx, node_id in enumerate(mapping.keys(), start=1):
         node = mapping.get(node_id)
         if not isinstance(node, dict):
             continue
@@ -166,10 +179,15 @@ def extract_messages_from_mapping(
 
         # Build provider_meta with structured content_blocks
         meta: dict[str, object] = {"raw": msg}
+        model_slug: object = None
+        duration_raw: object = None
 
         # Extract message-level metadata from typed fields
         if isinstance(msg_metadata, dict):
             model_slug = msg_metadata.get("model_slug")
+            duration_raw = msg_metadata.get("durationMs")
+            if duration_raw is None:
+                duration_raw = msg_metadata.get("duration_ms")
             if model_slug:
                 meta["model"] = model_slug
             # Citations from web browsing
@@ -184,6 +202,8 @@ def extract_messages_from_mapping(
             user_context = msg_metadata.get("user_context_message_data")
             if isinstance(user_context, dict) and user_context:
                 meta["user_context"] = user_context
+        model_name = str(model_slug) if isinstance(model_slug, str) and model_slug else None
+        duration_ms = _non_negative_int(duration_raw)
 
         # Author name (identifies tools like dalle, browser, python)
         if isinstance(author, dict):
@@ -289,14 +309,32 @@ def extract_messages_from_mapping(
             timestamp=str(timestamp) if timestamp is not None else None,
             content_blocks=content_blocks,
             parent_message_provider_id=parent_message_provider_id,
+            position=idx - 1,
             branch_index=branch_index,
+            variant_index=branch_index,
+            is_active_path=node_id in active_path_id_set if active_path_ids else None,
             provider_meta=meta,
+            model_name=model_name,
+            duration_ms=duration_ms,
         )
+        emitted_by_node_id[node_id] = parsed.provider_message_id
         entries.append((_coerce_float(timestamp), idx, parsed))
     if any(value is not None for value, _, _ in entries):
         # Use explicit None check instead of `or` to handle zero/negative timestamps correctly
         entries.sort(key=lambda item: (item[0] is None, item[0] if item[0] is not None else 0.0, item[1]))
-    return ([entry[2] for entry in entries], attachments)
+    messages = [entry[2] for entry in entries]
+    active_leaf_message_provider_id = next(
+        (emitted_by_node_id[node_id] for node_id in reversed(active_path_ids) if node_id in emitted_by_node_id),
+        None,
+    )
+    if active_leaf_message_provider_id is not None:
+        messages = [
+            message.model_copy(
+                update={"is_active_leaf": message.provider_message_id == active_leaf_message_provider_id}
+            )
+            for message in messages
+        ]
+    return (messages, attachments)
 
 
 def looks_like(payload: object) -> bool:
@@ -305,7 +343,7 @@ def looks_like(payload: object) -> bool:
     return isinstance(payload.get("mapping"), dict)
 
 
-def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedConversation:
+def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     mapping = payload.get("mapping") or {}
     if not isinstance(mapping, dict):
         mapping = {}
@@ -315,7 +353,7 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedConversation
     title = payload.get("title") or payload.get("name") or fallback_id
     conv_id = payload.get("id") or payload.get("uuid") or payload.get("conversation_id")
 
-    # Build conversation-level provider_meta from rich fields
+    # Build session-level provider_meta from rich fields
     conv_meta: dict[str, object] = {}
     default_model = payload.get("default_model_slug")
     if isinstance(default_model, str) and default_model:
@@ -330,13 +368,17 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedConversation
     if isinstance(is_archived, bool) and is_archived:
         conv_meta["is_archived"] = True
 
-    return ParsedConversation(
+    return ParsedSession(
         source_name=Provider.CHATGPT,
-        provider_conversation_id=str(conv_id or fallback_id),
+        provider_session_id=str(conv_id or fallback_id),
         title=str(title),
         created_at=str(payload.get("create_time")) if payload.get("create_time") is not None else None,
         updated_at=str(payload.get("update_time")) if payload.get("update_time") is not None else None,
         messages=messages,
+        active_leaf_message_provider_id=next(
+            (message.provider_message_id for message in messages if message.is_active_leaf),
+            None,
+        ),
         attachments=attachments,
         provider_meta=conv_meta if conv_meta else None,
     )

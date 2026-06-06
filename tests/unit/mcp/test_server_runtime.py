@@ -8,55 +8,6 @@ from unittest.mock import MagicMock, patch
 from polylogue.mcp import server as server_module
 
 
-def test_server_repository_accessors_use_runtime_services() -> None:
-    repository = object()
-    backend = object()
-    services = SimpleNamespace(get_repository=lambda: repository, get_backend=lambda: backend, config="config")
-
-    with patch("polylogue.mcp.server._get_runtime_services", return_value=services):
-        assert server_module._get_repo() is repository
-        assert server_module._get_query_store() is repository
-        assert server_module._get_tag_store() is repository
-
-
-def test_get_backend_prefers_repository_backend_when_typed() -> None:
-    class DummyBackend:
-        pass
-
-    repo_backend = DummyBackend()
-    repository = SimpleNamespace(backend=repo_backend)
-    services = SimpleNamespace(get_backend=lambda: "fallback-backend")
-
-    with (
-        patch("polylogue.mcp.server.SQLiteBackend", DummyBackend),
-        patch("polylogue.mcp.server._get_repo", return_value=repository),
-        patch("polylogue.mcp.server._get_runtime_services", return_value=services),
-    ):
-        assert server_module._get_backend() is repo_backend
-
-    repository = SimpleNamespace(backend=object())
-    with (
-        patch("polylogue.mcp.server.SQLiteBackend", DummyBackend),
-        patch("polylogue.mcp.server._get_repo", return_value=repository),
-        patch("polylogue.mcp.server._get_runtime_services", return_value=services),
-    ):
-        assert server_module._get_backend() == "fallback-backend"
-
-
-def test_get_archive_ops_builds_from_runtime_services() -> None:
-    services = SimpleNamespace(config="config")
-
-    with (
-        patch("polylogue.mcp.server._get_runtime_services", return_value=services),
-        patch("polylogue.mcp.server._get_repo", return_value="repository"),
-        patch("polylogue.mcp.server._get_backend", return_value="backend"),
-        patch("polylogue.mcp.server.ArchiveOperations", return_value="archive-ops") as mock_ops,
-    ):
-        assert server_module._get_archive_ops() == "archive-ops"
-
-    mock_ops.assert_called_once_with(config="config", repository="repository", backend="backend")
-
-
 def test_build_server_registers_tools_resources_and_prompts() -> None:
     fake_mcp = MagicMock()
     fake_fast_mcp = MagicMock(return_value=fake_mcp)
@@ -74,7 +25,6 @@ def test_build_server_registers_tools_resources_and_prompts() -> None:
     hooks = mock_tools.call_args.args[1]
     assert callable(hooks.json_payload)
     assert callable(hooks.clamp_limit)
-    assert callable(hooks.get_archive_ops)
     mock_resources.assert_called_once_with(fake_mcp, hooks)
     mock_prompts.assert_called_once_with(fake_mcp, hooks)
 

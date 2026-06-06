@@ -1,0 +1,18 @@
+Usage: polylogue maintenance preview [OPTIONS]
+
+  Staleness inventory by model and scope. Read-only.
+
+  Shows per-model counts of stale/missing/orphan rows with typed
+  :class:`InvalidationReason` tags. Use before triggering ``polylogue
+  maintenance run`` so the operator knows what will be rebuilt and why. Models
+  with nothing stale produce explicit zero rows rather than being absent from
+  the output.
+
+Options:
+  --scope [derived|retrieval|archive_cleanup|backfill]
+                                  Limit preview to named scopes (derived,
+                                  retrieval, archive_cleanup, backfill).
+  --output-format [plain|json]    Output format.  [default: plain]
+  --shallow                       Skip the expensive full-verification path
+                                  (faster, slightly less accurate).
+  -h, --help                      Show this message and exit.

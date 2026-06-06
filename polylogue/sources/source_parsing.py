@@ -18,9 +18,9 @@ from . import decoders as _decoders
 from .cursor import _log_source_iteration_summary, _ParseContext, _record_cursor_failure
 from .decoders import _process_zip
 from .dispatch import GROUP_PROVIDERS as _GROUP_PROVIDERS
-from .emitter import _ConversationEmitter
+from .emitter import _SessionEmitter
 from .parsers import antigravity
-from .parsers.base import ParsedConversation, RawConversationData
+from .parsers.base import ParsedSession, RawSessionData
 from .source_walk import _setup_source_walk
 
 logger = get_logger(__name__)
@@ -28,36 +28,36 @@ _cursor.logger = logger
 _decoders.logger = logger
 
 
-def iter_source_conversations(
+def iter_source_sessions(
     source: Source,
     *,
     cursor_state: CursorStatePayload | None = None,
-) -> Iterable[ParsedConversation]:
-    """Iterate parsed conversations from one configured source."""
-    for _raw, conversation in iter_source_conversations_with_raw(
+) -> Iterable[ParsedSession]:
+    """Iterate parsed sessions from one configured source."""
+    for _raw, session in iter_source_sessions_with_raw(
         source,
         cursor_state=cursor_state,
         capture_raw=False,
     ):
-        yield conversation
+        yield session
 
 
-def iter_source_conversations_with_raw(
+def iter_source_sessions_with_raw(
     source: Source,
     *,
     cursor_state: CursorStatePayload | None = None,
     capture_raw: bool = True,
     known_mtimes: dict[str, str] | None = None,
-) -> Iterable[tuple[RawConversationData | None, ParsedConversation]]:
-    """Iterate parsed conversations with optional raw byte capture."""
+) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
+    """Iterate parsed sessions with optional raw byte capture."""
     if not source.path:
         return
 
     provider_hint = Provider.from_string(source.name)
-    if provider_hint is Provider.ANTIGRAVITY and (source.path / "conversations").is_dir():
+    if provider_hint is Provider.ANTIGRAVITY and (source.path / "sessions").is_dir():
         try:
-            for conversation in antigravity.iter_language_server_exports(source.path):
-                yield (None, conversation)
+            for session in antigravity.iter_language_server_exports(source.path):
+                yield (None, session)
         except antigravity.AntigravityBinaryUnavailableError as exc:
             # Benign: Antigravity is simply not installed. Fall back to the
             # brain-artifact walk at INFO — this is not data loss.
@@ -67,12 +67,12 @@ def iter_source_conversations_with_raw(
                 exc,
             )
         except antigravity.AntigravityPartialExportError as exc:
-            # Mid-export failure: some conversations were obtained before the
+            # Mid-export failure: some sessions were obtained before the
             # abort and the remainder is dropped. Surface obtained-vs-expected
             # loudly instead of conflating it with a benign fallback.
             logger.error(
                 "Antigravity language-server export of %s truncated mid-iteration: "
-                "obtained %d of %d conversations; %d lost before fallback: %s",
+                "obtained %d of %d sessions; %d lost before fallback: %s",
                 source.path,
                 exc.obtained,
                 exc.expected,
@@ -80,7 +80,7 @@ def iter_source_conversations_with_raw(
                 exc,
             )
         except antigravity.AntigravityExportError as exc:
-            # Connection/protocol failure before any conversation was obtained.
+            # Connection/protocol failure before any session was obtained.
             logger.warning(
                 "Antigravity language-server export failed for %s; falling back to parseable artifacts: %s",
                 source.path,
@@ -101,7 +101,7 @@ def iter_source_conversations_with_raw(
     for path, file_mtime in walk.paths_to_process:
         try:
             path_classification = classify_artifact_path(path, provider=source.name)
-            if path_classification is not None and not path_classification.parse_as_conversation:
+            if path_classification is not None and not path_classification.parse_as_session:
                 continue
             should_group = provider_hint in _GROUP_PROVIDERS
 
@@ -124,11 +124,11 @@ def iter_source_conversations_with_raw(
                     capture_raw=capture_raw,
                     sidecar_data=walk.sidecar_data,
                 )
-                emitter = _ConversationEmitter(ctx)
+                emitter = _SessionEmitter(ctx)
 
                 if capture_raw and should_group:
                     blob_hash, blob_size = get_blob_store().write_from_path(path)
-                    raw_data = RawConversationData(
+                    raw_data = RawSessionData(
                         raw_bytes=b"",
                         source_path=str(path),
                         source_index=None,
@@ -173,6 +173,6 @@ def iter_source_conversations_with_raw(
 
 
 __all__ = [
-    "iter_source_conversations",
-    "iter_source_conversations_with_raw",
+    "iter_source_sessions",
+    "iter_source_sessions_with_raw",
 ]

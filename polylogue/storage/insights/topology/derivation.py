@@ -1,7 +1,7 @@
 """Derive ``SessionTopology`` from the canonical archive tables.
 
 This module is the single source of truth for how the topology read model
-is built. The async derivation walks from the requested conversation up
+is built. The async derivation walks from the requested session up
 to the topology root (cycle-safe), then performs a BFS over resolved
 children to enumerate the rooted subtree, classifying every visited
 edge and recording unresolved native-parent pointers found in
@@ -24,31 +24,31 @@ from polylogue.insights.topology import (
     TopologyEdgeKind,
     TopologyNode,
 )
-from polylogue.storage.query_models import ConversationRecordQuery
-from polylogue.storage.runtime import ConversationRecord
-from polylogue.types import ConversationId
+from polylogue.storage.query_models import SessionRecordQuery
+from polylogue.storage.runtime import SessionRecord
+from polylogue.types import SessionId
 
-# Field names inside ``conversations.provider_meta`` that have been
+# Field names inside ``sessions.provider_meta`` that have been
 # observed to carry a provider-native parent identifier. The topology
 # derivation treats a non-empty value at any of these keys as evidence
-# of an unresolved native edge when the conversation has no resolved
-# ``parent_conversation_id``.
+# of an unresolved native edge when the session has no resolved
+# ``parent_session_id``.
 UNRESOLVED_NATIVE_PARENT_KEYS: tuple[str, ...] = (
     "parent_session_id",
     "parentSessionId",
-    "parent_conversation_id",
-    "parentConversationId",
+    "parent_session_id",
+    "parentSessionId",
     "parent_id",
     "parentId",
 )
 
 
-class _ConversationQuerySource(Protocol):
+class _SessionQuerySource(Protocol):
     """Subset of the query-store surface needed by the derivation."""
 
-    async def get_conversation(self, conversation_id: str) -> ConversationRecord | None: ...
+    async def get_session(self, session_id: str) -> SessionRecord | None: ...
 
-    async def list_conversations(self, request: ConversationRecordQuery) -> list[ConversationRecord]: ...
+    async def list_sessions(self, request: SessionRecordQuery) -> list[SessionRecord]: ...
 
 
 def _extract_native_parent_id(provider_meta: dict[str, object] | None) -> str | None:
@@ -61,13 +61,13 @@ def _extract_native_parent_id(provider_meta: dict[str, object] | None) -> str | 
     return None
 
 
-def _edge_kind(record: ConversationRecord) -> TopologyEdgeKind:
+def _edge_kind(record: SessionRecord) -> TopologyEdgeKind:
     return TopologyEdgeKind.from_branch_type(record.branch_type)
 
 
-def _node_from_record(record: ConversationRecord, *, depth: int, is_root: bool) -> TopologyNode:
+def _node_from_record(record: SessionRecord, *, depth: int, is_root: bool) -> TopologyNode:
     return TopologyNode(
-        conversation_id=ConversationId(str(record.conversation_id)),
+        session_id=SessionId(str(record.session_id)),
         source_name=record.source_name,
         title=record.title,
         depth=depth,
@@ -75,26 +75,26 @@ def _node_from_record(record: ConversationRecord, *, depth: int, is_root: bool) 
     )
 
 
-def _resolved_edge(record: ConversationRecord) -> TopologyEdge | None:
-    if record.parent_conversation_id is None:
+def _resolved_edge(record: SessionRecord) -> TopologyEdge | None:
+    if record.parent_session_id is None:
         return None
     return TopologyEdge(
-        child_id=ConversationId(str(record.conversation_id)),
-        parent_id=ConversationId(str(record.parent_conversation_id)),
+        child_id=SessionId(str(record.session_id)),
+        parent_id=SessionId(str(record.parent_session_id)),
         kind=_edge_kind(record),
         resolved=True,
     )
 
 
-def _unresolved_edge(record: ConversationRecord) -> TopologyEdge | None:
+def _unresolved_edge(record: SessionRecord) -> TopologyEdge | None:
     """Return an unresolved native-pointer edge for ``record`` if any.
 
-    We only flag an unresolved edge when the conversation has no resolved
+    We only flag an unresolved edge when the session has no resolved
     parent: a resolved parent always supersedes a native pointer in the
     canonical read model.
     """
 
-    if record.parent_conversation_id is not None:
+    if record.parent_session_id is not None:
         return None
     native_id = _extract_native_parent_id(record.provider_meta)
     if native_id is None:
@@ -108,7 +108,7 @@ def _unresolved_edge(record: ConversationRecord) -> TopologyEdge | None:
         else TopologyEdgeKind.UNRESOLVED_NATIVE
     )
     return TopologyEdge(
-        child_id=ConversationId(str(record.conversation_id)),
+        child_id=SessionId(str(record.session_id)),
         parent_id=None,
         parent_native_id=native_id,
         kind=kind,
@@ -117,25 +117,25 @@ def _unresolved_edge(record: ConversationRecord) -> TopologyEdge | None:
 
 
 async def _walk_to_root(
-    source: _ConversationQuerySource,
-    start: ConversationRecord,
-) -> tuple[ConversationRecord, bool]:
+    source: _SessionQuerySource,
+    start: SessionRecord,
+) -> tuple[SessionRecord, bool]:
     """Walk parent pointers from ``start`` to the topology root.
 
     Returns the root record plus ``cycle_detected``. A cycle is signaled
-    when the walk revisits an already-seen conversation; in that case
+    when the walk revisits an already-seen session; in that case
     the function returns the last unique record reached.
     """
 
-    seen: set[str] = {str(start.conversation_id)}
+    seen: set[str] = {str(start.session_id)}
     current = start
     cycle = False
-    while current.parent_conversation_id is not None:
-        parent_id = str(current.parent_conversation_id)
+    while current.parent_session_id is not None:
+        parent_id = str(current.parent_session_id)
         if parent_id in seen:
             cycle = True
             break
-        parent = await source.get_conversation(parent_id)
+        parent = await source.get_session(parent_id)
         if parent is None:
             # Parent is referenced but not present — topology root for
             # the resolved subtree is ``current``. The dangling pointer
@@ -148,15 +148,15 @@ async def _walk_to_root(
 
 
 async def derive_session_topology_async(
-    source: _ConversationQuerySource,
-    conversation_id: str,
+    source: _SessionQuerySource,
+    session_id: str,
 ) -> SessionTopology | None:
-    """Derive ``SessionTopology`` for ``conversation_id``.
+    """Derive ``SessionTopology`` for ``session_id``.
 
-    Returns ``None`` if the conversation does not exist.
+    Returns ``None`` if the session does not exist.
     """
 
-    target = await source.get_conversation(conversation_id)
+    target = await source.get_session(session_id)
     if target is None:
         return None
 
@@ -165,11 +165,11 @@ async def derive_session_topology_async(
     nodes: list[TopologyNode] = []
     edges: list[TopologyEdge] = []
     seen_nodes: set[str] = set()
-    queue: list[tuple[ConversationRecord, int]] = [(root, 0)]
+    queue: list[tuple[SessionRecord, int]] = [(root, 0)]
 
     while queue:
         record, depth = queue.pop(0)
-        record_id = str(record.conversation_id)
+        record_id = str(record.session_id)
         if record_id in seen_nodes:
             # BFS guard — a cycle in the descendant graph is the same
             # structural failure mode as the ancestry one; surface it
@@ -177,7 +177,7 @@ async def derive_session_topology_async(
             cycle = True
             continue
         seen_nodes.add(record_id)
-        nodes.append(_node_from_record(record, depth=depth, is_root=record_id == str(root.conversation_id)))
+        nodes.append(_node_from_record(record, depth=depth, is_root=record_id == str(root.session_id)))
 
         resolved = _resolved_edge(record)
         if resolved is not None:
@@ -186,13 +186,13 @@ async def derive_session_topology_async(
         if unresolved is not None:
             edges.append(unresolved)
 
-        children = await source.list_conversations(ConversationRecordQuery(parent_id=record_id))
+        children = await source.list_sessions(SessionRecordQuery(parent_id=record_id))
         for child in children:
             queue.append((child, depth + 1))
 
     return SessionTopology(
-        target_id=ConversationId(str(target.conversation_id)),
-        root_id=ConversationId(str(root.conversation_id)),
+        target_id=SessionId(str(target.session_id)),
+        root_id=SessionId(str(root.session_id)),
         nodes=tuple(nodes),
         edges=tuple(edges),
         cycle_detected=cycle,
@@ -200,30 +200,30 @@ async def derive_session_topology_async(
 
 
 # A pure-Python sync derivation is exposed for tests and offline tools
-# that operate on a sequence of ``ConversationRecord`` objects without a
+# that operate on a sequence of ``SessionRecord`` objects without a
 # query-store. The async path above is the production entry point.
 
-_SyncFetcher = Callable[[str], ConversationRecord | None]
-_SyncChildrenFetcher = Callable[[str], list[ConversationRecord]]
+_SyncFetcher = Callable[[str], SessionRecord | None]
+_SyncChildrenFetcher = Callable[[str], list[SessionRecord]]
 
 
 def derive_session_topology_sync(
-    conversation_id: str,
+    session_id: str,
     *,
     fetch: _SyncFetcher,
     fetch_children: _SyncChildrenFetcher,
 ) -> SessionTopology | None:
     """Sync variant of :func:`derive_session_topology_async`."""
 
-    target = fetch(conversation_id)
+    target = fetch(session_id)
     if target is None:
         return None
 
-    seen_ancestors: set[str] = {str(target.conversation_id)}
+    seen_ancestors: set[str] = {str(target.session_id)}
     current = target
     cycle = False
-    while current.parent_conversation_id is not None:
-        parent_id = str(current.parent_conversation_id)
+    while current.parent_session_id is not None:
+        parent_id = str(current.parent_session_id)
         if parent_id in seen_ancestors:
             cycle = True
             break
@@ -236,12 +236,12 @@ def derive_session_topology_sync(
     nodes: list[TopologyNode] = []
     edges: list[TopologyEdge] = []
     seen_nodes: set[str] = set()
-    queue: list[tuple[ConversationRecord, int]] = [(current, 0)]
-    root_id = str(current.conversation_id)
+    queue: list[tuple[SessionRecord, int]] = [(current, 0)]
+    root_id = str(current.session_id)
 
     while queue:
         record, depth = queue.pop(0)
-        record_id = str(record.conversation_id)
+        record_id = str(record.session_id)
         if record_id in seen_nodes:
             cycle = True
             continue
@@ -259,8 +259,8 @@ def derive_session_topology_sync(
             queue.append((child, depth + 1))
 
     return SessionTopology(
-        target_id=ConversationId(str(target.conversation_id)),
-        root_id=ConversationId(root_id),
+        target_id=SessionId(str(target.session_id)),
+        root_id=SessionId(root_id),
         nodes=tuple(nodes),
         edges=tuple(edges),
         cycle_detected=cycle,

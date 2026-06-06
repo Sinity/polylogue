@@ -2,13 +2,13 @@
 
 Polylogue: your AI memory.
 
-A local archive that remembers every AI conversation so you can find, trace,
+A local archive that remembers every AI session so you can find, trace,
 and understand your AI-assisted work across days, months, and years.
 
 ## One-Line Description
 
-Polylogue records every AI conversation, makes it searchable, and surfaces
-patterns you didn't know were there — all from a single SQLite file on your
+Polylogue records every AI session, makes it searchable, and surfaces
+patterns you didn't know were there — all from a local SQLite archive on your
 machine.
 
 ## First Experience
@@ -21,7 +21,7 @@ The user installs polylogue, runs it with no arguments, and sees:
 $ polylogue
 
 Polylogue — your AI memory
-Archive: /home/user/.local/share/polylogue/polylogue.db
+Archive: /home/user/.local/share/polylogue/
 Sources configured: 1  (1 active, 0 stale)
 Last ingestion: 2 minutes ago
 
@@ -47,16 +47,16 @@ handful of indexed `COUNT` and `SUM` queries.
 ### 5 minutes: first search
 
 ```
-$ polylogue "schema migration"
-  claude-code:abc123  2026-03-10  Schema is fresh-only, no migration chain
-  claude-code:def456  2026-03-15  Considered v3→v4 migration, rejected
+$ polylogue "schema rebuild"
+  claude-code:abc123  2026-03-10  Schema is fresh-only, no in-place upgrade chain
+  claude-code:def456  2026-03-15  Considered v3->v4 rebuild, accepted
   claude-code:ghi789  2026-04-02  FTS rowid repair — schema impact
   3 results (23ms)
 ```
 
 The user searches for a concept they remember discussing. Results appear
 instantly. Clicking any result (in the web UI) or running `polylogue show`
-(in the CLI) opens the full conversation.
+(in the CLI) opens the full session.
 
 ### 15 minutes: first insight
 
@@ -154,7 +154,7 @@ their repos. The SessionStart hook now injects:
 ```
 [Project Memory — polylogue]
 Recent decisions (3):
-- Schema is fresh-only, no migration chain (2026-03-10, 55 days ago)
+- Schema is fresh-only, no in-place upgrade chain (2026-03-10, 55 days ago)
 - Content hash excludes user metadata (2026-03-15, 50 days ago)
 - FTS5 tokenizer is unicode61, no porter stemmer (2026-03-20, 45 days ago)
 ```
@@ -228,7 +228,7 @@ Every number in polylogue has provenance. The user should never wonder
 "where did that come from?"
 
 - **Content hashing**: archive writes are idempotent by SHA-256. If a
-  conversation was ingested, its content hasn't been silently modified.
+  session was ingested, its content hasn't been silently modified.
 - **Verification dashboard**: `polylogue check` audits the archive for
   integrity — schema consistency, foreign key violations, orphan records,
   FTS5 index health.
@@ -264,8 +264,8 @@ presentation, not capability.
 | Feature | CLI | MCP | Web |
 |---------|-----|-----|-----|
 | Search | `polylogue "query"` | `polylogue_search` | Search bar |
-| List conversations | `polylogue list --since ...` | `polylogue_list_conversations` | Conversation list |
-| Show conversation | `polylogue show <id>` | `polylogue_get_conversation` | Conversation detail page |
+| List sessions | `polylogue list --since ...` | `polylogue_list_sessions` | Session list |
+| Show session | `polylogue show <id>` | `polylogue_get_session` | Session detail page |
 | Stats | `polylogue stats` | `polylogue_get_stats` | Dashboard stats panel |
 | Cost | `polylogue cost` | `polylogue_get_cost` | Dashboard cost panel |
 | Calendar heatmap | `polylogue calendar` | `polylogue_calendar` | Calendar page |
@@ -277,7 +277,7 @@ presentation, not capability.
 | Refactor story | `polylogue story refactor` | `polylogue_story_refactor` | Story page |
 | AI journey | `polylogue story ai-journey` | `polylogue_story_ai_journey` | Story page |
 | Project memory | `polylogue memory` | `polylogue_get_project_memory` | Memory page |
-| Tags | `polylogue tags` | `polylogue_tag_conversation` | Tag editor |
+| Tags | `polylogue tags` | `polylogue_tag_session` | Tag editor |
 | Health check | `polylogue check` | `polylogue_health` | Health dashboard |
 | MCP server | `polylogue mcp` | (self) | — |
 | Daemon | `polylogued` | `polylogue_shutdown` | Daemon status |
@@ -294,10 +294,10 @@ different presentations.
   usage; CLAUDE.md provides instructions *for* AI usage.
 - Not a project management tool. Polylogue surfaces work that happened; it
   does not plan work that should happen.
-- Not a code search engine. FTS5 indexes conversation text, not code
-  repositories. Cross-reference between conversations and code is via
+- Not a code search engine. FTS5 indexes session text, not code
+  repositories. Cross-reference between sessions and code is via
   `action_events.affected_paths`, not via code indexing.
-- Not a general note-taking tool. Polylogue is for AI conversations
+- Not a general note-taking tool. Polylogue is for AI sessions
   specifically. General notes, todos, and documentation belong in a
   knowledgebase, not in the archive.
 

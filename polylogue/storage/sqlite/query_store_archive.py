@@ -9,26 +9,26 @@ from typing import TYPE_CHECKING
 import aiosqlite
 
 from polylogue.archive.message.roles import MessageRoleFilter
-from polylogue.storage.query_models import ConversationRecordQuery
+from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.runtime import (
     AttachmentRecord,
     ContentBlockRecord,
-    ConversationRecord,
     MessageRecord,
     ProviderEventRecord,
+    SessionRecord,
 )
-from polylogue.storage.search.models import ConversationSearchEvidenceRow, ConversationSearchResult
+from polylogue.storage.search.models import SessionSearchEvidenceRow, SessionSearchResult
 from polylogue.storage.sqlite.queries import attachments as attachments_q
-from polylogue.storage.sqlite.queries import conversations as conversations_q
 from polylogue.storage.sqlite.queries import messages as messages_q
 from polylogue.storage.sqlite.queries import provider_events as provider_events_q
+from polylogue.storage.sqlite.queries import sessions as sessions_q
 from polylogue.storage.sqlite.queries import stats as stats_q
 from polylogue.storage.sqlite.queries import tool_usage as tool_usage_q
 from polylogue.storage.sqlite.queries.messages import MessageTypeName
 from polylogue.storage.sqlite.queries.stats import (
     AggregateMessageStats,
-    ProviderConversationCountRow,
     ProviderMetricsRow,
+    ProviderSessionCountRow,
 )
 from polylogue.storage.sqlite.queries.tool_usage import (
     ToolUsageProviderCoverageRow,
@@ -49,69 +49,69 @@ class SQLiteQueryStoreArchiveMixin:
     if TYPE_CHECKING:
         _connection_factory: Callable[[], AbstractAsyncContextManager[aiosqlite.Connection]]
 
-    async def get_conversation(self, conversation_id: str) -> ConversationRecord | None:
+    async def get_session(self, session_id: str) -> SessionRecord | None:
         async with self._connection_factory() as conn:
-            return await conversations_q.get_conversation(conn, conversation_id)
+            return await sessions_q.get_session(conn, session_id)
 
-    async def get_conversations_batch(self, ids: list[str]) -> list[ConversationRecord]:
+    async def get_sessions_batch(self, ids: list[str]) -> list[SessionRecord]:
         async with self._connection_factory() as conn:
-            return await conversations_q.get_conversations_batch(conn, ids)
+            return await sessions_q.get_sessions_batch(conn, ids)
 
-    async def list_conversations(
+    async def list_sessions(
         self,
-        request: ConversationRecordQuery,
-    ) -> list[ConversationRecord]:
+        request: SessionRecordQuery,
+    ) -> list[SessionRecord]:
         async with self._connection_factory() as conn:
-            return await conversations_q.list_conversations(conn, **request.to_list_kwargs())
+            return await sessions_q.list_sessions(conn, **request.to_list_kwargs())
 
-    async def list_conversation_summaries(
+    async def list_session_summaries(
         self,
-        request: ConversationRecordQuery,
-    ) -> list[ConversationRecord]:
+        request: SessionRecordQuery,
+    ) -> list[SessionRecord]:
         async with self._connection_factory() as conn:
-            return await conversations_q.list_conversation_summaries(conn, **request.to_list_kwargs())
+            return await sessions_q.list_session_summaries(conn, **request.to_list_kwargs())
 
-    async def count_conversations(
+    async def count_sessions(
         self,
-        request: ConversationRecordQuery,
+        request: SessionRecordQuery,
     ) -> int:
         async with self._connection_factory() as conn:
-            return await conversations_q.count_conversations(conn, **request.to_count_kwargs())
+            return await sessions_q.count_sessions(conn, **request.to_count_kwargs())
 
-    async def conversation_exists_by_hash(self, content_hash: str) -> bool:
+    async def session_exists_by_hash(self, content_hash: str) -> bool:
         async with self._connection_factory() as conn:
-            return await conversations_q.conversation_exists_by_hash(conn, content_hash)
+            return await sessions_q.session_exists_by_hash(conn, content_hash)
 
     async def resolve_id(self, id_prefix: str, *, strict: bool = False) -> str | None:
         async with self._connection_factory() as conn:
-            return await conversations_q.resolve_id(conn, id_prefix, strict=strict)
+            return await sessions_q.resolve_id(conn, id_prefix, strict=strict)
 
-    async def search_conversations(self, query: str, limit: int = 100, providers: list[str] | None = None) -> list[str]:
-        return (await self.search_conversation_hits(query, limit=limit, providers=providers)).conversation_ids()
+    async def search_sessions(self, query: str, limit: int = 100, providers: list[str] | None = None) -> list[str]:
+        return (await self.search_session_hits(query, limit=limit, providers=providers)).session_ids()
 
-    async def search_action_conversations(
+    async def search_action_sessions(
         self, query: str, limit: int = 100, providers: list[str] | None = None
     ) -> list[str]:
-        return (await self.search_action_conversation_hits(query, limit=limit, providers=providers)).conversation_ids()
+        return (await self.search_action_session_hits(query, limit=limit, providers=providers)).session_ids()
 
-    async def search_conversation_hits(
+    async def search_session_hits(
         self,
         query: str,
         limit: int = 100,
         providers: list[str] | None = None,
-    ) -> ConversationSearchResult:
+    ) -> SessionSearchResult:
         async with self._connection_factory() as conn:
-            return await conversations_q.search_conversation_hits(conn, query, limit, providers)
+            return await sessions_q.search_session_hits(conn, query, limit, providers)
 
-    async def search_conversation_evidence_hits(
+    async def search_session_evidence_hits(
         self,
         query: str,
         limit: int = 100,
         providers: list[str] | None = None,
         since: str | None = None,
-    ) -> list[ConversationSearchEvidenceRow]:
+    ) -> list[SessionSearchEvidenceRow]:
         async with self._connection_factory() as conn:
-            return await conversations_q.search_conversation_evidence_hits(conn, query, limit, providers, since)
+            return await sessions_q.search_session_evidence_hits(conn, query, limit, providers, since)
 
     async def search_attachment_identity_evidence_hits(
         self,
@@ -119,22 +119,22 @@ class SQLiteQueryStoreArchiveMixin:
         limit: int = 100,
         providers: list[str] | None = None,
         since: str | None = None,
-    ) -> list[ConversationSearchEvidenceRow]:
+    ) -> list[SessionSearchEvidenceRow]:
         async with self._connection_factory() as conn:
             return await attachments_q.search_attachment_identity_evidence_hits(conn, query, limit, providers, since)
 
-    async def search_action_conversation_hits(
+    async def search_action_session_hits(
         self,
         query: str,
         limit: int = 100,
         providers: list[str] | None = None,
-    ) -> ConversationSearchResult:
+    ) -> SessionSearchResult:
         async with self._connection_factory() as conn:
-            return await conversations_q.search_action_conversation_hits(conn, query, limit, providers)
+            return await sessions_q.search_action_session_hits(conn, query, limit, providers)
 
-    async def get_messages(self, conversation_id: str) -> list[MessageRecord]:
+    async def get_messages(self, session_id: str) -> list[MessageRecord]:
         async with self._connection_factory() as conn:
-            messages = await messages_q.get_messages(conn, conversation_id)
+            messages = await messages_q.get_messages(conn, session_id)
         if not messages:
             return []
         blocks_by_message = await self.get_content_blocks([message.message_id for message in messages])
@@ -148,7 +148,7 @@ class SQLiteQueryStoreArchiveMixin:
 
     async def get_messages_paginated(
         self,
-        conversation_id: str,
+        session_id: str,
         *,
         message_role: MessageRoleFilter = (),
         message_type: MessageTypeName | None = None,
@@ -158,7 +158,7 @@ class SQLiteQueryStoreArchiveMixin:
         async with self._connection_factory() as conn:
             messages, total = await messages_q.get_messages_paginated(
                 conn,
-                conversation_id,
+                session_id,
                 message_role=message_role,
                 message_type=message_type,
                 limit=limit,
@@ -174,18 +174,18 @@ class SQLiteQueryStoreArchiveMixin:
 
     async def get_messages_batch(
         self,
-        conversation_ids: list[str],
+        session_ids: list[str],
         *,
         sort_key_since: float | None = None,
         sort_key_until: float | None = None,
         message_role: MessageRoleFilter = (),
     ) -> dict[str, list[MessageRecord]]:
-        if not conversation_ids:
+        if not session_ids:
             return {}
         async with self._connection_factory() as conn:
             result, all_messages = await messages_q.get_messages_batch(
                 conn,
-                conversation_ids,
+                session_ids,
                 sort_key_since=sort_key_since,
                 sort_key_until=sort_key_until,
                 message_role=message_role,
@@ -202,31 +202,31 @@ class SQLiteQueryStoreArchiveMixin:
         async with self._connection_factory() as conn:
             return await attachments_q.get_content_blocks(conn, message_ids)
 
-    async def get_attachments(self, conversation_id: str) -> list[AttachmentRecord]:
+    async def get_attachments(self, session_id: str) -> list[AttachmentRecord]:
         async with self._connection_factory() as conn:
-            return await attachments_q.get_attachments(conn, conversation_id)
+            return await attachments_q.get_attachments(conn, session_id)
 
     async def get_attachments_batch(
         self,
-        conversation_ids: list[str],
+        session_ids: list[str],
     ) -> dict[str, list[AttachmentRecord]]:
         async with self._connection_factory() as conn:
-            return await attachments_q.get_attachments_batch(conn, conversation_ids)
+            return await attachments_q.get_attachments_batch(conn, session_ids)
 
-    async def get_provider_events(self, conversation_id: str) -> list[ProviderEventRecord]:
+    async def get_provider_events(self, session_id: str) -> list[ProviderEventRecord]:
         async with self._connection_factory() as conn:
-            return await provider_events_q.get_provider_events(conn, conversation_id)
+            return await provider_events_q.get_provider_events(conn, session_id)
 
     async def get_provider_events_batch(
         self,
-        conversation_ids: list[str],
+        session_ids: list[str],
     ) -> dict[str, list[ProviderEventRecord]]:
         async with self._connection_factory() as conn:
-            return await provider_events_q.get_provider_events_batch(conn, conversation_ids)
+            return await provider_events_q.get_provider_events_batch(conn, session_ids)
 
     async def iter_messages(
         self,
-        conversation_id: str,
+        session_id: str,
         *,
         dialogue_only: bool = False,
         message_roles: MessageRoleFilter = (),
@@ -235,32 +235,32 @@ class SQLiteQueryStoreArchiveMixin:
         async with self._connection_factory() as conn:
             async for record in messages_q.iter_messages(
                 conn,
-                conversation_id,
+                session_id,
                 dialogue_only=dialogue_only,
                 message_roles=message_roles,
                 limit=limit,
             ):
                 yield record
 
-    async def get_conversation_stats(self, conversation_id: str) -> dict[str, int]:
+    async def get_session_stats(self, session_id: str) -> dict[str, int]:
         async with self._connection_factory() as conn:
-            return await messages_q.get_conversation_stats(conn, conversation_id)
+            return await messages_q.get_session_stats(conn, session_id)
 
-    async def get_message_counts_batch(self, conversation_ids: list[str]) -> dict[str, int]:
+    async def get_message_counts_batch(self, session_ids: list[str]) -> dict[str, int]:
         async with self._connection_factory() as conn:
-            return await messages_q.get_message_counts_batch(conn, conversation_ids)
+            return await messages_q.get_message_counts_batch(conn, session_ids)
 
-    async def aggregate_message_stats(self, conversation_ids: list[str] | None = None) -> AggregateMessageStats:
+    async def aggregate_message_stats(self, session_ids: list[str] | None = None) -> AggregateMessageStats:
         async with self._connection_factory() as conn:
-            return await stats_q.aggregate_message_stats(conn, conversation_ids)
+            return await stats_q.aggregate_message_stats(conn, session_ids)
 
     async def get_stats_by(self, group_by: str = "provider") -> dict[str, int]:
         async with self._connection_factory() as conn:
             return await stats_q.get_stats_by(conn, group_by)
 
-    async def get_provider_conversation_counts(self) -> list[ProviderConversationCountRow]:
+    async def get_provider_session_counts(self) -> list[ProviderSessionCountRow]:
         async with self._connection_factory() as conn:
-            return await stats_q.get_provider_conversation_counts(conn)
+            return await stats_q.get_provider_session_counts(conn)
 
     async def get_provider_metrics_rows(self) -> list[ProviderMetricsRow]:
         async with self._connection_factory() as conn:
@@ -278,31 +278,29 @@ class SQLiteQueryStoreArchiveMixin:
 
     async def get_last_sync_timestamp(self) -> str | None:
         async with self._connection_factory() as conn:
-            return await conversations_q.get_last_sync_timestamp(conn)
+            return await sessions_q.get_last_sync_timestamp(conn)
 
-    def conversation_id_query(
+    def session_id_query(
         self,
         *,
         source_names: list[str] | None = None,
     ) -> tuple[str, tuple[str, ...]]:
-        return conversations_q.conversation_id_query(source_names=source_names)
+        return sessions_q.session_id_query(source_names=source_names)
 
-    async def count_conversation_ids(
+    async def count_session_ids(
         self,
         *,
         source_names: list[str] | None = None,
     ) -> int:
         async with self._connection_factory() as conn:
-            return await conversations_q.count_conversation_ids(conn, source_names=source_names)
+            return await sessions_q.count_session_ids(conn, source_names=source_names)
 
-    async def iter_conversation_ids(
+    async def iter_session_ids(
         self,
         *,
         source_names: list[str] | None = None,
         page_size: int = 1000,
     ) -> AsyncIterator[str]:
         async with self._connection_factory() as conn:
-            async for conversation_id in conversations_q.iter_conversation_ids(
-                conn, source_names=source_names, page_size=page_size
-            ):
-                yield conversation_id
+            async for session_id in sessions_q.iter_session_ids(conn, source_names=source_names, page_size=page_size):
+                yield session_id

@@ -50,7 +50,7 @@ def _init_work_events_table(db_path: str) -> None:
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS session_work_events (
             event_id TEXT PRIMARY KEY,
-            conversation_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
             materializer_version INTEGER NOT NULL DEFAULT 5,
             materialized_at TEXT NOT NULL,
             source_updated_at TEXT,
@@ -80,7 +80,7 @@ def _init_work_events_table(db_path: str) -> None:
 
         CREATE TABLE IF NOT EXISTS messages (
             message_id TEXT,
-            conversation_id TEXT,
+            session_id TEXT,
             role TEXT,
             text TEXT,
             sort_key REAL
@@ -134,7 +134,7 @@ def _insert_work_event(
     db_path: str,
     *,
     event_id: str = "we-1",
-    conversation_id: str = "session-1",
+    session_id: str = "session-1",
     heuristic_label: str = "tool_use",
     start_time: str = "2024-01-15T10:00:00",
     end_time: str = "2024-01-15T10:00:01",
@@ -146,7 +146,7 @@ def _insert_work_event(
     conn.execute(
         """
         INSERT INTO session_work_events
-            (event_id, conversation_id, materializer_version, materialized_at,
+            (event_id, session_id, materializer_version, materialized_at,
              source_name, event_index, heuristic_label, confidence,
              start_time, end_time, duration_ms, summary,
              tools_used_json, evidence_payload_json, inference_payload_json,
@@ -156,7 +156,7 @@ def _insert_work_event(
         """,
         (
             event_id,
-            conversation_id,
+            session_id,
             event_index,
             heuristic_label,
             start_time,
@@ -173,7 +173,7 @@ def _insert_message(
     db_path: str,
     *,
     msg_id: str = "msg-1",
-    conversation_id: str = "session-1",
+    session_id: str = "session-1",
     role: str = "assistant",
     text: str = "",
     sort_key: float = 1705312830.0,
@@ -181,10 +181,10 @@ def _insert_message(
     conn = sqlite3.connect(db_path)
     conn.execute(
         """
-        INSERT INTO messages (message_id, conversation_id, role, text, sort_key)
+        INSERT INTO messages (message_id, session_id, role, text, sort_key)
         VALUES (?, ?, ?, ?, ?)
         """,
-        (msg_id, conversation_id, role, text, sort_key),
+        (msg_id, session_id, role, text, sort_key),
     )
     conn.commit()
     conn.close()
@@ -214,7 +214,7 @@ class TestCorrelateSpansToWorkEvents:
         _insert_work_event(
             db_path,
             event_id="we-1",
-            conversation_id="session-1",
+            session_id="session-1",
             start_time="2023-11-14T22:13:20",
             end_time="2023-11-14T22:13:21",
             tools_used_json='["Read"]',
@@ -237,7 +237,7 @@ class TestCorrelateSpansToWorkEvents:
         _insert_work_event(
             db_path,
             event_id="we-1",
-            conversation_id="session-1",
+            session_id="session-1",
         )
 
         results = correlate_spans_to_work_events(db_path, "session-1")
@@ -265,7 +265,7 @@ class TestCorrelateSpansToWorkEvents:
         _insert_work_event(
             db_path,
             event_id="we-1",
-            conversation_id="session-1",
+            session_id="session-1",
             start_time="2023-11-14T22:13:20",
             end_time="2023-11-14T22:13:21",
             event_index=0,
@@ -274,7 +274,7 @@ class TestCorrelateSpansToWorkEvents:
         _insert_work_event(
             db_path,
             event_id="we-2",
-            conversation_id="session-1",
+            session_id="session-1",
             start_time="2023-11-15T00:00:00",
             end_time="2023-11-15T00:00:01",
             event_index=1,
@@ -337,7 +337,7 @@ class TestGetSessionToolTiming:
         _insert_work_event(
             db_path,
             event_id="we-1",
-            conversation_id="session-1",
+            session_id="session-1",
             start_time="2024-01-15T10:00:00",
             end_time="2024-01-15T10:00:01",
             duration_ms=1000,
@@ -430,14 +430,14 @@ class TestGetSessionLLMTiming:
         _insert_message(
             db_path,
             msg_id="msg-1",
-            conversation_id="session-1",
+            session_id="session-1",
             role="user",
             sort_key=1705312800.0,
         )
         _insert_message(
             db_path,
             msg_id="msg-2",
-            conversation_id="session-1",
+            session_id="session-1",
             role="assistant",
             sort_key=1705312805.0,
         )

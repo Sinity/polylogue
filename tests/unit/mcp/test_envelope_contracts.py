@@ -16,6 +16,7 @@ should support pagination". The author owns that decision.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -30,7 +31,7 @@ from tests.infra.mcp import EXPECTED_TOOL_NAMES, MCPServerUnderTest
 #   - ("envelope", required_field_names) — list-shaped tool, JSON output is
 #     an object containing all listed fields. Use the domain-meaningful
 #     array name plus ``total`` (and ``limit``/``offset`` where applicable).
-#   - "single_object" — returns one record (e.g. get_conversation).
+#   - "single_object" — returns one record (e.g. get_session).
 #   - "stats_map"     — JSON object map keyed by domain key.
 #   - "operation_result" — mutation/maintenance result (own structured shape).
 #   - Insight registry tools share the standard envelope shape
@@ -47,7 +48,7 @@ ToolKind = EnvelopeSpec | str
 TOOL_CONTRACT: dict[str, ToolKind] = {
     # ------- search and list (envelope) -------
     "search": ("envelope", frozenset({"hits", "total"})),
-    "list_conversations": ("envelope", frozenset({"items", "total"})),
+    "list_sessions": ("envelope", frozenset({"items", "total"})),
     "neighbor_candidates": ("envelope", frozenset({"items", "total", "limit"})),
     "get_session_tree": ("envelope", frozenset({"items", "total"})),
     "get_session_topology": (
@@ -56,10 +57,12 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     ),
     "get_logical_session": (
         "envelope",
-        frozenset({"conversation_id", "root_id", "thread", "siblings", "descendants", "cycle_detected"}),
+        frozenset({"session_id", "root_id", "thread", "siblings", "descendants", "cycle_detected"}),
     ),
     "get_messages": ("envelope", frozenset({"messages", "total"})),
     "raw_artifacts": ("envelope", frozenset({"raw_artifacts", "total"})),
+    "archive_list_sessions": ("envelope", frozenset({"items", "total", "limit", "offset"})),
+    "archive_search_sessions": ("envelope", frozenset({"items", "total", "limit", "query"})),
     "find_abandoned_sessions": ("envelope", frozenset({"items", "total"})),
     "find_stuck_sessions": ("envelope", frozenset({"items", "total"})),
     "find_resume_candidates": ("envelope", frozenset({"candidates", "total"})),
@@ -71,8 +74,9 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "list_recall_packs": ("envelope", frozenset({"items", "total"})),
     "list_workspaces": ("envelope", frozenset({"items", "total"})),
     # ------- single record -------
-    "get_conversation": "single_object",
-    "get_conversation_summary": "single_object",
+    "get_session": "single_object",
+    "get_session_summary": "single_object",
+    "archive_get_session": "single_object",
     "get_metadata": "single_object",
     "session_profile": "single_object",
     "session_latency_profile": "single_object",
@@ -103,7 +107,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "remove_mark": "operation_result",
     "save_annotation": "operation_result",
     "delete_annotation": "operation_result",
-    "bulk_tag_conversations": "operation_result",
+    "bulk_tag_sessions": "operation_result",
     "save_saved_view": "operation_result",
     "delete_saved_view": "operation_result",
     "save_recall_pack": "operation_result",
@@ -112,7 +116,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "delete_workspace": "operation_result",
     "set_metadata": "operation_result",
     "delete_metadata": "operation_result",
-    "delete_conversation": "operation_result",
+    "delete_session": "operation_result",
     # ------- learning corrections (#1131) -------
     "record_correction": "operation_result",
     "list_corrections": ("envelope", frozenset({"corrections", "total"})),
@@ -121,7 +125,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "rebuild_index": "operation_result",
     "rebuild_session_insights": "operation_result",
     "update_index": "operation_result",
-    "export_conversation": "operation_result",
+    "export_session": "operation_result",
     "export_query_results": "operation_result",
     "maintenance_preview": "operation_result",
     "maintenance_execute": "operation_result",
@@ -192,6 +196,8 @@ class TestRegistryWideClassification:
 
 def _build_typed_envelope_classes() -> dict[str, type[BaseModel]]:
     from polylogue.mcp.payloads import (
+        MCPArchiveSearchPayload,
+        MCPArchiveSessionListPayload,
         MCPMessagesListPayload,
         MCPNeighborCandidatesPayload,
         MCPPaginatedQueryResultPayload,
@@ -203,12 +209,14 @@ def _build_typed_envelope_classes() -> dict[str, type[BaseModel]]:
 
     return {
         "search": MCPPaginatedSearchResultPayload,
-        "list_conversations": MCPPaginatedQueryResultPayload,
+        "list_sessions": MCPPaginatedQueryResultPayload,
         "neighbor_candidates": MCPNeighborCandidatesPayload,
         "get_session_tree": MCPSessionTreePayload,
         "get_session_topology": MCPSessionTopologyPayload,
         "get_messages": MCPMessagesListPayload,
         "raw_artifacts": MCPRawArtifactsListPayload,
+        "archive_list_sessions": MCPArchiveSessionListPayload,
+        "archive_search_sessions": MCPArchiveSearchPayload,
     }
 
 
@@ -344,7 +352,7 @@ class TestSessionTreeResourceShapeMatchesTool:
     ``get_session_tree`` tool must serialise the same domain entity in
     the same envelope shape.
 
-    A previous closure of #819 left this gap — the tool was migrated
+    A previous closure of #819 left this gap — the tool was moved
     to ``MCPSessionTreePayload`` while the resource still used the
     older ``MCPPaginatedQueryResultPayload`` (which carries unrelated
     ``limit``/``offset``/``next_offset`` fields it doesn't use). This
@@ -361,10 +369,10 @@ class TestSessionTreeResourceShapeMatchesTool:
 
         conv = make_conv(id="x:y", title="Resource shape probe")
 
-        with _patch("polylogue.mcp.server._get_archive_ops") as mock_get:
-            mock_ops = _MagicMock()
-            mock_ops.get_session_tree = _AsyncMock(return_value=[conv])
-            mock_get.return_value = mock_ops
+        with _patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = _MagicMock()
+            mock_poly.get_session_tree = _AsyncMock(return_value=[conv])
+            mock_get_polylogue.return_value = mock_poly
             result = invoke_surface(_resource(read_server, "polylogue://session-tree/{conv_id}"), conv_id="x:y")
 
         body = json.loads(result)
@@ -392,48 +400,53 @@ class TestResourceErrorEnvelopes:
     """
 
     def test_stats_resource_internal_error(self, read_server: MCPServerUnderTest) -> None:
-        from unittest.mock import AsyncMock as _AsyncMock
-        from unittest.mock import MagicMock as _MagicMock
+        # The archive stats resource calls ``ArchiveStore.stats()``. Force that to
+        # raise so the resource's structured ``internal_error`` envelope path is
+        # exercised.
         from unittest.mock import patch as _patch
 
-        with _patch("polylogue.mcp.server._get_archive_ops") as mock_get:
-            mock_ops = _MagicMock()
-            mock_ops.storage_stats = _AsyncMock(side_effect=RuntimeError("boom"))
-            mock_get.return_value = mock_ops
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        with _patch.object(ArchiveStore, "stats", side_effect=RuntimeError("boom")):
             from tests.infra.mcp import invoke_surface
 
             result = invoke_surface(_resource(read_server, "polylogue://stats"))
         _assert_structured_error(result, expected_code="internal_error")
 
-    def test_conversations_resource_internal_error(self, read_server: MCPServerUnderTest) -> None:
+    def test_sessions_resource_internal_error(self, read_server: MCPServerUnderTest) -> None:
+        # The native sessions resource builds its payload via
+        # ``archive_session_list_payload``. Force that to raise so the
+        # structured ``internal_error`` envelope path is exercised.
         from unittest.mock import patch as _patch
 
-        with _patch("polylogue.mcp.server._get_query_store") as mock_get:
-            mock_get.side_effect = RuntimeError("boom")
+        with _patch(
+            "polylogue.mcp.server_resources.archive_session_list_payload",
+            side_effect=RuntimeError("boom"),
+        ):
             from tests.infra.mcp import invoke_surface
 
-            result = invoke_surface(_resource(read_server, "polylogue://conversations"))
+            result = invoke_surface(_resource(read_server, "polylogue://sessions"))
         _assert_structured_error(result, expected_code="internal_error")
 
-    def test_conversation_resource_not_found(self, read_server: MCPServerUnderTest) -> None:
+    def test_session_resource_not_found(self, read_server: MCPServerUnderTest) -> None:
         from unittest.mock import AsyncMock as _AsyncMock
         from unittest.mock import MagicMock as _MagicMock
         from unittest.mock import patch as _patch
 
-        with _patch("polylogue.mcp.server._get_archive_ops") as mock_get:
-            mock_ops = _MagicMock()
-            mock_ops.get_conversation_summary = _AsyncMock(return_value=None)
-            mock_get.return_value = mock_ops
+        with _patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = _MagicMock()
+            mock_poly.get_session_summary = _AsyncMock(return_value=None)
+            mock_get_polylogue.return_value = mock_poly
             from tests.infra.mcp import invoke_surface
 
-            result = invoke_surface(_resource(read_server, "polylogue://conversation/{conv_id}"), conv_id="missing")
+            result = invoke_surface(_resource(read_server, "polylogue://session/{conv_id}"), conv_id="missing")
         _assert_structured_error(result, expected_code="not_found")
 
     def test_tags_resource_internal_error(self, read_server: MCPServerUnderTest) -> None:
         from unittest.mock import patch as _patch
 
-        with _patch("polylogue.mcp.server._get_tag_store") as mock_get:
-            mock_get.side_effect = RuntimeError("boom")
+        with _patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_get_polylogue.side_effect = RuntimeError("boom")
             from tests.infra.mcp import invoke_surface
 
             result = invoke_surface(_resource(read_server, "polylogue://tags"))
@@ -444,10 +457,10 @@ class TestResourceErrorEnvelopes:
         from unittest.mock import MagicMock as _MagicMock
         from unittest.mock import patch as _patch
 
-        with _patch("polylogue.mcp.server._get_archive_ops") as mock_get:
-            mock_ops = _MagicMock()
-            mock_ops.get_conversation_summary = _AsyncMock(return_value=None)
-            mock_get.return_value = mock_ops
+        with _patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = _MagicMock()
+            mock_poly.get_session_summary = _AsyncMock(return_value=None)
+            mock_get_polylogue.return_value = mock_poly
             from tests.infra.mcp import invoke_surface
 
             result = invoke_surface(_resource(read_server, "polylogue://messages/{conv_id}"), conv_id="missing")
@@ -458,23 +471,27 @@ class TestResourceErrorEnvelopes:
         from unittest.mock import MagicMock as _MagicMock
         from unittest.mock import patch as _patch
 
-        with _patch("polylogue.mcp.server._get_archive_ops") as mock_get:
-            mock_ops = _MagicMock()
-            mock_ops.get_session_tree = _AsyncMock(side_effect=RuntimeError("boom"))
-            mock_get.return_value = mock_ops
+        with _patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = _MagicMock()
+            mock_poly.get_session_tree = _AsyncMock(side_effect=RuntimeError("boom"))
+            mock_get_polylogue.return_value = mock_poly
             from tests.infra.mcp import invoke_surface
 
             result = invoke_surface(_resource(read_server, "polylogue://session-tree/{conv_id}"), conv_id="x")
         _assert_structured_error(result, expected_code="internal_error")
 
-    def test_provider_recent_resource_internal_error(self, read_server: MCPServerUnderTest) -> None:
+    def test_origin_recent_resource_internal_error(self, read_server: MCPServerUnderTest) -> None:
+        # The origin/recent resource also builds its payload via
+        # ``archive_session_list_payload``; force that to raise.
         from unittest.mock import patch as _patch
 
-        with _patch("polylogue.mcp.server._get_query_store") as mock_get:
-            mock_get.side_effect = RuntimeError("boom")
+        with _patch(
+            "polylogue.mcp.server_resources.archive_session_list_payload",
+            side_effect=RuntimeError("boom"),
+        ):
             from tests.infra.mcp import invoke_surface
 
-            result = invoke_surface(_resource(read_server, "polylogue://provider/{name}/recent"), name="chatgpt")
+            result = invoke_surface(_resource(read_server, "polylogue://origin/{name}/recent"), name="chatgpt")
         _assert_structured_error(result, expected_code="internal_error")
 
     def test_readiness_resource_internal_error(self, read_server: MCPServerUnderTest) -> None:
@@ -485,3 +502,98 @@ class TestResourceErrorEnvelopes:
 
             result = invoke_surface(_resource(read_server, "polylogue://readiness"))
         _assert_structured_error(result, expected_code="internal_error")
+
+
+# ---------------------------------------------------------------------------
+# Archive read-surface envelope coverage — every read tool that routes through
+# the store must honor its TOOL_CONTRACT classification at
+# runtime (not just at the static classification level). This strengthens the
+# universal envelope contract against the current archive surface: a tool
+# that silently returned a bare array, ``null``, or a mis-shaped object on the
+# archive path would slip past the static matrix but fail here.
+# ---------------------------------------------------------------------------
+
+
+class TestNativeReadSurfaceHonorsContract:
+    """Invoke every archive-routed read tool against a seeded archive and
+    assert it returns the classified envelope / single-object / stats-map shape.
+    """
+
+    @staticmethod
+    def _seed(archive_root: Path) -> str:
+        from polylogue.archive.message.roles import Role
+        from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.types import ContentBlockType, Provider
+
+        with ArchiveStore(archive_root) as archive:
+            return archive.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CHATGPT,
+                    provider_session_id="native-contract",
+                    title="Native contract probe",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m1",
+                            role=Role.USER,
+                            text="needle contract evidence",
+                            content_blocks=[
+                                ParsedContentBlock(type=ContentBlockType.TEXT, text="needle contract evidence")
+                            ],
+                        )
+                    ],
+                )
+            )
+
+    @pytest.mark.parametrize(
+        ("tool_name", "kwargs"),
+        [
+            ("search", {"query": "needle", "limit": 10}),
+            ("list_sessions", {"limit": 10}),
+            ("get_session", {}),  # id filled from seeded session
+            ("get_session_summary", {}),
+            ("get_messages", {}),  # session_id filled from seeded session
+            ("stats", {}),
+        ],
+    )
+    def test_archive_read_tool_matches_classification(
+        self,
+        tool_name: str,
+        kwargs: dict[str, Any],
+        admin_server: MCPServerUnderTest,
+        tmp_path: Path,
+    ) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import patch as _patch
+
+        from tests.infra.mcp import invoke_surface
+
+        archive_root = tmp_path / "archive"
+        session_id = self._seed(archive_root)
+        call_kwargs = dict(kwargs)
+        if tool_name in {"get_session", "get_session_summary"}:
+            call_kwargs["id"] = session_id
+        if tool_name == "get_messages":
+            call_kwargs["session_id"] = session_id
+
+        with _patch("polylogue.mcp.server._get_config") as mock_get_config:
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "polylogue.db",
+            )
+            raw = invoke_surface(admin_server._tool_manager._tools[tool_name].fn, **call_kwargs)
+
+        body = json.loads(raw)
+        assert isinstance(body, dict), f"{tool_name}: archive output is not a JSON object: {raw!r}"
+        assert not body.get("is_error"), f"{tool_name}: archive call returned an error envelope: {body}"
+
+        classification = TOOL_CONTRACT[tool_name]
+        if isinstance(classification, tuple) and classification[0] == "envelope":
+            for field in classification[1]:
+                assert field in body, f"{tool_name}: archive envelope missing classified field {field!r}: {body}"
+        elif classification == "single_object":
+            # Single-object tools return the record's own fields; ``id`` is the
+            # stable identity anchor for the seeded session/session tools.
+            assert "id" in body or "total_sessions" in body, (
+                f"{tool_name}: archive single-object payload has no identity field: {body}"
+            )

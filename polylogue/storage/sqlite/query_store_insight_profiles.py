@@ -22,13 +22,13 @@ class SQLiteQueryStoreInsightProfilesMixin:
     if TYPE_CHECKING:
         _connection_factory: Callable[[], AbstractAsyncContextManager[aiosqlite.Connection]]
 
-    async def get_session_profile(self, conversation_id: str) -> SessionProfileRecord | None:
+    async def get_session_profile(self, session_id: str) -> SessionProfileRecord | None:
         async with self._connection_factory() as conn:
-            return await session_insight_profiles_q.get_session_profile(conn, conversation_id)
+            return await session_insight_profiles_q.get_session_profile(conn, session_id)
 
-    async def get_session_latency_profile(self, conversation_id: str) -> SessionLatencyProfileRecord | None:
+    async def get_session_latency_profile(self, session_id: str) -> SessionLatencyProfileRecord | None:
         async with self._connection_factory() as conn:
-            return await session_latency_profiles_q.get_session_latency_profile(conn, conversation_id)
+            return await session_latency_profiles_q.get_session_latency_profile(conn, session_id)
 
     async def find_stuck_session_latency_profiles(
         self, *, since: str | None = None, limit: int = 50
@@ -59,12 +59,12 @@ class SQLiteQueryStoreInsightProfilesMixin:
 
     async def get_session_profiles_batch(
         self,
-        conversation_ids: list[str],
+        session_ids: list[str],
     ) -> dict[str, SessionProfileRecord]:
         async with self._connection_factory() as conn:
             return await session_insight_profiles_q.get_session_profiles_batch(
                 conn,
-                conversation_ids,
+                session_ids,
             )
 
     async def _list_session_profiles_query(

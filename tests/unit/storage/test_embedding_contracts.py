@@ -23,8 +23,10 @@ from polylogue.storage.embeddings.embedding_stats import (
     read_embedding_stats_sync,
 )
 from polylogue.storage.embeddings.materialization import (
-    embed_conversation_sync,
-    select_pending_conversation_window,
+    embed_archive_session_sync,
+    embed_session_sync,
+    select_pending_archive_session_window,
+    select_pending_session_window,
 )
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 from polylogue.storage.embeddings.progress import (
@@ -35,7 +37,27 @@ from polylogue.storage.embeddings.progress import (
     record_embedding_catchup_progress,
     start_embedding_catchup_run,
 )
+from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.sqlite.schema_ddl import SCHEMA_VERSION
+
+
+class _FakeV1VectorProvider:
+    model = "voyage-4"
+    dimension = 1024
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    def upsert(self, session_id: str, messages: list[MessageRecord]) -> None:
+        raise AssertionError("archive embedding helper must not call old upsert")
+
+    def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
+        return []
+
+    def _get_embeddings(self, texts: list[str], input_type: str = "document") -> list[list[float]]:
+        self.texts.extend(texts)
+        return [[0.01] * 1024 for _ in texts]
+
 
 # ---------------------------------------------------------------------------
 # Schema bootstrap (same DDL as sqlite_vec_runtime.py)
@@ -43,7 +65,7 @@ from polylogue.storage.sqlite.schema_ddl import SCHEMA_VERSION
 
 _EMBEDDING_STATUS_DDL = """
     CREATE TABLE IF NOT EXISTS embedding_status (
-        conversation_id        TEXT PRIMARY KEY,
+        session_id        TEXT PRIMARY KEY,
         message_count_embedded INTEGER DEFAULT 0,
         last_embedded_at       TEXT,
         needs_reindex          INTEGER DEFAULT 0,
@@ -57,9 +79,9 @@ _MESSAGE_EMBEDDINGS_DDL = """
     );
 """
 
-_CONVERSATIONS_DDL = """
-    CREATE TABLE IF NOT EXISTS conversations (
-        conversation_id TEXT PRIMARY KEY,
+_SESSIONS_DDL = """
+    CREATE TABLE IF NOT EXISTS sessions (
+        session_id TEXT PRIMARY KEY,
         source_name   TEXT NOT NULL DEFAULT '',
         title           TEXT,
         created_at      TEXT,
@@ -74,14 +96,14 @@ _CONVERSATIONS_DDL = """
 _MESSAGES_DDL = """
     CREATE TABLE IF NOT EXISTS messages (
         message_id       TEXT PRIMARY KEY,
-        conversation_id  TEXT NOT NULL,
+        session_id  TEXT NOT NULL,
         text             TEXT
     );
 """
 
-_CONVERSATION_STATS_DDL = """
-    CREATE TABLE IF NOT EXISTS conversation_stats (
-        conversation_id TEXT PRIMARY KEY,
+_SESSION_STATS_DDL = """
+    CREATE TABLE IF NOT EXISTS session_stats (
+        session_id TEXT PRIMARY KEY,
         message_count   INTEGER NOT NULL DEFAULT 0
     );
 """
@@ -91,7 +113,7 @@ def _setup_minimal_embedding_db(conn: sqlite3.Connection) -> None:
     """Create the minimum tables needed for embedding stats reading."""
     conn.executescript(_EMBEDDING_STATUS_DDL)
     conn.executescript(_MESSAGE_EMBEDDINGS_DDL)
-    conn.executescript(_CONVERSATIONS_DDL)
+    conn.executescript(_SESSIONS_DDL)
     conn.executescript(_MESSAGES_DDL)
     conn.commit()
 
@@ -106,18 +128,18 @@ def _setup_minimal_embedding_file(path: Path) -> None:
         conn.close()
 
 
-def _insert_conversation(conn: sqlite3.Connection, conversation_id: str, *, message_count: int) -> None:
+def _insert_session(conn: sqlite3.Connection, session_id: str, *, message_count: int) -> None:
     conn.execute(
         """
-        INSERT INTO conversations (conversation_id, source_name, title, updated_at, content_hash)
+        INSERT INTO sessions (session_id, source_name, title, updated_at, content_hash)
         VALUES (?, 'test', ?, ?, ?)
         """,
-        (conversation_id, conversation_id, conversation_id, f"hash-{conversation_id}"),
+        (session_id, session_id, session_id, f"hash-{session_id}"),
     )
     for index in range(message_count):
         conn.execute(
-            "INSERT INTO messages (message_id, conversation_id, text) VALUES (?, ?, ?)",
-            (f"{conversation_id}-msg-{index}", conversation_id, "long enough message text for embedding"),
+            "INSERT INTO messages (message_id, session_id, text) VALUES (?, ?, ?)",
+            (f"{session_id}-msg-{index}", session_id, "long enough message text for embedding"),
         )
 
 
@@ -130,11 +152,11 @@ def test_embedding_catchup_run_ledger_persists_progress(tmp_path: Path) -> None:
         db_path,
         CatchupRunStart(
             rebuild=False,
-            max_conversations=3,
+            max_sessions=3,
             max_messages=20,
             stop_after_seconds=30,
             max_errors=1,
-            planned_conversations=3,
+            planned_sessions=3,
             planned_messages=12,
         ),
     )
@@ -142,7 +164,7 @@ def test_embedding_catchup_run_ledger_persists_progress(tmp_path: Path) -> None:
         db_path,
         run_id,
         CatchupRunDelta(
-            conversation_id="conv-1",
+            session_id="conv-1",
             embedded=True,
             embedded_messages=5,
             estimated_cost_usd=0.001,
@@ -151,12 +173,12 @@ def test_embedding_catchup_run_ledger_persists_progress(tmp_path: Path) -> None:
     record_embedding_catchup_progress(
         db_path,
         run_id,
-        CatchupRunDelta(conversation_id="conv-empty", skipped=True),
+        CatchupRunDelta(session_id="conv-empty", skipped=True),
     )
     record_embedding_catchup_progress(
         db_path,
         run_id,
-        CatchupRunDelta(conversation_id="conv-error", errored=True),
+        CatchupRunDelta(session_id="conv-error", errored=True),
     )
     finish_embedding_catchup_run(db_path, run_id, status="stopped", stop_reason="max errors reached (1)")
 
@@ -168,15 +190,15 @@ def test_embedding_catchup_run_ledger_persists_progress(tmp_path: Path) -> None:
     assert payload["status"] == "stopped"
     assert payload["stop_reason"] == "max errors reached (1)"
     assert payload["rebuild"] is False
-    assert payload["max_conversations"] == 3
-    assert payload["planned_conversations"] == 3
+    assert payload["max_sessions"] == 3
+    assert payload["planned_sessions"] == 3
     assert payload["planned_messages"] == 12
-    assert payload["processed_conversations"] == 3
-    assert payload["embedded_conversations"] == 1
-    assert payload["skipped_conversations"] == 1
+    assert payload["processed_sessions"] == 3
+    assert payload["embedded_sessions"] == 1
+    assert payload["skipped_sessions"] == 1
     assert payload["error_count"] == 1
     assert payload["embedded_messages"] == 5
-    assert payload["last_conversation_id"] == "conv-error"
+    assert payload["last_session_id"] == "conv-error"
 
 
 def test_embedding_catchup_latest_run_uses_insert_order_for_timestamp_ties(tmp_path: Path) -> None:
@@ -188,11 +210,11 @@ def test_embedding_catchup_latest_run_uses_insert_order_for_timestamp_ties(tmp_p
         db_path,
         CatchupRunStart(
             rebuild=False,
-            max_conversations=None,
+            max_sessions=None,
             max_messages=None,
             stop_after_seconds=None,
             max_errors=None,
-            planned_conversations=1,
+            planned_sessions=1,
             planned_messages=1,
         ),
     )
@@ -200,11 +222,11 @@ def test_embedding_catchup_latest_run_uses_insert_order_for_timestamp_ties(tmp_p
         db_path,
         CatchupRunStart(
             rebuild=True,
-            max_conversations=None,
+            max_sessions=None,
             max_messages=None,
             stop_after_seconds=None,
             max_errors=None,
-            planned_conversations=2,
+            planned_sessions=2,
             planned_messages=2,
         ),
     )
@@ -235,7 +257,7 @@ def test_embedding_catchup_progress_fails_for_missing_run(tmp_path: Path) -> Non
         record_embedding_catchup_progress(
             db_path,
             "missing-run",
-            CatchupRunDelta(conversation_id="conv-1", embedded=True, embedded_messages=1),
+            CatchupRunDelta(session_id="conv-1", embedded=True, embedded_messages=1),
         )
 
     with pytest.raises(LookupError, match="finalization"):
@@ -250,33 +272,33 @@ LifecycleAssertion: TypeAlias = Callable[[EmbeddingStatsSnapshot, sqlite3.Connec
 
 
 def _assert_none_embedded(stats: EmbeddingStatsSnapshot, _conn: sqlite3.Connection) -> None:
-    assert stats.embedded_conversations == 0
+    assert stats.embedded_sessions == 0
     assert stats.embedded_messages == 0
-    assert stats.pending_conversations == 0
+    assert stats.pending_sessions == 0
 
 
 def _assert_all_pending(stats: EmbeddingStatsSnapshot, _conn: sqlite3.Connection) -> None:
-    assert stats.embedded_conversations == 0
+    assert stats.embedded_sessions == 0
     assert stats.embedded_messages == 0
-    assert stats.pending_conversations >= 1
+    assert stats.pending_sessions >= 1
     assert stats.pending_messages >= 1
 
 
 def _assert_partially_embedded(stats: EmbeddingStatsSnapshot, _conn: sqlite3.Connection) -> None:
-    assert stats.embedded_conversations >= 1
-    assert stats.pending_conversations >= 1
+    assert stats.embedded_sessions >= 1
+    assert stats.pending_sessions >= 1
 
 
 def _assert_fully_embedded(stats: EmbeddingStatsSnapshot, _conn: sqlite3.Connection) -> None:
-    assert stats.embedded_conversations == 2
-    assert stats.pending_conversations == 0
+    assert stats.embedded_sessions == 2
+    assert stats.pending_sessions == 0
     assert stats.embedded_messages > 0
-    # Pending derived from total conversations: when all are embedded, pending == 0
-    # even though total_conversations count = 2 (they're tracked by conversations table)
+    # Pending derived from total sessions: when all are embedded, pending == 0
+    # even though total_sessions count = 2 (they're tracked by sessions table)
 
 
 def _assert_error_visible(stats: EmbeddingStatsSnapshot, conn: sqlite3.Connection) -> None:
-    row = conn.execute("SELECT error_message FROM embedding_status WHERE conversation_id = ?", ("conv-2",)).fetchone()
+    row = conn.execute("SELECT error_message FROM embedding_status WHERE session_id = ?", ("conv-2",)).fetchone()
     assert row is not None, "error row should exist"
     assert "rate limit" in str(row[0]).lower(), f"Expected rate-limit error, got {row[0]!r}"
 
@@ -288,13 +310,13 @@ EMBEDDING_LIFECYCLE_CASES: list[tuple[str, list[EmbeddingSeedRow], str, Lifecycl
     (
         "empty-archive",
         [],
-        "No conversations in DB: all counts zero",
+        "No sessions in DB: all counts zero",
         _assert_none_embedded,
     ),
     (
         "pending-only",
         [("conv-1", None, 1, None), ("conv-2", None, 1, None)],
-        "Two conversations both pending embedding",
+        "Two sessions both pending embedding",
         _assert_all_pending,
     ),
     (
@@ -306,7 +328,7 @@ EMBEDDING_LIFECYCLE_CASES: list[tuple[str, list[EmbeddingSeedRow], str, Lifecycl
     (
         "fully-embedded",
         [("conv-1", "2026-01-01T00:00:00Z", 0, None), ("conv-2", "2026-01-02T00:00:00Z", 0, None)],
-        "Both conversations fully embedded",
+        "Both sessions fully embedded",
         _assert_fully_embedded,
     ),
     (
@@ -356,7 +378,7 @@ class _VeclessConnection(sqlite3.Connection):
 
 
 class TestEmbeddingStatsEmptyArchive:
-    """Empty archive: no embedding tables, no conversations."""
+    """Empty archive: no embedding tables, no sessions."""
 
     def test_empty_db_returns_zeroes(self) -> None:
         conn = sqlite3.connect(":memory:")
@@ -364,9 +386,9 @@ class TestEmbeddingStatsEmptyArchive:
             stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
         finally:
             conn.close()
-        assert stats.embedded_conversations == 0
+        assert stats.embedded_sessions == 0
         assert stats.embedded_messages == 0
-        assert stats.pending_conversations == 0
+        assert stats.pending_sessions == 0
 
 
 @pytest.mark.parametrize("name,seed_rows,desc,assert_fn", EMBEDDING_LIFECYCLE_CASES)
@@ -381,14 +403,14 @@ def test_embedding_status_lifecycle(
     try:
         _setup_minimal_embedding_db(conn)
 
-        # Seed conversations
+        # Seed sessions
         for conv_id, _last_embedded, _needs_reindex, _error_msg in seed_rows:
             conn.execute(
-                "INSERT INTO conversations (conversation_id, source_name, title) VALUES (?, ?, ?)",
+                "INSERT INTO sessions (session_id, source_name, title) VALUES (?, ?, ?)",
                 (conv_id, "test", f"Test {conv_id}"),
             )
             conn.execute(
-                "INSERT INTO messages (message_id, conversation_id, text) VALUES (?, ?, ?)",
+                "INSERT INTO messages (message_id, session_id, text) VALUES (?, ?, ?)",
                 (f"{conv_id}-msg-1", conv_id, "hello from embedding status test"),
             )
         conn.commit()
@@ -397,13 +419,13 @@ def test_embedding_status_lifecycle(
         for conv_id, last_embedded, needs_reindex, error_msg in seed_rows:
             conn.execute(
                 "INSERT INTO embedding_status "
-                "(conversation_id, last_embedded_at, needs_reindex, error_message) "
+                "(session_id, last_embedded_at, needs_reindex, error_message) "
                 "VALUES (?, ?, ?, ?)",
                 (conv_id, last_embedded, needs_reindex, error_msg),
             )
         conn.commit()
 
-        # Seed message_embeddings for fully embedded conversations
+        # Seed message_embeddings for fully embedded sessions
         for conv_id, _last_embedded, needs_reindex, _error_msg in seed_rows:
             if needs_reindex == 0:
                 conn.execute(
@@ -423,38 +445,38 @@ def test_embedding_status_lifecycle(
 
 
 def test_missing_embedding_status_rows_count_as_pending_messages() -> None:
-    """Never-embedded conversations are pending even before embedding_status exists for them."""
+    """Never-embedded sessions are pending even before embedding_status exists for them."""
     conn = sqlite3.connect(":memory:")
     try:
         _setup_minimal_embedding_db(conn)
         conn.execute(
-            "INSERT INTO conversations (conversation_id, source_name, title) VALUES (?, ?, ?)",
+            "INSERT INTO sessions (session_id, source_name, title) VALUES (?, ?, ?)",
             ("conv-new", "test", "New"),
         )
         conn.execute(
-            "INSERT INTO messages (message_id, conversation_id, text) VALUES (?, ?, ?)",
+            "INSERT INTO messages (message_id, session_id, text) VALUES (?, ?, ?)",
             ("msg-new", "conv-new", "this message has never been embedded"),
         )
         conn.commit()
 
         stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
-        assert stats.pending_conversations == 1
+        assert stats.pending_sessions == 1
         assert stats.pending_messages == 1
     finally:
         conn.close()
 
 
-def test_pending_window_honors_max_conversations() -> None:
+def test_pending_window_honors_max_sessions() -> None:
     conn = sqlite3.connect(":memory:")
     try:
         _setup_minimal_embedding_db(conn)
         for index in range(3):
-            _insert_conversation(conn, f"conv-{index}", message_count=1)
+            _insert_session(conn, f"conv-{index}", message_count=1)
         conn.commit()
 
-        pending = select_pending_conversation_window(conn, max_conversations=2)
+        pending = select_pending_session_window(conn, max_sessions=2)
 
-        assert [item.conversation_id for item in pending] == ["conv-0", "conv-1"]
+        assert [item.session_id for item in pending] == ["conv-0", "conv-1"]
     finally:
         conn.close()
 
@@ -463,39 +485,39 @@ def test_pending_window_honors_max_messages() -> None:
     conn = sqlite3.connect(":memory:")
     try:
         _setup_minimal_embedding_db(conn)
-        _insert_conversation(conn, "conv-a", message_count=2)
-        _insert_conversation(conn, "conv-b", message_count=2)
-        _insert_conversation(conn, "conv-c", message_count=1)
+        _insert_session(conn, "conv-a", message_count=2)
+        _insert_session(conn, "conv-b", message_count=2)
+        _insert_session(conn, "conv-c", message_count=1)
         conn.commit()
 
-        pending = select_pending_conversation_window(conn, max_messages=3)
+        pending = select_pending_session_window(conn, max_messages=3)
 
-        assert [item.conversation_id for item in pending] == ["conv-a"]
+        assert [item.session_id for item in pending] == ["conv-a"]
         assert sum(item.message_count for item in pending) == 2
     finally:
         conn.close()
 
 
-def test_pending_window_uses_conversation_stats_when_available() -> None:
+def test_pending_window_uses_session_stats_when_available() -> None:
     conn = sqlite3.connect(":memory:")
     try:
         _setup_minimal_embedding_db(conn)
-        conn.executescript(_CONVERSATION_STATS_DDL)
-        _insert_conversation(conn, "conv-a", message_count=1)
-        _insert_conversation(conn, "conv-b", message_count=1)
+        conn.executescript(_SESSION_STATS_DDL)
+        _insert_session(conn, "conv-a", message_count=1)
+        _insert_session(conn, "conv-b", message_count=1)
         conn.execute(
-            "INSERT INTO conversation_stats (conversation_id, message_count) VALUES (?, ?)",
+            "INSERT INTO session_stats (session_id, message_count) VALUES (?, ?)",
             ("conv-a", 7),
         )
         conn.execute(
-            "INSERT INTO conversation_stats (conversation_id, message_count) VALUES (?, ?)",
+            "INSERT INTO session_stats (session_id, message_count) VALUES (?, ?)",
             ("conv-b", 1),
         )
         conn.commit()
 
-        pending = select_pending_conversation_window(conn, max_conversations=1)
+        pending = select_pending_session_window(conn, max_sessions=1)
 
-        assert [item.conversation_id for item in pending] == ["conv-a"]
+        assert [item.session_id for item in pending] == ["conv-a"]
         assert pending[0].message_count == 7
     finally:
         conn.close()
@@ -505,33 +527,33 @@ def test_pending_window_uses_live_counts_for_message_bound() -> None:
     conn = sqlite3.connect(":memory:")
     try:
         _setup_minimal_embedding_db(conn)
-        conn.executescript(_CONVERSATION_STATS_DDL)
-        _insert_conversation(conn, "conv-a", message_count=3)
-        _insert_conversation(conn, "conv-b", message_count=3)
+        conn.executescript(_SESSION_STATS_DDL)
+        _insert_session(conn, "conv-a", message_count=3)
+        _insert_session(conn, "conv-b", message_count=3)
         conn.execute(
-            "INSERT INTO conversation_stats (conversation_id, message_count) VALUES (?, ?)",
+            "INSERT INTO session_stats (session_id, message_count) VALUES (?, ?)",
             ("conv-a", 1),
         )
         conn.execute(
-            "INSERT INTO conversation_stats (conversation_id, message_count) VALUES (?, ?)",
+            "INSERT INTO session_stats (session_id, message_count) VALUES (?, ?)",
             ("conv-b", 1),
         )
         conn.commit()
 
-        pending = select_pending_conversation_window(conn, max_messages=4)
+        pending = select_pending_session_window(conn, max_messages=4)
 
-        assert [item.conversation_id for item in pending] == ["conv-a"]
+        assert [item.session_id for item in pending] == ["conv-a"]
         assert pending[0].message_count == 3
     finally:
         conn.close()
 
 
-def test_no_message_conversation_records_clean_status(tmp_path: Path) -> None:
+def test_no_message_session_records_clean_status(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.sqlite"
     _setup_minimal_embedding_file(db_path)
     conn = sqlite3.connect(db_path)
     try:
-        _insert_conversation(conn, "conv-empty", message_count=0)
+        _insert_session(conn, "conv-empty", message_count=0)
         conn.commit()
     finally:
         conn.close()
@@ -540,16 +562,16 @@ def test_no_message_conversation_records_clean_status(tmp_path: Path) -> None:
     repo.backend.db_path = db_path
     repo.get_messages = AsyncMock(return_value=[])
 
-    outcome = embed_conversation_sync(repo, MagicMock(), "conv-empty")
+    outcome = embed_session_sync(repo, MagicMock(), "conv-empty")
 
     assert outcome.status == "no_messages"
     conn = sqlite3.connect(db_path)
     try:
         row = conn.execute(
-            "SELECT needs_reindex, error_message FROM embedding_status WHERE conversation_id = 'conv-empty'"
+            "SELECT needs_reindex, error_message FROM embedding_status WHERE session_id = 'conv-empty'"
         ).fetchone()
         assert row == (0, None)
-        assert select_pending_conversation_window(conn) == []
+        assert select_pending_session_window(conn) == []
     finally:
         conn.close()
 
@@ -559,7 +581,7 @@ def test_no_embeddable_provider_noop_records_clean_status(tmp_path: Path) -> Non
     _setup_minimal_embedding_file(db_path)
     conn = sqlite3.connect(db_path)
     try:
-        _insert_conversation(conn, "conv-short", message_count=1)
+        _insert_session(conn, "conv-short", message_count=1)
         conn.commit()
     finally:
         conn.close()
@@ -567,21 +589,21 @@ def test_no_embeddable_provider_noop_records_clean_status(tmp_path: Path) -> Non
     repo = MagicMock()
     repo.backend.db_path = db_path
     repo.get_messages = AsyncMock(
-        return_value=[MagicMock(message_id="m", conversation_id="conv-short", text="short", content_hash="h")]
+        return_value=[MagicMock(message_id="m", session_id="conv-short", text="short", content_hash="h")]
     )
     provider = MagicMock()
     provider.upsert.return_value = None
 
-    outcome = embed_conversation_sync(repo, provider, "conv-short")
+    outcome = embed_session_sync(repo, provider, "conv-short")
 
     assert outcome.status == "no_embeddable_messages"
     conn = sqlite3.connect(db_path)
     try:
         row = conn.execute(
-            "SELECT needs_reindex, error_message FROM embedding_status WHERE conversation_id = 'conv-short'"
+            "SELECT needs_reindex, error_message FROM embedding_status WHERE session_id = 'conv-short'"
         ).fetchone()
         assert row == (0, None)
-        assert select_pending_conversation_window(conn) == []
+        assert select_pending_session_window(conn) == []
     finally:
         conn.close()
 
@@ -591,7 +613,7 @@ def test_provider_error_records_error_status_and_clears_retry(tmp_path: Path) ->
     _setup_minimal_embedding_file(db_path)
     conn = sqlite3.connect(db_path)
     try:
-        _insert_conversation(conn, "conv-error", message_count=1)
+        _insert_session(conn, "conv-error", message_count=1)
         conn.commit()
     finally:
         conn.close()
@@ -599,21 +621,149 @@ def test_provider_error_records_error_status_and_clears_retry(tmp_path: Path) ->
     repo = MagicMock()
     repo.backend.db_path = db_path
     repo.get_messages = AsyncMock(
-        return_value=[MagicMock(message_id="m", conversation_id="conv-error", text="long enough", content_hash="h")]
+        return_value=[MagicMock(message_id="m", session_id="conv-error", text="long enough", content_hash="h")]
     )
     provider = MagicMock()
     provider.upsert.side_effect = RuntimeError("provider 429")
 
-    outcome = embed_conversation_sync(repo, provider, "conv-error")
+    outcome = embed_session_sync(repo, provider, "conv-error")
 
     assert outcome.status == "error"
     conn = sqlite3.connect(db_path)
     try:
         row = conn.execute(
-            "SELECT needs_reindex, error_message FROM embedding_status WHERE conversation_id = 'conv-error'"
+            "SELECT needs_reindex, error_message FROM embedding_status WHERE session_id = 'conv-error'"
         ).fetchone()
         assert row == (1, "provider 429")
-        assert [item.conversation_id for item in select_pending_conversation_window(conn)] == ["conv-error"]
+        assert [item.session_id for item in select_pending_session_window(conn)] == ["conv-error"]
+    finally:
+        conn.close()
+
+
+def test_archive_pending_window_and_embedding_success(tmp_path: Path) -> None:
+    from polylogue.archive.message.roles import Role
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.types import ContentBlockType, Provider
+
+    archive_root = tmp_path / "archive"
+    long_text = "This archive message is long enough to embed for semantic search."
+    with ArchiveStore(archive_root) as archive:
+        session_id = archive.write_parsed(
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="embed-v1",
+                title="v1 embedding session",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text=long_text,
+                        content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=long_text)],
+                    )
+                ],
+            )
+        )
+
+    index_db = archive_root / "index.db"
+    embeddings_db = archive_root / "embeddings.db"
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
+
+    conn = sqlite3.connect(index_db)
+    try:
+        conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
+        assert [item.session_id for item in select_pending_archive_session_window(conn, status_table="")] == [
+            session_id
+        ]
+    finally:
+        conn.close()
+
+    provider = _FakeV1VectorProvider()
+    outcome = embed_archive_session_sync(index_db, provider, session_id)
+
+    assert outcome.status == "embedded"
+    assert outcome.embedded_message_count == 1
+    assert provider.texts == [long_text]
+    conn = sqlite3.connect(embeddings_db)
+    try:
+        from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+        try_load_sqlite_vec(conn)
+        status = conn.execute(
+            "SELECT message_count_embedded, needs_reindex, error_message FROM embedding_status WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert status == (1, 0, None)
+        assert conn.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM embeddings_meta WHERE target_type = 'message'").fetchone()[0] == 1
+    finally:
+        conn.close()
+    conn = sqlite3.connect(index_db)
+    try:
+        conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
+        assert select_pending_archive_session_window(conn, status_table="embeddings.embedding_status") == []
+    finally:
+        conn.close()
+
+
+def test_archive_embedding_error_records_retryable_status(tmp_path: Path) -> None:
+    from polylogue.archive.message.roles import Role
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.types import ContentBlockType, Provider
+
+    class ErrorProvider(_FakeV1VectorProvider):
+        def _get_embeddings(self, texts: list[str], input_type: str = "document") -> list[list[float]]:
+            raise RuntimeError("provider 429")
+
+    archive_root = tmp_path / "archive"
+    long_text = "This archive message is long enough to trigger provider failure."
+    with ArchiveStore(archive_root) as archive:
+        session_id = archive.write_parsed(
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="embed-v1-error",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text=long_text,
+                        content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=long_text)],
+                    )
+                ],
+            )
+        )
+
+    index_db = archive_root / "index.db"
+    embeddings_db = archive_root / "embeddings.db"
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
+
+    outcome = embed_archive_session_sync(index_db, ErrorProvider(), session_id)
+
+    assert outcome.status == "error"
+    assert outcome.error == "provider 429"
+    conn = sqlite3.connect(embeddings_db)
+    try:
+        status = conn.execute(
+            "SELECT needs_reindex, error_message FROM embedding_status WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert status == (1, "provider 429")
+    finally:
+        conn.close()
+    conn = sqlite3.connect(index_db)
+    try:
+        conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
+        assert [
+            item.session_id
+            for item in select_pending_archive_session_window(conn, status_table="embeddings.embedding_status")
+        ] == [session_id]
     finally:
         conn.close()
 
@@ -633,6 +783,6 @@ class TestEmbeddingStatsLockedConnection:
             stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
         finally:
             conn.close()
-        assert stats.embedded_conversations == 0
+        assert stats.embedded_sessions == 0
         assert stats.embedded_messages == 0
-        assert stats.pending_conversations == 0
+        assert stats.pending_sessions == 0

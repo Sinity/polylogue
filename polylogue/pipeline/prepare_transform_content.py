@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from polylogue.archive.viewport.models import ContentBlock
 from polylogue.schemas.unified.unified import harmonize_parsed_message
-from polylogue.sources.parsers.base import ParsedContentBlock, ParsedConversation, ParsedMessage
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.types import ContentBlockType
 
 
@@ -85,7 +85,7 @@ def canonicalize_message_content(source_name: str, message: ParsedMessage) -> Pa
     return message.model_copy(update=updates)
 
 
-def canonicalize_conversation_content(convo: ParsedConversation) -> ParsedConversation:
+def canonicalize_session_content(convo: ParsedSession) -> ParsedSession:
     messages = [canonicalize_message_content(str(convo.source_name), message) for message in convo.messages]
     if all(original == updated for original, updated in zip(convo.messages, messages, strict=True)):
         return convo
@@ -93,7 +93,7 @@ def canonicalize_conversation_content(convo: ParsedConversation) -> ParsedConver
 
 
 __all__ = [
-    "canonicalize_conversation_content",
+    "canonicalize_session_content",
     "canonicalize_message_content",
     "parsed_block_from_harmonized",
 ]

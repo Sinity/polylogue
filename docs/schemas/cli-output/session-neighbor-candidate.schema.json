@@ -1,0 +1,322 @@
+{
+  "$defs": {
+    "ReaderActionAvailabilityPayload": {
+      "additionalProperties": false,
+      "description": "Per-target reader action availability with explicit disabled reason.\n\nReader actions surface seven distinct states (see :data:`ReaderActionState`)\nso the UI can render \"disabled because X\" / \"loading\" / \"dangerous\"\nwithout conflating them under a single boolean (#1488). ``enabled``\nis kept as a back-compat alias derived from ``state`` so existing\ncall sites that only know about enabled/disabled continue to work.",
+      "properties": {
+        "disabled_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Disabled Reason"
+        },
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "inspect_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inspect Path"
+        },
+        "repair_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Repair Path"
+        },
+        "state": {
+          "default": "enabled",
+          "enum": [
+            "enabled",
+            "disabled",
+            "partial",
+            "dangerous",
+            "loading",
+            "target",
+            "unavailable"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "title": "ReaderActionAvailabilityPayload",
+      "type": "object"
+    },
+    "SessionNeighborReasonPayload": {
+      "additionalProperties": false,
+      "description": "Evidence explaining one neighboring-candidate reason.",
+      "properties": {
+        "detail": {
+          "title": "Detail",
+          "type": "string"
+        },
+        "evidence": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "weight": {
+          "title": "Weight",
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind",
+        "detail",
+        "weight"
+      ],
+      "title": "SessionNeighborReasonPayload",
+      "type": "object"
+    },
+    "SessionSummaryPayload": {
+      "additionalProperties": false,
+      "description": "Compact session summary payload used by MCP/search surfaces.",
+      "properties": {
+        "actions": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ReaderActionAvailabilityPayload"
+          },
+          "title": "Actions",
+          "type": "object"
+        },
+        "anchor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Anchor"
+        },
+        "created_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created At"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "message_count": {
+          "title": "Message Count",
+          "type": "integer"
+        },
+        "origin": {
+          "title": "Origin",
+          "type": "string"
+        },
+        "target_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TargetRefPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "updated_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updated At"
+        }
+      },
+      "required": [
+        "id",
+        "origin",
+        "title",
+        "message_count"
+      ],
+      "title": "SessionSummaryPayload",
+      "type": "object"
+    },
+    "TargetRefPayload": {
+      "additionalProperties": false,
+      "description": "Stable reader target reference for selectable archive objects.",
+      "properties": {
+        "block_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Index"
+        },
+        "identity_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Identity Key"
+        },
+        "message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message Id"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "target_id": {
+          "title": "Target Id",
+          "type": "string"
+        },
+        "target_type": {
+          "enum": [
+            "session",
+            "message"
+          ],
+          "title": "Target Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_type",
+        "target_id"
+      ],
+      "title": "TargetRefPayload",
+      "type": "object"
+    }
+  },
+  "$id": "https://polylogue.dev/schemas/cli-output/session-neighbor-candidate.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Semantic-neighbor candidate for `polylogue neighbors`: session identity plus per-reason evidence and rank.\n\nGenerated from `polylogue.surfaces.payloads.SessionNeighborCandidatePayload` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "properties": {
+    "query": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Query"
+    },
+    "rank": {
+      "title": "Rank",
+      "type": "integer"
+    },
+    "reasons": {
+      "items": {
+        "$ref": "#/$defs/SessionNeighborReasonPayload"
+      },
+      "title": "Reasons",
+      "type": "array"
+    },
+    "score": {
+      "title": "Score",
+      "type": "number"
+    },
+    "session": {
+      "$ref": "#/$defs/SessionSummaryPayload"
+    },
+    "source_session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Session Id"
+    }
+  },
+  "required": [
+    "session",
+    "rank",
+    "score",
+    "reasons"
+  ],
+  "title": "Session Neighbor Candidate",
+  "type": "object",
+  "x-polylogue-cli-surfaces": [
+    "polylogue neighbors --format json"
+  ],
+  "x-polylogue-source-model": "SessionNeighborCandidatePayload"
+}

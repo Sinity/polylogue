@@ -2,7 +2,7 @@
 
 Polylogue tracks per-session and per-cycle AI cost as a typed, multi-basis
 estimate. This page explains the basis taxonomy, subscription plan
-configuration, cycle outlook semantics, the legacy migration path, and the
+configuration, cycle outlook semantics, the single-basis backfill path, and the
 non-authoritative caveat that governs every number displayed.
 
 > **Non-authoritative.** Polylogue is not a billing system. Subscription
@@ -14,7 +14,7 @@ non-authoritative caveat that governs every number displayed.
 
 Cost flows through four substrate-owned stages:
 
-1. **Estimate** — per-conversation token usage is priced against the
+1. **Estimate** — per-session token usage is priced against the
    curated price map, an exact provider-reported total, or both
    (`polylogue/archive/semantic/pricing.py`).
 2. **Materialize** — the estimate is folded into the typed
@@ -76,7 +76,7 @@ When `status == 'unavailable'`, the estimate carries a discrete
 
 | Reason | Triggered when |
 | --- | --- |
-| `no_messages` | The conversation has no messages |
+| `no_messages` | The session has no messages |
 | `no_tokens` | Messages exist but none reported token usage |
 | `no_model` | Token usage is present but the model is unknown |
 | `no_price` | A model is set but no catalog entry exists |
@@ -160,24 +160,24 @@ All three surfaces share the same typed `CycleOutlook` envelope. The CLI
 plain renderer visibly labels subscription-quota math as
 non-authoritative and tags estimated USD figures.
 
-## Legacy Migration
+## Single-Basis Backfill
 
 Session-profile rows materialized before the basis split (#1136) carry
 a populated `total_cost_usd` column but lack the per-basis values in
-their evidence payload. The migration helper in
-`polylogue/maintenance/cost_migration.py` identifies those rows and
+their evidence payload. The backfill helper in
+`polylogue/maintenance/cost_backfill.py` identifies those rows and
 schedules a typed rebuild:
 
-1. `find_legacy_cost_rows(reader)` selects rows whose `cost_provenance`
-   is in `LEGACY_COST_PROVENANCE_MARKERS` (currently `{"unknown", ""}`)
+1. `find_single_basis_cost_rows(reader)` selects rows whose `cost_provenance`
+   is in `SINGLE_BASIS_COST_PROVENANCE_MARKERS` (currently `{"unknown", ""}`)
    and whose `total_cost_usd` is strictly positive. Already-typed
    provenance values (`provider_reported`, `mixed`) are intentionally
    excluded.
-2. `plan_cost_migration(legacy_rows)` returns a typed
+2. `plan_cost_backfill(rows)` returns a typed
    `BackfillOperation` with `kind = DERIVED_REBUILD`,
    `targets = ('session_profiles',)`,
    `reason = STALE_MATERIALIZER_VERSION`, and a scope filter carrying
-   the source tag `legacy-single-basis` plus the conversation-id list.
+   the source tag `single-basis-cost` plus the session-id list.
 3. The maintenance planner
    (`polylogue/maintenance/planner.py:execute_backfill`) consumes the
    operation and re-materializes the affected session profiles. The
@@ -186,8 +186,8 @@ schedules a typed rebuild:
    `ArchiveInsightProvenance` so downstream surfaces can render *why*
    the row was rebuilt.
 
-The migration is one-shot and idempotent: a rebuilt row no longer
-matches the legacy provenance markers, so a second pass detects zero
+The backfill is one-shot and idempotent: a rebuilt row no longer
+matches the stale provenance markers, so a second pass detects zero
 candidates.
 
 ## Caveats

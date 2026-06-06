@@ -7,10 +7,10 @@ and message fields propagate through the DB-aware enrichment stage.
 
 from __future__ import annotations
 
-from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.roles import Role
+from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.topology.edge import TopologyEdgeStatus, TopologyEdgeType
-from polylogue.pipeline.ids import conversation_id as make_conversation_id
+from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.prepare_enrichment import enrich_bundle_from_db
 from polylogue.pipeline.prepare_models import (
     AttachmentMaterializationPlan,
@@ -18,31 +18,31 @@ from polylogue.pipeline.prepare_models import (
     RecordBundle,
     TransformResult,
 )
-from polylogue.sources.parsers.base_models import ParsedConversation, ParsedMessage
+from polylogue.sources.parsers.base_models import ParsedMessage, ParsedSession
 from polylogue.storage.runtime import (
     AttachmentRecord,
     ContentBlockRecord,
-    ConversationRecord,
     MessageRecord,
     ProviderEventRecord,
+    SessionRecord,
 )
-from polylogue.types import ContentHash, ConversationId, MessageId, Provider, ProviderEventId
+from polylogue.types import ContentHash, MessageId, Provider, ProviderEventId, SessionId
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _make_conversation_record(
-    conversation_id: str = "test:conv-1",
+def _make_session_record(
+    session_id: str = "test:conv-1",
     title: str = "Test Conv",
     created_at: str = "2026-05-01T00:00:00Z",
     updated_at: str = "2026-05-01T01:00:00Z",
     **kwargs: object,
-) -> ConversationRecord:
+) -> SessionRecord:
     defaults: dict[str, object] = {
-        "conversation_id": ConversationId(conversation_id),
-        "provider_conversation_id": "prov-1",
+        "session_id": SessionId(session_id),
+        "provider_session_id": "prov-1",
         "title": title,
         "created_at": created_at,
         "updated_at": updated_at,
@@ -53,17 +53,17 @@ def _make_conversation_record(
         "working_directories_json": None,
         "git_branch": None,
         "git_repository_url": None,
-        "parent_conversation_id": None,
+        "parent_session_id": None,
         "branch_type": None,
         "raw_id": None,
     }
     defaults.update(kwargs)
-    return ConversationRecord(**defaults)  # type: ignore[arg-type]
+    return SessionRecord(**defaults)  # type: ignore[arg-type]
 
 
 def _make_message_record(
     message_id: str = "test:msg-1",
-    conversation_id: str = "test:conv-1",
+    session_id: str = "test:conv-1",
     role: Role = Role.USER,
     text: str | None = "hello",
     sort_key: float = 0.0,
@@ -76,7 +76,7 @@ def _make_message_record(
 ) -> MessageRecord:
     defaults: dict[str, object] = {
         "message_id": MessageId(message_id),
-        "conversation_id": ConversationId(conversation_id),
+        "session_id": SessionId(session_id),
         "provider_message_id": "prov-msg-1",
         "role": role,
         "text": text,
@@ -100,21 +100,21 @@ def _make_transform(
     candidate_cid: str = "test:conv-1",
     content_hash_str: str = "hash-1",
     messages: list[MessageRecord] | None = None,
-    conversation: ConversationRecord | None = None,
+    session: SessionRecord | None = None,
     content_blocks: list[ContentBlockRecord] | None = None,
     attachments: list[AttachmentRecord] | None = None,
     provider_events: list[ProviderEventRecord] | None = None,
 ) -> TransformResult:
     """Build a TransformResult with sensible defaults."""
     msgs = messages if messages is not None else [_make_message_record(message_id="test:msg-1", text="hello")]
-    conv = conversation or _make_conversation_record()
+    conv = session or _make_session_record()
     mid_map: dict[str, MessageId] = {}
     for i, msg in enumerate(msgs, start=1):
         key = str(msg.provider_message_id) if msg.provider_message_id else f"msg-{i}"
         mid_map[key] = msg.message_id
 
     bundle = RecordBundle(
-        conversation=conv,
+        session=conv,
         messages=msgs,
         attachments=attachments or [],
         content_blocks=content_blocks or [],
@@ -124,20 +124,20 @@ def _make_transform(
         bundle=bundle,
         materialization_plan=AttachmentMaterializationPlan(),
         content_hash=ContentHash(content_hash_str),
-        candidate_cid=ConversationId(candidate_cid),
+        candidate_cid=SessionId(candidate_cid),
         message_id_map=mid_map,
     )
 
 
-def _make_parsed_conversation(
+def _make_parsed_session(
     source_name: str = "claude-code",
-    provider_conversation_id: str = "prov-1",
+    provider_session_id: str = "prov-1",
     title: str = "Test Conv",
     messages: list[ParsedMessage] | None = None,
     provider_meta: dict[str, object] | None = None,
     **kwargs: object,
-) -> ParsedConversation:
-    """Build a ParsedConversation with sensible defaults.
+) -> ParsedSession:
+    """Build a ParsedSession with sensible defaults.
 
     Pass ``messages=[]`` explicitly to get zero messages; ``None`` (the
     default) fills in one placeholder message.
@@ -149,9 +149,9 @@ def _make_parsed_conversation(
             ParsedMessage(provider_message_id="prov-msg-1", role=Role.USER, text="hello"),
         ]
     )
-    return ParsedConversation(
+    return ParsedSession(
         source_name=Provider.from_string(source_name),
-        provider_conversation_id=provider_conversation_id,
+        provider_session_id=provider_session_id,
         title=title,
         messages=msgs,
         provider_meta=provider_meta,
@@ -178,7 +178,7 @@ class TestPasteBoundaryPropagation:
             paste_boundary_state="exact",
         )
         transform = _make_transform(messages=[msg])
-        convo = _make_parsed_conversation(
+        convo = _make_parsed_session(
             messages=[ParsedMessage(provider_message_id="pm-1", role=Role.USER, text="content with [Pasted text #1]")]
         )
         cache = PrepareCache()
@@ -200,7 +200,7 @@ class TestPasteBoundaryPropagation:
             paste_boundary_state="projected",
         )
         transform = _make_transform(messages=[msg])
-        convo = _make_parsed_conversation(
+        convo = _make_parsed_session(
             messages=[ParsedMessage(provider_message_id="pm-1", role=Role.USER, text="pasted content")]
         )
         cache = PrepareCache()
@@ -219,9 +219,7 @@ class TestPasteBoundaryPropagation:
             paste_boundary_state="hash_only",
         )
         transform = _make_transform(messages=[msg])
-        convo = _make_parsed_conversation(
-            messages=[ParsedMessage(provider_message_id="pm-1", role=Role.USER, text=None)]
-        )
+        convo = _make_parsed_session(messages=[ParsedMessage(provider_message_id="pm-1", role=Role.USER, text=None)])
         cache = PrepareCache()
 
         result = enrich_bundle_from_db(convo, source_name="claude-code", transform=transform, cache=cache)
@@ -238,7 +236,7 @@ class TestPasteBoundaryPropagation:
             paste_boundary_state=None,
         )
         transform = _make_transform(messages=[msg])
-        convo = _make_parsed_conversation(
+        convo = _make_parsed_session(
             messages=[ParsedMessage(provider_message_id="pm-1", role=Role.USER, text="normal message")]
         )
         cache = PrepareCache()
@@ -265,7 +263,7 @@ class TestPasteBoundaryPropagation:
             paste_boundary_state="exact",
         )
         transform = _make_transform(messages=[msg1, msg2])
-        convo = _make_parsed_conversation(
+        convo = _make_parsed_session(
             messages=[
                 ParsedMessage(provider_message_id="pm-1", role=Role.USER, text="normal"),
                 ParsedMessage(provider_message_id="pm-2", role=Role.USER, text="[Pasted text #1] long content"),
@@ -293,7 +291,7 @@ class TestEmptyMessagesNoCrash:
     def test_empty_messages(self) -> None:
         """Zero messages → valid PreparedBundle with empty messages list."""
         transform = _make_transform(messages=[])
-        convo = _make_parsed_conversation(messages=[])
+        convo = _make_parsed_session(messages=[])
         cache = PrepareCache()
 
         result = enrich_bundle_from_db(convo, source_name="claude-code", transform=transform, cache=cache)
@@ -301,13 +299,13 @@ class TestEmptyMessagesNoCrash:
         assert len(result.bundle.messages) == 0
         assert len(result.bundle.attachments) == 0
         assert len(result.bundle.content_blocks) == 0
-        assert result.cid == ConversationId("test:conv-1")
+        assert result.cid == SessionId("test:conv-1")
 
     def test_no_provider_meta(self) -> None:
-        """Conversation without provider_meta still enriches."""
+        """Session without provider_meta still enriches."""
         msg = _make_message_record(provider_message_id="pm-1")
         transform = _make_transform(messages=[msg])
-        convo = _make_parsed_conversation(
+        convo = _make_parsed_session(
             messages=[ParsedMessage(provider_message_id="pm-1", role=Role.USER, text="hello")],
             provider_meta=None,
         )
@@ -321,9 +319,7 @@ class TestEmptyMessagesNoCrash:
         """Message with None text passes through."""
         msg = _make_message_record(message_id="test:msg-1", provider_message_id="pm-1", text=None)
         transform = _make_transform(messages=[msg])
-        convo = _make_parsed_conversation(
-            messages=[ParsedMessage(provider_message_id="pm-1", role=Role.USER, text=None)]
-        )
+        convo = _make_parsed_session(messages=[ParsedMessage(provider_message_id="pm-1", role=Role.USER, text=None)])
         cache = PrepareCache()
 
         result = enrich_bundle_from_db(convo, source_name="claude-code", transform=transform, cache=cache)
@@ -360,7 +356,7 @@ class TestFullEnrichment:
             branch_index=0,
         )
         transform = _make_transform(messages=[msg])
-        convo = _make_parsed_conversation(
+        convo = _make_parsed_session(
             messages=[
                 ParsedMessage(
                     provider_message_id="pm-1",
@@ -395,7 +391,7 @@ class TestFullEnrichment:
         """Provider_meta fields (working_directories, git, cwd) are extracted."""
         msg = _make_message_record(message_id="test:msg-1", provider_message_id="pm-1")
         transform = _make_transform(messages=[msg])
-        convo = _make_parsed_conversation(
+        convo = _make_parsed_session(
             messages=[ParsedMessage(provider_message_id="pm-1", role=Role.USER, text="hello")],
             provider_meta={
                 "source": "claude-code",
@@ -411,7 +407,7 @@ class TestFullEnrichment:
 
         result = enrich_bundle_from_db(convo, source_name="claude-code", transform=transform, cache=cache)
 
-        conv = result.bundle.conversation
+        conv = result.bundle.session
         assert conv.source_name == "claude-code"
         import json
 
@@ -420,18 +416,18 @@ class TestFullEnrichment:
         assert conv.git_branch == "feature/test"
         assert conv.git_repository_url == "https://github.com/Sinity/polylogue"
 
-    def test_parent_conversation_topology(self) -> None:
-        """When parent is in cache, parent_conversation_id is set and a
+    def test_parent_session_topology(self) -> None:
+        """When parent is in cache, parent_session_id is set and a
         resolved topology edge is emitted."""
         # Use a recognized provider name so candidate_parent is predictable.
-        parent_id = make_conversation_id("claude-code", "parent-prov-1")
+        parent_id = make_session_id("claude-code", "parent-prov-1")
 
         msg = _make_message_record(message_id="test:msg-1", provider_message_id="pm-1")
         transform = _make_transform(messages=[msg], candidate_cid="claude-code:child-1")
-        convo = _make_parsed_conversation(
+        convo = _make_parsed_session(
             source_name="claude-code",
             messages=[ParsedMessage(provider_message_id="pm-1", role=Role.USER, text="hello")],
-            parent_conversation_provider_id="parent-prov-1",
+            parent_session_provider_id="parent-prov-1",
             branch_type=BranchType.CONTINUATION,
         )
         cache = PrepareCache()
@@ -439,40 +435,40 @@ class TestFullEnrichment:
 
         result = enrich_bundle_from_db(convo, source_name="claude-code", transform=transform, cache=cache)
 
-        assert result.bundle.conversation.parent_conversation_id == parent_id
+        assert result.bundle.session.parent_session_id == parent_id
         assert len(result.bundle.topology_edges) == 1
         edge = result.bundle.topology_edges[0]
         assert edge.dst_provider_native_id == "parent-prov-1"
         assert edge.edge_type == TopologyEdgeType.CONTINUATION
         assert edge.status == TopologyEdgeStatus.RESOLVED
-        assert edge.resolved_dst_conversation_id == parent_id
+        assert edge.resolved_dst_session_id == parent_id
 
     def test_parent_not_in_cache_yields_unresolved_edge(self) -> None:
         """When parent is not in cache, the topology edge is unresolved."""
         msg = _make_message_record(message_id="test:msg-1", provider_message_id="pm-1")
         transform = _make_transform(messages=[msg])
-        convo = _make_parsed_conversation(
+        convo = _make_parsed_session(
             source_name="claude-code",
             messages=[ParsedMessage(provider_message_id="pm-1", role=Role.USER, text="hello")],
-            parent_conversation_provider_id="unknown-parent",
+            parent_session_provider_id="unknown-parent",
             branch_type=BranchType.FORK,
         )
         cache = PrepareCache()
 
         result = enrich_bundle_from_db(convo, source_name="claude-code", transform=transform, cache=cache)
 
-        assert result.bundle.conversation.parent_conversation_id is None
+        assert result.bundle.session.parent_session_id is None
         assert len(result.bundle.topology_edges) == 1
         edge = result.bundle.topology_edges[0]
         assert edge.status == TopologyEdgeStatus.UNRESOLVED
-        assert edge.resolved_dst_conversation_id is None
+        assert edge.resolved_dst_session_id is None
         assert edge.edge_type == TopologyEdgeType.FORK
 
     def test_provider_events_preserved(self) -> None:
         """Provider events in the transform bundle are preserved in output."""
         pe = ProviderEventRecord(
             event_id=ProviderEventId("evt-1"),
-            conversation_id=ConversationId("test:conv-1"),
+            session_id=SessionId("test:conv-1"),
             source_name="claude-code",
             event_index=0,
             event_type="compaction",
@@ -482,9 +478,7 @@ class TestFullEnrichment:
         )
         msg = _make_message_record(provider_message_id="pm-1")
         transform = _make_transform(messages=[msg], provider_events=[pe])
-        convo = _make_parsed_conversation(
-            messages=[ParsedMessage(provider_message_id="pm-1", role=Role.USER, text="hello")]
-        )
+        convo = _make_parsed_session(messages=[ParsedMessage(provider_message_id="pm-1", role=Role.USER, text="hello")])
         cache = PrepareCache()
 
         result = enrich_bundle_from_db(convo, source_name="claude-code", transform=transform, cache=cache)
@@ -495,9 +489,9 @@ class TestFullEnrichment:
         # event_id is recomputed by provider_event_id(cid, event_index).
         assert out_evt.event_id == ProviderEventId("test:conv-1:provider-event:000000")
 
-    def test_existing_conversation_changed_flag(self) -> None:
+    def test_existing_session_changed_flag(self) -> None:
         """When content_hash differs from existing, changed=True."""
-        from polylogue.storage.archive_views import ExistingConversation
+        from polylogue.storage.archive_views import ExistingSession
 
         msg = _make_message_record(provider_message_id="pm-1")
         transform = _make_transform(
@@ -505,12 +499,10 @@ class TestFullEnrichment:
             content_hash_str="new-hash",
             messages=[msg],
         )
-        convo = _make_parsed_conversation(
-            messages=[ParsedMessage(provider_message_id="pm-1", role=Role.USER, text="hello")]
-        )
+        convo = _make_parsed_session(messages=[ParsedMessage(provider_message_id="pm-1", role=Role.USER, text="hello")])
         cache = PrepareCache()
-        cache.existing["test:conv-1"] = ExistingConversation(
-            conversation_id="test:conv-1",
+        cache.existing["test:conv-1"] = ExistingSession(
+            session_id="test:conv-1",
             content_hash=ContentHash("old-hash"),
         )
 
@@ -518,9 +510,9 @@ class TestFullEnrichment:
 
         assert result.changed is True
 
-    def test_existing_conversation_unchanged_flag(self) -> None:
+    def test_existing_session_unchanged_flag(self) -> None:
         """When content_hash matches existing, changed=False."""
-        from polylogue.storage.archive_views import ExistingConversation
+        from polylogue.storage.archive_views import ExistingSession
 
         msg = _make_message_record(provider_message_id="pm-1")
         transform = _make_transform(
@@ -528,12 +520,10 @@ class TestFullEnrichment:
             content_hash_str="same-hash",
             messages=[msg],
         )
-        convo = _make_parsed_conversation(
-            messages=[ParsedMessage(provider_message_id="pm-1", role=Role.USER, text="hello")]
-        )
+        convo = _make_parsed_session(messages=[ParsedMessage(provider_message_id="pm-1", role=Role.USER, text="hello")])
         cache = PrepareCache()
-        cache.existing["test:conv-1"] = ExistingConversation(
-            conversation_id="test:conv-1",
+        cache.existing["test:conv-1"] = ExistingSession(
+            session_id="test:conv-1",
             content_hash=ContentHash("same-hash"),
         )
 

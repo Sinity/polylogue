@@ -7,7 +7,7 @@ VEC0_DDL = """
         message_id TEXT PRIMARY KEY,
         embedding float[1024],
         +source_name TEXT,
-        +conversation_id TEXT
+        +session_id TEXT
     )
 """
 
@@ -15,7 +15,7 @@ VEC0_DDL = """
 ARTIFACT_OBSERVATION_DDL = """
         CREATE TABLE IF NOT EXISTS artifact_observations (
             observation_id TEXT PRIMARY KEY,
-            raw_id TEXT NOT NULL REFERENCES raw_conversations(raw_id) ON DELETE CASCADE,
+            raw_id TEXT NOT NULL REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
             payload_provider TEXT,
             source_name TEXT NOT NULL,
             source_path TEXT NOT NULL,
@@ -24,7 +24,7 @@ ARTIFACT_OBSERVATION_DDL = """
             wire_format TEXT,
             artifact_kind TEXT NOT NULL,
             classification_reason TEXT NOT NULL,
-            parse_as_conversation INTEGER NOT NULL DEFAULT 0,
+            parse_as_session INTEGER NOT NULL DEFAULT 0,
             schema_eligible INTEGER NOT NULL DEFAULT 0,
             support_status TEXT NOT NULL
                 CHECK (support_status IN (

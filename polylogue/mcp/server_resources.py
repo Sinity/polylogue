@@ -4,16 +4,21 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from polylogue.mcp.archive_support import (
+    active_archive_root,
+    archive_messages_payload,
+    archive_session_list_payload,
+    archive_summary_payload,
+)
 from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
-    MCPConversationSummaryPayload,
     MCPErrorPayload,
     MCPReadinessReportPayload,
     MCPTagCountsPayload,
-    conversation_query_result_payload,
     session_tree_payload,
 )
-from polylogue.mcp.query_contracts import MCPConversationQueryRequest
+from polylogue.mcp.query_contracts import MCPSessionQueryRequest
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -27,7 +32,9 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.resource("polylogue://stats")
     async def stats_resource() -> str:
         try:
-            archive_stats = await hooks.get_archive_ops().storage_stats()
+            config = hooks.get_config()
+            with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
+                archive_stats = archive.stats()
         except Exception as exc:
             return hooks.error_json(
                 f"Failed to retrieve archive stats: {exc}",
@@ -43,40 +50,43 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             exclude_none=True,
         )
 
-    @mcp.resource("polylogue://conversations")
-    async def conversations_resource() -> str:
+    @mcp.resource("polylogue://sessions")
+    async def sessions_resource() -> str:
         try:
-            spec = MCPConversationQueryRequest().build_spec(hooks.clamp_limit)
-            convs = await spec.list(hooks.get_query_store())
-            total = await spec.count(hooks.get_query_store())
+            spec = MCPSessionQueryRequest().build_spec(hooks.clamp_limit)
+            config = hooks.get_config()
+            with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
+                payload = archive_session_list_payload(archive, spec)
+            return hooks.json_payload(payload)
         except Exception as exc:
             return hooks.error_json(
-                f"Failed to list conversations: {exc}",
+                f"Failed to list sessions: {exc}",
                 code="internal_error",
                 detail=type(exc).__name__,
             )
-        return hooks.json_payload(
-            conversation_query_result_payload(convs, total=total, limit=spec.limit or 0, offset=spec.offset)
-        )
 
-    @mcp.resource("polylogue://conversation/{conv_id}")
-    async def conversation_resource(conv_id: str) -> str:
-        ops = hooks.get_archive_ops()
-        summary = await ops.get_conversation_summary(conv_id)
-        if not summary:
-            return hooks.error_json(f"Conversation not found: {conv_id}", code="not_found")
-        stats = await ops.get_conversation_stats(conv_id)
-        return hooks.json_payload(
-            MCPConversationSummaryPayload.from_summary(
-                summary,
-                message_count=stats["total_messages"] if stats else 0,
+    @mcp.resource("polylogue://session/{conv_id}")
+    async def session_resource(conv_id: str) -> str:
+        try:
+            config = hooks.get_config()
+            with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
+                try:
+                    session_id = archive.resolve_session_id(conv_id)
+                    archive_summary = archive.read_summary(session_id)
+                except (KeyError, ValueError):
+                    return hooks.error_json(f"Session not found: {conv_id}", code="not_found")
+                return hooks.json_payload(archive_summary_payload(archive_summary))
+        except Exception as exc:
+            return hooks.error_json(
+                f"Failed to get session {conv_id}: {exc}",
+                code="internal_error",
+                detail=type(exc).__name__,
             )
-        )
 
     @mcp.resource("polylogue://tags")
     async def tags_resource() -> str:
         try:
-            tags = await hooks.get_tag_store().list_tags()
+            tags = await hooks.get_polylogue().list_tags()
         except Exception as exc:
             return hooks.error_json(
                 f"Failed to list tags: {exc}",
@@ -87,28 +97,26 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
     @mcp.resource("polylogue://messages/{conv_id}")
     async def messages_resource(conv_id: str) -> str:
-        ops = hooks.get_archive_ops()
-        summary = await ops.get_conversation_summary(conv_id)
-        if summary is None:
-            return hooks.error_json(f"Conversation not found: {conv_id}", code="not_found")
-        canonical_id = str(summary.id)
-        messages, total = await ops.get_messages_paginated(canonical_id, limit=20, offset=0)
-        from polylogue.mcp.payloads import MCPMessagePayload, MCPMessagesListPayload
-
-        return hooks.json_payload(
-            MCPMessagesListPayload(
-                conversation_id=canonical_id,
-                messages=tuple(MCPMessagePayload.from_message(message) for message in messages),
-                total=total,
-                limit=20,
-                offset=0,
+        try:
+            config = hooks.get_config()
+            with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
+                try:
+                    session_id = archive.resolve_session_id(conv_id)
+                    session = archive.read_session(session_id)
+                except (KeyError, ValueError):
+                    return hooks.error_json(f"Session not found: {conv_id}", code="not_found")
+                return hooks.json_payload(archive_messages_payload(session, limit=20, offset=0))
+        except Exception as exc:
+            return hooks.error_json(
+                f"Failed to list messages for {conv_id}: {exc}",
+                code="internal_error",
+                detail=type(exc).__name__,
             )
-        )
 
     @mcp.resource("polylogue://session-tree/{conv_id}")
     async def session_tree_resource(conv_id: str) -> str:
         try:
-            tree = await hooks.get_archive_ops().get_session_tree(conv_id)
+            tree = await hooks.get_polylogue().get_session_tree(conv_id)
         except Exception as exc:
             return hooks.error_json(
                 f"Failed to get session tree for {conv_id}: {exc}",
@@ -117,21 +125,20 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             )
         return hooks.json_payload(session_tree_payload(tree))
 
-    @mcp.resource("polylogue://provider/{name}/recent")
-    async def provider_recent_resource(name: str) -> str:
+    @mcp.resource("polylogue://origin/{name}/recent")
+    async def origin_recent_resource(name: str) -> str:
         try:
-            spec = MCPConversationQueryRequest(provider=name, sort="date", limit=10).build_spec(hooks.clamp_limit)
-            convs = await spec.list(hooks.get_query_store())
-            total = await spec.count(hooks.get_query_store())
+            spec = MCPSessionQueryRequest(origin=name, sort="date", limit=10).build_spec(hooks.clamp_limit)
+            config = hooks.get_config()
+            with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
+                payload = archive_session_list_payload(archive, spec)
+            return hooks.json_payload(payload)
         except Exception as exc:
             return hooks.error_json(
-                f"Failed to list recent conversations for provider {name}: {exc}",
+                f"Failed to list recent sessions for origin {name}: {exc}",
                 code="internal_error",
                 detail=type(exc).__name__,
             )
-        return hooks.json_payload(
-            conversation_query_result_payload(convs, total=total, limit=spec.limit or 0, offset=spec.offset)
-        )
 
     @mcp.resource("polylogue://readiness")
     def readiness_resource() -> str:

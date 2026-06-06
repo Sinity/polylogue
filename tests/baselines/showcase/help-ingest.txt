@@ -1,10 +1,12 @@
 Usage: polylogue ingest [OPTIONS] PATH
 
-  Schedule a file or directory for ingestion by the daemon.
+  Schedule a file or directory for ingestion by the running daemon.
 
-  Contacts the running polylogued daemon and requests ingestion of PATH. The
-  daemon copies the file into its inbox and begins processing asynchronously.
-  Use 'polylogue status' to monitor progress.
+  Stages PATH into the archive inbox and asks the running polylogued daemon to
+  schedule it for processing. The command is truthful: it either confirms the
+  daemon accepted scheduling (with a pointer to 'polylogue status' for
+  observable progress) or fails with an actionable error. It never reports
+  success without observable processing.
 
 Options:
   --daemon-url TEXT  Daemon API URL.  [default: http://127.0.0.1:8766]

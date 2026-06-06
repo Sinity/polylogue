@@ -1,0 +1,230 @@
+{
+  "$defs": {
+    "ReaderActionAvailabilityPayload": {
+      "additionalProperties": false,
+      "description": "Per-target reader action availability with explicit disabled reason.\n\nReader actions surface seven distinct states (see :data:`ReaderActionState`)\nso the UI can render \"disabled because X\" / \"loading\" / \"dangerous\"\nwithout conflating them under a single boolean (#1488). ``enabled``\nis kept as a back-compat alias derived from ``state`` so existing\ncall sites that only know about enabled/disabled continue to work.",
+      "properties": {
+        "disabled_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Disabled Reason"
+        },
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "inspect_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inspect Path"
+        },
+        "repair_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Repair Path"
+        },
+        "state": {
+          "default": "enabled",
+          "enum": [
+            "enabled",
+            "disabled",
+            "partial",
+            "dangerous",
+            "loading",
+            "target",
+            "unavailable"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "title": "ReaderActionAvailabilityPayload",
+      "type": "object"
+    },
+    "TargetRefPayload": {
+      "additionalProperties": false,
+      "description": "Stable reader target reference for selectable archive objects.",
+      "properties": {
+        "block_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Index"
+        },
+        "identity_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Identity Key"
+        },
+        "message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message Id"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "target_id": {
+          "title": "Target Id",
+          "type": "string"
+        },
+        "target_type": {
+          "enum": [
+            "session",
+            "message"
+          ],
+          "title": "Target Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_type",
+        "target_id"
+      ],
+      "title": "TargetRefPayload",
+      "type": "object"
+    }
+  },
+  "$id": "https://polylogue.dev/schemas/cli-output/session-summary.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Compact session identity payload used by stats/group-by and embedded inside search hits.\n\nGenerated from `polylogue.surfaces.payloads.SessionSummaryPayload` by `devtools render-cli-output-schemas`. Do not edit by hand.",
+  "properties": {
+    "actions": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ReaderActionAvailabilityPayload"
+      },
+      "title": "Actions",
+      "type": "object"
+    },
+    "anchor": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Anchor"
+    },
+    "created_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Created At"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "message_count": {
+      "title": "Message Count",
+      "type": "integer"
+    },
+    "origin": {
+      "title": "Origin",
+      "type": "string"
+    },
+    "target_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TargetRefPayload"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    },
+    "updated_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Updated At"
+    }
+  },
+  "required": [
+    "id",
+    "origin",
+    "title",
+    "message_count"
+  ],
+  "title": "Session Summary",
+  "type": "object",
+  "x-polylogue-cli-surfaces": [
+    "polylogue stats --format json (rows)",
+    "polylogue select --format json"
+  ],
+  "x-polylogue-source-model": "SessionSummaryPayload"
+}

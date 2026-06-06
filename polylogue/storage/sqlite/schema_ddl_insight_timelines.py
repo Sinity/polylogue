@@ -10,7 +10,7 @@ SESSION_INSIGHT_TIMELINE_DDL = (
     """
         CREATE TABLE IF NOT EXISTS session_work_events (
             event_id TEXT PRIMARY KEY,
-            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,"""
+            session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,"""
     + MATERIALIZATION_COLUMNS_SQL
     + """
             source_name TEXT NOT NULL,
@@ -33,8 +33,8 @@ SESSION_INSIGHT_TIMELINE_DDL = (
             inference_family TEXT NOT NULL DEFAULT 'heuristic_session_semantics'
         );
 
-        CREATE INDEX IF NOT EXISTS idx_session_work_events_conversation
-        ON session_work_events(conversation_id, event_index);
+        CREATE INDEX IF NOT EXISTS idx_session_work_events_session
+        ON session_work_events(session_id, event_index);
 
         CREATE INDEX IF NOT EXISTS idx_session_work_events_heuristic_label
         ON session_work_events(heuristic_label);
@@ -47,7 +47,7 @@ SESSION_INSIGHT_TIMELINE_DDL = (
 
         CREATE VIRTUAL TABLE IF NOT EXISTS session_work_events_fts USING fts5(
             event_id UNINDEXED,
-            conversation_id UNINDEXED,
+            session_id UNINDEXED,
             source_name UNINDEXED,
             heuristic_label UNINDEXED,
             text,
@@ -56,13 +56,13 @@ SESSION_INSIGHT_TIMELINE_DDL = (
 
         CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ai
         AFTER INSERT ON session_work_events BEGIN
-            INSERT INTO session_work_events_fts (event_id, conversation_id, source_name, heuristic_label, text)
-            VALUES (new.event_id, new.conversation_id, new.source_name, new.heuristic_label, new.search_text);
+            INSERT INTO session_work_events_fts (event_id, session_id, source_name, heuristic_label, text)
+            VALUES (new.event_id, new.session_id, new.source_name, new.heuristic_label, new.search_text);
         END;
 
         CREATE TABLE IF NOT EXISTS session_phases (
             phase_id TEXT PRIMARY KEY,
-            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,"""
+            session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,"""
     + MATERIALIZATION_COLUMNS_SQL
     + """
             source_name TEXT NOT NULL,
@@ -85,8 +85,8 @@ SESSION_INSIGHT_TIMELINE_DDL = (
             inference_family TEXT NOT NULL DEFAULT 'heuristic_session_semantics'
         );
 
-        CREATE INDEX IF NOT EXISTS idx_session_phases_conversation
-        ON session_phases(conversation_id, phase_index);
+        CREATE INDEX IF NOT EXISTS idx_session_phases_session
+        ON session_phases(session_id, phase_index);
 
         CREATE INDEX IF NOT EXISTS idx_session_phases_kind
         ON session_phases(kind);
@@ -105,8 +105,8 @@ SESSION_INSIGHT_TIMELINE_DDL = (
         CREATE TRIGGER IF NOT EXISTS session_work_events_fts_au
         AFTER UPDATE ON session_work_events BEGIN
             DELETE FROM session_work_events_fts WHERE event_id = old.event_id;
-            INSERT INTO session_work_events_fts (event_id, conversation_id, source_name, heuristic_label, text)
-            VALUES (new.event_id, new.conversation_id, new.source_name, new.heuristic_label, new.search_text);
+            INSERT INTO session_work_events_fts (event_id, session_id, source_name, heuristic_label, text)
+            VALUES (new.event_id, new.session_id, new.source_name, new.heuristic_label, new.search_text);
         END;
 """
 )

@@ -118,35 +118,35 @@ def test_profile_repair_candidates_match_sort_key_freshness() -> None:
         conn.row_factory = sqlite3.Row
         conn.executescript(
             """
-            CREATE TABLE conversations (
-                conversation_id TEXT PRIMARY KEY,
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
                 sort_key REAL,
                 updated_at TEXT
             );
             CREATE TABLE session_profiles (
-                conversation_id TEXT PRIMARY KEY,
+                session_id TEXT PRIMARY KEY,
                 materializer_version INTEGER NOT NULL,
                 source_sort_key REAL,
                 source_updated_at TEXT
             );
 
-            INSERT INTO conversations (conversation_id, sort_key, updated_at)
+            INSERT INTO sessions (session_id, sort_key, updated_at)
             VALUES ('ready-even-if-updated-at-differs', 1.0, '2026-05-01T12:00:00Z');
 
-            INSERT INTO conversations (conversation_id, sort_key, updated_at)
+            INSERT INTO sessions (session_id, sort_key, updated_at)
             VALUES ('stale-sort-key', 2.0, '2026-05-01T12:00:00Z');
-            INSERT INTO conversations (conversation_id, sort_key, updated_at)
+            INSERT INTO sessions (session_id, sort_key, updated_at)
             VALUES ('missing-profile', 3.0, '2026-05-01T12:00:00Z');
-            INSERT INTO conversations (conversation_id, sort_key, updated_at)
+            INSERT INTO sessions (session_id, sort_key, updated_at)
             VALUES ('hot-missing-profile', 4102444800.0, '2100-01-01T00:00:00Z');
-            INSERT INTO conversations (conversation_id, sort_key, updated_at)
+            INSERT INTO sessions (session_id, sort_key, updated_at)
             VALUES ('hot-stale-sort-key', 4102444800.0, '2100-01-01T00:00:00Z');
             """
         )
         conn.execute(
             """
             INSERT INTO session_profiles (
-                conversation_id, materializer_version, source_sort_key, source_updated_at
+                session_id, materializer_version, source_sort_key, source_updated_at
             ) VALUES (?, ?, ?, ?)
             """,
             (
@@ -159,7 +159,7 @@ def test_profile_repair_candidates_match_sort_key_freshness() -> None:
         conn.execute(
             """
             INSERT INTO session_profiles (
-                conversation_id, materializer_version, source_sort_key, source_updated_at
+                session_id, materializer_version, source_sort_key, source_updated_at
             ) VALUES (?, ?, ?, ?)
             """,
             (
@@ -172,7 +172,7 @@ def test_profile_repair_candidates_match_sort_key_freshness() -> None:
         conn.execute(
             """
             INSERT INTO session_profiles (
-                conversation_id, materializer_version, source_sort_key, source_updated_at
+                session_id, materializer_version, source_sort_key, source_updated_at
             ) VALUES (?, ?, ?, ?)
             """,
             (
@@ -192,19 +192,19 @@ def test_profile_repair_candidates_do_not_require_row_factory() -> None:
     with sqlite3.connect(":memory:") as conn:
         conn.executescript(
             """
-            CREATE TABLE conversations (
-                conversation_id TEXT PRIMARY KEY,
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
                 sort_key REAL,
                 updated_at TEXT
             );
             CREATE TABLE session_profiles (
-                conversation_id TEXT PRIMARY KEY,
+                session_id TEXT PRIMARY KEY,
                 materializer_version INTEGER NOT NULL,
                 source_sort_key REAL,
                 source_updated_at TEXT
             );
 
-            INSERT INTO conversations (conversation_id, sort_key, updated_at)
+            INSERT INTO sessions (session_id, sort_key, updated_at)
             VALUES ('missing-profile', 3.0, '2026-05-01T12:00:00Z');
             """
         )
@@ -218,22 +218,22 @@ def test_profile_repair_candidates_ignore_hot_recent_sources() -> None:
     with sqlite3.connect(":memory:") as conn:
         conn.executescript(
             """
-            CREATE TABLE conversations (
-                conversation_id TEXT PRIMARY KEY,
-                parent_conversation_id TEXT,
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                parent_session_id TEXT,
                 sort_key REAL,
                 updated_at TEXT
             );
             CREATE TABLE session_profiles (
-                conversation_id TEXT PRIMARY KEY,
+                session_id TEXT PRIMARY KEY,
                 materializer_version INTEGER NOT NULL,
                 source_sort_key REAL,
                 source_updated_at TEXT
             );
 
-            INSERT INTO conversations (conversation_id, sort_key, updated_at)
+            INSERT INTO sessions (session_id, sort_key, updated_at)
             VALUES ('cold-missing-profile', 3.0, '2026-05-01T12:00:00Z');
-            INSERT INTO conversations (conversation_id, sort_key, updated_at)
+            INSERT INTO sessions (session_id, sort_key, updated_at)
             VALUES ('hot-missing-profile', strftime('%s', 'now'), '2026-05-24T07:00:00Z');
             """
         )
@@ -247,14 +247,14 @@ def test_session_insight_status_requires_latency_rows_for_ready_profiles() -> No
     with sqlite3.connect(":memory:") as conn:
         conn.executescript(
             f"""
-            CREATE TABLE conversations (
-                conversation_id TEXT PRIMARY KEY,
-                parent_conversation_id TEXT,
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                parent_session_id TEXT,
                 sort_key REAL,
                 updated_at TEXT
             );
             CREATE TABLE session_profiles (
-                conversation_id TEXT PRIMARY KEY,
+                session_id TEXT PRIMARY KEY,
                 source_name TEXT NOT NULL,
                 canonical_session_date TEXT,
                 first_message_at TEXT,
@@ -269,20 +269,20 @@ def test_session_insight_status_requires_latency_rows_for_ready_profiles() -> No
                 phase_count INTEGER NOT NULL
             );
             CREATE TABLE session_latency_profiles (
-                conversation_id TEXT PRIMARY KEY,
+                session_id TEXT PRIMARY KEY,
                 materializer_version INTEGER NOT NULL,
                 source_sort_key REAL
             );
 
-            INSERT INTO conversations (conversation_id, parent_conversation_id, sort_key, updated_at)
+            INSERT INTO sessions (session_id, parent_session_id, sort_key, updated_at)
             VALUES ('ready', NULL, 1.0, '2026-05-01T12:00:00Z');
-            INSERT INTO conversations (conversation_id, parent_conversation_id, sort_key, updated_at)
+            INSERT INTO sessions (session_id, parent_session_id, sort_key, updated_at)
             VALUES ('missing-latency', NULL, 2.0, '2026-05-01T12:00:00Z');
-            INSERT INTO conversations (conversation_id, parent_conversation_id, sort_key, updated_at)
+            INSERT INTO sessions (session_id, parent_session_id, sort_key, updated_at)
             VALUES ('stale-latency', NULL, 3.0, '2026-05-01T12:00:00Z');
 
             INSERT INTO session_profiles (
-                conversation_id, source_name, canonical_session_date, tags_json, auto_tags_json,
+                session_id, source_name, canonical_session_date, tags_json, auto_tags_json,
                 first_message_at, last_message_at, source_updated_at, evidence_payload_json,
                 materializer_version, source_sort_key, work_event_count, phase_count
             ) VALUES
@@ -302,7 +302,7 @@ def test_session_insight_status_requires_latency_rows_for_ready_profiles() -> No
                     {SESSION_INSIGHT_MATERIALIZER_VERSION}, 3.0, 0, 0
                 );
 
-            INSERT INTO session_latency_profiles (conversation_id, materializer_version, source_sort_key)
+            INSERT INTO session_latency_profiles (session_id, materializer_version, source_sort_key)
             VALUES
                 ('ready', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 1.0),
                 ('stale-latency', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 2.5);
@@ -323,15 +323,15 @@ async def test_status_sync_and_async_match_when_product_tables_are_absent(tmp_pa
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
             """
-            CREATE TABLE conversations (
-                conversation_id TEXT PRIMARY KEY,
-                parent_conversation_id TEXT,
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                parent_session_id TEXT,
                 sort_key REAL,
                 updated_at TEXT
             );
-            INSERT INTO conversations (conversation_id, parent_conversation_id, sort_key, updated_at)
+            INSERT INTO sessions (session_id, parent_session_id, sort_key, updated_at)
             VALUES ('root', NULL, 1.0, '2026-04-01T00:00:00Z');
-            INSERT INTO conversations (conversation_id, parent_conversation_id, sort_key, updated_at)
+            INSERT INTO sessions (session_id, parent_session_id, sort_key, updated_at)
             VALUES ('child', 'root', 2.0, '2026-04-01T00:01:00Z');
             """
         )
@@ -341,7 +341,7 @@ async def test_status_sync_and_async_match_when_product_tables_are_absent(tmp_pa
         async_status = await session_insight_status_async(conn)
 
     assert asdict(sync_status) == asdict(async_status)
-    assert sync_status.total_conversations == 2
+    assert sync_status.total_sessions == 2
     assert sync_status.root_threads == 1
     assert sync_status.missing_profile_row_count == 2
     assert sync_status.stale_profile_row_count == 0
@@ -354,25 +354,25 @@ async def test_lightweight_status_sync_and_async_match_with_freshness_tables(tmp
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
             """
-            CREATE TABLE conversations (
-                conversation_id TEXT PRIMARY KEY,
-                parent_conversation_id TEXT,
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                parent_session_id TEXT,
                 sort_key REAL,
                 updated_at TEXT
             );
             CREATE TABLE session_profiles (
-                conversation_id TEXT PRIMARY KEY,
+                session_id TEXT PRIMARY KEY,
                 work_event_count INTEGER NOT NULL,
                 phase_count INTEGER NOT NULL
             );
-            CREATE TABLE session_profiles_fts (conversation_id TEXT NOT NULL);
+            CREATE TABLE session_profiles_fts (session_id TEXT NOT NULL);
             CREATE TABLE work_threads (thread_id TEXT PRIMARY KEY);
 
-            INSERT INTO conversations (conversation_id, parent_conversation_id, sort_key, updated_at)
+            INSERT INTO sessions (session_id, parent_session_id, sort_key, updated_at)
             VALUES ('root', NULL, 1.0, '2026-04-01T00:00:00Z');
-            INSERT INTO session_profiles (conversation_id, work_event_count, phase_count)
+            INSERT INTO session_profiles (session_id, work_event_count, phase_count)
             VALUES ('root', 0, 0);
-            INSERT INTO session_profiles_fts (conversation_id) VALUES ('root'), ('root');
+            INSERT INTO session_profiles_fts (session_id) VALUES ('root'), ('root');
             INSERT INTO work_threads (thread_id) VALUES ('root');
             """
         )

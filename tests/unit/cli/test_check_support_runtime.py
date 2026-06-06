@@ -121,9 +121,9 @@ def test_formatting_helpers_cover_plan_counts_details_and_run_sections(monkeypat
     assert formatting.plain_forced_by_env() is True
 
     counts = {
-        "conversations": 4,
-        "new_conversations": 2,
-        "changed_conversations": 1,
+        "sessions": 4,
+        "new_sessions": 2,
+        "changed_sessions": 1,
         "acquired": 4,
         "skipped": 1,
         "acquire_errors": 1,
@@ -137,16 +137,16 @@ def test_formatting_helpers_cover_plan_counts_details_and_run_sections(monkeypat
         "schemas_generated": 1,
         "schemas_failed": 1,
     }
-    assert formatting.format_counts({"conversations": 4, "messages": 0}) == "4 conv (4 new)"
+    assert formatting.format_counts({"sessions": 4, "messages": 0}) == "4 conv (4 new)"
     assert formatting.format_run_details(counts) == [
         "Acquire: 4 acquired, 1 skipped, 1 errors",
         "Validate: 3 passed, 1 invalid, 1 drift, 2 no-schema, 1 errors",
-        "Conversations: 2 new, 1 changed",
+        "Sessions: 2 new, 1 changed",
         "Parse: 2 failures",
-        "Materialize: 3 conversations",
+        "Materialize: 3 sessions",
         "Schemas: 1 generated, 1 failed",
     ]
-    assert formatting.format_run_details({"conversations": 2}) == ["Conversations: 2 new"]
+    assert formatting.format_run_details({"sessions": 2}) == ["Sessions: 2 new"]
 
     assert formatting.format_plan_counts({"scan": 2, "index": 1}) == "2 scan, 1 index"
     assert formatting.format_plan_counts({}) == "no pipeline actions"

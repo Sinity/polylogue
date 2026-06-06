@@ -2,7 +2,7 @@
 
 Graduates ``cwd`` / ``repo`` / ``git origin`` context out of provider-meta
 JSON into typed storage. Provides a canonical join surface for repo-scoped
-queries such as "show me every conversation that touched repo X" across
+queries such as "show me every session that touched repo X" across
 providers (Claude Code, Codex, ChatGPT, ...).
 
 Three tables:
@@ -11,8 +11,8 @@ Three tables:
   display ``repo_name``. ``origin_url`` may be empty when only a local
   root path was observed; the unique key includes both columns so the
   same root path can carry distinct origins over its lifetime.
-* ``conversation_repo_observations`` — many-to-many association from a
-  conversation to the repos it touched, with the most recent branch
+* ``session_repo_observations`` — many-to-many association from a
+  session to the repos it touched, with the most recent branch
   name and observation timestamp.
 * ``session_commit_edges`` — links archived sessions to git commits they
   likely produced (#1690 phase 2). Each edge records the detection method,
@@ -21,8 +21,8 @@ Three tables:
 
 Population: see ``polylogue/storage/insights/session/repo_identity.py``
 and ``polylogue/insights/session_commit.py``.
-These rows live OUTSIDE the conversation content-hash boundary — they
-are derived per ingest from action events plus typed conversation
+These rows live OUTSIDE the session content-hash boundary — they
+are derived per ingest from action events plus typed session
 columns, and rebuilt deterministically.
 """
 
@@ -46,19 +46,19 @@ REPO_IDENTITY_DDL = """
         CREATE INDEX IF NOT EXISTS idx_repo_identities_root_path
         ON repo_identities(root_path);
 
-        CREATE TABLE IF NOT EXISTS conversation_repo_observations (
-            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+        CREATE TABLE IF NOT EXISTS session_repo_observations (
+            session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
             repo_identity_id INTEGER NOT NULL REFERENCES repo_identities(id) ON DELETE CASCADE,
             branch_name TEXT NOT NULL DEFAULT '',
             observed_at TEXT NOT NULL,
-            PRIMARY KEY (conversation_id, repo_identity_id)
+            PRIMARY KEY (session_id, repo_identity_id)
         );
 
         CREATE INDEX IF NOT EXISTS idx_conv_repo_obs_repo
-        ON conversation_repo_observations(repo_identity_id, conversation_id);
+        ON session_repo_observations(repo_identity_id, session_id);
 
         CREATE TABLE IF NOT EXISTS session_commit_edges (
-            session_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
             commit_sha TEXT NOT NULL,
             repo_id INTEGER REFERENCES repo_identities(id) ON DELETE CASCADE,
             detection_method TEXT NOT NULL CHECK (

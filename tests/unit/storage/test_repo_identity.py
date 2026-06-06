@@ -9,14 +9,14 @@ from typing import Any
 import aiosqlite
 import pytest
 
-from polylogue.archive.conversation.attribution import ConversationAttribution
+from polylogue.archive.session.attribution import SessionAttribution
 from polylogue.storage.insights.session.repo_identity import (
     RepoObservation,
     attribution_to_observations,
-    list_conversations_for_repo,
     list_repo_identities,
-    refresh_conversation_repo_observations,
-    refresh_conversation_repo_observations_sync,
+    list_sessions_for_repo,
+    refresh_session_repo_observations,
+    refresh_session_repo_observations_sync,
 )
 from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
 
@@ -28,11 +28,10 @@ def _make_db() -> sqlite3.Connection:
     return conn
 
 
-def _seed_conversation(conn: sqlite3.Connection, conversation_id: str) -> None:
+def _seed_session(conn: sqlite3.Connection, session_id: str) -> None:
     conn.execute(
-        "INSERT INTO conversations (conversation_id, source_name, provider_conversation_id, version) "
-        "VALUES (?, ?, ?, ?)",
-        (conversation_id, "claude-code", f"pcid-{conversation_id}", 1),
+        "INSERT INTO sessions (session_id, source_name, provider_session_id, version) VALUES (?, ?, ?, ?)",
+        (session_id, "claude-code", f"pcid-{session_id}", 1),
     )
 
 
@@ -41,8 +40,8 @@ def _attr(
     repo_paths: tuple[str, ...] = (),
     repo_names: tuple[str, ...] = (),
     branch_names: tuple[str, ...] = (),
-) -> ConversationAttribution:
-    return ConversationAttribution(
+) -> SessionAttribution:
+    return SessionAttribution(
         repo_paths=repo_paths,
         repo_names=repo_names,
         cwd_paths=repo_paths,
@@ -89,7 +88,7 @@ def test_attribution_to_observations_local_repo_without_origin() -> None:
 
 def test_refresh_sync_upserts_identity_and_observation() -> None:
     conn = _make_db()
-    _seed_conversation(conn, "conv-a")
+    _seed_session(conn, "conv-a")
     obs = (
         RepoObservation(
             origin_url="https://github.com/Sinity/polylogue.git",
@@ -99,16 +98,16 @@ def test_refresh_sync_upserts_identity_and_observation() -> None:
         ),
     )
 
-    written = refresh_conversation_repo_observations_sync(conn, "conv-a", obs)
+    written = refresh_session_repo_observations_sync(conn, "conv-a", obs)
     assert written == 1
     identities = conn.execute("SELECT id, origin_url, root_path FROM repo_identities").fetchall()
     assert [(r["origin_url"], r["root_path"]) for r in identities] == [
         ("https://github.com/Sinity/polylogue.git", "/realm/project/polylogue"),
     ]
     observations = conn.execute(
-        "SELECT conversation_id, repo_identity_id, branch_name FROM conversation_repo_observations"
+        "SELECT session_id, repo_identity_id, branch_name FROM session_repo_observations"
     ).fetchall()
-    assert [(r["conversation_id"], r["branch_name"]) for r in observations] == [("conv-a", "master")]
+    assert [(r["session_id"], r["branch_name"]) for r in observations] == [("conv-a", "master")]
 
     # Re-running deduplicates the identity but updates last_seen_at and branch.
     obs_v2 = (
@@ -119,11 +118,11 @@ def test_refresh_sync_upserts_identity_and_observation() -> None:
             branch_name="feature/foo",
         ),
     )
-    refresh_conversation_repo_observations_sync(conn, "conv-a", obs_v2)
+    refresh_session_repo_observations_sync(conn, "conv-a", obs_v2)
     identities_after = conn.execute("SELECT id FROM repo_identities").fetchall()
     assert len(identities_after) == 1
     branch_after = conn.execute(
-        "SELECT branch_name FROM conversation_repo_observations WHERE conversation_id = ?",
+        "SELECT branch_name FROM session_repo_observations WHERE session_id = ?",
         ("conv-a",),
     ).fetchone()
     assert branch_after["branch_name"] == "feature/foo"
@@ -131,8 +130,8 @@ def test_refresh_sync_upserts_identity_and_observation() -> None:
 
 def test_refresh_sync_replaces_existing_observations() -> None:
     conn = _make_db()
-    _seed_conversation(conn, "conv-b")
-    refresh_conversation_repo_observations_sync(
+    _seed_session(conn, "conv-b")
+    refresh_session_repo_observations_sync(
         conn,
         "conv-b",
         (
@@ -150,10 +149,10 @@ def test_refresh_sync_replaces_existing_observations() -> None:
             ),
         ),
     )
-    count_a = conn.execute("SELECT COUNT(*) FROM conversation_repo_observations").fetchone()[0]
+    count_a = conn.execute("SELECT COUNT(*) FROM session_repo_observations").fetchone()[0]
     assert count_a == 2
 
-    refresh_conversation_repo_observations_sync(
+    refresh_session_repo_observations_sync(
         conn,
         "conv-b",
         (
@@ -165,15 +164,15 @@ def test_refresh_sync_replaces_existing_observations() -> None:
             ),
         ),
     )
-    count_b = conn.execute("SELECT COUNT(*) FROM conversation_repo_observations").fetchone()[0]
+    count_b = conn.execute("SELECT COUNT(*) FROM session_repo_observations").fetchone()[0]
     assert count_b == 1
 
 
-def test_conversation_cascade_drops_observations() -> None:
+def test_session_cascade_drops_observations() -> None:
     conn = _make_db()
     conn.execute("PRAGMA foreign_keys = ON")
-    _seed_conversation(conn, "conv-c")
-    refresh_conversation_repo_observations_sync(
+    _seed_session(conn, "conv-c")
+    refresh_session_repo_observations_sync(
         conn,
         "conv-c",
         (
@@ -185,10 +184,10 @@ def test_conversation_cascade_drops_observations() -> None:
             ),
         ),
     )
-    conn.execute("DELETE FROM conversations WHERE conversation_id = ?", ("conv-c",))
-    remaining = conn.execute("SELECT COUNT(*) FROM conversation_repo_observations").fetchone()[0]
+    conn.execute("DELETE FROM sessions WHERE session_id = ?", ("conv-c",))
+    remaining = conn.execute("SELECT COUNT(*) FROM session_repo_observations").fetchone()[0]
     assert remaining == 0
-    # Identity row survives the cascade (it can still be observed by another conversation).
+    # Identity row survives the cascade (it can still be observed by another session).
     assert conn.execute("SELECT COUNT(*) FROM repo_identities").fetchone()[0] == 1
 
 
@@ -201,24 +200,21 @@ def test_conversation_cascade_drops_observations() -> None:
         ({"origin_url": "https://github.com/other/repo.git"}, ()),
     ],
 )
-def test_list_conversations_for_repo_async(lookup: dict[str, Any], expected: tuple[str, ...]) -> None:
+def test_list_sessions_for_repo_async(lookup: dict[str, Any], expected: tuple[str, ...]) -> None:
     async def _run() -> tuple[str, ...]:
         async with aiosqlite.connect(":memory:") as conn:
             conn.row_factory = aiosqlite.Row
             await conn.executescript(SCHEMA_DDL)
             await conn.execute(
-                "INSERT INTO conversations (conversation_id, source_name, provider_conversation_id, version) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO sessions (session_id, source_name, provider_session_id, version) VALUES (?, ?, ?, ?)",
                 ("conv-x", "claude-code", "px", 1),
             )
             await conn.execute(
-                "INSERT INTO conversations (conversation_id, source_name, provider_conversation_id, version) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO sessions (session_id, source_name, provider_session_id, version) VALUES (?, ?, ?, ?)",
                 ("conv-y", "codex", "py", 1),
             )
             await conn.execute(
-                "INSERT INTO conversations (conversation_id, source_name, provider_conversation_id, version) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO sessions (session_id, source_name, provider_session_id, version) VALUES (?, ?, ?, ?)",
                 ("conv-z", "chatgpt", "pz", 1),
             )
             obs = (
@@ -229,9 +225,9 @@ def test_list_conversations_for_repo_async(lookup: dict[str, Any], expected: tup
                     branch_name="master",
                 ),
             )
-            await refresh_conversation_repo_observations(conn, "conv-x", obs)
-            await refresh_conversation_repo_observations(conn, "conv-y", obs)
-            await refresh_conversation_repo_observations(
+            await refresh_session_repo_observations(conn, "conv-x", obs)
+            await refresh_session_repo_observations(conn, "conv-y", obs)
+            await refresh_session_repo_observations(
                 conn,
                 "conv-z",
                 (
@@ -243,18 +239,18 @@ def test_list_conversations_for_repo_async(lookup: dict[str, Any], expected: tup
                     ),
                 ),
             )
-            return await list_conversations_for_repo(conn, **lookup)
+            return await list_sessions_for_repo(conn, **lookup)
 
     assert asyncio.run(_run()) == expected
 
 
-def test_list_conversations_for_repo_requires_filter() -> None:
+def test_list_sessions_for_repo_requires_filter() -> None:
     async def _run() -> None:
         async with aiosqlite.connect(":memory:") as conn:
             conn.row_factory = aiosqlite.Row
             await conn.executescript(SCHEMA_DDL)
             with pytest.raises(ValueError):
-                await list_conversations_for_repo(conn)
+                await list_sessions_for_repo(conn)
 
     asyncio.run(_run())
 
@@ -265,11 +261,10 @@ def test_list_repo_identities_filter_by_name() -> None:
             conn.row_factory = aiosqlite.Row
             await conn.executescript(SCHEMA_DDL)
             await conn.execute(
-                "INSERT INTO conversations (conversation_id, source_name, provider_conversation_id, version) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO sessions (session_id, source_name, provider_session_id, version) VALUES (?, ?, ?, ?)",
                 ("conv-list", "claude-code", "pl", 1),
             )
-            await refresh_conversation_repo_observations(
+            await refresh_session_repo_observations(
                 conn,
                 "conv-list",
                 (

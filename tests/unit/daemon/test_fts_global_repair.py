@@ -13,13 +13,13 @@ def _seed_archive_with_orphan_fts(db_path: Path) -> None:
     try:
         _ensure_schema(conn)
         conn.execute(
-            "INSERT INTO conversations(conversation_id, source_name, provider_conversation_id, title, "
+            "INSERT INTO sessions(session_id, source_name, provider_session_id, title, "
             "created_at, updated_at, content_hash, source_name, version) "
             "VALUES('c1', 'codex', 'provider-c1', 'one', '2026-01-01T00:00:00+00:00', "
             "'2026-01-01T00:00:00+00:00', 'h1', 'codex', 1)"
         )
         conn.execute(
-            "INSERT INTO messages(rowid, message_id, conversation_id, role, text, source_name, version) "
+            "INSERT INTO messages(rowid, message_id, session_id, role, text, source_name, version) "
             "VALUES(1, 'm1', 'c1', 'user', 'hello', 'codex', 1)"
         )
         rebuild_fts_index_sync(conn)

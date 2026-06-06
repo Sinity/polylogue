@@ -11,11 +11,11 @@ from .assembly import (
     ClaudeCodeSessionIndex,
     SidecarData,
 )
-from .parsers.base import ParsedConversation, ParsedMessage
+from .parsers.base import ParsedMessage, ParsedSession
 from .parsers.claude.history import HistoryEntry, build_session_paste_index
 from .parsers.claude.index import (
     SessionIndexEntry,
-    enrich_conversation_from_index,
+    enrich_session_from_index,
     parse_sessions_index,
 )
 
@@ -62,26 +62,26 @@ class ClaudeCodeAssemblySpec:
                 merged_history.setdefault(session_id, []).extend(history_entries)
         return {"session_index": session_index, "history_paste_index": merged_history}
 
-    def enrich_conversation(
+    def enrich_session(
         self,
-        conv: ParsedConversation,
+        conv: ParsedSession,
         sidecar_data: SidecarData,
-    ) -> ParsedConversation:
-        """Enrich a Claude Code conversation from session-index + history sidecars."""
+    ) -> ParsedSession:
+        """Enrich a Claude Code session from session-index + history sidecars."""
         idx: ClaudeCodeSessionIndex = sidecar_data.get("session_index", {})
-        if conv.provider_conversation_id in idx:
-            conv = enrich_conversation_from_index(conv, idx[conv.provider_conversation_id])
+        if conv.provider_session_id in idx:
+            conv = enrich_session_from_index(conv, idx[conv.provider_session_id])
         history_index: ClaudeCodeHistoryPasteIndex = sidecar_data.get("history_paste_index", {})
-        paste_entries = history_index.get(conv.provider_conversation_id, [])
+        paste_entries = history_index.get(conv.provider_session_id, [])
         if paste_entries:
             conv = _annotate_messages_with_history_paste(conv, paste_entries)
         return conv
 
 
 def _annotate_messages_with_history_paste(
-    conv: ParsedConversation,
+    conv: ParsedSession,
     paste_entries: list[HistoryEntry],
-) -> ParsedConversation:
+) -> ParsedSession:
     """Mark user messages whose timestamps match a paste-bearing history row.
 
     Operates only on the strong-identity path: sessionId already pinned by

@@ -27,9 +27,9 @@ from hypothesis.database import DirectoryBasedExampleDatabase
 # them to RAM eliminates IO contention between test workers and lets
 # pytest-xdist parallelism actually deliver wall-clock speedup (#1026).
 # ---------------------------------------------------------------------------
-from polylogue.archive.models import Conversation
+from polylogue.archive.models import Session
 from polylogue.scenarios import CorpusSpec, build_default_corpus_specs
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.runtime import RawSessionRecord
 from tests.infra.builders import make_conv, make_msg
 
 pytest_plugins = (
@@ -42,9 +42,9 @@ if TYPE_CHECKING:
     from click.testing import CliRunner
 
     from polylogue.config import Source
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.repository import SessionRepository
     from polylogue.storage.sqlite import SQLiteBackend
-    from tests.infra.storage_records import ConversationBuilder
+    from tests.infra.storage_records import SessionBuilder
 
 # ---------------------------------------------------------------------------
 # Scale markers for data-gravity and long-haul validation (Workstream H)
@@ -407,21 +407,21 @@ def db_without_fts(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def storage_repository(workspace_env: dict[str, Path]) -> ConversationRepository:
+def storage_repository(workspace_env: dict[str, Path]) -> SessionRepository:
     """Storage repository with its own write lock.
 
     Use this fixture in tests that need thread-safe storage operations.
     The repository encapsulates the write lock and provides methods for
-    saving conversations and recording runs.
+    saving sessions and recording runs.
 
     Depends on workspace_env to ensure XDG_DATA_HOME is set before
     creating the default backend.
     """
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.repository import SessionRepository
     from polylogue.storage.sqlite.connection import create_default_backend
 
     backend = create_default_backend()
-    return ConversationRepository(backend=backend)
+    return SessionRepository(backend=backend)
 
 
 @pytest.fixture
@@ -448,10 +448,10 @@ def cli_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
     for path in [data_dir, state_dir, archive_root, inbox_dir, render_root]:
         path.mkdir(parents=True, exist_ok=True)
 
-    # Set environment variables
-    # polylogue.paths.db_path() returns: DATA_HOME / "polylogue" / "polylogue.db"
-    db_path = data_dir / "polylogue" / "polylogue.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    # The archive is the index database under the archive root. Seeding helpers
+    # and the CLI read and write the same store, so the workspace db_path is the
+    # archive root's index.db rather than a separate file.
+    db_path = archive_root / "index.db"
 
     monkeypatch.setenv("XDG_DATA_HOME", str(data_dir))
     monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
@@ -459,11 +459,10 @@ def cli_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")  # Plain output for tests
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
 
-    from polylogue.storage.sqlite.connection import connection_context
-    from polylogue.storage.sqlite.schema import _ensure_schema
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    with connection_context(db_path) as conn:
-        _ensure_schema(conn)
+    with ArchiveStore(archive_root):
+        pass
 
     return {
         "archive_root": archive_root,
@@ -631,7 +630,7 @@ def db_path(workspace_env: Mapping[str, Path]) -> Path:
 
     Usage in tests:
         def test_something(db_path):
-            builder = ConversationBuilder(db_path, "test-conv")
+            builder = SessionBuilder(db_path, "test-conv")
     """
     from tests.infra.storage_records import db_setup
 
@@ -639,19 +638,19 @@ def db_path(workspace_env: Mapping[str, Path]) -> Path:
 
 
 @pytest.fixture
-def conversation_builder(db_path: Path) -> Callable[[str], ConversationBuilder]:
-    """Fixture that provides ConversationBuilder factory.
+def session_builder(db_path: Path) -> Callable[[str], SessionBuilder]:
+    """Fixture that provides SessionBuilder factory.
 
     Usage in tests:
-        def test_something(conversation_builder):
-            conv = (conversation_builder("test-conv")
+        def test_something(session_builder):
+            conv = (session_builder("test-conv")
                    .add_message("m1", text="Hello")
                    .save())
     """
-    from tests.infra.storage_records import ConversationBuilder
+    from tests.infra.storage_records import SessionBuilder
 
-    def _builder(conversation_id: str = "test-conv") -> ConversationBuilder:
-        return ConversationBuilder(db_path, conversation_id)
+    def _builder(session_id: str = "test-conv") -> SessionBuilder:
+        return SessionBuilder(db_path, session_id)
 
     return _builder
 
@@ -701,8 +700,8 @@ async def sqlite_backend(tmp_path: Path) -> AsyncIterator[SQLiteBackend]:
 
 
 @pytest.fixture
-def sample_conversation() -> Conversation:
-    """Create a diverse conversation for filter/projection testing.
+def sample_session() -> Session:
+    """Create a diverse session for filter/projection testing.
 
     Includes:
     - User messages (m1, m5)
@@ -771,10 +770,10 @@ def seeded_db(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
     from polylogue.config import Source
     from polylogue.pipeline.prepare import prepare_records
     from polylogue.schemas.synthetic import SyntheticCorpus
-    from polylogue.sources import iter_source_conversations
+    from polylogue.sources import iter_source_sessions
     from polylogue.storage.blob_store import BlobStore
-    from polylogue.storage.repository import ConversationRepository
-    from polylogue.storage.runtime import RawConversationRecord
+    from polylogue.storage.repository import SessionRepository
+    from polylogue.storage.runtime import RawSessionRecord
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
     from polylogue.storage.sqlite.connection import open_connection
 
@@ -825,7 +824,7 @@ def seeded_db(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
             pass
 
         backend = SQLiteBackend(db_path=db_path)
-        repository = ConversationRepository(backend=backend)
+        repository = SessionRepository(backend=backend)
 
         corpus_dir = tmp_dir / "corpus"
         corpus_dir.mkdir()
@@ -849,14 +848,14 @@ def seeded_db(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
 
                     try:
                         raw_id, blob_size = blob_store.write_from_bytes(raw_bytes)
-                        record = RawConversationRecord(
+                        record = RawSessionRecord(
                             raw_id=raw_id,
                             source_name=spec.provider,
                             source_path=str(file_path),
                             blob_size=blob_size,
                             acquired_at=datetime.now(timezone.utc).isoformat(),
                         )
-                        await backend.save_raw_conversation(record)
+                        await backend.save_raw_session(record)
                     except Exception as e:
                         import warnings
 
@@ -871,7 +870,7 @@ def seeded_db(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
                     try:
                         source = Source(name=provider, path=file_path)
                         raw_id = hashlib.sha256(file_path.read_bytes()).hexdigest()
-                        for convo in iter_source_conversations(source):
+                        for convo in iter_source_sessions(source):
                             await prepare_records(
                                 convo,
                                 source_name=provider,
@@ -894,7 +893,7 @@ def seeded_db(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
 
 
 @pytest.fixture
-def seeded_repository(seeded_db: Path) -> ConversationRepository:
+def seeded_repository(seeded_db: Path) -> SessionRepository:
     """Repository backed by the shared read-only seeded database.
 
     Tests that only read (query, search, stats, schema inspection) should
@@ -903,11 +902,11 @@ def seeded_repository(seeded_db: Path) -> ConversationRepository:
 
     Use ``seeded_db_writable`` for tests that need to mutate data.
     """
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.repository import SessionRepository
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
     backend = SQLiteBackend(db_path=seeded_db)
-    return ConversationRepository(backend=backend)
+    return SessionRepository(backend=backend)
 
 
 @pytest.fixture
@@ -939,21 +938,21 @@ def seeded_db_writable(seeded_db: Path, tmp_path: Path) -> Path:
 
 
 @pytest.fixture(scope="session")
-def raw_synthetic_samples() -> list[RawConversationRecord]:
-    """Generate synthetic raw conversation records for all providers.
+def raw_synthetic_samples() -> list[RawSessionRecord]:
+    """Generate synthetic raw session records for all providers.
 
     Uses SyntheticCorpus to generate wire-format bytes, wrapped in
-    RawConversationRecord objects. This replaces the old raw_db_samples
+    RawSessionRecord objects. This replaces the old raw_db_samples
     fixture that required a real database with imported data.
 
     Returns:
-        List of RawConversationRecord objects (synthetic data, always available)
+        List of RawSessionRecord objects (synthetic data, always available)
     """
     import hashlib
     from datetime import datetime, timezone
 
     from polylogue.schemas.synthetic import SyntheticCorpus
-    from polylogue.storage.runtime import RawConversationRecord
+    from polylogue.storage.runtime import RawSessionRecord
 
     specs = build_default_corpus_specs(
         providers=SyntheticCorpus.available_providers(),
@@ -963,13 +962,13 @@ def raw_synthetic_samples() -> list[RawConversationRecord]:
         tags=("synthetic", "test", "raw-samples"),
     )
 
-    samples: list[RawConversationRecord] = []
+    samples: list[RawSessionRecord] = []
     for spec in specs:
         batch = SyntheticCorpus.generate_batch_for_spec(spec)
         for idx, raw_bytes in enumerate(batch.raw_items):
             raw_id = hashlib.sha256(raw_bytes).hexdigest()
             samples.append(
-                RawConversationRecord(
+                RawSessionRecord(
                     raw_id=raw_id,
                     source_name=spec.provider,
                     source_path=f"<synthetic:{spec.provider}:{idx}>",
@@ -997,7 +996,7 @@ def synthetic_source(tmp_path: Path) -> Callable[[str, int, range, int], Source]
 
         def test_something(synthetic_source):
             source = synthetic_source("chatgpt")
-            for convo in iter_source_conversations(source):
+            for convo in iter_source_sessions(source):
                 ...
 
             # Multiple files:
@@ -1009,14 +1008,14 @@ def synthetic_source(tmp_path: Path) -> Callable[[str, int, range, int], Source]
     def _factory(
         provider: str,
         count: int = 1,
-        messages_per_conversation: range = range(4, 12),
+        messages_per_session: range = range(4, 12),
         seed: int = 42,
     ) -> Source:
         spec = CorpusSpec.for_provider(
             provider,
             count=count,
-            messages_min=messages_per_conversation.start,
-            messages_max=messages_per_conversation.stop - 1,
+            messages_min=messages_per_session.start,
+            messages_max=messages_per_session.stop - 1,
             seed=seed,
             origin="generated.test-source",
             tags=("synthetic", "test", "source"),

@@ -16,7 +16,7 @@ def test_write_gateway_commits_effects_on_caller_owned_connection(tmp_path: Path
             WriteOperation.INGEST,
             {
                 "_connection": conn,
-                "changed_conversation_ids": (),
+                "changed_session_ids": (),
             },
         )
 
@@ -47,7 +47,7 @@ def test_write_gateway_normal_commit_does_not_drop_fts_triggers(
             WriteOperation.INGEST,
             {
                 "_connection": conn,
-                "changed_conversation_ids": (),
+                "changed_session_ids": (),
             },
         )
 
@@ -78,7 +78,7 @@ def test_write_gateway_can_skip_fts_repairs_when_triggers_maintained_rows(
             WriteOperation.INGEST,
             {
                 "_connection": conn,
-                "changed_conversation_ids": ("c1",),
+                "changed_session_ids": ("c1",),
                 "repair_message_fts": False,
                 "repair_action_fts": False,
             },
@@ -110,7 +110,7 @@ def test_write_gateway_repairs_fts_when_requested_even_if_live_triggers_exist(
             WriteOperation.INGEST,
             {
                 "_connection": conn,
-                "changed_conversation_ids": ("c1",),
+                "changed_session_ids": ("c1",),
             },
         )
 
@@ -143,7 +143,7 @@ def test_write_gateway_repairs_fts_when_live_triggers_were_missing(
             WriteOperation.INGEST,
             {
                 "_connection": conn,
-                "changed_conversation_ids": ("c1",),
+                "changed_session_ids": ("c1",),
             },
         )
 
@@ -159,7 +159,7 @@ async def test_write_gateway_async_commit_uses_same_local_effects_path(tmp_path:
             WriteOperation.INGEST,
             {
                 "_connection": conn,
-                "changed_conversation_ids": (),
+                "changed_session_ids": (),
             },
         )
 

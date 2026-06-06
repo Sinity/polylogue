@@ -4,14 +4,14 @@ This is the operator-facing onboarding surface for the embedding pipeline
 described in [`docs/architecture.md`](../../../docs/architecture.md) —
 ``polylogue embed enable`` (alias: ``activate``) writes the config flip and
 records the Voyage API key in ``polylogue.toml``; ``polylogue embed preflight``
-counts the conversations that would be embedded plus the Voyage cost estimate
+counts the sessions that would be embedded plus the Voyage cost estimate
 without contacting the provider; ``polylogue embed backfill`` runs the first
-batch with per-conversation cost feedback against the cost cap; and
+batch with per-session cost feedback against the cost cap; and
 ``polylogue embed disable`` flips the gate back off without dropping any
 existing embeddings.
 
 The substrate-side primitives (token-count and cost estimation,
-``PendingConversation`` enumeration, ``embed_conversation_sync``) live under
+``PendingSession`` enumeration, ``embed_session_sync``) live under
 ``polylogue.storage.embeddings``; the CLI is a thin orchestrator over them.
 """
 
@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import time
 from pathlib import Path
+from typing import cast
 
 import click
 
@@ -50,7 +52,7 @@ def _build_preflight_report(
     env: AppEnv,
     *,
     rebuild: bool = False,
-    max_conversations: int | None = None,
+    max_sessions: int | None = None,
     max_messages: int | None = None,
     max_cost_usd: float | None = None,
 ) -> PreflightReport:
@@ -58,30 +60,52 @@ def _build_preflight_report(
     return build_preflight_report(
         env.config.db_path,
         rebuild=rebuild,
-        max_conversations=max_conversations,
+        max_sessions=max_sessions,
         max_messages=max_messages,
         max_cost_usd=max_cost_usd,
     )
+
+
+def _active_archive_index_path(db_path: Path) -> Path | None:
+    from polylogue.paths import archive_root
+
+    candidates = []
+    if db_path.name == "index.db":
+        candidates.append(db_path)
+    candidates.append(db_path.with_name("index.db"))
+    candidates.append(archive_root() / "index.db")
+    index_db = next((candidate for candidate in dict.fromkeys(candidates) if candidate.exists()), None)
+    if index_db is None:
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+        try:
+            row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions' LIMIT 1").fetchone()
+            return index_db if row is not None else None
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
 
 
 def _render_preflight(env: AppEnv, report: PreflightReport) -> None:
     console = env.ui.console
     console.print("\n[bold]Embedding preflight[/bold]")
     console.print(f"  Model:                 {report.model} ({report.dimension}d)")
-    console.print(f"  Total conversations:   {report.total_conversations:,}")
+    console.print(f"  Total sessions:   {report.total_sessions:,}")
     if report.windowed:
         limits: list[str] = []
-        if report.max_conversations is not None:
-            limits.append(f"{report.max_conversations:,} conversations")
+        if report.max_sessions is not None:
+            limits.append(f"{report.max_sessions:,} sessions")
         if report.max_messages is not None:
             limits.append(f"{report.max_messages:,} messages")
         if report.max_cost_usd is not None:
             limits.append(f"${report.max_cost_usd:.4f}")
         console.print(f"  Window limit:          {', '.join(limits)}")
-        console.print(f"  Window conversations:  {report.pending_conversations:,}")
+        console.print(f"  Window sessions:  {report.pending_sessions:,}")
         console.print(f"  Window messages:       {report.pending_messages:,}")
     else:
-        console.print(f"  Pending conversations: {report.pending_conversations:,}")
+        console.print(f"  Pending sessions: {report.pending_sessions:,}")
         console.print(f"  Pending messages:      {report.pending_messages:,}")
     console.print(f"  Estimated tokens:      ~{report.estimated_tokens:,}")
     console.print(f"  Estimated cost (USD):  ~${report.estimated_cost_usd:.4f}")
@@ -305,10 +329,10 @@ def disable_subcommand(env: AppEnv) -> None:
 
 @embed_command.command("preflight")
 @click.option(
-    "--max-conversations",
+    "--max-sessions",
     type=click.IntRange(min=1),
     default=None,
-    help="Estimate only the next bounded conversation window.",
+    help="Estimate only the next bounded session window.",
 )
 @click.option(
     "--max-messages",
@@ -325,7 +349,7 @@ def disable_subcommand(env: AppEnv) -> None:
 @click.option(
     "--rebuild",
     is_flag=True,
-    help="Estimate re-embedding every conversation, not just pending ones.",
+    help="Estimate re-embedding every session, not just pending ones.",
 )
 @click.option(
     "--format",
@@ -338,7 +362,7 @@ def disable_subcommand(env: AppEnv) -> None:
 @click.pass_obj
 def preflight_subcommand(
     env: AppEnv,
-    max_conversations: int | None,
+    max_sessions: int | None,
     max_messages: int | None,
     max_cost_usd: float | None,
     rebuild: bool,
@@ -352,7 +376,7 @@ def preflight_subcommand(
     report = _build_preflight_report(
         env,
         rebuild=rebuild,
-        max_conversations=max_conversations,
+        max_sessions=max_sessions,
         max_messages=max_messages,
         max_cost_usd=max_cost_usd,
     )
@@ -364,10 +388,10 @@ def preflight_subcommand(
 
 @embed_command.command("backfill")
 @click.option(
-    "--max-conversations",
+    "--max-sessions",
     type=click.IntRange(min=1),
     default=None,
-    help="Maximum conversations to process in this catch-up window.",
+    help="Maximum sessions to process in this catch-up window.",
 )
 @click.option(
     "--max-messages",
@@ -385,7 +409,7 @@ def preflight_subcommand(
     "--stop-after-seconds",
     type=click.IntRange(min=1),
     default=None,
-    help="Stop starting new conversations after this many seconds.",
+    help="Stop starting new sessions after this many seconds.",
 )
 @click.option(
     "--max-errors",
@@ -396,7 +420,7 @@ def preflight_subcommand(
 @click.option(
     "--rebuild",
     is_flag=True,
-    help="Re-embed every conversation, not just the pending ones.",
+    help="Re-embed every session, not just the pending ones.",
 )
 @click.option(
     "--yes",
@@ -407,7 +431,7 @@ def preflight_subcommand(
 @click.pass_obj
 def backfill_subcommand(
     env: AppEnv,
-    max_conversations: int | None,
+    max_sessions: int | None,
     max_messages: int | None,
     max_cost_usd: float | None,
     stop_after_seconds: int | None,
@@ -415,29 +439,13 @@ def backfill_subcommand(
     rebuild: bool,
     yes: bool,
 ) -> None:
-    """Run the first embedding batch with per-conversation cost feedback.
+    """Run the first embedding batch with per-session cost feedback.
 
-    Prints the cost preflight, confirms, then iterates pending conversations
-    (or all conversations if ``--rebuild``) and emits running totals so the
+    Prints the cost preflight, confirms, then iterates pending sessions
+    (or all sessions if ``--rebuild``) and emits running totals so the
     user can interrupt before the soft monthly cap kicks in.
     """
-    from polylogue.storage.embeddings.materialization import (
-        embed_conversation_sync,
-        iter_pending_conversations,
-        mark_all_conversations_needs_reindex,
-    )
-    from polylogue.storage.embeddings.progress import (
-        CatchupRunDelta,
-        CatchupRunStart,
-        finish_embedding_catchup_run,
-        record_embedding_catchup_progress,
-        start_embedding_catchup_run,
-    )
     from polylogue.storage.search_providers import create_vector_provider
-    from polylogue.storage.search_providers.sqlite_vec_support import (
-        ESTIMATED_TOKENS_PER_MESSAGE,
-        VOYAGE_4_COST_PER_1M_TOKENS,
-    )
 
     key = _resolve_voyage_key(env, None)
     if not key:
@@ -450,7 +458,7 @@ def backfill_subcommand(
     report = _build_preflight_report(
         env,
         rebuild=rebuild,
-        max_conversations=max_conversations,
+        max_sessions=max_sessions,
         max_messages=max_messages,
         max_cost_usd=max_cost_usd,
     )
@@ -458,12 +466,27 @@ def backfill_subcommand(
     if not yes and not click.confirm("\nProceed with backfill?", default=False):
         click.echo("Cancelled.")
         return
-    if rebuild:
-        mark_all_conversations_needs_reindex(env.repository.backend)
+    index_db = _active_archive_index_path(env.config.db_path)
+    if index_db is None:
+        click.echo(
+            "Error: index.db not found. Initialize the archive tiers first.",
+            err=True,
+        )
+        raise click.Abort()
 
+    if rebuild:
+        from polylogue.storage.embeddings.materialization import mark_all_archive_sessions_needs_reindex
+
+        mark_all_archive_sessions_needs_reindex(index_db)
+
+    embeddings_db = index_db.with_name("embeddings.db")
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
     vec_provider = create_vector_provider(
         voyage_api_key=key,
-        db_path=env.config.db_path,
+        db_path=embeddings_db,
         model=report.model,
         dimension=report.dimension,
     )
@@ -471,14 +494,59 @@ def backfill_subcommand(
         click.echo("Error: vector provider unavailable (sqlite-vec or voyage init failed).", err=True)
         raise click.Abort()
 
-    pending = iter_pending_conversations(
-        env.repository.backend,
+    _run_archive_backfill(
+        env,
+        index_db,
+        vec_provider,
+        report,
         rebuild=rebuild,
-        max_conversations=max_conversations,
-        max_messages=report.max_messages,
+        max_sessions=max_sessions,
+        stop_after_seconds=stop_after_seconds,
+        max_errors=max_errors,
     )
+
+
+def _run_archive_backfill(
+    env: AppEnv,
+    index_db: Path,
+    vec_provider: object,
+    report: PreflightReport,
+    *,
+    rebuild: bool,
+    max_sessions: int | None,
+    stop_after_seconds: int | None,
+    max_errors: int | None,
+) -> None:
+    from polylogue.protocols import VectorProvider
+    from polylogue.storage.embeddings.materialization import (
+        embed_archive_session_sync,
+        select_pending_archive_session_window,
+    )
+    from polylogue.storage.search_providers.sqlite_vec_support import (
+        ESTIMATED_TOKENS_PER_MESSAGE,
+        VOYAGE_4_COST_PER_1M_TOKENS,
+    )
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    embeddings_db = index_db.with_name("embeddings.db")
+    conn = open_readonly_connection(index_db)
+    try:
+        if embeddings_db.exists():
+            conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
+            status_table = "embeddings.embedding_status"
+        else:
+            status_table = ""
+        pending = select_pending_archive_session_window(
+            conn,
+            status_table=status_table,
+            rebuild=rebuild,
+            max_sessions=max_sessions,
+            max_messages=report.max_messages,
+        )
+    finally:
+        conn.close()
     if not pending:
-        click.echo("All conversations are already embedded.")
+        click.echo("All sessions are already embedded.")
         return
 
     cap = _effective_cost_cap(report.cost_cap_usd, report.max_cost_usd)
@@ -488,86 +556,38 @@ def backfill_subcommand(
     console = env.ui.console
     started_at = time.monotonic()
     stopped_reason: str | None = None
-    run_id = start_embedding_catchup_run(
-        env.config.db_path,
-        CatchupRunStart(
-            rebuild=rebuild,
-            max_conversations=max_conversations,
-            max_messages=report.max_messages,
-            stop_after_seconds=stop_after_seconds,
-            max_errors=max_errors,
-            planned_conversations=len(pending),
-            planned_messages=sum(item.message_count for item in pending),
-        ),
-    )
+    typed_provider = cast(VectorProvider, vec_provider)
 
-    try:
-        for index, item in enumerate(pending, start=1):
-            if stop_after_seconds is not None and time.monotonic() - started_at >= stop_after_seconds:
-                stopped_reason = f"time limit reached ({stop_after_seconds}s)"
+    for index, item in enumerate(pending, start=1):
+        if stop_after_seconds is not None and time.monotonic() - started_at >= stop_after_seconds:
+            stopped_reason = f"time limit reached ({stop_after_seconds}s)"
+            break
+        outcome = embed_archive_session_sync(index_db, typed_provider, item.session_id)
+        if outcome.status == "embedded":
+            embedded += 1
+            batch_cost = (
+                outcome.embedded_message_count * ESTIMATED_TOKENS_PER_MESSAGE * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
+            )
+            cumulative_cost += batch_cost
+            console.print(
+                f"  [{index}/{len(pending)}] {item.title or item.session_id[:12]}: "
+                f"{outcome.embedded_message_count} msgs (~${batch_cost:.4f}, cumulative ~${cumulative_cost:.4f})"
+            )
+            if cap > 0 and cumulative_cost > cap:
+                stopped_reason = f"cost cap reached (~${cumulative_cost:.4f} > ${cap:.2f})"
+                console.print(
+                    f"[yellow]Cost cap reached (~${cumulative_cost:.4f} > ${cap:.2f}). "
+                    f"Stopping after {embedded} sessions.[/yellow]"
+                )
                 break
-            outcome = embed_conversation_sync(env.repository, vec_provider, item.conversation_id)
-            if outcome.status == "embedded":
-                embedded += 1
-                batch_cost = (
-                    outcome.embedded_message_count
-                    * ESTIMATED_TOKENS_PER_MESSAGE
-                    * VOYAGE_4_COST_PER_1M_TOKENS
-                    / 1_000_000
-                )
-                cumulative_cost += batch_cost
-                record_embedding_catchup_progress(
-                    env.config.db_path,
-                    run_id,
-                    CatchupRunDelta(
-                        conversation_id=item.conversation_id,
-                        embedded=True,
-                        embedded_messages=outcome.embedded_message_count,
-                        estimated_cost_usd=batch_cost,
-                    ),
-                )
-                console.print(
-                    f"  [{index}/{len(pending)}] {item.title or item.conversation_id[:12]}: "
-                    f"{outcome.embedded_message_count} msgs (~${batch_cost:.4f}, cumulative ~${cumulative_cost:.4f})"
-                )
-                if cap > 0 and cumulative_cost > cap:
-                    stopped_reason = f"cost cap reached (~${cumulative_cost:.4f} > ${cap:.2f})"
-                    console.print(
-                        f"[yellow]Cost cap reached (~${cumulative_cost:.4f} > ${cap:.2f}). "
-                        f"Stopping after {embedded} conversations.[/yellow]"
-                    )
-                    break
-            elif outcome.status in {"no_messages", "no_embeddable_messages"}:
-                record_embedding_catchup_progress(
-                    env.config.db_path,
-                    run_id,
-                    CatchupRunDelta(conversation_id=item.conversation_id, skipped=True),
-                )
-                console.print(
-                    f"  [{index}/{len(pending)}] {item.title or item.conversation_id[:12]}: no embeddable messages"
-                )
-            elif outcome.status == "error":
-                errors += 1
-                record_embedding_catchup_progress(
-                    env.config.db_path,
-                    run_id,
-                    CatchupRunDelta(conversation_id=item.conversation_id, errored=True),
-                )
-                console.print(f"  [{index}/{len(pending)}] {item.conversation_id}: error {outcome.error}")
-                if max_errors is not None and errors >= max_errors:
-                    stopped_reason = f"max errors reached ({max_errors})"
-                    break
-    except KeyboardInterrupt:
-        finish_embedding_catchup_run(env.config.db_path, run_id, status="interrupted", stop_reason="keyboard interrupt")
-        raise
-    except Exception as exc:
-        finish_embedding_catchup_run(env.config.db_path, run_id, status="failed", stop_reason=str(exc))
-        raise
-
-    if stopped_reason:
-        finish_embedding_catchup_run(env.config.db_path, run_id, status="stopped", stop_reason=stopped_reason)
-    else:
-        finish_embedding_catchup_run(env.config.db_path, run_id, status="completed", stop_reason=None)
+        elif outcome.status in {"no_messages", "no_embeddable_messages"}:
+            console.print(f"  [{index}/{len(pending)}] {item.title or item.session_id[:12]}: no embeddable messages")
+        elif outcome.status == "error":
+            errors += 1
+            console.print(f"  [{index}/{len(pending)}] {item.session_id}: error {outcome.error}")
+            if max_errors is not None and errors >= max_errors:
+                stopped_reason = f"max errors reached ({max_errors})"
+                break
 
     click.echo(f"\nBackfill complete. Embedded {embedded}, errors {errors}, est. cost ~${cumulative_cost:.4f}.")
     if stopped_reason:

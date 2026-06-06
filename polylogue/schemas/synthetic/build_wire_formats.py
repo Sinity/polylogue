@@ -9,7 +9,7 @@ from typing import Protocol, TypeAlias
 
 from polylogue.archive.raw_payload.decode import JSONValue
 from polylogue.schemas.synthetic.semantic_values import _text_for_role
-from polylogue.schemas.synthetic.showcase import ConversationTheme
+from polylogue.schemas.synthetic.showcase import SessionTheme
 
 SyntheticRecord: TypeAlias = dict[str, JSONValue]
 
@@ -35,7 +35,7 @@ class _WireFormatContext(Protocol):
         ts: float,
         *,
         index: int,
-        theme: ConversationTheme | None,
+        theme: SessionTheme | None,
     ) -> None: ...
 
     def _ensure_wire_claude_ai(
@@ -46,7 +46,7 @@ class _WireFormatContext(Protocol):
         ts: float,
         *,
         index: int,
-        theme: ConversationTheme | None,
+        theme: SessionTheme | None,
     ) -> None: ...
 
     def _ensure_wire_claude_code(
@@ -57,7 +57,7 @@ class _WireFormatContext(Protocol):
         ts: float,
         *,
         index: int,
-        theme: ConversationTheme | None,
+        theme: SessionTheme | None,
     ) -> None: ...
 
     def _ensure_wire_codex(
@@ -68,7 +68,7 @@ class _WireFormatContext(Protocol):
         ts: float,
         *,
         index: int,
-        theme: ConversationTheme | None,
+        theme: SessionTheme | None,
     ) -> None: ...
 
     def _ensure_wire_gemini(
@@ -78,7 +78,7 @@ class _WireFormatContext(Protocol):
         rng: random.Random,
         *,
         index: int,
-        theme: ConversationTheme | None,
+        theme: SessionTheme | None,
     ) -> None: ...
 
 
@@ -89,7 +89,7 @@ def _ensure_wire_format(
     rng: random.Random,
     index: int,
     base_ts: float = 1700000000.0,
-    theme: ConversationTheme | None = None,
+    theme: SessionTheme | None = None,
 ) -> None:
     ts = base_ts + index * 60
     match self.provider:
@@ -113,7 +113,7 @@ def _ensure_wire_chatgpt(
     ts: float,
     *,
     index: int,
-    theme: ConversationTheme | None,
+    theme: SessionTheme | None,
 ) -> None:
     msg = _record_field(data, "message")
     msg.setdefault("id", str(uuid.UUID(int=rng.getrandbits(128), version=4)))
@@ -137,7 +137,7 @@ def _ensure_wire_claude_ai(
     ts: float,
     *,
     index: int,
-    theme: ConversationTheme | None,
+    theme: SessionTheme | None,
 ) -> None:
     data.setdefault("uuid", str(uuid.UUID(int=rng.getrandbits(128), version=4)))
     data.setdefault("sender", role)
@@ -155,7 +155,7 @@ def _ensure_wire_claude_code(
     ts: float,
     *,
     index: int,
-    theme: ConversationTheme | None,
+    theme: SessionTheme | None,
 ) -> None:
     data.setdefault("type", role)
     msg = _record_field(data, "message")
@@ -166,7 +166,7 @@ def _ensure_wire_claude_code(
         data["timestamp"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
-def _claude_code_content_fallback(rng: random.Random, role: str, index: int, theme: ConversationTheme | None) -> object:
+def _claude_code_content_fallback(rng: random.Random, role: str, index: int, theme: SessionTheme | None) -> object:
     """Diverse content fallback matching production block-type distribution."""
     block_type = rng.choices(
         ["text", "tool_use", "tool_result", "thinking"],
@@ -204,7 +204,7 @@ def _ensure_wire_codex(
     ts: float,
     *,
     index: int,
-    theme: ConversationTheme | None,
+    theme: SessionTheme | None,
 ) -> None:
     data["type"] = "message"
     data.setdefault("role", role)
@@ -218,7 +218,7 @@ def _ensure_wire_codex(
     data.pop("payload", None)
 
 
-def _codex_content_fallback(rng: random.Random, role: str, index: int, theme: ConversationTheme | None) -> object:
+def _codex_content_fallback(rng: random.Random, role: str, index: int, theme: SessionTheme | None) -> object:
     """Diverse content fallback matching production block-type distribution."""
     block_type = rng.choices(
         ["text", "tool_use", "tool_result", "thinking"],
@@ -258,7 +258,7 @@ def _ensure_wire_gemini(
     rng: random.Random,
     *,
     index: int,
-    theme: ConversationTheme | None,
+    theme: SessionTheme | None,
 ) -> None:
     data.setdefault("role", role)
     if not data.get("text"):

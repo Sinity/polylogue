@@ -11,7 +11,7 @@ SESSION_INSIGHT_AGGREGATE_DDL = (
     """
         CREATE TABLE IF NOT EXISTS work_threads (
             thread_id TEXT PRIMARY KEY,
-            root_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,"""
+            root_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,"""
     + MATERIALIZATION_COLUMNS_SQL_NO_SORT_KEY
     + """
             start_time TEXT,
@@ -66,9 +66,9 @@ SESSION_INSIGHT_AGGREGATE_DDL = (
             source_name TEXT NOT NULL,"""
     + MATERIALIZATION_COLUMNS_SQL
     + """
-            conversation_count INTEGER NOT NULL DEFAULT 0,
+            session_count INTEGER NOT NULL DEFAULT 0,
             logical_session_count INTEGER NOT NULL DEFAULT 0,
-            logical_conversation_ids_json TEXT NOT NULL DEFAULT '[]',
+            logical_session_ids_json TEXT NOT NULL DEFAULT '[]',
             explicit_count INTEGER NOT NULL DEFAULT 0,
             auto_count INTEGER NOT NULL DEFAULT 0,
             repo_breakdown_json TEXT NOT NULL DEFAULT '{}',

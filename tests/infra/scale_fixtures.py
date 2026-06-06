@@ -1,15 +1,15 @@
 """Tiered scale fixtures for performance/regression tests (issue #1183).
 
-Provides three explicit tiers with documented conversation/message counts
+Provides three explicit tiers with documented session/message counts
 and pytest markers so each tier runs in the right gate:
 
-  ``tier_small_db``  — ~100 conversations / ~1,000 messages
+  ``tier_small_db``  — ~100 sessions / ~1,000 messages
                        Marker: ``@pytest.mark.scale_small``
                        Default ``devtools verify`` includes these.
-  ``tier_medium_db`` — ~1,000 conversations / ~10,000 messages
+  ``tier_medium_db`` — ~1,000 sessions / ~10,000 messages
                        Marker: ``@pytest.mark.scale_medium``
                        ``devtools verify --lab`` includes these.
-  ``tier_large_db``  — ~10,000 conversations / ~100,000 messages
+  ``tier_large_db``  — ~10,000 sessions / ~100,000 messages
                        Marker: ``@pytest.mark.scale_large``
                        Nightly CI / explicit campaigns only.
 
@@ -42,7 +42,7 @@ class ScaleTier:
         name: tier label (``small``/``medium``/``large``)
         target_messages: approximate number of messages to seed; the seeder
             stops once the running total reaches this floor.
-        target_conversations: approximate number of conversations expected
+        target_sessions: approximate number of sessions expected
             for this tier (informational; the seeder is driven by message
             count and the realistic-distribution profile).
         marker: pytest marker name registered in ``pyproject.toml``.
@@ -50,28 +50,28 @@ class ScaleTier:
 
     name: str
     target_messages: int
-    target_conversations: int
+    target_sessions: int
     marker: str
 
 
 SCALE_SMALL = ScaleTier(
     name="small",
     target_messages=1_000,
-    target_conversations=100,
+    target_sessions=100,
     marker="scale_small",
 )
 
 SCALE_MEDIUM = ScaleTier(
     name="medium",
     target_messages=10_000,
-    target_conversations=1_000,
+    target_sessions=1_000,
     marker="scale_medium",
 )
 
 SCALE_LARGE = ScaleTier(
     name="large",
     target_messages=100_000,
-    target_conversations=10_000,
+    target_sessions=10_000,
     marker="scale_large",
 )
 

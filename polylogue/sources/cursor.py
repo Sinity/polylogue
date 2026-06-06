@@ -175,12 +175,12 @@ def _log_source_iteration_summary(
 
 @dataclass
 class _ParseContext:
-    """All context needed to parse a stream and yield conversations."""
+    """All context needed to parse a stream and yield sessions."""
 
     provider_hint: Provider
     should_group: bool
-    source_path_str: str  # For RawConversationData.source_path
-    fallback_id: str  # path.stem, used as fallback conversation ID
+    source_path_str: str  # For RawSessionData.source_path
+    fallback_id: str  # path.stem, used as fallback session ID
     file_mtime: str | None
     capture_raw: bool
     sidecar_data: SidecarData

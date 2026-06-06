@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from polylogue.archive.query.fields import describe_spec_selection_fields
@@ -9,25 +10,24 @@ from polylogue.cli.shared.machine_errors import error_no_results
 
 if TYPE_CHECKING:
     from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
-    from polylogue.archive.query.spec import ConversationQuerySpec
+    from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.cli.shared.types import AppEnv
 
 
-def _maybe_subcommand_typo_hint(selection: ConversationQuerySpec | None) -> str | None:
-    """Return a 'did you mean to run a subcommand?' hint when the query is a single bare token.
+def maybe_subcommand_typo_hint(query_terms: Sequence[str]) -> str | None:
+    """Return a 'did you mean to run a subcommand?' hint for a single bare token.
 
     Query-first dispatch is surprising when a user types something like
-    ``polylogue stats-by-provider`` expecting a subcommand. If the query
-    text is a single token and matches a registered subcommand by Levenshtein
-    distance, we surface that explicitly in the no-results output.
+    ``polylogue stats-by-origin`` expecting a subcommand. If ``query_terms``
+    is a single token and matches a registered subcommand by Levenshtein
+    distance, we surface that explicitly in the no-results output. Both the
+    archive no-results paths consume this helper so the
+    hint stays identical across surfaces.
     """
-    if selection is None:
+    terms: tuple[str, ...] = tuple(str(term) for term in query_terms)
+    if len(terms) != 1:
         return None
-    raw_terms = getattr(selection, "query_terms", None) or ()
-    query_terms: tuple[str, ...] = tuple(str(t) for t in raw_terms)
-    if len(query_terms) != 1:
-        return None
-    token = query_terms[0].strip()
+    token = terms[0].strip()
     if not token or " " in token:
         return None
 
@@ -46,10 +46,17 @@ def _maybe_subcommand_typo_hint(selection: ConversationQuerySpec | None) -> str 
     )
 
 
+def _maybe_subcommand_typo_hint(selection: SessionQuerySpec | None) -> str | None:
+    """Adapter for the legacy spec-driven no-results path."""
+    if selection is None:
+        return None
+    return maybe_subcommand_typo_hint(getattr(selection, "query_terms", None) or ())
+
+
 def emit_no_results(
     env: AppEnv,
     *,
-    selection: ConversationQuerySpec | None = None,
+    selection: SessionQuerySpec | None = None,
     diagnostics: QueryMissDiagnostics | None = None,
     output_format: str = "text",
     message: str | None = None,
@@ -58,7 +65,7 @@ def emit_no_results(
 ) -> None:
     """Render a canonical no-results message for human and machine surfaces."""
     filters = describe_spec_selection_fields(selection) if selection is not None else []
-    resolved_message = message or ("No conversations matched filters." if filters else "No conversations matched.")
+    resolved_message = message or ("No sessions matched filters." if filters else "No sessions matched.")
     if output_format == "json":
         error_no_results(
             resolved_message,
@@ -67,7 +74,7 @@ def emit_no_results(
         ).emit(exit_code=exit_code or 2)
 
     if filters and message is None:
-        env.ui.console.print("No conversations matched filters:")
+        env.ui.console.print("No sessions matched filters:")
         for item in filters:
             env.ui.console.print(f"  {item}")
         env.ui.console.print(hint or "Hint: try broadening your filters or use `list` to browse")
@@ -87,4 +94,4 @@ def emit_no_results(
         raise SystemExit(exit_code)
 
 
-__all__ = ["emit_no_results"]
+__all__ = ["emit_no_results", "maybe_subcommand_typo_hint"]

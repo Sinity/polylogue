@@ -30,14 +30,14 @@ class _MessageAggregate(TypedDict):
     words_approx: int
 
 
-class ProviderConversationCountRow(TypedDict):
+class ProviderSessionCountRow(TypedDict):
     source_name: str
-    conversation_count: int
+    session_count: int
 
 
 class ProviderMetricsRow(TypedDict):
     source_name: str
-    conversation_count: int
+    session_count: int
     message_count: int
     user_message_count: int
     assistant_message_count: int
@@ -45,25 +45,25 @@ class ProviderMetricsRow(TypedDict):
     assistant_word_sum: int
     tool_use_count: int
     thinking_count: int
-    conversations_with_tools: int
-    conversations_with_thinking: int
+    sessions_with_tools: int
+    sessions_with_thinking: int
 
 
 __all__ = [
     "AggregateMessageStats",
-    "ProviderConversationCountRow",
+    "ProviderSessionCountRow",
     "ProviderMetricsRow",
     "aggregate_message_stats",
-    "upsert_conversation_stats",
+    "upsert_session_stats",
     "get_stats_by",
-    "get_provider_conversation_counts",
+    "get_provider_session_counts",
     "get_provider_metrics_rows",
 ]
 
 
 async def aggregate_message_stats(
     conn: aiosqlite.Connection,
-    conversation_ids: list[str] | None = None,
+    session_ids: list[str] | None = None,
 ) -> AggregateMessageStats:
     """Compute aggregate message statistics via SQL."""
 
@@ -110,10 +110,10 @@ async def aggregate_message_stats(
             "words_approx": _row_int(row, "words_approx"),
         }
 
-    if conversation_ids is not None:
+    if session_ids is not None:
         # #1659: read profile is query_only=ON which rejects TEMP TABLE writes,
         # so use inline IN-clause binding instead of a temp-table join.
-        if not conversation_ids:
+        if not session_ids:
             return {
                 "total": 0,
                 "user": 0,
@@ -126,23 +126,23 @@ async def aggregate_message_stats(
                 "max_sort_key": None,
                 "providers": {},
             }
-        placeholders = ",".join("?" * len(conversation_ids))
-        cid_params = tuple(conversation_ids)
+        placeholders = ",".join("?" * len(session_ids))
+        cid_params = tuple(session_ids)
 
-        message_stats = await _message_aggregate(f"WHERE conversation_id IN ({placeholders})", cid_params)
+        message_stats = await _message_aggregate(f"WHERE session_id IN ({placeholders})", cid_params)
 
         date_row = await (
             await conn.execute(
-                f"SELECT MIN(sort_key) as min_sk, MAX(sort_key) as max_sk FROM conversations "
-                f"WHERE conversation_id IN ({placeholders})",
+                f"SELECT MIN(sort_key) as min_sk, MAX(sort_key) as max_sk FROM sessions "
+                f"WHERE session_id IN ({placeholders})",
                 cid_params,
             )
         ).fetchone()
 
         prov_rows = await (
             await conn.execute(
-                f"SELECT source_name, COUNT(*) as cnt FROM conversations "
-                f"WHERE conversation_id IN ({placeholders}) "
+                f"SELECT source_name, COUNT(*) as cnt FROM sessions "
+                f"WHERE session_id IN ({placeholders}) "
                 "GROUP BY source_name ORDER BY cnt DESC",
                 cid_params,
             )
@@ -153,7 +153,7 @@ async def aggregate_message_stats(
             await conn.execute(
                 f"SELECT COUNT(*) AS attachment_ref_count, COUNT(DISTINCT attachment_id) "
                 f"AS distinct_attachment_count FROM attachment_refs "
-                f"WHERE conversation_id IN ({placeholders})",
+                f"WHERE session_id IN ({placeholders})",
                 cid_params,
             )
         ).fetchone()
@@ -168,19 +168,19 @@ async def aggregate_message_stats(
         }
 
     # Unfiltered path — #1678: total/words moved from a full messages scan
-    # to conversation_stats (pre-aggregated, ~1 row per conversation).
+    # to session_stats (pre-aggregated, ~1 row per session).
     # The role-level splits still scan messages, but the query is index-only
     # (role is in idx_messages_provider_stats) — no table access for word_count.
-    # Provider counts also move to conversation_stats; this is consistent with
-    # get_provider_conversation_counts which queries conversations directly
-    # because zero-message conversations have no stats row.
+    # Provider counts also move to session_stats; this is consistent with
+    # get_provider_session_counts which queries sessions directly
+    # because zero-message sessions have no stats row.
     stats_row = await (
         await conn.execute(
             """
             SELECT
                 COALESCE(SUM(message_count), 0)  AS total_msgs,
                 COALESCE(SUM(word_count), 0)     AS total_words
-            FROM conversation_stats
+            FROM session_stats
             """
         )
     ).fetchone()
@@ -207,12 +207,12 @@ async def aggregate_message_stats(
     }
 
     date_row = await (
-        await conn.execute("SELECT MIN(sort_key) as min_sk, MAX(sort_key) as max_sk FROM conversations")
+        await conn.execute("SELECT MIN(sort_key) as min_sk, MAX(sort_key) as max_sk FROM sessions")
     ).fetchone()
 
     prov_rows = await (
         await conn.execute(
-            "SELECT source_name, COUNT(*) as cnt FROM conversation_stats GROUP BY source_name ORDER BY cnt DESC"
+            "SELECT source_name, COUNT(*) as cnt FROM session_stats GROUP BY source_name ORDER BY cnt DESC"
         )
     ).fetchall()
     providers = {str(r["source_name"]): _row_int(r, "cnt") for r in prov_rows}
@@ -236,14 +236,14 @@ async def aggregate_message_stats(
     }
 
 
-async def upsert_conversation_stats(
+async def upsert_session_stats(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
     source_name: str,
     messages: list[MessageRecord],
     transaction_depth: int,
 ) -> None:
-    """Upsert precomputed per-conversation aggregate stats including per-role counts."""
+    """Upsert precomputed per-session aggregate stats including per-role counts."""
     message_count = len(messages)
     word_count = sum(m.word_count for m in messages)
     tool_use_count = sum(1 for m in messages if m.has_tool_use)
@@ -260,7 +260,7 @@ async def upsert_conversation_stats(
     await conn.execute(
         _STATS_UPSERT_SQL,
         (
-            conversation_id,
+            session_id,
             source_name,
             message_count,
             word_count,
@@ -280,16 +280,16 @@ async def upsert_conversation_stats(
 
 
 async def get_stats_by(conn: aiosqlite.Connection, group_by: str = "provider") -> dict[str, int]:
-    """Get conversation counts grouped by provider, day, month, or year.
+    """Get session counts grouped by provider, day, month, or year.
 
     Raises ValueError on unknown ``group_by`` rather than silently returning
     provider counts. Each branch is a literal SQL constant — the validated
     input never reaches string interpolation — but the explicit reject closes
     the door on future branches that might.
 
-    These are the conversations-table calendar/provider dimensions. The CLI's
+    These are the sessions-table calendar/provider dimensions. The CLI's
     additional ``action``/``tool``/``repo``/``work-kind`` dimensions are not
-    plain conversation counts — they are computed via insight-summary
+    plain session counts — they are computed via insight-summary
     aggregation paths in ``cli/query.py:_handle_stats_by`` and are not exposed
     through this substrate count (#1749).
     """
@@ -297,7 +297,7 @@ async def get_stats_by(conn: aiosqlite.Connection, group_by: str = "provider") -
         cursor = await conn.execute(
             """
             SELECT strftime('%Y-%m-%d', updated_at) as period, COUNT(*) as count
-            FROM conversations
+            FROM sessions
             WHERE updated_at IS NOT NULL
             GROUP BY period ORDER BY period DESC
             """
@@ -306,7 +306,7 @@ async def get_stats_by(conn: aiosqlite.Connection, group_by: str = "provider") -
         cursor = await conn.execute(
             """
             SELECT strftime('%Y-%m', updated_at) as period, COUNT(*) as count
-            FROM conversations
+            FROM sessions
             WHERE updated_at IS NOT NULL
             GROUP BY period ORDER BY period DESC
             """
@@ -315,7 +315,7 @@ async def get_stats_by(conn: aiosqlite.Connection, group_by: str = "provider") -
         cursor = await conn.execute(
             """
             SELECT strftime('%Y', updated_at) as period, COUNT(*) as count
-            FROM conversations
+            FROM sessions
             WHERE updated_at IS NOT NULL
             GROUP BY period ORDER BY period DESC
             """
@@ -324,7 +324,7 @@ async def get_stats_by(conn: aiosqlite.Connection, group_by: str = "provider") -
         cursor = await conn.execute(
             """
             SELECT source_name as period, COUNT(*) as count
-            FROM conversations
+            FROM sessions
             GROUP BY source_name ORDER BY count DESC
             """
         )
@@ -334,23 +334,23 @@ async def get_stats_by(conn: aiosqlite.Connection, group_by: str = "provider") -
     return {row["period"]: row["count"] for row in rows}
 
 
-async def get_provider_conversation_counts(
+async def get_provider_session_counts(
     conn: aiosqlite.Connection,
-) -> list[ProviderConversationCountRow]:
-    """Return conversation counts per provider — fast, conversations-table-only query."""
+) -> list[ProviderSessionCountRow]:
+    """Return session counts per provider — fast, sessions-table-only query."""
     cursor = await conn.execute(
         """
-        SELECT source_name, COUNT(*) AS conversation_count
-        FROM conversations
+        SELECT source_name, COUNT(*) AS session_count
+        FROM sessions
         GROUP BY source_name
-        ORDER BY conversation_count DESC
+        ORDER BY session_count DESC
         """
     )
     rows = await cursor.fetchall()
     return [
         {
             "source_name": str(row["source_name"] or "unknown"),
-            "conversation_count": int(row["conversation_count"] or 0),
+            "session_count": int(row["session_count"] or 0),
         }
         for row in rows
     ]
@@ -361,8 +361,8 @@ async def get_provider_metrics_rows(
 ) -> list[ProviderMetricsRow]:
     """Return raw provider aggregation rows for analytics reporting.
 
-    All aggregates come from ``conversation_stats`` — one row per
-    conversation, far smaller than ``messages``. As of schema v21,
+    All aggregates come from ``session_stats`` — one row per
+    session, far smaller than ``messages``. As of schema v21,
     per-role message counts and word sums are also pre-aggregated,
     eliminating the former messages-table scan (#1314 companion).
     """
@@ -370,17 +370,17 @@ async def get_provider_metrics_rows(
         """
         SELECT
             COALESCE(NULLIF(cs.source_name, ''), 'unknown')        AS source_name,
-            COUNT(*)                                                  AS conversation_count,
+            COUNT(*)                                                  AS session_count,
             COALESCE(SUM(cs.message_count), 0)                        AS message_count,
             COALESCE(SUM(cs.tool_use_count), 0)                       AS tool_use_count,
             COALESCE(SUM(cs.thinking_count), 0)                       AS thinking_count,
-            SUM(CASE WHEN cs.tool_use_count > 0 THEN 1 ELSE 0 END)    AS conversations_with_tools,
-            SUM(CASE WHEN cs.thinking_count > 0 THEN 1 ELSE 0 END)    AS conversations_with_thinking,
+            SUM(CASE WHEN cs.tool_use_count > 0 THEN 1 ELSE 0 END)    AS sessions_with_tools,
+            SUM(CASE WHEN cs.thinking_count > 0 THEN 1 ELSE 0 END)    AS sessions_with_thinking,
             COALESCE(SUM(cs.user_msg_count), 0)                       AS user_message_count,
             COALESCE(SUM(cs.assistant_msg_count), 0)                  AS assistant_message_count,
             COALESCE(SUM(cs.user_word_count), 0)                      AS user_word_sum,
             COALESCE(SUM(cs.assistant_word_count), 0)                 AS assistant_word_sum
-        FROM conversation_stats cs
+        FROM session_stats cs
         GROUP BY COALESCE(NULLIF(cs.source_name, ''), 'unknown')
         """
     )
@@ -398,7 +398,7 @@ async def get_provider_metrics_rows(
         merged.append(
             {
                 "source_name": provider,
-                "conversation_count": int(row["conversation_count"] or 0),
+                "session_count": int(row["session_count"] or 0),
                 "message_count": int(row["message_count"] or 0),
                 "user_message_count": role_split["user_message_count"],
                 "assistant_message_count": role_split["assistant_message_count"],
@@ -406,9 +406,9 @@ async def get_provider_metrics_rows(
                 "assistant_word_sum": role_split["assistant_word_sum"],
                 "tool_use_count": int(row["tool_use_count"] or 0),
                 "thinking_count": int(row["thinking_count"] or 0),
-                "conversations_with_tools": int(row["conversations_with_tools"] or 0),
-                "conversations_with_thinking": int(row["conversations_with_thinking"] or 0),
+                "sessions_with_tools": int(row["sessions_with_tools"] or 0),
+                "sessions_with_thinking": int(row["sessions_with_thinking"] or 0),
             }
         )
-    merged.sort(key=lambda item: item["conversation_count"], reverse=True)
+    merged.sort(key=lambda item: item["session_count"], reverse=True)
     return merged

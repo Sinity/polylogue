@@ -20,7 +20,7 @@ This test:
 
 The whitelist (``_AUDITED_SITES``) is keyed by ``(relative_path, line_no)``
 and records *why* a given interpolation is safe. New interpolations must be
-audited and added explicitly; the gate forces that conversation rather than
+audited and added explicitly; the gate forces that session rather than
 allowing silent drift.
 """
 
@@ -48,7 +48,7 @@ _AUDITED_SITES: Final[dict[tuple[str, int], str]] = {
     # literal with a ``{}`` for the placeholder list); ``placeholders`` is a
     # generated ``?,?`` string sized to the bound ``chunk``; values flow through
     # bound params, never the format string.
-    ("polylogue/storage/repository/archive/conversations.py", 296): (
+    ("polylogue/storage/repository/archive/sessions.py", 296): (
         "chunked IN-clause: literal scoped_sql template + '?,?' placeholders, values bound"
     ),
 }
@@ -107,13 +107,15 @@ _TRUSTED_IDENTIFIER_NAMES: frozenset[str] = frozenset(
         "dimension",  # vec0 dimension is an int literal from config
         "table",
         "table_name",
+        "status_table",
+        "meta_table",
         "source_table",
         "freshness_table",
         "tablename",
         "column",
         "column_name",
         "columnname",
-        "id_column",  # compile-time PK column name (e.g. "conversation_id")
+        "id_column",  # compile-time PK column name (e.g. "session_id")
         "key_column",
         "view",
         "view_name",
@@ -142,16 +144,32 @@ _TRUSTED_IDENTIFIER_NAMES: frozenset[str] = frozenset(
         "where",
         "where_clause",
         "where_clauses",
+        "clauses",
         "where_sql",
+        "clause",
         "scope_clause",
         "scope_sql",
         "json_where",
         "join",  # attribute name of str.join() in `' AND '.join(where_clauses)`
         "join_clause",
         "filter_sql",
+        "pagination",
+        "bucket_format",
         "id_filter",
         "having_clause",
+        "tag_clause",
         "effective_raw_provider_sql",
+        "base_select",  # local literal SELECT template; dynamic values stay bound
+        "quoted",  # double-quote escaped identifier from a closed table list
+        "source_filter",  # local literal predicate fragment plus bound value
+        "source_alias",  # attached schema alias returned by _ensure_source_tier_attached
+        "schema",  # closed SQLite schema alias
+        "tags_relation",  # archive-local table name or closed user/archive tag UNION relation
+        "_tags_relation",  # instance copy of the same closed archive tag relation
+        "target_table",  # closed user-state target mapping table name
+        "target_column",  # closed user-state target mapping column name
+        "spec",  # archive tier spec object; version is an internal int literal
+        "version",
     }
 )
 

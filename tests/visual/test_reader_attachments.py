@@ -3,13 +3,13 @@
 Pins the daemon web shell's contract for the attachment surface:
 
 - per-message attachment cards rendered inline above the message body;
-- conversation envelope carries an ``attachments`` list and each
+- session envelope carries an ``attachments`` list and each
   message envelope embeds its own ``attachments`` array;
-- ``/api/conversations/<id>/attachments`` returns the same envelope
-  shape, scoped to one conversation;
+- ``/api/sessions/<id>/attachments`` returns the same envelope
+  shape, scoped to one session;
 - ``/api/attachments`` returns the archive-wide library payload;
 - ``/a`` library page serves a standalone HTML page with filters for
-  mime / state / conversation;
+  mime / state / session;
 - attachment states cover ``available``, ``missing-blob``,
   ``unsupported-kind``, ``too-large``, and ``quarantined`` derived
   purely from substrate fields;
@@ -23,9 +23,6 @@ served HTML / JSON so the contract surface is browserless-verifiable.
 
 from __future__ import annotations
 
-import json
-import sqlite3
-import uuid
 from pathlib import Path
 
 import pytest
@@ -36,122 +33,24 @@ from polylogue.daemon.web_shell_attachments import (
     classify_state,
 )
 from tests.visual.conftest import (
+    ATT_MISSING,
+    ATT_OK,
+    ATT_QUARANTINED,
+    ATT_RAWHTML,
+    ATT_TOOLARGE,
+    ATT_UNSUPPORTED,
+    READER_C1,
+    READER_C1_M1,
+    READER_C2,
     ReaderWorkspace,
-    archive_db_path,
     assert_no_private_paths,
     get_json,
     get_text,
     parse_dom,
     running_reader_server,
+    seed_reader_attachments,
     write_evidence_manifest,
 )
-
-
-def _insert_attachment(
-    conn: sqlite3.Connection,
-    *,
-    attachment_id: str,
-    conversation_id: str,
-    message_id: str,
-    mime_type: str | None,
-    size_bytes: int | None,
-    path: str | None,
-    provider_meta: dict[str, object] | None = None,
-) -> None:
-    meta_blob = json.dumps(provider_meta or {})
-    conn.execute(
-        """
-        INSERT INTO attachments(
-            attachment_id, mime_type, size_bytes, path, ref_count, provider_meta
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (attachment_id, mime_type, size_bytes, path, 1, meta_blob),
-    )
-    conn.execute(
-        """
-        INSERT INTO attachment_refs(
-            ref_id, attachment_id, conversation_id, message_id, provider_meta
-        ) VALUES (?, ?, ?, ?, ?)
-        """,
-        (str(uuid.uuid4()), attachment_id, conversation_id, message_id, meta_blob),
-    )
-
-
-def _seed_attachments(workspace: ReaderWorkspace) -> None:
-    """Insert one attachment of each MK3 state under ``reader-c1``.
-
-    The seed produces five distinct attachment rows linked to the
-    first message of the seeded ``reader-c1`` conversation so the
-    library + inspector + inline-card surfaces all have evidence to
-    render at once.
-    """
-
-    db = archive_db_path(workspace)
-    conn = sqlite3.connect(str(db))
-    _insert_attachment(
-        conn,
-        attachment_id="att-ok",
-        conversation_id="reader-c1",
-        message_id="reader-c1-m1",
-        mime_type="text/plain",
-        size_bytes=1024,
-        path="blob/aa/aaaa-ok",
-        provider_meta={"name": "notes.txt"},
-    )
-    _insert_attachment(
-        conn,
-        attachment_id="att-missing",
-        conversation_id="reader-c1",
-        message_id="reader-c1-m1",
-        mime_type="image/png",
-        size_bytes=2048,
-        path=None,
-        provider_meta={"name": "screenshot.png"},
-    )
-    _insert_attachment(
-        conn,
-        attachment_id="att-unsupported",
-        conversation_id="reader-c1",
-        message_id="reader-c1-m1",
-        mime_type="application/zip",
-        size_bytes=4096,
-        path="blob/bb/bbbb-zip",
-        provider_meta={"name": "bundle.zip"},
-    )
-    _insert_attachment(
-        conn,
-        attachment_id="att-toolarge",
-        conversation_id="reader-c1",
-        message_id="reader-c1-m1",
-        mime_type="video/mp4",
-        size_bytes=PREVIEW_SIZE_BUDGET + 1,
-        path="blob/cc/cccc-video",
-        provider_meta={"name": "recording.mp4"},
-    )
-    _insert_attachment(
-        conn,
-        attachment_id="att-quarantined",
-        conversation_id="reader-c1",
-        message_id="reader-c1-m1",
-        mime_type="text/html",
-        size_bytes=512,
-        path="blob/dd/dddd-html",
-        provider_meta={"name": "suspect.html", "quarantined": True},
-    )
-    # A raw HTML attachment for the safety-boundary check. The name
-    # carries injection markers — the renderer must escape them.
-    _insert_attachment(
-        conn,
-        attachment_id="att-rawhtml",
-        conversation_id="reader-c1",
-        message_id="reader-c1-m1",
-        mime_type="text/html",
-        size_bytes=2048,
-        path="blob/ee/eeee-html",
-        provider_meta={"name": "<script>alert('xss')</script>.html"},
-    )
-    conn.commit()
-    conn.close()
 
 
 def test_classify_state_pure_function() -> None:
@@ -194,10 +93,10 @@ def test_attachment_to_envelope_shape() -> None:
         provider_meta = {"name": "n.txt"}
         name = "n.txt"
 
-    envelope = attachment_to_envelope(_Stub(), conversation_id="c1", message_id="m1")
+    envelope = attachment_to_envelope(_Stub(), session_id="c1", message_id="m1")
     assert envelope == {
         "attachment_id": "att-1",
-        "conversation_id": "c1",
+        "session_id": "c1",
         "message_id": "m1",
         "name": "n.txt",
         "mime_type": "text/plain",
@@ -209,10 +108,10 @@ def test_attachment_to_envelope_shape() -> None:
 
 def test_reader_attachment_surface_contract(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
     with running_reader_server(reader_workspace) as (_, base_url):
-        _seed_attachments(reader_workspace)
+        seed_reader_attachments(reader_workspace)
         status, content_type, body = get_text(base_url, "/")
-        conv_payload = get_json(base_url, "/api/conversations/reader-c1")
-        per_conv = get_json(base_url, "/api/conversations/reader-c1/attachments")
+        conv_payload = get_json(base_url, f"/api/sessions/{READER_C1}")
+        per_conv = get_json(base_url, f"/api/sessions/{READER_C1}/attachments")
         library = get_json(base_url, "/api/attachments?limit=100")
         lib_status, lib_ctype, lib_body = get_text(base_url, "/a")
 
@@ -232,35 +131,35 @@ def test_reader_attachment_surface_contract(reader_workspace: ReaderWorkspace, t
     ):
         assert phrase in body, f"reader shell missing {phrase!r}"
 
-    # Conversation envelope embeds attachments at both levels.
+    # Session envelope embeds attachments at both levels.
     assert isinstance(conv_payload, dict)
     conv_atts = conv_payload["attachments"]
     assert isinstance(conv_atts, list)
     by_id = {a["attachment_id"]: a for a in conv_atts}
-    assert by_id["att-ok"]["state"] == "available"
-    assert by_id["att-missing"]["state"] == "missing-blob"
-    assert by_id["att-unsupported"]["state"] == "unsupported-kind"
-    assert by_id["att-toolarge"]["state"] == "too-large"
-    assert by_id["att-quarantined"]["state"] == "quarantined"
+    assert by_id[ATT_OK]["state"] == "available"
+    assert by_id[ATT_MISSING]["state"] == "missing-blob"
+    assert by_id[ATT_UNSUPPORTED]["state"] == "unsupported-kind"
+    assert by_id[ATT_TOOLARGE]["state"] == "too-large"
+    assert by_id[ATT_QUARANTINED]["state"] == "quarantined"
 
     messages = conv_payload["messages"]
-    msg = next(m for m in messages if m["id"] == "reader-c1-m1")
+    msg = next(m for m in messages if m["id"] == READER_C1_M1)
     assert "attachments" in msg
     assert {a["attachment_id"] for a in msg["attachments"]} >= {
-        "att-ok",
-        "att-missing",
-        "att-unsupported",
-        "att-toolarge",
-        "att-quarantined",
-        "att-rawhtml",
+        ATT_OK,
+        ATT_MISSING,
+        ATT_UNSUPPORTED,
+        ATT_TOOLARGE,
+        ATT_QUARANTINED,
+        ATT_RAWHTML,
     }
 
-    # Per-conversation endpoint returns the same envelope shape.
+    # Per-session endpoint returns the same envelope shape.
     assert isinstance(per_conv, dict)
     assert per_conv["total"] >= 6
     assert any(item["state"] == "missing-blob" for item in per_conv["items"])
 
-    # Library envelope carries conversation context per row.
+    # Library envelope carries session context per row.
     assert isinstance(library, dict)
     lib_items = library["items"]
     assert isinstance(lib_items, list)
@@ -268,9 +167,9 @@ def test_reader_attachment_surface_contract(reader_workspace: ReaderWorkspace, t
     sample = lib_items[0]
     for required_key in (
         "attachment_id",
-        "conversation_id",
-        "conversation_title",
-        "provider",
+        "session_id",
+        "session_title",
+        "origin",
         "state",
         "message_anchor",
     ):
@@ -286,7 +185,7 @@ def test_reader_attachment_surface_contract(reader_workspace: ReaderWorkspace, t
         'id="att-empty"',
         'id="att-filter-mime"',
         'id="att-filter-state"',
-        'id="att-filter-conversation"',
+        'id="att-filter-session"',
         "initAttachmentLibrary",
         "/api/attachments",
     ):
@@ -314,13 +213,13 @@ def test_reader_attachment_surface_contract(reader_workspace: ReaderWorkspace, t
 
 
 def test_library_filters_apply(reader_workspace: ReaderWorkspace) -> None:
-    """``mime``, ``state``, and ``conversation`` query params filter."""
+    """``mime``, ``state``, and ``session`` query params filter."""
 
     with running_reader_server(reader_workspace) as (_, base_url):
-        _seed_attachments(reader_workspace)
+        seed_reader_attachments(reader_workspace)
         only_missing = get_json(base_url, "/api/attachments?state=missing-blob")
         only_text = get_json(base_url, "/api/attachments?mime=text/")
-        only_other = get_json(base_url, "/api/attachments?conversation=reader-c2")
+        only_other = get_json(base_url, f"/api/attachments?session={READER_C2}")
 
     assert isinstance(only_missing, dict)
     states_missing = {item["state"] for item in only_missing["items"]}
@@ -373,7 +272,7 @@ def test_raw_html_attachment_renders_no_inline_script(
     served HTML."""
 
     with running_reader_server(reader_workspace) as (_, base_url):
-        _seed_attachments(reader_workspace)
+        seed_reader_attachments(reader_workspace)
         _status, _ctype, shell_body = get_text(base_url, "/")
         _ls, _lc, library_body = get_text(base_url, "/a")
         payload = get_json(base_url, "/api/attachments?limit=200")

@@ -20,9 +20,9 @@ from polylogue.config import Source
 from polylogue.pipeline.prepare import prepare_records
 from polylogue.scenarios import build_default_corpus_specs
 from polylogue.schemas.synthetic import SyntheticCorpus
-from polylogue.sources import iter_source_conversations
-from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.sources import iter_source_sessions
+from polylogue.storage.repository import SessionRepository
+from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
 
@@ -36,11 +36,11 @@ _CORE_PROVIDERS = ("chatgpt", "claude-code", "codex", "gemini")
 
 _TABLES_EXPECTED_POPULATED = frozenset(
     {
-        "raw_conversations",
-        "conversations",
+        "raw_sessions",
+        "sessions",
         "messages",
         "content_blocks",
-        "conversation_stats",
+        "session_stats",
         "action_events",
         "session_profiles",
         "session_work_events",
@@ -87,10 +87,10 @@ def _write_corpus_files(
 
 
 async def _ingest_corpus(archive_root: Path, corpus_dir: Path, db_path: Path) -> int:
-    """Ingest all corpus files into the given database.  Returns conversation count."""
+    """Ingest all corpus files into the given database.  Returns session count."""
     backend = SQLiteBackend(db_path=db_path)
-    repository = ConversationRepository(backend=backend)
-    conversation_count = 0
+    repository = SessionRepository(backend=backend)
+    session_count = 0
 
     for provider_dir in sorted(corpus_dir.iterdir()):
         provider = provider_dir.name
@@ -98,8 +98,8 @@ async def _ingest_corpus(archive_root: Path, corpus_dir: Path, db_path: Path) ->
             raw_bytes = file_path.read_bytes()
             raw_id = hashlib.sha256(raw_bytes).hexdigest()
 
-            await backend.save_raw_conversation(
-                RawConversationRecord(
+            await backend.save_raw_session(
+                RawSessionRecord(
                     raw_id=raw_id,
                     source_name=provider,
                     source_path=str(file_path),
@@ -109,7 +109,7 @@ async def _ingest_corpus(archive_root: Path, corpus_dir: Path, db_path: Path) ->
             )
 
             source = Source(name=provider, path=file_path)
-            for convo in iter_source_conversations(source):
+            for convo in iter_source_sessions(source):
                 conv = await prepare_records(
                     convo,
                     source_name=provider,
@@ -119,17 +119,17 @@ async def _ingest_corpus(archive_root: Path, corpus_dir: Path, db_path: Path) ->
                     raw_id=raw_id,
                 )
                 if conv is not None:
-                    conversation_count += 1
+                    session_count += 1
 
     await backend.close()
-    return conversation_count
+    return session_count
 
 
 def _snapshot(db_path: Path) -> dict[str, int]:
     """Return a snapshot of key archive metrics."""
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
-        conv_count = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+        conv_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
         content_blocks_count = conn.execute("SELECT COUNT(*) FROM content_blocks").fetchone()[0]
         fts_docsize = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
@@ -137,11 +137,11 @@ def _snapshot(db_path: Path) -> dict[str, int]:
         action_fts_docsize = conn.execute("SELECT COUNT(*) FROM action_events_fts_docsize").fetchone()[0]
         session_profiles_count = conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0]
         session_work_events_count = conn.execute("SELECT COUNT(*) FROM session_work_events").fetchone()[0]
-        content_hashes = {row[0] for row in conn.execute("SELECT content_hash FROM conversations").fetchall()}
+        content_hashes = {row[0] for row in conn.execute("SELECT content_hash FROM sessions").fetchall()}
     finally:
         conn.close()
     return {
-        "conversations": conv_count,
+        "sessions": conv_count,
         "messages": msg_count,
         "content_blocks": content_blocks_count,
         "fts_docsize": fts_docsize,
@@ -191,9 +191,9 @@ def test_full_pipeline_replay_produces_correct_archive(
 
     Assertions:
     - Every expected DDL table has at least one row
-    - conversations / messages / content_blocks have expected counts
+    - sessions / messages / content_blocks have expected counts
     - FTS index docsize matches message count
-    - session_profiles has one row per conversation
+    - session_profiles has one row per session
     - session_work_events has rows (for providers that emit work events)
     - Content hashes are deterministic across two independent databases
     """
@@ -212,9 +212,9 @@ def test_full_pipeline_replay_produces_correct_archive(
     snap1 = _snapshot(db1_path)
 
     # ── Core assertions ──
-    assert conv_count > 0, "No conversations ingested"
-    assert snap1["conversations"] == conv_count, (
-        f"Conversation count mismatch: snapshot={snap1['conversations']} vs ingested={conv_count}"
+    assert conv_count > 0, "No sessions ingested"
+    assert snap1["sessions"] == conv_count, (
+        f"Session count mismatch: snapshot={snap1['sessions']} vs ingested={conv_count}"
     )
     assert snap1["messages"] > 0, "No messages in archive"
     assert snap1["content_blocks"] > 0, "No content_blocks in archive — content extraction failed"
@@ -250,7 +250,7 @@ def test_full_pipeline_replay_produces_correct_archive(
     conv_count2 = asyncio.run(_ingest_corpus(archive_root, corpus_dir, db2_path))
     snap2 = _snapshot(db2_path)
 
-    assert conv_count2 == conv_count, f"Conversation count differs between runs: {conv_count} vs {conv_count2}"
+    assert conv_count2 == conv_count, f"Session count differs between runs: {conv_count} vs {conv_count2}"
     assert snap2["messages"] == snap1["messages"], (
         f"Message count differs between runs: {snap1['messages']} vs {snap2['messages']}"
     )
@@ -259,8 +259,8 @@ def test_full_pipeline_replay_produces_correct_archive(
     conn1 = sqlite3.connect(f"file:{db1_path}?mode=ro", uri=True)
     conn2 = sqlite3.connect(f"file:{db2_path}?mode=ro", uri=True)
     try:
-        hashes1 = {row[0] for row in conn1.execute("SELECT content_hash FROM conversations")}
-        hashes2 = {row[0] for row in conn2.execute("SELECT content_hash FROM conversations")}
+        hashes1 = {row[0] for row in conn1.execute("SELECT content_hash FROM sessions")}
+        hashes2 = {row[0] for row in conn2.execute("SELECT content_hash FROM sessions")}
     finally:
         conn1.close()
         conn2.close()
@@ -291,8 +291,8 @@ def test_idempotent_reingest(
     asyncio.run(_ingest_corpus(archive_root, corpus_dir, db_path))
     snap2 = _snapshot(db_path)
 
-    assert snap1["conversations"] > 0
-    assert snap2["conversations"] == snap1["conversations"]
+    assert snap1["sessions"] > 0
+    assert snap2["sessions"] == snap1["sessions"]
     assert snap2["messages"] == snap1["messages"]
     assert snap2["content_blocks"] == snap1["content_blocks"]
     assert snap2["distinct_content_hashes"] == snap1["distinct_content_hashes"]
@@ -319,12 +319,12 @@ def test_content_blocks_present_for_all_providers(
 
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
-        # Content blocks are linked to messages, which are linked to conversations
+        # Content blocks are linked to messages, which are linked to sessions
         # with a known provider. We verify each ingested provider has blocks.
         rows = conn.execute(
             """SELECT c.source_name, COUNT(DISTINCT cb.block_id)
-               FROM conversations c
-               JOIN messages m ON m.conversation_id = c.conversation_id
+               FROM sessions c
+               JOIN messages m ON m.session_id = c.session_id
                JOIN content_blocks cb ON cb.message_id = m.message_id
                GROUP BY c.source_name
                ORDER BY c.source_name"""

@@ -19,7 +19,7 @@ import pytest
 from polylogue.mcp.server import build_server
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface
 
-#: Synthetic conversation id for tools that require one — we accept not_found.
+#: Synthetic session id for tools that require one — we accept not_found.
 _SYNTHETIC_CONV_ID = "test:conv-discovery-nonexistent"
 
 #: Minimal known-good kwargs per tool name. Tools not listed here are called
@@ -27,30 +27,33 @@ _SYNTHETIC_CONV_ID = "test:conv-discovery-nonexistent"
 #: for an empty archive, etc.).
 _KNOWN_MINIMAL: dict[str, dict[str, object]] = {
     "search": {"query": "hello", "limit": 1},
-    "get_conversation": {"id": _SYNTHETIC_CONV_ID},
-    "get_conversation_summary": {"id": _SYNTHETIC_CONV_ID},
-    "get_messages": {"conversation_id": _SYNTHETIC_CONV_ID, "limit": 1},
-    "get_session_tree": {"conversation_id": _SYNTHETIC_CONV_ID},
-    "get_session_topology": {"conversation_id": _SYNTHETIC_CONV_ID},
-    "get_logical_session": {"conversation_id": _SYNTHETIC_CONV_ID},
-    "session_profile": {"conversation_id": _SYNTHETIC_CONV_ID},
-    "session_latency_profile": {"conversation_id": _SYNTHETIC_CONV_ID},
-    "get_resume_brief": {"conversation_id": _SYNTHETIC_CONV_ID},
-    "raw_artifacts": {"conversation_id": _SYNTHETIC_CONV_ID},
-    "session_costs": {"conversation_id": _SYNTHETIC_CONV_ID},
+    "get_session": {"id": _SYNTHETIC_CONV_ID},
+    "get_session_summary": {"id": _SYNTHETIC_CONV_ID},
+    "get_messages": {"session_id": _SYNTHETIC_CONV_ID, "limit": 1},
+    "get_session_tree": {"session_id": _SYNTHETIC_CONV_ID},
+    "get_session_topology": {"session_id": _SYNTHETIC_CONV_ID},
+    "get_logical_session": {"session_id": _SYNTHETIC_CONV_ID},
+    "session_profile": {"session_id": _SYNTHETIC_CONV_ID},
+    "session_latency_profile": {"session_id": _SYNTHETIC_CONV_ID},
+    "get_resume_brief": {"session_id": _SYNTHETIC_CONV_ID},
+    "raw_artifacts": {"session_id": _SYNTHETIC_CONV_ID},
+    "session_costs": {"session_id": _SYNTHETIC_CONV_ID},
     "cost_outlook": {"plan": "claude-pro"},
     "find_resume_candidates": {"repo_path": "/tmp/nonexistent"},
     "aggregate_sessions": {"session_ids": "test:a,test:b"},
     "compose_context_preamble": {"context": "{}"},
     "compare_sessions": {"session_ids": "test:a,test:b"},
     "find_similar_sessions": {"query": "test"},
-    "correlate_session": {"conversation_id": _SYNTHETIC_CONV_ID},
+    "correlate_session": {"session_id": _SYNTHETIC_CONV_ID},
     "correlate_sessions": {"session_ids": "test:a,test:b"},
-    "session_tool_timing": {"conversation_id": _SYNTHETIC_CONV_ID},
+    "session_tool_timing": {"session_id": _SYNTHETIC_CONV_ID},
     "facets": {"limit": 1},
     "neighbor_candidates": {"query": "test"},
     "insight_rigor_audit": {},
-    "list_conversations": {"limit": 1},
+    "list_sessions": {"limit": 1},
+    "archive_get_session": {"session_id": _SYNTHETIC_CONV_ID},
+    "archive_list_sessions": {"limit": 1},
+    "archive_search_sessions": {"query": "hello", "limit": 1},
     "session_profiles": {"limit": 1},
     "session_work_events": {"limit": 1},
     "session_phases": {"limit": 1},
@@ -64,7 +67,7 @@ _KNOWN_MINIMAL: dict[str, dict[str, object]] = {
     "workflow_shape_distribution": {"limit": 1},
     "find_stuck_sessions": {"limit": 1},
     "find_abandoned_sessions": {"limit": 1},
-    "get_stats_by": {"group_by": "provider"},
+    "get_stats_by": {"group_by": "origin"},
     "embedding_status": {},
     "embedding_preflight": {},
     "build_context_pack": {"project_repo": "test"},
@@ -120,7 +123,7 @@ def test_tool_returns_valid_response_envelope(tool_name: str, kwargs: dict[str, 
 
     assert isinstance(body, dict), f"{tool_name}: response body is not a dict"
 
-    # Tools passed a synthetic conversation id will naturally produce
+    # Tools passed a synthetic session id will naturally produce
     # internal_error when the resource is not found — the _async_safe_call
     # wrapper catches the exception and returns structured JSON. That proves
     # the safety net is working (the #1621 regression where exceptions killed
@@ -130,18 +133,18 @@ def test_tool_returns_valid_response_envelope(tool_name: str, kwargs: dict[str, 
         assert body.get("error") is not None, f"{tool_name}: error response missing error string"
         # internal_error (with or without explicit code) is acceptable —
         # it means the safety net caught a tool-body exception.
-        # Other structured errors (schema_incompatible, not_found) are also fine.
+        # Other structured errors (schema_version_mismatch, not_found) are also fine.
 
 
 def test_all_read_tools_discovered() -> None:
     """Sanity: we discovered at least the known headline read tools."""
     for expected in [
         "search",
-        "list_conversations",
+        "list_sessions",
         "stats",
         "facets",
         "readiness_check",
-        "get_conversation",
+        "get_session",
         "build_context_pack",
     ]:
         assert expected in _READ_TOOL_NAMES, f"missing expected read tool: {expected}"
@@ -155,14 +158,14 @@ def test_no_mutation_tools_in_read_role() -> None:
     known_mutations = {
         "add_tag",
         "remove_tag",
-        "bulk_tag_conversations",
+        "bulk_tag_sessions",
         "add_mark",
         "remove_mark",
         "save_annotation",
         "delete_annotation",
         "set_metadata",
         "delete_metadata",
-        "delete_conversation",
+        "delete_session",
         "rebuild_session_insights",
         "maintenance_execute",
     }

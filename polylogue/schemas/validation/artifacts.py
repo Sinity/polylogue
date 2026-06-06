@@ -116,7 +116,7 @@ def prove_raw_artifact_coverage(
                 state["sidecars"].add(observation.link_group_key)
                 if observation.sidecar_agent_type is not None:
                     _increment_count(stats.sidecar_agent_types, observation.sidecar_agent_type)
-            elif observation.artifact_kind == ArtifactKind.SUBAGENT_CONVERSATION_STREAM.value:
+            elif observation.artifact_kind == ArtifactKind.SUBAGENT_SESSION_STREAM.value:
                 state["streams"].add(observation.link_group_key)
 
         if observation.support_status is ArtifactSupportStatus.SUPPORTED_PARSEABLE:

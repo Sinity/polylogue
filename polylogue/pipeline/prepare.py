@@ -8,16 +8,16 @@ from typing import TYPE_CHECKING, Protocol
 from polylogue.archive.topology.edge import TopologyEdgeRecord
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import (
-    conversation_id as make_conversation_id,
-)
-from polylogue.pipeline.ids import (
     materialize_attachment_path,
     move_attachment_to_archive,
+)
+from polylogue.pipeline.ids import (
+    session_id as make_session_id,
 )
 from polylogue.pipeline.prepare_enrichment import _build_single_cache, enrich_bundle_from_db
 from polylogue.pipeline.prepare_models import (
     AttachmentMaterializationPlan,
-    PersistedConversationResult,
+    PersistedSessionResult,
     PrepareCache,
     PreparedBundle,
     RecordBundle,
@@ -29,13 +29,13 @@ from polylogue.pipeline.prepare_transform import transform_to_records
 from polylogue.storage.runtime import (
     AttachmentRecord,
     ContentBlockRecord,
-    ConversationRecord,
     MessageRecord,
     ProviderEventRecord,
+    SessionRecord,
 )
 
 if TYPE_CHECKING:
-    from polylogue.sources.parsers.base import ParsedConversation
+    from polylogue.sources.parsers.base import ParsedSession
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
@@ -47,9 +47,9 @@ class PrepareRepository(Protocol):
     @property
     def backend(self) -> SQLiteBackend: ...
 
-    async def save_conversation(
+    async def save_session(
         self,
-        conversation: ConversationRecord,
+        session: SessionRecord,
         messages: list[MessageRecord],
         attachments: list[AttachmentRecord],
         content_blocks: list[ContentBlockRecord] | None = None,
@@ -59,8 +59,8 @@ class PrepareRepository(Protocol):
 
 
 async def save_bundle(bundle: RecordBundle, repository: PrepareRepository) -> SaveResult:
-    counts = await repository.save_conversation(
-        conversation=bundle.conversation,
+    counts = await repository.save_session(
+        session=bundle.session,
         messages=bundle.messages,
         attachments=bundle.attachments,
         content_blocks=bundle.content_blocks,
@@ -71,7 +71,7 @@ async def save_bundle(bundle: RecordBundle, repository: PrepareRepository) -> Sa
 
 
 async def prepare_bundle(
-    convo: ParsedConversation,
+    convo: ParsedSession,
     source_name: str,
     *,
     archive_root: Path,
@@ -80,13 +80,13 @@ async def prepare_bundle(
     raw_id: str | None = None,
     cache: PrepareCache | None = None,
 ) -> PreparedBundle:
-    """Convert a parsed conversation to a DB-aware prepared bundle."""
+    """Convert a parsed session to a DB-aware prepared bundle."""
     if repository is None and backend is None:
         raise ValueError("prepare_bundle requires a repository or backend")
     if repository is None:
-        from polylogue.storage.repository import ConversationRepository
+        from polylogue.storage.repository import SessionRepository
 
-        repository = ConversationRepository(backend=backend)
+        repository = SessionRepository(backend=backend)
     if backend is None:
         backend = repository.backend
 
@@ -100,8 +100,8 @@ async def persist_prepared_bundle(
     prepared: PreparedBundle,
     *,
     repository: PrepareRepository,
-) -> PersistedConversationResult:
-    """Persist a prepared conversation bundle, including attachment materialization."""
+) -> PersistedSessionResult:
+    """Persist a prepared session bundle, including attachment materialization."""
     applied_moves: list[tuple[Path, Path]] = []
     try:
         for source_path, target_path in prepared.materialization_plan.move_before_save:
@@ -119,15 +119,15 @@ async def persist_prepared_bundle(
         if duplicate_source.exists():
             duplicate_source.unlink()
 
-    return PersistedConversationResult(
-        conversation_id=prepared.cid,
+    return PersistedSessionResult(
+        session_id=prepared.cid,
         save_result=save_result,
         content_changed=prepared.changed,
     )
 
 
 async def prepare_records(
-    convo: ParsedConversation,
+    convo: ParsedSession,
     source_name: str,
     *,
     archive_root: Path,
@@ -135,27 +135,27 @@ async def prepare_records(
     repository: PrepareRepository | None = None,
     raw_id: str | None = None,
     cache: PrepareCache | None = None,
-) -> PersistedConversationResult:
-    """Convert a ParsedConversation to storage records and persist them."""
+) -> PersistedSessionResult:
+    """Convert a ParsedSession to storage records and persist them."""
     if repository is None and backend is None:
         raise ValueError("prepare_records requires a repository or backend")
     if repository is None:
-        from polylogue.storage.repository import ConversationRepository
+        from polylogue.storage.repository import SessionRepository
 
-        repository = ConversationRepository(backend=backend)
+        repository = SessionRepository(backend=backend)
     if backend is None:
         backend = repository.backend
 
     if not convo.messages:
-        cid = make_conversation_id(convo.source_name, convo.provider_conversation_id)
-        logger.debug("Skipping empty conversation (no messages)", conversation_id=cid)
-        return PersistedConversationResult(
-            conversation_id=cid,
+        cid = make_session_id(convo.source_name, convo.provider_session_id)
+        logger.debug("Skipping empty session (no messages)", session_id=cid)
+        return PersistedSessionResult(
+            session_id=cid,
             save_result=SaveResult(
-                conversations=0,
+                sessions=0,
                 messages=0,
                 attachments=0,
-                skipped_conversations=1,
+                skipped_sessions=1,
                 skipped_messages=0,
                 skipped_attachments=0,
             ),
@@ -176,7 +176,7 @@ async def prepare_records(
 
 __all__ = [
     "AttachmentMaterializationPlan",
-    "PersistedConversationResult",
+    "PersistedSessionResult",
     "PrepareCache",
     "PrepareRepository",
     "PreparedBundle",

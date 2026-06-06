@@ -59,9 +59,9 @@ def test_summarize_mutmut_results_filters_by_prefix_and_groups_statuses(tmp_path
         json.dumps(
             {
                 "exit_code_by_key": {
-                    "polylogue.archive.filter.filters.xǁConversationFilterǁpick__mutmut_1": 0,
-                    "polylogue.archive.filter.filters.xǁConversationFilterǁpick__mutmut_2": 1,
-                    "polylogue.archive.filter.filters.xǁConversationFilterǁdelete__mutmut_1": -24,
+                    "polylogue.archive.filter.filters.xǁSessionFilterǁpick__mutmut_1": 0,
+                    "polylogue.archive.filter.filters.xǁSessionFilterǁpick__mutmut_2": 1,
+                    "polylogue.archive.filter.filters.xǁSessionFilterǁdelete__mutmut_1": -24,
                     "polylogue.archive.models.xǁMessageǁextract_thinking__mutmut_1": 0,
                 }
             }
@@ -80,8 +80,8 @@ def test_summarize_mutmut_results_filters_by_prefix_and_groups_statuses(tmp_path
     assert survivors["pick"] == 1
     assert timeouts["delete"] == 1
     assert not not_checked
-    assert survivor_keys == ["polylogue.archive.filter.filters.xǁConversationFilterǁpick__mutmut_1"]
-    assert timeout_keys == ["polylogue.archive.filter.filters.xǁConversationFilterǁdelete__mutmut_1"]
+    assert survivor_keys == ["polylogue.archive.filter.filters.xǁSessionFilterǁpick__mutmut_1"]
+    assert timeout_keys == ["polylogue.archive.filter.filters.xǁSessionFilterǁdelete__mutmut_1"]
     assert not not_checked_keys
 
 

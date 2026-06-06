@@ -31,16 +31,18 @@ def resume_command(
 ) -> None:
     """Reconstruct work-state context for a fresh agent session."""
     from polylogue.api.sync.bridge import run_coroutine_sync
+    from polylogue.insights.resume import build_resume_brief
 
     env: AppEnv = ctx.obj
     brief = run_coroutine_sync(
-        env.operations.build_resume_brief(
+        build_resume_brief(
+            env.polylogue,
             session_id,
             related_limit=related_limit,
         )
     )
     if brief is None:
-        fail("resume", f"Conversation not found: {session_id}")
+        fail("resume", f"Session not found: {session_id}")
     if _wants_json(ctx, output_format=output_format):
         emit_success(brief.model_dump(mode="json"))
         return

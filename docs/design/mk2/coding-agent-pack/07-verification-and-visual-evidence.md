@@ -13,7 +13,7 @@ Create scenario/exercise outputs for:
 - `polylogue.local_reader.search`: browser screenshot of `/search` with facet/result/reader layout.
 - `polylogue.local_reader.conversation`: browser screenshot of `/c/{id}`.
 - `polylogue.dashboard.status`: terminal/TUI screenshot of daemon/live/capture/doctor status.
-- `polylogue.capture.status`: web/extension/capture state screenshot, deferred until browser receiver migration.
+- `polylogue.capture.status`: web/extension/capture state screenshot, deferred until browser receiver move.
 
 ## Evidence envelope
 

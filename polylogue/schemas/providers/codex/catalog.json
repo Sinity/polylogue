@@ -9,8 +9,8 @@
     {
       "provider": "codex",
       "version": "v1",
-      "anchor_kind": "conversation_record_stream",
-      "default_element_kind": "conversation_record_stream",
+      "anchor_kind": "session_record_stream",
+      "default_element_kind": "session_record_stream",
       "first_seen": "2026-03-16T12:26:12.880141+00:00",
       "last_seen": "2026-03-16T12:26:12.880141+00:00",
       "bundle_scope_count": 0,
@@ -21,8 +21,8 @@
       "representative_paths": [],
       "elements": [
         {
-          "element_kind": "conversation_record_stream",
-          "schema_file": "conversation_record_stream.schema.json.gz",
+          "element_kind": "session_record_stream",
+          "schema_file": "session_record_stream.schema.json.gz",
           "sample_count": 151159,
           "artifact_count": 151159,
           "supported": true,

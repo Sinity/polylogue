@@ -1,6 +1,6 @@
 Usage: polylogue count [OPTIONS]
 
-  Print count of matched conversations.
+  Print count of matched sessions.
 
 Options:
-  -h, --help  Show this message and exit.
+  --help  Show this message and exit.

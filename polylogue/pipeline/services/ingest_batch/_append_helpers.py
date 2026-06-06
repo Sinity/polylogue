@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from hashlib import sha256
 from typing import cast
 
-from polylogue.pipeline.services.ingest_worker import ConversationTuple, MessageTuple, ProviderEventTuple
+from polylogue.pipeline.services.ingest_worker import MessageTuple, ProviderEventTuple, SessionTuple
 
 
 def append_content_hash(existing_hash: str | None, tail_hash: str) -> str:
@@ -19,8 +19,8 @@ def tail_content_hash(changed_messages: Sequence[MessageTuple], fallback_hash: s
     return sha256("\0".join(str(message[6]) for message in changed_messages).encode()).hexdigest()
 
 
-def conversation_tuple_without_raw_id(conversation: ConversationTuple) -> ConversationTuple:
-    return cast(ConversationTuple, (*conversation[:13], None, *conversation[14:]))
+def session_tuple_without_raw_id(session: SessionTuple) -> SessionTuple:
+    return cast(SessionTuple, (*session[:13], None, *session[14:]))
 
 
 def provider_event_tuple_without_raw_id(event: ProviderEventTuple) -> ProviderEventTuple:
@@ -29,7 +29,7 @@ def provider_event_tuple_without_raw_id(event: ProviderEventTuple) -> ProviderEv
 
 __all__ = [
     "append_content_hash",
-    "conversation_tuple_without_raw_id",
+    "session_tuple_without_raw_id",
     "provider_event_tuple_without_raw_id",
     "tail_content_hash",
 ]

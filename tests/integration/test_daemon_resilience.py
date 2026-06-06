@@ -204,20 +204,20 @@ def _wait_for_messages(
     )
 
 
-def _wait_for_conversations(
+def _wait_for_sessions(
     db: Path,
     *,
     min_count: int = 1,
     timeout_s: float = 60.0,
     poll_interval: float = 0.5,
 ) -> int:
-    """Poll the database until at least *min_count* conversations are present."""
+    """Poll the database until at least *min_count* sessions are present."""
     deadline = time.monotonic() + timeout_s
     last_count = 0
     while time.monotonic() < deadline:
         try:
             with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
-                cur = conn.execute("SELECT COUNT(*) FROM conversations")
+                cur = conn.execute("SELECT COUNT(*) FROM sessions")
                 row = cur.fetchone()
                 count = int(row[0]) if row else 0
                 last_count = count
@@ -229,7 +229,7 @@ def _wait_for_conversations(
                 raise
         time.sleep(poll_interval)
     raise TimeoutError(
-        f"Timed out waiting for {min_count} conversations after {timeout_s}s; last observed count: {last_count}"
+        f"Timed out waiting for {min_count} sessions after {timeout_s}s; last observed count: {last_count}"
     )
 
 
@@ -271,10 +271,10 @@ def _expected_fts_triggers() -> set[str]:
 
 
 def _content_hashes(db: Path, limit: int = 10) -> list[tuple[str, str]]:
-    """Return (conversation_id, content_hash) for up to *limit* conversations."""
+    """Return (session_id, content_hash) for up to *limit* sessions."""
     with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
         rows = conn.execute(
-            "SELECT conversation_id, content_hash FROM conversations ORDER BY conversation_id LIMIT ?",
+            "SELECT session_id, content_hash FROM sessions ORDER BY session_id LIMIT ?",
             (limit,),
         ).fetchall()
     return [(r[0], r[1]) for r in rows]
@@ -357,7 +357,7 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
 
     Assertions:
     - FTS triggers are present after restart.
-    - No conversations lost (count before == count after).
+    - No sessions lost (count before == count after).
     - Content hashes unchanged.
     - Pending blob refs drained (no leaked leases).
     - Daemon reaches ready state within timeout.
@@ -412,7 +412,7 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
 
         # Record pre-recovery state.
         pre_hashes = _content_hashes(db, limit=N_SESSIONS)
-        conv_count_before = _wait_for_conversations(db, min_count=1, timeout_s=10.0)
+        conv_count_before = _wait_for_sessions(db, min_count=1, timeout_s=10.0)
 
         # 5. Restart daemon.
         restart: subprocess.Popen[bytes] = subprocess.Popen(
@@ -435,7 +435,7 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
             assert _wait_for_daemon_ready(restart, timeout_s=30.0), "Daemon did not reach ready state after restart"
 
             # Let it catch up.
-            _wait_for_conversations(db, min_count=N_SESSIONS, timeout_s=60.0)
+            _wait_for_sessions(db, min_count=N_SESSIONS, timeout_s=60.0)
 
             # 6. Assertions.
             # FTS triggers present.
@@ -443,17 +443,13 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
             missing = _expected_fts_triggers() - set(triggers)
             assert not missing, f"Missing FTS triggers after restart: {sorted(missing)}"
 
-            # Conversations not lost.
+            # Sessions not lost.
             conv_count_after = (
-                sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-                .execute("SELECT COUNT(*) FROM conversations")
-                .fetchone()[0]
+                sqlite3.connect(f"file:{db}?mode=ro", uri=True).execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
             )
-            assert conv_count_after >= conv_count_before, (
-                f"Conversations lost: {conv_count_before} → {conv_count_after}"
-            )
+            assert conv_count_after >= conv_count_before, f"Sessions lost: {conv_count_before} → {conv_count_after}"
             # All N sessions should be present eventually.
-            assert conv_count_after == N_SESSIONS, f"Expected {N_SESSIONS} conversations, got {conv_count_after}"
+            assert conv_count_after == N_SESSIONS, f"Expected {N_SESSIONS} sessions, got {conv_count_after}"
 
             # Content hashes unchanged (sample the first few that were ingested
             # before SIGKILL).
@@ -655,9 +651,9 @@ def test_daemon_memory_pressure(workspace_env: dict[str, Path]) -> None:
         )
         _assert_daemon_alive(proc)
 
-        # Wait for all conversations to be ingested.
-        conv_count = _wait_for_conversations(db, min_count=N_SESSIONS, timeout_s=300.0)
-        assert conv_count == N_SESSIONS, f"Expected {N_SESSIONS} conversations, got {conv_count}"
+        # Wait for all sessions to be ingested.
+        conv_count = _wait_for_sessions(db, min_count=N_SESSIONS, timeout_s=300.0)
+        assert conv_count == N_SESSIONS, f"Expected {N_SESSIONS} sessions, got {conv_count}"
 
         # Assert daemon is still alive (did not OOM).
         assert proc.poll() is None, f"Daemon exited prematurely with code {proc.returncode} — likely OOM"

@@ -3,13 +3,12 @@
 The CLI's ``polylogue ingest`` and ``polylogue maintenance run``
 commands already route input through :class:`ImportOperation` and
 :class:`BackfillOperation` respectively, and tag/delete subcommands
-route through the same ``ArchiveOperations`` write methods the Python
-API uses.  This adapter is the in-process projection that lets
-cross-surface tests assert CLI conformance to the same Protocol
-contracts as the MCP and Python API adapters without invoking Click
-subprocesses.
+route through the Polylogue facade write methods.  This adapter is the
+in-process projection that lets cross-surface tests assert CLI conformance
+to the same Protocol contracts as the MCP and Python API adapters without
+invoking Click subprocesses.
 
-The adapter delegates to :class:`ArchiveOperations` and the shared
+The adapter delegates to the Polylogue facade and the shared
 :func:`execute_backfill` planner — the same layer the CLI command
 handlers reach for after parsing flags — so the write semantics are
 identical.  CLI-specific concerns (Click flag parsing, daemon HTTP
@@ -25,14 +24,13 @@ from typing import TYPE_CHECKING
 
 from polylogue.api.contracts.assertions import assert_implements
 from polylogue.api.contracts.write_surface import (
-    ConversationDeleteSurface,
     IndexMaintenanceSurface,
     IngestSurface,
     MaintenanceSurface,
+    SessionDeleteSurface,
     TagMutationSurface,
 )
 from polylogue.maintenance.planner import BackfillOperation, execute_backfill
-from polylogue.operations import ArchiveOperations
 from polylogue.operations.import_contracts import ImportOperation
 from polylogue.surfaces.payloads import TagMutationResult
 
@@ -45,15 +43,20 @@ class CLIWriteSurface:
     """Write-surface adapter mirroring the CLI's write semantics.
 
     Concrete CLI command handlers in ``polylogue/cli/commands/`` build
-    the same operation envelopes and call through the same
-    :class:`ArchiveOperations` methods; this adapter captures that
-    projection directly so the Protocol conformance is verifiable
-    without an in-process Click runner.
+    the same operation envelopes and call through the Polylogue facade;
+    this adapter captures that projection directly so the Protocol
+    conformance is verifiable without an in-process Click runner.
     """
 
     def __init__(self, services: RuntimeServices, *, polylogue: Polylogue | None = None) -> None:
+        from polylogue.api import Polylogue
+
         self._services = services
-        self._operations = ArchiveOperations.from_services(services)
+        cfg = services.get_config()
+        self._facade = Polylogue(
+            archive_root=cfg.archive_root,
+            db_path=services.db_path or cfg.db_path,
+        )
         # Tag/delete mutations live on the Polylogue facade; tests construct
         # both adapter and facade against the same db_path so the adapter does
         # not own a parallel runtime.  Adapter callers without a pre-built
@@ -61,10 +64,6 @@ class CLIWriteSurface:
         # tag/delete (the static protocols still pass because conformance is
         # method presence, not execution).
         self._polylogue = polylogue
-
-    @property
-    def operations(self) -> ArchiveOperations:
-        return self._operations
 
     async def ingest_path(self, path: Path | str) -> ImportOperation:
         """Mirror ``polylogue ingest`` semantics without the daemon hop.
@@ -105,10 +104,10 @@ class CLIWriteSurface:
         return execute_backfill(config, targets=targets, dry_run=dry_run)
 
     async def rebuild_index(self) -> bool:
-        return await self._operations.rebuild_index()
+        return await self._facade.rebuild_index()
 
-    async def update_index(self, conversation_ids: list[str]) -> bool:
-        return await self._operations.update_index(conversation_ids)
+    async def update_index(self, session_ids: list[str]) -> bool:
+        return await self._facade.update_index(session_ids)
 
     def _require_polylogue(self) -> Polylogue:
         if self._polylogue is None:
@@ -119,21 +118,21 @@ class CLIWriteSurface:
             )
         return self._polylogue
 
-    async def add_tag(self, conversation_id: str, tag: str) -> TagMutationResult:
-        return await self._require_polylogue().add_tag(conversation_id, tag)
+    async def add_tag(self, session_id: str, tag: str) -> TagMutationResult:
+        return await self._require_polylogue().add_tag(session_id, tag)
 
-    async def remove_tag(self, conversation_id: str, tag: str) -> TagMutationResult:
-        return await self._require_polylogue().remove_tag(conversation_id, tag)
+    async def remove_tag(self, session_id: str, tag: str) -> TagMutationResult:
+        return await self._require_polylogue().remove_tag(session_id, tag)
 
-    async def delete_conversation(self, conversation_id: str) -> bool:
-        return await self._require_polylogue().delete_conversation(conversation_id)
+    async def delete_session(self, session_id: str) -> bool:
+        return await self._require_polylogue().delete_session(session_id)
 
 
 assert_implements(CLIWriteSurface, IngestSurface)
 assert_implements(CLIWriteSurface, MaintenanceSurface)
 assert_implements(CLIWriteSurface, IndexMaintenanceSurface)
 assert_implements(CLIWriteSurface, TagMutationSurface)
-assert_implements(CLIWriteSurface, ConversationDeleteSurface)
+assert_implements(CLIWriteSurface, SessionDeleteSurface)
 
 
 __all__ = ["CLIWriteSurface"]

@@ -66,7 +66,7 @@ class RigorContract(ArchiveInsightModel):
             enforced at runtime.
         version_fields: materialization version fields the row carries.
             Used by the audit runner to count stale-version rows.
-        notes: optional free-form notes (deprecated fields, migration
+        notes: optional free-form notes (deprecated fields, transition
             anchors, etc.).
     """
 
@@ -100,7 +100,7 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             "evidence-only."
         ),
         consumer_fields=(
-            "conversation_id",
+            "session_id",
             "source_name",
             "title",
             "semantic_tier",
@@ -132,7 +132,7 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         ),
         consumer_fields=(
             "event_id",
-            "conversation_id",
+            "session_id",
             "source_name",
             "event_index",
             "evidence",
@@ -158,7 +158,7 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         ),
         consumer_fields=(
             "phase_id",
-            "conversation_id",
+            "session_id",
             "source_name",
             "phase_index",
             "evidence",
@@ -201,7 +201,7 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         ),
         consumer_fields=(
             "tag",
-            "conversation_count",
+            "session_count",
             "explicit_count",
             "auto_count",
             "provider_breakdown",

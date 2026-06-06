@@ -24,7 +24,7 @@ All provider identity flows through the `Provider` enum in
 `canonical_runtime_provider()` and defaults to `UNKNOWN` for unrecognized
 strings.
 
-Conversation IDs use the composite format `provider:provider_id`:
+Session IDs use the composite format `provider:provider_id`:
 
 ```
 claude-code:abc123
@@ -42,7 +42,7 @@ Three payload modes:
 
 | Mode | Providers | Description |
 |------|-----------|-------------|
-| Bundle record | ChatGPT, Claude.ai | Single JSON object containing a complete conversation |
+| Bundle record | ChatGPT, Claude.ai | Single JSON object containing a complete session |
 | Grouped records | Claude Code, Codex | Array of records with session grouping keys |
 | Chunked prompt | Gemini, Drive | Multi-part prompt chunk structure |
 
@@ -51,7 +51,7 @@ Three payload modes:
 ### ChatGPT
 
 Parses the ChatGPT export format: `mapping` dictionary with message nodes,
-parent/children graph, and author roles. Extracts conversation title from the
+parent/children graph, and author roles. Extracts session title from the
 first user message or the export metadata.
 
 ### Claude.ai / Claude Code
@@ -70,7 +70,7 @@ tool use records.
 ### Gemini / Drive
 
 Gemini and Google Drive Takeout exports use a chunked prompt structure. The
-parser reconstructs conversations from `chunkedPrompt.chunks` arrays. Drive
+parser reconstructs sessions from `chunkedPrompt.chunks` arrays. Drive
 exports additionally handle Google Docs metadata.
 
 ## Browser Capture

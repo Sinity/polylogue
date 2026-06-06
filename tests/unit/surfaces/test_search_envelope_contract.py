@@ -19,21 +19,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from polylogue.archive.conversation.models import ConversationSummary
 from polylogue.archive.query.search_hits import (
-    ConversationSearchHit,
-    conversation_search_hit_from_summary,
+    SessionSearchHit,
+    session_search_hit_from_summary,
 )
+from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.cli.query_output import format_search_envelope
-from polylogue.mcp.payloads import conversation_search_result_payload
+from polylogue.core.enums import Origin
+from polylogue.mcp.payloads import session_search_result_payload
 from polylogue.surfaces.payloads import (
     RANKING_POLICY_MIXED,
     RANKING_POLICY_VERSION,
-    ConversationSearchHitPayload,
     SearchEnvelope,
+    SessionSearchHitPayload,
     build_search_envelope,
 )
-from polylogue.types import ConversationId, Provider
+from polylogue.types import SessionId
 
 # Canonical fields every surface MUST expose on the search envelope.
 REQUIRED_ENVELOPE_FIELDS: frozenset[str] = frozenset(
@@ -54,17 +55,17 @@ REQUIRED_ENVELOPE_FIELDS: frozenset[str] = frozenset(
 )
 
 
-def _summary() -> ConversationSummary:
-    return ConversationSummary(
-        id=ConversationId("chatgpt:envelope-1"),
-        provider=Provider.CHATGPT,
-        title="Envelope test conversation",
+def _summary() -> SessionSummary:
+    return SessionSummary(
+        id=SessionId("chatgpt:envelope-1"),
+        origin=Origin.CHATGPT_EXPORT,
+        title="Envelope test session",
         created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
 
 
-def _hit(rank: int = 1) -> ConversationSearchHit:
-    return conversation_search_hit_from_summary(
+def _hit(rank: int = 1) -> SessionSearchHit:
+    return session_search_hit_from_summary(
         _summary(),
         rank=rank,
         retrieval_lane="dialogue",
@@ -126,7 +127,7 @@ def _normalise_envelope_dict(payload: dict[str, Any]) -> dict[str, Any]:
     def normalise_match(hit: dict[str, Any]) -> dict[str, Any]:
         match = dict(hit["match"])
         return {
-            "conversation_id": hit["conversation"]["id"],
+            "session_id": hit["session"]["id"],
             "rank": match["rank"],
             "retrieval_lane": match["retrieval_lane"],
             "match_surface": match["match_surface"],
@@ -150,7 +151,7 @@ def _normalise_envelope_dict(payload: dict[str, Any]) -> dict[str, Any]:
         "ranking_policy": payload["ranking_policy"],
         "ranking_policy_version": payload["ranking_policy_version"],
         "hit_count": len(hits),
-        "hit_conversation_ids": tuple(hit["conversation"]["id"] for hit in hits),
+        "hit_session_ids": tuple(hit["session"]["id"] for hit in hits),
         "hit_ranks": tuple(hit["match"]["rank"] for hit in hits),
         "hit_lanes": tuple(hit["match"]["retrieval_lane"] for hit in hits),
         "hit_matches": tuple(normalise_match(hit) for hit in hits),
@@ -167,7 +168,7 @@ def test_all_surfaces_emit_semantically_equivalent_envelope() -> None:
 
     # 1. Python API / shared helper.
     hit_payloads = [
-        ConversationSearchHitPayload.from_search_hit(hit, message_count=hit.summary.message_count) for hit in hits
+        SessionSearchHitPayload.from_search_hit(hit, message_count=hit.summary.message_count) for hit in hits
     ]
     api_envelope = build_search_envelope(
         hit_payloads,
@@ -180,7 +181,7 @@ def test_all_surfaces_emit_semantically_equivalent_envelope() -> None:
     api_dict = json.loads(api_envelope.model_dump_json(exclude_none=False))
 
     # 2. MCP search tool helper.
-    mcp_envelope = conversation_search_result_payload(
+    mcp_envelope = session_search_result_payload(
         hits,
         total=2,
         limit=limit,
@@ -222,7 +223,7 @@ def test_all_surfaces_emit_semantically_equivalent_envelope() -> None:
         == RANKING_POLICY_VERSION
     )
     assert api_norm["hit_count"] == mcp_norm["hit_count"] == cli_norm["hit_count"] == 2
-    assert api_norm["hit_conversation_ids"] == mcp_norm["hit_conversation_ids"] == cli_norm["hit_conversation_ids"]
+    assert api_norm["hit_session_ids"] == mcp_norm["hit_session_ids"] == cli_norm["hit_session_ids"]
     assert api_norm["hit_ranks"] == mcp_norm["hit_ranks"] == cli_norm["hit_ranks"] == (1, 2)
     assert api_norm["hit_lanes"] == mcp_norm["hit_lanes"] == cli_norm["hit_lanes"]
     assert api_norm["hit_matches"] == mcp_norm["hit_matches"] == cli_norm["hit_matches"]
@@ -237,7 +238,7 @@ def test_envelope_carries_cursor_when_page_is_full() -> None:
     """When ``len(hits) == limit`` AND more rows exist, the envelope exposes
     a keyset cursor so callers can resume scanning without offset drift."""
     hits = [_hit(rank=1), _hit(rank=2)]
-    hit_payloads = [ConversationSearchHitPayload.from_search_hit(hit) for hit in hits]
+    hit_payloads = [SessionSearchHitPayload.from_search_hit(hit) for hit in hits]
     envelope = build_search_envelope(
         hit_payloads,
         total=10,
@@ -252,7 +253,7 @@ def test_envelope_carries_cursor_when_page_is_full() -> None:
 
 def test_envelope_omits_cursor_when_page_is_last() -> None:
     hits = [_hit(rank=1), _hit(rank=2)]
-    hit_payloads = [ConversationSearchHitPayload.from_search_hit(hit) for hit in hits]
+    hit_payloads = [SessionSearchHitPayload.from_search_hit(hit) for hit in hits]
     envelope = build_search_envelope(
         hit_payloads,
         total=2,
@@ -279,4 +280,4 @@ def test_openapi_schema_is_present_and_well_formed() -> None:
     # The header pins provenance; if the renderer changes shape, regenerate.
     assert "Generated by `devtools render-openapi`" in body
     assert "SearchEnvelope" in body
-    assert "/api/conversations" in body
+    assert "/api/sessions" in body

@@ -21,7 +21,7 @@ from hypothesis import strategies as st
 
 from polylogue.core import json as core_json
 from polylogue.core.provider_identity import normalize_provider_token
-from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId, Provider
+from polylogue.types import AttachmentId, ContentHash, MessageId, Provider, SessionId
 
 SURROGATE_CATEGORY: tuple[Literal["Cs"], ...] = ("Cs",)
 
@@ -325,8 +325,8 @@ def test_encoder_decimal_serialized_when_custom_fails() -> None:
 
 
 # All NewType string wrappers share identical runtime behavior
-NEWTYPE_WRAPPERS = [ConversationId, MessageId, AttachmentId, ContentHash]
-NEWTYPE_IDS = ["ConversationId", "MessageId", "AttachmentId", "ContentHash"]
+NEWTYPE_WRAPPERS = [SessionId, MessageId, AttachmentId, ContentHash]
+NEWTYPE_IDS = ["SessionId", "MessageId", "AttachmentId", "ContentHash"]
 IdWrapper = Callable[[str], str]
 
 
@@ -450,24 +450,24 @@ def test_all_id_types_as_dict_keys(data: st.DataObject) -> None:
     att_str = data.draw(st.text(min_size=1, max_size=50), label="att_str")
     hash_str = data.draw(st.text(min_size=1, max_size=50).filter(lambda s: s != conv_str), label="hash_str")
 
-    cid = ConversationId(conv_str)
+    cid = SessionId(conv_str)
     mid = MessageId(msg_str)
     aid = AttachmentId(att_str)
     ch = ContentHash(hash_str)
 
-    conversation_index: dict[ConversationId, dict[str, list[str]]] = {
+    session_index: dict[SessionId, dict[str, list[str]]] = {
         cid: {"messages": [mid], "attachments": [aid]},
     }
     dedupe_index: dict[ContentHash, str] = {ch: "dedup-info"}
 
-    assert conversation_index[cid]["messages"][0] == mid
+    assert session_index[cid]["messages"][0] == mid
     assert dedupe_index[ch] == "dedup-info"
 
 
 @given(st.lists(st.text(), min_size=1, max_size=10))
 def test_ids_in_list_and_set(texts: list[str]) -> None:
     """ID types work correctly in collections."""
-    cids = [ConversationId(t) for t in texts]
+    cids = [SessionId(t) for t in texts]
 
     assert len(cids) == len(texts)
 
@@ -479,10 +479,10 @@ def test_ids_in_list_and_set(texts: list[str]) -> None:
 @given(st.sampled_from(list(Provider)), st.text(min_size=1, max_size=50))
 def test_provider_enum_interop_with_ids(provider: Provider, conv_str: str) -> None:
     """Provider enum works with ID types in data structures."""
-    cid = ConversationId(conv_str)
+    cid = SessionId(conv_str)
 
-    metadata = {"conversation_id": cid, "provider": provider}
+    metadata = {"session_id": cid, "provider": provider}
 
-    assert metadata["conversation_id"] == cid
+    assert metadata["session_id"] == cid
     assert metadata["provider"] == provider
     assert str(metadata["provider"]) == provider.value

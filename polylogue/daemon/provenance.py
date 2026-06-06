@@ -1,13 +1,13 @@
-"""Per-conversation provenance read surface (#1125).
+"""Per-session provenance read surface (#1125).
 
 Surfaces the source artifact and ingest metadata that produced a given
-conversation, with optional bounded access to the raw payload bytes.
+session, with optional bounded access to the raw payload bytes.
 
 Contract:
 
 - Provenance metadata (source path, acquisition timestamp, content hash,
   raw blob size, validation/quarantine state) is always returned for a
-  known conversation. Source paths are sanitized for display — the home
+  known session. Source paths are sanitized for display — the home
   directory is rendered as ``~`` so absolute filesystem locations do not
   leak unnecessarily into the reader.
 - The raw payload preview is opt-in (``?include_raw=1``) and is capped
@@ -17,9 +17,9 @@ Contract:
   ``quarantined`` flag plus a ``quarantine_reason`` string, instead of
   silently omitting the row.
 
-The endpoint reads from ``conversations`` and ``raw_conversations`` via a
-synchronous SQLite connection. No archive mutations occur. Raw bytes are
-read from the content-addressed blob store using
+The endpoint reads session metadata from ``index.db`` and, when available,
+raw acquisition metadata from ``source.db``.
+No archive mutations occur. Raw bytes are read from the content-addressed blob store using
 :func:`polylogue.storage.blob_store.get_blob_store`'s ``read_prefix``
 helper so the full blob is never materialized for the preview.
 """
@@ -30,10 +30,11 @@ import base64
 import os
 import sqlite3
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
-from polylogue.paths import db_path
+from polylogue.paths import active_index_db_path
 from polylogue.storage.blob_store import get_blob_store
 
 # Hard server-side cap on the preview window. The endpoint will never
@@ -45,11 +46,12 @@ RAW_PREVIEW_MAX_BYTES: Final[int] = 16 * 1024
 
 @dataclass(frozen=True)
 class ProvenanceRow:
-    """Joined conversation + raw row used to assemble a response."""
+    """Joined session + raw row used to assemble a response."""
 
-    conversation_id: str
+    session_id: str
     content_hash: str
     raw_id: str | None
+    raw_blob_id: str | None
     source_path: str | None
     source_name: str | None
     blob_size: int | None
@@ -79,25 +81,130 @@ def _display_source_path(raw_path: str | None) -> str | None:
     return raw_path
 
 
-def fetch_provenance_row(conversation_id: str) -> ProvenanceRow | None:
-    """Load the joined provenance row for *conversation_id*.
+def _iso_from_epoch_ms(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        epoch_ms = value
+    elif isinstance(value, float):
+        epoch_ms = int(value)
+    elif isinstance(value, str):
+        try:
+            epoch_ms = int(value)
+        except ValueError:
+            return None
+    else:
+        return None
+    return datetime.fromtimestamp(epoch_ms / 1000.0, UTC).isoformat()
 
-    Returns ``None`` when no conversation with that id exists. When the
-    conversation exists but has no raw_id (legacy / hand-seeded rows),
+
+def _fetch_archive_provenance_row(archive_db: Path, session_id: str) -> ProvenanceRow | None:
+    if not archive_db.exists():
+        return None
+    source_db = archive_db.with_name("source.db")
+    conn = sqlite3.connect(f"file:{archive_db}?mode=ro", uri=True)
+    try:
+        conn.row_factory = sqlite3.Row
+        if source_db.exists():
+            conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
+            row = conn.execute(
+                """
+                SELECT
+                    s.session_id              AS session_id,
+                    s.origin                  AS source_name,
+                    lower(hex(s.content_hash)) AS content_hash,
+                    s.raw_id                  AS raw_id,
+                    r.source_path             AS source_path,
+                    r.blob_hash               AS blob_hash,
+                    r.blob_size               AS blob_size,
+                    r.acquired_at_ms          AS acquired_at_ms,
+                    r.file_mtime_ms           AS file_mtime_ms,
+                    r.parsed_at_ms            AS parsed_at_ms,
+                    r.parse_error             AS parse_error,
+                    r.validated_at_ms         AS validated_at_ms,
+                    r.validation_status       AS validation_status,
+                    r.validation_error        AS validation_error
+                FROM sessions AS s
+                LEFT JOIN source_tier.raw_sessions AS r ON r.raw_id = s.raw_id
+                WHERE s.session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+            SELECT
+                s.session_id              AS session_id,
+                s.origin                  AS source_name,
+                lower(hex(s.content_hash)) AS content_hash,
+                s.raw_id                  AS raw_id,
+                NULL                      AS source_path,
+                NULL                      AS blob_hash,
+                NULL                      AS blob_size,
+                NULL                      AS acquired_at_ms,
+                NULL                      AS file_mtime_ms,
+                NULL                      AS parsed_at_ms,
+                NULL                      AS parse_error,
+                NULL                      AS validated_at_ms,
+                NULL                      AS validation_status,
+                NULL                      AS validation_error
+            FROM sessions AS s
+            WHERE s.session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    blob_hash = row["blob_hash"]
+    raw_blob_id = bytes(blob_hash).hex() if blob_hash is not None else None
+    return ProvenanceRow(
+        session_id=str(row["session_id"]),
+        source_name=(str(row["source_name"]) if row["source_name"] is not None else None),
+        content_hash=str(row["content_hash"] or ""),
+        raw_id=(str(row["raw_id"]) if row["raw_id"] is not None else None),
+        raw_blob_id=raw_blob_id,
+        source_path=(str(row["source_path"]) if row["source_path"] is not None else None),
+        blob_size=(int(row["blob_size"]) if row["blob_size"] is not None else None),
+        acquired_at=_iso_from_epoch_ms(row["acquired_at_ms"]),
+        file_mtime=_iso_from_epoch_ms(row["file_mtime_ms"]),
+        parsed_at=_iso_from_epoch_ms(row["parsed_at_ms"]),
+        parse_error=(str(row["parse_error"]) if row["parse_error"] is not None else None),
+        validated_at=_iso_from_epoch_ms(row["validated_at_ms"]),
+        validation_status=(str(row["validation_status"]) if row["validation_status"] is not None else None),
+        validation_error=(str(row["validation_error"]) if row["validation_error"] is not None else None),
+    )
+
+
+def fetch_provenance_row(session_id: str) -> ProvenanceRow | None:
+    """Load the joined provenance row for *session_id*.
+
+    Returns ``None`` when no session with that id exists. When the
+    session exists but has no raw_id (unsupported or hand-seeded rows),
     the raw fields come back as ``None`` and the caller surfaces the
     "no raw artifact" state explicitly.
     """
 
-    dbp = db_path()
+    dbp = active_index_db_path()
+    archive_db = dbp if dbp.name == "index.db" else dbp.with_name("index.db")
+    if archive_db.exists():
+        archive_row = _fetch_archive_provenance_row(archive_db, session_id)
+        if archive_row is not None:
+            return archive_row
     if not dbp.exists():
-        return None
+        return _fetch_archive_provenance_row(archive_db, session_id)
     conn = sqlite3.connect(str(dbp))
     try:
         conn.row_factory = sqlite3.Row
         cur = conn.execute(
             """
             SELECT
-                c.conversation_id   AS conversation_id,
+                c.session_id   AS session_id,
                 c.source_name     AS source_name,
                 c.content_hash      AS content_hash,
                 c.raw_id            AS raw_id,
@@ -111,11 +218,11 @@ def fetch_provenance_row(conversation_id: str) -> ProvenanceRow | None:
                 r.validated_at      AS validated_at,
                 r.validation_status AS validation_status,
                 r.validation_error  AS validation_error
-            FROM conversations AS c
-            LEFT JOIN raw_conversations AS r ON r.raw_id = c.raw_id
-            WHERE c.conversation_id = ?
+            FROM sessions AS c
+            LEFT JOIN raw_sessions AS r ON r.raw_id = c.raw_id
+            WHERE c.session_id = ?
             """,
-            (conversation_id,),
+            (session_id,),
         )
         row = cur.fetchone()
     finally:
@@ -123,10 +230,11 @@ def fetch_provenance_row(conversation_id: str) -> ProvenanceRow | None:
     if row is None:
         return None
     return ProvenanceRow(
-        conversation_id=str(row["conversation_id"]),
+        session_id=str(row["session_id"]),
         source_name=(str(row["source_name"]) if row["source_name"] is not None else None),
         content_hash=str(row["content_hash"] or ""),
         raw_id=(str(row["raw_id"]) if row["raw_id"] is not None else None),
+        raw_blob_id=(str(row["raw_id"]) if row["raw_id"] is not None else None),
         source_path=(str(row["source_path"]) if row["source_path"] is not None else None),
         blob_size=(int(row["blob_size"]) if row["blob_size"] is not None else None),
         acquired_at=(str(row["acquired_at"]) if row["acquired_at"] is not None else None),
@@ -223,20 +331,20 @@ def _build_raw_preview(
 
 
 def build_provenance_payload(
-    conversation_id: str,
+    session_id: str,
     *,
     include_raw: bool = False,
     requested_bytes: int | None = None,
 ) -> dict[str, object] | None:
-    """Assemble the JSON payload for ``GET /api/conversations/{id}/provenance``.
+    """Assemble the JSON payload for ``GET /api/sessions/{id}/provenance``.
 
-    Returns ``None`` when the conversation does not exist so the caller
+    Returns ``None`` when the session does not exist so the caller
     can emit a 404. Otherwise returns the full structured envelope. The
     raw preview is only attached when ``include_raw`` is true, and even
     then is bounded by :data:`RAW_PREVIEW_MAX_BYTES`.
     """
 
-    row = fetch_provenance_row(conversation_id)
+    row = fetch_provenance_row(session_id)
     if row is None:
         return None
     quarantined, quarantine_reason = _quarantine_state(row)
@@ -248,8 +356,8 @@ def build_provenance_payload(
     contains_home = bool(home and raw_path and (raw_path == home or raw_path.startswith(home + os.sep)))
 
     payload: dict[str, object] = {
-        "conversation_id": row.conversation_id,
-        "provider": row.source_name or None,
+        "session_id": row.session_id,
+        "origin": row.source_name or None,
         "content_hash": row.content_hash or None,
         "raw_id": row.raw_id,
         "source_path_display": sanitized_path,
@@ -271,7 +379,7 @@ def build_provenance_payload(
     }
 
     if include_raw:
-        if row.raw_id is None:
+        if row.raw_blob_id is None:
             payload["raw_preview_included"] = True
             payload["raw_preview"] = {
                 "available": False,
@@ -283,7 +391,7 @@ def build_provenance_payload(
         else:
             payload["raw_preview_included"] = True
             payload["raw_preview"] = _build_raw_preview(
-                row.raw_id,
+                row.raw_blob_id,
                 row.blob_size,
                 requested_bytes=requested_bytes,
             )

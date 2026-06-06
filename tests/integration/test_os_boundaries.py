@@ -65,7 +65,7 @@ class TestFileDescriptorPressure:
         del workspace_env
         import asyncio
 
-        from polylogue.storage.query_models import ConversationRecordQuery
+        from polylogue.storage.query_models import SessionRecordQuery
         from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
         from polylogue.storage.sqlite.connection import open_connection
 
@@ -85,7 +85,7 @@ class TestFileDescriptorPressure:
             backend = SQLiteBackend(db_path=db_path)
 
             async def _check() -> int:
-                count = await backend.queries.count_conversations(ConversationRecordQuery())
+                count = await backend.queries.count_sessions(SessionRecordQuery())
                 await backend.close()
                 return count
 

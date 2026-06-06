@@ -19,36 +19,36 @@ from polylogue.core.json import json_document
 # SQL templates — canonical source, used by sync and async write paths
 # ---------------------------------------------------------------------------
 
-_CONVERSATION_UPSERT_SQL = """
-INSERT INTO conversations (
-    conversation_id, source_name, provider_conversation_id, title,
+_SESSION_UPSERT_SQL = """
+INSERT INTO sessions (
+    session_id, source_name, provider_session_id, title,
     created_at, updated_at, sort_key, content_hash,
     provider_meta, metadata, version,
-    parent_conversation_id, branch_type, raw_id, source_name,
+    parent_session_id, branch_type, raw_id, source_name,
     working_directories_json, git_branch, git_repository_url
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(conversation_id) DO UPDATE SET
+ON CONFLICT(session_id) DO UPDATE SET
     title = excluded.title,
     created_at = excluded.created_at,
     updated_at = excluded.updated_at,
     sort_key = excluded.sort_key,
     content_hash = excluded.content_hash,
     provider_meta = excluded.provider_meta,
-    metadata = COALESCE(excluded.metadata, conversations.metadata),
-    parent_conversation_id = excluded.parent_conversation_id,
+    metadata = COALESCE(excluded.metadata, sessions.metadata),
+    parent_session_id = excluded.parent_session_id,
     branch_type = excluded.branch_type,
-    raw_id = COALESCE(excluded.raw_id, conversations.raw_id),
-    source_name = COALESCE(NULLIF(excluded.source_name, ''), conversations.source_name),
-    working_directories_json = COALESCE(excluded.working_directories_json, conversations.working_directories_json),
-    git_branch = COALESCE(excluded.git_branch, conversations.git_branch),
-    git_repository_url = COALESCE(excluded.git_repository_url, conversations.git_repository_url)
+    raw_id = COALESCE(excluded.raw_id, sessions.raw_id),
+    source_name = COALESCE(NULLIF(excluded.source_name, ''), sessions.source_name),
+    working_directories_json = COALESCE(excluded.working_directories_json, sessions.working_directories_json),
+    git_branch = COALESCE(excluded.git_branch, sessions.git_branch),
+    git_repository_url = COALESCE(excluded.git_repository_url, sessions.git_repository_url)
 WHERE
     content_hash != excluded.content_hash
     OR IFNULL(title, '') != IFNULL(excluded.title, '')
     OR IFNULL(created_at, '') != IFNULL(excluded.created_at, '')
     OR IFNULL(updated_at, '') != IFNULL(excluded.updated_at, '')
     OR IFNULL(provider_meta, '') != IFNULL(excluded.provider_meta, '')
-    OR IFNULL(parent_conversation_id, '') != IFNULL(excluded.parent_conversation_id, '')
+    OR IFNULL(parent_session_id, '') != IFNULL(excluded.parent_session_id, '')
     OR IFNULL(branch_type, '') != IFNULL(excluded.branch_type, '')
     OR IFNULL(raw_id, '') != IFNULL(excluded.raw_id, '')
     OR IFNULL(sort_key, 0) != IFNULL(excluded.sort_key, 0)
@@ -56,7 +56,7 @@ WHERE
 
 _MESSAGE_UPSERT_SQL = """
 INSERT INTO messages (
-    message_id, conversation_id, provider_message_id, role, text,
+    message_id, session_id, provider_message_id, role, text,
     sort_key, content_hash, version, parent_message_id, branch_index,
     source_name, word_count, has_tool_use, has_thinking, has_paste,
     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
@@ -102,7 +102,7 @@ WHERE
 
 _CONTENT_BLOCK_UPSERT_SQL = """
 INSERT INTO content_blocks (
-    block_id, message_id, conversation_id, block_index,
+    block_id, message_id, session_id, block_index,
     type, text, tool_name, tool_id, tool_input,
     metadata, semantic_type
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -117,12 +117,12 @@ ON CONFLICT(message_id, block_index) DO UPDATE SET
 """
 
 _STATS_UPSERT_SQL = """
-INSERT INTO conversation_stats
-    (conversation_id, source_name, message_count, word_count, tool_use_count, thinking_count, paste_count,
+INSERT INTO session_stats
+    (session_id, source_name, message_count, word_count, tool_use_count, thinking_count, paste_count,
      user_msg_count, assistant_msg_count, system_msg_count, tool_msg_count,
      user_word_count, assistant_word_count)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(conversation_id) DO UPDATE SET
+ON CONFLICT(session_id) DO UPDATE SET
     source_name         = excluded.source_name,
     message_count       = excluded.message_count,
     word_count          = excluded.word_count,
@@ -139,7 +139,7 @@ ON CONFLICT(conversation_id) DO UPDATE SET
 
 _ACTION_EVENT_INSERT_SQL = """
 INSERT INTO action_events (
-    event_id, conversation_id, message_id, materializer_version,
+    event_id, session_id, message_id, materializer_version,
     source_block_id, timestamp, sort_key, sequence_index,
     source_name, action_kind, tool_name, normalized_tool_name, tool_id,
     affected_paths_json, cwd_path, branch_names_json,
@@ -149,7 +149,7 @@ INSERT INTO action_events (
 
 _PROVIDER_EVENT_INSERT_SQL = """
 INSERT INTO provider_events (
-    event_id, conversation_id, source_name, event_index, event_type,
+    event_id, session_id, source_name, event_index, event_type,
     normalized_kind, timestamp, sort_key, source_message_id, raw_id,
     materializer_version
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -173,7 +173,7 @@ ON CONFLICT(attachment_id) DO UPDATE SET
 
 _ATTACHMENT_REF_INSERT_SQL = """
 INSERT INTO attachment_refs (
-    ref_id, attachment_id, conversation_id, message_id, provider_meta,
+    ref_id, attachment_id, session_id, message_id, provider_meta,
     provider_attachment_id, provider_file_id, provider_drive_id, upload_origin
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(ref_id) DO NOTHING
@@ -181,13 +181,13 @@ ON CONFLICT(ref_id) DO NOTHING
 
 _IDENTITY_LEDGER_UPSERT_SQL = """
 INSERT OR IGNORE INTO identity_ledger (
-    provider, source, source_path, provider_conversation_id, raw_hash, current_conversation_id
+    provider, source, source_path, provider_session_id, raw_hash, current_session_id
 ) VALUES (?, ?, ?, ?, ?, ?)
 """
 
 
 # Public exports — both sync and async write paths import these directly.
-SQL_CONVERSATION_UPSERT = _CONVERSATION_UPSERT_SQL
+SQL_SESSION_UPSERT = _SESSION_UPSERT_SQL
 SQL_MESSAGE_UPSERT = _MESSAGE_UPSERT_SQL
 SQL_CONTENT_BLOCK_UPSERT = _CONTENT_BLOCK_UPSERT_SQL
 SQL_STATS_UPSERT = _STATS_UPSERT_SQL
@@ -234,7 +234,7 @@ __all__ = [
     "SQL_ATTACHMENT_REF_INSERT",
     "SQL_ATTACHMENT_UPSERT",
     "SQL_CONTENT_BLOCK_UPSERT",
-    "SQL_CONVERSATION_UPSERT",
+    "SQL_SESSION_UPSERT",
     "SQL_MESSAGE_UPSERT",
     "SQL_PROVIDER_EVENT_INSERT",
     "SQL_STATS_UPSERT",

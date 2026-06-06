@@ -21,15 +21,15 @@ from polylogue.pipeline.services.acquisition_records import ScanResult
 from polylogue.pipeline.services.parsing import ParseResult, ParsingService
 from polylogue.pipeline.services.planning import PlanningService
 from polylogue.pipeline.services.validation import ValidationService  # used by TestPlanningService
-from polylogue.sources.parsers.base import RawConversationData
-from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.sources.parsers.base import RawSessionData
+from polylogue.storage.repository import SessionRepository
+from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.types import Provider
 
 WorkspacePaths = dict[str, Path]
-ConversationPayload = dict[str, JSONValue]
-VisitSourcesCallback = Callable[[RawConversationRecord], Awaitable[None]]
+SessionPayload = dict[str, JSONValue]
+VisitSourcesCallback = Callable[[RawSessionRecord], Awaitable[None]]
 
 
 def _parse_batch_observation(
@@ -56,10 +56,10 @@ class TestParseResultMerge:
                 await result.merge_result(
                     f"conv-{start_id}-{index}",
                     {
-                        "conversations": 1,
+                        "sessions": 1,
                         "messages": 2,
                         "attachments": 1,
-                        "skipped_conversations": 0,
+                        "skipped_sessions": 0,
                         "skipped_messages": 0,
                         "skipped_attachments": 0,
                     },
@@ -68,7 +68,7 @@ class TestParseResultMerge:
 
         await asyncio.gather(*(merge_batch(index) for index in range(5)))
 
-        assert result.counts["conversations"] == 500
+        assert result.counts["sessions"] == 500
         assert result.counts["messages"] == 1000
         assert result.counts["attachments"] == 500
         assert len(result.processed_ids) == 500
@@ -104,7 +104,7 @@ class TestParsingServiceParseSources:
         mock_collect_validate.assert_awaited_once_with(source_names=None, exclude_raw_ids=[])
         mock_collect_parse.assert_awaited_once_with(source_names=None, exclude_raw_ids=[])
         mock_parse.assert_not_called()
-        assert result.counts["conversations"] == 0
+        assert result.counts["sessions"] == 0
         assert result.counts["messages"] == 0
         assert len(result.processed_ids) == 0
 
@@ -132,7 +132,7 @@ class TestParsingServiceParseSources:
                     new=AsyncMock(return_value=[]),
                 ) as mock_collect_parse:
                     parse_result = ParseResult()
-                    parse_result.counts["conversations"] = 2
+                    parse_result.counts["sessions"] = 2
                     parse_result.counts["messages"] = 5
                     parse_result.processed_ids = {"conv-1", "conv-2"}
                     with patch.object(
@@ -151,7 +151,7 @@ class TestParsingServiceParseSources:
         mock_collect_validate.assert_awaited_once()
         mock_collect_parse.assert_awaited_once()
         mock_parse.assert_awaited_once_with(raw_ids=["raw-1", "raw-2"], progress_callback=None, force_write=False)
-        assert result.counts["conversations"] == 2
+        assert result.counts["sessions"] == 2
         assert result.counts["messages"] == 5
         assert result.processed_ids == {"conv-1", "conv-2"}
 
@@ -277,7 +277,7 @@ class TestParsingServiceParseSources:
         mock_collect_validate.assert_awaited_once_with(source_names=["test-source"], exclude_raw_ids=[])
         mock_collect_parse.assert_awaited_once_with(source_names=["test-source"], exclude_raw_ids=[])
         mock_parse.assert_not_called()
-        assert result.counts["conversations"] == 0
+        assert result.counts["sessions"] == 0
 
     async def test_progress_callback_passed_to_both_stages(self) -> None:
         mock_repository = MagicMock()
@@ -330,9 +330,9 @@ class TestParsingServiceParseSources:
 
 
 class TestParsingServiceIntegration:
-    def _conversation_json(self, conversation_id: str, title: str, message: str) -> ConversationPayload:
+    def _session_json(self, session_id: str, title: str, message: str) -> SessionPayload:
         return {
-            "id": conversation_id,
+            "id": session_id,
             "title": title,
             "create_time": 1700000000,
             "update_time": 1700000100,
@@ -357,29 +357,35 @@ class TestParsingServiceIntegration:
     ) -> None:
         monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
         inbox = cli_workspace["inbox_dir"]
-        (inbox / "conversations.json").write_text(
-            json.dumps([self._conversation_json("test-conv-1", "Test Conversation", "Hello, world!")])
+        (inbox / "sessions.json").write_text(
+            json.dumps([self._session_json("test-conv-1", "Test Session", "Hello, world!")])
         )
-        backend = SQLiteBackend(db_path=cli_workspace["db_path"])
+        # This ParsingService/SQLiteBackend path persists into monolithic
+        # sessions/messages tables. cli_workspace["db_path"] is the archive
+        # index.db, so this test writes to its own fresh backend database
+        # alongside it.
+        backend = SQLiteBackend(db_path=cli_workspace["archive_root"] / "ingest.db")
         config = Config(
             archive_root=cli_workspace["archive_root"],
             render_root=cli_workspace["render_root"],
             sources=[Source(name="test-inbox", path=inbox)],
         )
         result = await ParsingService(
-            repository=ConversationRepository(backend=backend),
+            repository=SessionRepository(backend=backend),
             archive_root=cli_workspace["archive_root"],
             config=config,
         ).parse_sources(config.sources)
-        assert result.counts["conversations"] >= 1
+        assert result.counts["sessions"] >= 1
         assert result.processed_ids
 
-    async def test_parse_from_raw_parses_stored_conversations(self, cli_workspace: WorkspacePaths) -> None:
+    async def test_parse_from_raw_parses_stored_sessions(self, cli_workspace: WorkspacePaths) -> None:
         inbox = cli_workspace["inbox_dir"]
-        (inbox / "conversations.json").write_text(
-            json.dumps([self._conversation_json("test-conv-raw", "Test Raw Conversation", "Hello from raw!")])
+        (inbox / "sessions.json").write_text(
+            json.dumps([self._session_json("test-conv-raw", "Test Raw Session", "Hello from raw!")])
         )
-        backend = SQLiteBackend(db_path=cli_workspace["db_path"])
+        # See test_ingest_with_real_database: this SQLiteBackend path cannot
+        # open the archive index.db, so route it to its own DB.
+        backend = SQLiteBackend(db_path=cli_workspace["archive_root"] / "ingest.db")
         config = Config(
             archive_root=cli_workspace["archive_root"],
             render_root=cli_workspace["render_root"],
@@ -390,16 +396,16 @@ class TestParsingServiceIntegration:
         assert len(raw_ids) == 1
 
         parse_result = await ParsingService(
-            repository=ConversationRepository(backend=backend),
+            repository=SessionRepository(backend=backend),
             archive_root=cli_workspace["archive_root"],
             config=config,
         ).parse_from_raw(raw_ids=raw_ids)
-        assert parse_result.counts["conversations"] >= 1
+        assert parse_result.counts["sessions"] >= 1
         assert parse_result.processed_ids
         async with backend.connection() as conn:
             row = await (
                 await conn.execute(
-                    "SELECT raw_id FROM conversations WHERE conversation_id = ?",
+                    "SELECT raw_id FROM sessions WHERE session_id = ?",
                     (list(parse_result.processed_ids)[0],),
                 )
             ).fetchone()
@@ -410,7 +416,7 @@ class TestParsingServiceIntegration:
 class TestParsingServiceStreaming:
     async def test_parse_from_raw_uses_raw_headers_without_prefetching_full_records(self, tmp_path: Path) -> None:
         backend = MagicMock()
-        backend.iter_raw_conversations.side_effect = AssertionError("iter_raw_conversations should not be used")
+        backend.iter_raw_sessions.side_effect = AssertionError("iter_raw_sessions should not be used")
 
         async def raw_headers() -> AsyncGenerator[tuple[str, int], None]:
             for raw_header in (("raw-1", 1), ("raw-2", 1)):
@@ -498,8 +504,8 @@ class TestPlanningService:
         source_dir = tmp_path / "inbox-a"
         source_dir.mkdir()
 
-        await backend.save_raw_conversation(
-            RawConversationRecord(
+        await backend.save_raw_session(
+            RawSessionRecord(
                 raw_id="raw-scoped",
                 source_name="inbox-a",
                 source_path="/tmp/a.json",
@@ -529,8 +535,8 @@ class TestPlanningService:
             ("raw-legacy-provider", None, "/tmp/legacy.json"),
             ("raw-other", "inbox-b", "/tmp/b.json"),
         ):
-            await backend.save_raw_conversation(
-                RawConversationRecord(
+            await backend.save_raw_session(
+                RawSessionRecord(
                     raw_id=raw_id,
                     source_name=source_name,
                     source_path=source_path,
@@ -553,7 +559,7 @@ class TestPlanningService:
         source_dir = tmp_path / "inbox-a"
         source_dir.mkdir()
 
-        raw_data = RawConversationData(
+        raw_data = RawSessionData(
             raw_bytes=b'{"id":"duplicate"}',
             source_path="/tmp/duplicate.json",
             source_index=0,
@@ -583,8 +589,8 @@ class TestPlanningService:
 
         backlog_ids = [hashlib.sha256(f"backlog-{index}".encode()).hexdigest() for index in range(5)]
         for index in range(5):
-            await backend.save_raw_conversation(
-                RawConversationRecord(
+            await backend.save_raw_session(
+                RawSessionRecord(
                     raw_id=backlog_ids[index],
                     source_name="inbox-a",
                     source_path=f"/tmp/backlog-{index}.json",
@@ -594,20 +600,20 @@ class TestPlanningService:
             )
 
         call_count = [0]
-        from polylogue.storage.repository import ConversationRepository
+        from polylogue.storage.repository import SessionRepository
 
-        original = ConversationRepository.get_raw_conversations_batch
+        original = SessionRepository.get_raw_sessions_batch
 
         async def spy_batch(
-            repository: ConversationRepository,
+            repository: SessionRepository,
             ids: list[str],
             *args: object,
             **kwargs: object,
-        ) -> list[RawConversationRecord]:
+        ) -> list[RawSessionRecord]:
             call_count[0] += 1
             return await original(repository, ids, *args, **kwargs)
 
-        monkeypatch.setattr(ConversationRepository, "get_raw_conversations_batch", spy_batch)
+        monkeypatch.setattr(SessionRepository, "get_raw_sessions_batch", spy_batch)
         plan = await planner.build_plan(sources=[Source(name="inbox-a", path=source_dir)], stage="all", preview=False)
 
         assert set(plan.validate_raw_ids) == set(backlog_ids)
@@ -624,8 +630,8 @@ class TestPlanningService:
 
         total_backlog = ValidationService.RAW_BATCH_SIZE + 5
         for index in range(total_backlog):
-            await backend.save_raw_conversation(
-                RawConversationRecord(
+            await backend.save_raw_session(
+                RawSessionRecord(
                     raw_id=hashlib.sha256(f"raw-preview-{index}".encode()).hexdigest(),
                     source_name="inbox-a",
                     source_path=f"/tmp/p-{index}.json",
@@ -636,21 +642,21 @@ class TestPlanningService:
 
         call_count = [0]
         batch_sizes: list[int] = []
-        from polylogue.storage.repository import ConversationRepository
+        from polylogue.storage.repository import SessionRepository
 
-        original = ConversationRepository.get_raw_conversations_batch
+        original = SessionRepository.get_raw_sessions_batch
 
         async def spy_batch(
-            repository: ConversationRepository,
+            repository: SessionRepository,
             ids: list[str],
             *args: object,
             **kwargs: object,
-        ) -> list[RawConversationRecord]:
+        ) -> list[RawSessionRecord]:
             call_count[0] += 1
             batch_sizes.append(len(ids))
             return await original(repository, ids, *args, **kwargs)
 
-        monkeypatch.setattr(ConversationRepository, "get_raw_conversations_batch", spy_batch)
+        monkeypatch.setattr(SessionRepository, "get_raw_sessions_batch", spy_batch)
         plan = await planner.build_plan(sources=[Source(name="inbox-a", path=source_dir)], stage="all", preview=True)
 
         assert len(plan.validate_raw_ids) == total_backlog
@@ -665,8 +671,8 @@ class TestPlanningService:
         source_dir.mkdir()
 
         for raw_id, status in (("raw-passed", "passed"), ("raw-skipped", "skipped"), ("raw-failed", "failed")):
-            await backend.save_raw_conversation(
-                RawConversationRecord(
+            await backend.save_raw_session(
+                RawSessionRecord(
                     raw_id=raw_id,
                     source_name="inbox-a",
                     source_path=f"/tmp/{raw_id}.json",
@@ -689,8 +695,8 @@ class TestPlanningService:
         source_dir = tmp_path / "inbox-a"
         source_dir.mkdir()
 
-        await backend.save_raw_conversation(
-            RawConversationRecord(
+        await backend.save_raw_session(
+            RawSessionRecord(
                 raw_id="raw-validated",
                 source_name="inbox-a",
                 source_path="/tmp/validated.json",
@@ -701,8 +707,8 @@ class TestPlanningService:
         await backend.mark_raw_validated("raw-validated", status="passed", provider="chatgpt", mode="strict")
         await backend.mark_raw_parsed("raw-validated", payload_provider="chatgpt")
 
-        await backend.save_raw_conversation(
-            RawConversationRecord(
+        await backend.save_raw_session(
+            RawSessionRecord(
                 raw_id="raw-unvalidated",
                 source_name="inbox-a",
                 source_path="/tmp/unvalidated.json",
@@ -712,8 +718,8 @@ class TestPlanningService:
         )
         await backend.mark_raw_parsed("raw-unvalidated", payload_provider="chatgpt")
 
-        await backend.save_raw_conversation(
-            RawConversationRecord(
+        await backend.save_raw_session(
+            RawSessionRecord(
                 raw_id="raw-validation-failed",
                 source_name="inbox-a",
                 source_path="/tmp/validation-failed.json",
@@ -762,14 +768,14 @@ class TestPlanningService:
         source_dir = tmp_path / "inbox-a"
         source_dir.mkdir()
 
-        record = RawConversationRecord(
+        record = RawSessionRecord(
             raw_id="raw-existing",
             source_name="inbox-a",
             source_path="/tmp/existing.json",
             blob_size=len(b'{"id":"x"}'),
             acquired_at=datetime.now(tz=timezone.utc).isoformat(),
         )
-        await backend.save_raw_conversation(record)
+        await backend.save_raw_session(record)
         await backend.mark_raw_validated("raw-existing", status="passed", provider="chatgpt", mode="strict")
         await backend.mark_raw_parsed("raw-existing", payload_provider="chatgpt")
 
@@ -818,21 +824,21 @@ class TestPlanningService:
         source_dir.mkdir()
 
         records = [
-            RawConversationRecord(
+            RawSessionRecord(
                 raw_id=hashlib.sha256(b"existing-passed").hexdigest(),
                 source_name="inbox-a",
                 source_path="/tmp/existing-passed.json",
                 blob_size=len(b'{"id":"x"}'),
                 acquired_at=datetime.now(tz=timezone.utc).isoformat(),
             ),
-            RawConversationRecord(
+            RawSessionRecord(
                 raw_id=hashlib.sha256(b"existing-unvalidated").hexdigest(),
                 source_name="inbox-a",
                 source_path="/tmp/existing-unvalidated.json",
                 blob_size=len(b'{"id":"x"}'),
                 acquired_at=datetime.now(tz=timezone.utc).isoformat(),
             ),
-            RawConversationRecord(
+            RawSessionRecord(
                 raw_id=hashlib.sha256(b"existing-failed").hexdigest(),
                 source_name="inbox-a",
                 source_path="/tmp/existing-failed.json",
@@ -841,7 +847,7 @@ class TestPlanningService:
             ),
         ]
         for record in records:
-            await backend.save_raw_conversation(record)
+            await backend.save_raw_session(record)
 
         passed_id = records[0].raw_id
         unvalidated_id = records[1].raw_id
@@ -896,11 +902,11 @@ class TestPlanningService:
     ) -> None:
         backend = MagicMock(spec=SQLiteBackend)
         backend.queries = MagicMock()
-        backend.count_conversation_ids = AsyncMock(return_value=7)
+        backend.count_session_ids = AsyncMock(return_value=7)
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
         planner = PlanningService(backend=backend, config=config)
 
         plan = await planner.build_plan(sources=[], stage=stage)
 
         assert plan.summary.counts == {count_key: 7}
-        backend.count_conversation_ids.assert_awaited_once_with(source_names=None)
+        backend.count_session_ids.assert_awaited_once_with(source_names=None)

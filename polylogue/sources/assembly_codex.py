@@ -10,7 +10,7 @@ from polylogue.core.json import json_document
 from polylogue.logging import get_logger
 
 from .assembly import CodexThreadNames, SidecarData
-from .parsers.base import ParsedConversation
+from .parsers.base import ParsedSession
 
 logger = get_logger(__name__)
 
@@ -69,14 +69,14 @@ class CodexAssemblySpec:
                     break
         return {"thread_names": thread_names}
 
-    def enrich_conversation(
+    def enrich_session(
         self,
-        conv: ParsedConversation,
+        conv: ParsedSession,
         sidecar_data: SidecarData,
-    ) -> ParsedConversation:
-        """Enrich a Codex conversation with thread name or first-user-message title."""
+    ) -> ParsedSession:
+        """Enrich a Codex session with thread name or first-user-message title."""
         thread_names: CodexThreadNames = sidecar_data.get("thread_names", {})
-        cid = conv.provider_conversation_id
+        cid = conv.provider_session_id
 
         # Try thread name from side index
         name = thread_names.get(cid)
@@ -84,16 +84,16 @@ class CodexAssemblySpec:
             provider_meta = dict(conv.provider_meta) if conv.provider_meta else {}
             provider_meta["thread_name"] = name
             provider_meta["title_source"] = "session-index:thread-name"
-            return ParsedConversation(
+            return ParsedSession(
                 source_name=conv.source_name,
-                provider_conversation_id=conv.provider_conversation_id,
+                provider_session_id=conv.provider_session_id,
                 title=name,
                 created_at=conv.created_at,
                 updated_at=conv.updated_at,
                 messages=conv.messages,
                 attachments=conv.attachments,
                 provider_meta=provider_meta,
-                parent_conversation_provider_id=conv.parent_conversation_provider_id,
+                parent_session_provider_id=conv.parent_session_provider_id,
                 branch_type=conv.branch_type,
             )
 
@@ -106,16 +106,16 @@ class CodexAssemblySpec:
                         preview += "..."
                     provider_meta = dict(conv.provider_meta) if conv.provider_meta else {}
                     provider_meta["title_source"] = "first-user-message"
-                    return ParsedConversation(
+                    return ParsedSession(
                         source_name=conv.source_name,
-                        provider_conversation_id=conv.provider_conversation_id,
+                        provider_session_id=conv.provider_session_id,
                         title=preview,
                         created_at=conv.created_at,
                         updated_at=conv.updated_at,
                         messages=conv.messages,
                         attachments=conv.attachments,
                         provider_meta=provider_meta,
-                        parent_conversation_provider_id=conv.parent_conversation_provider_id,
+                        parent_session_provider_id=conv.parent_session_provider_id,
                         branch_type=conv.branch_type,
                     )
 

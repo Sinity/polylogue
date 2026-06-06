@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -15,10 +16,9 @@ from polylogue.sources.live.batch_support import (
     _AppendPlan,
     _AppendResult,
     _detect_provider_from_path_sample,
-    _parse_path_as_conversation_artifact,
+    _parse_path_as_session_artifact,
 )
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.storage.runtime import RawConversationRecord
 from polylogue.types import Provider
 
 
@@ -48,23 +48,16 @@ def test_full_ingest_heartbeats_small_file_groups_with_current_path(
         *,
         current_path: Path | None = None,
         source_payload_read_bytes: int | None = None,
+        stage_payload: dict[str, object] | None = None,
         force: bool = False,
     ) -> None:
+        del stage_payload
         del force
         events.append((phase, current_path, source_payload_read_bytes))
 
-    def fake_write_from_bytes(_store: object, payload: bytes) -> tuple[str, int]:
-        suffix = f"{len(events):064x}"[-64:]
-        return suffix, len(payload)
-
     monkeypatch.setattr(
-        "polylogue.sources.live.batch._jsonl_provider_and_conversation_artifact",
+        "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
         lambda _path, fallback_provider: (fallback_provider, True),
-    )
-    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.write_from_bytes", fake_write_from_bytes)
-    monkeypatch.setattr(
-        "polylogue.sources.live.batch._process_ingest_batch_sync",
-        lambda *args, **kwargs: SimpleNamespace(failed_raw_ids=set(), parse_failures=0, worker_count=1),
     )
 
     result = processor._ingest_full_paths_sync([first, second], source_name="codex", heartbeat=heartbeat)
@@ -72,10 +65,12 @@ def test_full_ingest_heartbeats_small_file_groups_with_current_path(
     assert result.succeeded == [first, second]
     assert ("full_file_scan", first, 0) in events
     assert ("full_file_scan", second, first.stat().st_size) in events
-    assert any(event == ("full_worker_wait", second, first.stat().st_size + second.stat().st_size) for event in events)
+    assert any(
+        event == ("full_archive_write", second, first.stat().st_size + second.stat().st_size) for event in events
+    )
 
 
-def test_large_full_ingest_suspends_fts_triggers_and_repairs_once(
+def test_large_full_ingest_uses_archive(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -90,34 +85,19 @@ def test_large_full_ingest_suspends_fts_triggers_and_repairs_once(
         cursor=CursorStore(db_path),
         parser_fingerprint="test-parser",
     )
-    captured_kwargs: dict[str, object] = {}
-
-    monkeypatch.setattr("polylogue.sources.live.batch._FULL_INGEST_SUSPEND_FTS_TRIGGER_BYTES", 1)
     monkeypatch.setattr(
-        "polylogue.sources.live.batch._jsonl_provider_and_conversation_artifact",
+        "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
         lambda _path, fallback_provider: (fallback_provider, True),
     )
-    monkeypatch.setattr(
-        "polylogue.sources.live.batch.BlobStore.write_from_bytes",
-        lambda _store, payload: ("a" * 64, len(payload)),
-    )
-
-    def fake_process_ingest_batch_sync(*args: object, **kwargs: object) -> SimpleNamespace:
-        del args
-        captured_kwargs.update(kwargs)
-        return SimpleNamespace(failed_raw_ids=set(), parse_failures=0, worker_count=1)
-
-    monkeypatch.setattr("polylogue.sources.live.batch._process_ingest_batch_sync", fake_process_ingest_batch_sync)
 
     result = processor._ingest_full_paths_sync([source], source_name="codex")
 
     assert result.succeeded == [source]
-    assert captured_kwargs["suspend_fts_triggers"] is True
-    assert captured_kwargs["repair_message_fts"] is True
-    assert captured_kwargs["repair_action_fts"] is True
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT native_id FROM sessions").fetchone()[0] == "large"
 
 
-def test_streaming_sized_full_ingest_suspends_fts_triggers_by_default(
+def test_streaming_sized_full_ingest_uses_archive(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -132,30 +112,245 @@ def test_streaming_sized_full_ingest_suspends_fts_triggers_by_default(
         cursor=CursorStore(db_path),
         parser_fingerprint="test-parser",
     )
-    captured_kwargs: dict[str, object] = {}
-
     monkeypatch.setattr(
-        "polylogue.sources.live.batch._jsonl_provider_and_conversation_artifact",
+        "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
         lambda _path, fallback_provider: (fallback_provider, True),
     )
-    monkeypatch.setattr(
-        "polylogue.sources.live.batch.BlobStore.write_from_path",
-        lambda _store, path, heartbeat=None: ("a" * 64, path.stat().st_size),
-    )
-
-    def fake_process_ingest_batch_sync(*args: object, **kwargs: object) -> SimpleNamespace:
-        del args
-        captured_kwargs.update(kwargs)
-        return SimpleNamespace(failed_raw_ids=set(), parse_failures=0, worker_count=1)
-
-    monkeypatch.setattr("polylogue.sources.live.batch._process_ingest_batch_sync", fake_process_ingest_batch_sync)
 
     result = processor._ingest_full_paths_sync([source], source_name="codex")
 
     assert result.succeeded == [source]
-    assert captured_kwargs["suspend_fts_triggers"] is True
-    assert captured_kwargs["repair_message_fts"] is True
-    assert captured_kwargs["repair_action_fts"] is True
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
+
+
+def test_full_ingest_writes_archive_with_route_observability(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    source = root / "full-v1.jsonl"
+    payload = (
+        b'{"type":"session_meta","payload":{"id":"full-v1","timestamp":"2026-06-02T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}\n'
+    )
+    source.write_bytes(payload)
+    index_db = tmp_path / "index.db"
+    source_db = tmp_path / "source.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    stage_events: list[tuple[str, dict[str, object] | None]] = []
+
+    def heartbeat(
+        phase: str,
+        *,
+        current_path: Path | None = None,
+        source_payload_read_bytes: int | None = None,
+        stage_payload: dict[str, object] | None = None,
+        force: bool = False,
+    ) -> None:
+        del current_path, source_payload_read_bytes, force
+        stage_events.append((phase, stage_payload))
+
+    result = processor._ingest_full_paths_sync([source], source_name="codex", heartbeat=heartbeat)
+
+    assert result.succeeded == [source]
+    assert result.failed == []
+    assert result.ingested_session_count == 1
+    assert result.ingested_message_count == 1
+    assert result.changed_session_count == 1
+    assert result.raw_fingerprints[source]
+    with sqlite3.connect(source_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT native_id FROM sessions").fetchone()[0] == "full-v1"
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
+    assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_sessions'").fetchone() is None
+
+    probe_event = next(payload for phase, payload in stage_events if phase == "full_archive_storage_probe")
+    assert probe_event == {
+        "storage_route": "archive_full",
+        "storage_tiers": "source,index,embeddings,user,ops",
+        "storage_write_tiers": "source,index",
+        "archive_active": True,
+        "archive_bootstrapped": False,
+        "archive_present_tiers": "source,index,ops",
+        "archive_missing_tiers": "embeddings,user",
+        "archive_tier_user_versions_json": ('{"embeddings": null, "index": 1, "ops": 1, "source": 1, "user": null}'),
+    }
+    write_event = next(payload for phase, payload in stage_events if phase == "full_archive_write")
+    assert write_event == {
+        "storage_route": "archive_full",
+        "storage_tiers": "source,index,embeddings,user,ops",
+        "storage_write_tiers": "source,index",
+        "input_file_count": 1,
+        "payload_available_file_count": 1,
+        "payload_unavailable_file_count": 0,
+        "payload_replayed_from_blob_file_count": 0,
+    }
+    completed_event = next(payload for phase, payload in stage_events if phase == "full_archive_write_completed")
+    assert completed_event == {
+        "storage_route": "archive_full",
+        "storage_tiers": "source,index,embeddings,user,ops",
+        "storage_write_tiers": "source,index",
+        "written_raw_count": 1,
+        "ingested_session_count": 1,
+        "ingested_message_count": 1,
+        "payload_unavailable_file_count": 0,
+        "payload_replayed_from_blob_file_count": 0,
+    }
+
+
+def test_streaming_full_ingest_writes_archive_from_blob(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    source = root / "stream-v1.jsonl"
+    payload = (
+        b'{"type":"session_meta","payload":{"id":"stream-v1","timestamp":"2026-06-02T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"large"}]}}\n'
+    )
+    source.write_bytes(payload)
+    index_db = tmp_path / "index.db"
+    source_db = tmp_path / "source.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    stage_events: list[tuple[str, dict[str, object] | None]] = []
+
+    def heartbeat(
+        phase: str,
+        *,
+        current_path: Path | None = None,
+        source_payload_read_bytes: int | None = None,
+        stage_payload: dict[str, object] | None = None,
+        force: bool = False,
+    ) -> None:
+        del current_path, source_payload_read_bytes, force
+        stage_events.append((phase, stage_payload))
+
+    monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)
+
+    result = processor._ingest_full_paths_sync([source], source_name="codex", heartbeat=heartbeat)
+
+    assert result.succeeded == [source]
+    assert result.failed == []
+    assert result.ingested_session_count == 1
+    assert result.ingested_message_count == 1
+    assert result.changed_session_count == 1
+    with sqlite3.connect(source_db) as conn:
+        raw_row = conn.execute("SELECT raw_id, blob_size FROM raw_sessions").fetchone()
+        assert raw_row[1] == len(payload)
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT native_id FROM sessions").fetchone()[0] == "stream-v1"
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
+
+    probe_event = next(payload for phase, payload in stage_events if phase == "full_archive_storage_probe")
+    assert probe_event == {
+        "storage_route": "archive_full",
+        "storage_tiers": "source,index,embeddings,user,ops",
+        "storage_write_tiers": "source,index",
+        "archive_active": True,
+        "archive_bootstrapped": False,
+        "archive_present_tiers": "source,index,ops",
+        "archive_missing_tiers": "embeddings,user",
+        "archive_tier_user_versions_json": ('{"embeddings": null, "index": 1, "ops": 1, "source": 1, "user": null}'),
+    }
+    write_event = next(payload for phase, payload in stage_events if phase == "full_archive_write")
+    assert write_event == {
+        "storage_route": "archive_full",
+        "storage_tiers": "source,index,embeddings,user,ops",
+        "storage_write_tiers": "source,index",
+        "input_file_count": 1,
+        "payload_available_file_count": 0,
+        "payload_unavailable_file_count": 1,
+        "payload_replayed_from_blob_file_count": 1,
+    }
+    completed_event = next(payload for phase, payload in stage_events if phase == "full_archive_write_completed")
+    assert completed_event == {
+        "storage_route": "archive_full",
+        "storage_tiers": "source,index,embeddings,user,ops",
+        "storage_write_tiers": "source,index",
+        "written_raw_count": 1,
+        "ingested_session_count": 1,
+        "ingested_message_count": 1,
+        "payload_unavailable_file_count": 1,
+        "payload_replayed_from_blob_file_count": 1,
+    }
+    assert raw_row[0] == result.raw_fingerprints[source]
+
+
+def test_full_ingest_bootstraps_archive_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    source = root / "bootstrap-v1.jsonl"
+    payload = (
+        b'{"type":"session_meta","payload":{"id":"bootstrap-v1","timestamp":"2026-06-02T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"boot"}]}}\n'
+    )
+    source.write_bytes(payload)
+    db_path = tmp_path / "archive.sqlite"
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    stage_events: list[tuple[str, dict[str, object] | None]] = []
+
+    def heartbeat(
+        phase: str,
+        *,
+        current_path: Path | None = None,
+        source_payload_read_bytes: int | None = None,
+        stage_payload: dict[str, object] | None = None,
+        force: bool = False,
+    ) -> None:
+        del current_path, source_payload_read_bytes, force
+        stage_events.append((phase, stage_payload))
+
+    result = processor._ingest_full_paths_sync([source], source_name="codex", heartbeat=heartbeat)
+
+    assert result.succeeded == [source]
+    for filename in ("source.db", "index.db", "embeddings.db", "user.db", "ops.db"):
+        assert (tmp_path / filename).exists()
+    probe_event = next(payload for phase, payload in stage_events if phase == "full_archive_storage_probe")
+    assert probe_event == {
+        "storage_route": "archive_full",
+        "storage_tiers": "source,index,embeddings,user,ops",
+        "storage_write_tiers": "source,index",
+        "archive_active": True,
+        "archive_bootstrapped": True,
+        "archive_present_tiers": "source,index,embeddings,user,ops",
+        "archive_missing_tiers": "",
+        "archive_tier_user_versions_json": '{"embeddings": 1, "index": 1, "ops": 1, "source": 1, "user": 1}',
+    }
 
 
 def test_fingerprint_file_streams_in_bounded_memory(tmp_path: Path) -> None:
@@ -235,10 +430,10 @@ def test_large_non_jsonl_full_ingest_planning_does_not_read_whole_file(
     monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
 
     assert _detect_provider_from_path_sample(target, Provider.CHATGPT) is Provider.CHATGPT
-    assert _parse_path_as_conversation_artifact(target, provider=Provider.CHATGPT) is True
+    assert _parse_path_as_session_artifact(target, provider=Provider.CHATGPT) is True
 
 
-def test_unclassified_large_non_jsonl_is_not_streamed_as_conversation_artifact(
+def test_unclassified_large_non_jsonl_is_not_streamed_as_session_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -251,7 +446,7 @@ def test_unclassified_large_non_jsonl_is_not_streamed_as_conversation_artifact(
 
     monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
 
-    assert _parse_path_as_conversation_artifact(target, provider=Provider.UNKNOWN) is False
+    assert _parse_path_as_session_artifact(target, provider=Provider.UNKNOWN) is False
 
 
 def test_append_plan_chunks_large_tail_without_full_ingest(tmp_path: Path) -> None:
@@ -363,8 +558,10 @@ def test_incomplete_append_is_requeued_not_full_ingested(tmp_path: Path) -> None
     assert metrics.failed_paths == [str(path)]
 
 
-def test_codex_append_plan_uses_append_only_conversation_identity(tmp_path: Path) -> None:
-    from polylogue.storage.sqlite.schema import _ensure_schema
+def test_codex_append_plan_uses_append_only_session_identity(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     root = tmp_path / "sessions"
     root.mkdir()
@@ -372,62 +569,40 @@ def test_codex_append_plan_uses_append_only_conversation_identity(tmp_path: Path
     original = b'{"type":"session_meta","payload":{"id":"019e309f-7614-7381-a8ac-f9080f304ee6"}}\n'
     appended = b'{"type":"event_msg","payload":{"message":"new"}}\n'
     path.write_bytes(original + appended)
-    db_path = tmp_path / "archive.sqlite"
-    cursor = CursorStore(db_path)
-    with cursor._connect() as conn:
-        _ensure_schema(conn)
-        conn.execute(
-            """
-            INSERT INTO raw_conversations (
-                raw_id, source_name, payload_provider, source_name, source_path,
-                source_index, blob_size, acquired_at, file_mtime
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "append-raw",
-                "codex",
-                "codex",
-                "codex",
-                str(path),
-                -1,
-                len(original),
-                "2026-05-24T00:00:00+00:00",
-                "2026-05-24T00:00:00+00:00",
-            ),
+    index_db = tmp_path / "index.db"
+    source_db = tmp_path / "source.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    with sqlite3.connect(source_db) as conn:
+        raw_id = write_source_raw_session(
+            conn,
+            origin="codex-session",
+            source_path=str(path),
+            source_index=-1,
+            payload=original,
+            acquired_at_ms=1_770_000_000_000,
         )
+    with sqlite3.connect(index_db) as conn:
         conn.execute(
             """
-            INSERT INTO conversations (
-                conversation_id, source_name, provider_conversation_id, title,
-                created_at, updated_at, sort_key, content_hash, provider_meta,
-                metadata, source_name, working_directories_json, git_branch,
-                git_repository_url, version, parent_conversation_id, branch_type, raw_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO sessions (
+                native_id, origin, raw_id, title, content_hash, created_at_ms, updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                "codex:019e309f-7614-7381-a8ac-f9080f304ee6",
-                "codex",
                 "019e309f-7614-7381-a8ac-f9080f304ee6",
+                "codex-session",
+                raw_id,
                 "hot session",
-                "2026-05-24T00:00:00+00:00",
-                "2026-05-24T00:00:00+00:00",
-                0.0,
-                "base-hash",
-                '{"source":"codex"}',
-                "{}",
-                "codex",
-                None,
-                None,
-                None,
-                1,
-                None,
-                None,
-                "append-raw",
+                bytes([7]) * 32,
+                1_770_000_000_000,
+                1_770_000_000_000,
             ),
         )
         conn.commit()
+    cursor = CursorStore(index_db)
     processor = LiveBatchProcessor(
-        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
         cursor=cursor,
         parser_fingerprint="test-parser",
@@ -454,10 +629,89 @@ def test_codex_append_plan_uses_append_only_conversation_identity(tmp_path: Path
     assert plan.payload.endswith(appended)
 
 
+def test_codex_append_plan_reads_archive_file_set_session_identity(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "rollout-2026-05-16T13-50-17-019e309f-7614-7381-a8ac-f9080f304ee6.jsonl"
+    original = b'{"type":"session_meta","payload":{"id":"019e309f-7614-7381-a8ac-f9080f304ee6"}}\n'
+    appended = b'{"type":"event_msg","payload":{"message":"new"}}\n'
+    path.write_bytes(original + appended)
+    index_db = tmp_path / "index.db"
+    source_db = tmp_path / "source.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    with sqlite3.connect(source_db) as conn:
+        raw_id = write_source_raw_session(
+            conn,
+            origin="codex-session",
+            source_path=str(path),
+            source_index=0,
+            payload=original,
+            acquired_at_ms=1_770_000_000_000,
+        )
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (
+                native_id, origin, raw_id, title, content_hash, created_at_ms, updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "019e309f-7614-7381-a8ac-f9080f304ee6",
+                "codex-session",
+                raw_id,
+                "hot session",
+                bytes([7]) * 32,
+                1_770_000_000_000,
+                1_770_000_000_000,
+            ),
+        )
+        conn.commit()
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    stat = path.stat()
+    cursor.set(
+        path,
+        len(original),
+        byte_offset=len(original),
+        last_complete_newline=len(original),
+        parser_fingerprint="test-parser",
+        content_fingerprint="base-cursor",
+        source_name="codex",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+    plan = processor._append_plan(path)
+
+    assert isinstance(plan, _AppendPlan)
+    assert plan.payload.startswith(b'{"type":"session_meta","payload":{"id":"019e309f-7614-7381-a8ac-f9080f304ee6"}}\n')
+    assert plan.payload.endswith(appended)
+    assert processor._latest_raw_fingerprint(path) == raw_id
+    with cursor._connect() as conn:
+        assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_sessions'").fetchone() is None
+
+
 def test_append_ingest_preserves_successes_when_other_plan_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    ok_payload = (
+        b'{"type":"session_meta","payload":{"id":"append-ok","timestamp":"2026-06-02T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"ok"}]}}\n'
+    )
+    bad_payload = b"{bad json}\n"
+
     class Owner:
         def __init__(self) -> None:
             self._cursor = CursorStore(tmp_path / "append.sqlite")
@@ -465,10 +719,6 @@ def test_append_ingest_preserves_successes_when_other_plan_fails(
                 archive_root=tmp_path,
                 backend=SimpleNamespace(db_path=self._cursor._db_path),
             )
-            self.persisted_count = 0
-
-        def _persist_raw_records(self, records: list[RawConversationRecord]) -> None:
-            self.persisted_count = len(records)
 
     plans = [
         _AppendPlan(
@@ -480,51 +730,169 @@ def test_append_ingest_preserves_successes_when_other_plan_fails(
             st_dev=1,
             st_ino=1,
             mtime_ns=1,
-            payload=b'{"ok":1}\n',
+            payload=ok_payload,
             payload_hash="ok",
             cursor_fingerprint="base",
-            bytes_read=8,
+            bytes_read=len(ok_payload),
         ),
         _AppendPlan(
             path=tmp_path / "bad.jsonl",
-            source_name="codex",
+            source_name="unknown",
             start_offset=0,
             last_complete_newline=9,
             stat_size=9,
             st_dev=1,
             st_ino=2,
             mtime_ns=1,
-            payload=b'{"bad":1}\n',
+            payload=bad_payload,
             payload_hash="bad",
             cursor_fingerprint="base",
-            bytes_read=9,
+            bytes_read=len(bad_payload),
         ),
     ]
-    raw_ids = iter(("raw-ok", "raw-bad"))
-    captured_kwargs: dict[str, object] = {}
-    monkeypatch.setattr(
-        "polylogue.sources.live.append_ingest.BlobStore.write_from_bytes",
-        lambda _store, payload: (next(raw_ids), len(payload)),
-    )
-
-    def fake_process_ingest_batch_sync(*args: object, **kwargs: object) -> SimpleNamespace:
-        del args
-        captured_kwargs.update(kwargs)
-        return SimpleNamespace(failed_raw_ids={"raw-bad"}, parse_failures=1, worker_count=1)
-
-    monkeypatch.setattr(
-        "polylogue.sources.live.append_ingest._process_ingest_batch_sync", fake_process_ingest_batch_sync
-    )
 
     owner = Owner()
     result = ingest_append_plans(owner, plans)
 
-    assert owner.persisted_count == 2
     assert result.succeeded == [plans[0]]
     assert result.failed == [plans[1]]
     assert result.worker_count == 1
-    assert captured_kwargs["repair_message_fts"] is True
-    assert captured_kwargs["repair_action_fts"] is True
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT native_id FROM sessions").fetchone()[0] == "append-ok"
+
+
+def test_append_ingest_writes_archive_file_set_without_monolithic_persistence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "append-v1.jsonl"
+    payload = (
+        b'{"type":"session_meta","payload":{"id":"append-v1","timestamp":"2026-06-02T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}\n'
+    )
+    path.write_bytes(payload)
+    index_db = tmp_path / "index.db"
+    source_db = tmp_path / "source.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    cursor = CursorStore(index_db)
+
+    class Owner:
+        _cursor = cursor
+        _polylogue = SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))
+
+    stat = path.stat()
+    plan = _AppendPlan(
+        path=path,
+        source_name="codex",
+        start_offset=0,
+        last_complete_newline=stat.st_size,
+        stat_size=stat.st_size,
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+        payload=payload,
+        payload_hash="payload-hash",
+        cursor_fingerprint="base",
+        bytes_read=len(payload),
+    )
+
+    result = ingest_append_plans(Owner(), [plan])
+
+    assert result.succeeded == [plan]
+    assert result.failed == []
+    with sqlite3.connect(source_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT native_id FROM sessions").fetchone()[0] == "append-v1"
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
+        assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_sessions'").fetchone() is None
+
+
+def test_append_ingest_bootstraps_archive_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "append-bootstrap.jsonl"
+    payload = (
+        b'{"type":"session_meta","payload":{"id":"append-bootstrap","timestamp":"2026-06-02T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}\n'
+    )
+    path.write_bytes(payload)
+    cursor = CursorStore(tmp_path / "append.sqlite")
+
+    class Owner:
+        _cursor = cursor
+        _polylogue = SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor._db_path))
+
+    stat = path.stat()
+    plan = _AppendPlan(
+        path=path,
+        source_name="codex",
+        start_offset=0,
+        last_complete_newline=stat.st_size,
+        stat_size=stat.st_size,
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+        payload=payload,
+        payload_hash="payload-hash",
+        cursor_fingerprint="base",
+        bytes_read=len(payload),
+    )
+
+    result = ingest_append_plans(Owner(), [plan])
+
+    assert result.succeeded == [plan]
+    assert result.failed == []
+    for filename in ("source.db", "index.db", "embeddings.db", "user.db", "ops.db"):
+        assert (tmp_path / filename).exists()
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT native_id FROM sessions").fetchone()[0] == "append-bootstrap"
+
+
+def test_live_raw_compaction_ignores_legacy_archive_without_source_db(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "session.jsonl"
+    path.write_text("{}\n", encoding="utf-8")
+    legacy_db = tmp_path / "live.sqlite"
+    cursor = CursorStore(legacy_db)
+    with cursor._connect() as conn:
+        conn.executescript(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY,
+                source_path TEXT NOT NULL,
+                source_index INTEGER NOT NULL,
+                blob_size INTEGER NOT NULL,
+                acquired_at TEXT NOT NULL
+            );
+            INSERT INTO raw_sessions
+                (raw_id, source_path, source_index, blob_size, acquired_at)
+            VALUES
+                ('raw-old', '/tmp/old.jsonl', 0, 10, '2026-01-01T00:00:00+00:00');
+            """
+        )
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=legacy_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+
+    processor._compact_superseded_raw_snapshots([path])
+
+    with cursor._connect() as conn:
+        rows = conn.execute("SELECT raw_id FROM raw_sessions").fetchall()
+    assert rows == [("raw-old",)]
 
 
 @pytest.mark.asyncio

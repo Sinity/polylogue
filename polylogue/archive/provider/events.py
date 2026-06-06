@@ -8,14 +8,14 @@ from pydantic import BaseModel, Field, field_validator
 
 from polylogue.core.json import json_document
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.types import ConversationId, MessageId, Provider, ProviderEventId
+from polylogue.types import MessageId, Provider, ProviderEventId, SessionId
 
 
 class ProviderEvent(BaseModel):
     """Semantic provider artifact that is not itself a dialogue message."""
 
     id: ProviderEventId
-    conversation_id: ConversationId
+    session_id: SessionId
     provider: Provider
     event_index: int
     event_type: str

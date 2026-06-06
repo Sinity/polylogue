@@ -9,8 +9,8 @@ from polylogue.browser_capture.models import BrowserCaptureEnvelope
 from polylogue.browser_capture.receiver import write_capture_envelope
 from polylogue.config import Source, get_config
 from polylogue.sources.dispatch import detect_provider, parse_payload
-from polylogue.storage.sqlite.connection import open_connection
 from polylogue.types import Provider
+from tests.infra.archive_scenarios import open_index_db
 
 
 def _capture_payload() -> dict[str, object]:
@@ -61,17 +61,17 @@ def test_browser_capture_parses_session_metadata_and_deduplicates_turns() -> Non
     parsed = parse_payload(Provider.CHATGPT, _capture_payload(), "fallback")
 
     assert len(parsed) == 1
-    conversation = parsed[0]
-    assert conversation.source_name is Provider.CHATGPT
-    assert conversation.provider_conversation_id == "conv-123"
-    assert conversation.title == "Work plan"
-    assert [message.provider_message_id for message in conversation.messages] == ["u1", "a1"]
-    assert conversation.provider_meta is not None
-    assert conversation.provider_meta["browser_capture"] is True
-    assert conversation.provider_meta["model"] == "gpt-5.4"
-    assert len(conversation.attachments) == 1
-    assert conversation.attachments[0].message_provider_id == "a1"
-    assert conversation.attachments[0].provider_meta == {"url": "https://chatgpt.com/attachment/1"}
+    session = parsed[0]
+    assert session.source_name is Provider.CHATGPT
+    assert session.provider_session_id == "conv-123"
+    assert session.title == "Work plan"
+    assert [message.provider_message_id for message in session.messages] == ["u1", "a1"]
+    assert session.provider_meta is not None
+    assert session.provider_meta["browser_capture"] is True
+    assert session.provider_meta["model"] == "gpt-5.4"
+    assert len(session.attachments) == 1
+    assert session.attachments[0].message_provider_id == "a1"
+    assert session.attachments[0].provider_meta == {"url": "https://chatgpt.com/attachment/1"}
 
 
 def test_browser_capture_supports_claude_ai_provider() -> None:
@@ -84,7 +84,7 @@ def test_browser_capture_supports_claude_ai_provider() -> None:
     assert detect_provider(payload) is Provider.CLAUDE_AI
     parsed = parse_payload(Provider.CLAUDE_AI, payload, "fallback")
     assert parsed[0].source_name is Provider.CLAUDE_AI
-    assert parsed[0].provider_conversation_id == "claude-session"
+    assert parsed[0].provider_session_id == "claude-session"
 
 
 @pytest.mark.asyncio
@@ -100,10 +100,14 @@ async def test_browser_capture_receiver_artifact_lands_in_archive(
     async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
         await polylogue.parse_sources(config.sources)
 
-    with open_connection(None) as conn:
-        row = conn.execute("SELECT source_name, provider_conversation_id, provider_meta FROM conversations").fetchone()
+    # The archive ingest path persists the captured session into the archive
+    # ``index.db`` ``sessions`` table: ``origin`` carries the source family
+    # (chatgpt -> chatgpt-export), ``native_id`` the provider session id, and
+    # the browser-capture provenance lands in the ``origin_meta`` JSON.
+    with open_index_db(config.archive_root / "index.db") as conn:
+        row = conn.execute("SELECT origin, native_id, origin_meta FROM sessions").fetchone()
 
     assert row is not None
-    assert row["source_name"] == "chatgpt"
-    assert row["provider_conversation_id"] == "conv-123"
-    assert "browser_capture" in row["provider_meta"]
+    assert row["origin"] == "chatgpt-export"
+    assert row["native_id"] == "conv-123"
+    assert "browser_capture" in row["origin_meta"]

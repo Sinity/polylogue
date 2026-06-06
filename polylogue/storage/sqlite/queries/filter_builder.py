@@ -1,4 +1,4 @@
-"""SQL filter builder for conversation queries."""
+"""SQL filter builder for session queries."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def _iso_to_epoch(iso_str: str) -> float:
         raise ValueError(f"Invalid date filter value {iso_str!r}. Use ISO 8601 format (e.g., 2026-01-01).") from None
 
 
-def _build_conversation_filters(
+def _build_session_filters(
     *,
     source: str | None = None,
     provider: str | None = None,
@@ -53,12 +53,12 @@ def _build_conversation_filters(
     min_words: int | None = None,
     message_type: str | None = None,
 ) -> tuple[str, list[str | int | float]]:
-    """Build WHERE clause and params for conversation queries.
+    """Build WHERE clause and params for session queries.
 
     Stats-based filters (has_tool_use, has_thinking, min_messages, max_messages,
-    min_words) emit a LEFT JOIN on conversation_stats and filter on cs columns.
+    min_words) emit a LEFT JOIN on session_stats and filter on cs columns.
     Path and semantic filters emit EXISTS subqueries against content_blocks.
-    Callers must prefix conversation columns with 'c.' when using stats filters.
+    Callers must prefix session columns with 'c.' when using stats filters.
     """
     where_clauses: list[str] = []
     params: list[str | int | float] = []
@@ -78,7 +78,7 @@ def _build_conversation_filters(
         where_clauses.append(source_scope_sql)
         params.extend(source_scope_params)
     if parent_id is not None:
-        where_clauses.append("c.parent_conversation_id = ?" if needs_stats_join else "parent_conversation_id = ?")
+        where_clauses.append("c.parent_session_id = ?" if needs_stats_join else "parent_session_id = ?")
         params.append(parent_id)
     if since is not None:
         where_clauses.append("c.sort_key >= ?" if needs_stats_join else "sort_key >= ?")
@@ -91,7 +91,7 @@ def _build_conversation_filters(
         where_clauses.append("c.title LIKE ? ESCAPE '\\'" if needs_stats_join else "title LIKE ? ESCAPE '\\'")
         params.append(f"%{escaped}%")
 
-    # Stats-based filters (require conversation_stats JOIN)
+    # Stats-based filters (require session_stats JOIN)
     if has_tool_use:
         where_clauses.append("cs.tool_use_count > 0")
     if has_thinking:
@@ -113,7 +113,7 @@ def _build_conversation_filters(
     # Semantic filters via EXISTS subquery on durable action_events.
     # When using stats join, outer table is aliased as 'c'; otherwise use fully qualified
     # table name to prevent ambiguity.
-    conv_id_col = "c.conversation_id" if needs_stats_join else "conversations.conversation_id"
+    conv_id_col = "c.session_id" if needs_stats_join else "sessions.session_id"
     if referenced_path:
         for term in referenced_path:
             normalized = str(term).replace("\\", "/").lower()
@@ -121,12 +121,12 @@ def _build_conversation_filters(
             where_clauses.append(
                 f"EXISTS (SELECT 1 FROM action_events ae "
                 f"JOIN json_each(COALESCE(ae.affected_paths_json, '[]')) path "
-                f"WHERE ae.conversation_id = {conv_id_col} "
+                f"WHERE ae.session_id = {conv_id_col} "
                 f"AND REPLACE(LOWER(path.value), char(92), '/') LIKE ? ESCAPE '\\')"
             )
             params.append(f"%{escaped}%")
     if cwd_prefix:
-        cwd_col = "c.working_directories_json" if needs_stats_join else "conversations.working_directories_json"
+        cwd_col = "c.working_directories_json" if needs_stats_join else "sessions.working_directories_json"
         exact_prefix, child_prefix = escaped_sql_path_prefix_patterns(cwd_prefix)
         where_clauses.append(
             f"EXISTS (SELECT 1 FROM json_each(COALESCE({cwd_col}, '[]')) cwd "
@@ -139,13 +139,13 @@ def _build_conversation_filters(
             if str(term) == "none":
                 placeholders = ",".join("?" for _ in _SEMANTIC_ACTION_TYPES)
                 where_clauses.append(
-                    f"NOT EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col}"
+                    f"NOT EXISTS (SELECT 1 FROM action_events ae WHERE ae.session_id = {conv_id_col}"
                     f" AND ae.action_kind IN ({placeholders}))"
                 )
                 params.extend(_SEMANTIC_ACTION_TYPES)
             else:
                 where_clauses.append(
-                    f"EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col}"
+                    f"EXISTS (SELECT 1 FROM action_events ae WHERE ae.session_id = {conv_id_col}"
                     " AND ae.action_kind = ?)"
                 )
                 params.append(str(term))
@@ -154,37 +154,33 @@ def _build_conversation_filters(
             if str(term) == "none":
                 placeholders = ",".join("?" for _ in _SEMANTIC_ACTION_TYPES)
                 where_clauses.append(
-                    f"EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col}"
+                    f"EXISTS (SELECT 1 FROM action_events ae WHERE ae.session_id = {conv_id_col}"
                     f" AND ae.action_kind IN ({placeholders}))"
                 )
                 params.extend(_SEMANTIC_ACTION_TYPES)
             else:
                 where_clauses.append(
-                    f"NOT EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col}"
+                    f"NOT EXISTS (SELECT 1 FROM action_events ae WHERE ae.session_id = {conv_id_col}"
                     " AND ae.action_kind = ?)"
                 )
                 params.append(str(term))
     if tool_terms:
         for term in tool_terms:
             if str(term) == "none":
-                where_clauses.append(
-                    f"NOT EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col})"
-                )
+                where_clauses.append(f"NOT EXISTS (SELECT 1 FROM action_events ae WHERE ae.session_id = {conv_id_col})")
             else:
                 where_clauses.append(
-                    f"EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col}"
+                    f"EXISTS (SELECT 1 FROM action_events ae WHERE ae.session_id = {conv_id_col}"
                     " AND ae.normalized_tool_name = ?)"
                 )
                 params.append(str(term).lower())
     if excluded_tool_terms:
         for term in excluded_tool_terms:
             if str(term) == "none":
-                where_clauses.append(
-                    f"EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col})"
-                )
+                where_clauses.append(f"EXISTS (SELECT 1 FROM action_events ae WHERE ae.session_id = {conv_id_col})")
             else:
                 where_clauses.append(
-                    f"NOT EXISTS (SELECT 1 FROM action_events ae WHERE ae.conversation_id = {conv_id_col}"
+                    f"NOT EXISTS (SELECT 1 FROM action_events ae WHERE ae.session_id = {conv_id_col}"
                     " AND ae.normalized_tool_name = ?)"
                 )
                 params.append(str(term).lower())
@@ -193,12 +189,12 @@ def _build_conversation_filters(
         where_clauses.append(
             f"EXISTS (SELECT 1 FROM session_profiles sp "
             f"JOIN json_each(COALESCE(sp.repo_names_json, '[]')) "
-            f"WHERE sp.conversation_id = {conv_id_col} AND value IN ({placeholders}))"
+            f"WHERE sp.session_id = {conv_id_col} AND value IN ({placeholders}))"
         )
         params.extend(repo_names)
     if message_type:
         where_clauses.append(
-            f"EXISTS (SELECT 1 FROM messages mt WHERE mt.conversation_id = {conv_id_col} AND mt.message_type = ?)"
+            f"EXISTS (SELECT 1 FROM messages mt WHERE mt.session_id = {conv_id_col} AND mt.message_type = ?)"
         )
         params.append(validate_message_type_filter(message_type).value)
     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
@@ -215,5 +211,5 @@ def _needs_stats_join(
     max_messages: int | None = None,
     min_words: int | None = None,
 ) -> bool:
-    """Return True when the query requires a JOIN on conversation_stats."""
+    """Return True when the query requires a JOIN on session_stats."""
     return storage_filters_require_stats_join(locals())

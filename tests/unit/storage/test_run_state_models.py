@@ -81,10 +81,10 @@ def test_int_payload_models_expose_mapping_contracts() -> None:
 
 def test_run_counts_and_drift_payloads_cover_all_fields() -> None:
     run_counts = RunCounts(
-        conversations=1,
+        sessions=1,
         messages=2,
         attachments=3,
-        skipped_conversations=4,
+        skipped_sessions=4,
         skipped_messages=5,
         skipped_attachments=6,
         acquired=7,
@@ -99,28 +99,28 @@ def test_run_counts_and_drift_payloads_cover_all_fields() -> None:
         parse_failures=16,
         schemas_generated=17,
         schemas_failed=18,
-        new_conversations=19,
-        changed_conversations=20,
+        new_sessions=19,
+        changed_sessions=20,
     )
-    assert run_counts.to_payload()["changed_conversations"] == 20
+    assert run_counts.to_payload()["changed_sessions"] == 20
 
     drift = RunDrift.model_validate(
         {
-            "new": DriftBucket(conversations=1, messages=2, attachments=3),
-            "removed": {"conversations": 4, "messages": 5, "attachments": 6},
-            "changed": {"conversations": 7, "messages": 8, "attachments": 9},
+            "new": DriftBucket(sessions=1, messages=2, attachments=3),
+            "removed": {"sessions": 4, "messages": 5, "attachments": 6},
+            "changed": {"sessions": 7, "messages": 8, "attachments": 9},
         }
     )
-    assert drift.to_payload()["new"] == {"conversations": 1, "messages": 2, "attachments": 3}
+    assert drift.to_payload()["new"] == {"sessions": 1, "messages": 2, "attachments": 3}
     assert drift["removed"].messages == 5
     assert drift.get("missing") is None
-    assert [(name, bucket.conversations) for name, bucket in drift.items()] == [
+    assert [(name, bucket.sessions) for name, bucket in drift.items()] == [
         ("new", 1),
         ("removed", 4),
         ("changed", 7),
     ]
     assert list(drift.keys()) == ["new", "removed", "changed"]
-    assert [bucket.conversations for bucket in drift.values()] == [1, 4, 7]
+    assert [bucket.sessions for bucket in drift.values()] == [1, 4, 7]
     assert "changed" in drift
     assert drift == drift.to_payload()
     with pytest.raises(KeyError):

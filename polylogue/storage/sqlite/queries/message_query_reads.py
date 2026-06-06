@@ -17,11 +17,11 @@ MessageTypeName = Literal["message", "summary", "tool_use", "tool_result", "thin
 
 async def get_messages(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
 ) -> list[MessageRecord]:
     cursor = await conn.execute(
-        "SELECT * FROM messages WHERE conversation_id = ? ORDER BY (sort_key IS NULL), sort_key, message_id",
-        (conversation_id,),
+        "SELECT * FROM messages WHERE session_id = ? ORDER BY (sort_key IS NULL), sort_key, message_id",
+        (session_id,),
     )
     rows = await cursor.fetchall()
     return [_row_to_message(row) for row in rows]
@@ -29,20 +29,20 @@ async def get_messages(
 
 async def get_messages_batch(
     conn: aiosqlite.Connection,
-    conversation_ids: list[str],
+    session_ids: list[str],
     *,
     sort_key_since: float | None = None,
     sort_key_until: float | None = None,
     message_role: MessageRoleFilter = (),
 ) -> tuple[dict[str, list[MessageRecord]], list[MessageRecord]]:
-    if not conversation_ids:
+    if not session_ids:
         return {}, []
 
-    result: dict[str, list[MessageRecord]] = {cid: [] for cid in conversation_ids}
+    result: dict[str, list[MessageRecord]] = {cid: [] for cid in session_ids}
     all_messages: list[MessageRecord] = []
-    placeholders = ",".join("?" for _ in conversation_ids)
-    query = f"SELECT * FROM messages WHERE conversation_id IN ({placeholders})"
-    params: list[str | float] = list(conversation_ids)
+    placeholders = ",".join("?" for _ in session_ids)
+    query = f"SELECT * FROM messages WHERE session_id IN ({placeholders})"
+    params: list[str | float] = list(session_ids)
 
     role_values = message_role_sql_values(message_role)
     if role_values:
@@ -66,7 +66,7 @@ async def get_messages_batch(
     rows = await cursor.fetchall()
 
     for row in rows:
-        cid = row["conversation_id"]
+        cid = row["session_id"]
         msg = _row_to_message(row)
         if cid in result:
             result[cid].append(msg)
@@ -77,21 +77,21 @@ async def get_messages_batch(
 
 async def get_messages_paginated(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
     *,
     message_role: MessageRoleFilter = (),
     message_type: MessageTypeName | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[MessageRecord], int]:
-    """Return paginated messages for a conversation with optional filters.
+    """Return paginated messages for a session with optional filters.
 
     Returns (messages, total_count) where total_count is the unfiltered
     count of messages matching the SQL-level filters (before limit/offset).
     """
-    query = "SELECT * FROM messages WHERE conversation_id = ?"
-    count_query = "SELECT COUNT(*) FROM messages WHERE conversation_id = ?"
-    params: list[str | int] = [conversation_id]
+    query = "SELECT * FROM messages WHERE session_id = ?"
+    count_query = "SELECT COUNT(*) FROM messages WHERE session_id = ?"
+    params: list[str | int] = [session_id]
 
     role_values = message_role_sql_values(message_role)
     if role_values:
@@ -124,21 +124,21 @@ async def get_messages_paginated(
 
 async def iter_messages(
     conn: aiosqlite.Connection,
-    conversation_id: str,
+    session_id: str,
     *,
     chunk_size: int = 100,
     dialogue_only: bool = False,
     message_roles: MessageRoleFilter = (),
     limit: int | None = None,
 ) -> AsyncIterator[MessageRecord]:
-    """Stream a conversation's messages in deterministic order, chunked.
+    """Stream a session's messages in deterministic order, chunked.
 
     Pagination is keyset, not ``LIMIT/OFFSET``: each chunk is seeded by the
-    previous chunk's last ``(sort_key, message_id)`` so a single conversation's
+    previous chunk's last ``(sort_key, message_id)`` so a single session's
     stream stays linear instead of re-scanning and discarding all prior rows
     (O(M^2)) on every chunk. The ordering
     ``(sort_key IS NULL), sort_key, message_id`` is unchanged and served by
-    ``idx_messages_conversation_sortkey``. ``message_id`` is the table primary
+    ``idx_messages_session_sortkey``. ``message_id`` is the table primary
     key (globally unique), so the keyset cursor is a total order with no skipped
     or duplicated rows across chunk boundaries. NULL-``sort_key`` rows form the
     ordering tail and are advanced by a distinct cursor branch.
@@ -155,8 +155,8 @@ async def iter_messages(
     have_cursor = False
 
     while True:
-        query = "SELECT * FROM messages WHERE conversation_id = ?"
-        params: list[str | float] = [conversation_id]
+        query = "SELECT * FROM messages WHERE session_id = ?"
+        params: list[str | float] = [session_id]
 
         if role_values:
             placeholders = ",".join("?" for _ in role_values)

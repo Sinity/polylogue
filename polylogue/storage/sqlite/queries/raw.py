@@ -1,18 +1,18 @@
-"""Raw conversation query public surface."""
+"""Raw session query public surface."""
 
 from __future__ import annotations
 
 from polylogue.storage.sqlite.queries.raw_reads import (
     get_known_source_mtimes,
     get_raw_blob_sizes,
-    get_raw_conversation,
-    get_raw_conversation_count,
-    get_raw_conversation_states,
-    get_raw_conversations_batch,
-    get_raw_records_for_conversation,
-    iter_raw_conversations,
+    get_raw_records_for_session,
+    get_raw_session,
+    get_raw_session_count,
+    get_raw_session_states,
+    get_raw_sessions_batch,
     iter_raw_headers,
     iter_raw_ids,
+    iter_raw_sessions,
     raw_header_query,
     raw_id_query,
 )
@@ -23,19 +23,19 @@ from polylogue.storage.sqlite.queries.raw_state import (
     reset_parse_status,
     reset_validation_status,
 )
-from polylogue.storage.sqlite.queries.raw_writes import save_raw_conversation
+from polylogue.storage.sqlite.queries.raw_writes import save_raw_session
 
 __all__ = [
     "apply_raw_state_update",
     "get_known_source_mtimes",
     "get_raw_blob_sizes",
-    "get_raw_conversation",
-    "get_raw_conversation_count",
-    "get_raw_conversation_states",
-    "get_raw_conversations_batch",
-    "get_raw_records_for_conversation",
+    "get_raw_session",
+    "get_raw_session_count",
+    "get_raw_session_states",
+    "get_raw_sessions_batch",
+    "get_raw_records_for_session",
     "iter_raw_headers",
-    "iter_raw_conversations",
+    "iter_raw_sessions",
     "iter_raw_ids",
     "mark_raw_parsed",
     "mark_raw_validated",
@@ -43,5 +43,5 @@ __all__ = [
     "raw_id_query",
     "reset_parse_status",
     "reset_validation_status",
-    "save_raw_conversation",
+    "save_raw_session",
 ]

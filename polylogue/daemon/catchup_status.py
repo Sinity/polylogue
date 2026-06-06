@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -145,6 +146,9 @@ def format_catchup_status_lines(payload: object) -> list[str]:
 
 
 def _recent_stage_events(dbf: Path) -> list[CatchupStageEvent]:
+    ops_events = _archive_recent_stage_events(dbf.with_name("ops.db"))
+    if ops_events:
+        return ops_events
     if not dbf.exists():
         return []
     try:
@@ -175,6 +179,58 @@ def _recent_stage_events(dbf: Path) -> list[CatchupStageEvent]:
     return [_catchup_stage_event_from_row(row) for row in rows]
 
 
+def _archive_recent_stage_events(ops_db: Path) -> list[CatchupStageEvent]:
+    if not ops_db.exists():
+        return []
+    try:
+        conn = open_readonly_connection(ops_db)
+        try:
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'daemon_stage_events'"
+            ).fetchone()
+            if has_table is None:
+                return []
+            rows = conn.execute(
+                """
+                SELECT rowid, attempt_id, observed_at_ms, stage, status, payload_json
+                FROM daemon_stage_events
+                ORDER BY observed_at_ms DESC, rowid DESC
+                LIMIT 10
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return []
+    return [_archive_catchup_stage_event_from_row(row) for row in rows]
+
+
+def _archive_catchup_stage_event_from_row(row: sqlite3.Row | tuple[object, ...]) -> CatchupStageEvent:
+    payload = _payload(row[5])
+    return CatchupStageEvent(
+        attempt_id=_required_str(row[1]),
+        sequence=_row_int(row[0]),
+        observed_at=_epoch_ms_to_iso(_row_int(row[2])),
+        phase=_payload_str(payload, "phase", default=_required_str(row[3])),
+        status=_payload_str(payload, "status", default=_required_str(row[4])),
+        queued_file_count=_payload_int(payload, "queued_file_count"),
+        needed_file_count=_payload_int(payload, "needed_file_count"),
+        skipped_file_count=_payload_int(payload, "skipped_file_count"),
+        succeeded_file_count=_payload_int(payload, "succeeded_file_count"),
+        failed_file_count=_payload_int(payload, "failed_file_count"),
+        input_bytes=_payload_int(payload, "input_bytes"),
+        source_payload_read_bytes=_payload_int(payload, "source_payload_read_bytes"),
+        cursor_fingerprint_read_bytes=_payload_int(payload, "cursor_fingerprint_read_bytes"),
+        archive_write_bytes_delta=_payload_int(payload, "archive_write_bytes_delta"),
+        parse_time_s=_payload_float(payload, "parse_time_s"),
+        convergence_time_s=_payload_float(payload, "convergence_time_s"),
+        total_time_s=_payload_float(payload, "total_time_s"),
+        current_source=_payload_optional_str(payload, "current_source"),
+        current_path=_payload_optional_str(payload, "current_path"),
+        error=_payload_optional_str(payload, "error"),
+    )
+
+
 def _catchup_stage_event_from_row(row: sqlite3.Row | tuple[object, ...]) -> CatchupStageEvent:
     return CatchupStageEvent(
         attempt_id=_required_str(row[0]),
@@ -198,6 +254,58 @@ def _catchup_stage_event_from_row(row: sqlite3.Row | tuple[object, ...]) -> Catc
         current_path=_optional_str(row[18]),
         error=_optional_str(row[19]),
     )
+
+
+def _payload(raw: object) -> dict[str, object]:
+    if not isinstance(raw, str) or not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _payload_int(payload: dict[str, object], key: str, default: int = 0) -> int:
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float | str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _payload_float(payload: dict[str, object], key: str, default: float = 0.0) -> float:
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _payload_str(payload: dict[str, object], key: str, *, default: str) -> str:
+    value = payload.get(key)
+    return value if isinstance(value, str) else default
+
+
+def _payload_optional_str(payload: dict[str, object], key: str) -> str | None:
+    value = payload.get(key)
+    return value if isinstance(value, str) else None
+
+
+def _epoch_ms_to_iso(value: int) -> str:
+    return datetime.fromtimestamp(max(value, 0) / 1000.0, tz=UTC).isoformat()
 
 
 def _catchup_mode(latest: CatchupStageEvent | None, latest_attempt: object | None, convergence: object) -> str:

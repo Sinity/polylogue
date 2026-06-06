@@ -7,7 +7,7 @@ from pydantic import BaseModel, field_validator
 from polylogue.types import ArtifactSupportStatus, Provider, ValidationMode, ValidationStatus
 
 
-class RawConversationRecord(BaseModel):
+class RawSessionRecord(BaseModel):
     raw_id: str
     payload_provider: Provider | None = None
     source_name: str | None = None
@@ -81,7 +81,7 @@ class ArtifactObservationRecord(BaseModel):
     wire_format: str | None = None
     artifact_kind: str
     classification_reason: str
-    parse_as_conversation: bool
+    parse_as_session: bool
     schema_eligible: bool
     support_status: ArtifactSupportStatus
     malformed_jsonl_lines: int = 0

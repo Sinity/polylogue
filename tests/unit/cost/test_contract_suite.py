@@ -35,7 +35,7 @@ from polylogue.archive.models import Message
 from polylogue.archive.semantic.pricing import (
     CostBasisPayload,
     CostEstimatePayload,
-    estimate_conversation_cost,
+    estimate_session_cost,
 )
 from polylogue.cost.aggregation import session_costs_to_daily_usd
 from polylogue.cost.outlook import (
@@ -59,13 +59,13 @@ from polylogue.insights.archive import (
     ArchiveInsightProvenance,
     SessionCostInsight,
 )
-from polylogue.maintenance.cost_migration import (
-    LEGACY_COST_PROVENANCE_MARKERS,
-    LEGACY_COST_SOURCE,
+from polylogue.maintenance.cost_backfill import (
     SESSION_PROFILES_REBUILD_TARGET,
-    LegacyCostRow,
-    find_legacy_cost_rows,
-    plan_cost_migration,
+    SINGLE_BASIS_COST_PROVENANCE_MARKERS,
+    SINGLE_BASIS_COST_SOURCE,
+    SingleBasisCostRow,
+    find_single_basis_cost_rows,
+    plan_cost_backfill,
 )
 from polylogue.maintenance.invalidation import InvalidationReason
 from polylogue.maintenance.planner import BackfillKind, BackfillStatus
@@ -86,7 +86,7 @@ def _msg_with_tokens(
 ) -> Message:
     # Per #1256, hydrated ``Message`` no longer carries ``provider_meta``;
     # per-message token usage flows through the typed cost projection
-    # (#803). For this helper's callers, the conversation-level
+    # (#803). For this helper's callers, the session-level
     # provider_meta envelope supplies the cost facts.
     del model, input_tokens, output_tokens  # accepted for backcompat
     return make_msg(id=id, role=role, text="x", provider="claude-code")
@@ -103,7 +103,7 @@ def _basis_to_dict(basis: CostBasisPayload) -> dict[str, float]:
 
 
 def _exact_estimate() -> CostEstimatePayload:
-    conversation = make_conv(
+    session = make_conv(
         id="conv-exact",
         provider="claude-code",
         provider_meta={
@@ -113,13 +113,13 @@ def _exact_estimate() -> CostEstimatePayload:
         },
         messages=MessageCollection(messages=[]),
     )
-    return estimate_conversation_cost(conversation)
+    return estimate_session_cost(session)
 
 
 def _priced_estimate() -> CostEstimatePayload:
     # Hydrated messages no longer surface cost facts (#1256); the priced
-    # estimate is sourced from the conversation-level provider_meta envelope.
-    conversation = make_conv(
+    # estimate is sourced from the session-level provider_meta envelope.
+    session = make_conv(
         id="conv-priced",
         provider="claude-code",
         provider_meta={
@@ -128,7 +128,7 @@ def _priced_estimate() -> CostEstimatePayload:
         },
         messages=MessageCollection(messages=[]),
     )
-    return estimate_conversation_cost(conversation)
+    return estimate_session_cost(session)
 
 
 def _provenance() -> ArchiveInsightProvenance:
@@ -198,7 +198,7 @@ def test_per_model_breakdown_reconciles_when_message_estimates_are_priced() -> N
 
     Pre-#1256 message-level cost surfaced a model + usage pair per message
     and the aggregate exposed a per-model breakdown. With hydrated messages
-    no longer carrying ``provider_meta``, the conversation-level estimate
+    no longer carrying ``provider_meta``, the session-level estimate
     path used by ``_priced_estimate`` does not emit a per-model breakdown:
     the breakdown is reserved for the future typed cost projection (#803).
     For now the contract is "breakdown sum reconciles to the priced rows it
@@ -230,12 +230,12 @@ def test_per_model_breakdown_reconciles_when_message_estimates_are_priced() -> N
 def test_unavailable_status_when_hydrated_messages_carry_no_typed_cost() -> None:
     """Hydrated messages no longer surface per-message cost facts (#1256).
 
-    Without conversation-level provider_meta cost facts and with no typed
+    Without session-level provider_meta cost facts and with no typed
     per-message cost projection (#803) in the read path, the aggregate
     declares ``status='unavailable'`` rather than silently fabricating a
     partial coverage figure.
     """
-    conversation = make_conv(
+    session = make_conv(
         id="conv-no-cost",
         provider="claude-code",
         messages=MessageCollection(
@@ -245,7 +245,7 @@ def test_unavailable_status_when_hydrated_messages_carry_no_typed_cost() -> None
             ]
         ),
     )
-    estimate = estimate_conversation_cost(conversation)
+    estimate = estimate_session_cost(session)
     assert estimate.status == "unavailable"
     assert estimate.confidence < 0.85
 
@@ -414,26 +414,26 @@ def test_session_costs_aggregation_excludes_unpriced() -> None:
     """
     insights = [
         SessionCostInsight(
-            conversation_id="c1",
+            session_id="c1",
             source_name="claude-code",
             created_at="2026-05-01T10:00:00+00:00",
             estimate=_priced_estimate(),
             provenance=_provenance(),
         ),
         SessionCostInsight(
-            conversation_id="c2",
+            session_id="c2",
             source_name="claude-code",
             created_at=None,  # excluded: no timestamp
             estimate=_priced_estimate(),
             provenance=_provenance(),
         ),
         SessionCostInsight(
-            conversation_id="c3",
+            session_id="c3",
             source_name="claude-code",
             created_at="2026-05-02T10:00:00+00:00",
             estimate=CostEstimatePayload(
                 source_name="claude-code",
-                conversation_id="c3",
+                session_id="c3",
                 status="unavailable",
                 total_usd=0.0,
             ),
@@ -525,69 +525,69 @@ async def test_mcp_cost_outlook_tool_uses_shared_envelope() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Migration contracts (#1140)
+# Cost backfill contracts (#1140)
 # ---------------------------------------------------------------------------
 
 
-def _legacy_reader(rows: tuple[LegacyCostRow, ...]) -> object:
+def _single_basis_reader(rows: tuple[SingleBasisCostRow, ...]) -> object:
     def _reader(
         *,
-        provenance_markers: frozenset[str] = LEGACY_COST_PROVENANCE_MARKERS,
+        provenance_markers: frozenset[str] = SINGLE_BASIS_COST_PROVENANCE_MARKERS,
         min_total_usd: float = 0.0,
-    ) -> tuple[LegacyCostRow, ...]:
+    ) -> tuple[SingleBasisCostRow, ...]:
         return rows
 
     return _reader
 
 
-def test_find_legacy_cost_rows_filters_by_provenance_and_amount() -> None:
-    """Only ``cost_provenance`` markers from the legacy set with positive cost migrate."""
+def test_find_single_basis_cost_rows_filters_by_provenance_and_amount() -> None:
+    """Only untyped positive-cost rows need the single-basis backfill."""
     candidates = (
-        LegacyCostRow("conv-legacy", "claude-code", total_cost_usd=0.42, cost_provenance="unknown"),
+        SingleBasisCostRow("conv-stale", "claude-code", total_cost_usd=0.42, cost_provenance="unknown"),
         # Excluded: already typed provenance.
-        LegacyCostRow("conv-typed", "claude-code", total_cost_usd=0.42, cost_provenance="provider_reported"),
+        SingleBasisCostRow("conv-typed", "claude-code", total_cost_usd=0.42, cost_provenance="provider_reported"),
         # Excluded: zero cost — no basis to backfill.
-        LegacyCostRow("conv-zero", "chatgpt", total_cost_usd=0.0, cost_provenance="unknown"),
+        SingleBasisCostRow("conv-zero", "chatgpt", total_cost_usd=0.0, cost_provenance="unknown"),
     )
-    legacy = find_legacy_cost_rows(_legacy_reader(candidates))  # type: ignore[arg-type]
-    assert len(legacy) == 1
-    assert legacy[0].conversation_id == "conv-legacy"
+    stale_rows = find_single_basis_cost_rows(_single_basis_reader(candidates))  # type: ignore[arg-type]
+    assert len(stale_rows) == 1
+    assert stale_rows[0].session_id == "conv-stale"
 
 
-def test_plan_cost_migration_emits_typed_backfill() -> None:
-    """The migration returns a typed ``BackfillOperation`` with the legacy source tag.
+def test_plan_cost_backfill_emits_typed_backfill() -> None:
+    """The backfill returns a typed ``BackfillOperation`` with the source tag.
 
     The planner-driven shape pins:
     - ``kind == DERIVED_REBUILD``
     - target == ``session_profiles``
     - reason == ``STALE_MATERIALIZER_VERSION``
-    - scope filter carries ``cost_basis = legacy-single-basis`` and the
-      conversation-id list — both load-bearing for the executor.
+    - scope filter carries ``cost_basis = single-basis-cost`` and the
+      session-id list — both load-bearing for the executor.
     """
-    legacy = (
-        LegacyCostRow("conv-a", "claude-code", total_cost_usd=1.0, cost_provenance="unknown"),
-        LegacyCostRow("conv-b", "chatgpt", total_cost_usd=2.5, cost_provenance="unknown"),
+    rows = (
+        SingleBasisCostRow("conv-a", "claude-code", total_cost_usd=1.0, cost_provenance="unknown"),
+        SingleBasisCostRow("conv-b", "chatgpt", total_cost_usd=2.5, cost_provenance="unknown"),
     )
-    op = plan_cost_migration(legacy)
+    op = plan_cost_backfill(rows)
     assert op.kind is BackfillKind.DERIVED_REBUILD
     assert op.status is BackfillStatus.PENDING
     assert op.targets == (SESSION_PROFILES_REBUILD_TARGET,)
     assert op.affected_rows == 2
     assert op.reason is InvalidationReason.STALE_MATERIALIZER_VERSION
     assert op.scope is not None
-    # The cost-migration plan now uses the typed MaintenanceScopeFilter
-    # and surfaces the legacy conversation set via ``conversation_ids``.
+    # The cost-backfill plan now uses the typed MaintenanceScopeFilter
+    # and surfaces the stale session set via ``session_ids``.
     # ``cost_basis`` / ``dry_run`` are no longer scope dimensions — they
     # are encoded in the per-result rows and in the operation status.
-    assert op.scope.filter.conversation_ids == ("conv-a", "conv-b")
+    assert op.scope.filter.session_ids == ("conv-a", "conv-b")
     # Each result row exposes the source tag so downstream surfaces can render it.
     for result in op.results:
-        assert result["source"] == LEGACY_COST_SOURCE
+        assert result["source"] == SINGLE_BASIS_COST_SOURCE
 
 
-def test_plan_cost_migration_empty_input_produces_zero_affected() -> None:
-    """An empty legacy set still produces a valid pending op with zero work."""
-    op = plan_cost_migration(())
+def test_plan_cost_backfill_empty_input_produces_zero_affected() -> None:
+    """An empty stale set still produces a valid pending op with zero work."""
+    op = plan_cost_backfill(())
     assert op.affected_rows == 0
     assert op.estimated_time_s == 0.0
     assert op.status is BackfillStatus.PENDING

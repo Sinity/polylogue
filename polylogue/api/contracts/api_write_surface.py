@@ -22,10 +22,10 @@ from typing import TYPE_CHECKING
 
 from polylogue.api.contracts.assertions import assert_implements
 from polylogue.api.contracts.write_surface import (
-    ConversationDeleteSurface,
     IndexMaintenanceSurface,
     IngestSurface,
     MaintenanceSurface,
+    SessionDeleteSurface,
     TagMutationSurface,
 )
 from polylogue.maintenance.planner import BackfillOperation, execute_backfill
@@ -46,8 +46,9 @@ class APIWriteSurface:
         """Run a low-level parse over ``path`` and project the result.
 
         The Python API does not stage into the daemon inbox or contact
-        a running daemon — it parses directly through ``ParsingService``
-        (see ``Polylogue.parse_file``).  The returned envelope mirrors
+        a running daemon — it parses directly through archive ingest
+        (``Polylogue.parse_file`` →
+        ``parse_sources_archive`` → ``ArchiveStore``).  The returned envelope mirrors
         what the daemon HTTP and CLI ingest commands emit so callers
         downstream can consume one shape regardless of surface.
         """
@@ -89,26 +90,17 @@ class APIWriteSurface:
     async def rebuild_index(self) -> bool:
         return await self._polylogue.rebuild_index()
 
-    async def update_index(self, conversation_ids: list[str]) -> bool:
-        # Polylogue.rebuild_index lives on the ingest mixin; update_index is
-        # only exposed via ArchiveOperations, so route through the shared
-        # operations object the facade already wires up.
-        from polylogue.operations import ArchiveOperations
+    async def update_index(self, session_ids: list[str]) -> bool:
+        return await self._polylogue.update_index(session_ids)
 
-        ops = ArchiveOperations(
-            repository=self._polylogue.repository,
-            backend=self._polylogue.backend,
-        )
-        return await ops.update_index(conversation_ids)
+    async def add_tag(self, session_id: str, tag: str) -> TagMutationResult:
+        return await self._polylogue.add_tag(session_id, tag)
 
-    async def add_tag(self, conversation_id: str, tag: str) -> TagMutationResult:
-        return await self._polylogue.add_tag(conversation_id, tag)
+    async def remove_tag(self, session_id: str, tag: str) -> TagMutationResult:
+        return await self._polylogue.remove_tag(session_id, tag)
 
-    async def remove_tag(self, conversation_id: str, tag: str) -> TagMutationResult:
-        return await self._polylogue.remove_tag(conversation_id, tag)
-
-    async def delete_conversation(self, conversation_id: str) -> bool:
-        return await self._polylogue.delete_conversation(conversation_id)
+    async def delete_session(self, session_id: str) -> bool:
+        return await self._polylogue.delete_session(session_id)
 
 
 # Static conformance pins — mypy fails the build if APIWriteSurface drifts.
@@ -116,7 +108,7 @@ assert_implements(APIWriteSurface, IngestSurface)
 assert_implements(APIWriteSurface, MaintenanceSurface)
 assert_implements(APIWriteSurface, IndexMaintenanceSurface)
 assert_implements(APIWriteSurface, TagMutationSurface)
-assert_implements(APIWriteSurface, ConversationDeleteSurface)
+assert_implements(APIWriteSurface, SessionDeleteSurface)
 
 
 __all__ = ["APIWriteSurface"]

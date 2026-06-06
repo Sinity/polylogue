@@ -1,4 +1,4 @@
-"""Retrieval and candidate-selection helpers for immutable conversation query plans."""
+"""Retrieval and candidate-selection helpers for immutable session query plans."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from polylogue.archive.query.retrieval_candidates import (
     uses_action_read_model,
 )
 from polylogue.archive.query.retrieval_search import (
-    fetch_batched_filtered_conversations,
+    fetch_batched_filtered_sessions,
     score_action_search_text,
     search_action_results,
     search_hybrid_results,
@@ -33,7 +33,7 @@ __all__ = [
     "candidate_batch_limit",
     "candidate_record_query",
     "candidate_record_query_for",
-    "fetch_batched_filtered_conversations",
+    "fetch_batched_filtered_sessions",
     "fetch_candidates",
     "fetch_direct_id",
     "fetch_record_query_for",

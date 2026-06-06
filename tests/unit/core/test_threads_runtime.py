@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from polylogue.archive.conversation.threads import WorkThread, build_session_threads
 from polylogue.archive.session.session_profile import SessionProfile
+from polylogue.archive.session.threads import WorkThread, build_session_threads
 
 
 def _profile(
-    conversation_id: str,
+    session_id: str,
     *,
     parent_id: str | None = None,
     repo_names: tuple[str, ...] = ("polylogue",),
@@ -15,9 +15,9 @@ def _profile(
     last_message_at: datetime | None = None,
 ) -> SessionProfile:
     return SessionProfile(
-        conversation_id=conversation_id,
-        provider="claude-code",
-        title=conversation_id,
+        session_id=session_id,
+        origin="claude-code-session",
+        title=session_id,
         created_at=first_message_at,
         updated_at=last_message_at or first_message_at,
         message_count=2,
@@ -65,13 +65,13 @@ def test_build_session_threads_explains_explicit_continuation_membership() -> No
     assert "explicit_lineage" in thread.support_signals
     assert "branching_continuations" in thread.support_signals
 
-    evidence_by_id = {member.conversation_id: member for member in thread.member_evidence}
+    evidence_by_id = {member.session_id: member for member in thread.member_evidence}
     assert evidence_by_id["root"].role == "root"
     assert evidence_by_id["root"].depth == 0
     assert evidence_by_id["child-a"].role == "parent_continuation"
     assert evidence_by_id["child-a"].parent_id == "root"
     assert evidence_by_id["child-a"].depth == 1
-    assert "parent_conversation_id" in evidence_by_id["child-a"].support_signals
+    assert "parent_session_id" in evidence_by_id["child-a"].support_signals
 
 
 def test_build_session_threads_keeps_obvious_non_matches_separate() -> None:

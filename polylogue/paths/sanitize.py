@@ -36,11 +36,11 @@ def safe_path_component(raw: object | None, *, fallback: str = "item") -> str:
     return safe
 
 
-def conversation_render_root(base_render_root: Path, provider: str, conversation_id: str) -> Path:
-    """Return the sanitized render directory for a conversation."""
+def session_render_root(base_render_root: Path, provider: str, session_id: str) -> Path:
+    """Return the sanitized render directory for a session."""
     safe_provider = safe_path_component(provider, fallback="provider")
-    safe_conversation = safe_path_component(conversation_id, fallback="conversation")
-    return base_render_root / safe_provider / safe_conversation
+    safe_session = safe_path_component(session_id, fallback="session")
+    return base_render_root / safe_provider / safe_session
 
 
 def is_within_root(path: Path, root: Path) -> bool:
@@ -53,7 +53,7 @@ def is_within_root(path: Path, root: Path) -> bool:
 
 
 __all__ = [
-    "conversation_render_root",
+    "session_render_root",
     "is_within_root",
     "safe_path_component",
 ]

@@ -93,45 +93,45 @@ class ParseResult:
 
     def __init__(self) -> None:
         self.counts: dict[str, int] = {
-            "conversations": 0,
+            "sessions": 0,
             "messages": 0,
             "attachments": 0,
-            "skipped_conversations": 0,
+            "skipped_sessions": 0,
             "skipped_messages": 0,
             "skipped_attachments": 0,
         }
         self.changed_counts: dict[str, int] = {
-            "conversations": 0,
+            "sessions": 0,
             "messages": 0,
             "attachments": 0,
         }
         self.processed_ids: set[str] = set()
         self.parse_failures: int = 0
         self._lock = asyncio.Lock()
-        # Tracks conversation IDs whose content changed so downstream
+        # Tracks session IDs whose content changed so downstream
         # materialization can refresh derived session-insight rows explicitly.
-        self._changed_conversation_ids: list[str] = []
+        self._changed_session_ids: list[str] = []
         self.batch_observations: list[ParseBatchObservation] = []
 
     @property
-    def changed_conversation_ids(self) -> tuple[str, ...]:
-        """Conversation IDs whose persisted content changed during parsing."""
-        return tuple(self._changed_conversation_ids)
+    def changed_session_ids(self) -> tuple[str, ...]:
+        """Session IDs whose persisted content changed during parsing."""
+        return tuple(self._changed_session_ids)
 
     async def merge_result(
         self,
-        conversation_id: str,
+        session_id: str,
         result_counts: dict[str, int],
         content_changed: bool,
     ) -> None:
-        """Merge a single conversation's result into the aggregate."""
-        ingest_changed = (result_counts["conversations"] + result_counts["messages"] + result_counts["attachments"]) > 0
+        """Merge a single session's result into the aggregate."""
+        ingest_changed = (result_counts["sessions"] + result_counts["messages"] + result_counts["attachments"]) > 0
 
         async with self._lock:
             if ingest_changed or content_changed:
-                self.processed_ids.add(conversation_id)
+                self.processed_ids.add(session_id)
             if content_changed:
-                self.changed_counts["conversations"] += 1
+                self.changed_counts["sessions"] += 1
             if result_counts["messages"]:
                 self.changed_counts["messages"] += result_counts["messages"]
             if result_counts["attachments"]:

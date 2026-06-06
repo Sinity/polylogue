@@ -13,14 +13,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from polylogue.archive.conversation.branch_type import BranchType
+from polylogue.archive.session.branch_type import BranchType
 from polylogue.storage.search_providers.fts5 import FTS5Provider
 from polylogue.storage.search_providers.hybrid import (
     HybridSearchProvider,
     reciprocal_rank_fusion,
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from tests.infra.storage_records import make_conversation, make_hash, make_message
+from tests.infra.storage_records import make_hash, make_message, make_session
 
 
 def _as_mock(value: object) -> MagicMock:
@@ -32,42 +32,42 @@ def _as_mock(value: object) -> MagicMock:
 class TestHybridSearchProvider:
     """Tests for HybridSearchProvider search methods."""
 
-    async def test_hybrid_search_conversations_limit_reached(self, tmp_path: Path) -> None:
-        """search_conversations stops when limit reached."""
-        # Create backend with some conversations and messages
+    async def test_hybrid_search_sessions_limit_reached(self, tmp_path: Path) -> None:
+        """search_sessions stops when limit reached."""
+        # Create backend with some sessions and messages
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
-        # Add conversations and messages
+        # Add sessions and messages
         for i in range(5):
-            conv = make_conversation(
-                conversation_id=f"conv-{i}",
+            conv = make_session(
+                session_id=f"conv-{i}",
                 source_name="test",
-                provider_conversation_id=f"p{i}",
+                provider_session_id=f"p{i}",
                 content_hash=make_hash(f"conv-{i}"),
                 title=f"Conv {i}",
                 created_at=f"2024-01-0{i + 1}T00:00:00Z",
                 updated_at=f"2024-01-0{i + 1}T00:00:00Z",
-                parent_conversation_id=None,
+                parent_session_id=None,
                 branch_type=None,
                 raw_id=None,
             )
             msg = make_message(
                 message_id=f"msg-{i}",
-                conversation_id=f"conv-{i}",
+                session_id=f"conv-{i}",
                 content_hash=make_hash(f"msg-{i}"),
                 role="user",
                 provider_message_id=f"pm{i}",
                 text=f"Message {i}",
                 timestamp=f"2024-01-0{i + 1}T00:00:00Z",
             )
-            await backend.save_conversation_record(conv)
+            await backend.save_session_record(conv)
             await backend.save_messages([msg])
 
         await backend.close()
 
         # Create hybrid provider with mocks
         fts_mock = MagicMock()
-        # Return message IDs for all 5 conversations
+        # Return message IDs for all 5 sessions
         fts_mock.search.return_value = [f"msg-{i}" for i in range(5)]
         fts_mock.db_path = tmp_path / "test.db"
 
@@ -76,8 +76,8 @@ class TestHybridSearchProvider:
 
         provider = HybridSearchProvider(fts_provider=fts_mock, vector_provider=vec_mock)
 
-        # Request only 2 conversations
-        result = provider.search_conversations("test", limit=2)
+        # Request only 2 sessions
+        result = provider.search_sessions("test", limit=2)
         assert len(result) <= 2
 
     def test_create_hybrid_provider_no_vector_returns_none(self) -> None:
@@ -107,13 +107,13 @@ class TestHybridSearchProvider:
         """Hybrid search respects provider filter."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
-        # Add conversations from different providers
+        # Add sessions from different providers
         for source_name in ["claude-ai", "chatgpt"]:
             for i in range(2):
-                conv = make_conversation(
-                    conversation_id=f"{source_name}-conv-{i}",
+                conv = make_session(
+                    session_id=f"{source_name}-conv-{i}",
                     source_name=source_name,
-                    provider_conversation_id=f"p{i}",
+                    provider_session_id=f"p{i}",
                     content_hash=make_hash(f"{source_name}-{i}"),
                     title=f"{source_name} Conv {i}",
                     created_at=f"2024-01-0{i + 1}T00:00:00Z",
@@ -121,13 +121,13 @@ class TestHybridSearchProvider:
                 )
                 msg = make_message(
                     message_id=f"{source_name}-msg-{i}",
-                    conversation_id=f"{source_name}-conv-{i}",
+                    session_id=f"{source_name}-conv-{i}",
                     content_hash=make_hash(f"{source_name}-msg-{i}"),
                     role="user",
                     text="test message",
                     timestamp=f"2024-01-0{i + 1}T00:00:00Z",
                 )
-                await backend.save_conversation_record(conv)
+                await backend.save_session_record(conv)
                 await backend.save_messages([msg])
 
         await backend.close()
@@ -148,8 +148,8 @@ class TestHybridSearchProvider:
         provider = HybridSearchProvider(fts_provider=fts_mock, vector_provider=vec_mock)
 
         # Search with provider filter
-        result = provider.search_conversations("test", limit=10, providers=["claude-ai"])
-        # Should filter to only Claude AI conversations
+        result = provider.search_sessions("test", limit=10, providers=["claude-ai"])
+        # Should filter to only Claude AI sessions
         assert set(result) == {"claude-ai-conv-0", "claude-ai-conv-1"}
 
 
@@ -334,14 +334,14 @@ class TestHybridSearchProviderRRF:
         results = hybrid_provider.search_scored("test query", limit=5)
         assert len(results) == 5
 
-    def test_search_conversations_deduplicates(
+    def test_search_sessions_deduplicates(
         self,
         hybrid_provider: HybridSearchProvider,
         mock_fts_provider: MagicMock,
         mock_vector_provider: MagicMock,
     ) -> None:
-        """search_conversations() returns unique conversation IDs."""
-        # Multiple messages from same conversation
+        """search_sessions() returns unique session IDs."""
+        # Multiple messages from same session
         mock_fts_provider.search.return_value = ["msg1", "msg2", "msg3"]
         mock_vector_provider.query.return_value = [
             ("msg2", 0.95),
@@ -353,14 +353,14 @@ class TestHybridSearchProviderRRF:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
             mock_context.execute.return_value.fetchall.return_value = [
-                {"conversation_id": "conv1"},
-                {"conversation_id": "conv2"},
-                {"conversation_id": "conv3"},
+                {"session_id": "conv1"},
+                {"session_id": "conv2"},
+                {"session_id": "conv3"},
             ]
 
-            results = hybrid_provider.search_conversations("test query", limit=10)
+            results = hybrid_provider.search_sessions("test query", limit=10)
 
-            # Should have 3 unique conversations
+            # Should have 3 unique sessions
             assert len(results) == 3
             assert len(set(results)) == len(results)  # All unique
 
@@ -429,23 +429,23 @@ class TestProviderFilteringIntegration:
             (f"msg-claude-{i}", 0.9 - i * 0.01) for i in range(10)
         ]
 
-        # Mock database to return conversation IDs with provider info
+        # Mock database to return session IDs with provider info
         with patch("polylogue.storage.search_providers.hybrid.open_connection") as mock_conn:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
             mock_context.execute.return_value.fetchall.return_value = [
-                {"conversation_id": f"conv-chatgpt-{i}"} for i in range(5)
+                {"session_id": f"conv-chatgpt-{i}"} for i in range(5)
             ]
 
             # Search with provider filter
-            results = hybrid_provider.search_conversations("test query", limit=10, providers=["chatgpt"])
+            results = hybrid_provider.search_sessions("test query", limit=10, providers=["chatgpt"])
 
-            # Should return chatgpt conversations, not empty
+            # Should return chatgpt sessions, not empty
             assert len(results) > 0
             assert set(results) == {f"conv-chatgpt-{i}" for i in range(5)}
 
     def test_provider_filter_none_returns_all(self, hybrid_provider: HybridSearchProvider) -> None:
-        """When providers=None, should return conversations from all providers."""
+        """When providers=None, should return sessions from all providers."""
         _as_mock(hybrid_provider.fts_provider.search).return_value = [
             "msg-claude-1",
             "msg-chatgpt-1",
@@ -458,18 +458,18 @@ class TestProviderFilteringIntegration:
             mock_conn.return_value.__enter__.return_value = mock_context
 
             mock_context.execute.return_value.fetchall.return_value = [
-                {"conversation_id": "conv-1"},
-                {"conversation_id": "conv-2"},
-                {"conversation_id": "conv-3"},
+                {"session_id": "conv-1"},
+                {"session_id": "conv-2"},
+                {"session_id": "conv-3"},
             ]
 
-            results = hybrid_provider.search_conversations(
+            results = hybrid_provider.search_sessions(
                 "test query",
                 limit=10,
                 providers=None,  # No filter
             )
 
-            # Should return all 3 conversations
+            # Should return all 3 sessions
             assert len(results) == 3
 
     def test_provider_filter_multiple_providers(self, hybrid_provider: HybridSearchProvider) -> None:
@@ -485,11 +485,11 @@ class TestProviderFilteringIntegration:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
             mock_context.execute.return_value.fetchall.return_value = [
-                {"conversation_id": "conv-1"},
-                {"conversation_id": "conv-2"},
+                {"session_id": "conv-1"},
+                {"session_id": "conv-2"},
             ]
 
-            results = hybrid_provider.search_conversations("test query", limit=10, providers=["claude-ai", "chatgpt"])
+            results = hybrid_provider.search_sessions("test query", limit=10, providers=["claude-ai", "chatgpt"])
 
             # Should return claude and chatgpt, but not gemini
             assert len(results) == 2
@@ -561,70 +561,70 @@ class TestSearchProviderSourceFiltering:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
             mock_context.execute.return_value.fetchall.return_value = [
-                {"conversation_id": "conv-1"},
+                {"session_id": "conv-1"},
             ]
 
-            provider.search_conversations("test", limit=10, providers=["specific-source"])
+            provider.search_sessions("test", limit=10, providers=["specific-source"])
 
             # Provider filtering should stay scoped to source_name only.
             execute_call = mock_context.execute.call_args
             assert execute_call is not None
             sql = execute_call.args[0]
-            assert "conversations.source_name" in sql
-            assert "conversations.provider_name" not in sql
+            assert "sessions.source_name" in sql
+            assert "sessions.provider_name" not in sql
 
 
-class TestListConversationsByParent:
-    """Tests for list_conversations_by_parent (query for child conversations)."""
+class TestListSessionsByParent:
+    """Tests for list_sessions_by_parent (query for child sessions)."""
 
     async def test_empty(self, tmp_path: Path) -> None:
         """No parent → empty list."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        children = await backend.list_conversations_by_parent("nonexistent-parent")
+        children = await backend.list_sessions_by_parent("nonexistent-parent")
         assert children == []
         await backend.close()
 
     async def test_single_child(self, tmp_path: Path) -> None:
         """Single child linked to parent."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        await backend.save_conversation_record(
-            make_conversation(
-                conversation_id="parent-conv",
+        await backend.save_session_record(
+            make_session(
+                session_id="parent-conv",
                 source_name="test",
-                provider_conversation_id="p1",
+                provider_session_id="p1",
                 content_hash=make_hash("parent-conv"),
                 title="Parent",
                 created_at="2024-01-01T00:00:00Z",
                 updated_at="2024-01-01T00:00:00Z",
             )
         )
-        await backend.save_conversation_record(
-            make_conversation(
-                conversation_id="child-conv",
+        await backend.save_session_record(
+            make_session(
+                session_id="child-conv",
                 source_name="test",
-                provider_conversation_id="p2",
+                provider_session_id="p2",
                 content_hash=make_hash("child-conv"),
                 title="Child",
                 created_at="2024-01-02T00:00:00Z",
                 updated_at="2024-01-02T00:00:00Z",
-                parent_conversation_id="parent-conv",
+                parent_session_id="parent-conv",
                 branch_type=BranchType.CONTINUATION,
             )
         )
-        children = await backend.list_conversations_by_parent("parent-conv")
+        children = await backend.list_sessions_by_parent("parent-conv")
         assert len(children) == 1
-        assert children[0].conversation_id == "child-conv"
-        assert children[0].parent_conversation_id == "parent-conv"
+        assert children[0].session_id == "child-conv"
+        assert children[0].parent_session_id == "parent-conv"
         await backend.close()
 
     async def test_multiple_children(self, tmp_path: Path) -> None:
         """Multiple children sorted by created_at."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        await backend.save_conversation_record(
-            make_conversation(
-                conversation_id="parent",
+        await backend.save_session_record(
+            make_session(
+                session_id="parent",
                 source_name="test",
-                provider_conversation_id="p",
+                provider_session_id="p",
                 content_hash=make_hash("parent"),
                 title="Parent",
                 created_at="2024-01-01T00:00:00Z",
@@ -632,22 +632,22 @@ class TestListConversationsByParent:
             )
         )
         for i, ts in enumerate(["2024-01-03T00:00:00Z", "2024-01-02T00:00:00Z", "2024-01-04T00:00:00Z"]):
-            await backend.save_conversation_record(
-                make_conversation(
-                    conversation_id=f"child-{i}",
+            await backend.save_session_record(
+                make_session(
+                    session_id=f"child-{i}",
                     source_name="test",
-                    provider_conversation_id=f"p{i}",
+                    provider_session_id=f"p{i}",
                     content_hash=make_hash(f"child-{i}"),
                     title=f"Child {i}",
                     created_at=ts,
                     updated_at=ts,
-                    parent_conversation_id="parent",
+                    parent_session_id="parent",
                     branch_type=BranchType.FORK,
                 )
             )
-        children = await backend.list_conversations_by_parent("parent")
+        children = await backend.list_sessions_by_parent("parent")
         assert len(children) == 3
-        assert children[0].conversation_id == "child-1"
-        assert children[1].conversation_id == "child-0"
-        assert children[2].conversation_id == "child-2"
+        assert children[0].session_id == "child-1"
+        assert children[1].session_id == "child-0"
+        assert children[2].session_id == "child-2"
         await backend.close()

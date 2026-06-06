@@ -10,7 +10,7 @@ from polylogue.logging import get_logger
 from polylogue.sources.providers.gemini import GeminiMessage
 from polylogue.types import Provider
 
-from .base import ParsedAttachment, ParsedConversation, ParsedMessage
+from .base import ParsedAttachment, ParsedMessage, ParsedSession
 from .drive_support import (
     _attachment_from_doc as _attachment_from_doc_impl,
 )
@@ -153,7 +153,33 @@ def _append_attachment_blocks(meta: dict[str, object], chunk_attachments: list[P
     meta["content_blocks"] = attachment_blocks
 
 
-def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallback_id: str) -> ParsedConversation:
+def _string_field(payload: JSONDocument, *keys: str) -> str | None:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _non_negative_int_field(payload: JSONDocument, *keys: str) -> int | None:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, bool) or value is None:
+            continue
+        if isinstance(value, int):
+            return value if value >= 0 else None
+        if isinstance(value, float):
+            return int(value) if value >= 0 else None
+        if isinstance(value, str):
+            try:
+                parsed = int(float(value))
+            except ValueError:
+                continue
+            return parsed if parsed >= 0 else None
+    return None
+
+
+def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallback_id: str) -> ParsedSession:
     runtime_provider = Provider.from_string(provider)
     prompt = json_document(payload.get("chunkedPrompt"))
     chunks: Sequence[object] = ()
@@ -165,13 +191,14 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         if isinstance(payload_chunks, list):
             chunks = payload_chunks
 
-    # Fallback timestamp from conversation metadata
+    # Fallback timestamp from session metadata
     create_time = payload.get("createTime")
     default_timestamp = str(create_time) if create_time else None
 
     messages: list[ParsedMessage] = []
     attachments: list[ParsedAttachment] = []
     observed_timestamps: list[str | None] = []
+    message_position = 0
     for idx, chunk in enumerate(chunks, start=1):
         if isinstance(chunk, str):
             chunk_obj: JSONDocument = {"text": chunk}
@@ -212,9 +239,15 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
                 text=text,
                 timestamp=message_timestamp,
                 content_blocks=_parsed_content_blocks_from_meta(meta.get("content_blocks")),
+                position=message_position,
+                variant_index=0,
+                is_active_path=True,
                 provider_meta=meta,
+                model_name=_string_field(chunk_obj, "model", "modelName", "model_name"),
+                duration_ms=_non_negative_int_field(chunk_obj, "durationMs", "duration_ms", "elapsed_ms"),
             )
         )
+        message_position += 1
         attachments.extend(chunk_attachments)
 
     title_val = payload.get("title")
@@ -234,13 +267,22 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         if payload.get("updateTime")
         else _select_timestamp(observed_timestamps, latest=True)
     )
-    return ParsedConversation(
+    active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
+    if active_leaf_message_provider_id is not None:
+        messages = [
+            message.model_copy(
+                update={"is_active_leaf": message.provider_message_id == active_leaf_message_provider_id}
+            )
+            for message in messages
+        ]
+    return ParsedSession(
         source_name=runtime_provider,
-        provider_conversation_id=str(payload.get("id") or fallback_id),
+        provider_session_id=str(payload.get("id") or fallback_id),
         title=title,
         created_at=create_time_str,
         updated_at=update_time_str,
         messages=messages,
+        active_leaf_message_provider_id=active_leaf_message_provider_id,
         attachments=attachments,
         provider_meta=provider_meta,
     )

@@ -9,7 +9,7 @@ import pytest
 from polylogue.config import Source
 from polylogue.core.json import JSONDocument
 from polylogue.pipeline.services import acquisition_streams
-from polylogue.sources.parsers.base import RawConversationData
+from polylogue.sources.parsers.base import RawSessionData
 from polylogue.types import Provider
 
 
@@ -17,9 +17,9 @@ async def test_iter_raw_record_stream_logs_make_raw_record_value_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _raw_stream(*args: object, **kwargs: object) -> AsyncIterator[RawConversationData]:
+    async def _raw_stream(*args: object, **kwargs: object) -> AsyncIterator[RawSessionData]:
         del args, kwargs
-        yield RawConversationData(
+        yield RawSessionData(
             raw_bytes=b'{"id":"broken"}',
             source_path=str(tmp_path / "broken.json"),
             provider_hint=Provider.CHATGPT,
@@ -60,12 +60,12 @@ async def test_iter_raw_record_stream_forwards_source_status_progress(
 ) -> None:
     from polylogue.pipeline.services import acquisition as acquisition_module
 
-    def _iter_source_raw_data(*args: object, **kwargs: object) -> Iterator[RawConversationData]:
+    def _iter_source_raw_data(*args: object, **kwargs: object) -> Iterator[RawSessionData]:
         del args
         status_callback = kwargs["status_callback"]
         assert callable(status_callback)
         status_callback("Scanning [chatgpt] reading export.json")
-        yield RawConversationData(
+        yield RawSessionData(
             raw_bytes=b'{"mapping": {}, "id": "ok"}',
             source_path=str(tmp_path / "export.json"),
             provider_hint=Provider.CHATGPT,
@@ -101,7 +101,7 @@ async def test_iter_raw_record_stream_forwards_drive_progress_and_observations(
     observations: list[JSONDocument] = []
     progress_events: list[tuple[int, str | None]] = []
 
-    def _iter_drive_raw_data(*args: object, **kwargs: object) -> Iterator[RawConversationData]:
+    def _iter_drive_raw_data(*args: object, **kwargs: object) -> Iterator[RawSessionData]:
         del args
         observation_callback = kwargs["observation_callback"]
         status_callback = kwargs["status_callback"]
@@ -109,7 +109,7 @@ async def test_iter_raw_record_stream_forwards_drive_progress_and_observations(
         assert callable(status_callback)
         observation_callback({"phase": "drive-test", "source_path": "drive.json"})
         status_callback("Scanning [gemini] reading drive.json")
-        yield RawConversationData(
+        yield RawSessionData(
             raw_bytes=b'{"id":"drive"}',
             source_path=str(tmp_path / "drive.json"),
             provider_hint=Provider.GEMINI,

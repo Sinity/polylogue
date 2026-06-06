@@ -64,7 +64,7 @@ class TimelineEntry:
 
     source: Literal["work_event", "phase"]
     entry_id: str
-    conversation_id: str
+    session_id: str
     kind: str
     summary: str
     start_time: str | None
@@ -81,7 +81,7 @@ class TimelineEntry:
         return {
             "source": self.source,
             "entry_id": self.entry_id,
-            "conversation_id": self.conversation_id,
+            "session_id": self.session_id,
             "kind": self.kind,
             "summary": self.summary,
             "start_time": self.start_time,
@@ -106,13 +106,13 @@ class SessionTimeline:
     a session is dominated by sort-key-reconstructed timing.
     """
 
-    conversation_id: str
+    session_id: str
     entries: tuple[TimelineEntry, ...]
     fidelity_counts: dict[FidelityTag, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "conversation_id": self.conversation_id,
+            "session_id": self.session_id,
             "fidelity_counts": dict(self.fidelity_counts),
             "entries": [entry.to_dict() for entry in self.entries],
         }
@@ -124,7 +124,7 @@ def _work_event_entry(insight: SessionWorkEventInsight) -> TimelineEntry:
     return TimelineEntry(
         source="work_event",
         entry_id=insight.event_id,
-        conversation_id=insight.conversation_id,
+        session_id=insight.session_id,
         kind=inference.heuristic_label,
         summary=inference.summary,
         start_time=evidence.start_time,
@@ -144,7 +144,7 @@ def _phase_entry(insight: SessionPhaseInsight, *, phase_kind: str = "phase") -> 
     return TimelineEntry(
         source="phase",
         entry_id=insight.phase_id,
-        conversation_id=insight.conversation_id,
+        session_id=insight.session_id,
         kind=phase_kind,
         summary=f"phase #{insight.phase_index} ({evidence.word_count} words)",
         start_time=evidence.start_time,
@@ -182,7 +182,7 @@ def build_timeline_entries(
 
 
 def build_session_timeline(
-    conversation_id: str,
+    session_id: str,
     work_events: Iterable[SessionWorkEventInsight],
     phases: Iterable[SessionPhaseInsight],
 ) -> SessionTimeline:
@@ -192,7 +192,7 @@ def build_session_timeline(
     for entry in entries:
         counts[entry.fidelity] += 1
     return SessionTimeline(
-        conversation_id=conversation_id,
+        session_id=session_id,
         entries=tuple(entries),
         fidelity_counts=counts,
     )
@@ -237,7 +237,7 @@ def render_plain(timeline: SessionTimeline) -> str:
     sort-key-reconstructed entries. The legend appears beneath the table.
     """
     lines: list[str] = []
-    lines.append(f"Timeline for {timeline.conversation_id}")
+    lines.append(f"Timeline for {timeline.session_id}")
     counts = timeline.fidelity_counts
     lines.append(f"  fidelity: hook={counts.get('hook', 0)} sort_key={counts.get('sort_key', 0)}")
     lines.append("")
@@ -264,7 +264,7 @@ def render_plain(timeline: SessionTimeline) -> str:
 def render_markdown(timeline: SessionTimeline) -> str:
     """Render the timeline as a GitHub-flavored Markdown table."""
     lines: list[str] = []
-    lines.append(f"# Timeline — `{timeline.conversation_id}`")
+    lines.append(f"# Timeline — `{timeline.session_id}`")
     counts = timeline.fidelity_counts
     lines.append("")
     lines.append(f"**Fidelity:** hook={counts.get('hook', 0)}, sort_key={counts.get('sort_key', 0)}")
@@ -293,11 +293,11 @@ def render(
     work_events: Sequence[SessionWorkEventInsight],
     phases: Sequence[SessionPhaseInsight],
     *,
-    conversation_id: str,
+    session_id: str,
     output: Literal["plain", "markdown"] = "plain",
 ) -> str:
     """Convenience: build the SessionTimeline and render in one call."""
-    timeline = build_session_timeline(conversation_id, work_events, phases)
+    timeline = build_session_timeline(session_id, work_events, phases)
     if output == "markdown":
         return render_markdown(timeline)
     return render_plain(timeline)

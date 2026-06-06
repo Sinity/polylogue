@@ -158,9 +158,9 @@ def test_failed_retry_scan_requeues_only_due_failures(tmp_path: Path, frozen_clo
     watcher._cursor.mark_failed(waiting)
     past = (frozen_clock.now() - timedelta(seconds=1)).isoformat()
     future = (frozen_clock.now() + timedelta(seconds=60)).isoformat()
-    with sqlite3.connect(tmp_path / "polylogue.db") as conn:
-        conn.execute("UPDATE live_cursor SET next_retry_at = ? WHERE source_path = ?", (past, str(due)))
-        conn.execute("UPDATE live_cursor SET next_retry_at = ? WHERE source_path = ?", (future, str(waiting)))
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute("UPDATE ingest_cursor SET next_retry_at = ? WHERE source_path = ?", (past, str(due)))
+        conn.execute("UPDATE ingest_cursor SET next_retry_at = ? WHERE source_path = ?", (future, str(waiting)))
         conn.commit()
 
     async def run_scan() -> None:
@@ -180,14 +180,14 @@ def test_hot_insight_convergence_debt_uses_quiet_window_retry(
     cursor = CursorStore(tmp_path / "cursor.sqlite")
     cursor.record_convergence_debt(
         stage="insights",
-        subject_type="conversation_id",
+        subject_type="session_id",
         subject_id="conv-hot",
         error="insights deferred until source quiet",
     )
     frozen_clock.advance(1)
     cursor.record_convergence_debt(
         stage="insights",
-        subject_type="conversation_id",
+        subject_type="session_id",
         subject_id="conv-hot",
         error="insights deferred until source quiet",
     )
@@ -208,14 +208,14 @@ def test_hot_insight_convergence_debt_advances_after_retry_is_due(
     cursor = CursorStore(tmp_path / "cursor.sqlite")
     cursor.record_convergence_debt(
         stage="insights",
-        subject_type="conversation_id",
+        subject_type="session_id",
         subject_id="conv-hot",
         error="insights deferred until source quiet",
     )
     frozen_clock.advance(61)
     cursor.record_convergence_debt(
         stage="insights",
-        subject_type="conversation_id",
+        subject_type="session_id",
         subject_id="conv-hot",
         error="insights deferred until source quiet",
     )
@@ -232,36 +232,93 @@ def test_hot_insight_convergence_debt_uses_source_quiet_deadline(
     tmp_path: Path,
     frozen_clock: FrozenClock,
 ) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
     source = tmp_path / "active.jsonl"
     source.write_text("{}\n", encoding="utf-8")
     source_mtime = frozen_clock.now().timestamp() - 10
     os.utime(source, (source_mtime, source_mtime))
-    cursor = CursorStore(tmp_path / "cursor.sqlite")
-    with sqlite3.connect(cursor._db_path) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE conversations (
-                conversation_id TEXT PRIMARY KEY,
-                raw_id TEXT
-            );
-            CREATE TABLE raw_conversations (
-                raw_id TEXT PRIMARY KEY,
-                source_path TEXT
-            );
-            INSERT INTO conversations (conversation_id, raw_id)
-            VALUES ('conv-hot', 'raw-hot');
-            """
+    index_db = tmp_path / "index.db"
+    source_db = tmp_path / "source.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    with sqlite3.connect(source_db) as conn:
+        raw_id = write_source_raw_session(
+            conn,
+            origin="codex-session",
+            source_path=str(source),
+            source_index=0,
+            payload=b"{}\n",
+            acquired_at_ms=1,
         )
+    with sqlite3.connect(index_db) as conn:
         conn.execute(
-            "INSERT INTO raw_conversations (raw_id, source_path) VALUES ('raw-hot', ?)",
-            (str(source),),
+            """
+            INSERT INTO sessions (
+                native_id, origin, raw_id, message_count, content_hash, created_at_ms, updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("conv-hot", "codex-session", raw_id, 0, b"b" * 32, 1, 1),
         )
         conn.commit()
 
+    cursor = CursorStore(index_db)
     cursor.record_convergence_debt(
         stage="insights",
-        subject_type="conversation_id",
-        subject_id="conv-hot",
+        subject_type="session_id",
+        subject_id="codex-session:conv-hot",
+        error="insights deferred until source quiet",
+    )
+
+    debt = cursor.list_convergence_debt(limit=1)[0]
+    retry_at = datetime.fromisoformat(debt.next_retry_at or "")
+    failed_at = datetime.fromisoformat(debt.last_failed_at)
+    assert retry_at - failed_at == timedelta(seconds=50)
+
+
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor", "polylogue.sources.live.convergence_debt_retry")
+def test_hot_insight_convergence_debt_uses_archive_source_quiet_deadline(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    source = tmp_path / "active-v1.jsonl"
+    source.write_text("{}\n", encoding="utf-8")
+    source_mtime = frozen_clock.now().timestamp() - 10
+    os.utime(source, (source_mtime, source_mtime))
+    index_db = tmp_path / "index.db"
+    source_db = tmp_path / "source.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index,
+                blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("raw-hot-v1", "codex-session", "conv-hot-v1", str(source), 0, b"a" * 32, 2, 1),
+        )
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (
+                native_id, origin, raw_id, message_count, content_hash, created_at_ms, updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("conv-hot-v1", "codex-session", "raw-hot-v1", 0, b"b" * 32, 1, 1),
+        )
+
+    cursor = CursorStore(index_db)
+    cursor.record_convergence_debt(
+        stage="insights",
+        subject_type="session_id",
+        subject_id="codex-session:conv-hot-v1",
         error="insights deferred until source quiet",
     )
 

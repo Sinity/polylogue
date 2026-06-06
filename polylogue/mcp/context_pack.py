@@ -4,13 +4,23 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from datetime import datetime
+from pathlib import Path
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from pydantic import BaseModel, Field
 
+from polylogue.mcp.archive_support import archive_index_active_paths, archive_query_filters
+from polylogue.storage.sqlite.archive_tiers.archive import (
+    ArchiveSessionSearchHit,
+    ArchiveSessionSummary,
+    ArchiveStore,
+)
+
 if TYPE_CHECKING:
     from polylogue.archive.action_event.action_events import ActionEvent
-    from polylogue.archive.query.spec import ConversationQuerySpec
+    from polylogue.archive.query.spec import SessionQuerySpec
 
 
 class ContextPackProject(BaseModel):
@@ -27,7 +37,7 @@ class ContextPackDateRange(BaseModel):
     earliest: str | None = None
     latest: str | None = None
     sessions_in_range: int = 0
-    conversation_count_in_range: int = 0
+    session_count_in_range: int = 0
     has_gaps: bool = False
 
 
@@ -35,11 +45,11 @@ class ContextPackQueryContext(BaseModel):
     query: str | None = None
     project_path: str | None = None
     project_repo: str | None = None
-    provider: str | None = None
+    origin: str | None = None
     query_matched: int = 0
     query_total: int = 0
-    total_matching_conversations: int = 0
-    conversations_included: int = 0
+    total_matching_sessions: int = 0
+    sessions_included: int = 0
     match_strategy: str = "strict"
     relaxed_filters: list[str] = Field(default_factory=list)
 
@@ -52,10 +62,10 @@ class ContextPackMessage(BaseModel):
     has_thinking: bool = False
 
 
-class ContextPackConversation(BaseModel):
-    conversation_id: str
+class ContextPackSession(BaseModel):
+    session_id: str
     title: str | None = None
-    provider: str
+    origin: str
     created_at: str | None = None
     updated_at: str | None = None
     message_count: int = 0
@@ -74,8 +84,8 @@ class ContextPackActionSummary(BaseModel):
 
 
 class ContextPackUnresolvedWork(BaseModel):
-    conversation_id: str | None = None
-    provider: str | None = None
+    session_id: str | None = None
+    origin: str | None = None
     title: str | None = None
     description: str | None = None
     last_activity: str | None = None
@@ -88,6 +98,9 @@ class ContextPackProvenance(BaseModel):
     generated_at: str = ""
     source: str = "polylogue"
     redacted: bool = True
+    archive_runtime: str = "archive_file_set"
+    archive_root: str | None = None
+    active_db_path: str | None = None
 
 
 class ContextPackIntent(BaseModel):
@@ -109,11 +122,11 @@ class ContextPackPayload(BaseModel):
     project: ContextPackProject = Field(default_factory=ContextPackProject)
     date_range: ContextPackDateRange = Field(default_factory=ContextPackDateRange)
     query_context: ContextPackQueryContext = Field(default_factory=ContextPackQueryContext)
-    conversations: list[ContextPackConversation] = Field(default_factory=list)
+    sessions: list[ContextPackSession] = Field(default_factory=list)
     action_summaries: list[ContextPackActionSummary] = Field(default_factory=list)
     unresolved_work: list[ContextPackUnresolvedWork] = Field(default_factory=list)
     provenance: ContextPackProvenance = Field(default_factory=ContextPackProvenance)
-    total_conversations: int = 0
+    total_sessions: int = 0
     total_messages: int = 0
     total_tool_calls: int = 0
     truncated: bool = False
@@ -121,10 +134,21 @@ class ContextPackPayload(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class ContextPackSelection:
-    conversations: list[Any]
+    sessions: list[Any]
     match_strategy: str
     relaxed_filters: tuple[str, ...] = ()
     query_total: int = 0
+
+
+class ArchiveContextPackFilters(TypedDict):
+    origins: tuple[str, ...]
+    excluded_origins: tuple[str, ...]
+    tags: tuple[str, ...]
+    excluded_tags: tuple[str, ...]
+    repo_names: tuple[str, ...]
+    cwd_prefix: str | None
+    since_ms: int | None
+    until_ms: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,32 +215,32 @@ def _context_pack_query_attempts(
     return tuple(attempts)
 
 
-async def select_context_pack_conversations(
-    query_conversations: Callable[[ConversationQuerySpec], Awaitable[Sequence[Any]]],
+async def select_context_pack_sessions(
+    query_sessions: Callable[[SessionQuerySpec], Awaitable[Sequence[Any]]],
     clamp_limit: Callable[[int | object], int],
     *,
     project_path: str | None,
     project_repo: str | None,
     since: str | None,
     until: str | None,
-    provider: str | None,
+    origin: str | None,
     query: str | None,
     limit: int,
 ) -> ContextPackSelection:
-    """Select conversations for a context pack with recall-oriented fallback.
+    """Select sessions for a context pack with recall-oriented fallback.
 
     The context-pack surface is an archaeology/reorientation tool. A pasted
     investigative query often contains many alternative identifiers; treating
     it as one strict FTS conjunction produces false "no history" answers. We
     still run the strict request first, then fall back to single-term recall
-    only when strict selection returns no conversations.
+    only when strict selection returns no sessions.
     """
-    from polylogue.mcp.query_contracts import MCPConversationQueryRequest
+    from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 
-    def _spec(attempt: _ContextPackQueryAttempt) -> ConversationQuerySpec:
-        return MCPConversationQueryRequest(
+    def _spec(attempt: _ContextPackQueryAttempt) -> SessionQuerySpec:
+        return MCPSessionQueryRequest(
             query=attempt.query,
-            provider=provider,
+            origin=origin,
             since=since,
             until=until,
             cwd_prefix=attempt.project_path,
@@ -231,9 +255,9 @@ async def select_context_pack_conversations(
         project_path=project_path,
         project_repo=project_repo,
     )
-    strict = list(await query_conversations(_spec(attempts[0])))
+    strict = list(await query_sessions(_spec(attempts[0])))
     if strict:
-        return ContextPackSelection(conversations=strict[:limit], match_strategy="strict", query_total=len(strict))
+        return ContextPackSelection(sessions=strict[:limit], match_strategy="strict", query_total=len(strict))
 
     for strategy in ("term_recall", "relaxed_project_term_recall"):
         merged: list[Any] = []
@@ -242,13 +266,13 @@ async def select_context_pack_conversations(
         for attempt in attempts:
             if attempt.strategy != strategy:
                 continue
-            for conversation in await query_conversations(_spec(attempt)):
-                conv_id = str(getattr(conversation, "id", ""))
+            for session in await query_sessions(_spec(attempt)):
+                conv_id = str(getattr(session, "id", ""))
                 if conv_id and conv_id in seen:
                     continue
                 if conv_id:
                     seen.add(conv_id)
-                merged.append(conversation)
+                merged.append(session)
                 if len(merged) >= limit:
                     break
             relaxed_filters = attempt.relaxed_filters
@@ -256,13 +280,116 @@ async def select_context_pack_conversations(
                 break
         if merged:
             return ContextPackSelection(
-                conversations=merged,
+                sessions=merged,
                 match_strategy=strategy,
                 relaxed_filters=relaxed_filters,
                 query_total=len(merged),
             )
 
-    return ContextPackSelection(conversations=[], match_strategy="strict", query_total=0)
+    return ContextPackSelection(sessions=[], match_strategy="strict", query_total=0)
+
+
+def archive_context_pack_active(
+    *,
+    archive_root: Path,
+    db_anchor_path: Path,
+) -> bool:
+    """Return whether context-pack should read archive index data."""
+    return archive_index_active_paths(
+        archive_root=archive_root,
+        db_anchor_path=db_anchor_path,
+    )
+
+
+def query_archive_context_pack(
+    archive: ArchiveStore,
+    spec: SessionQuerySpec,
+    *,
+    default_limit: int,
+) -> list[SimpleNamespace]:
+    """Project archive sessions into the context-pack summary surface."""
+    query = " ".join(spec.query_terms).strip()
+    kwargs = archive_context_pack_filters(spec)
+    if query:
+        rows: list[ArchiveSessionSummary | ArchiveSessionSearchHit] = list(
+            archive.search_summaries(
+                query,
+                limit=spec.limit or default_limit,
+                offset=spec.offset,
+                sort="date",
+                reverse=spec.reverse,
+                **kwargs,
+            )
+        )
+    else:
+        rows = list(
+            archive.list_summaries(
+                limit=spec.limit or default_limit,
+                offset=spec.offset,
+                sort="date",
+                reverse=spec.reverse,
+                **kwargs,
+            )
+        )
+
+    summaries: list[ArchiveSessionSummary] = []
+    for row in dedupe_archive_context_pack_rows(rows):
+        if isinstance(row, ArchiveSessionSearchHit):
+            try:
+                summaries.append(archive.read_summary(row.session_id))
+            except KeyError:
+                continue
+        else:
+            summaries.append(row)
+    return [archive_context_pack_summary(row) for row in summaries]
+
+
+def archive_context_pack_filters(spec: SessionQuerySpec) -> ArchiveContextPackFilters:
+    filters = archive_query_filters(spec)
+    return {
+        "origins": filters["origins"],
+        "excluded_origins": filters["excluded_origins"],
+        "tags": filters["tags"],
+        "excluded_tags": filters["excluded_tags"],
+        "repo_names": filters["repo_names"],
+        "cwd_prefix": filters["cwd_prefix"],
+        "since_ms": filters["since_ms"],
+        "until_ms": filters["until_ms"],
+    }
+
+
+def archive_context_pack_summary(row: ArchiveSessionSummary) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=row.session_id,
+        origin=row.origin,
+        title=row.title,
+        display_title=row.title,
+        created_at=_parse_archive_datetime(row.created_at),
+        updated_at=_parse_archive_datetime(row.updated_at),
+        message_count=row.message_count,
+        messages=(),
+        tool_use_count=0,
+    )
+
+
+def dedupe_archive_context_pack_rows(
+    rows: list[ArchiveSessionSummary | ArchiveSessionSearchHit],
+) -> list[ArchiveSessionSummary | ArchiveSessionSearchHit]:
+    deduped: list[ArchiveSessionSummary | ArchiveSessionSearchHit] = []
+    seen: set[str] = set()
+    for row in rows:
+        session_id = row.session_id
+        if session_id in seen:
+            continue
+        seen.add(session_id)
+        deduped.append(row)
+    return deduped
+
+
+def _parse_archive_datetime(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def redact_path(path: str) -> str:
@@ -279,7 +406,7 @@ def _build_project_context(
     *,
     redact: bool = True,
 ) -> ContextPackProject:
-    """Build project context from action events across matched conversations."""
+    """Build project context from action events across matched sessions."""
     cwd_set: list[str] = []
     branch_set: list[str] = []
     affected_set: list[str] = []

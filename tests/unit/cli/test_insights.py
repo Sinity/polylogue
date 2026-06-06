@@ -2,25 +2,24 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import click
 import pytest
 from click.testing import CliRunner, Result
 
+from polylogue.api.archive import _rebuild_archive_session_insights
 from polylogue.cli.click_app import cli
 from polylogue.cli.commands.insights import _make_callback
 from polylogue.insights.archive import ArchiveCoverageInsight
 from polylogue.insights.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION
 from polylogue.insights.registry import get_insight_type, insight_items_payload
-from polylogue.storage.action_events.rebuild_runtime import rebuild_action_event_read_model_sync
-from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
-from polylogue.storage.insights.session.status import session_insight_status_sync
-from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
-from polylogue.storage.sqlite.connection import open_connection
+from polylogue.storage.insights.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_scenarios import native_session_id_for, open_index_db
 from tests.infra.json_contracts import (
     extract_json_result,
     json_array,
@@ -29,9 +28,38 @@ from tests.infra.json_contracts import (
     json_object,
     json_object_list,
 )
-from tests.infra.storage_records import ConversationBuilder
+from tests.infra.storage_records import SessionBuilder
 
 CliWorkspace = dict[str, Path]
+
+# session ids for the seeded sessions. The CLI surfaces
+# now emit archive ``<origin>:ext-<conv-id>`` ids, so read-side assertions key on
+# these rather than the raw builder tokens.
+NID_ROOT = native_session_id_for("claude-code", "conv-root")
+NID_CHILD = native_session_id_for("claude-code", "conv-child")
+NID_EXACT_COST = native_session_id_for("claude-code", "conv-exact-cost")
+NID_PRICED_COST = native_session_id_for("chatgpt", "conv-priced-cost")
+NID_UNAVAILABLE_COST = native_session_id_for("chatgpt", "conv-unavailable-cost")
+NID_EPOCH = native_session_id_for("claude-code", "conv-epoch")
+NID_HEAVY = native_session_id_for("codex", "conv-heavy")
+
+
+def _rebuild_insights(db_path: Path, **kwargs: Any) -> SessionInsightCounts:
+    """Materialize session insights for a seeded ``index.db``.
+
+    This is the archive equivalent of the legacy ``rebuild_session_insights_sync``
+    over a v22 connection: it opens the archive at ``db_path``'s root
+    and runs the archive session-insight materializer, populating ``session_profiles``,
+    ``session_work_events``, ``session_phases``, and ``threads``.
+    """
+    with ArchiveStore.open_existing(db_path.parent, read_only=False) as archive:
+        return _rebuild_archive_session_insights(archive, **kwargs)
+
+
+def _insight_status(db_path: Path) -> SessionInsightStatusSnapshot:
+    """Archive session-insight readiness snapshot for a seeded ``index.db``."""
+    with ArchiveStore.open_existing(db_path.parent, read_only=False) as archive:
+        return archive.session_insight_status()
 
 
 def _exception_message(result: Result) -> str:
@@ -43,17 +71,17 @@ def test_insight_items_payload_can_render_cli_and_mcp_keys() -> None:
         group_by="provider",
         bucket="claude-code",
         source_name="claude-code",
-        conversation_count=1,
+        session_count=1,
         message_count=2,
         user_message_count=1,
         assistant_message_count=1,
-        avg_messages_per_conversation=2.0,
+        avg_messages_per_session=2.0,
         avg_user_words=3.0,
         avg_assistant_words=4.0,
         tool_use_count=1,
         thinking_count=0,
-        total_conversations_with_tools=1,
-        total_conversations_with_thinking=0,
+        total_sessions_with_tools=1,
+        total_sessions_with_thinking=0,
         tool_use_percentage=100.0,
         thinking_percentage=0.0,
     )
@@ -65,13 +93,13 @@ def test_insight_items_payload_can_render_cli_and_mcp_keys() -> None:
     assert cli_payload["total"] == 1
     assert json_object_list(cli_payload["archive_coverage"])[0]["insight_kind"] == "archive_coverage"
     assert mcp_payload["total"] == 1
-    assert json_object_list(mcp_payload["items"])[0]["source_name"] == "claude-code"
+    assert json_object_list(mcp_payload["items"])[0]["origin"] == "claude-code-session"
 
 
 def _seed_products(cli_workspace: CliWorkspace) -> None:
     db_path = cli_workspace["db_path"]
     (
-        ConversationBuilder(db_path, "conv-root")
+        SessionBuilder(db_path, "conv-root")
         .provider("claude-code")
         .title("Root Thread")
         .created_at("2026-03-01T10:00:00+00:00")
@@ -107,10 +135,10 @@ def _seed_products(cli_workspace: CliWorkspace) -> None:
         .save()
     )
     (
-        ConversationBuilder(db_path, "conv-child")
+        SessionBuilder(db_path, "conv-child")
         .provider("claude-code")
         .title("Child Thread")
-        .parent_conversation("conv-root")
+        .parent_session("ext-conv-root")
         .branch_type("continuation")
         .created_at("2026-03-01T11:00:00+00:00")
         .updated_at("2026-03-01T11:05:00+00:00")
@@ -138,15 +166,13 @@ def _seed_products(cli_workspace: CliWorkspace) -> None:
         )
         .save()
     )
-    with open_connection(db_path) as conn:
-        rebuild_session_insights_sync(conn)
-        rebuild_action_event_read_model_sync(conn)
+    _rebuild_insights(db_path)
 
 
 def _seed_cost_products(cli_workspace: CliWorkspace) -> None:
     db_path = cli_workspace["db_path"]
     (
-        ConversationBuilder(db_path, "conv-exact-cost")
+        SessionBuilder(db_path, "conv-exact-cost")
         .provider("claude-code")
         .title("Exact Cost")
         .provider_meta({"total_cost_usd": 1.25, "model": "claude-sonnet-4-5"})
@@ -155,7 +181,7 @@ def _seed_cost_products(cli_workspace: CliWorkspace) -> None:
         .save()
     )
     (
-        ConversationBuilder(db_path, "conv-priced-cost")
+        SessionBuilder(db_path, "conv-priced-cost")
         .provider("chatgpt")
         .title("Priced Cost")
         .provider_meta({"model": "openai/gpt-4o-2024-08-06", "usage": {"input_tokens": 1000, "output_tokens": 500}})
@@ -164,13 +190,14 @@ def _seed_cost_products(cli_workspace: CliWorkspace) -> None:
         .save()
     )
     (
-        ConversationBuilder(db_path, "conv-unavailable-cost")
+        SessionBuilder(db_path, "conv-unavailable-cost")
         .provider("chatgpt")
         .title("Unavailable Cost")
         .updated_at("2026-03-01T14:00:00+00:00")
         .add_message("u3", role="user", text="Run unavailable-cost task", timestamp="2026-03-01T13:55:00+00:00")
         .save()
     )
+    _rebuild_insights(db_path)
 
 
 def test_insights_profiles_json(cli_workspace: CliWorkspace) -> None:
@@ -183,7 +210,7 @@ def test_insights_profiles_json(cli_workspace: CliWorkspace) -> None:
     payload = extract_json_result(result.output)
     assert json_int(payload["total"]) == 2
     profiles = json_object_list(payload["session_profiles"])
-    first = next(item for item in profiles if item["conversation_id"] == "conv-root")
+    first = next(item for item in profiles if item["session_id"] == NID_ROOT)
     evidence = json_object(first["evidence"])
     inference = json_object(first["inference"])
     assert json_int(first["contract_version"]) == ARCHIVE_INSIGHT_CONTRACT_VERSION
@@ -211,9 +238,9 @@ def test_insights_costs_json(cli_workspace: CliWorkspace) -> None:
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
     costs = json_object_list(payload["session_costs"])
-    exact = next(item for item in costs if item["conversation_id"] == "conv-exact-cost")
-    priced = next(item for item in costs if item["conversation_id"] == "conv-priced-cost")
-    unavailable = next(item for item in costs if item["conversation_id"] == "conv-unavailable-cost")
+    exact = next(item for item in costs if item["session_id"] == NID_EXACT_COST)
+    priced = next(item for item in costs if item["session_id"] == NID_PRICED_COST)
+    unavailable = next(item for item in costs if item["session_id"] == NID_UNAVAILABLE_COST)
     exact_estimate = json_object(exact["estimate"])
     priced_estimate = json_object(priced["estimate"])
     unavailable_estimate = json_object(unavailable["estimate"])
@@ -236,9 +263,9 @@ def test_insights_cost_rollups_json(cli_workspace: CliWorkspace) -> None:
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
     rollups = json_object_list(payload["cost_rollups"])
-    claude = next(item for item in rollups if item["source_name"] == "claude-code")
+    claude = next(item for item in rollups if item["origin"] == "claude-code-session")
     gpt = next(item for item in rollups if item["normalized_model"] == "gpt-4o")
-    unknown = next(item for item in rollups if item["source_name"] == "chatgpt" and item["normalized_model"] is None)
+    unknown = next(item for item in rollups if item["origin"] == "chatgpt-export" and item["normalized_model"] is None)
     assert claude["insight_kind"] == "cost_rollup"
     assert json_number(claude["total_usd"]) == pytest.approx(1.25)
     assert json_int(claude["priced_session_count"]) == 1
@@ -260,7 +287,7 @@ def test_insights_profiles_support_wallclock_filters_and_sort(cli_workspace: Cli
     payload = extract_json_result(result.output)
     profiles = json_object_list(payload["session_profiles"])
     assert json_int(payload["total"]) == 1
-    assert profiles[0]["conversation_id"] == "conv-root"
+    assert profiles[0]["session_id"] == NID_ROOT
 
     result = runner.invoke(
         cli,
@@ -271,7 +298,7 @@ def test_insights_profiles_support_wallclock_filters_and_sort(cli_workspace: Cli
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
     profiles = json_object_list(payload["session_profiles"])
-    assert [item["conversation_id"] for item in profiles] == ["conv-root", "conv-child"]
+    assert [item["session_id"] for item in profiles] == [NID_ROOT, NID_CHILD]
 
 
 def test_insights_profiles_plain_output_shows_session_time_axis(cli_workspace: CliWorkspace) -> None:
@@ -344,8 +371,8 @@ def test_insights_status_inherits_root_format_and_filters(cli_workspace: CliWork
         [
             "--format",
             "json",
-            "--provider",
-            "claude-code",
+            "--origin",
+            "claude-code-session",
             "insights",
             "status",
             "--insight",
@@ -356,12 +383,12 @@ def test_insights_status_inherits_root_format_and_filters(cli_workspace: CliWork
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
-    assert payload["provider"] == "claude-code"
+    assert payload["origin"] == "claude-code-session"
     insights = json_object_list(payload["insights"])
     assert len(insights) == 1
     assert insights[0]["insight_name"] == "session_work_events"
-    coverage = json_object_list(insights[0]["provider_coverage"])
-    assert coverage[0]["source_name"] == "claude-code"
+    coverage = json_object_list(insights[0]["origin_coverage"])
+    assert coverage[0]["origin"] == "claude-code-session"
 
 
 def test_insights_status_plain(cli_workspace: CliWorkspace) -> None:
@@ -438,8 +465,8 @@ def test_insights_profiles_json_includes_folded_enrichment(cli_workspace: CliWor
     result = runner.invoke(
         cli,
         [
-            "--provider",
-            "claude-code",
+            "--origin",
+            "claude-code-session",
             "insights",
             "profiles",
             "--session-date-since",
@@ -459,14 +486,14 @@ def test_insights_profiles_json_includes_folded_enrichment(cli_workspace: CliWor
     assert json_int(first["contract_version"]) == ARCHIVE_INSIGHT_CONTRACT_VERSION
     assert first["insight_kind"] == "session_profile"
     assert first["semantic_tier"] == "merged"
-    assert enrichment_provenance["enrichment_family"] == "scored_session_enrichment"
+    assert enrichment_provenance["enrichment_family"] == "archive"
     assert enrichment["support_level"] in {"weak", "moderate", "strong"}
     assert "input_band_summary" in enrichment
 
 
 def test_insights_callback_rejects_unknown_query_fields() -> None:
     callback = _make_callback(get_insight_type("session_profiles"))
-    env = SimpleNamespace(operations=MagicMock())
+    env = SimpleNamespace(polylogue=MagicMock())
     # Build a minimal Click context to satisfy @click.pass_context
     mock_ctx = click.Context(click.Command("profiles"))
     mock_ctx.obj = env
@@ -511,13 +538,13 @@ def test_insights_profiles_json_supports_explicit_evidence_and_inference_tiers(c
     assert inference_profile["semantic_tier"] == "inference"
     assert inference_profile["evidence"] is None
     assert json_number(json_object(inference_profile["inference"])["engaged_duration_ms"]) >= 0
-    assert json_object(inference_profile["inference_provenance"])["inference_family"] == "heuristic_session_semantics"
+    assert json_object(inference_profile["inference_provenance"])["inference_family"] == "archive"
 
 
 def test_insights_profiles_json_handles_blank_tier_search_text_from_migrated_rows(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
-    with open_connection(cli_workspace["db_path"]) as conn:
-        conn.execute("UPDATE session_profiles SET evidence_search_text = '', inference_search_text = ''")
+    with open_index_db(cli_workspace["db_path"]) as conn:
+        conn.execute("UPDATE session_profiles SET search_text = ''")
         conn.commit()
 
     runner = CliRunner()
@@ -538,63 +565,10 @@ def test_insights_profiles_json_handles_blank_tier_search_text_from_migrated_row
     assert json_int(extract_json_result(inference_result.output)["total"]) == 2
 
 
-def test_insights_reconstructs_tiered_payloads_from_blank_migrated_rows(cli_workspace: CliWorkspace) -> None:
-    _seed_products(cli_workspace)
-    with open_connection(cli_workspace["db_path"]) as conn:
-        conn.execute("UPDATE session_profiles SET evidence_payload_json = '{}', inference_payload_json = '{}'")
-        conn.execute("UPDATE session_work_events SET evidence_payload_json = '{}', inference_payload_json = '{}'")
-        conn.execute("UPDATE session_phases SET evidence_payload_json = '{}', inference_payload_json = '{}'")
-        conn.commit()
-
-    runner = CliRunner()
-    evidence_profiles = runner.invoke(
-        cli,
-        ["insights", "profiles", "--tier", "evidence", "--format", "json"],
-        catch_exceptions=False,
-    )
-    inference_profiles = runner.invoke(
-        cli,
-        ["insights", "profiles", "--tier", "inference", "--format", "json"],
-        catch_exceptions=False,
-    )
-    work_events = runner.invoke(cli, ["insights", "work-events", "--format", "json"], catch_exceptions=False)
-    phases = runner.invoke(cli, ["insights", "phases", "--format", "json"], catch_exceptions=False)
-
-    assert evidence_profiles.exit_code == 0
-    assert inference_profiles.exit_code == 0
-    assert work_events.exit_code == 0
-    assert phases.exit_code == 0
-
-    evidence_profiles_payload = json_object_list(extract_json_result(evidence_profiles.output)["session_profiles"])
-    inference_profiles_payload = json_object_list(extract_json_result(inference_profiles.output)["session_profiles"])
-    work_event = json_object_list(extract_json_result(work_events.output)["session_work_events"])[0]
-    phase = json_object_list(extract_json_result(phases.output)["session_phases"])[0]
-
-    assert all(json_int(json_object(item["evidence"])["message_count"]) >= 1 for item in evidence_profiles_payload)
-    assert all(
-        json_object(item["evidence"])["canonical_session_date"] == "2026-03-01" for item in evidence_profiles_payload
-    )
-    assert all(json_int(json_object(item["inference"])["work_event_count"]) >= 0 for item in inference_profiles_payload)
-    assert json_int(json_object(work_event["evidence"])["start_index"]) >= 0
-    assert json_object(work_event["evidence"])["timing_provenance"] in {
-        "timestamped_range",
-        "start_timestamp_only",
-        "end_timestamp_only",
-        "untimestamped",
-    }
-    assert json_object(work_event["evidence"])["date_provenance"] in {
-        "event_timestamp",
-        "date_only",
-        "none",
-    }
-    assert json_object(work_event["inference"])["heuristic_label"] in {
-        "implementation",
-        "testing",
-        "planning",
-        "debugging",
-    }
-    assert json_int(json_array(json_object(phase["evidence"])["message_range"])[0]) >= 0
-    assert json_number(json_object(phase["inference"])["confidence"]) >= 0.0
+# Retired (#1743): tiered-payload reconstruction from blanked
+# provenance/evidence/inference columns was a legacy rebuild-recovery path.
+# stores the tiered payloads canonically (no base-column
+# reconstruction fallback), so blanking them is not a supported state to recover.
 
 
 def test_insights_work_events_filter_by_canonical_session_date(cli_workspace: CliWorkspace) -> None:
@@ -666,29 +640,11 @@ def test_insights_profile_date_filters_and_phases_json(cli_workspace: CliWorkspa
     assert json_object_list(phase_payload["session_phases"])[0]["insight_kind"] == "session_phase"
 
 
-def test_session_insight_rebuild_supports_legacy_payload_columns(cli_workspace: CliWorkspace) -> None:
-    _seed_products(cli_workspace)
-
-    with open_connection(cli_workspace["db_path"]) as conn:
-        conn.execute("ALTER TABLE session_profiles ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'")
-        conn.execute("ALTER TABLE session_work_events ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'")
-        conn.execute("ALTER TABLE session_phases ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'")
-        conn.commit()
-        rebuild_session_insights_sync(conn)
-        status = session_insight_status_sync(conn)
-
-    assert status.profile_row_count == 2
-    assert status.profile_rows_ready is True
-    assert status.work_event_inference_rows_ready is True
-    assert status.phase_inference_rows_ready is True
-
-
 def test_session_insight_rebuild_pages_full_rebuild(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
 
-    with open_connection(cli_workspace["db_path"]) as conn:
-        counts = rebuild_session_insights_sync(conn, page_size=1)
-        status = session_insight_status_sync(conn)
+    counts = _rebuild_insights(cli_workspace["db_path"])
+    status = _insight_status(cli_workspace["db_path"])
 
     assert counts.profiles == 2
     assert counts.work_events >= 1
@@ -704,39 +660,30 @@ def test_session_insight_rebuild_sync_reports_progress(cli_workspace: CliWorkspa
 
     observed: list[tuple[int, str | None]] = []
 
-    with open_connection(cli_workspace["db_path"]) as conn:
-        rebuild_session_insights_sync(
-            conn,
-            page_size=1,
-            progress_callback=lambda amount, desc=None: observed.append((json_int(amount), desc)),
-            progress_total=2,
-        )
+    _rebuild_insights(
+        cli_workspace["db_path"],
+        progress_callback=lambda amount, desc=None: observed.append((json_int(amount), desc)),
+    )
 
-    # The full-rebuild path now also emits a "rebuild: cleared <table>"
-    # event per DELETE before the chunk-level Materializing events (#1607).
-    materialize_events = [event for event in observed if event[1] and event[1].startswith("Materializing:")]
-    assert materialize_events == [
-        (1, "Materializing: 1/2"),
-        (1, "Materializing: 2/2"),
-    ]
+    # The archive full-rebuild path emits a "rebuild: cleared <table>" event per
+    # DELETE before materializing the archive session-insight tables.
     cleared_events = [event for event in observed if event[1] and event[1].startswith("rebuild: cleared ")]
     assert [desc for _, desc in cleared_events] == [
         "rebuild: cleared session_work_events",
         "rebuild: cleared session_phases",
-        "rebuild: cleared session_latency_profiles",
         "rebuild: cleared session_profiles",
-        "rebuild: cleared session_tag_rollups",
-        "rebuild: cleared conversation_repo_observations",
-        "rebuild: cleared repo_identities",
+        "rebuild: cleared thread_sessions",
+        "rebuild: cleared threads",
+        "rebuild: cleared insight_materialization",
     ]
 
 
-def test_session_insight_rebuild_preserves_profile_semantics_without_loading_full_provider_meta(
+def test_session_insight_rebuild_materializes_profile_and_repo_for_git_session(
     cli_workspace: CliWorkspace,
 ) -> None:
     db_path = cli_workspace["db_path"]
-    (
-        ConversationBuilder(db_path, "conv-heavy")
+    builder = (
+        SessionBuilder(db_path, "conv-heavy")
         .provider("codex")
         .title("Heavy Provider Meta")
         .created_at("2026-03-01T10:00:00+00:00")
@@ -753,61 +700,42 @@ def test_session_insight_rebuild_preserves_profile_semantics_without_loading_ful
             text="Inspecting the repository state.",
             timestamp="2026-03-01T10:05:00+00:00",
         )
-        .save()
     )
-    huge_provider_meta = {
-        "git": {
-            "branch": "master",
-            "repository_url": "git@github.com:Sinity/sinex.git",
-        },
-        "raw": {"payload": "x" * 200_000},
-    }
+    # Archive repo derivation reads ParsedSession git fields (written at
+    # ingest into ``session_repos``), not a legacy ``repo_names_json`` profile
+    # column.
+    builder.conv = builder.conv.model_copy(
+        update={
+            "git_repository_url": "git@github.com:Sinity/sinex.git",
+            "git_branch": "master",
+        }
+    )
+    builder.save()
 
-    with open_connection(db_path) as conn:
-        conn.execute(
-            "UPDATE conversations SET provider_meta = ? WHERE conversation_id = ?",
-            (json.dumps(huge_provider_meta), "conv-heavy"),
-        )
-        conn.execute(
-            """
-            INSERT INTO provider_events (
-                event_id,
-                conversation_id,
-                source_name,
-                event_index,
-                event_type,
-                timestamp,
-                sort_key,
-                materializer_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "conv-heavy:provider-event:000000",
-                "conv-heavy",
-                "codex",
-                0,
-                "compaction",
-                "2026-03-01T10:04:00+00:00",
-                None,
-                1,
-            ),
-        )
-        conn.execute(
-            "INSERT INTO provider_event_compactions (event_id, summary) VALUES (?, ?)",
-            ("conv-heavy:provider-event:000000", "Earlier context collapsed."),
-        )
-        counts = rebuild_session_insights_sync(conn, page_size=1)
-        row = conn.execute(
-            "SELECT repo_names_json, evidence_payload_json FROM session_profiles WHERE conversation_id = ?",
-            ("conv-heavy",),
-        ).fetchone()
+    counts = _rebuild_insights(db_path)
 
     assert counts.profiles == 1
-    assert row is not None
-    repo_names = json_array(json.loads(row["repo_names_json"]))
-    evidence_payload = json_object(json.loads(row["evidence_payload_json"]))
+    with open_index_db(db_path) as conn:
+        profile = conn.execute(
+            "SELECT session_id FROM session_profiles WHERE session_id = ?",
+            (NID_HEAVY,),
+        ).fetchone()
+        repo_names = [
+            str(r["repo_name"])
+            for r in conn.execute(
+                """
+                SELECT repos.repo_name
+                FROM session_repos
+                JOIN repos
+                  ON repos.repository_url = session_repos.repository_url
+                 AND repos.root_path = session_repos.root_path
+                WHERE session_repos.session_id = ?
+                """,
+                (NID_HEAVY,),
+            ).fetchall()
+        ]
+    assert profile is not None
     assert "sinex" in repo_names
-    assert json_int(evidence_payload["compaction_count"]) == 1
 
 
 def test_insights_threads_json(cli_workspace: CliWorkspace) -> None:
@@ -823,13 +751,14 @@ def test_insights_threads_json(cli_workspace: CliWorkspace) -> None:
     thread = json_object_list(threads_payload["work_threads"])[0]
     assert thread["insight_kind"] == "work_thread"
     thread_payload = json_object(thread["thread"])
-    assert thread_payload["support_level"] == "strong"
-    assert "explicit_lineage" in json_array(thread_payload["support_signals"])
+    # Archive thread payloads attribute support to the archive thread tables
+    # rather than the legacy ``explicit_lineage`` lineage-scoring vocabulary.
+    assert "archive_threads" in json_array(thread_payload["support_signals"])
     members = json_object_list(thread_payload["member_evidence"])
-    assert [member["conversation_id"] for member in members] == ["conv-root", "conv-child"]
+    assert [member["session_id"] for member in members] == [NID_ROOT, NID_CHILD]
     assert members[0]["role"] == "root"
-    assert members[1]["role"] == "parent_continuation"
-    assert members[1]["parent_id"] == "conv-root"
+    assert members[1]["role"] == "child"
+    assert members[1]["parent_id"] == NID_ROOT
 
 
 def test_insights_tag_and_summary_rollups_json(cli_workspace: CliWorkspace) -> None:
@@ -855,7 +784,9 @@ def test_insights_tag_and_summary_rollups_json(cli_workspace: CliWorkspace) -> N
     tag_payload = extract_json_result(tags.output)
     day_payload = extract_json_result(days.output)
     week_payload = extract_json_result(weeks.output)
-    assert any(item["tag"] == "provider:claude-code" for item in json_object_list(tag_payload["session_tag_rollups"]))
+    assert any(
+        item["tag"] == "origin:claude-code-session" for item in json_object_list(tag_payload["session_tag_rollups"])
+    )
     assert json_int(day_payload["total"]) == 1
     assert json_object_list(day_payload["archive_coverage"])[0]["insight_kind"] == "archive_coverage"
     assert json_object_list(day_payload["archive_coverage"])[0]["group_by"] == "day"
@@ -869,7 +800,7 @@ def test_insights_analytics_json(cli_workspace: CliWorkspace) -> None:
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["--provider", "claude-code", "insights", "coverage", "--group-by", "provider", "--format", "json"],
+        ["--origin", "claude-code-session", "insights", "coverage", "--group-by", "origin", "--format", "json"],
         catch_exceptions=False,
     )
 
@@ -878,8 +809,8 @@ def test_insights_analytics_json(cli_workspace: CliWorkspace) -> None:
     assert json_int(payload["total"]) == 1
     item = json_object_list(payload["archive_coverage"])[0]
     assert item["insight_kind"] == "archive_coverage"
-    assert item["source_name"] == "claude-code"
-    assert json_int(item["conversation_count"]) == 2
+    assert item["origin"] == "claude-code-session"
+    assert json_int(item["session_count"]) == 2
     assert json_int(item["tool_use_count"]) == 2
 
 
@@ -895,10 +826,10 @@ def test_insights_debt_json(cli_workspace: CliWorkspace) -> None:
     assert "maintenance_target" in first
 
 
-def test_session_insight_status_accepts_epoch_backed_conversation_timestamps(cli_workspace: CliWorkspace) -> None:
+def test_session_insight_status_accepts_epoch_backed_session_timestamps(cli_workspace: CliWorkspace) -> None:
     db_path = cli_workspace["db_path"]
     (
-        ConversationBuilder(db_path, "conv-epoch")
+        SessionBuilder(db_path, "conv-epoch")
         .provider("claude-code")
         .title("Epoch-backed timestamps")
         .created_at("1740823200.0")
@@ -922,9 +853,8 @@ def test_session_insight_status_accepts_epoch_backed_conversation_timestamps(cli
         .save()
     )
 
-    with open_connection(db_path) as conn:
-        rebuild_session_insights_sync(conn)
-        status = session_insight_status_sync(conn)
+    _rebuild_insights(db_path)
+    status = _insight_status(db_path)
 
     assert status.profile_row_count == 1
     assert status.stale_profile_row_count == 0
@@ -939,103 +869,38 @@ def test_session_insight_status_accepts_epoch_backed_conversation_timestamps(cli
 def test_targeted_session_insight_rebuild_does_not_duplicate_profile_fts(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
 
-    with open_connection(cli_workspace["db_path"]) as conn:
-        rebuild_session_insights_sync(conn, conversation_ids=["conv-root"])
-        status = session_insight_status_sync(conn)
+    _rebuild_insights(cli_workspace["db_path"], session_ids=[NID_ROOT])
+    status = _insight_status(cli_workspace["db_path"])
 
     assert status.profile_row_count == 2
     assert status.profile_rows_ready is True
 
 
-def test_session_insight_status_marks_older_materializer_versions_stale(cli_workspace: CliWorkspace) -> None:
+def test_session_insight_status_marks_missing_profile_rows_not_ready(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
 
-    with open_connection(cli_workspace["db_path"]) as conn:
-        rebuild_session_insights_sync(conn)
-        conn.execute(
-            "UPDATE session_profiles SET materializer_version = ?",
-            (SESSION_INSIGHT_MATERIALIZER_VERSION - 1,),
-        )
+    # Archive readiness is structural: a session without a materialized
+    # ``session_profiles`` row makes the profile surface not-ready. (The legacy
+    # per-row ``materializer_version`` staleness column does not exist in the v1
+    # schema; missing/orphan rows are the archive incompleteness signal.)
+    with open_index_db(cli_workspace["db_path"]) as conn:
+        conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (NID_CHILD,))
         conn.commit()
-        status = session_insight_status_sync(conn)
 
-    assert status.profile_row_count == 2
-    assert status.stale_profile_row_count == 2
+    status = _insight_status(cli_workspace["db_path"])
+
+    assert status.profile_row_count == 1
+    assert status.missing_profile_row_count == 1
     assert status.profile_rows_ready is False
 
 
-@pytest.mark.parametrize(
-    ("argv", "sql", "expected"),
-    [
-        (
-            ["insights", "profiles", "--format", "json"],
-            "UPDATE session_profiles SET materializer_version = ?",
-            "Session-profile rows are incomplete.",
-        ),
-        (
-            ["insights", "work-events", "--format", "json"],
-            "UPDATE session_work_events SET materializer_version = ?",
-            "Session work-event rows are incomplete.",
-        ),
-        (
-            ["insights", "phases", "--format", "json"],
-            "UPDATE session_phases SET materializer_version = ?",
-            "Session phase rows are incomplete.",
-        ),
-        (
-            ["insights", "threads", "--format", "json"],
-            "UPDATE work_threads SET materializer_version = ?",
-            "Work-thread rows are incomplete.",
-        ),
-        (
-            ["insights", "tags", "--format", "json"],
-            "UPDATE session_tag_rollups SET materializer_version = ?",
-            "Session tag rollups are incomplete.",
-        ),
-    ],
-)
-def test_insights_reject_stale_session_insight_surfaces(
-    cli_workspace: CliWorkspace, argv: list[str], sql: str, expected: str
-) -> None:
-    _seed_products(cli_workspace)
-
-    with open_connection(cli_workspace["db_path"]) as conn:
-        conn.execute(sql, (SESSION_INSIGHT_MATERIALIZER_VERSION - 1,))
-        conn.commit()
-
-    runner = CliRunner()
-    result = runner.invoke(cli, argv, catch_exceptions=False)
-
-    assert result.exit_code == 1
-    message = _exception_message(result)
-    assert expected in message
-    assert "polylogue doctor --repair --target session_insights" in message
-
-
-def test_insights_profiles_reject_incomplete_profile_search_index(cli_workspace: CliWorkspace) -> None:
-    """Session-profile merged FTS readiness is asserted via the work-events FTS table.
-
-    The merged search index over session profiles is materialized through
-    ``session_work_events_fts``; deleting from it simulates a partially
-    rebuilt insight surface that the CLI must refuse to serve.
-    """
-    _seed_products(cli_workspace)
-
-    with open_connection(cli_workspace["db_path"]) as conn:
-        conn.execute("DELETE FROM session_work_events_fts")
-        conn.commit()
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli,
-        ["insights", "profiles", "--query", "refactor", "--format", "json"],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 1
-    message = _exception_message(result)
-    assert "search index is incomplete" in message
-    assert "polylogue doctor --repair --target session_insights" in message
+# Retired (#1743): the materializer_version staleness guard and the
+# session_work_events_fts "incomplete search index" rejection were retired single-file
+# mechanisms. has no materializer_version column, no
+# work_threads / session_tag_rollups tables, and no per-surface FTS staleness
+# rejection — the readiness model is rebuild-from-source, so these surfaces are
+# always coherent or absent. Tests removed rather than asserting a removed
+# contract.
 
 
 def test_insights_timeline_json_emits_fidelity_tags(cli_workspace: CliWorkspace) -> None:
@@ -1045,13 +910,13 @@ def test_insights_timeline_json_emits_fidelity_tags(cli_workspace: CliWorkspace)
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["insights", "timeline", "conv-root", "--format", "json"],
+        ["insights", "timeline", NID_ROOT, "--format", "json"],
         catch_exceptions=False,
     )
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
-    assert payload["conversation_id"] == "conv-root"
+    assert payload["session_id"] == NID_ROOT
     counts = json_object(payload["fidelity_counts"])
     # Both fidelity buckets are present in the contract output even if zero.
     assert "hook" in counts
@@ -1070,10 +935,10 @@ def test_insights_timeline_plain_includes_legend(cli_workspace: CliWorkspace) ->
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["insights", "timeline", "conv-root"],
+        ["insights", "timeline", NID_ROOT],
         catch_exceptions=False,
     )
 
     assert result.exit_code == 0
-    assert "Timeline for conv-root" in result.output
+    assert f"Timeline for {NID_ROOT}" in result.output
     assert "legend:" in result.output

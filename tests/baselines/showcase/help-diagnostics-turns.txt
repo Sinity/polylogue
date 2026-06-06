@@ -1,7 +1,10 @@
-Usage: polylogue diagnostics turns [OPTIONS] CONVERSATION_ID
+Usage: polylogue diagnostics turns [OPTIONS] [SESSION_ID]
 
-  Show per-turn cost and duration for one conversation.
+  Show per-turn cost and duration for one session.
+
+  The session id may be omitted when a root filter like ``--latest`` or
+  ``--provider`` narrows the archive to a single match (#1642).
 
 Options:
-  -n, --limit INTEGER  Max turns to show
-  -h, --help           Show this message and exit.
+  -l, -n, --limit INTEGER  Max turns to show
+  -h, --help               Show this message and exit.

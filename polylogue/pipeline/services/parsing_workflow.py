@@ -290,7 +290,7 @@ async def parse_from_raw(
     progress_callback: ProgressCallback | None = None,
     force_write: bool = False,
 ) -> ParseResult:
-    """Parse raw_conversations from DB into conversations.
+    """Parse raw_sessions from DB into sessions.
 
     Uses the unified ingest batch processor (decode + validate + parse +
     transform + write in one pass). Derived session-insight materialization

@@ -22,19 +22,18 @@ def _config(workspace_env: dict[str, Path], db_path: Path) -> Config:
     )
 
 
-def _reference_blob(db_path: Path, blob_hash: str, blob_size: int) -> None:
-    with open_connection(db_path) as conn:
-        # Column list has six slots; the seven-value form pre-dated a column
-        # removal and tripped ``OperationalError: 7 values for 6 columns``.
+def _reference_blob_in_source_db(source_db_path: Path, blob_hash: str, blob_size: int) -> None:
+    with open_connection(source_db_path) as conn:
         conn.execute(
-            """
-            INSERT INTO raw_conversations (
-                raw_id, source_name, source_path, source_index,
-                blob_size, acquired_at
-            )
-            VALUES (?, 'test', 'test', 0, ?, '2026-05-23T00:00:00+00:00')
-            """,
-            (blob_hash, blob_size),
+            """CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY,
+                blob_hash BLOB NOT NULL,
+                blob_size INTEGER NOT NULL DEFAULT 0
+            ) STRICT"""
+        )
+        conn.execute(
+            "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size) VALUES (?, ?, ?)",
+            ("raw-v1", bytes.fromhex(blob_hash), blob_size),
         )
         conn.commit()
 
@@ -49,7 +48,7 @@ def test_repair_orphaned_blobs_dry_run_accounts_full_orphan_set(
     referenced_hash, referenced_size = store.write_from_bytes(b"referenced")
     orphan_a, orphan_a_size = store.write_from_bytes(b"orphan-a")
     orphan_b, orphan_b_size = store.write_from_bytes(b"orphan-b")
-    _reference_blob(db_path, referenced_hash, referenced_size)
+    _reference_blob_in_source_db(db_path.with_name("source.db"), referenced_hash, referenced_size)
 
     result = repair_orphaned_blobs(_config(workspace_env, db_path), dry_run=True)
 
@@ -70,11 +69,31 @@ def test_repair_orphaned_blobs_deletes_only_unreferenced_blobs(
     store = BlobStore(blob_store_root())
     referenced_hash, referenced_size = store.write_from_bytes(b"referenced")
     orphan_hash, _ = store.write_from_bytes(b"orphan")
-    _reference_blob(db_path, referenced_hash, referenced_size)
+    _reference_blob_in_source_db(db_path.with_name("source.db"), referenced_hash, referenced_size)
 
     result = repair_orphaned_blobs(_config(workspace_env, db_path), dry_run=False)
 
     assert result.success is True
     assert result.repaired_count == 1
+    assert store.exists(referenced_hash)
+    assert not store.exists(orphan_hash)
+
+
+def test_repair_orphaned_blobs_preserves_archive_source_references(
+    workspace_env: dict[str, Path],
+) -> None:
+    db_path = db_setup(workspace_env)
+    with connection_context(db_path):
+        pass
+    store = BlobStore(blob_store_root())
+    referenced_hash, referenced_size = store.write_from_bytes(b"archive referenced")
+    orphan_hash, _ = store.write_from_bytes(b"archive orphan")
+    _reference_blob_in_source_db(db_path.with_name("source.db"), referenced_hash, referenced_size)
+
+    result = repair_orphaned_blobs(_config(workspace_env, db_path), dry_run=False)
+
+    assert result.success is True
+    assert result.repaired_count == 1
+    assert "source.db.raw_sessions" in result.detail
     assert store.exists(referenced_hash)
     assert not store.exists(orphan_hash)

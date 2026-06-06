@@ -2,12 +2,8 @@
 
 from .archive import (
     ArchiveDebtInsight,
-    ArchiveOperations,
     ArchiveStats,
     CompletionAggregate,
-    get_provider_counts,
-    list_archive_coverage_insights,
-    list_tool_usage_insights,
 )
 from .import_contracts import (
     ImportOperation,
@@ -34,7 +30,6 @@ from .specs import (
 
 __all__ = [
     "ArchiveDebtInsight",
-    "ArchiveOperations",
     "ArchiveStats",
     "CompletionAggregate",
     "ImportAck",
@@ -51,7 +46,4 @@ __all__ = [
     "bounded_failure_samples",
     "build_declared_operation_catalog",
     "build_runtime_operation_catalog",
-    "get_provider_counts",
-    "list_archive_coverage_insights",
-    "list_tool_usage_insights",
 ]

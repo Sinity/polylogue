@@ -37,13 +37,13 @@ class _FakeApi:
         return None
 
     async def get_messages_paginated(
-        self, conversation_id: str, **kwargs: object
+        self, session_id: str, **kwargs: object
     ) -> tuple[list[dict[str, object]], int] | None:
-        self.messages_kwargs = {"conversation_id": conversation_id, **kwargs}
+        self.messages_kwargs = {"session_id": session_id, **kwargs}
         if self.messages_result is None:
-            from polylogue.api.archive import ConversationNotFoundError
+            from polylogue.api.archive import SessionNotFoundError
 
-            raise ConversationNotFoundError("missing")
+            raise SessionNotFoundError("missing")
         msgs, total = self.messages_result
         # Convert dicts to fake objects with attribute access for Message compat
         objs = (
@@ -58,10 +58,10 @@ class _FakeApi:
         )
         return objs, total
 
-    async def get_raw_artifacts_for_conversation(
-        self, conversation_id: str, **kwargs: object
+    async def get_raw_artifacts_for_session(
+        self, session_id: str, **kwargs: object
     ) -> tuple[list[dict[str, object]], int]:
-        self.raw_kwargs = {"conversation_id": conversation_id, **kwargs}
+        self.raw_kwargs = {"session_id": session_id, **kwargs}
         return self.raw_result
 
 
@@ -113,7 +113,7 @@ def test_run_messages_emits_json_and_passes_projection(tmp_path: Path) -> None:
         run_messages(
             env,
             _request(tmp_path),
-            conversation_id="conv-1",
+            session_id="conv-1",
             message_role=("user",),
             message_type="summary",
             limit=5,
@@ -125,7 +125,7 @@ def test_run_messages_emits_json_and_passes_projection(tmp_path: Path) -> None:
 
     payload = json.loads(_ui_print(env).call_args.args[0])
     assert payload["messages"][0]["text"] == "hello"
-    assert api.messages_kwargs["conversation_id"] == "conv-1"
+    assert api.messages_kwargs["session_id"] == "conv-1"
     assert api.messages_kwargs["message_role"] == ("user",)
     assert api.messages_kwargs["message_type"] == "summary"
     assert api.messages_kwargs["limit"] == 5
@@ -140,16 +140,16 @@ def test_run_messages_markdown_and_not_found_paths(tmp_path: Path) -> None:
     api = _FakeApi(messages_result=([{"role": "assistant", "message_type": "message", "text": "x" * 501}], 1))
 
     with patch("polylogue.api.Polylogue.open", return_value=api):
-        run_messages(env, _request(tmp_path), conversation_id="conv-1")
+        run_messages(env, _request(tmp_path), session_id="conv-1")
 
     assert _ui_print(env).call_args_list[0].args[0].endswith("...")
     assert _ui_print(env).call_args_list[1].args[0] == "---"
 
     missing_env = _env()
     with patch("polylogue.api.Polylogue.open", return_value=_FakeApi(messages_result=None)):
-        run_messages(missing_env, _request(tmp_path), conversation_id="missing")
+        run_messages(missing_env, _request(tmp_path), session_id="missing")
 
-    _ui_error(missing_env).assert_called_once_with("Conversation not found: missing")
+    _ui_error(missing_env).assert_called_once_with("Session not found: missing")
 
 
 def test_run_raw_emits_json_yaml_and_empty_error(tmp_path: Path) -> None:
@@ -169,18 +169,18 @@ def test_run_raw_emits_json_yaml_and_empty_error(tmp_path: Path) -> None:
     env = _env()
 
     with patch("polylogue.api.Polylogue.open", return_value=api):
-        run_raw(env, _request(tmp_path), conversation_id="conv-raw", limit=3, offset=1)
+        run_raw(env, _request(tmp_path), session_id="conv-raw", limit=3, offset=1)
 
     payload = json.loads(_ui_print(env).call_args.args[0])
     assert payload["artifacts"][0]["raw_id"] == "raw-1"
-    assert api.raw_kwargs == {"conversation_id": "conv-raw", "limit": 3, "offset": 1}
+    assert api.raw_kwargs == {"session_id": "conv-raw", "limit": 3, "offset": 1}
 
     yaml_env = _env()
     with patch("polylogue.api.Polylogue.open", return_value=api):
-        run_raw(yaml_env, _request(tmp_path), conversation_id="conv-raw", output_format="yaml")
+        run_raw(yaml_env, _request(tmp_path), session_id="conv-raw", output_format="yaml")
     assert "raw-1" in _ui_print(yaml_env).call_args.args[0]
 
     empty_env = _env()
     with patch("polylogue.api.Polylogue.open", return_value=_FakeApi(raw_result=([], 0))):
-        run_raw(empty_env, _request(tmp_path), conversation_id="missing")
-    _ui_error(empty_env).assert_called_once_with("No raw artifacts found for conversation: missing")
+        run_raw(empty_env, _request(tmp_path), session_id="missing")
+    _ui_error(empty_env).assert_called_once_with("No raw artifacts found for session: missing")

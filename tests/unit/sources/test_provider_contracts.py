@@ -18,7 +18,7 @@ from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.validator import validate_provider_export
 from polylogue.schemas.validator_resolution import available_providers
 from polylogue.sources.dispatch import parse_payload
-from polylogue.sources.parsers.base import ParsedConversation
+from polylogue.sources.parsers.base import ParsedSession
 
 # Providers that have both committed schemas AND synthetic generator support.
 _VALIDATOR_PROVIDERS = set(available_providers())
@@ -38,10 +38,10 @@ def _load_payload(raw_bytes: bytes, provider: str) -> object:
     return json.loads(raw_bytes)
 
 
-def _generate_and_parse(provider: str) -> tuple[object, list[ParsedConversation]]:
+def _generate_and_parse(provider: str) -> tuple[object, list[ParsedSession]]:
     """Generate a synthetic payload for a provider and parse it.
 
-    Returns (raw_payload, parsed_conversations).
+    Returns (raw_payload, parsed_sessions).
     """
     spec = CorpusSpec.for_provider(
         provider,
@@ -81,11 +81,11 @@ def _validate_payload_for_provider(provider: str, payload: object) -> bool:
 @pytest.mark.parametrize("provider", _PROVIDERS_WITH_SCHEMAS)
 def test_schema_conformant_payload_parses_without_error(provider: str) -> None:
     """Every committed provider schema must produce a payload the parser accepts."""
-    _payload, conversations = _generate_and_parse(provider)
-    assert len(conversations) >= 1, f"Parser returned zero conversations for {provider}"
-    conv = conversations[0]
-    assert hasattr(conv, "messages"), f"Parsed conversation for {provider} has no messages attribute"
-    assert len(conv.messages) >= 1, f"Parsed conversation for {provider} has zero messages"
+    _payload, sessions = _generate_and_parse(provider)
+    assert len(sessions) >= 1, f"Parser returned zero sessions for {provider}"
+    conv = sessions[0]
+    assert hasattr(conv, "messages"), f"Parsed session for {provider} has no messages attribute"
+    assert len(conv.messages) >= 1, f"Parsed session for {provider} has zero messages"
 
 
 @pytest.mark.parametrize("provider", _PROVIDERS_WITH_SCHEMAS)
@@ -161,7 +161,7 @@ def test_claude_code_progress_records_produce_zero_messages() -> None:
     # claude-code the list has one element since all records belong
     # to the same session.
     parsed = parse_payload("claude-code", records, fallback_id="test-progress")
-    assert len(parsed) == 1, f"Expected 1 parsed conversation, got {len(parsed)}"
+    assert len(parsed) == 1, f"Expected 1 parsed session, got {len(parsed)}"
     result = parsed[0]
     assert result.messages, "Should have at least some messages"
 
@@ -209,7 +209,7 @@ def test_claude_code_init_records_produce_zero_messages() -> None:
     ]
 
     parsed = parse_payload("claude-code", records, fallback_id="test-init")
-    assert len(parsed) == 1, f"Expected 1 parsed conversation, got {len(parsed)}"
+    assert len(parsed) == 1, f"Expected 1 parsed session, got {len(parsed)}"
     result = parsed[0]
     assert len(result.messages) == 2, (
         f"Expected 2 messages (user + assistant), got {len(result.messages)}. Init record should not produce a message."
@@ -240,7 +240,7 @@ def test_unknown_fields_in_payload_do_not_crash_parser(provider: str) -> None:
 
     # Parse must succeed without exception.
     result = parse_payload(provider, payload, fallback_id="test-unknown")
-    assert len(result) >= 1, f"Parser returned zero conversations for {provider} with unknown fields"
+    assert len(result) >= 1, f"Parser returned zero sessions for {provider} with unknown fields"
     assert len(result[0].messages) >= 1, f"Parser returned zero messages for {provider} with unknown fields"
 
 
@@ -271,7 +271,7 @@ def test_unknown_fields_at_record_level_do_not_crash(provider: str) -> None:
                 record["__another_unknown__"] = None
 
     result = parse_payload(provider, payload, fallback_id="test-unknown-top")
-    assert len(result) >= 1, f"Parser returned zero conversations for {provider} with unknown top-level fields"
+    assert len(result) >= 1, f"Parser returned zero sessions for {provider} with unknown top-level fields"
 
 
 def _inject_unknown_fields(payload: object, *, depth: int = 0) -> None:
@@ -318,11 +318,11 @@ def test_generated_payload_is_detected_as_correct_provider(provider: str) -> Non
 
 
 @pytest.mark.parametrize("provider", _PROVIDERS_WITH_SCHEMAS)
-def test_parse_payload_returns_typed_conversation(provider: str) -> None:
-    """parse_payload must return a ParsedConversation with the provider set."""
-    _payload, conversations = _generate_and_parse(provider)
-    assert len(conversations) >= 1
-    conv = conversations[0]
+def test_parse_payload_returns_typed_session(provider: str) -> None:
+    """parse_payload must return a ParsedSession with the provider set."""
+    _payload, sessions = _generate_and_parse(provider)
+    assert len(sessions) >= 1
+    conv = sessions[0]
     assert conv.source_name is not None, f"source_name is None for {provider}"
     assert len(conv.messages) >= 1, f"No messages for {provider}"
     first_msg = conv.messages[0]

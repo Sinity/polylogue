@@ -57,7 +57,7 @@ def ensure_canonical_archive_db_name(db_path: Path) -> None:
             logger.warning("archive_db_stub: could not replace stub %s", archive_db, exc_info=True)
     else:
         logger.warning(
-            "archive_db_stub: %s is a non-empty file (%d bytes); it may be a legacy archive — inspect before removing",
+            "archive_db_stub: %s is a non-empty file (%d bytes); inspect before removing",
             archive_db,
             size,
         )

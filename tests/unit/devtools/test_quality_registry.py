@@ -64,8 +64,8 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     )
     search_filters = next(entry for entry in registry.benchmark_campaigns if entry.name == "search-filters")
     assert search_filters.origin == "authored.benchmark-domain"
-    assert search_filters.artifact_targets == ("conversation_query_results", "message_fts")
-    assert set(search_filters.operation_targets) == {"query-conversations", "benchmark.query.search-filters"}
+    assert search_filters.artifact_targets == ("session_query_results", "message_fts")
+    assert set(search_filters.operation_targets) == {"query-sessions", "benchmark.query.search-filters"}
     assert search_filters.tags == ("benchmark", "search", "filters")
     pipeline = next(entry for entry in registry.benchmark_campaigns if entry.name == "pipeline")
     assert pipeline.origin == "authored.benchmark-domain"
@@ -84,9 +84,9 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert startup_health.operation_targets == ("project-archive-readiness", "readiness.startup.synthetic")
     assert startup_health.tags == ("benchmark", "synthetic", "readiness")
     retrieval_checks = next(entry for entry in registry.contract_lanes if entry.name == "retrieval-checks")
-    assert retrieval_checks.path_targets == ("conversation-query-loop", "message-fts-readiness-loop")
-    assert retrieval_checks.artifact_targets == ("message_fts", "conversation_query_results", "archive_readiness")
-    assert retrieval_checks.operation_targets == ("query-conversations", "project-archive-readiness")
+    assert retrieval_checks.path_targets == ("session-query-loop", "message-fts-readiness-loop")
+    assert retrieval_checks.artifact_targets == ("message_fts", "session_query_results", "archive_readiness")
+    assert retrieval_checks.operation_targets == ("query-sessions", "project-archive-readiness")
     assert retrieval_checks.tags == ("contract", "retrieval", "readiness")
     action_events = next(
         entry for entry in registry.synthetic_benchmark_campaigns if entry.name == "action-event-materialization"
@@ -100,7 +100,7 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     )
     assert session_insights.origin == "authored.synthetic-benchmark"
     assert session_insights.artifact_targets == (
-        "session_insight_source_conversations",
+        "session_insight_source_sessions",
         "session_profile_rows",
         "session_work_event_rows",
         "session_work_event_fts",
@@ -121,7 +121,7 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert daemon_live.artifact_targets == (
         "configured_sources",
         "source_payload_stream",
-        "archive_conversation_rows",
+        "archive_session_rows",
         "message_source_rows",
         "message_fts",
         "tool_use_source_blocks",
@@ -168,7 +168,7 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     runtime_substrate = next(entry for entry in registry.composite_lanes if entry.name == "runtime-substrate-hardening")
     assert "cli.json-contract" in frontier_local.operation_targets
     assert "cli.help" in frontier_local.operation_targets
-    assert "query-conversations" in archive_intelligence.operation_targets
+    assert "query-sessions" in archive_intelligence.operation_targets
     assert "project-archive-readiness" in archive_intelligence.operation_targets
     assert runtime_substrate.family == "runtime-substrate"
     runtime_projection = next(

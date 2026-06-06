@@ -10,33 +10,32 @@ from unittest.mock import patch
 import click
 from click.testing import CliRunner
 
-from polylogue.archive.models import Conversation
-from polylogue.archive.query.spec import ConversationQuerySpec
+from polylogue.archive.models import Session
+from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.cli import bulk_export, query_verbs
 from polylogue.cli.click_app import cli
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
-from polylogue.types import Provider
 from tests.infra.builders import make_conv, make_msg
 
 
-def _stub_env(conversations: list[Conversation]) -> AppEnv:
-    """Build an AppEnv-like stub whose query_conversations returns the given list."""
+def _stub_env(sessions: list[Session]) -> AppEnv:
+    """Build an AppEnv-like stub whose list_sessions_for_spec returns the list."""
 
-    async def _query_conversations(spec, **_):  # type: ignore[no-untyped-def]
-        return list(conversations)
+    async def _list_for_spec(spec, **_):  # type: ignore[no-untyped-def]
+        return list(sessions)
 
-    operations = SimpleNamespace(query_conversations=_query_conversations)
-    return cast(AppEnv, SimpleNamespace(operations=operations))
+    polylogue = SimpleNamespace(list_sessions_for_spec=_list_for_spec)
+    return cast(AppEnv, SimpleNamespace(polylogue=polylogue))
 
 
-def _capturing_env(conversations: list[Conversation], captured: dict[str, object]) -> AppEnv:
-    async def _query_conversations(spec, **_):  # type: ignore[no-untyped-def]
+def _capturing_env(sessions: list[Session], captured: dict[str, object]) -> AppEnv:
+    async def _list_for_spec(spec, **_):  # type: ignore[no-untyped-def]
         captured["spec"] = spec
-        return list(conversations)
+        return list(sessions)
 
-    operations = SimpleNamespace(query_conversations=_query_conversations)
-    return cast(AppEnv, SimpleNamespace(operations=operations))
+    polylogue = SimpleNamespace(list_sessions_for_spec=_list_for_spec)
+    return cast(AppEnv, SimpleNamespace(polylogue=polylogue))
 
 
 def _request(**param_overrides: object) -> RootModeRequest:
@@ -50,7 +49,7 @@ def _capture_run(env: AppEnv, request: RootModeRequest, output_format: str, fiel
         return out.getvalue().decode("utf-8")
 
 
-def test_run_bulk_export_emits_one_jsonl_line_per_conversation() -> None:
+def test_run_bulk_export_emits_one_jsonl_line_per_session() -> None:
     convs = [
         make_conv(id="a", title="Alpha", messages=[make_msg(text="hello")]),
         make_conv(id="b", title="Beta", messages=[make_msg(text="world")]),
@@ -76,7 +75,7 @@ def test_run_bulk_export_separates_markdown_with_horizontal_rule() -> None:
 
     assert "Alpha" in text
     assert "Beta" in text
-    # Separator appears between conversations, not before the first.
+    # Separator appears between sessions, not before the first.
     assert text.count("\n---\n") == 1
 
 
@@ -99,7 +98,7 @@ def test_bulk_export_verb_registered_and_dispatches_via_root_cli() -> None:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["--plain", "--provider", "claude-code", "bulk-export", "--format", "jsonl"],
+            ["--plain", "--origin", "claude-code-session", "bulk-export", "--format", "jsonl"],
             catch_exceptions=False,
         )
 
@@ -107,8 +106,8 @@ def test_bulk_export_verb_registered_and_dispatches_via_root_cli() -> None:
     assert result.exit_code == 0, result.output
     assert captured["output_format"] == "jsonl"
     assert isinstance(captured["request"], RootModeRequest)
-    assert captured["request"].query_params()["provider"] == "claude-code"
-    # Mark conversations referenced (lints the import path).
+    assert captured["request"].query_params()["origin"] == "claude-code-session"
+    # Mark sessions referenced (lints the import path).
     assert convs
 
 
@@ -118,7 +117,7 @@ def test_bulk_export_verb_in_verb_names() -> None:
 
 def test_bulk_export_verb_callback_passes_fields_through() -> None:
     parent = click.Context(click.Command("query"))
-    parent.params = {"query_term": (), "provider": "codex"}
+    parent.params = {"query_term": (), "origin": "codex-session"}
     parent.meta["polylogue_query_terms"] = ()
     child = click.Context(click.Command("verb"), parent=parent)
     child.obj = SimpleNamespace()
@@ -148,7 +147,7 @@ def test_authored_content_bulk_export_workflow_filters_user_messages() -> None:
         )
     ]
     request = _request(
-        provider="claude-code",
+        origin="claude-code-session",
         repo="__thoughtspace",
         filter_has_paste=True,
         typed_only=True,
@@ -157,8 +156,8 @@ def test_authored_content_bulk_export_workflow_filters_user_messages() -> None:
 
     output = _capture_run(_capturing_env(convs, captured), request, "jsonl", None)
 
-    spec = cast(ConversationQuerySpec, captured["spec"])
-    assert spec.providers == (Provider.CLAUDE_CODE,)
+    spec = cast(SessionQuerySpec, captured["spec"])
+    assert spec.origins == ("claude-code-session",)
     assert spec.repo_names == ("__thoughtspace",)
     assert spec.filter_has_paste is True
     assert spec.typed_only is True

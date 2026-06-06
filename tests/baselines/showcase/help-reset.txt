@@ -6,17 +6,17 @@ Usage: polylogue reset [OPTIONS]
   reset everything.
 
   Identity-preserving reset:
-    --conversation ID  Tombstone a specific conversation (preserves user metadata)
-    --source PATH      Tombstone all conversations from a source path
+    --session ID  Tombstone a specific session (preserves user metadata)
+    --source PATH      Tombstone all sessions from a source path
 
 Options:
-  --database           Delete the SQLite database
-  --blob               Delete the content-addressed blob store
-  --assets             Delete archived assets/attachments
-  --cache              Delete search indexes, schemas, and cache
-  --auth               Delete Google Drive OAuth tokens
-  --all                Reset everything
-  -y, --yes            Skip confirmation prompt
-  --conversation TEXT  Tombstone a specific conversation by ID
-  --source PATH        Tombstone all conversations from a source path
-  -h, --help           Show this message and exit.
+  --database      Delete the SQLite database
+  --blob          Delete the content-addressed blob store
+  --assets        Delete archived assets/attachments
+  --cache         Delete search indexes, schemas, and cache
+  --auth          Delete Google Drive OAuth tokens
+  --all           Reset everything
+  -y, --yes       Skip confirmation prompt
+  --session TEXT  Tombstone a specific session by ID
+  --source PATH   Tombstone all sessions from a source path
+  -h, --help      Show this message and exit.

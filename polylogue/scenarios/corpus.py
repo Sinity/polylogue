@@ -232,7 +232,7 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
             raise ValueError("CorpusSpec.messages_max must be >= messages_min")
 
     @property
-    def messages_per_conversation(self) -> range:
+    def messages_per_session(self) -> range:
         return range(self.messages_min, self.messages_max + 1)
 
     @property

@@ -172,7 +172,7 @@ class TestExtractSchemaUnitsFromPayload:
 
         assert len(units) == 1
         unit = units[0]
-        assert unit.conversation_id == "raw-1"
+        assert unit.session_id == "raw-1"
         assert unit.bundle_scope == "session"
         assert any(token.startswith("bucket:") for token in unit.profile_tokens)
         content = unit.schema_samples[1]["content"]
@@ -197,11 +197,11 @@ class TestExtractSchemaUnitsFromPayload:
         units = extract_schema_units_from_payload(
             payload,
             source_name=Provider.CHATGPT,
-            source_path="/tmp/conversations.json",
+            source_path="/tmp/sessions.json",
             raw_id="raw-docs",
             config=config,
         )
 
         assert len(units) == 2
-        assert {unit.conversation_id for unit in units} == {"conv-1", "conv-2"}
-        assert all(unit.artifact_kind == "conversation_document" for unit in units)
+        assert {unit.session_id for unit in units} == {"conv-1", "conv-2"}
+        assert all(unit.artifact_kind == "session_document" for unit in units)

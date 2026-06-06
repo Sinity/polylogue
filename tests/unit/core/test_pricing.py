@@ -5,19 +5,19 @@ from __future__ import annotations
 import pytest
 
 from polylogue.archive.message.messages import MessageCollection
-from polylogue.archive.semantic.pricing import _normalize_model, estimate_conversation_cost, estimate_cost
+from polylogue.archive.semantic.pricing import _normalize_model, estimate_cost, estimate_session_cost
 from tests.infra.builders import make_conv, make_msg
 
 
 def test_exact_archive_cost_wins_over_catalog_estimate() -> None:
-    conversation = make_conv(
+    session = make_conv(
         id="conv-exact-cost",
         provider="claude-code",
         provider_meta={"total_cost_usd": 1.25, "model": "claude-sonnet-4-5"},
         messages=MessageCollection(messages=[]),
     )
 
-    estimate = estimate_conversation_cost(conversation)
+    estimate = estimate_session_cost(session)
 
     assert estimate.status == "exact"
     assert estimate.confidence == 1.0
@@ -26,7 +26,7 @@ def test_exact_archive_cost_wins_over_catalog_estimate() -> None:
 
 
 def test_token_usage_prices_known_model_with_catalog_provenance() -> None:
-    conversation = make_conv(
+    session = make_conv(
         id="conv-priced-cost",
         provider="chatgpt",
         provider_meta={
@@ -36,7 +36,7 @@ def test_token_usage_prices_known_model_with_catalog_provenance() -> None:
         messages=MessageCollection(messages=[]),
     )
 
-    estimate = estimate_conversation_cost(conversation)
+    estimate = estimate_session_cost(session)
 
     assert estimate.status == "priced"
     assert estimate.normalized_model == "gpt-4o"
@@ -50,12 +50,12 @@ def test_token_usage_prices_known_model_with_catalog_provenance() -> None:
 def test_hydrated_messages_report_missing_model_when_no_envelope_cost() -> None:
     """Per #1256, hydrated Message instances no longer carry
     ``provider_meta``; per-message cost facts now flow through the typed
-    cost projection (#803). When neither conversation-level cost nor
+    cost projection (#803). When neither session-level cost nor
     per-message harmonized facts are present, the estimate reports
     ``missing_model`` for each message.
     """
 
-    conversation = make_conv(
+    session = make_conv(
         id="conv-hydrated-no-cost",
         provider="chatgpt",
         messages=MessageCollection(
@@ -66,7 +66,7 @@ def test_hydrated_messages_report_missing_model_when_no_envelope_cost() -> None:
         ),
     )
 
-    estimate = estimate_conversation_cost(conversation)
+    estimate = estimate_session_cost(session)
 
     assert estimate.status == "unavailable"
     assert estimate.total_usd == 0.0
@@ -75,10 +75,10 @@ def test_hydrated_messages_report_missing_model_when_no_envelope_cost() -> None:
     assert estimate.missing_reasons
 
 
-def test_conversation_level_exact_cost_still_wins_for_hydrated_messages() -> None:
-    """Conversation-level provider_meta is still consumed for exact totals."""
+def test_session_level_exact_cost_still_wins_for_hydrated_messages() -> None:
+    """Session-level provider_meta is still consumed for exact totals."""
 
-    conversation = make_conv(
+    session = make_conv(
         id="conv-exact-from-envelope",
         provider="chatgpt",
         provider_meta={"costUSD": 0.01, "model": "gpt-4o"},
@@ -90,21 +90,21 @@ def test_conversation_level_exact_cost_still_wins_for_hydrated_messages() -> Non
         ),
     )
 
-    estimate = estimate_conversation_cost(conversation)
+    estimate = estimate_session_cost(session)
 
     assert estimate.status == "exact"
     assert estimate.total_usd == pytest.approx(0.01)
 
 
 def test_missing_price_is_unavailable_not_zero_precision() -> None:
-    conversation = make_conv(
+    session = make_conv(
         id="conv-unknown-model",
         provider="chatgpt",
         provider_meta={"model": "unknown-frontier-model", "usage": {"input_tokens": 100, "output_tokens": 50}},
         messages=MessageCollection(messages=[]),
     )
 
-    estimate = estimate_conversation_cost(conversation)
+    estimate = estimate_session_cost(session)
 
     assert estimate.status == "unavailable"
     assert estimate.total_usd == 0.0

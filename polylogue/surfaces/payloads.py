@@ -19,9 +19,9 @@ from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 if TYPE_CHECKING:
     from collections.abc import Container
 
-    from polylogue.archive.conversation.neighbor_candidates import ConversationNeighborCandidate, NeighborReason
-    from polylogue.archive.models import Conversation, ConversationSummary, Message
-    from polylogue.archive.query.search_hits import ConversationSearchHit
+    from polylogue.archive.models import Message, Session, SessionSummary
+    from polylogue.archive.query.search_hits import SessionSearchHit
+    from polylogue.archive.session.neighbor_candidates import NeighborReason, SessionNeighborCandidate
 
 
 def serialize_surface_payload(payload: BaseModel, *, exclude_none: bool = False) -> str:
@@ -123,33 +123,33 @@ _ANCHOR_SAFE_RE = re.compile(r"[^A-Za-z0-9_-]+")
 class TargetRefPayload(SurfacePayloadModel):
     """Stable reader target reference for selectable archive objects."""
 
-    target_type: Literal["conversation", "message"]
+    target_type: Literal["session", "message"]
     target_id: str
-    conversation_id: str | None = None
+    session_id: str | None = None
     message_id: str | None = None
     block_index: int | None = None
     identity_key: str | None = None
 
     @classmethod
-    def conversation(cls, conversation_id: object) -> TargetRefPayload:
-        target_id = str(conversation_id)
+    def session(cls, session_id: object) -> TargetRefPayload:
+        target_id = str(session_id)
         return cls(
-            target_type="conversation",
+            target_type="session",
             target_id=target_id,
-            conversation_id=target_id,
-            identity_key=f"conversation:{target_id}",
+            session_id=target_id,
+            identity_key=f"session:{target_id}",
         )
 
     @classmethod
-    def message(cls, *, conversation_id: object, message_id: object) -> TargetRefPayload:
-        conversation_target_id = str(conversation_id)
+    def message(cls, *, session_id: object, message_id: object) -> TargetRefPayload:
+        session_target_id = str(session_id)
         target_id = str(message_id)
         return cls(
             target_type="message",
             target_id=target_id,
-            conversation_id=conversation_target_id,
+            session_id=session_target_id,
             message_id=target_id,
-            identity_key=f"message:{conversation_target_id}:{target_id}",
+            identity_key=f"message:{session_target_id}:{target_id}",
         )
 
 
@@ -229,15 +229,15 @@ class ReaderActionAvailabilityPayload(SurfacePayloadModel):
     inspect_path: str | None = None
 
 
-def reader_anchor(target_type: Literal["conversation", "message"], target_id: object) -> str:
+def reader_anchor(target_type: Literal["session", "message"], target_id: object) -> str:
     """Return a deterministic DOM-safe anchor for a reader target."""
-    prefix = "conversation" if target_type == "conversation" else "message"
+    prefix = "session" if target_type == "session" else "message"
     safe_id = _ANCHOR_SAFE_RE.sub("-", str(target_id)).strip("-")
     return f"{prefix}-{safe_id or 'target'}"
 
 
-def reader_conversation_actions() -> dict[str, ReaderActionAvailabilityPayload]:
-    """Default action contract for conversation-level reader targets."""
+def reader_session_actions() -> dict[str, ReaderActionAvailabilityPayload]:
+    """Default action contract for session-level reader targets."""
     return {
         "open": ReaderActionAvailabilityPayload(enabled=True),
         "copy_link": ReaderActionAvailabilityPayload(enabled=True),
@@ -254,11 +254,11 @@ def reader_message_actions() -> dict[str, ReaderActionAvailabilityPayload]:
     }
 
 
-class ConversationMessagePayload(SurfacePayloadModel):
+class SessionMessagePayload(SurfacePayloadModel):
     """Machine-readable message payload shared across CLI and MCP surfaces.
 
     #1487: this is the canonical ``MessageRenderEnvelope`` for every
-    reader entry. Both conversation-detail and paginated-message
+    reader entry. Both session-detail and paginated-message
     endpoints emit this exact shape so the UI can render parent/branch
     state, paste/attachment flags, raw/source refs, usage/cost
     metadata, and disabled actions without per-endpoint special cases.
@@ -302,10 +302,10 @@ class ConversationMessagePayload(SurfacePayloadModel):
     attachment_refs: tuple[str, ...] = ()
     # #1487 envelope: raw/source refs so the inspector can deep-link
     # to provenance without re-querying. ``raw_id`` is the
-    # content-addressed blob id from ``raw_conversations``;
-    # ``source_path`` is the on-disk path the conversation was
+    # content-addressed blob id from ``raw_sessions``;
+    # ``source_path`` is the on-disk path the session was
     # acquired from. Both default to None for messages whose
-    # conversation has no recorded raw artifact.
+    # session has no recorded raw artifact.
     raw_id: str | None = None
     source_path: str | None = None
     # #1655: paste boundary state — exact, projected, whole_message_fallback,
@@ -318,10 +318,10 @@ class ConversationMessagePayload(SurfacePayloadModel):
         cls,
         message: Message,
         *,
-        conversation_id: object | None = None,
+        session_id: object | None = None,
         raw_id: str | None = None,
         source_path: str | None = None,
-    ) -> ConversationMessagePayload:
+    ) -> SessionMessagePayload:
         raw_message_type = getattr(message, "message_type", None)
         if raw_message_type is None:
             message_type = "message"
@@ -330,9 +330,7 @@ class ConversationMessagePayload(SurfacePayloadModel):
         else:
             message_type = str(raw_message_type)
         target_ref = (
-            TargetRefPayload.message(conversation_id=conversation_id, message_id=message.id)
-            if conversation_id is not None
-            else None
+            TargetRefPayload.message(session_id=session_id, message_id=message.id) if session_id is not None else None
         )
         attachment_refs = tuple(
             str(getattr(attachment, "id", ""))
@@ -364,100 +362,97 @@ class ConversationMessagePayload(SurfacePayloadModel):
         )
 
 
-class ConversationSummaryPayload(SurfacePayloadModel):
-    """Compact conversation summary payload used by MCP/search surfaces."""
+class SessionSummaryPayload(SurfacePayloadModel):
+    """Compact session summary payload used by MCP/search surfaces."""
 
     id: str
-    provider: str
+    origin: str
     title: str
     message_count: int
     target_ref: TargetRefPayload | None = None
     anchor: str | None = None
-    actions: dict[str, ReaderActionAvailabilityPayload] = Field(default_factory=reader_conversation_actions)
+    actions: dict[str, ReaderActionAvailabilityPayload] = Field(default_factory=reader_session_actions)
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
     @classmethod
-    def from_conversation(cls, conversation: Conversation) -> ConversationSummaryPayload:
-        conversation_id = str(conversation.id)
+    def from_session(cls, session: Session) -> SessionSummaryPayload:
+        session_id = str(session.id)
         return cls(
-            id=conversation_id,
-            provider=str(conversation.provider),
-            title=conversation.display_title,
-            message_count=len(conversation.messages),
-            target_ref=TargetRefPayload.conversation(conversation_id),
-            anchor=reader_anchor("conversation", conversation_id),
-            created_at=conversation.created_at,
-            updated_at=conversation.updated_at,
+            id=session_id,
+            origin=session.origin,
+            title=session.display_title,
+            message_count=len(session.messages),
+            target_ref=TargetRefPayload.session(session_id),
+            anchor=reader_anchor("session", session_id),
+            created_at=session.created_at,
+            updated_at=session.updated_at,
         )
 
     @classmethod
     def from_summary(
         cls,
-        summary: ConversationSummary,
+        summary: SessionSummary,
         *,
         message_count: int | None = None,
-    ) -> ConversationSummaryPayload:
-        conversation_id = str(summary.id)
+    ) -> SessionSummaryPayload:
+        session_id = str(summary.id)
         return cls(
-            id=conversation_id,
-            provider=str(summary.provider),
+            id=session_id,
+            origin=summary.origin,
             title=summary.display_title,
             message_count=summary.message_count or 0 if message_count is None else message_count,
-            target_ref=TargetRefPayload.conversation(conversation_id),
-            anchor=reader_anchor("conversation", conversation_id),
+            target_ref=TargetRefPayload.session(session_id),
+            anchor=reader_anchor("session", session_id),
             created_at=summary.created_at,
             updated_at=summary.updated_at,
         )
 
 
-class ConversationDetailPayload(ConversationSummaryPayload):
-    """Full conversation detail payload with serialized messages."""
+class SessionDetailPayload(SessionSummaryPayload):
+    """Full session detail payload with serialized messages."""
 
-    messages: tuple[ConversationMessagePayload, ...]
+    messages: tuple[SessionMessagePayload, ...]
 
     @classmethod
-    def from_conversation(
+    def from_session(
         cls,
-        conversation: Conversation,
+        session: Session,
         *,
         content_projection: ContentProjectionSpec | None = None,
-    ) -> ConversationDetailPayload:
+    ) -> SessionDetailPayload:
         if content_projection is not None and content_projection.filters_content():
-            conversation = conversation.with_content_projection(content_projection)
-        summary = ConversationSummaryPayload.from_conversation(conversation)
+            session = session.with_content_projection(content_projection)
+        summary = SessionSummaryPayload.from_session(session)
         return cls(
             **summary.model_dump(),
-            messages=tuple(
-                ConversationMessagePayload.from_message(msg, conversation_id=conversation.id)
-                for msg in conversation.messages
-            ),
+            messages=tuple(SessionMessagePayload.from_message(msg, session_id=session.id) for msg in session.messages),
         )
 
 
-class ConversationFlagsPayload(SurfacePayloadModel):
-    """Boolean flags summarizing conversation content characteristics."""
+class SessionFlagsPayload(SurfacePayloadModel):
+    """Boolean flags summarizing session content characteristics."""
 
     has_tool_use: bool = False
     has_thinking: bool = False
     has_paste: bool = False
 
 
-class ConversationListRowPayload(SurfacePayloadModel):
-    """Conversation row payload used by CLI list, JSON, and YAML surfaces.
+class SessionListRowPayload(SurfacePayloadModel):
+    """Session row payload used by CLI list, JSON, and YAML surfaces.
 
     Carries the canonical row shape for the web reader contract (#848).
     """
 
     id: str
-    provider: str
+    origin: str
     title: str
     target_ref: TargetRefPayload | None = None
     anchor: str | None = None
-    actions: dict[str, ReaderActionAvailabilityPayload] = Field(default_factory=reader_conversation_actions)
+    actions: dict[str, ReaderActionAvailabilityPayload] = Field(default_factory=reader_session_actions)
     # #1673 (field-name harmonization): created_at/updated_at replace the
     # single ``date`` field; ``message_count`` replaces ``messages``.
-    # Old keys are kept for one release cycle so consumers can migrate.
+    # Old keys are kept for one release cycle so consumers can move.
     created_at: str | None = None
     updated_at: str | None = None
     date: str | None = None  # deprecated — use created_at
@@ -468,55 +463,55 @@ class ConversationListRowPayload(SurfacePayloadModel):
     words: int | None = None
     repo: str | None = None
     cwd_display: str | None = None
-    flags: ConversationFlagsPayload | None = None
+    flags: SessionFlagsPayload | None = None
 
     @classmethod
-    def from_conversation(cls, conversation: Conversation) -> ConversationListRowPayload:
-        conversation_id = str(conversation.id)
-        created_at = conversation.created_at.isoformat() if conversation.created_at else None
-        updated_at = conversation.updated_at.isoformat() if conversation.updated_at else None
-        display_date = conversation.display_date.isoformat() if conversation.display_date else None
-        msg_count = len(conversation.messages)
+    def from_session(cls, session: Session) -> SessionListRowPayload:
+        session_id = str(session.id)
+        created_at = session.created_at.isoformat() if session.created_at else None
+        updated_at = session.updated_at.isoformat() if session.updated_at else None
+        display_date = session.display_date.isoformat() if session.display_date else None
+        msg_count = len(session.messages)
         return cls(
-            id=conversation_id,
-            provider=str(conversation.provider),
-            title=conversation.display_title,
-            target_ref=TargetRefPayload.conversation(conversation_id),
-            anchor=reader_anchor("conversation", conversation_id),
+            id=session_id,
+            origin=session.origin,
+            title=session.display_title,
+            target_ref=TargetRefPayload.session(session_id),
+            anchor=reader_anchor("session", session_id),
             created_at=created_at,
             updated_at=updated_at,
             date=display_date,  # deprecated — kept for one release cycle
             message_count=msg_count,
             messages=msg_count,  # deprecated — kept for one release cycle
-            tags=tuple(conversation.tags),
-            summary=conversation.summary,
-            words=sum(message.word_count for message in conversation.messages),
-            repo=_extract_repo(conversation.provider_meta),
-            cwd_display=_extract_cwd(conversation.provider_meta),
-            flags=_build_flags_from_conversation(conversation),
+            tags=tuple(session.tags),
+            summary=session.summary,
+            words=sum(message.word_count for message in session.messages),
+            repo=_extract_repo(session.provider_meta),
+            cwd_display=_extract_cwd(session.provider_meta),
+            flags=_build_flags_from_session(session),
         )
 
     @classmethod
     def from_summary(
         cls,
-        summary: ConversationSummary,
+        summary: SessionSummary,
         *,
         message_count: int,
         word_count: int | None = None,
-        flags: ConversationFlagsPayload | None = None,
+        flags: SessionFlagsPayload | None = None,
         repo: str | None = None,
         cwd_display: str | None = None,
-    ) -> ConversationListRowPayload:
-        conversation_id = str(summary.id)
+    ) -> SessionListRowPayload:
+        session_id = str(summary.id)
         created_at = summary.created_at.isoformat() if summary.created_at else None
         updated_at = summary.updated_at.isoformat() if summary.updated_at else None
         display_date = summary.display_date.isoformat() if summary.display_date else None
         return cls(
-            id=conversation_id,
-            provider=str(summary.provider),
+            id=session_id,
+            origin=summary.origin,
             title=summary.display_title,
-            target_ref=TargetRefPayload.conversation(conversation_id),
-            anchor=reader_anchor("conversation", conversation_id),
+            target_ref=TargetRefPayload.session(session_id),
+            anchor=reader_anchor("session", session_id),
             created_at=created_at,
             updated_at=updated_at,
             date=display_date,  # deprecated — kept for one release cycle
@@ -537,8 +532,8 @@ class ConversationListRowPayload(SurfacePayloadModel):
         return {key: value for key, value in data.items() if key in fields}
 
 
-class ConversationSearchMatchPayload(SurfacePayloadModel):
-    """Evidence explaining why a conversation appeared in search results.
+class SessionSearchMatchPayload(SurfacePayloadModel):
+    """Evidence explaining why a session appeared in search results.
 
     ``score_kind`` describes the meaning of ``score`` so consumers don't
     have to guess at ordering or comparability:
@@ -572,33 +567,33 @@ class ConversationSearchMatchPayload(SurfacePayloadModel):
     raw_score: float | None = Field(default=None, description="Backend-native score before public interpretation.")
 
 
-class ConversationSearchHitPayload(SurfacePayloadModel):
+class SessionSearchHitPayload(SurfacePayloadModel):
     """Search-hit payload with summary identity and match evidence."""
 
-    conversation: ConversationSummaryPayload
-    match: ConversationSearchMatchPayload
+    session: SessionSummaryPayload
+    match: SessionSearchMatchPayload
 
     @classmethod
     def from_search_hit(
         cls,
-        hit: ConversationSearchHit,
+        hit: SessionSearchHit,
         *,
         message_count: int | None = None,
-    ) -> ConversationSearchHitPayload:
+    ) -> SessionSearchHitPayload:
         if hit.message_id is not None:
-            target_ref = TargetRefPayload.message(conversation_id=hit.conversation_id, message_id=hit.message_id)
+            target_ref = TargetRefPayload.message(session_id=hit.session_id, message_id=hit.message_id)
             anchor = reader_anchor("message", hit.message_id)
             actions = reader_message_actions()
         else:
-            target_ref = TargetRefPayload.conversation(hit.conversation_id)
-            anchor = reader_anchor("conversation", hit.conversation_id)
-            actions = reader_conversation_actions()
+            target_ref = TargetRefPayload.session(hit.session_id)
+            anchor = reader_anchor("session", hit.session_id)
+            actions = reader_session_actions()
         return cls(
-            conversation=ConversationSummaryPayload.from_summary(
+            session=SessionSummaryPayload.from_summary(
                 hit.summary,
                 message_count=message_count if message_count is not None else hit.summary.message_count,
             ),
-            match=ConversationSearchMatchPayload(
+            match=SessionSearchMatchPayload(
                 rank=hit.rank,
                 retrieval_lane=hit.retrieval_lane,
                 match_surface=hit.match_surface,
@@ -618,7 +613,7 @@ class ConversationSearchHitPayload(SurfacePayloadModel):
         )
 
 
-class ConversationNeighborReasonPayload(SurfacePayloadModel):
+class SessionNeighborReasonPayload(SurfacePayloadModel):
     """Evidence explaining one neighboring-candidate reason."""
 
     kind: str
@@ -627,7 +622,7 @@ class ConversationNeighborReasonPayload(SurfacePayloadModel):
     weight: float
 
     @classmethod
-    def from_reason(cls, reason: NeighborReason) -> ConversationNeighborReasonPayload:
+    def from_reason(cls, reason: NeighborReason) -> SessionNeighborReasonPayload:
         return cls(
             kind=reason.kind,
             detail=reason.detail,
@@ -636,30 +631,30 @@ class ConversationNeighborReasonPayload(SurfacePayloadModel):
         )
 
 
-class ConversationNeighborCandidatePayload(SurfacePayloadModel):
-    """Machine-readable neighboring-conversation candidate payload."""
+class SessionNeighborCandidatePayload(SurfacePayloadModel):
+    """Machine-readable neighboring-session candidate payload."""
 
-    conversation: ConversationSummaryPayload
+    session: SessionSummaryPayload
     rank: int
     score: float
-    reasons: tuple[ConversationNeighborReasonPayload, ...]
-    source_conversation_id: str | None = None
+    reasons: tuple[SessionNeighborReasonPayload, ...]
+    source_session_id: str | None = None
     query: str | None = None
 
     @classmethod
     def from_candidate(
         cls,
-        candidate: ConversationNeighborCandidate,
-    ) -> ConversationNeighborCandidatePayload:
+        candidate: SessionNeighborCandidate,
+    ) -> SessionNeighborCandidatePayload:
         return cls(
-            conversation=ConversationSummaryPayload.from_summary(
+            session=SessionSummaryPayload.from_summary(
                 candidate.summary,
                 message_count=candidate.summary.message_count,
             ),
             rank=candidate.rank,
             score=candidate.score,
-            reasons=tuple(ConversationNeighborReasonPayload.from_reason(reason) for reason in candidate.reasons),
-            source_conversation_id=candidate.source_conversation_id,
+            reasons=tuple(SessionNeighborReasonPayload.from_reason(reason) for reason in candidate.reasons),
+            source_session_id=candidate.source_session_id,
             query=candidate.query,
         )
 
@@ -708,8 +703,8 @@ class QueryMissDiagnosticsPayload(SurfacePayloadModel):
     message: str
     filters: tuple[str, ...]
     reasons: tuple[QueryMissReasonPayload, ...]
-    archive_conversation_count: int | None = None
-    raw_conversation_count: int | None = None
+    archive_session_count: int | None = None
+    raw_session_count: int | None = None
 
     @classmethod
     def from_diagnostics(cls, diagnostics: object) -> QueryMissDiagnosticsPayload:
@@ -717,18 +712,18 @@ class QueryMissDiagnosticsPayload(SurfacePayloadModel):
             message=getattr(diagnostics, "message", ""),
             filters=tuple(getattr(diagnostics, "filters", ())),
             reasons=tuple(QueryMissReasonPayload.from_reason(reason) for reason in getattr(diagnostics, "reasons", ())),
-            archive_conversation_count=getattr(diagnostics, "archive_conversation_count", None),
-            raw_conversation_count=getattr(diagnostics, "raw_conversation_count", None),
+            archive_session_count=getattr(diagnostics, "archive_session_count", None),
+            raw_session_count=getattr(diagnostics, "raw_session_count", None),
         )
 
 
-class ConversationListResponse(SurfacePayloadModel):
+class SessionListResponse(SurfacePayloadModel):
     """Shared response envelope for list and search results.
 
     All read surfaces (daemon HTTP, MCP, CLI JSON output) adapt this shape.
     """
 
-    items: tuple[ConversationListRowPayload, ...]
+    items: tuple[SessionListRowPayload, ...]
     total: int
     limit: int
     offset: int
@@ -762,9 +757,9 @@ class SearchEnvelope(SurfacePayloadModel):
 
     Fields:
 
-    - ``hits``: ordered tuple of :class:`ConversationSearchHitPayload`
+    - ``hits``: ordered tuple of :class:`SessionSearchHitPayload`
       (already evidence-bearing — see #873).
-    - ``total``: total number of matching conversations. Every read surface
+    - ``total``: total number of matching sessions. Every read surface
       (CLI, MCP, daemon HTTP, Python API) computes this via the shared
       ``spec.count()`` so the field carries a concrete count uniformly
       (#1749). ``None`` is reserved for the genuine no-spec case where a
@@ -774,7 +769,7 @@ class SearchEnvelope(SurfacePayloadModel):
       "best-effort, not stable" for ranked results; prefer ``next_cursor``).
     - ``next_offset``: convenience pointer for offset-based clients; only
       set when more results are likely available.
-    - ``next_cursor``: opaque keyset cursor encoding (rank, conversation_id)
+    - ``next_cursor``: opaque keyset cursor encoding (rank, session_id)
       for stable rank-first pagination. Pass back unchanged in the
       following request.
     - ``query``: the search query text actually applied (after CLI/MCP/HTTP
@@ -799,7 +794,7 @@ class SearchEnvelope(SurfacePayloadModel):
       produced no hits but filters were applied.
     """
 
-    hits: tuple[ConversationSearchHitPayload, ...]
+    hits: tuple[SessionSearchHitPayload, ...]
     total: int | None
     limit: int
     offset: int
@@ -815,9 +810,9 @@ class SearchEnvelope(SurfacePayloadModel):
 
 #: Cursor envelope version. Bump when the encoded shape changes in a way
 #: that earlier decoders cannot tolerate; consumers that pin a version
-#: can detect skew. v1 carries ``r`` (anchor rank within the current
+#: can detect skew. archive carries ``r`` (anchor rank within the current
 #: ranking pass), ``s`` (optional float score, ``None`` for lanes without
-#: a numeric score), ``c`` (conversation_id tie-break), and ``l`` (lane
+#: a numeric score), ``c`` (session_id tie-break), and ``l`` (lane
 #: resolved at the time the cursor was minted).
 SEARCH_CURSOR_VERSION: Literal[1] = 1
 
@@ -839,7 +834,7 @@ class SearchCursor(BaseModel):
       pass). The next page starts strictly after this position.
     - ``s``: anchor score, when the lane emits a numeric score (BM25,
       RRF, vector distance). ``None`` for lanes without a score.
-    - ``c``: anchor conversation id — deterministic tie-break when two
+    - ``c``: anchor session id — deterministic tie-break when two
       hits share the same score.
     - ``l``: retrieval lane name resolved when the cursor was minted.
       Surfaces SHOULD reject a cursor whose lane does not match the
@@ -864,10 +859,10 @@ class InvalidSearchCursorError(ValueError):
     """
 
 
-def build_search_cursor(hits: Sequence[ConversationSearchHitPayload]) -> str | None:
+def build_search_cursor(hits: Sequence[SessionSearchHitPayload]) -> str | None:
     """Build an opaque keyset cursor token from the last hit of a page.
 
-    Encodes ``(rank, score, conversation_id, lane)`` of the final hit so
+    Encodes ``(rank, score, session_id, lane)`` of the final hit so
     a follow-up request can resume strictly after the anchor even when
     the underlying archive grows between requests. Returns ``None`` when
     ``hits`` is empty.
@@ -884,7 +879,7 @@ def build_search_cursor(hits: Sequence[ConversationSearchHitPayload]) -> str | N
         v=SEARCH_CURSOR_VERSION,
         r=last.match.rank,
         s=last.match.score,
-        c=last.conversation.id,
+        c=last.session.id,
         lane=last.match.retrieval_lane,
     )
     payload = cursor.model_dump_json(by_alias=True)
@@ -926,14 +921,14 @@ def decode_search_cursor(token: str) -> SearchCursor:
 
 
 def apply_search_cursor(
-    hits: Sequence[ConversationSearchHitPayload],
+    hits: Sequence[SessionSearchHitPayload],
     cursor: SearchCursor,
     *,
     retrieval_lane: str | None = None,
-) -> tuple[ConversationSearchHitPayload, ...]:
+) -> tuple[SessionSearchHitPayload, ...]:
     """Drop hits up to and including the cursor anchor.
 
-    Stability rule: a hit survives iff its ``(score, conversation_id)``
+    Stability rule: a hit survives iff its ``(score, session_id)``
     sorts strictly *after* the cursor anchor under the lane's natural
     ordering, or — when no score is available — its rank strictly
     exceeds the anchor rank.
@@ -947,7 +942,7 @@ def apply_search_cursor(
         raise InvalidSearchCursorError(
             f"cursor was minted for retrieval_lane={cursor.lane!r} but this request is {retrieval_lane!r}"
         )
-    result: list[ConversationSearchHitPayload] = []
+    result: list[SessionSearchHitPayload] = []
     for hit in hits:
         if _cursor_strictly_before(cursor, hit):
             result.append(hit)
@@ -970,11 +965,11 @@ def search_cursor_lane_matches_request(cursor_lane: str, requested_lane: str | N
     return requested_lane == cursor_lane
 
 
-def _cursor_strictly_before(cursor: SearchCursor, hit: ConversationSearchHitPayload) -> bool:
+def _cursor_strictly_before(cursor: SearchCursor, hit: SessionSearchHitPayload) -> bool:
     """Return True when ``hit`` is strictly after the cursor anchor.
 
     Comparison uses lane-natural score ordering when both sides have a
-    numeric score, otherwise falls back to rank. ``conversation_id`` is
+    numeric score, otherwise falls back to rank. ``session_id`` is
     the deterministic tie-break.
     """
     anchor_score = cursor.s
@@ -987,11 +982,11 @@ def _cursor_strictly_before(cursor: SearchCursor, hit: ConversationSearchHitPayl
     # Same score (or no score on one side) — use rank, then conv id.
     if hit.match.rank != cursor.r:
         return hit.match.rank > cursor.r
-    return hit.conversation.id > cursor.c
+    return hit.session.id > cursor.c
 
 
 def build_search_envelope(
-    hits: Sequence[ConversationSearchHitPayload],
+    hits: Sequence[SessionSearchHitPayload],
     *,
     total: int | None,
     limit: int,
@@ -1081,7 +1076,7 @@ class MetadataMutationResult(SurfacePayloadModel):
     """
 
     outcome: MetadataMutationOutcome
-    conversation_id: str
+    session_id: str
     key: str
     detail: str | None = None
 
@@ -1089,15 +1084,15 @@ class MetadataMutationResult(SurfacePayloadModel):
         return self.outcome in ("set", "deleted")
 
 
-DeleteConversationOutcome: TypeAlias = Literal["deleted", "not_found"]
-"""Conversation delete idempotency outcome exposed by all surfaces."""
+DeleteSessionOutcome: TypeAlias = Literal["deleted", "not_found"]
+"""Session delete idempotency outcome exposed by all surfaces."""
 
 
-class DeleteConversationResult(SurfacePayloadModel):
-    """Typed result for a single conversation delete."""
+class DeleteSessionResult(SurfacePayloadModel):
+    """Typed result for a single session delete."""
 
-    outcome: DeleteConversationOutcome
-    conversation_id: str
+    outcome: DeleteSessionOutcome
+    session_id: str
     detail: str | None = None
 
     def __bool__(self) -> bool:
@@ -1108,22 +1103,22 @@ class BulkTagMutationResult(SurfacePayloadModel):
     """Typed result for bulk tag mutations.
 
     Carries the same counts the MCP/CLI/daemon surfaces expose: how many
-    conversations had at least one tag applied (``affected_count``) and how
+    sessions had at least one tag applied (``affected_count``) and how
     many were untouched because every tag was already present
     (``skipped_count``).
     """
 
     outcome: Literal["ok"] = "ok"
-    conversation_count: int
+    session_count: int
     tag_count: int
     affected_count: int
     skipped_count: int
 
 
-class ConversationDetailResponse(SurfacePayloadModel):
-    """Shared response envelope for a single conversation detail."""
+class SessionDetailResponse(SurfacePayloadModel):
+    """Shared response envelope for a single session detail."""
 
-    conversation: ConversationDetailPayload
+    session: SessionDetailPayload
 
 
 class FacetTimeRange(SurfacePayloadModel):
@@ -1136,34 +1131,33 @@ class FacetTimeRange(SurfacePayloadModel):
 class FacetBucketsPayload(SurfacePayloadModel):
     """Bucket counts for one facet scope (scoped or global).
 
-    Carries the same shape as the legacy top-level facet fields on
+    Carries the same shape as the top-level facet fields on
     :class:`FacetsResponse` so a reader can render scoped and global
     side by side without having to interpret ``scoped_to_query``.
     See #1269 (slice D of #873).
     """
 
-    providers: dict[str, int] = Field(default_factory=dict)
+    origins: dict[str, int] = Field(default_factory=dict)
     tags: dict[str, int] = Field(default_factory=dict)
     repos: dict[str, int] = Field(default_factory=dict)
     message_types: dict[str, int] = Field(default_factory=dict)
     action_types: dict[str, int] = Field(default_factory=dict)
     has_flags: dict[str, int] = Field(default_factory=dict)
-    total_conversations: int = 0
+    total_sessions: int = 0
     total_messages: int = 0
 
 
 class FacetsResponse(SurfacePayloadModel):
     """Shared facets response envelope with scope semantics.
 
-    Top-level fields (``providers``, ``tags`` etc.) carry the *active*
-    view — scoped when ``scoped_to_query`` is true, global otherwise —
-    and exist for backward compatibility with surfaces written before
-    #1269 landed.  Consumers that need both views read the explicit
-    :attr:`scoped` and :attr:`global_` payloads.
+    Top-level fields (``origins``, ``tags`` etc.) carry the *active*
+    view — scoped when ``scoped_to_query`` is true, global otherwise.
+    Consumers that need both views read the explicit :attr:`scoped` and
+    :attr:`global_` payloads.
     """
 
     scoped_to_query: bool = False
-    providers: dict[str, int] = Field(default_factory=dict)
+    origins: dict[str, int] = Field(default_factory=dict)
     tags: dict[str, int] = Field(default_factory=dict)
     repos: dict[str, int] = Field(default_factory=dict)
     cwd_prefixes: dict[str, int] = Field(default_factory=dict)
@@ -1171,7 +1165,7 @@ class FacetsResponse(SurfacePayloadModel):
     action_types: dict[str, int] = Field(default_factory=dict)
     has_flags: dict[str, int] = Field(default_factory=dict)
     time_range: FacetTimeRange | None = None
-    total_conversations: int = 0
+    total_sessions: int = 0
     total_messages: int = 0
     # #1269: scoped/global pair plus optional IDF weighting. The global
     # field is named ``global_`` in Python (``global`` is a reserved word)
@@ -1228,7 +1222,7 @@ class ContextPreambleSession(SurfacePayloadModel):
     date: str | None = None
     terminal_state: str | None = None
     summary: str | None = None
-    provider: str | None = None
+    origin: str | None = None
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -1279,10 +1273,10 @@ class MutationResultPayload(SurfacePayloadModel):
     status: str
     """``ok``, ``deleted``, ``not_found``, ``unchanged``, or ``partial``."""
 
-    conversation_id: str | None = None
+    session_id: str | None = None
     detail: str | None = None
     """Machine-readable detail: ``already_present``, ``tag_not_present``,
-    ``key_not_found``, ``value_unchanged``, ``conversation_not_found``."""
+    ``key_not_found``, ``value_unchanged``, ``session_not_found``."""
 
     outcome: str | None = None
     """Tag idempotency outcome: ``added``, ``no_op``, ``removed``, or ``not_present``."""
@@ -1291,7 +1285,7 @@ class MutationResultPayload(SurfacePayloadModel):
     skipped_count: int | None = None
     tag: str | None = None
     key: str | None = None
-    conversation_count: int | None = None
+    session_count: int | None = None
     tag_count: int | None = None
     applied_count: int | None = None
 
@@ -1315,17 +1309,21 @@ def _extract_cwd(provider_meta: dict[str, object] | None) -> str | None:
     return str(cwd) if cwd else None
 
 
-def _build_flags_from_conversation(conversation: object) -> ConversationFlagsPayload | None:
-    has_tool = bool(getattr(conversation, "has_tool_use", None))
-    has_thinking = bool(getattr(conversation, "has_thinking", None))
-    has_paste = bool(getattr(conversation, "has_paste", None))
+def _build_flags_from_session(session: object) -> SessionFlagsPayload | None:
+    has_tool = bool(getattr(session, "has_tool_use", None))
+    has_thinking = bool(getattr(session, "has_thinking", None))
+    has_paste = bool(getattr(session, "has_paste", None))
     if not has_tool and not has_thinking and not has_paste:
         return None
-    return ConversationFlagsPayload(has_tool_use=has_tool, has_thinking=has_thinking, has_paste=has_paste)
+    return SessionFlagsPayload(has_tool_use=has_tool, has_thinking=has_thinking, has_paste=has_paste)
 
 
 METADATA_KEY_MAX_LENGTH = 200
 """Centralized maximum length for user metadata keys."""
+
+
+class MetadataKeyValidationError(ValueError):
+    """Raised when a user metadata key fails the centralized validation rules."""
 
 
 def validate_metadata_key(key: object) -> str | None:
@@ -1344,23 +1342,23 @@ def validate_metadata_key(key: object) -> str | None:
 
 __all__ = [
     "BulkTagMutationResult",
-    "ConversationDetailPayload",
-    "ConversationDetailResponse",
-    "ConversationFlagsPayload",
-    "ConversationListResponse",
-    "ConversationListRowPayload",
-    "ConversationMessagePayload",
+    "SessionDetailPayload",
+    "SessionDetailResponse",
+    "SessionFlagsPayload",
+    "SessionListResponse",
+    "SessionListRowPayload",
+    "SessionMessagePayload",
     "ContextPreamble",
     "ContextPreambleBlackboardNote",
     "ContextPreambleIssue",
     "ContextPreambleLineage",
     "ContextPreambleProjectState",
     "ContextPreambleSession",
-    "ConversationNeighborCandidatePayload",
-    "ConversationNeighborReasonPayload",
-    "ConversationSearchHitPayload",
-    "ConversationSearchMatchPayload",
-    "ConversationSummaryPayload",
+    "SessionNeighborCandidatePayload",
+    "SessionNeighborReasonPayload",
+    "SessionSearchHitPayload",
+    "SessionSearchMatchPayload",
+    "SessionSummaryPayload",
     "FacetBucketsPayload",
     "FacetTimeRange",
     "FacetsResponse",
@@ -1369,10 +1367,11 @@ __all__ = [
     "MachineSuccessEnvelope",
     "MachineSuccessPayload",
     "METADATA_KEY_MAX_LENGTH",
+    "MetadataKeyValidationError",
     "MetadataMutationOutcome",
     "MetadataMutationResult",
-    "DeleteConversationOutcome",
-    "DeleteConversationResult",
+    "DeleteSessionOutcome",
+    "DeleteSessionResult",
     "MutationResultPayload",
     "QueryErrorPayload",
     "QueryMissDiagnosticsPayload",
@@ -1397,7 +1396,7 @@ __all__ = [
     "model_json_document",
     "normalize_role",
     "reader_anchor",
-    "reader_conversation_actions",
+    "reader_session_actions",
     "reader_message_actions",
     "search_cursor_lane_matches_request",
     "serialize_surface_payload",

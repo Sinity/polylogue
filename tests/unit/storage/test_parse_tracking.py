@@ -17,8 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage.raw.models import RawConversationStateUpdate
-from polylogue.storage.runtime import RawConversationRecord
+from polylogue.storage.raw.models import RawSessionStateUpdate
+from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.schema import (
     SCHEMA_VERSION,
@@ -37,7 +37,7 @@ class TestMarkRawParsed:
         return SQLiteBackend(db_path=tmp_path / "test.db")
 
     async def _save_raw(self, backend: SQLiteBackend, raw_id: str = "test-raw") -> None:
-        record = RawConversationRecord(
+        record = RawSessionRecord(
             raw_id=raw_id,
             source_name="test",
             source_path="/test.json",
@@ -45,14 +45,14 @@ class TestMarkRawParsed:
             acquired_at="2026-01-01T00:00:00Z",
             file_mtime="2026-01-01T00:00:00Z",
         )
-        await backend.save_raw_conversation(record)
+        await backend.save_raw_session(record)
 
     async def test_mark_success(self, backend: SQLiteBackend) -> None:
         """Marking as parsed sets parsed_at and clears parse_error."""
         await self._save_raw(backend)
         await backend.mark_raw_parsed("test-raw", payload_provider="chatgpt")
 
-        rec = await backend.get_raw_conversation("test-raw")
+        rec = await backend.get_raw_session("test-raw")
         assert rec is not None
         assert rec.parsed_at is not None
         assert rec.parse_error is None
@@ -63,7 +63,7 @@ class TestMarkRawParsed:
         await self._save_raw(backend)
         await backend.mark_raw_parsed("test-raw", error="JSON decode error")
 
-        rec = await backend.get_raw_conversation("test-raw")
+        rec = await backend.get_raw_session("test-raw")
         assert rec is not None
         assert rec.parsed_at is None
         assert rec.parse_error == "JSON decode error"
@@ -74,7 +74,7 @@ class TestMarkRawParsed:
         await backend.mark_raw_parsed("test-raw", error="first attempt failed")
         await backend.mark_raw_parsed("test-raw")  # Success
 
-        rec = await backend.get_raw_conversation("test-raw")
+        rec = await backend.get_raw_session("test-raw")
         assert rec is not None
         assert rec.parsed_at is not None
         assert rec.parse_error is None
@@ -85,7 +85,7 @@ class TestMarkRawParsed:
         long_error = "x" * 5000
         await backend.mark_raw_parsed("test-raw", error=long_error)
 
-        rec = await backend.get_raw_conversation("test-raw")
+        rec = await backend.get_raw_session("test-raw")
         assert rec is not None
         assert rec.parse_error is not None
         assert len(rec.parse_error) == 2000
@@ -99,8 +99,8 @@ class TestUpdateRawState:
         return SQLiteBackend(db_path=tmp_path / "test.db")
 
     async def _save_raw(self, backend: SQLiteBackend, raw_id: str = "update-raw") -> None:
-        await backend.save_raw_conversation(
-            RawConversationRecord(
+        await backend.save_raw_session(
+            RawSessionRecord(
                 raw_id=raw_id,
                 source_name="test",
                 source_path="/test.json",
@@ -114,14 +114,14 @@ class TestUpdateRawState:
         await self._save_raw(backend)
         await backend.update_raw_state(
             "update-raw",
-            state=RawConversationStateUpdate(
+            state=RawSessionStateUpdate(
                 parsed_at="2026-01-02T00:00:00Z",
                 parse_error=None,
                 payload_provider="chatgpt",
             ),
         )
 
-        rec = await backend.get_raw_conversation("update-raw")
+        rec = await backend.get_raw_session("update-raw")
         assert rec is not None
         assert rec.parsed_at == "2026-01-02T00:00:00Z"
         assert rec.parse_error is None
@@ -132,7 +132,7 @@ class TestUpdateRawState:
         await self._save_raw(backend, raw_id="validate-update")
         await backend.update_raw_state(
             "validate-update",
-            state=RawConversationStateUpdate(
+            state=RawSessionStateUpdate(
                 validation_status="passed",
                 validation_error="",
                 validation_drift_count=3,
@@ -141,7 +141,7 @@ class TestUpdateRawState:
             ),
         )
 
-        rec = await backend.get_raw_conversation("validate-update")
+        rec = await backend.get_raw_session("validate-update")
         assert rec is not None
         assert rec.validated_at is not None
         assert rec.validation_status == "passed"
@@ -155,13 +155,13 @@ class TestUpdateRawState:
         long_error = "x" * 5000
         await backend.update_raw_state(
             "error-trunc",
-            state=RawConversationStateUpdate(
+            state=RawSessionStateUpdate(
                 parse_error=long_error,
                 validation_error=long_error,
             ),
         )
 
-        rec = await backend.get_raw_conversation("error-trunc")
+        rec = await backend.get_raw_session("error-trunc")
         assert rec is not None
         assert rec.parse_error is not None
         assert len(rec.parse_error) == 2000
@@ -177,7 +177,7 @@ class TestMarkRawValidated:
         return SQLiteBackend(db_path=tmp_path / "test.db")
 
     async def _save_raw(self, backend: SQLiteBackend, raw_id: str = "test-raw") -> None:
-        record = RawConversationRecord(
+        record = RawSessionRecord(
             raw_id=raw_id,
             source_name="test",
             source_path="/test.json",
@@ -185,7 +185,7 @@ class TestMarkRawValidated:
             acquired_at="2026-01-01T00:00:00Z",
             file_mtime="2026-01-01T00:00:00Z",
         )
-        await backend.save_raw_conversation(record)
+        await backend.save_raw_session(record)
 
     async def test_mark_passed(self, backend: SQLiteBackend) -> None:
         await self._save_raw(backend)
@@ -198,7 +198,7 @@ class TestMarkRawValidated:
             payload_provider="chatgpt",
         )
 
-        rec = await backend.get_raw_conversation("test-raw")
+        rec = await backend.get_raw_session("test-raw")
         assert rec is not None
         assert rec.validated_at is not None
         assert rec.validation_status == "passed"
@@ -219,7 +219,7 @@ class TestMarkRawValidated:
             mode="strict",
         )
 
-        rec = await backend.get_raw_conversation("test-raw")
+        rec = await backend.get_raw_session("test-raw")
         assert rec is not None
         assert rec.validation_status == "failed"
         assert rec.validation_error is not None
@@ -241,8 +241,8 @@ class TestGetKnownSourceMtimes:
     async def test_returns_mtime_mapping(self, backend: SQLiteBackend) -> None:
         """Returns {source_path: file_mtime} for records with mtimes."""
         for i in range(3):
-            await backend.save_raw_conversation(
-                RawConversationRecord(
+            await backend.save_raw_session(
+                RawSessionRecord(
                     raw_id=f"raw-{i}",
                     source_name="test",
                     source_path=f"/path/file{i}.json",
@@ -259,8 +259,8 @@ class TestGetKnownSourceMtimes:
 
     async def test_excludes_null_mtimes(self, backend: SQLiteBackend) -> None:
         """Records without file_mtime are excluded from the mapping."""
-        await backend.save_raw_conversation(
-            RawConversationRecord(
+        await backend.save_raw_session(
+            RawSessionRecord(
                 raw_id="with-mtime",
                 source_name="test",
                 source_path="/path/a.json",
@@ -269,8 +269,8 @@ class TestGetKnownSourceMtimes:
                 file_mtime="2026-01-01T00:00:00Z",
             )
         )
-        await backend.save_raw_conversation(
-            RawConversationRecord(
+        await backend.save_raw_session(
+            RawSessionRecord(
                 raw_id="no-mtime",
                 source_name="test",
                 source_path="/path/b.json",
@@ -306,8 +306,8 @@ class TestResetParseStatus:
             ("claude-ai", "inbox-a"),
         ]
         for i, (provider, source_name) in enumerate(rows):
-            await backend.save_raw_conversation(
-                RawConversationRecord(
+            await backend.save_raw_session(
+                RawSessionRecord(
                     raw_id=f"raw-{i}",
                     source_name=source_name,
                     payload_provider=Provider.from_string(provider),
@@ -327,7 +327,7 @@ class TestResetParseStatus:
 
         # Verify all records are now unparsed
         for i in range(3):
-            rec = await backend.get_raw_conversation(f"raw-{i}")
+            rec = await backend.get_raw_session(f"raw-{i}")
             assert rec is not None
             assert rec.parsed_at is None
 
@@ -338,12 +338,12 @@ class TestResetParseStatus:
         assert count == 1  # Only raw-0 was chatgpt and parsed
 
         # chatgpt record is reset
-        rec0 = await backend.get_raw_conversation("raw-0")
+        rec0 = await backend.get_raw_session("raw-0")
         assert rec0 is not None
         assert rec0.parsed_at is None
 
         # claude record is still parsed
-        rec2 = await backend.get_raw_conversation("raw-2")
+        rec2 = await backend.get_raw_session("raw-2")
         assert rec2 is not None
         assert rec2.parsed_at is not None
 
@@ -353,9 +353,9 @@ class TestResetParseStatus:
         count = await backend.reset_parse_status(source_names=["inbox-a"])
         assert count == 2
 
-        rec0 = await backend.get_raw_conversation("raw-0")
-        rec1 = await backend.get_raw_conversation("raw-1")
-        rec2 = await backend.get_raw_conversation("raw-2")
+        rec0 = await backend.get_raw_session("raw-0")
+        rec1 = await backend.get_raw_session("raw-1")
+        rec2 = await backend.get_raw_session("raw-2")
         assert rec0 is not None and rec1 is not None and rec2 is not None
         assert rec0.parsed_at is None
         assert rec1.parsed_at is None
@@ -363,8 +363,8 @@ class TestResetParseStatus:
 
     async def test_reset_returns_zero_when_nothing_to_reset(self, backend: SQLiteBackend) -> None:
         """Reset returns 0 when no records have parsed_at set."""
-        await backend.save_raw_conversation(
-            RawConversationRecord(
+        await backend.save_raw_session(
+            RawSessionRecord(
                 raw_id="unparsed",
                 source_name="test",
                 source_path="/test.json",
@@ -390,8 +390,8 @@ class TestResetValidationStatus:
             ("claude-ai", "inbox-a"),
         ]
         for i, (provider, source_name) in enumerate(rows):
-            await backend.save_raw_conversation(
-                RawConversationRecord(
+            await backend.save_raw_session(
+                RawSessionRecord(
                     raw_id=f"raw-{i}",
                     source_name=source_name,
                     payload_provider=Provider.from_string(provider),
@@ -422,13 +422,13 @@ class TestResetValidationStatus:
         assert count == 2
 
         for i in range(3):
-            rec = await backend.get_raw_conversation(f"raw-{i}")
+            rec = await backend.get_raw_session(f"raw-{i}")
             assert rec is not None
             assert rec.validated_at is None
             assert rec.validation_status is None
             assert rec.validation_error is None
-        rec0 = await backend.get_raw_conversation("raw-0")
-        rec2 = await backend.get_raw_conversation("raw-2")
+        rec0 = await backend.get_raw_session("raw-0")
+        rec2 = await backend.get_raw_session("raw-2")
         assert rec0 is not None and rec2 is not None
         assert rec0.payload_provider == "chatgpt"
         assert rec2.payload_provider == "claude-ai"
@@ -438,8 +438,8 @@ class TestResetValidationStatus:
         count = await backend.reset_validation_status(provider="chatgpt")
         assert count == 1
 
-        rec0 = await backend.get_raw_conversation("raw-0")
-        rec2 = await backend.get_raw_conversation("raw-2")
+        rec0 = await backend.get_raw_session("raw-0")
+        rec2 = await backend.get_raw_session("raw-2")
         assert rec0 is not None and rec2 is not None
         assert rec0.validation_status is None
         assert rec2.validation_status == "failed"
@@ -451,9 +451,9 @@ class TestResetValidationStatus:
         count = await backend.reset_validation_status(source_names=["inbox-a"])
         assert count == 2
 
-        rec0 = await backend.get_raw_conversation("raw-0")
-        rec1 = await backend.get_raw_conversation("raw-1")
-        rec2 = await backend.get_raw_conversation("raw-2")
+        rec0 = await backend.get_raw_session("raw-0")
+        rec1 = await backend.get_raw_session("raw-1")
+        rec2 = await backend.get_raw_session("raw-2")
         assert rec0 is not None and rec1 is not None and rec2 is not None
         assert rec0.validation_status is None
         assert rec1.validation_status is None
@@ -464,13 +464,13 @@ class TestResetValidationStatus:
 
 
 class TestMtimeSkip:
-    """Tests for mtime-based file skipping in iter_source_conversations_with_raw."""
+    """Tests for mtime-based file skipping in iter_source_sessions_with_raw."""
 
     def test_unchanged_file_skipped(self, tmp_path: Path) -> None:
         """Files with matching mtime in known_mtimes are skipped."""
         from polylogue.config import Source
         from polylogue.sources.cursor import _get_file_mtime
-        from polylogue.sources.source_parsing import iter_source_conversations_with_raw
+        from polylogue.sources.source_parsing import iter_source_sessions_with_raw
 
         # Create a test JSON file
         test_file = tmp_path / "test.json"
@@ -480,8 +480,8 @@ class TestMtimeSkip:
 
         source = Source(name="test", path=tmp_path)
 
-        # First pass: capture all conversations (no known_mtimes)
-        results_first = list(iter_source_conversations_with_raw(source, capture_raw=True))
+        # First pass: capture all sessions (no known_mtimes)
+        results_first = list(iter_source_sessions_with_raw(source, capture_raw=True))
         assert len(results_first) > 0
 
         # Get the actual mtime
@@ -491,7 +491,7 @@ class TestMtimeSkip:
 
         # Second pass with known_mtimes: file should be skipped
         results_second = list(
-            iter_source_conversations_with_raw(
+            iter_source_sessions_with_raw(
                 source,
                 capture_raw=True,
                 known_mtimes=known_mtimes,
@@ -502,7 +502,7 @@ class TestMtimeSkip:
     def test_modified_file_not_skipped(self, tmp_path: Path) -> None:
         """Files with different mtime are NOT skipped."""
         from polylogue.config import Source
-        from polylogue.sources.source_parsing import iter_source_conversations_with_raw
+        from polylogue.sources.source_parsing import iter_source_sessions_with_raw
 
         test_file = tmp_path / "test.json"
         test_file.write_text(
@@ -515,7 +515,7 @@ class TestMtimeSkip:
         known_mtimes = {str(test_file): "1999-01-01T00:00:00Z"}
 
         results = list(
-            iter_source_conversations_with_raw(
+            iter_source_sessions_with_raw(
                 source,
                 capture_raw=True,
                 known_mtimes=known_mtimes,
@@ -526,7 +526,7 @@ class TestMtimeSkip:
     def test_no_known_mtimes_processes_all(self, tmp_path: Path) -> None:
         """Without known_mtimes, all files are processed normally."""
         from polylogue.config import Source
-        from polylogue.sources.source_parsing import iter_source_conversations_with_raw
+        from polylogue.sources.source_parsing import iter_source_sessions_with_raw
 
         test_file = tmp_path / "test.json"
         test_file.write_text(
@@ -536,7 +536,7 @@ class TestMtimeSkip:
         source = Source(name="test", path=tmp_path)
 
         results = list(
-            iter_source_conversations_with_raw(
+            iter_source_sessions_with_raw(
                 source,
                 capture_raw=True,
                 known_mtimes=None,
@@ -558,7 +558,7 @@ class TestFreshSchema:
         conn.row_factory = sqlite3.Row
         _ensure_schema(conn)
 
-        cursor = conn.execute("PRAGMA table_info(raw_conversations)")
+        cursor = conn.execute("PRAGMA table_info(raw_sessions)")
         columns = {row[1] for row in cursor.fetchall()}
         assert "parsed_at" in columns
         assert "parse_error" in columns
@@ -571,7 +571,7 @@ class TestFreshSchema:
         msg_columns = {row[1] for row in cursor.fetchall()}
         assert "sort_key" in msg_columns
 
-        cursor = conn.execute("PRAGMA table_info(conversations)")
+        cursor = conn.execute("PRAGMA table_info(sessions)")
         conv_columns = {row[1] for row in cursor.fetchall()}
         assert "sort_key" in conv_columns
 
@@ -581,7 +581,7 @@ class TestFreshSchema:
         conn.close()
 
     def test_fresh_db_has_all_indices(self, tmp_path: Path) -> None:
-        """A fresh database has all expected indices from the v1 schema."""
+        """A fresh database has all expected indices from the archive schema."""
         db_path = tmp_path / "fresh.db"
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
@@ -590,23 +590,23 @@ class TestFreshSchema:
         cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
         indices = {row[0] for row in cursor.fetchall()}
 
-        # raw_conversations indices
+        # raw_sessions indices
         assert "idx_raw_conv_source_mtime" in indices
         assert "idx_raw_conv_source_path_raw_id" in indices
         assert "idx_raw_conv_parse_ready" in indices
         assert "idx_raw_conv_payload_provider" in indices
 
-        # conversations indices
-        assert "idx_conversations_content_hash" in indices
-        assert "idx_conversations_sortkey" in indices
-        assert "idx_conversations_raw_id" in indices
+        # sessions indices
+        assert "idx_sessions_content_hash" in indices
+        assert "idx_sessions_sortkey" in indices
+        assert "idx_sessions_raw_id" in indices
 
         # messages indices
-        assert "idx_messages_conversation_sortkey" in indices
+        assert "idx_messages_session_sortkey" in indices
 
         # content_blocks indices
         assert "idx_content_blocks_message" in indices
-        assert "idx_content_blocks_conversation" in indices
+        assert "idx_content_blocks_session" in indices
         assert "idx_content_blocks_conv_type" in indices
 
         conn.close()

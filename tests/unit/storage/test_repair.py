@@ -67,7 +67,7 @@ def test_action_event_repair_detail_reports_missing_and_stale_rows() -> None:
 
     assert repair_mod.action_event_repair_count(statuses) == 26
     assert repair_mod._action_event_repair_detail(statuses) == (
-        "Action-event read model pending (12 missing conversations, 5 stale action-event rows, 9 pending action-event FTS rows)"
+        "Action-event read model pending (12 missing sessions, 5 stale action-event rows, 9 pending action-event FTS rows)"
     )
 
 
@@ -133,20 +133,20 @@ def test_preview_counts_from_archive_debt_include_healthy_preview_targets_only()
             detail="clean",
             maintenance_target="orphaned_messages",
         ),
-        "empty_conversations": repair_mod.ArchiveDebtStatus(
-            name="empty_conversations",
-            category=repair_mod._maintenance_target_spec("empty_conversations").category,
+        "empty_sessions": repair_mod.ArchiveDebtStatus(
+            name="empty_sessions",
+            category=repair_mod._maintenance_target_spec("empty_sessions").category,
             destructive=True,
             issue_count=4,
             detail="needs cleanup",
-            maintenance_target="empty_conversations",
+            maintenance_target="empty_sessions",
         ),
     }
 
     assert repair_mod.preview_counts_from_archive_debt(statuses) == {
         "session_insights": 0,
         "dangling_fts": 0,
-        "empty_conversations": 4,
+        "empty_sessions": 4,
     }
 
 
@@ -162,9 +162,7 @@ def test_probe_only_archive_debt_skips_large_message_scans(monkeypatch: pytest.M
     }
     monkeypatch.setattr(repair_mod, "_table_has_more_than", lambda *_args: True)
     monkeypatch.setattr(repair_mod, "count_orphaned_messages_sync", lambda _conn: (_ for _ in ()).throw(AssertionError))
-    monkeypatch.setattr(
-        repair_mod, "count_empty_conversations_sync", lambda _conn: (_ for _ in ()).throw(AssertionError)
-    )
+    monkeypatch.setattr(repair_mod, "count_empty_sessions_sync", lambda _conn: (_ for _ in ()).throw(AssertionError))
     monkeypatch.setattr(
         repair_mod, "count_unclassified_message_type_sync", lambda _conn: (_ for _ in ()).throw(AssertionError)
     )
@@ -175,7 +173,7 @@ def test_probe_only_archive_debt_skips_large_message_scans(monkeypatch: pytest.M
     )
 
     assert debt["orphaned_messages"].skipped is True
-    assert debt["empty_conversations"].skipped is True
+    assert debt["empty_sessions"].skipped is True
     assert debt["message_type_backfill"].skipped is True
     assert debt["orphaned_attachments"].skipped is False
 
@@ -247,8 +245,8 @@ def test_repair_session_insights_uses_stale_profile_candidates(monkeypatch: pyte
     )
     statuses = iter((stale_status, _ready_session_insight_status()))
 
-    def fake_rebuild(_conn: FakeConn, *, conversation_ids: tuple[str, ...] | None, **_kwargs: object) -> Any:
-        calls.append(("rebuild", conversation_ids))
+    def fake_rebuild(_conn: FakeConn, *, session_ids: tuple[str, ...] | None, **_kwargs: object) -> Any:
+        calls.append(("rebuild", session_ids))
         return SessionInsightCounts(profiles=2, work_events=2)
 
     monkeypatch.setattr("polylogue.storage.sqlite.connection.connection_context", fake_connection_context)
@@ -415,8 +413,8 @@ def test_repair_action_event_read_model_rebuilds_fts_when_stale_extra_rows(
         if "rebuild_fts" in calls:
             return {
                 "ready": True,
-                "valid_source_conversation_count": 1,
-                "materialized_conversation_count": 1,
+                "valid_source_session_count": 1,
+                "materialized_session_count": 1,
                 "count": 1,
                 "action_fts_count": 1,
                 "stale_count": 0,
@@ -425,8 +423,8 @@ def test_repair_action_event_read_model_rebuilds_fts_when_stale_extra_rows(
             }
         return {
             "ready": False,
-            "valid_source_conversation_count": 1,
-            "materialized_conversation_count": 1,
+            "valid_source_session_count": 1,
+            "materialized_session_count": 1,
             "count": 1,
             "action_fts_count": 2,
             "stale_count": 0,
@@ -445,7 +443,7 @@ def test_repair_action_event_read_model_rebuilds_fts_when_stale_extra_rows(
     monkeypatch.setattr(
         "polylogue.storage.action_events.rebuild_runtime.valid_action_event_source_ids_sync",
         lambda _conn: (_ for _ in ()).throw(
-            AssertionError("full FTS rebuild should not enumerate per-conversation targets")
+            AssertionError("full FTS rebuild should not enumerate per-session targets")
         ),
     )
     monkeypatch.setattr(
@@ -460,3 +458,24 @@ def test_repair_action_event_read_model_rebuilds_fts_when_stale_extra_rows(
 
     assert result.success is True
     assert "rebuild_fts" in calls
+
+
+def test_repair_action_event_read_model_is_archive_noop(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.connection.connection_context",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy repair path must not open")),
+    )
+
+    result = repair_mod.repair_action_event_read_model(_config(tmp_path), dry_run=False)
+    preview = repair_mod.repair_action_event_read_model(_config(tmp_path), dry_run=True)
+
+    assert result.success is True
+    assert result.repaired_count == 0
+    assert "retired for archives" in result.detail
+    assert preview.success is True
+    assert preview.repaired_count == 0
+    assert preview.detail.startswith("Would: action-event materialized read model retired")

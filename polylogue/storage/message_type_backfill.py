@@ -47,6 +47,23 @@ class BackfillResult:
     detail: str = ""
 
 
+# Per-message text reconstruction. The ``messages`` table
+# has no ``text`` column; message text lives in ``blocks`` (one row per
+# content block). The classifier operates on the message's prose, which we
+# reconstruct by concatenating the text of its blocks in position order.
+_MESSAGE_TEXT_BY_ID_SQL = """
+    SELECT m.message_id AS message_id,
+           GROUP_CONCAT(b.text, '
+') AS text
+    FROM messages m
+    JOIN blocks b
+      ON b.message_id = m.message_id
+     AND b.text IS NOT NULL
+    WHERE m.message_type = 'message'
+    GROUP BY m.message_id
+"""
+
+
 def count_unclassified_message_type_sync(conn: sqlite3.Connection) -> int:
     """Count default-``message`` rows whose text actually carries a #839
     context or protocol marker.
@@ -61,14 +78,15 @@ def count_unclassified_message_type_sync(conn: sqlite3.Connection) -> int:
     would flip to ``context`` or ``protocol``. This is the preview count
     for the #839 message_type backfill and matches ``repaired_count``
     after the backfill runs.
+
+    Message text is reconstructed from the ``blocks`` table because the
+    ``messages`` table carries no ``text`` column.
     """
     from polylogue.archive.message.artifacts import classify_text_message_type
 
     candidates = 0
-    for (text,) in conn.execute(
-        "SELECT text FROM messages WHERE message_type = 'message' AND text IS NOT NULL AND text != ''"
-    ):
-        if classify_text_message_type(text) is not None:
+    for _message_id, text in conn.execute(_MESSAGE_TEXT_BY_ID_SQL):
+        if text and classify_text_message_type(text) is not None:
             candidates += 1
     return candidates
 
@@ -90,9 +108,10 @@ def count_messages_by_type_sync(conn: sqlite3.Connection) -> dict[str, int]:
 def _backfill_pass(conn: sqlite3.Connection) -> int:
     """Walk every default-``message`` row and rewrite via the classifier.
 
-    Uses rowid-keyset pagination because in-place UPDATE shrinks the
-    WHERE-matching population, which would let OFFSET-based pagination
-    skip rows on each batch.
+    Message text is reconstructed from the archive ``blocks`` table (the
+    archive ``messages`` table has no ``text`` column). Candidates are
+    grouped per ``message_id`` and reclassified into ``context`` or
+    ``protocol`` with batched UPDATEs keyed on ``message_id``.
 
     Returns the exact number of rows the classifier reclassified, as
     reported by ``cursor.rowcount`` on each UPDATE (not
@@ -102,44 +121,26 @@ def _backfill_pass(conn: sqlite3.Connection) -> int:
     from polylogue.archive.message.artifacts import classify_text_message_type
     from polylogue.archive.message.types import MessageType
 
+    context_ids: list[str] = []
+    protocol_ids: list[str] = []
+    for message_id, text in conn.execute(_MESSAGE_TEXT_BY_ID_SQL):
+        if not text:
+            continue
+        mt = classify_text_message_type(text)
+        if mt == MessageType.CONTEXT:
+            context_ids.append(str(message_id))
+        elif mt == MessageType.PROTOCOL:
+            protocol_ids.append(str(message_id))
+
     updated = 0
     batch_size = 1000
-    last_rowid = 0
-    while True:
-        rows = conn.execute(
-            "SELECT rowid, text FROM messages"
-            " WHERE message_type = 'message'"
-            "  AND text IS NOT NULL AND text != ''"
-            "  AND rowid > ?"
-            " ORDER BY rowid"
-            " LIMIT ?",
-            (last_rowid, batch_size),
-        ).fetchall()
-        if not rows:
-            break
-
-        context_ids: list[int] = []
-        protocol_ids: list[int] = []
-        for rowid_val, text in rows:
-            last_rowid = rowid_val
-            mt = classify_text_message_type(text)
-            if mt == MessageType.CONTEXT:
-                context_ids.append(rowid_val)
-            elif mt == MessageType.PROTOCOL:
-                protocol_ids.append(rowid_val)
-
-        if context_ids:
-            placeholders = ",".join("?" * len(context_ids))
+    for target, ids in (("context", context_ids), ("protocol", protocol_ids)):
+        for start in range(0, len(ids), batch_size):
+            chunk = ids[start : start + batch_size]
+            placeholders = ",".join("?" * len(chunk))
             result = conn.execute(
-                f"UPDATE messages SET message_type = 'context' WHERE rowid IN ({placeholders})",
-                context_ids,
-            )
-            updated += result.rowcount
-        if protocol_ids:
-            placeholders = ",".join("?" * len(protocol_ids))
-            result = conn.execute(
-                f"UPDATE messages SET message_type = 'protocol' WHERE rowid IN ({placeholders})",
-                protocol_ids,
+                f"UPDATE messages SET message_type = ? WHERE message_id IN ({placeholders})",
+                (target, *chunk),
             )
             updated += result.rowcount
     return updated
@@ -180,13 +181,17 @@ def run_backfill(_config: Config, *, dry_run: bool = False) -> BackfillResult:
     Idempotent: rows already classified are skipped by the WHERE clause
     on the next pass.
     """
-    from polylogue.storage.sqlite.connection import connection_context
+    from contextlib import closing
+
+    from polylogue.paths import active_index_db_path
+    from polylogue.storage.sqlite.connection_profile import open_connection
 
     spec = build_maintenance_target_catalog().resolve_name(_TARGET_NAME)
     assert spec is not None, "message_type_backfill must be registered in the catalog"
 
     try:
-        with connection_context(None) as conn:
+        with closing(open_connection(active_index_db_path())) as conn:
+            conn.row_factory = sqlite3.Row
             if dry_run:
                 return preview_backfill(count=count_unclassified_message_type_sync(conn))
 

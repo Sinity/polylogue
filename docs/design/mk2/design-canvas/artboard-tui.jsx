@@ -29,7 +29,7 @@ const TUICockpit = () => {
         {/* capture */}
         <Panel title="CAPTURE" k="3">
           <KV k="receiver"    v={<><StateDot state="ok" /> 127.0.0.1:8765</>} />
-          <KV k="extension"   v={<><StateDot state="ok" /> connected · v1.4</>} />
+          <KV k="extension"   v={<><StateDot state="ok" /> connected · archive.4</>} />
           <KV k="scope"       v="claude.ai · chatgpt.com" />
           <KV k="last"        v={<Mono>12:04:08 · 2c41ed09</Mono>} />
           <KV k="privacy"     v={<><StateDot state="ok" /> page allow-list · no cookies</>} />
@@ -52,7 +52,7 @@ const TUICockpit = () => {
           <Diag state="ok"    label="archive integrity"   detail="sha256 manifest match" />
           <Diag state="warn"  label="fts trigger drift"   detail="UPDATE OF body backfill needed" />
           <Diag state="stale" label="derived:costs"        detail="last roll-up 14m ago" />
-          <Diag state="ok"    label="schema migrations"   detail="v17 · 0 pending" />
+          <Diag state="ok"    label="schema rebuild"      detail="current · ready" />
           <Diag state="ok"    label="receiver reachable"  detail="127.0.0.1:8765 200 OK" />
         </Panel>
 

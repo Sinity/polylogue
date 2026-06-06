@@ -45,7 +45,7 @@ def _seeded_archive_counts(db_path: Path) -> dict[str, int]:
     counts: dict[str, int] = {}
     with closing(sqlite3.connect(db_path)) as conn:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        for table in ("raw_conversations", "conversations", "messages"):
+        for table in ("raw_sessions", "sessions", "messages"):
             if table in tables:
                 counts[table] = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
     return counts

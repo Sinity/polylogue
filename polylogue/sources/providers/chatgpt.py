@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from .chatgpt_conversation_models import ChatGPTConversation, ChatGPTNode
 from .chatgpt_message_models import ChatGPTAuthor, ChatGPTContent, ChatGPTMessage
+from .chatgpt_session_models import ChatGPTNode, ChatGPTSession
 
 __all__ = [
     "ChatGPTAuthor",
     "ChatGPTContent",
-    "ChatGPTConversation",
+    "ChatGPTSession",
     "ChatGPTMessage",
     "ChatGPTNode",
 ]

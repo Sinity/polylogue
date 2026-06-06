@@ -8,13 +8,13 @@ from dataclasses import dataclass
 
 @dataclass
 class SearchHit:
-    conversation_id: str
+    session_id: str
     source_name: str | None
     message_id: str
     title: str | None
     timestamp: str | None
     snippet: str
-    conversation_url: str
+    session_url: str
 
 
 @dataclass
@@ -23,17 +23,17 @@ class SearchResult:
 
 
 @dataclass(frozen=True)
-class ConversationSearchIdHit:
-    conversation_id: str
+class SessionSearchIdHit:
+    session_id: str
     rank: int
     score: float | None = None
 
 
 @dataclass(frozen=True)
-class ConversationSearchEvidenceRow:
+class SessionSearchEvidenceRow:
     """Storage-level ranked evidence row before archive summary hydration."""
 
-    conversation_id: str
+    session_id: str
     rank: int
     score: float | None = None
     message_id: str | None = None
@@ -52,26 +52,26 @@ class ConversationSearchEvidenceRow:
 
 
 @dataclass(frozen=True)
-class ConversationSearchResult:
-    hits: list[ConversationSearchIdHit]
+class SessionSearchResult:
+    hits: list[SessionSearchIdHit]
 
     @classmethod
-    def from_ids(cls, conversation_ids: Sequence[str]) -> ConversationSearchResult:
+    def from_ids(cls, session_ids: Sequence[str]) -> SessionSearchResult:
         return cls(
             hits=[
-                ConversationSearchIdHit(conversation_id=conversation_id, rank=rank)
-                for rank, conversation_id in enumerate(conversation_ids, start=1)
+                SessionSearchIdHit(session_id=session_id, rank=rank)
+                for rank, session_id in enumerate(session_ids, start=1)
             ]
         )
 
-    def conversation_ids(self) -> list[str]:
-        return [hit.conversation_id for hit in self.hits]
+    def session_ids(self) -> list[str]:
+        return [hit.session_id for hit in self.hits]
 
 
 __all__ = [
-    "ConversationSearchEvidenceRow",
-    "ConversationSearchIdHit",
-    "ConversationSearchResult",
+    "SessionSearchEvidenceRow",
+    "SessionSearchIdHit",
+    "SessionSearchResult",
     "SearchHit",
     "SearchResult",
 ]

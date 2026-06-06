@@ -8,25 +8,25 @@ from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync, r
 from polylogue.storage.fts.sql import (
     ACTION_FTS_REBUILD_SQL,
     delete_action_rows_sql,
-    delete_conversation_rows_sql,
+    delete_session_rows_sql,
     insert_action_rows_sql,
-    insert_conversation_rows_sql,
     insert_missing_action_rows_sql,
+    insert_session_rows_sql,
 )
-from tests.infra.storage_records import make_conversation, make_message, store_records
+from tests.infra.storage_records import make_message, make_session, store_records
 
 
 def test_incremental_fts_repair_deletes_via_base_rowid(test_conn: sqlite3.Connection) -> None:
-    """Incremental FTS repair must not filter FTS5 virtual tables by conversation_id."""
-    message_delete_sql = " ".join(delete_conversation_rows_sql(1).split())
+    """Incremental FTS repair must not filter FTS5 virtual tables by session_id."""
+    message_delete_sql = " ".join(delete_session_rows_sql(1).split())
     action_delete_sql = " ".join(delete_action_rows_sql(1).split())
 
     assert "DELETE FROM messages_fts WHERE rowid IN" in message_delete_sql
-    assert "DELETE FROM messages_fts WHERE conversation_id" not in message_delete_sql
-    message_insert_sql = " ".join(insert_conversation_rows_sql(1).split())
-    assert "SELECT DISTINCT conversation_id FROM raw_target_conversations" in message_insert_sql
+    assert "DELETE FROM messages_fts WHERE session_id" not in message_delete_sql
+    message_insert_sql = " ".join(insert_session_rows_sql(1).split())
+    assert "SELECT DISTINCT session_id FROM raw_target_sessions" in message_insert_sql
     assert "DELETE FROM action_events_fts WHERE rowid IN" in action_delete_sql
-    assert "DELETE FROM action_events_fts WHERE conversation_id" not in action_delete_sql
+    assert "DELETE FROM action_events_fts WHERE session_id" not in action_delete_sql
     assert "INSERT INTO action_events_fts (rowid," in " ".join(insert_action_rows_sql(1).split())
     missing_action_sql = " ".join(insert_missing_action_rows_sql(1).split())
     assert "LEFT JOIN action_events_fts_docsize" in missing_action_sql
@@ -36,16 +36,16 @@ def test_incremental_fts_repair_deletes_via_base_rowid(test_conn: sqlite3.Connec
     assert "VALUES('rebuild')" in " ".join(ACTION_FTS_REBUILD_SQL.split())
 
     plan = "\n".join(
-        row[3] for row in test_conn.execute(f"EXPLAIN QUERY PLAN {delete_conversation_rows_sql(1)}", ("conv1",))
+        row[3] for row in test_conn.execute(f"EXPLAIN QUERY PLAN {delete_session_rows_sql(1)}", ("conv1",))
     )
     assert "SEARCH messages USING" in plan
 
 
-def test_message_fts_repair_dedupes_duplicate_conversation_ids(test_conn: sqlite3.Connection) -> None:
+def test_message_fts_repair_dedupes_duplicate_session_ids(test_conn: sqlite3.Connection) -> None:
     restore_fts_triggers_sync(test_conn)
-    conv = make_conversation("conv-message-repair-dupe", title="Message repair")
+    conv = make_session("conv-message-repair-dupe", title="Message repair")
     msg = make_message("msg-message-repair-dupe", "conv-message-repair-dupe", text="repair duplicate needle")
-    store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
+    store_records(session=conv, messages=[msg], attachments=[], conn=test_conn)
 
     repair_message_fts_index_sync(
         test_conn,
@@ -69,14 +69,14 @@ def test_message_fts_repair_dedupes_duplicate_conversation_ids(test_conn: sqlite
 def test_action_fts_trigger_rowids_track_action_event_rowids(test_conn: sqlite3.Connection) -> None:
     """Action-event FTS triggers use base-table rowids so rowid deletes are targeted."""
     restore_fts_triggers_sync(test_conn)
-    conv = make_conversation("conv-action-rowid", title="Action rowid")
+    conv = make_session("conv-action-rowid", title="Action rowid")
     msg = make_message("msg-action-rowid", "conv-action-rowid", text="Ran command")
-    store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
+    store_records(session=conv, messages=[msg], attachments=[], conn=test_conn)
 
     test_conn.execute(
         """
         INSERT INTO action_events (
-            event_id, conversation_id, message_id, sequence_index,
+            event_id, session_id, message_id, sequence_index,
             action_kind, normalized_tool_name, search_text
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
         """,

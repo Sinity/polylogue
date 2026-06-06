@@ -2,13 +2,13 @@
 
 These tests pin the on-disk semantics of Gemini AI Studio's ``chunkedPrompt``
 export shape -- what the persisted Google Drive JSON looks like once a
-multi-turn conversation has been realized. They are explicitly contract-shaped:
+multi-turn session has been realized. They are explicitly contract-shaped:
 if Google changes the chunk schema, executableCode / codeExecutionResult key
 tokens, or per-chunk role/timestamp semantics, these tests should fail with a
 precise reason naming the broken field.
 
 Catalog payloads live under ``tests/data/gemini_chunked_prompt/`` and cover
-three realistic conversation shapes:
+three realistic session shapes:
 
 - ``text_only_prompt.json`` -- alternating user/model text turns with token
   counts and finish reasons.
@@ -31,7 +31,7 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.json import JSONDocument
-from polylogue.sources.parsers.base import ParsedConversation
+from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.drive import looks_like as _looks_like_impl
 from polylogue.sources.parsers.drive import parse_chunked_prompt
 from polylogue.types import Provider
@@ -56,7 +56,7 @@ def _load_catalog(name: str) -> JSONDocument:
     return cast(JSONDocument, payload)
 
 
-def _parse(payload: JSONDocument, fallback_id: str = "fallback") -> ParsedConversation:
+def _parse(payload: JSONDocument, fallback_id: str = "fallback") -> ParsedSession:
     return parse_chunked_prompt(Provider.GEMINI, payload, fallback_id)
 
 
@@ -89,9 +89,9 @@ def test_catalog_payloads_are_detected_as_gemini(fixture: str) -> None:
 @pytest.mark.parametrize("fixture", CATALOG_FIXTURES)
 def test_catalog_payloads_parse_without_raising(fixture: str) -> None:
     payload = _load_catalog(fixture)
-    conversation = _parse(payload, fixture)
-    assert conversation.source_name == Provider.GEMINI
-    assert conversation.messages, f"{fixture} produced zero messages"
+    session = _parse(payload, fixture)
+    assert session.source_name == Provider.GEMINI
+    assert session.messages, f"{fixture} produced zero messages"
 
 
 # ---------------------------------------------------------------------------
@@ -110,15 +110,15 @@ class TestChunkedPromptEnvelopeShape:
 
     def test_each_text_chunk_becomes_its_own_message(self) -> None:
         payload = _load_catalog("text_only_prompt.json")
-        conversation = _parse(payload, "text_only_prompt")
-        assert len(conversation.messages) == 4
-        assert [m.role for m in conversation.messages] == [
+        session = _parse(payload, "text_only_prompt")
+        assert len(session.messages) == 4
+        assert [m.role for m in session.messages] == [
             Role.USER,
             Role.ASSISTANT,
             Role.USER,
             Role.ASSISTANT,
         ]
-        assert [m.text for m in conversation.messages] == [
+        assert [m.text for m in session.messages] == [
             "What is the capital of France?",
             "The capital of France is Paris.",
             "And of Germany?",
@@ -139,8 +139,8 @@ class TestChunkedPromptEnvelopeShape:
                 ]
             },
         }
-        conversation = _parse(payload, "no-role")
-        assert [m.text for m in conversation.messages] == ["kept"]
+        session = _parse(payload, "no-role")
+        assert [m.text for m in session.messages] == ["kept"]
 
     def test_empty_chunk_without_text_attachments_or_blocks_is_dropped(self) -> None:
         payload: JSONDocument = {
@@ -152,8 +152,8 @@ class TestChunkedPromptEnvelopeShape:
                 ]
             },
         }
-        conversation = _parse(payload, "empty")
-        assert [m.text for m in conversation.messages] == ["real reply"]
+        session = _parse(payload, "empty")
+        assert [m.text for m in session.messages] == ["real reply"]
 
     def test_chunks_top_level_fallback_is_honoured(self) -> None:
         """When ``chunkedPrompt`` is absent but a top-level ``chunks`` array
@@ -166,8 +166,8 @@ class TestChunkedPromptEnvelopeShape:
                 {"role": "model", "text": "fallback path"},
             ],
         }
-        conversation = _parse(payload, "top-level")
-        assert [m.text for m in conversation.messages] == [
+        session = _parse(payload, "top-level")
+        assert [m.text for m in session.messages] == [
             "top-level chunks",
             "fallback path",
         ]
@@ -179,9 +179,9 @@ class TestChunkedPromptEnvelopeShape:
             "id": "string-chunks",
             "chunkedPrompt": {"chunks": ["bare string", {"role": "user", "text": "kept"}]},
         }
-        conversation = _parse(payload, "string-chunks")
+        session = _parse(payload, "string-chunks")
         # String chunks have no role -> dropped; only the typed user chunk survives.
-        assert [m.text for m in conversation.messages] == ["kept"]
+        assert [m.text for m in session.messages] == ["kept"]
 
 
 # ---------------------------------------------------------------------------
@@ -201,8 +201,8 @@ class TestPerChunkContentBlocks:
 
     def test_thought_chunk_emits_thinking_block(self) -> None:
         payload = _load_catalog("code_execution_prompt.json")
-        conversation = _parse(payload, "code_execution_prompt")
-        thought_msgs = [m for m in conversation.messages if (m.provider_meta or {}).get("isThought")]
+        session = _parse(payload, "code_execution_prompt")
+        thought_msgs = [m for m in session.messages if (m.provider_meta or {}).get("isThought")]
         assert len(thought_msgs) == 1
         blocks = _meta_blocks(thought_msgs[0].provider_meta)
         assert [b["type"] for b in blocks] == ["thinking"]
@@ -210,20 +210,18 @@ class TestPerChunkContentBlocks:
 
     def test_executable_code_chunk_emits_code_block_with_source(self) -> None:
         payload = _load_catalog("code_execution_prompt.json")
-        conversation = _parse(payload, "code_execution_prompt")
-        code_msgs = [
-            m for m in conversation.messages if any(b.get("type") == "code" for b in _meta_blocks(m.provider_meta))
-        ]
+        session = _parse(payload, "code_execution_prompt")
+        code_msgs = [m for m in session.messages if any(b.get("type") == "code" for b in _meta_blocks(m.provider_meta))]
         assert len(code_msgs) == 1
         code_block = next(b for b in _meta_blocks(code_msgs[0].provider_meta) if b["type"] == "code")
         assert code_block["text"] == "print(2+2)"
 
     def test_code_execution_result_chunk_emits_tool_result_block(self) -> None:
         payload = _load_catalog("code_execution_prompt.json")
-        conversation = _parse(payload, "code_execution_prompt")
+        session = _parse(payload, "code_execution_prompt")
         result_blocks = [
             block
-            for m in conversation.messages
+            for m in session.messages
             for block in _meta_blocks(m.provider_meta)
             if block.get("type") == "tool_result"
         ]
@@ -235,8 +233,8 @@ class TestPerChunkContentBlocks:
 
     def test_text_chunk_emits_single_text_block(self) -> None:
         payload = _load_catalog("text_only_prompt.json")
-        conversation = _parse(payload, "text_only_prompt")
-        for message in conversation.messages:
+        session = _parse(payload, "text_only_prompt")
+        for message in session.messages:
             blocks = _meta_blocks(message.provider_meta)
             assert [b["type"] for b in blocks] == ["text"]
             assert blocks[0]["text"] == message.text
@@ -264,14 +262,14 @@ class TestMetadataRoundtrip:
     def test_raw_chunk_is_preserved_verbatim_under_provider_meta_raw(self) -> None:
         payload = _load_catalog("text_only_prompt.json")
         original_chunks = copy.deepcopy(cast(dict[str, Any], payload["chunkedPrompt"])["chunks"])
-        conversation = _parse(payload, "text_only_prompt")
-        observed_raw = [(m.provider_meta or {}).get("raw") for m in conversation.messages]
+        session = _parse(payload, "text_only_prompt")
+        observed_raw = [(m.provider_meta or {}).get("raw") for m in session.messages]
         assert observed_raw == original_chunks
 
     def test_token_count_and_finish_reason_surface_at_top_level(self) -> None:
         payload = _load_catalog("text_only_prompt.json")
-        conversation = _parse(payload, "text_only_prompt")
-        assistant_msgs = [m for m in conversation.messages if m.role == Role.ASSISTANT]
+        session = _parse(payload, "text_only_prompt")
+        assistant_msgs = [m for m in session.messages if m.role == Role.ASSISTANT]
         assert assistant_msgs
         first_meta = assistant_msgs[0].provider_meta or {}
         assert first_meta.get("tokenCount") == 8
@@ -279,8 +277,8 @@ class TestMetadataRoundtrip:
 
     def test_thinking_budget_and_is_thought_surface_at_top_level(self) -> None:
         payload = _load_catalog("code_execution_prompt.json")
-        conversation = _parse(payload, "code_execution_prompt")
-        thought_msgs = [m for m in conversation.messages if (m.provider_meta or {}).get("isThought")]
+        session = _parse(payload, "code_execution_prompt")
+        thought_msgs = [m for m in session.messages if (m.provider_meta or {}).get("isThought")]
         assert len(thought_msgs) == 1
         meta = thought_msgs[0].provider_meta or {}
         assert meta.get("isThought") is True
@@ -288,8 +286,8 @@ class TestMetadataRoundtrip:
 
     def test_safety_ratings_round_trip_into_provider_meta(self) -> None:
         payload = _load_catalog("multi_turn_prompt.json")
-        conversation = _parse(payload, "multi_turn_prompt")
-        rated = [m for m in conversation.messages if isinstance((m.provider_meta or {}).get("safetyRatings"), list)]
+        session = _parse(payload, "multi_turn_prompt")
+        rated = [m for m in session.messages if isinstance((m.provider_meta or {}).get("safetyRatings"), list)]
         assert len(rated) == 1
         ratings = (rated[0].provider_meta or {})["safetyRatings"]
         assert isinstance(ratings, list)
@@ -297,13 +295,13 @@ class TestMetadataRoundtrip:
 
     def test_executable_code_and_result_round_trip_into_provider_meta(self) -> None:
         payload = _load_catalog("code_execution_prompt.json")
-        conversation = _parse(payload, "code_execution_prompt")
+        session = _parse(payload, "code_execution_prompt")
         exec_meta = next(
-            (m.provider_meta or {}) for m in conversation.messages if (m.provider_meta or {}).get("executableCode")
+            (m.provider_meta or {}) for m in session.messages if (m.provider_meta or {}).get("executableCode")
         )
         assert exec_meta["executableCode"] == {"language": "PYTHON", "code": "print(2+2)"}
         result_meta = next(
-            (m.provider_meta or {}) for m in conversation.messages if (m.provider_meta or {}).get("codeExecutionResult")
+            (m.provider_meta or {}) for m in session.messages if (m.provider_meta or {}).get("codeExecutionResult")
         )
         assert result_meta["codeExecutionResult"] == {"outcome": "OUTCOME_OK", "output": "4\n"}
 
@@ -341,47 +339,47 @@ class TestMetadataRoundtrip:
 
 
 # ---------------------------------------------------------------------------
-# Conversation-level metadata: title, timestamps, fallback id
+# Session-level metadata: title, timestamps, fallback id
 # ---------------------------------------------------------------------------
 
 
-class TestConversationLevelMetadata:
-    """Pin the conversation envelope contract built around ``chunkedPrompt``."""
+class TestSessionLevelMetadata:
+    """Pin the session envelope contract built around ``chunkedPrompt``."""
 
     def test_title_prefers_title_field_with_imported_source_marker(self) -> None:
         payload = _load_catalog("text_only_prompt.json")
-        conversation = _parse(payload, "text_only_prompt")
-        assert conversation.title == "Capital trivia"
-        assert (conversation.provider_meta or {}).get("title_source") == "imported:title"
+        session = _parse(payload, "text_only_prompt")
+        assert session.title == "Capital trivia"
+        assert (session.provider_meta or {}).get("title_source") == "imported:title"
 
     def test_title_falls_back_to_display_name_when_title_absent(self) -> None:
         payload = _load_catalog("multi_turn_prompt.json")
-        conversation = _parse(payload, "multi_turn_prompt")
-        assert conversation.title == "Drive doc summary"
-        assert (conversation.provider_meta or {}).get("title_source") == "imported:displayName"
+        session = _parse(payload, "multi_turn_prompt")
+        assert session.title == "Drive doc summary"
+        assert (session.provider_meta or {}).get("title_source") == "imported:displayName"
 
     def test_title_falls_back_to_id_when_no_title_or_display_name(self) -> None:
         payload: JSONDocument = {
             "id": "no-title",
             "chunkedPrompt": {"chunks": [{"role": "user", "text": "hi"}]},
         }
-        conversation = _parse(payload, "no-title")
-        assert conversation.title == "no-title"
-        assert (conversation.provider_meta or {}).get("title_source") == "fallback:id"
+        session = _parse(payload, "no-title")
+        assert session.title == "no-title"
+        assert (session.provider_meta or {}).get("title_source") == "fallback:id"
 
-    def test_provider_conversation_id_uses_id_field_then_fallback(self) -> None:
+    def test_provider_session_id_uses_id_field_then_fallback(self) -> None:
         payload: JSONDocument = {
             "title": "Untitled",
             "chunkedPrompt": {"chunks": [{"role": "user", "text": "hi"}]},
         }
-        conversation = _parse(payload, "the-fallback-id")
-        assert conversation.provider_conversation_id == "the-fallback-id"
+        session = _parse(payload, "the-fallback-id")
+        assert session.provider_session_id == "the-fallback-id"
 
     def test_create_and_update_time_come_from_envelope_when_present(self) -> None:
         payload = _load_catalog("text_only_prompt.json")
-        conversation = _parse(payload, "text_only_prompt")
-        assert conversation.created_at == "2025-02-01T08:00:00Z"
-        assert conversation.updated_at == "2025-02-01T08:00:30Z"
+        session = _parse(payload, "text_only_prompt")
+        assert session.created_at == "2025-02-01T08:00:00Z"
+        assert session.updated_at == "2025-02-01T08:00:30Z"
 
     def test_create_and_update_time_fall_back_to_chunk_timestamps(self) -> None:
         """Without envelope-level timestamps, the parser must derive
@@ -397,9 +395,9 @@ class TestConversationLevelMetadata:
                 ]
             },
         }
-        conversation = _parse(payload, "no-envelope-ts")
-        assert conversation.created_at == "2025-03-01T11:00:00Z"
-        assert conversation.updated_at == "2025-03-01T11:00:30Z"
+        session = _parse(payload, "no-envelope-ts")
+        assert session.created_at == "2025-03-01T11:00:00Z"
+        assert session.updated_at == "2025-03-01T11:00:30Z"
 
 
 # ---------------------------------------------------------------------------
@@ -418,8 +416,8 @@ class TestPerChunkTimestamps:
 
     def test_per_chunk_create_time_propagates_to_message_timestamp(self) -> None:
         payload = _load_catalog("text_only_prompt.json")
-        conversation = _parse(payload, "text_only_prompt")
-        assert [m.timestamp for m in conversation.messages] == [
+        session = _parse(payload, "text_only_prompt")
+        assert [m.timestamp for m in session.messages] == [
             "2025-02-01T08:00:00Z",
             "2025-02-01T08:00:05Z",
             "2025-02-01T08:00:20Z",
@@ -437,8 +435,8 @@ class TestPerChunkTimestamps:
                 ]
             },
         }
-        conversation = _parse(payload, "ts-fallback")
-        assert [m.timestamp for m in conversation.messages] == [
+        session = _parse(payload, "ts-fallback")
+        assert [m.timestamp for m in session.messages] == [
             "2025-04-01T12:00:00Z",
             "2025-04-01T12:30:00Z",
         ]

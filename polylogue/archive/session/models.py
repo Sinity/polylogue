@@ -6,15 +6,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
-from polylogue.archive.conversation.attribution import ConversationAttribution
-from polylogue.archive.conversation.extraction import WorkEvent
-from polylogue.archive.conversation.repo_identity import normalize_repo_names, normalize_repo_paths
 from polylogue.archive.phase.extraction import SessionPhase
-from polylogue.archive.semantic.facts import ConversationSemanticFacts
+from polylogue.archive.semantic.facts import SessionSemanticFacts
+from polylogue.archive.session.attribution import SessionAttribution
 from polylogue.archive.session.documents import (
     SessionPhaseDocument,
     SessionProfileDocument,
 )
+from polylogue.archive.session.extraction import WorkEvent
+from polylogue.archive.session.repo_identity import normalize_repo_names, normalize_repo_paths
 from polylogue.core.payload_coercion import (
     coerce_float,
     coerce_int,
@@ -95,10 +95,10 @@ def _date_provenance(canonical_session_date: str | None, start_time: str | None,
 
 @dataclass(frozen=True)
 class SessionProfile:
-    """Complete semantic profile of a conversation session."""
+    """Complete semantic profile of a session session."""
 
-    conversation_id: str
-    provider: str
+    session_id: str
+    origin: str
     title: str | None
     created_at: datetime | None
     updated_at: datetime | None
@@ -138,7 +138,7 @@ class SessionProfile:
     terminal_state_confidence: float = 0.0
     terminal_state_evidence: dict[str, int | float | str | None] = field(default_factory=dict)
     cost_is_estimated: bool = False
-    logical_conversation_id: str | None = None
+    logical_session_id: str | None = None
     thread_id: str | None = None
     continuation_depth: int = 0
     compaction_count: int = 0
@@ -172,8 +172,8 @@ class SessionProfile:
 
     def to_dict(self) -> SessionProfilePayload:
         return {
-            "conversation_id": self.conversation_id,
-            "provider": self.provider,
+            "session_id": self.session_id,
+            "origin": self.origin,
             "title": self.title,
             "inferred_topic": self.inferred_topic,
             "inferred_topic_source": self.inferred_topic_source,
@@ -215,7 +215,7 @@ class SessionProfile:
             "terminal_state_confidence": self.terminal_state_confidence,
             "terminal_state_evidence": dict(self.terminal_state_evidence),
             "cost_is_estimated": self.cost_is_estimated,
-            "logical_conversation_id": self.logical_conversation_id,
+            "logical_session_id": self.logical_session_id,
             "compaction_count": self.compaction_count,
             "thread_id": self.thread_id,
             "continuation_depth": self.continuation_depth,
@@ -246,8 +246,8 @@ class SessionProfile:
         )
         repo_names = explicit_repo_names or normalize_repo_names(repo_paths=repo_paths)
         return cls(
-            conversation_id=str(payload["conversation_id"]),
-            provider=str(payload["provider"]),
+            session_id=str(payload["session_id"]),
+            origin=str(payload["origin"]),
             title=optional_string(payload.get("title")),
             inferred_topic=optional_string(payload.get("inferred_topic")),
             inferred_topic_source=optional_string(payload.get("inferred_topic_source")) or "absent",
@@ -291,7 +291,7 @@ class SessionProfile:
             terminal_state_confidence=coerce_float(payload.get("terminal_state_confidence"), 0.0),
             terminal_state_evidence=_scalar_mapping(payload.get("terminal_state_evidence")),
             cost_is_estimated=bool(payload.get("cost_is_estimated", False)),
-            logical_conversation_id=optional_string(payload.get("logical_conversation_id")),
+            logical_session_id=optional_string(payload.get("logical_session_id")),
             compaction_count=coerce_int(payload.get("compaction_count"), 0),
             thread_id=optional_string(payload.get("thread_id")),
             continuation_depth=coerce_int(payload.get("continuation_depth"), 0),
@@ -314,8 +314,8 @@ class SessionProfile:
 
 @dataclass(frozen=True)
 class SessionAnalysis:
-    facts: ConversationSemanticFacts
-    attribution: ConversationAttribution
+    facts: SessionSemanticFacts
+    attribution: SessionAttribution
     work_events: tuple[WorkEvent, ...]
     phases: tuple[SessionPhase, ...]
 

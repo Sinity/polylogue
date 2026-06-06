@@ -10,22 +10,22 @@ from pydantic import BaseModel, Field
 
 from polylogue.archive.topology.edge import TopologyEdgeRecord
 from polylogue.pipeline.materialization_runtime import _timestamp_sort_key
-from polylogue.storage.archive_views import ExistingConversation
+from polylogue.storage.archive_views import ExistingSession
 from polylogue.storage.runtime import (
     AttachmentRecord,
     ContentBlockRecord,
-    ConversationRecord,
     MessageRecord,
     ProviderEventRecord,
+    SessionRecord,
 )
-from polylogue.types import ContentHash, ConversationId, MessageId
+from polylogue.types import ContentHash, MessageId, SessionId
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 
 class RecordBundle(BaseModel):
-    conversation: ConversationRecord
+    session: SessionRecord
     messages: list[MessageRecord]
     attachments: list[AttachmentRecord]
     content_blocks: list[ContentBlockRecord] = Field(default_factory=list)
@@ -34,11 +34,11 @@ class RecordBundle(BaseModel):
 
 
 class SaveResult(BaseModel):
-    conversations: int
+    sessions: int
     messages: int
     attachments: int
     provider_events: int = 0
-    skipped_conversations: int
+    skipped_sessions: int
     skipped_messages: int
     skipped_attachments: int
     skipped_provider_events: int = 0
@@ -48,7 +48,7 @@ class SaveResult(BaseModel):
 class PrepareCache:
     """Pre-loaded batch data for prepare_records."""
 
-    existing: dict[str, ExistingConversation] = field(default_factory=dict)
+    existing: dict[str, ExistingSession] = field(default_factory=dict)
     known_ids: set[str] = field(default_factory=set)
     message_ids: dict[str, dict[str, MessageId]] = field(default_factory=dict)
 
@@ -64,15 +64,14 @@ class PrepareCache:
             placeholders = ", ".join("?" for _ in chunk)
             async with backend.connection() as conn:
                 cursor = await conn.execute(
-                    f"SELECT conversation_id, content_hash FROM conversations "
-                    f"WHERE conversation_id IN ({placeholders})",
+                    f"SELECT session_id, content_hash FROM sessions WHERE session_id IN ({placeholders})",
                     tuple(chunk),
                 )
                 rows = await cursor.fetchall()
             for row in rows:
-                cid = row["conversation_id"]
-                cache.existing[cid] = ExistingConversation(
-                    conversation_id=cid,
+                cid = row["session_id"]
+                cache.existing[cid] = ExistingSession(
+                    session_id=cid,
                     content_hash=row["content_hash"],
                 )
                 cache.known_ids.add(cid)
@@ -83,14 +82,14 @@ class PrepareCache:
             placeholders = ", ".join("?" for _ in chunk)
             async with backend.connection() as conn:
                 cursor = await conn.execute(
-                    f"SELECT conversation_id, provider_message_id, message_id "
-                    f"FROM messages WHERE conversation_id IN ({placeholders}) "
+                    f"SELECT session_id, provider_message_id, message_id "
+                    f"FROM messages WHERE session_id IN ({placeholders}) "
                     f"AND provider_message_id IS NOT NULL",
                     tuple(chunk),
                 )
                 rows = await cursor.fetchall()
             for row in rows:
-                cid = row["conversation_id"]
+                cid = row["session_id"]
                 if cid not in cache.message_ids:
                     cache.message_ids[cid] = {}
                 if row["provider_message_id"]:
@@ -110,7 +109,7 @@ class TransformResult:
     bundle: RecordBundle
     materialization_plan: AttachmentMaterializationPlan
     content_hash: ContentHash
-    candidate_cid: ConversationId
+    candidate_cid: SessionId
     message_id_map: dict[str, MessageId]
 
 
@@ -118,13 +117,13 @@ class TransformResult:
 class PreparedBundle:
     bundle: RecordBundle
     materialization_plan: AttachmentMaterializationPlan
-    cid: ConversationId
+    cid: SessionId
     changed: bool
 
 
 @dataclass(frozen=True)
-class PersistedConversationResult:
-    conversation_id: ConversationId
+class PersistedSessionResult:
+    session_id: SessionId
     save_result: SaveResult
     content_changed: bool
 
@@ -135,7 +134,7 @@ class PersistedConversationResult:
 
 __all__ = [
     "AttachmentMaterializationPlan",
-    "PersistedConversationResult",
+    "PersistedSessionResult",
     "PreparedBundle",
     "PrepareCache",
     "RecordBundle",

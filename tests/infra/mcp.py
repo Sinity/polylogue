@@ -8,15 +8,15 @@ from datetime import datetime, timezone
 from typing import Protocol, TypeAlias, TypeVar, runtime_checkable
 from unittest.mock import AsyncMock, MagicMock
 
-from polylogue.archive.models import Conversation
+from polylogue.archive.models import Session
 from polylogue.types import Provider
 from tests.infra.builders import make_conv, make_msg
 
 EXPECTED_TOOL_NAMES = {
     "search",
-    "list_conversations",
+    "list_sessions",
     "build_context_pack",
-    "get_conversation",
+    "get_session",
     "neighbor_candidates",
     "stats",
     "embedding_status",
@@ -24,7 +24,7 @@ EXPECTED_TOOL_NAMES = {
     "facets",
     "add_tag",
     "remove_tag",
-    "bulk_tag_conversations",
+    "bulk_tag_sessions",
     "list_tags",
     "list_marks",
     "add_mark",
@@ -38,8 +38,8 @@ EXPECTED_TOOL_NAMES = {
     "get_metadata",
     "set_metadata",
     "delete_metadata",
-    "delete_conversation",
-    "get_conversation_summary",
+    "delete_session",
+    "get_session_summary",
     "get_session_tree",
     "get_session_topology",
     "get_logical_session",
@@ -47,7 +47,7 @@ EXPECTED_TOOL_NAMES = {
     "readiness_check",
     "rebuild_index",
     "update_index",
-    "export_conversation",
+    "export_session",
     "export_query_results",
     "rebuild_session_insights",
     "maintenance_preview",
@@ -80,20 +80,20 @@ EXPECTED_TOOL_NAMES = {
 
 EXPECTED_RESOURCE_URIS = {
     "polylogue://stats",
-    "polylogue://conversations",
+    "polylogue://sessions",
     "polylogue://tags",
     "polylogue://readiness",
 }
 
 EXPECTED_RESOURCE_TEMPLATE_URIS = {
-    "polylogue://conversation/{conv_id}",
+    "polylogue://session/{conv_id}",
 }
 
 EXPECTED_PROMPT_NAMES = {
     "analyze_errors",
     "summarize_week",
     "extract_code",
-    "compare_conversations",
+    "compare_sessions",
     "extract_patterns",
 }
 
@@ -156,62 +156,21 @@ async def invoke_surface_async(
     return result
 
 
-def make_query_store_mock(*, resolved_id: str | None = None) -> MagicMock:
-    """Create a query-store mock matching the current MCP read/query seam.
+def make_polylogue_mock(*, resolved_id: str | None = None) -> MagicMock:
+    """Create a Polylogue facade mock matching the current MCP tool surface.
 
-    Pass ``resolved_id`` to make ``resolve_id`` return that value (the realistic
-    "conversation found" path used by mutation tools that gate on resolution).
-    Default ``None`` matches the unresolved path.
+    Pass ``resolved_id`` to make ``get_session_summary`` return a summary
+    whose ``.id`` is that value — the MCP mutation/read tools resolve a
+    session by calling ``get_session_summary`` and reading ``.id``
+    (the archive canonical-id seam). Default ``None`` is the "not found" path.
     """
-    store = MagicMock()
-    store.list = AsyncMock(return_value=[])
-    store.list_summaries = AsyncMock(return_value=[])
-    store.list_summaries_by_query = AsyncMock(return_value=[])
-    store.search = AsyncMock(return_value=[])
-    store.search_summaries = AsyncMock(return_value=[])
-    store.view = AsyncMock(return_value=None)
-    store.get = AsyncMock(return_value=None)
-    store.get_eager = AsyncMock(return_value=None)
-    store.resolve_id = AsyncMock(return_value=resolved_id)
-    store.delete_conversation = AsyncMock(return_value=False)
-    return store
-
-
-def make_tag_store_mock() -> MagicMock:
-    """Create a tag/metadata store mock matching the current MCP mutation seam."""
-    store = MagicMock()
-    store.add_tag = AsyncMock(return_value=None)
-    store.remove_tag = AsyncMock(return_value=None)
-    store.bulk_add_tags = AsyncMock(return_value=0)
-    store.list_tags = AsyncMock(return_value={})
-    store.get_metadata = AsyncMock(return_value={})
-    store.update_metadata = AsyncMock(return_value=None)
-    store.delete_metadata = AsyncMock(return_value=None)
-    return store
-
-
-def make_archive_ops_mock() -> MagicMock:
-    """Create an archive-operations mock matching the current MCP read seam."""
-    operations = MagicMock()
-    operations.get_conversation = AsyncMock(return_value=None)
-    operations.get_conversation_summary = AsyncMock(return_value=None)
-    operations.get_conversation_stats = AsyncMock(return_value={})
-    operations.get_session_tree = AsyncMock(return_value=[])
-    operations.get_stats_by = AsyncMock(return_value={})
-    operations.neighbor_candidates = AsyncMock(return_value=[])
-    operations.storage_stats = AsyncMock(return_value=MagicMock())
-    return operations
-
-
-def make_polylogue_mock() -> MagicMock:
-    """Create a Polylogue facade mock matching the current MCP tool surface."""
     poly = MagicMock()
     poly.add_tag = AsyncMock()
     poly.remove_tag = AsyncMock()
     poly.list_tags = AsyncMock(return_value={})
     poly.get_metadata = AsyncMock(return_value={})
     poly.update_metadata = AsyncMock()
-    poly.delete_conversation = AsyncMock(return_value=False)
+    poly.delete_session = AsyncMock(return_value=False)
     poly.list_marks = AsyncMock(return_value=[])
     poly.add_mark = AsyncMock(return_value=False)
     poly.remove_mark = AsyncMock(return_value=False)
@@ -221,13 +180,18 @@ def make_polylogue_mock() -> MagicMock:
     poly.list_views = AsyncMock(return_value=[])
     poly.save_view = AsyncMock(return_value=False)
     poly.delete_view = AsyncMock(return_value=False)
-    poly.get_conversation_summary = AsyncMock(return_value=None)
-    poly.get_conversation_stats = AsyncMock(return_value={})
+    poly.get_session_summary = AsyncMock(return_value=(MagicMock(id=resolved_id) if resolved_id is not None else None))
+    poly.get_session_stats = AsyncMock(return_value={})
+    poly.get_stats_by = AsyncMock(return_value={})
     poly.get_session_tree = AsyncMock(return_value=[])
+    poly.rebuild_index = AsyncMock(return_value=True)
+    poly.update_index = AsyncMock(return_value=True)
+    poly.get_index_status = AsyncMock(return_value={"exists": True, "count": 0})
+    poly.get_raw_artifacts_for_session = AsyncMock(return_value=([], 0))
     poly.get_session_topology = AsyncMock(return_value=None)
     poly.get_logical_session = AsyncMock(return_value=None)
     poly.get_messages_paginated = AsyncMock(return_value=([], 0))
-    poly.get_conversation = AsyncMock(return_value=None)
+    poly.get_session = AsyncMock(return_value=None)
     poly.get_session_profile_insight = AsyncMock(return_value=None)
     poly.resume_brief = AsyncMock(return_value=None)
     poly.find_resume_candidates = AsyncMock(return_value=())
@@ -248,23 +212,21 @@ def make_polylogue_mock() -> MagicMock:
     # Typed mutation entrypoints (#862).
     from polylogue.surfaces.payloads import (
         BulkTagMutationResult,
-        DeleteConversationResult,
+        DeleteSessionResult,
         MetadataMutationResult,
     )
 
-    poly.set_metadata = AsyncMock(return_value=MetadataMutationResult(outcome="set", conversation_id="", key=""))
-    poly.delete_metadata = AsyncMock(return_value=MetadataMutationResult(outcome="deleted", conversation_id="", key=""))
-    poly.delete_conversation_safe = AsyncMock(
-        return_value=DeleteConversationResult(outcome="deleted", conversation_id="")
-    )
-    poly.bulk_tag_conversations = AsyncMock(
-        return_value=BulkTagMutationResult(conversation_count=0, tag_count=0, affected_count=0, skipped_count=0)
+    poly.set_metadata = AsyncMock(return_value=MetadataMutationResult(outcome="set", session_id="", key=""))
+    poly.delete_metadata = AsyncMock(return_value=MetadataMutationResult(outcome="deleted", session_id="", key=""))
+    poly.delete_session_safe = AsyncMock(return_value=DeleteSessionResult(outcome="deleted", session_id=""))
+    poly.bulk_tag_sessions = AsyncMock(
+        return_value=BulkTagMutationResult(session_count=0, tag_count=0, affected_count=0, skipped_count=0)
     )
     return poly
 
 
 def make_mock_filter(results: Sequence[object] | None = None, **method_overrides: object) -> MagicMock:
-    """Create a chaining-capable ConversationFilter mock."""
+    """Create a chaining-capable SessionFilter mock."""
     filt = MagicMock()
     for method in (
         "contains",
@@ -299,12 +261,12 @@ def make_mock_filter(results: Sequence[object] | None = None, **method_overrides
     return filt
 
 
-def make_simple_conversation() -> Conversation:
-    """Return a representative conversation for MCP surface tests."""
+def make_simple_session() -> Session:
+    """Return a representative session for MCP surface tests."""
     return make_conv(
         id="test:conv-123",
         provider=Provider.CHATGPT,
-        title="Test Conversation",
+        title="Test Session",
         messages=[
             make_msg(
                 id="msg-1",

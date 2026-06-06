@@ -1,4 +1,4 @@
-"""Provider assembly layer — generic sidecar discovery and conversation enrichment.
+"""Provider assembly layer — generic sidecar discovery and session enrichment.
 
 Replaces Claude-specific session index logic with a protocol that any provider
 can implement for sidecar discovery and post-parse enrichment.
@@ -14,7 +14,7 @@ from typing_extensions import TypedDict
 
 from polylogue.types import Provider
 
-from .parsers.base import ParsedConversation
+from .parsers.base import ParsedSession
 
 if TYPE_CHECKING:
     from .parsers.claude.history import HistoryEntry
@@ -47,7 +47,7 @@ class TitleResolution:
 
 
 class ProviderAssemblySpec(Protocol):
-    """Provider-specific sidecar discovery and conversation enrichment."""
+    """Provider-specific sidecar discovery and session enrichment."""
 
     def discover_sidecars(self, source_paths: list[Path]) -> SidecarData:
         """Discover provider-specific sidecars from source paths.
@@ -56,12 +56,12 @@ class ProviderAssemblySpec(Protocol):
         """
         ...
 
-    def enrich_conversation(
+    def enrich_session(
         self,
-        conv: ParsedConversation,
+        conv: ParsedSession,
         sidecar_data: SidecarData,
-    ) -> ParsedConversation:
-        """Enrich a parsed conversation using discovered sidecar data."""
+    ) -> ParsedSession:
+        """Enrich a parsed session using discovered sidecar data."""
         ...
 
 

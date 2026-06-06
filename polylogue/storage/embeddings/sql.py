@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-EMBEDDED_CONVERSATIONS_SQL = "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 0"
-PENDING_CONVERSATIONS_SQL = "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 1"
+EMBEDDED_SESSIONS_SQL = "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 0"
+PENDING_SESSIONS_SQL = "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 1"
 PENDING_MESSAGES_SQL = """
     SELECT COUNT(*)
     FROM messages m
-    JOIN conversations c ON c.conversation_id = m.conversation_id
-    LEFT JOIN embedding_status e ON e.conversation_id = c.conversation_id
-    WHERE e.conversation_id IS NULL OR e.needs_reindex = 1
+    JOIN sessions c ON c.session_id = m.session_id
+    LEFT JOIN embedding_status e ON e.session_id = c.session_id
+    WHERE e.session_id IS NULL OR e.needs_reindex = 1
 """
 EMBEDDED_MESSAGES_SQL = "SELECT COUNT(*) FROM message_embeddings"
 MISSING_META_MESSAGES_SQL = """
@@ -49,7 +49,7 @@ DIMENSION_COUNTS_SQL = """
     GROUP BY dimension
     ORDER BY count DESC, dimension ASC
 """
-CONVERSATIONS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'"
+SESSIONS_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'"
 EMBEDDING_FAILURE_COUNT_SQL = "SELECT COUNT(*) FROM embedding_status WHERE error_message IS NOT NULL"
 STORED_MODEL_SQL = """
     SELECT DISTINCT model

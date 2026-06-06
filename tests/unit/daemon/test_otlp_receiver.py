@@ -181,7 +181,7 @@ class TestDbStorage:
 
         import sqlite3
 
-        conn = sqlite3.connect(db)
+        conn = sqlite3.connect(tmp_path / "ops.db")
         try:
             rows = conn.execute("SELECT signal_type, resource_count, span_count FROM otlp_telemetry").fetchall()
             assert len(rows) == 1
@@ -208,7 +208,7 @@ class TestDbStorage:
             )
         import sqlite3
 
-        conn = sqlite3.connect(db)
+        conn = sqlite3.connect(tmp_path / "ops.db")
         try:
             count = conn.execute("SELECT count(*) FROM otlp_telemetry").fetchone()[0]
             assert count == 3

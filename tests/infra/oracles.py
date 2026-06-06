@@ -6,15 +6,15 @@ from collections.abc import Iterable, Mapping
 
 from tests.infra.semantic_facts import (
     ArchiveFacts,
-    ConversationFacts,
+    SessionFacts,
     assert_same_archive_facts,
-    assert_same_conversation_facts,
+    assert_same_session_facts,
 )
 
 
-def assert_conversation_surfaces_agree(*facts: ConversationFacts) -> None:
+def assert_session_surfaces_agree(*facts: SessionFacts) -> None:
     """Assert record, hydrated, repository, and surface facts agree."""
-    assert_same_conversation_facts(*facts)
+    assert_same_session_facts(*facts)
 
 
 def assert_archive_surfaces_agree(*facts: ArchiveFacts) -> None:
@@ -24,11 +24,11 @@ def assert_archive_surfaces_agree(*facts: ArchiveFacts) -> None:
 
 def assert_provider_partition_exhaustive(
     *,
-    all_conversation_ids: Iterable[str],
+    all_session_ids: Iterable[str],
     ids_by_provider: Mapping[str, Iterable[str]],
 ) -> None:
     """Assert provider buckets partition the archive without gaps or overlap."""
-    expected = set(all_conversation_ids)
+    expected = set(all_session_ids)
     seen: set[str] = set()
     for provider, provider_ids in ids_by_provider.items():
         ids = set(provider_ids)
@@ -40,6 +40,6 @@ def assert_provider_partition_exhaustive(
 
 __all__ = [
     "assert_archive_surfaces_agree",
-    "assert_conversation_surfaces_agree",
+    "assert_session_surfaces_agree",
     "assert_provider_partition_exhaustive",
 ]

@@ -1,4 +1,4 @@
-"""Shared conversation materialization helpers for prepare and ingest paths."""
+"""Shared session materialization helpers for prepare and ingest paths."""
 
 from __future__ import annotations
 
@@ -7,36 +7,36 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TypeAlias
 
-from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.artifacts import classify_text_message_type
 from polylogue.archive.message.paste_detection import detect_paste
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
+from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.json import dumps as json_dumps
 from polylogue.core.timestamps import canonical_timestamp_text, parse_timestamp
 from polylogue.pipeline.ids import (
     attachment_content_id,
-    conversation_content_hashes,
     message_content_hash,
     provider_event_id,
+    session_content_hashes,
 )
-from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.ids import message_id as make_message_id
-from polylogue.pipeline.prepare_transform_content import canonicalize_conversation_content
+from polylogue.pipeline.ids import session_id as make_session_id
+from polylogue.pipeline.prepare_transform_content import canonicalize_session_content
 from polylogue.pipeline.semantic_metadata import ToolInputPayload, extract_tool_metadata
 from polylogue.schemas.code_detection.detection import detect_language
-from polylogue.sources.parsers.base import ParsedConversation
+from polylogue.sources.parsers.base import ParsedSession
 from polylogue.types import (
     AttachmentId,
     ContentBlockType,
     ContentHash,
-    ConversationId,
     MessageId,
     Provider,
     ProviderEventId,
     SemanticBlockType,
+    SessionId,
 )
 
 ProviderMetadata: TypeAlias = dict[str, object]
@@ -98,7 +98,7 @@ class MaterializedAttachment:
 @dataclass(frozen=True, slots=True)
 class MaterializedProviderEvent:
     event_id: ProviderEventId
-    conversation_id: ConversationId
+    session_id: SessionId
     source_name: Provider
     event_index: int
     event_type: str
@@ -109,7 +109,7 @@ class MaterializedProviderEvent:
 
 
 @dataclass(frozen=True, slots=True)
-class MaterializedConversationStats:
+class MaterializedSessionStats:
     message_count: int
     word_count: int
     tool_use_count: int
@@ -118,22 +118,22 @@ class MaterializedConversationStats:
 
 
 @dataclass(frozen=True, slots=True)
-class MaterializedConversation:
-    conversation_id: ConversationId
+class MaterializedSession:
+    session_id: SessionId
     source_name: Provider
-    provider_conversation_id: str
+    provider_session_id: str
     title: str | None
     created_at: str | None
     updated_at: str | None
     sort_key: float | None
     content_hash: ContentHash
     provider_meta: ProviderMetadata
-    parent_conversation_id: ConversationId | None
+    parent_session_id: SessionId | None
     branch_type: BranchType | None
     messages: list[MaterializedMessage]
     attachments: list[MaterializedAttachment]
     provider_events: list[MaterializedProviderEvent]
-    stats: MaterializedConversationStats
+    stats: MaterializedSessionStats
     working_directories_json: str | None = None
     git_branch: str | None = None
     git_repository_url: str | None = None
@@ -156,8 +156,8 @@ def _timestamp_sort_key(ts: str | None) -> float | None:
     return None
 
 
-def _merged_conversation_provider_meta(
-    convo: ParsedConversation,
+def _merged_session_provider_meta(
+    convo: ParsedSession,
     *,
     source_name: str,
 ) -> ProviderMetadata:
@@ -170,9 +170,9 @@ def _merged_conversation_provider_meta(
 
 
 def _materialize_provider_events(
-    convo: ParsedConversation,
+    convo: ParsedSession,
     *,
-    conversation_id: ConversationId,
+    session_id: SessionId,
     message_id_map: dict[str, MessageId],
 ) -> list[MaterializedProviderEvent]:
     events: list[MaterializedProviderEvent] = []
@@ -184,8 +184,8 @@ def _materialize_provider_events(
         )
         events.append(
             MaterializedProviderEvent(
-                event_id=provider_event_id(conversation_id, event_index),
-                conversation_id=conversation_id,
+                event_id=provider_event_id(session_id, event_index),
+                session_id=session_id,
                 source_name=convo.source_name,
                 event_index=event_index,
                 event_type=event.event_type,
@@ -221,11 +221,11 @@ def _block_metadata(metadata: Mapping[str, object] | JSONDocument | None) -> Blo
     return json_document(metadata if isinstance(metadata, dict) else dict(metadata))
 
 
-def _build_message_ids(convo: ParsedConversation, conversation_id: ConversationId) -> dict[str, MessageId]:
+def _build_message_ids(convo: ParsedSession, session_id: SessionId) -> dict[str, MessageId]:
     message_id_map: dict[str, MessageId] = {}
     for idx, msg in enumerate(convo.messages, start=1):
         provider_message_id = msg.provider_message_id or f"msg-{idx}"
-        message_id_map[str(provider_message_id)] = make_message_id(conversation_id, provider_message_id)
+        message_id_map[str(provider_message_id)] = make_message_id(session_id, provider_message_id)
     return message_id_map
 
 
@@ -282,28 +282,28 @@ def _materialize_content_block(
     )
 
 
-def materialize_conversation(
-    convo: ParsedConversation,
+def materialize_session(
+    convo: ParsedSession,
     *,
     source_name: str,
     archive_root: Path,
-) -> MaterializedConversation:
-    normalized_convo = canonicalize_conversation_content(convo)
-    content_hash, message_hashes = conversation_content_hashes(normalized_convo)
-    conversation_id = make_conversation_id(
+) -> MaterializedSession:
+    normalized_convo = canonicalize_session_content(convo)
+    content_hash, message_hashes = session_content_hashes(normalized_convo)
+    session_id = make_session_id(
         normalized_convo.source_name,
-        normalized_convo.provider_conversation_id,
+        normalized_convo.provider_session_id,
     )
-    parent_conversation_id = (
-        make_conversation_id(normalized_convo.source_name, normalized_convo.parent_conversation_provider_id)
-        if normalized_convo.parent_conversation_provider_id
+    parent_session_id = (
+        make_session_id(normalized_convo.source_name, normalized_convo.parent_session_provider_id)
+        if normalized_convo.parent_session_provider_id
         else None
     )
-    provider_meta = _merged_conversation_provider_meta(
+    provider_meta = _merged_session_provider_meta(
         normalized_convo,
         source_name=source_name,
     )
-    message_id_map = _build_message_ids(normalized_convo, conversation_id)
+    message_id_map = _build_message_ids(normalized_convo, session_id)
 
     messages: list[MaterializedMessage] = []
 
@@ -453,26 +453,26 @@ def materialize_conversation(
             git_branch = git_branch or git_obj.get("branch")
             git_repository_url = git_obj.get("repository_url")
 
-    return MaterializedConversation(
-        conversation_id=conversation_id,
+    return MaterializedSession(
+        session_id=session_id,
         source_name=normalized_convo.source_name,
-        provider_conversation_id=normalized_convo.provider_conversation_id,
+        provider_session_id=normalized_convo.provider_session_id,
         title=normalized_convo.title,
         created_at=canonical_timestamp_text(normalized_convo.created_at),
         updated_at=canonical_timestamp_text(normalized_convo.updated_at),
         sort_key=_timestamp_sort_key(normalized_convo.updated_at),
         content_hash=content_hash,
         provider_meta=provider_meta,
-        parent_conversation_id=parent_conversation_id,
+        parent_session_id=parent_session_id,
         branch_type=normalized_convo.branch_type,
         messages=messages,
         attachments=attachments,
         provider_events=_materialize_provider_events(
             normalized_convo,
-            conversation_id=conversation_id,
+            session_id=session_id,
             message_id_map=message_id_map,
         ),
-        stats=MaterializedConversationStats(
+        stats=MaterializedSessionStats(
             message_count=len(messages),
             word_count=0,
             tool_use_count=0,
@@ -503,11 +503,11 @@ __all__ = [
     "BlockMetadata",
     "MaterializedAttachment",
     "MaterializedContentBlock",
-    "MaterializedConversation",
-    "MaterializedConversationStats",
+    "MaterializedSession",
+    "MaterializedSessionStats",
     "MaterializedMessage",
     "MaterializedProviderEvent",
     "ProviderMetadata",
     "_timestamp_sort_key",
-    "materialize_conversation",
+    "materialize_session",
 ]

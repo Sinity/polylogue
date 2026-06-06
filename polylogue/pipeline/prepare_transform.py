@@ -1,23 +1,23 @@
-"""Pure raw-to-record transformation helpers for parsed conversations."""
+"""Pure raw-to-record transformation helpers for parsed sessions."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.pipeline.materialization_runtime import materialize_conversation
+from polylogue.pipeline.materialization_runtime import materialize_session
 from polylogue.pipeline.prepare_models import (
     AttachmentMaterializationPlan,
     RecordBundle,
     TransformResult,
 )
-from polylogue.sources.parsers.base import ParsedConversation
+from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.runtime import (
     PROVIDER_EVENT_MATERIALIZER_VERSION,
     AttachmentRecord,
     ContentBlockRecord,
-    ConversationRecord,
     MessageRecord,
     ProviderEventRecord,
+    SessionRecord,
 )
 from polylogue.types import MessageId
 
@@ -38,24 +38,24 @@ def plan_attachment_materialization(
     return AttachmentMaterializationPlan(move_before_save=[(source, target)])
 
 
-def transform_to_records(convo: ParsedConversation, source_name: str, *, archive_root: Path) -> TransformResult:
-    materialized = materialize_conversation(
+def transform_to_records(convo: ParsedSession, source_name: str, *, archive_root: Path) -> TransformResult:
+    materialized = materialize_session(
         convo,
         source_name=source_name,
         archive_root=archive_root,
     )
 
-    conversation_record = ConversationRecord(
-        conversation_id=materialized.conversation_id,
+    session_record = SessionRecord(
+        session_id=materialized.session_id,
         source_name=materialized.source_name,
-        provider_conversation_id=materialized.provider_conversation_id,
+        provider_session_id=materialized.provider_session_id,
         title=materialized.title,
         created_at=materialized.created_at,
         updated_at=materialized.updated_at,
         sort_key=materialized.sort_key,
         content_hash=materialized.content_hash,
         provider_meta=materialized.provider_meta,
-        parent_conversation_id=materialized.parent_conversation_id,
+        parent_session_id=materialized.parent_session_id,
         branch_type=materialized.branch_type,
         raw_id=None,
     )
@@ -63,7 +63,7 @@ def transform_to_records(convo: ParsedConversation, source_name: str, *, archive
     messages: list[MessageRecord] = [
         MessageRecord(
             message_id=message.message_id,
-            conversation_id=materialized.conversation_id,
+            session_id=materialized.session_id,
             provider_message_id=message.provider_message_id,
             role=message.role,
             text=None if message.blocks else message.text,
@@ -90,7 +90,7 @@ def transform_to_records(convo: ParsedConversation, source_name: str, *, archive
                 ContentBlockRecord(
                     block_id=block.block_id,
                     message_id=message.message_id,
-                    conversation_id=materialized.conversation_id,
+                    session_id=materialized.session_id,
                     block_index=block.block_index,
                     type=block.type,
                     text=block.text,
@@ -111,7 +111,7 @@ def transform_to_records(convo: ParsedConversation, source_name: str, *, archive
         attachments.append(
             AttachmentRecord(
                 attachment_id=attachment.attachment_id,
-                conversation_id=materialized.conversation_id,
+                session_id=materialized.session_id,
                 message_id=attachment.message_id,
                 mime_type=attachment.mime_type,
                 size_bytes=attachment.size_bytes,
@@ -127,7 +127,7 @@ def transform_to_records(convo: ParsedConversation, source_name: str, *, archive
     provider_events = [
         ProviderEventRecord(
             event_id=event.event_id,
-            conversation_id=event.conversation_id,
+            session_id=event.session_id,
             source_name=str(event.source_name),
             event_index=event.event_index,
             event_type=event.event_type,
@@ -141,7 +141,7 @@ def transform_to_records(convo: ParsedConversation, source_name: str, *, archive
     ]
 
     bundle = RecordBundle(
-        conversation=conversation_record,
+        session=session_record,
         messages=messages,
         attachments=attachments,
         content_blocks=content_block_records,
@@ -151,7 +151,7 @@ def transform_to_records(convo: ParsedConversation, source_name: str, *, archive
         bundle=bundle,
         materialization_plan=materialization_plan,
         content_hash=materialized.content_hash,
-        candidate_cid=materialized.conversation_id,
+        candidate_cid=materialized.session_id,
         message_id_map=message_id_map,
     )
 

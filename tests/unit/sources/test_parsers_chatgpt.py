@@ -10,7 +10,7 @@ from typing import Any, TypeAlias
 import pytest
 
 from polylogue.scenarios import CorpusSpec
-from polylogue.sources.parsers.base import ParsedConversation
+from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.chatgpt import _coerce_float, extract_messages_from_mapping
 from polylogue.sources.parsers.chatgpt import looks_like as chatgpt_looks_like
 from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
@@ -24,8 +24,8 @@ ChatGPTMapping: TypeAlias = dict[str, object]
 ExtractMessagesCase: TypeAlias = tuple[ChatGPTMapping, int, str]
 ParentBranchCase: TypeAlias = tuple[ChatGPTMapping, list[str | None], list[int], str]
 MetadataCase: TypeAlias = tuple[object, str | None, str]
-ParseFn: TypeAlias = Callable[[Mapping[str, object], str], ParsedConversation]
-ParseConversationCase: TypeAlias = tuple[ParseFn, ChatGPTMapping, str, str]
+ParseFn: TypeAlias = Callable[[Mapping[str, object], str], ParsedSession]
+ParseSessionCase: TypeAlias = tuple[ParseFn, ChatGPTMapping, str, str]
 
 
 def _looks_like_code_payload(data: object) -> bool:
@@ -330,7 +330,7 @@ def test_chatgpt_metadata_extraction(metadata: object, expected_type: str | None
 # -----------------------------------------------------------------------------
 
 
-PARSE_CONVERSATION_CASES: list[ParseConversationCase] = [
+PARSE_SESSION_CASES: list[ParseSessionCase] = [
     # ChatGPT title extraction
     (chatgpt_parse, {"title": "My Conv", "mapping": {}}, "title", "ChatGPT: title field"),
     (chatgpt_parse, {"name": "Conv Name", "mapping": {}}, "name", "ChatGPT: name field"),
@@ -339,17 +339,17 @@ PARSE_CONVERSATION_CASES: list[ParseConversationCase] = [
 ]
 
 
-@pytest.mark.parametrize("parse_fn,conv_data,check_type,desc", PARSE_CONVERSATION_CASES)
-def test_parse_conversation(parse_fn: ParseFn, conv_data: ChatGPTMapping, check_type: str, desc: str) -> None:
-    """Unified conversation parsing across providers."""
+@pytest.mark.parametrize("parse_fn,conv_data,check_type,desc", PARSE_SESSION_CASES)
+def test_parse_session(parse_fn: ParseFn, conv_data: ChatGPTMapping, check_type: str, desc: str) -> None:
+    """Unified session parsing across providers."""
     result = parse_fn(conv_data, "fallback-id")
 
     if check_type == "title":
         assert result.title in conv_data.values(), f"Failed {desc}"
     elif check_type == "id":
-        assert result.provider_conversation_id == conv_data["id"], f"Failed {desc}"
+        assert result.provider_session_id == conv_data["id"], f"Failed {desc}"
     elif check_type == "fallback":
-        assert result.provider_conversation_id == "fallback-id", f"Failed {desc}"
+        assert result.provider_session_id == "fallback-id", f"Failed {desc}"
     elif check_type == "provider":
         assert result.source_name in ["claude-ai", "claude-code"], f"Failed {desc}"
 
@@ -384,7 +384,7 @@ def test_chatgpt_parse_synthetic_simple() -> None:
 
 
 def test_chatgpt_parse_synthetic_branching() -> None:
-    """Parse synthetic ChatGPT conversation with many messages (branching structure)."""
+    """Parse synthetic ChatGPT session with many messages (branching structure)."""
     from polylogue.schemas.synthetic import SyntheticCorpus
 
     raw = SyntheticCorpus.generate_for_spec(
@@ -403,7 +403,7 @@ def test_chatgpt_parse_synthetic_branching() -> None:
     result = chatgpt_parse(data, "branching-test")
 
     assert result.source_name == "chatgpt"
-    assert len(result.messages) > 10  # Multiple messages like branching conversations
+    assert len(result.messages) > 10  # Multiple messages like branching sessions
 
 
 # -----------------------------------------------------------------------------
@@ -419,7 +419,7 @@ def test_chatgpt_metadata_roundtrip_parser_to_hydration(tmp_path: Path) -> None:
     Message.content_blocks[].metadata without depending on
     Message.provider_meta.raw.
     """
-    from polylogue.pipeline.materialization_runtime import materialize_conversation
+    from polylogue.pipeline.materialization_runtime import materialize_session
     from polylogue.storage.hydrators import message_from_record
     from polylogue.storage.runtime import ContentBlockRecord, MessageRecord
 
@@ -491,7 +491,7 @@ def test_chatgpt_metadata_roundtrip_parser_to_hydration(tmp_path: Path) -> None:
     assert "chatgpt_recipient" not in user_block_meta
 
     # --- Stage 2: Materialize ---
-    materialized = materialize_conversation(
+    materialized = materialize_session(
         parsed,
         source_name="test",
         archive_root=tmp_path,
@@ -522,7 +522,7 @@ def test_chatgpt_metadata_roundtrip_parser_to_hydration(tmp_path: Path) -> None:
         ContentBlockRecord(
             block_id=b.block_id,
             message_id=mat_assistant.message_id,
-            conversation_id=materialized.conversation_id,
+            session_id=materialized.session_id,
             block_index=b.block_index,
             type=b.type,
             text=b.text,
@@ -536,7 +536,7 @@ def test_chatgpt_metadata_roundtrip_parser_to_hydration(tmp_path: Path) -> None:
     ]
     record = MessageRecord(
         message_id=mat_assistant.message_id,
-        conversation_id=materialized.conversation_id,
+        session_id=materialized.session_id,
         provider_message_id=mat_assistant.provider_message_id,
         role=mat_assistant.role,
         text=mat_assistant.text,
@@ -737,7 +737,7 @@ def test_chatgpt_metadata_permutation_roundtrip(
     tmp_path: Path,
 ) -> None:
     """Catalog-driven: each metadata field permutation survives parser→materialize→hydrate."""
-    from polylogue.pipeline.materialization_runtime import materialize_conversation
+    from polylogue.pipeline.materialization_runtime import materialize_session
     from polylogue.storage.hydrators import message_from_record
     from polylogue.storage.runtime import ContentBlockRecord, MessageRecord
 
@@ -748,7 +748,7 @@ def test_chatgpt_metadata_permutation_roundtrip(
     assert parsed.source_name == "chatgpt"
 
     # Stage 2: Materialize
-    materialized = materialize_conversation(parsed, source_name="test", archive_root=tmp_path)
+    materialized = materialize_session(parsed, source_name="test", archive_root=tmp_path)
     assert len(materialized.messages) >= 1
 
     msg = materialized.messages[0]
@@ -761,7 +761,7 @@ def test_chatgpt_metadata_permutation_roundtrip(
         ContentBlockRecord(
             block_id=b.block_id,
             message_id=msg.message_id,
-            conversation_id=materialized.conversation_id,
+            session_id=materialized.session_id,
             block_index=b.block_index,
             type=b.type,
             text=b.text,
@@ -775,7 +775,7 @@ def test_chatgpt_metadata_permutation_roundtrip(
     ]
     record = MessageRecord(
         message_id=msg.message_id,
-        conversation_id=materialized.conversation_id,
+        session_id=materialized.session_id,
         provider_message_id=msg.provider_message_id,
         role=msg.role,
         text=msg.text,
@@ -814,7 +814,7 @@ def test_chatgpt_metadata_permutation_roundtrip(
 
 
 # ---------------------------------------------------------------------------
-# #1744 — active-leaf graph traversal (abandoned branches not emitted)
+# #1743 — branch graph preservation with active-path metadata
 # ---------------------------------------------------------------------------
 
 
@@ -841,13 +841,8 @@ def _branch_node(
     }
 
 
-def test_regeneration_emits_only_active_branch_via_current_node() -> None:
-    """A regenerated assistant turn must yield the active branch only (#1744).
-
-    ``u1`` has two assistant children: ``a_old`` (abandoned) and ``a_new``
-    (active, pointed at by current_node). Before the fix both were flattened
-    into sibling messages, duplicating the assistant turn.
-    """
+def test_regeneration_preserves_all_branches_and_marks_active_leaf() -> None:
+    """A regenerated assistant turn keeps every branch and marks the active leaf."""
     nodes = [
         _branch_node("root", "system", "", parent=None, children=["u1"]),
         _branch_node("u1", "user", "question", parent="root", children=["a_old", "a_new"]),
@@ -862,8 +857,14 @@ def test_regeneration_emits_only_active_branch_via_current_node() -> None:
     }
     conv = chatgpt_parse(payload, "fallback-id")
     texts = [m.text for m in conv.messages]
-    assert texts == ["question", "NEW correct answer"]
-    assert "OLD wrong answer" not in texts
+    assert texts == ["question", "OLD wrong answer", "NEW correct answer"]
+    by_id = {m.provider_message_id: m for m in conv.messages}
+    assert by_id["u1"].is_active_path is True
+    assert by_id["a_old"].is_active_path is False
+    assert by_id["a_new"].is_active_path is True
+    assert by_id["a_old"].is_active_leaf is False
+    assert by_id["a_new"].is_active_leaf is True
+    assert conv.active_leaf_message_provider_id == "a_new"
 
 
 def test_no_current_node_preserves_all_nodes_losslessly() -> None:
@@ -886,10 +887,13 @@ def test_no_current_node_preserves_all_nodes_losslessly() -> None:
     conv = chatgpt_parse(payload, "fallback-id")
     texts = [m.text for m in conv.messages]
     assert texts == ["question", "OLD answer", "NEW answer"]
+    assert [m.is_active_path for m in conv.messages] == [None, None, None]
+    assert [m.is_active_leaf for m in conv.messages] == [None, None, None]
+    assert conv.active_leaf_message_provider_id is None
 
 
-def test_current_node_pointing_at_old_branch_selects_that_branch() -> None:
-    """current_node is authoritative: if it points at the older branch, emit it."""
+def test_current_node_pointing_at_old_branch_marks_that_leaf() -> None:
+    """current_node is authoritative active-path metadata, not an emission filter."""
     nodes = [
         _branch_node("u1", "user", "question", parent=None, children=["a_old", "a_new"]),
         _branch_node("a_old", "assistant", "kept answer", parent="u1", children=[]),
@@ -903,8 +907,36 @@ def test_current_node_pointing_at_old_branch_selects_that_branch() -> None:
     }
     conv = chatgpt_parse(payload, "fallback-id")
     texts = [m.text for m in conv.messages]
-    assert texts == ["question", "kept answer"]
-    assert "discarded answer" not in texts
+    assert texts == ["question", "kept answer", "discarded answer"]
+    by_id = {m.provider_message_id: m for m in conv.messages}
+    assert by_id["a_old"].is_active_path is True
+    assert by_id["a_old"].is_active_leaf is True
+    assert by_id["a_new"].is_active_path is False
+    assert by_id["a_new"].is_active_leaf is False
+    assert conv.active_leaf_message_provider_id == "a_old"
+
+
+def test_chatgpt_archive_contract_fields() -> None:
+    nodes = [
+        _branch_node("u1", "user", "question", parent=None, children=["a_old", "a_new"]),
+        _branch_node("a_old", "assistant", "OLD answer", parent="u1", children=[]),
+        _branch_node("a_new", "assistant", "NEW answer", parent="u1", children=[]),
+    ]
+    nodes[2]["message"]["metadata"] = {"model_slug": "gpt-4o", "durationMs": 2500}
+    payload = {
+        "title": "Regenerated archive contract",
+        "mapping": {n["id"]: n for n in nodes},
+        "current_node": "a_new",
+        "create_time": 1700000000.0,
+    }
+
+    conv = chatgpt_parse(payload, "fallback-id")
+
+    assert [m.position for m in conv.messages] == [0, 1, 2]
+    assert [m.variant_index for m in conv.messages] == [0, 0, 1]
+    active = next(m for m in conv.messages if m.provider_message_id == "a_new")
+    assert active.model_name == "gpt-4o"
+    assert active.duration_ms == 2500
 
 
 # ---------------------------------------------------------------------------

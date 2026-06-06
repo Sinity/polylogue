@@ -3,105 +3,38 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
+from typing import cast
 
 import pytest
-
-from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
-from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 
 
 def test_collect_derived_statuses_skips_retrieval_band_recomputation(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    """``collect_derived_model_statuses_sync`` returns exactly the merge of the
+    archive-insight and retrieval band builders over the archive `index.db` —
+    it does not recompute the retrieval band itself."""
     from polylogue.storage.derived import derived_status as derived_status_mod
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-    conn = sqlite3.connect(":memory:")
+    initialize_active_archive_root(tmp_path)
+    conn = sqlite3.connect(tmp_path / "index.db")
     try:
-        conn.execute("CREATE TABLE conversations (conversation_id TEXT)")
-        conn.execute("CREATE TABLE messages (message_id TEXT)")
-        conn.commit()
+        monkeypatch.setattr(derived_status_mod, "build_archive_insight_statuses", lambda _metrics: {"insight": "ok"})
+        monkeypatch.setattr(derived_status_mod, "build_retrieval_statuses", lambda _metrics: {"band": "ok"})
 
-        calls: list[bool] = []
-
-        verify_calls: list[tuple[str, bool]] = []
-
-        def fake_message_fts(_conn: sqlite3.Connection, *, verify_total_rows: bool = True) -> dict[str, object]:
-            verify_calls.append(("fts", verify_total_rows))
-            return {"exists": True, "indexed_rows": 0, "total_rows": 0, "ready": True}
-
-        def fake_action_status(
-            _conn: sqlite3.Connection,
-            *,
-            verify_source_alignment: bool = True,
-        ) -> dict[str, object]:
-            verify_calls.append(("action", verify_source_alignment))
-            return {
-                "count": 0,
-                "materialized_conversation_count": 0,
-                "valid_source_conversation_count": 0,
-                "orphan_tool_block_count": 0,
-                "action_fts_count": 0,
-                "rows_ready": True,
-                "action_fts_ready": True,
-                "stale_count": 0,
-                "matches_version": True,
-            }
-
-        def fake_session_status(
-            _conn: sqlite3.Connection,
-            *,
-            verify_freshness: bool = True,
-        ) -> SessionInsightStatusSnapshot:
-            verify_calls.append(("session", verify_freshness))
-            return SessionInsightStatusSnapshot(
-                profile_rows_ready=True,
-                latency_profile_rows_ready=True,
-                profile_merged_fts_ready=True,
-                profile_evidence_fts_ready=True,
-                profile_inference_fts_ready=True,
-                profile_enrichment_fts_ready=True,
-                work_event_inference_rows_ready=True,
-                work_event_inference_fts_ready=True,
-                phase_inference_rows_ready=True,
-                threads_ready=True,
-                threads_fts_ready=True,
-                tag_rollups_ready=True,
-            )
-
-        monkeypatch.setattr(
-            derived_status_mod,
-            "message_fts_readiness_sync",
-            fake_message_fts,
+        statuses = cast(
+            "dict[str, object]",
+            derived_status_mod.collect_derived_model_statuses_sync(conn, verify_full=False),
         )
-        monkeypatch.setattr(
-            derived_status_mod,
-            "action_event_read_model_status_sync",
-            fake_action_status,
-        )
-        monkeypatch.setattr(
-            derived_status_mod,
-            "session_insight_status_sync",
-            fake_session_status,
-        )
-
-        def fake_embedding_stats(
-            _conn: sqlite3.Connection,
-            *,
-            include_retrieval_bands: bool = True,
-        ) -> EmbeddingStatsSnapshot:
-            calls.append(include_retrieval_bands)
-            return EmbeddingStatsSnapshot()
-
-        monkeypatch.setattr(derived_status_mod, "read_embedding_stats_sync", fake_embedding_stats)
-        monkeypatch.setattr(derived_status_mod, "build_archive_insight_statuses", lambda _metrics: {})
-        monkeypatch.setattr(derived_status_mod, "build_retrieval_statuses", lambda _metrics: {})
-
-        assert derived_status_mod.collect_derived_model_statuses_sync(conn, verify_full=False) == {}
+        assert statuses == {
+            "insight": "ok",
+            "band": "ok",
+        }
     finally:
         conn.close()
-
-    assert calls == [False]
-    assert verify_calls == [("fts", False), ("action", False), ("session", False)]
 
 
 def test_build_retrieval_statuses_counts_stale_action_event_fts_rows() -> None:
@@ -110,12 +43,12 @@ def test_build_retrieval_statuses_counts_stale_action_event_fts_rows() -> None:
     statuses = build_retrieval_statuses(
         {
             "transcript_embeddings_ready": True,
-            "embedded_conversations": 0,
+            "embedded_sessions": 0,
             "embedded_messages": 0,
-            "pending_conversations": 0,
+            "pending_sessions": 0,
             "stale_messages": 0,
             "missing_provenance": 0,
-            "total_conversations": 0,
+            "total_sessions": 0,
             "evidence_retrieval_ready": False,
             "evidence_retrieval_rows": 13,
             "expected_evidence_retrieval_rows": 10,

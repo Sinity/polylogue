@@ -139,7 +139,7 @@ def build_profile_fts_status(
 def _profile_rows_status(metrics: Metrics) -> DerivedModelStatus:
     ready = _metric_bool(metrics, "profile_rows_ready")
     profile_rows = _metric_int(metrics, "profile_rows")
-    total_conversations = _metric_int(metrics, "total_conversations")
+    total_sessions = _metric_int(metrics, "total_sessions")
     stale_rows = _metric_int(metrics, "stale_profile_rows")
     orphan_rows = _metric_int(metrics, "orphan_profile_rows")
     return DerivedModelStatus(
@@ -147,10 +147,10 @@ def _profile_rows_status(metrics: Metrics) -> DerivedModelStatus:
         ready=ready,
         detail=_ready_detail(
             ready=ready,
-            ready_detail=f"Session-profile rows ready ({profile_rows:,}/{total_conversations:,} conversations)",
-            pending_detail=f"Session-profile rows pending ({profile_rows:,}/{total_conversations:,} conversations)",
+            ready_detail=f"Session-profile rows ready ({profile_rows:,}/{total_sessions:,} sessions)",
+            pending_detail=f"Session-profile rows pending ({profile_rows:,}/{total_sessions:,} sessions)",
         ),
-        source_documents=total_conversations,
+        source_documents=total_sessions,
         materialized_documents=profile_rows,
         pending_documents=_metric_int(metrics, "missing_profile_rows"),
         stale_rows=stale_rows,

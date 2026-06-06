@@ -17,7 +17,7 @@ from polylogue.core.provider_identity import (
     canonical_schema_provider,
 )
 from polylogue.logging import get_logger
-from polylogue.paths import db_path as archive_db_path
+from polylogue.paths import db_path as index_db_path
 from polylogue.schemas.observation import (
     ProviderConfig,
     SchemaUnit,
@@ -34,7 +34,7 @@ SchemaSample: TypeAlias = JSONDocument
 
 
 @dataclass(frozen=True)
-class _RawConversationRow:
+class _RawSessionRow:
     source_path: str | None
     source_name: str | None
     payload_provider: str | None
@@ -63,8 +63,8 @@ def _sample_provider_where_clause(source_name: str | Provider) -> tuple[str, tup
     return clause, params
 
 
-def _coerce_schema_row(row: sqlite3.Row) -> _RawConversationRow:
-    return _RawConversationRow(
+def _coerce_schema_row(row: sqlite3.Row) -> _RawSessionRow:
+    return _RawSessionRow(
         source_path=row[0],
         source_name=row[1],
         payload_provider=row[2],
@@ -89,7 +89,7 @@ def _record_sample_limit(
 
 def _iter_record_stream_units(
     *,
-    row: _RawConversationRow,
+    row: _RawSessionRow,
     source_name: Provider,
     raw_content: Path,
     config: ProviderConfig,
@@ -129,7 +129,7 @@ def _iter_record_stream_units(
 
 
 def _build_raw_payload_envelope_for_row(
-    row: _RawConversationRow,
+    row: _RawSessionRow,
     *,
     source_name: Provider,
     raw_content: Path,
@@ -158,7 +158,7 @@ def _iter_schema_units_from_db(
     max_samples: int | None = None,
     full_corpus: bool = False,
 ) -> Iterator[SchemaUnit]:
-    """Yield clusterable schema units from raw_conversations."""
+    """Yield clusterable schema units from raw_sessions."""
     source_name = Provider.from_string(source_name)
     blob_store = get_blob_store()
     conn = open_connection(db_path)
@@ -168,7 +168,7 @@ def _iter_schema_units_from_db(
         cursor = conn.execute(
             f"""
             SELECT source_path, source_name, payload_provider, raw_id, file_mtime, acquired_at
-            FROM raw_conversations
+            FROM raw_sessions
             WHERE {where_clause}
             """,
             where_params,
@@ -251,7 +251,7 @@ def _iter_samples_from_db(
     for unit in _iter_schema_units_from_db(source_name, db_path=db_path, config=config):
         for sample in unit.schema_samples:
             if with_conv_ids:
-                yield sample, unit.conversation_id
+                yield sample, unit.session_id
             else:
                 yield sample
 
@@ -263,7 +263,7 @@ def get_sample_count_from_db(
     """Get total message count for a provider in the database."""
     source_name = Provider.from_string(source_name)
     if db_path is None:
-        db_path = archive_db_path()
+        db_path = index_db_path()
     if not db_path.exists():
         return 0
 
@@ -279,7 +279,7 @@ def get_sample_count_from_db(
             f"""
             SELECT COUNT(*)
             FROM messages m
-            JOIN conversations c ON m.conversation_id = c.conversation_id
+            JOIN sessions c ON m.session_id = c.session_id
             WHERE c.source_name IN ({placeholders})
             """,
             provider_tokens,

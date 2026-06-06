@@ -48,7 +48,7 @@ from polylogue.schemas.unified.unified import (
     harmonize_parsed_message,
     is_message_record,
 )
-from polylogue.sources.providers.chatgpt import ChatGPTConversation, ChatGPTMessage
+from polylogue.sources.providers.chatgpt import ChatGPTMessage, ChatGPTSession
 from polylogue.sources.providers.claude_ai import ClaudeAIChatMessage
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 from polylogue.sources.providers.codex import CodexRecord
@@ -648,10 +648,10 @@ def test_invalid_semantic_surface_contract(label: str, action: Callable[[], obje
 
 
 def test_chatgpt_iter_user_assistant_pairs_contract() -> None:
-    conversation = ChatGPTConversation.model_validate(
+    session = ChatGPTSession.model_validate(
         {
             "id": "conv-pairs",
-            "conversation_id": "conv-pairs",
+            "session_id": "conv-pairs",
             "title": "Pairs",
             "create_time": 1700000000.0,
             "update_time": 1700000001.0,
@@ -702,7 +702,7 @@ def test_chatgpt_iter_user_assistant_pairs_contract() -> None:
         }
     )
 
-    pairs = list(conversation.iter_user_assistant_pairs())
+    pairs = list(session.iter_user_assistant_pairs())
 
     assert [(user.id, assistant.id) for user, assistant in pairs] == [("m1", "m2"), ("m3", "m4")]
 

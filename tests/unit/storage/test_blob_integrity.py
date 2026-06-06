@@ -13,12 +13,18 @@ def _make_db(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.executescript(
         """
-        CREATE TABLE raw_conversations (
+        CREATE TABLE raw_sessions (
             raw_id TEXT PRIMARY KEY,
             source_name TEXT NOT NULL DEFAULT '',
             source_path TEXT NOT NULL DEFAULT '',
+            blob_hash BLOB,
             blob_size INTEGER NOT NULL DEFAULT 0,
             acquired_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE blob_refs (
+            blob_hash BLOB NOT NULL,
+            raw_id TEXT NOT NULL,
+            ref_type TEXT NOT NULL DEFAULT 'raw_payload'
         );
         CREATE TABLE pending_blob_refs (
             blob_hash TEXT NOT NULL,
@@ -48,7 +54,7 @@ def test_scan_blob_integrity_classifies_missing_orphan_hash_mismatch_and_stale_l
 
     for blob_hash, size in ((referenced_ok, ok_size), (missing_hash, 128), (corrupt_hash, corrupt_size)):
         conn.execute(
-            "INSERT INTO raw_conversations (raw_id, blob_size, acquired_at) VALUES (?, ?, ?)",
+            "INSERT INTO raw_sessions (raw_id, blob_size, acquired_at) VALUES (?, ?, ?)",
             (blob_hash, size, "2026-05-24T00:00:00+00:00"),
         )
     conn.execute(
@@ -80,7 +86,7 @@ def test_scan_blob_integrity_bounds_default_probe_but_full_scans_everything(tmp_
     hashes = [store.write_from_bytes(f"payload-{idx}".encode())[0] for idx in range(3)]
     for blob_hash in hashes:
         conn.execute(
-            "INSERT INTO raw_conversations (raw_id, blob_size, acquired_at) VALUES (?, ?, ?)",
+            "INSERT INTO raw_sessions (raw_id, blob_size, acquired_at) VALUES (?, ?, ?)",
             (blob_hash, 9, "2026-05-24T00:00:00+00:00"),
         )
     conn.commit()
@@ -93,3 +99,79 @@ def test_scan_blob_integrity_bounds_default_probe_but_full_scans_everything(tmp_
     assert sampled.scanned_references == 1
     assert full.scanned_blobs == 3
     assert full.scanned_references == 3
+
+
+def test_scan_blob_integrity_reads_source_tier_blob_refs(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    store = BlobStore(tmp_path / "blob")
+    raw_hash, raw_size = store.write_from_bytes(b"raw payload")
+    attachment_hash, attachment_size = store.write_from_bytes(b"attachment")
+    orphan_hash, _ = store.write_from_bytes(b"orphan")
+    with sqlite3.connect(source_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY,
+                blob_hash BLOB NOT NULL,
+                blob_size INTEGER NOT NULL
+            );
+            CREATE TABLE blob_refs (
+                blob_hash BLOB NOT NULL,
+                raw_id TEXT NOT NULL,
+                ref_type TEXT NOT NULL,
+                source_path TEXT,
+                size_bytes INTEGER NOT NULL,
+                acquired_at_ms INTEGER NOT NULL,
+                PRIMARY KEY(blob_hash, raw_id, ref_type)
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size) VALUES (?, ?, ?)",
+            ("raw-v1", bytes.fromhex(raw_hash), raw_size),
+        )
+        conn.execute(
+            """
+            INSERT INTO blob_refs (
+                blob_hash, raw_id, ref_type, source_path, size_bytes, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (bytes.fromhex(attachment_hash), "raw-v1", "attachment", "/tmp/a.bin", attachment_size, 1),
+        )
+
+    report = scan_blob_integrity(source_db, store=store, full=True)
+
+    by_kind = {finding.kind: finding for finding in report.findings}
+    assert report.total_references_seen == 2
+    assert by_kind["orphan_blobs"].sample == (orphan_hash,)
+    assert raw_hash not in by_kind["orphan_blobs"].sample
+    assert attachment_hash not in by_kind["orphan_blobs"].sample
+
+
+def test_scan_blob_integrity_uses_sibling_archive_source_from_index_db(tmp_path: Path) -> None:
+    index_db = tmp_path / "index.db"
+    source_db = tmp_path / "source.db"
+    store = BlobStore(tmp_path / "blob")
+    raw_hash, raw_size = store.write_from_bytes(b"raw payload")
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+    with sqlite3.connect(source_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY,
+                blob_hash BLOB NOT NULL,
+                blob_size INTEGER NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size) VALUES (?, ?, ?)",
+            ("raw-v1", bytes.fromhex(raw_hash), raw_size),
+        )
+
+    report = scan_blob_integrity(index_db, store=store, full=True)
+
+    assert report.ok is True
+    assert report.total_references_seen == 1
+    assert report.scanned_references == 1

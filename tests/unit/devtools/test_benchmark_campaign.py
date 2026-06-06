@@ -200,8 +200,8 @@ def test_campaign_result_round_trips_path_targets_from_artifact(tmp_path: Path) 
         worst_regression_pct=None,
         origin="generated.search-filters",
         path_targets=["search-filter-loop"],
-        artifact_targets=["conversation_query_results"],
-        operation_targets=["query-conversations", "benchmark.query.search-filters"],
+        artifact_targets=["session_query_results"],
+        operation_targets=["query-sessions", "benchmark.query.search-filters"],
         tags=["benchmark", "search"],
     )
     artifact = tmp_path / "artifact.json"

@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict
 
 
 class GeminiBranchParent(BaseModel):
-    """Parent reference for branched conversations."""
+    """Parent reference for branched sessions."""
 
     model_config = ConfigDict(extra="allow")
 

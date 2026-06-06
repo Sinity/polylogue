@@ -3,14 +3,12 @@
 Only protocols with 2+ implementations earn their existence here:
 - SearchProvider: FTS5, Hybrid
 - VectorProvider: sqlite-vec (optional, requires `VOYAGE_API_KEY`)
-- OutputRenderer: Markdown, HTML
 """
 
 from __future__ import annotations
 
 import builtins
 from collections.abc import AsyncIterator
-from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from polylogue.core.json import JSONDocument, JSONValue
@@ -20,25 +18,25 @@ if TYPE_CHECKING:
     import aiosqlite
 
     from polylogue.archive.action_event.action_events import ActionEvent
-    from polylogue.archive.conversation.models import Conversation, ConversationSummary
     from polylogue.archive.message.models import Message
     from polylogue.archive.message.roles import MessageRoleFilter
-    from polylogue.archive.query.search_hits import ConversationSearchHit
+    from polylogue.archive.query.search_hits import SessionSearchHit
+    from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.archive.session.session_profile import SessionProfile
     from polylogue.archive.stats import ArchiveStats
     from polylogue.storage.action_events.artifacts import ActionEventArtifactState
-    from polylogue.storage.archive_views import ConversationRenderProjection
-    from polylogue.storage.query_models import ConversationRecordQuery
+    from polylogue.storage.archive_views import SessionRenderProjection
+    from polylogue.storage.query_models import SessionRecordQuery
     from polylogue.storage.runtime import (
         ArtifactObservationRecord,
         AttachmentRecord,
-        ConversationRecord,
         MessageRecord,
-        RawConversationRecord,
+        RawSessionRecord,
+        SessionRecord,
     )
     from polylogue.storage.sqlite.queries.messages import MessageTypeName
     from polylogue.storage.sqlite.queries.stats import AggregateMessageStats
-    from polylogue.types import ConversationId
+    from polylogue.types import SessionId
 
 
 @runtime_checkable
@@ -67,28 +65,12 @@ class VectorProvider(Protocol):
 
     model: str
 
-    def upsert(self, conversation_id: str, messages: list[MessageRecord]) -> None:
-        """Synchronously embed and store vectors for a conversation's messages."""
+    def upsert(self, session_id: str, messages: list[MessageRecord]) -> None:
+        """Synchronously embed and store vectors for a session's messages."""
         ...
 
     def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
         """Synchronously return ranked ``(message_id, distance)`` search results."""
-        ...
-
-
-@runtime_checkable
-class OutputRenderer(Protocol):
-    """Pluggable output renderer.
-
-    Implementations: MarkdownRenderer, HTMLRenderer (polylogue.rendering.renderers)
-    """
-
-    async def render(self, conversation_id: str, output_path: Path) -> Path:
-        """Render a conversation to the output path, returning the written file path."""
-        ...
-
-    def supports_format(self) -> str:
-        """Return the format name this renderer handles (e.g. 'markdown', 'html')."""
         ...
 
 
@@ -102,16 +84,16 @@ class ProgressCallback(Protocol):
 
 
 @runtime_checkable
-class ConversationReader(Protocol):
-    """Read-only interface for conversation retrieval.
+class SessionReader(Protocol):
+    """Read-only interface for session retrieval.
 
-    Subset of ConversationRepository used by filters and query specs that
-    only need to read conversations, not write or search them.
+    Subset of SessionRepository used by filters and query specs that
+    only need to read sessions, not write or search them.
     """
 
-    async def get(self, conversation_id: str) -> Conversation | None: ...
+    async def get(self, session_id: str) -> Session | None: ...
 
-    async def get_eager(self, conversation_id: str) -> Conversation | None: ...
+    async def get_eager(self, session_id: str) -> Session | None: ...
 
     async def list(
         self,
@@ -134,7 +116,7 @@ class ConversationReader(Protocol):
         max_messages: int | None = None,
         min_words: int | None = None,
         message_type: str | None = None,
-    ) -> builtins.list[Conversation]: ...
+    ) -> builtins.list[Session]: ...
 
     async def list_summaries(
         self,
@@ -158,7 +140,7 @@ class ConversationReader(Protocol):
         max_messages: int | None = None,
         min_words: int | None = None,
         message_type: str | None = None,
-    ) -> builtins.list[ConversationSummary]: ...
+    ) -> builtins.list[SessionSummary]: ...
 
     async def count(
         self,
@@ -181,13 +163,13 @@ class ConversationReader(Protocol):
         message_type: str | None = None,
     ) -> int: ...
 
-    async def get_summary(self, conversation_id: str) -> ConversationSummary | None: ...
+    async def get_summary(self, session_id: str) -> SessionSummary | None: ...
 
-    async def resolve_id(self, id_prefix: str, *, strict: bool = False) -> ConversationId | None: ...
+    async def resolve_id(self, id_prefix: str, *, strict: bool = False) -> SessionId | None: ...
 
     def iter_messages(
         self,
-        conversation_id: str,
+        session_id: str,
         *,
         dialogue_only: bool = False,
         message_roles: MessageRoleFilter = (),
@@ -197,21 +179,21 @@ class ConversationReader(Protocol):
 
 @runtime_checkable
 class SearchStore(Protocol):
-    """Search interface for conversation retrieval."""
+    """Search interface for session retrieval."""
 
     async def search(
         self,
         query: str,
         limit: int = 20,
         providers: builtins.list[str] | None = None,
-    ) -> list[Conversation]: ...
+    ) -> list[Session]: ...
 
     async def search_summaries(
         self,
         query: str,
         limit: int = 20,
         providers: builtins.list[str] | None = None,
-    ) -> list[ConversationSummary]: ...
+    ) -> list[SessionSummary]: ...
 
     async def search_summary_hits(
         self,
@@ -219,14 +201,14 @@ class SearchStore(Protocol):
         limit: int = 20,
         providers: builtins.list[str] | None = None,
         since: str | None = None,
-    ) -> list[ConversationSearchHit]: ...
+    ) -> list[SessionSearchHit]: ...
 
     async def search_similar(
         self,
         text: str,
         limit: int = 10,
         vector_provider: VectorProvider | None = None,
-    ) -> list[Conversation]: ...
+    ) -> list[Session]: ...
 
 
 @runtime_checkable
@@ -237,8 +219,8 @@ class ActionEventArtifactReader(Protocol):
 
 
 @runtime_checkable
-class ConversationQueryRuntimeStore(
-    ConversationReader,
+class SessionQueryRuntimeStore(
+    SessionReader,
     SearchStore,
     ActionEventArtifactReader,
     Protocol,
@@ -247,35 +229,35 @@ class ConversationQueryRuntimeStore(
 
     async def list_summaries_by_query(
         self,
-        query: ConversationRecordQuery,
-    ) -> list[ConversationSummary]: ...
+        query: SessionRecordQuery,
+    ) -> list[SessionSummary]: ...
 
     async def list_by_query(
         self,
-        query: ConversationRecordQuery,
-    ) -> list[Conversation]: ...
+        query: SessionRecordQuery,
+    ) -> list[Session]: ...
 
-    async def count_by_query(self, query: ConversationRecordQuery) -> int: ...
+    async def count_by_query(self, query: SessionRecordQuery) -> int: ...
 
-    async def delete_conversation(self, conversation_id: str) -> bool: ...
+    async def delete_session(self, session_id: str) -> bool: ...
 
     async def search_actions(
         self,
         query: str,
         limit: int = 20,
         providers: builtins.list[str] | None = None,
-    ) -> list[Conversation]: ...
+    ) -> list[Session]: ...
 
 
 @runtime_checkable
 class ArchiveMessageQueryStore(Protocol):
     """Low-level archive/message query band used by CLI output and stats helpers."""
 
-    async def get_messages(self, conversation_id: str) -> list[MessageRecord]: ...
+    async def get_messages(self, session_id: str) -> list[MessageRecord]: ...
 
     async def get_messages_paginated(
         self,
-        conversation_id: str,
+        session_id: str,
         *,
         message_role: MessageRoleFilter = (),
         message_type: MessageTypeName | None = None,
@@ -283,13 +265,13 @@ class ArchiveMessageQueryStore(Protocol):
         offset: int = 0,
     ) -> tuple[list[MessageRecord], int]: ...
 
-    async def get_conversation_stats(self, conversation_id: str) -> dict[str, int]: ...
+    async def get_session_stats(self, session_id: str) -> dict[str, int]: ...
 
-    async def get_message_counts_batch(self, conversation_ids: list[str]) -> dict[str, int]: ...
+    async def get_message_counts_batch(self, session_ids: list[str]) -> dict[str, int]: ...
 
     async def aggregate_message_stats(
         self,
-        conversation_ids: list[str] | None = None,
+        session_ids: list[str] | None = None,
     ) -> AggregateMessageStats: ...
 
     async def get_stats_by(self, group_by: str = "provider") -> dict[str, int]: ...
@@ -299,11 +281,11 @@ class ArchiveMessageQueryStore(Protocol):
 class SemanticArchiveQueryStore(ArchiveMessageQueryStore, Protocol):
     """Archive query band needed to hydrate semantic facts in batch."""
 
-    async def get_conversations_batch(self, ids: list[str]) -> list[ConversationRecord]: ...
+    async def get_sessions_batch(self, ids: list[str]) -> list[SessionRecord]: ...
 
     async def get_messages_batch(
         self,
-        conversation_ids: list[str],
+        session_ids: list[str],
         *,
         sort_key_since: float | None = None,
         sort_key_until: float | None = None,
@@ -312,33 +294,33 @@ class SemanticArchiveQueryStore(ArchiveMessageQueryStore, Protocol):
 
     async def get_attachments_batch(
         self,
-        conversation_ids: list[str],
+        session_ids: list[str],
     ) -> dict[str, list[AttachmentRecord]]: ...
 
 
 @runtime_checkable
-class ConversationOutputStore(ConversationReader, Protocol):
-    """Conversation output surface used by streaming and summary display helpers."""
+class SessionOutputStore(SessionReader, Protocol):
+    """Session output surface used by streaming and summary display helpers."""
 
     async def get_render_projection(
         self,
-        conversation_id: str,
-    ) -> ConversationRenderProjection | None: ...
+        session_id: str,
+    ) -> SessionRenderProjection | None: ...
 
-    async def get_conversation_stats(self, conversation_id: str) -> dict[str, int]: ...
+    async def get_session_stats(self, session_id: str) -> dict[str, int]: ...
 
-    async def get_message_counts_batch(self, conversation_ids: list[str]) -> dict[str, int]: ...
+    async def get_message_counts_batch(self, session_ids: list[str]) -> dict[str, int]: ...
 
 
 @runtime_checkable
-class ConversationSemanticStatsStore(ActionEventArtifactReader, Protocol):
+class SessionSemanticStatsStore(ActionEventArtifactReader, Protocol):
     """Semantic stats surface for action-event-backed grouped output."""
 
-    async def get_conversations_batch(self, ids: list[str]) -> list[ConversationRecord]: ...
+    async def get_sessions_batch(self, ids: list[str]) -> list[SessionRecord]: ...
 
     async def get_messages_batch(
         self,
-        conversation_ids: list[str],
+        session_ids: list[str],
         *,
         sort_key_since: float | None = None,
         sort_key_until: float | None = None,
@@ -347,26 +329,26 @@ class ConversationSemanticStatsStore(ActionEventArtifactReader, Protocol):
 
     async def get_attachments_batch(
         self,
-        conversation_ids: list[str],
+        session_ids: list[str],
     ) -> dict[str, list[AttachmentRecord]]: ...
 
     async def get_action_events_batch(
         self,
-        conversation_ids: list[str],
+        session_ids: list[str],
     ) -> dict[str, tuple[ActionEvent, ...]]: ...
 
 
 @runtime_checkable
-class ConversationArchiveStatsStore(
-    ConversationOutputStore,
-    ConversationSemanticStatsStore,
+class SessionArchiveStatsStore(
+    SessionOutputStore,
+    SessionSemanticStatsStore,
     Protocol,
 ):
     """Archive stats/profile surface consumed by grouped CLI output helpers."""
 
     async def aggregate_message_stats(
         self,
-        conversation_ids: list[str] | None = None,
+        session_ids: list[str] | None = None,
     ) -> AggregateMessageStats: ...
 
     async def get_archive_stats(
@@ -379,33 +361,33 @@ class ConversationArchiveStatsStore(
 
     async def get_session_profiles_batch(
         self,
-        conversation_ids: list[str],
+        session_ids: list[str],
     ) -> dict[str, SessionProfile]: ...
 
-    async def get_many(self, conversation_ids: list[str]) -> list[Conversation]: ...
+    async def get_many(self, session_ids: list[str]) -> list[Session]: ...
 
 
 @runtime_checkable
 class TagStore(Protocol):
     """Tag and metadata management interface."""
 
-    async def list_tags(self, *, provider: str | None = None) -> dict[str, int]: ...
+    async def list_tags(self, *, origin: str | None = None) -> dict[str, int]: ...
 
-    async def get_metadata(self, conversation_id: str) -> JSONDocument: ...
+    async def get_metadata(self, session_id: str) -> JSONDocument: ...
 
-    async def update_metadata(self, conversation_id: str, key: str, value: JSONValue) -> bool: ...
+    async def update_metadata(self, session_id: str, key: str, value: JSONValue) -> bool: ...
 
-    async def delete_metadata(self, conversation_id: str, key: str) -> bool: ...
+    async def delete_metadata(self, session_id: str, key: str) -> bool: ...
 
-    async def add_tag(self, conversation_id: str, tag: str) -> bool: ...
+    async def add_tag(self, session_id: str, tag: str) -> bool: ...
 
-    async def bulk_add_tags(self, conversation_ids: list[str], tags: list[str]) -> int: ...
+    async def bulk_add_tags(self, session_ids: list[str], tags: list[str]) -> int: ...
 
-    async def remove_tag(self, conversation_id: str, tag: str) -> bool: ...
+    async def remove_tag(self, session_id: str, tag: str) -> bool: ...
 
 
 @runtime_checkable
-class ConversationArchiveReadStore(ConversationReader, SearchStore, Protocol):
+class SessionArchiveReadStore(SessionReader, SearchStore, Protocol):
     """Small read-side surface used by UI and resource adapters."""
 
     async def get_archive_stats(
@@ -419,7 +401,7 @@ class ConversationArchiveReadStore(ConversationReader, SearchStore, Protocol):
 class RawPersistenceStore(Protocol):
     """Minimal raw-persistence surface used during acquisition."""
 
-    async def save_raw_conversation(self, record: RawConversationRecord) -> bool: ...
+    async def save_raw_session(self, record: RawSessionRecord) -> bool: ...
 
     async def save_artifact_observation(self, record: ArtifactObservationRecord) -> bool: ...
 
@@ -428,10 +410,10 @@ class RawPersistenceStore(Protocol):
 class RawValidationStore(Protocol):
     """Minimal raw-validation surface used by validation flows."""
 
-    async def get_raw_conversations_batch(
+    async def get_raw_sessions_batch(
         self,
         raw_ids: builtins.list[str],
-    ) -> builtins.list[RawConversationRecord]: ...
+    ) -> builtins.list[RawSessionRecord]: ...
 
     async def mark_raw_validated(
         self,
@@ -457,17 +439,16 @@ class RawValidationStore(Protocol):
 __all__ = [
     "SearchProvider",
     "VectorProvider",
-    "OutputRenderer",
     "ProgressCallback",
-    "ConversationReader",
+    "SessionReader",
     "SearchStore",
     "ActionEventArtifactReader",
-    "ConversationQueryRuntimeStore",
+    "SessionQueryRuntimeStore",
     "ArchiveMessageQueryStore",
     "SemanticArchiveQueryStore",
-    "ConversationOutputStore",
-    "ConversationSemanticStatsStore",
-    "ConversationArchiveStatsStore",
+    "SessionOutputStore",
+    "SessionSemanticStatsStore",
+    "SessionArchiveStatsStore",
     "TagStore",
     "RawPersistenceStore",
     "RawValidationStore",

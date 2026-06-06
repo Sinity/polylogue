@@ -1,11 +1,12 @@
 Usage: polylogue stats [OPTIONS]
 
-  Show statistics for matched conversations.
+  Show statistics for matched sessions.
 
 Options:
   --by [provider|month|year|day|action|tool|repo|work-kind]
                                   Aggregate by dimension
-  -f, --format [markdown|json|html|obsidian|org|yaml|plaintext|csv]
-                                  Output format
-  -n, --limit INTEGER             Max matched conversations before grouping
-  -h, --help                      Show this message and exit.
+  -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|plaintext|csv]
+                                  Output format (ndjson = one JSON document
+                                  per row, streaming-friendly)
+  -l, -n, --limit INTEGER         Max matched sessions before grouping
+  --help                          Show this message and exit.

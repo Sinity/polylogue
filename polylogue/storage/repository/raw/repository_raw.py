@@ -1,15 +1,15 @@
-"""Raw/evidence persistence and query mixin for the conversation repository."""
+"""Raw/evidence persistence and query mixin for the session repository."""
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from polylogue.storage.raw.models import RawConversationState, RawConversationStateUpdate
+from polylogue.storage.raw.models import RawSessionState, RawSessionStateUpdate
 from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
 from polylogue.storage.runtime import (
     ArtifactObservationRecord,
-    RawConversationRecord,
+    RawSessionRecord,
 )
 from polylogue.storage.sqlite.queries import artifacts as artifacts_q
 from polylogue.storage.sqlite.queries import raw as raw_queries
@@ -20,9 +20,9 @@ class RepositoryRawMixin:
     if TYPE_CHECKING:
         _backend: RepositoryBackendProtocol
 
-    async def save_raw_conversation(self, record: RawConversationRecord) -> bool:
+    async def save_raw_session(self, record: RawSessionRecord) -> bool:
         async with self._backend.connection() as conn:
-            return await raw_queries.save_raw_conversation(
+            return await raw_queries.save_raw_session(
                 conn,
                 record,
                 self._backend.transaction_depth,
@@ -36,15 +36,15 @@ class RepositoryRawMixin:
                 self._backend.transaction_depth,
             )
 
-    async def get_raw_conversation(self, raw_id: str) -> RawConversationRecord | None:
+    async def get_raw_session(self, raw_id: str) -> RawSessionRecord | None:
         async with self._backend.connection() as conn:
-            return await raw_queries.get_raw_conversation(conn, raw_id)
+            return await raw_queries.get_raw_session(conn, raw_id)
 
     async def update_raw_state(
         self,
         raw_id: str,
         *,
-        state: RawConversationStateUpdate,
+        state: RawSessionStateUpdate,
     ) -> None:
         """Apply a typed raw-state mutation."""
         async with self._backend.connection() as conn:
@@ -170,12 +170,12 @@ class RepositoryRawMixin:
                 transaction_depth=self._backend.transaction_depth,
             )
 
-    async def get_raw_conversations_batch(
+    async def get_raw_sessions_batch(
         self,
         raw_ids: list[str],
-    ) -> list[RawConversationRecord]:
+    ) -> list[RawSessionRecord]:
         async with self._backend.connection() as conn:
-            return await raw_queries.get_raw_conversations_batch(conn, raw_ids)
+            return await raw_queries.get_raw_sessions_batch(conn, raw_ids)
 
     async def get_raw_blob_sizes(
         self,
@@ -184,20 +184,20 @@ class RepositoryRawMixin:
         async with self._backend.connection() as conn:
             return await raw_queries.get_raw_blob_sizes(conn, raw_ids)
 
-    async def get_raw_conversation_states(
+    async def get_raw_session_states(
         self,
         raw_ids: list[str],
-    ) -> dict[str, RawConversationState]:
+    ) -> dict[str, RawSessionState]:
         async with self._backend.connection() as conn:
-            return await raw_queries.get_raw_conversation_states(conn, raw_ids)
+            return await raw_queries.get_raw_session_states(conn, raw_ids)
 
-    async def iter_raw_conversations(
+    async def iter_raw_sessions(
         self,
         provider: str | None = None,
         limit: int | None = None,
-    ) -> AsyncIterator[RawConversationRecord]:
+    ) -> AsyncIterator[RawSessionRecord]:
         async with self._backend.connection() as conn:
-            async for record in raw_queries.iter_raw_conversations(
+            async for record in raw_queries.iter_raw_sessions(
                 conn,
                 provider=provider,
                 limit=limit,
@@ -226,21 +226,21 @@ class RepositoryRawMixin:
             ):
                 yield header
 
-    async def get_raw_conversation_count(self, provider: str | None = None) -> int:
+    async def get_raw_session_count(self, provider: str | None = None) -> int:
         async with self._backend.connection() as conn:
-            return await raw_queries.get_raw_conversation_count(conn, provider=provider)
+            return await raw_queries.get_raw_session_count(conn, provider=provider)
 
-    async def get_raw_records_for_conversation(
+    async def get_raw_records_for_session(
         self,
-        conversation_id: str,
+        session_id: str,
         *,
         limit: int = 50,
         offset: int = 0,
-    ) -> tuple[list[RawConversationRecord], int]:
+    ) -> tuple[list[RawSessionRecord], int]:
         async with self._backend.connection() as conn:
-            return await raw_queries.get_raw_records_for_conversation(
+            return await raw_queries.get_raw_records_for_session(
                 conn,
-                conversation_id,
+                session_id,
                 limit=limit,
                 offset=offset,
             )

@@ -12,13 +12,13 @@ from polylogue.insights.archive_models import (
     WorkThreadPayload,
 )
 from polylogue.storage.runtime import SessionPhaseRecord, SessionWorkEventRecord, WorkThreadRecord
-from polylogue.storage.sqlite.queries.mappers_insight_legacy import (
-    parse_legacy_payload_dict,
+from polylogue.storage.sqlite.queries.mappers_insight_fallback import (
+    parse_fallback_payload_dict,
     parse_payload_model,
-    session_phase_evidence_from_legacy,
-    session_phase_inference_from_legacy,
-    session_work_event_evidence_from_legacy,
-    session_work_event_inference_from_legacy,
+    session_phase_evidence_from_fallback,
+    session_phase_inference_from_fallback,
+    session_work_event_evidence_from_fallback,
+    session_work_event_inference_from_fallback,
 )
 from polylogue.storage.sqlite.queries.mappers_support import (
     _json_int_dict,
@@ -29,11 +29,11 @@ from polylogue.storage.sqlite.queries.mappers_support import (
     _row_int,
     _row_text,
 )
-from polylogue.types import ConversationId
+from polylogue.types import SessionId
 
 
 def _row_to_session_work_event_record(row: sqlite3.Row) -> SessionWorkEventRecord:
-    legacy_payload = parse_legacy_payload_dict(
+    fallback_payload = parse_fallback_payload_dict(
         row,
         record_id=row["event_id"],
     )
@@ -44,7 +44,7 @@ def _row_to_session_work_event_record(row: sqlite3.Row) -> SessionWorkEventRecor
         model=WorkEventEvidencePayload,
     )
     if evidence_payload is None:
-        evidence_payload = session_work_event_evidence_from_legacy(row, legacy_payload)
+        evidence_payload = session_work_event_evidence_from_fallback(row, fallback_payload)
     inference_payload = parse_payload_model(
         row,
         "inference_payload_json",
@@ -52,10 +52,10 @@ def _row_to_session_work_event_record(row: sqlite3.Row) -> SessionWorkEventRecor
         model=WorkEventInferencePayload,
     )
     if inference_payload is None:
-        inference_payload = session_work_event_inference_from_legacy(row, legacy_payload)
+        inference_payload = session_work_event_inference_from_fallback(row, fallback_payload)
     return SessionWorkEventRecord(
         event_id=row["event_id"],
-        conversation_id=ConversationId(row["conversation_id"]),
+        session_id=SessionId(row["session_id"]),
         materializer_version=int(_row_int(row, "materializer_version", 1) or 1),
         materialized_at=row["materialized_at"],
         source_updated_at=_row_text(row, "source_updated_at"),
@@ -85,7 +85,7 @@ def _row_to_session_work_event_record(row: sqlite3.Row) -> SessionWorkEventRecor
 
 
 def _row_to_session_phase_record(row: sqlite3.Row) -> SessionPhaseRecord:
-    legacy_payload = parse_legacy_payload_dict(
+    fallback_payload = parse_fallback_payload_dict(
         row,
         record_id=row["phase_id"],
     )
@@ -96,7 +96,7 @@ def _row_to_session_phase_record(row: sqlite3.Row) -> SessionPhaseRecord:
         model=SessionPhaseEvidencePayload,
     )
     if evidence_payload is None:
-        evidence_payload = session_phase_evidence_from_legacy(row, legacy_payload)
+        evidence_payload = session_phase_evidence_from_fallback(row, fallback_payload)
     inference_payload = parse_payload_model(
         row,
         "inference_payload_json",
@@ -104,10 +104,10 @@ def _row_to_session_phase_record(row: sqlite3.Row) -> SessionPhaseRecord:
         model=SessionPhaseInferencePayload,
     )
     if inference_payload is None:
-        inference_payload = session_phase_inference_from_legacy(row, legacy_payload)
+        inference_payload = session_phase_inference_from_fallback(row, fallback_payload)
     return SessionPhaseRecord(
         phase_id=row["phase_id"],
-        conversation_id=ConversationId(row["conversation_id"]),
+        session_id=SessionId(row["session_id"]),
         materializer_version=int(_row_int(row, "materializer_version", 1) or 1),
         materialized_at=row["materialized_at"],
         source_updated_at=_row_text(row, "source_updated_at"),
@@ -145,7 +145,7 @@ def _row_to_session_phase_record(row: sqlite3.Row) -> SessionPhaseRecord:
 def _row_to_work_thread_record(row: sqlite3.Row) -> WorkThreadRecord:
     return WorkThreadRecord(
         thread_id=row["thread_id"],
-        root_id=ConversationId(row["root_id"]),
+        root_id=SessionId(row["root_id"]),
         materializer_version=int(_row_int(row, "materializer_version", 1) or 1),
         materialized_at=row["materialized_at"],
         source_updated_at=_row_text(row, "source_updated_at"),

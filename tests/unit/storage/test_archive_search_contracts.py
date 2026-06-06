@@ -6,79 +6,80 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.archive.conversation.models import Conversation
 from polylogue.archive.message.messages import MessageCollection
+from polylogue.archive.session.domain_models import Session
 from polylogue.core.json import JSONDocument
+from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.prepare import prepare_records
 from polylogue.sources.parsers.drive import parse_chunked_prompt
-from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.repository import SessionRepository
 from polylogue.storage.repository.archive.search import RepositoryArchiveSearchMixin
-from polylogue.storage.runtime import ConversationRecord
+from polylogue.storage.runtime import SessionRecord
 from polylogue.storage.search.models import (
-    ConversationSearchEvidenceRow,
-    ConversationSearchResult,
+    SessionSearchEvidenceRow,
+    SessionSearchResult,
 )
 from polylogue.storage.search.models import (
-    ConversationSearchIdHit as StorageConversationSearchIdHit,
+    SessionSearchIdHit as StorageSessionSearchIdHit,
 )
-from polylogue.storage.search_providers.hybrid_conversations import (
-    _resolve_ranked_conversation_hits,
+from polylogue.storage.search_providers.hybrid_sessions import (
+    _resolve_ranked_session_hits,
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.query_store import SQLiteQueryStore
-from polylogue.types import ContentHash, ConversationId, Provider
+from polylogue.types import ContentHash, Provider, SessionId
 
 
-def _conversation_record(conversation_id: str, *, title: str, source_name: str = "chatgpt") -> ConversationRecord:
-    return ConversationRecord(
-        conversation_id=ConversationId(conversation_id),
+def _session_record(session_id: str, *, title: str, source_name: str = "chatgpt") -> SessionRecord:
+    return SessionRecord(
+        session_id=SessionId(session_id),
         source_name=source_name,
-        provider_conversation_id=f"provider-{conversation_id}",
+        provider_session_id=f"provider-{session_id}",
         title=title,
-        content_hash=ContentHash(f"hash-{conversation_id}"),
+        content_hash=ContentHash(f"hash-{session_id}"),
     )
 
 
 @dataclass
 class _FakeQueries(SQLiteQueryStore):
-    hits: ConversationSearchResult
-    records_by_id: dict[str, ConversationRecord]
-    attachment_hits: list[ConversationSearchEvidenceRow] | None = None
+    hits: SessionSearchResult
+    records_by_id: dict[str, SessionRecord]
+    attachment_hits: list[SessionSearchEvidenceRow] | None = None
     last_batch_ids: list[str] | None = None
 
-    async def search_conversation_hits(
+    async def search_session_hits(
         self,
         query: str,
         limit: int = 20,
         providers: list[str] | None = None,
-    ) -> ConversationSearchResult:
+    ) -> SessionSearchResult:
         del query, limit, providers
         return self.hits
 
-    async def search_action_conversation_hits(
+    async def search_action_session_hits(
         self,
         query: str,
         limit: int = 20,
         providers: list[str] | None = None,
-    ) -> ConversationSearchResult:
+    ) -> SessionSearchResult:
         del query, limit, providers
         return self.hits
 
-    async def search_conversation_evidence_hits(
+    async def search_session_evidence_hits(
         self,
         query: str,
         limit: int = 20,
         providers: list[str] | None = None,
         since: str | None = None,
-    ) -> list[ConversationSearchEvidenceRow]:
+    ) -> list[SessionSearchEvidenceRow]:
         del query, limit, providers, since
         return [
-            ConversationSearchEvidenceRow(
-                conversation_id=hit.conversation_id,
+            SessionSearchEvidenceRow(
+                session_id=hit.session_id,
                 rank=hit.rank,
                 score=hit.score,
-                message_id=f"msg-{hit.conversation_id}",
-                snippet=f"snippet for {hit.conversation_id}",
+                message_id=f"msg-{hit.session_id}",
+                snippet=f"snippet for {hit.session_id}",
                 score_components={"bm25_raw": hit.score} if hit.score is not None else {},
                 score_kind="bm25" if hit.score is not None else None,
                 lane_rank=hit.rank,
@@ -93,17 +94,17 @@ class _FakeQueries(SQLiteQueryStore):
         limit: int = 20,
         providers: list[str] | None = None,
         since: str | None = None,
-    ) -> list[ConversationSearchEvidenceRow]:
+    ) -> list[SessionSearchEvidenceRow]:
         del query, limit, providers, since
         return self.attachment_hits or []
 
-    async def get_conversations_batch(self, ids: list[str]) -> list[ConversationRecord]:
+    async def get_sessions_batch(self, ids: list[str]) -> list[SessionRecord]:
         self.last_batch_ids = ids
-        return [self.records_by_id[conversation_id] for conversation_id in ids]
+        return [self.records_by_id[session_id] for session_id in ids]
 
     async def get_message_counts_batch(self, ids: list[str]) -> dict[str, int]:
-        """Hydrator (#1630): return a count per conversation id keyed in records."""
-        return {conversation_id: 42 + i for i, conversation_id in enumerate(ids)}
+        """Hydrator (#1630): return a count per session id keyed in records."""
+        return {session_id: 42 + i for i, session_id in enumerate(ids)}
 
 
 class _FakeRepo(RepositoryArchiveSearchMixin):
@@ -113,43 +114,43 @@ class _FakeRepo(RepositoryArchiveSearchMixin):
         self.queries = queries
         self.ordered_ids_seen: list[str] | None = None
 
-    async def _hydrate_conversations(
+    async def _hydrate_sessions(
         self,
-        conversation_records: list[ConversationRecord],
+        session_records: list[SessionRecord],
         *,
         ordered_ids: list[str] | None = None,
-    ) -> list[Conversation]:
+    ) -> list[Session]:
         self.ordered_ids_seen = ordered_ids
         return [
-            Conversation(
-                id=ConversationId(str(record.conversation_id)),
-                provider=Provider.from_string(record.source_name),
+            Session(
+                id=SessionId(str(record.session_id)),
+                origin=origin_from_provider(Provider.from_string(record.source_name)),
                 messages=MessageCollection.empty(),
                 title=record.title,
             )
-            for record in conversation_records
+            for record in session_records
         ]
 
 
 def _memory_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    conn.execute("CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY, source_name TEXT NOT NULL)")
-    conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL)")
+    conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, source_name TEXT NOT NULL)")
+    conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, session_id TEXT NOT NULL)")
     return conn
 
 
-def test_resolve_ranked_conversation_hits_preserves_order_and_provider_scope() -> None:
+def test_resolve_ranked_session_hits_preserves_order_and_provider_scope() -> None:
     conn = _memory_conn()
     conn.executemany(
-        "INSERT INTO conversations(conversation_id, source_name) VALUES (?, ?)",
+        "INSERT INTO sessions(session_id, source_name) VALUES (?, ?)",
         [
             ("conv-a", "chatgpt"),
             ("conv-b", "claude"),
         ],
     )
     conn.executemany(
-        "INSERT INTO messages(message_id, conversation_id) VALUES (?, ?)",
+        "INSERT INTO messages(message_id, session_id) VALUES (?, ?)",
         [
             ("msg-a1", "conv-a"),
             ("msg-a2", "conv-a"),
@@ -157,38 +158,38 @@ def test_resolve_ranked_conversation_hits_preserves_order_and_provider_scope() -
         ],
     )
 
-    hits = _resolve_ranked_conversation_hits(
+    hits = _resolve_ranked_session_hits(
         conn,
         message_results=[("msg-b1", 0.9), ("msg-a1", 0.8), ("msg-a2", 0.7)],
         limit=10,
         scope_names=None,
     )
-    assert hits.conversation_ids() == ["conv-b", "conv-a"]
+    assert hits.session_ids() == ["conv-b", "conv-a"]
     assert [hit.rank for hit in hits.hits] == [1, 2]
 
-    scoped_hits = _resolve_ranked_conversation_hits(
+    scoped_hits = _resolve_ranked_session_hits(
         conn,
         message_results=[("msg-b1", 0.9), ("msg-a1", 0.8), ("msg-a2", 0.7)],
         limit=10,
         scope_names=["chatgpt"],
     )
-    assert scoped_hits.conversation_ids() == ["conv-a"]
+    assert scoped_hits.session_ids() == ["conv-a"]
     assert [hit.rank for hit in scoped_hits.hits] == [1]
 
 
 @pytest.mark.asyncio
-async def test_repository_search_summaries_follow_conversation_hit_order() -> None:
-    hits = ConversationSearchResult(
+async def test_repository_search_summaries_follow_session_hit_order() -> None:
+    hits = SessionSearchResult(
         hits=[
-            StorageConversationSearchIdHit(conversation_id="conv-b", rank=1, score=1.0),
-            StorageConversationSearchIdHit(conversation_id="conv-a", rank=2, score=2.0),
+            StorageSessionSearchIdHit(session_id="conv-b", rank=1, score=1.0),
+            StorageSessionSearchIdHit(session_id="conv-a", rank=2, score=2.0),
         ]
     )
     queries = _FakeQueries(
         hits=hits,
         records_by_id={
-            "conv-a": _conversation_record("conv-a", title="First"),
-            "conv-b": _conversation_record("conv-b", title="Second"),
+            "conv-a": _session_record("conv-a", title="First"),
+            "conv-b": _session_record("conv-b", title="Second"),
         },
     )
     repo = _FakeRepo(queries)
@@ -196,30 +197,30 @@ async def test_repository_search_summaries_follow_conversation_hit_order() -> No
     summaries = await repo.search_summaries("storage", limit=5)
 
     assert queries.last_batch_ids == ["conv-b", "conv-a"]
-    assert [summary.id for summary in summaries] == [ConversationId("conv-b"), ConversationId("conv-a")]
+    assert [summary.id for summary in summaries] == [SessionId("conv-b"), SessionId("conv-a")]
     assert [summary.title for summary in summaries] == ["Second", "First"]
 
 
 @pytest.mark.asyncio
 async def test_repository_search_summaries_hydrates_message_count_from_stats() -> None:
     """#1630: ``search_summaries`` must populate ``message_count`` from
-    ``conversation_stats`` so the daemon HTTP search path and any other
+    ``session_stats`` so the daemon HTTP search path and any other
     caller see a real total instead of None.
 
     Before the fix the message_count surfaced as 0 (None coerced) for every
-    conversation in /api/conversations and /api/conversations?q=... results.
+    session in /api/sessions and /api/sessions?q=... results.
     """
-    hits = ConversationSearchResult(
+    hits = SessionSearchResult(
         hits=[
-            StorageConversationSearchIdHit(conversation_id="conv-b", rank=1, score=1.0),
-            StorageConversationSearchIdHit(conversation_id="conv-a", rank=2, score=2.0),
+            StorageSessionSearchIdHit(session_id="conv-b", rank=1, score=1.0),
+            StorageSessionSearchIdHit(session_id="conv-a", rank=2, score=2.0),
         ]
     )
     queries = _FakeQueries(
         hits=hits,
         records_by_id={
-            "conv-a": _conversation_record("conv-a", title="First"),
-            "conv-b": _conversation_record("conv-b", title="Second"),
+            "conv-a": _session_record("conv-a", title="First"),
+            "conv-b": _session_record("conv-b", title="Second"),
         },
     )
     repo = _FakeRepo(queries)
@@ -233,18 +234,18 @@ async def test_repository_search_summaries_hydrates_message_count_from_stats() -
 
 
 @pytest.mark.asyncio
-async def test_repository_search_summary_hits_keep_evidence_and_conversation_order() -> None:
-    hits = ConversationSearchResult(
+async def test_repository_search_summary_hits_keep_evidence_and_session_order() -> None:
+    hits = SessionSearchResult(
         hits=[
-            StorageConversationSearchIdHit(conversation_id="conv-b", rank=1, score=1.0),
-            StorageConversationSearchIdHit(conversation_id="conv-a", rank=2, score=2.0),
+            StorageSessionSearchIdHit(session_id="conv-b", rank=1, score=1.0),
+            StorageSessionSearchIdHit(session_id="conv-a", rank=2, score=2.0),
         ]
     )
     queries = _FakeQueries(
         hits=hits,
         records_by_id={
-            "conv-a": _conversation_record("conv-a", title="First"),
-            "conv-b": _conversation_record("conv-b", title="Second"),
+            "conv-a": _session_record("conv-a", title="First"),
+            "conv-b": _session_record("conv-b", title="Second"),
         },
     )
     repo = _FakeRepo(queries)
@@ -252,7 +253,7 @@ async def test_repository_search_summary_hits_keep_evidence_and_conversation_ord
     summary_hits = await repo.search_summary_hits("storage", limit=5, providers=["chatgpt"], since="2025-01-01")
 
     assert queries.last_batch_ids == ["conv-b", "conv-a"]
-    assert [hit.conversation_id for hit in summary_hits] == ["conv-b", "conv-a"]
+    assert [hit.session_id for hit in summary_hits] == ["conv-b", "conv-a"]
     assert [hit.rank for hit in summary_hits] == [1, 2]
     assert [hit.message_id for hit in summary_hits] == ["msg-conv-b", "msg-conv-a"]
     assert [hit.snippet for hit in summary_hits] == ["snippet for conv-b", "snippet for conv-a"]
@@ -263,9 +264,9 @@ async def test_repository_search_summary_hits_keep_evidence_and_conversation_ord
 
 @pytest.mark.asyncio
 async def test_repository_search_summary_hits_prioritize_attachment_identity_evidence() -> None:
-    hits = ConversationSearchResult.from_ids(["conv-b", "conv-a"])
-    attachment_hit = ConversationSearchEvidenceRow(
-        conversation_id="conv-a",
+    hits = SessionSearchResult.from_ids(["conv-b", "conv-a"])
+    attachment_hit = SessionSearchEvidenceRow(
+        session_id="conv-a",
         rank=1,
         message_id="msg-attachment",
         snippet="attachment identity attachment.provider_file_id=drive-file-1",
@@ -276,8 +277,8 @@ async def test_repository_search_summary_hits_prioritize_attachment_identity_evi
         hits=hits,
         attachment_hits=[attachment_hit],
         records_by_id={
-            "conv-a": _conversation_record("conv-a", title="Attachment Match"),
-            "conv-b": _conversation_record("conv-b", title="Message Match"),
+            "conv-a": _session_record("conv-a", title="Attachment Match"),
+            "conv-b": _session_record("conv-b", title="Message Match"),
         },
     )
     repo = _FakeRepo(queries)
@@ -285,7 +286,7 @@ async def test_repository_search_summary_hits_prioritize_attachment_identity_evi
     summary_hits = await repo.search_summary_hits("drive-file-1", limit=5, providers=["gemini"])
 
     assert queries.last_batch_ids == ["conv-a", "conv-b"]
-    assert [hit.conversation_id for hit in summary_hits] == ["conv-a", "conv-b"]
+    assert [hit.session_id for hit in summary_hits] == ["conv-a", "conv-b"]
     assert [hit.rank for hit in summary_hits] == [1, 2]
     assert summary_hits[0].match_surface == "attachment"
     assert summary_hits[0].retrieval_lane == "attachment"
@@ -329,7 +330,7 @@ async def test_gemini_drive_attachment_id_is_searchable_after_parse_and_prepare(
         },
     }
     backend = SQLiteBackend(db_path=tmp_path / "attachment-identity.db")
-    repo = ConversationRepository(backend=backend)
+    repo = SessionRepository(backend=backend)
     try:
         parsed = parse_chunked_prompt("gemini", payload, "fallback-id")
         await prepare_records(
@@ -346,7 +347,7 @@ async def test_gemini_drive_attachment_id_is_searchable_after_parse_and_prepare(
 
     assert len(hits) == 1
     hit = hits[0]
-    assert hit.conversation_id == "gemini:gemini-attachment-identity"
+    assert hit.session_id == "gemini:gemini-attachment-identity"
     assert hit.match_surface == "attachment"
     assert hit.retrieval_lane == "attachment"
     assert hit.message_id == "gemini:gemini-attachment-identity:msg-doc"
@@ -357,20 +358,20 @@ async def test_gemini_drive_attachment_id_is_searchable_after_parse_and_prepare(
 
 @pytest.mark.asyncio
 async def test_repository_search_and_action_search_pass_ordered_ids_to_hydration() -> None:
-    hits = ConversationSearchResult.from_ids(["conv-b", "conv-a"])
+    hits = SessionSearchResult.from_ids(["conv-b", "conv-a"])
     queries = _FakeQueries(
         hits=hits,
         records_by_id={
-            "conv-a": _conversation_record("conv-a", title="First"),
-            "conv-b": _conversation_record("conv-b", title="Second"),
+            "conv-a": _session_record("conv-a", title="First"),
+            "conv-b": _session_record("conv-b", title="Second"),
         },
     )
     repo = _FakeRepo(queries)
 
     search_result = await repo.search("storage", limit=5)
-    assert [str(conversation.id) for conversation in search_result] == ["conv-b", "conv-a"]
+    assert [str(session.id) for session in search_result] == ["conv-b", "conv-a"]
     assert repo.ordered_ids_seen == ["conv-b", "conv-a"]
 
     action_result = await repo.search_actions("storage", limit=5)
-    assert [str(conversation.id) for conversation in action_result] == ["conv-b", "conv-a"]
+    assert [str(session.id) for session in action_result] == ["conv-b", "conv-a"]
     assert repo.ordered_ids_seen == ["conv-b", "conv-a"]

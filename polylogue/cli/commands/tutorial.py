@@ -13,6 +13,8 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import click
 
@@ -70,26 +72,48 @@ def _stage_start_daemon() -> tuple[bool, str]:
 
 
 def _stage_first_search() -> tuple[bool, str]:
-    """Report whether the archive has any conversations to search."""
-    from polylogue.paths import db_path
+    """Report whether the archive has any sessions to search."""
+    from polylogue.paths import archive_root, db_path
 
-    db = db_path()
-    if not db.exists():
+    db = _active_archive_db(db_path(), archive_root())
+    if db is None:
         return False, "No archive yet — ingest must run before search."
     try:
         import sqlite3
 
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)
         try:
-            count_row = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()
-            count = int(count_row[0]) if count_row else 0
+            count = _count_searchable_sessions(conn)
         finally:
             conn.close()
     except Exception:
         return False, "Archive present but could not be queried."
     if count > 0:
-        return True, f"Archive has {count:,} conversations."
+        return True, f"Archive has {count:,} sessions."
     return False, "Archive present but empty — wait for first ingest to finish."
+
+
+def _active_archive_db(_db_anchor: Path, root: Path) -> Path | None:
+    """Return the archive DB file that contains searchable sessions."""
+    archive_db = root / "index.db"
+    if archive_db.exists():
+        return archive_db
+    return None
+
+
+def _table_exists(conn: Any, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _count_searchable_sessions(conn: Any) -> int:
+    if _table_exists(conn, "sessions"):
+        count_row = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
+        return int(count_row[0]) if count_row else 0
+    return 0
 
 
 def _stage_open_reader() -> tuple[bool, str]:

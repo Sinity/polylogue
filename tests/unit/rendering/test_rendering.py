@@ -10,19 +10,20 @@ from datetime import datetime, timezone
 
 import pytest
 
-from polylogue.archive.models import Conversation, ConversationSummary, Message
+from polylogue.archive.models import Message, Session, SessionSummary
+from polylogue.core.enums import Origin
 from polylogue.rendering.block_models import RenderableBlock
 from polylogue.rendering.blocks import (
     render_blocks_html,
     render_blocks_markdown,
     render_blocks_plaintext,
 )
-from polylogue.rendering.core import format_conversation_markdown
+from polylogue.rendering.core import format_session_markdown
 from polylogue.rendering.renderers.html import (
     _attach_branches,
-    render_conversation_html,
+    render_session_html,
 )
-from polylogue.types import ContentBlockType, ConversationId, Provider
+from polylogue.types import ContentBlockType, Provider, SessionId
 from polylogue.ui.facade_console import PlainConsole
 from tests.infra.builders import make_conv, make_msg
 
@@ -59,7 +60,7 @@ def _make_msg(
     )
 
 
-def _make_conv(messages: list[Message], title: str | None = "Branch Test") -> Conversation:
+def _make_conv(messages: list[Message], title: str | None = "Branch Test") -> Session:
     return make_conv(
         id="test-conv",
         provider=Provider.CHATGPT,
@@ -133,23 +134,23 @@ class TestAttachBranches:
 class TestBranchRendering:
     """Tests for branch-aware HTML rendering."""
 
-    def test_linear_conversation_no_branches_section(self) -> None:
-        """Linear conversations should not have branch markup."""
+    def test_linear_session_no_branches_section(self) -> None:
+        """Linear sessions should not have branch markup."""
         msgs = [_make_msg("m1", "user", "Hello"), _make_msg("m2", "assistant", "Hi")]
         conv = _make_conv(msgs)
-        html = render_conversation_html(conv)
+        html = render_session_html(conv)
         assert "<details" not in html
         assert "branches" not in html or "branches" in html
 
-    def test_branching_conversation_has_details(self) -> None:
-        """Branching conversations should render <details> sections."""
+    def test_branching_session_has_details(self) -> None:
+        """Branching sessions should render <details> sections."""
         msgs = [
             _make_msg("m1", "user", "Question", parent_id=None, branch_index=0),
             _make_msg("m2", "assistant", "Answer 1", parent_id="m1", branch_index=0),
             _make_msg("m3", "assistant", "Answer 2 (edited)", parent_id="m1", branch_index=1),
         ]
         conv = _make_conv(msgs)
-        html = render_conversation_html(conv)
+        html = render_session_html(conv)
         assert "<details" in html
         assert "<summary>" in html
         assert "1 alternative" in html
@@ -163,7 +164,7 @@ class TestBranchRendering:
             _make_msg("m3", "assistant", "Answer 2 (edited)", parent_id="m1", branch_index=1),
         ]
         conv = _make_conv(msgs)
-        html = render_conversation_html(conv)
+        html = render_session_html(conv)
         assert "Answer 1" in html
         assert "Answer 2 (edited)" in html
 
@@ -176,7 +177,7 @@ class TestBranchRendering:
             _make_msg("m4", "assistant", "A3", parent_id="m1", branch_index=2),
         ]
         conv = _make_conv(msgs)
-        html = render_conversation_html(conv)
+        html = render_session_html(conv)
         assert "2 alternatives" in html
 
     def test_branch_css_present(self) -> None:
@@ -187,7 +188,7 @@ class TestBranchRendering:
             _make_msg("m3", "assistant", "A2", parent_id="m1", branch_index=1),
         ]
         conv = _make_conv(msgs)
-        html = render_conversation_html(conv)
+        html = render_session_html(conv)
         assert "branch-message" in html
         assert "branch-label" in html
 
@@ -200,7 +201,7 @@ class TestBranchRendering:
             _make_msg("m4", "user", "Follow-up"),
         ]
         conv = _make_conv(msgs)
-        html = render_conversation_html(conv)
+        html = render_session_html(conv)
         assert "Follow-up" in html
         assert "A1" in html
         assert "A2 alt" in html
@@ -264,10 +265,10 @@ class TestPlainConsoleLiteralOutput:
 # =============================================================================
 
 
-class TestFormatConversationMarkdownNoneGuards:
-    """format_conversation_markdown must handle None text, None role, etc."""
+class TestFormatSessionMarkdownNoneGuards:
+    """format_session_markdown must handle None text, None role, etc."""
 
-    def _make_conv(self, messages: list[Message], title: str | None = "Test") -> Conversation:
+    def _make_conv(self, messages: list[Message], title: str | None = "Test") -> Session:
         return make_conv(
             id="test-conv",
             provider=Provider.UNKNOWN,
@@ -283,7 +284,7 @@ class TestFormatConversationMarkdownNoneGuards:
                 make_msg(id="m2", role="assistant", text="Hello!"),
             ]
         )
-        md = format_conversation_markdown(conv)
+        md = format_session_markdown(conv)
         assert "Hello!" in md
         assert md.count("## ") == 1
 
@@ -295,7 +296,7 @@ class TestFormatConversationMarkdownNoneGuards:
                 make_msg(id="m2", role="assistant", text="Response"),
             ]
         )
-        md = format_conversation_markdown(conv)
+        md = format_session_markdown(conv)
         assert "Response" in md
 
     def test_whitespace_only_text_skipped(self) -> None:
@@ -306,7 +307,7 @@ class TestFormatConversationMarkdownNoneGuards:
                 make_msg(id="m2", role="assistant", text="Answer"),
             ]
         )
-        md = format_conversation_markdown(conv)
+        md = format_session_markdown(conv)
         assert "Answer" in md
 
     def test_none_role_renders_as_unknown(self) -> None:
@@ -316,7 +317,7 @@ class TestFormatConversationMarkdownNoneGuards:
                 make_msg(id="m1", role="unknown", text="Message with unknown role"),
             ]
         )
-        md = format_conversation_markdown(conv)
+        md = format_session_markdown(conv)
         assert "unknown" in md
         assert "Message with unknown role" in md
 
@@ -326,7 +327,7 @@ class TestFormatConversationMarkdownNoneGuards:
             [make_msg(id="m1", role="user", text="Hello")],
             title=None,
         )
-        md = format_conversation_markdown(conv)
+        md = format_session_markdown(conv)
         assert "Untitled" in md
 
     def test_json_text_wrapped_in_code_block(self) -> None:
@@ -337,7 +338,7 @@ class TestFormatConversationMarkdownNoneGuards:
                 make_msg(id="m1", role="assistant", text=json_text),
             ]
         )
-        md = format_conversation_markdown(conv)
+        md = format_session_markdown(conv)
         assert "```json" in md
 
     def test_message_text_heading_marker_does_not_create_extra_section(self) -> None:
@@ -348,7 +349,7 @@ class TestFormatConversationMarkdownNoneGuards:
                 make_msg(id="m2", role="assistant", text="Response"),
             ]
         )
-        md = format_conversation_markdown(conv)
+        md = format_session_markdown(conv)
         assert "\\## not a message header" in md
         assert sum(1 for line in md.splitlines() if line.startswith("## ")) == 2
 
@@ -360,24 +361,24 @@ class TestFormatConversationMarkdownNoneGuards:
                 make_msg(id="m2", role="assistant", text=None),
             ]
         )
-        md = format_conversation_markdown(conv)
+        md = format_session_markdown(conv)
         assert "# Test" in md
         assert "## " not in md
 
     def test_empty_messages_list(self) -> None:
-        """Conversation with no messages should not crash."""
+        """Session with no messages should not crash."""
         conv = self._make_conv([])
-        md = format_conversation_markdown(conv)
+        md = format_session_markdown(conv)
         assert "# Test" in md
 
 
-class TestConversationSummaryDisplayDate:
-    """ConversationSummary.display_date must handle None timestamps (f9c88e2)."""
+class TestSessionSummaryDisplayDate:
+    """SessionSummary.display_date must handle None timestamps (f9c88e2)."""
 
     def test_both_none_returns_none(self) -> None:
-        summary = ConversationSummary(
-            id=ConversationId("test"),
-            provider=Provider.UNKNOWN,
+        summary = SessionSummary(
+            id=SessionId("test"),
+            origin=Origin.UNKNOWN_EXPORT,
             created_at=None,
             updated_at=None,
         )
@@ -385,9 +386,9 @@ class TestConversationSummaryDisplayDate:
 
     def test_only_created_at(self) -> None:
         dt = datetime(2024, 6, 15, tzinfo=timezone.utc)
-        summary = ConversationSummary(
-            id=ConversationId("test"),
-            provider=Provider.UNKNOWN,
+        summary = SessionSummary(
+            id=SessionId("test"),
+            origin=Origin.UNKNOWN_EXPORT,
             created_at=dt,
             updated_at=None,
         )
@@ -395,9 +396,9 @@ class TestConversationSummaryDisplayDate:
 
     def test_only_updated_at(self) -> None:
         dt = datetime(2024, 6, 15, tzinfo=timezone.utc)
-        summary = ConversationSummary(
-            id=ConversationId("test"),
-            provider=Provider.UNKNOWN,
+        summary = SessionSummary(
+            id=SessionId("test"),
+            origin=Origin.UNKNOWN_EXPORT,
             created_at=None,
             updated_at=dt,
         )
@@ -406,35 +407,35 @@ class TestConversationSummaryDisplayDate:
     def test_both_present_prefers_updated(self) -> None:
         created = datetime(2024, 1, 1, tzinfo=timezone.utc)
         updated = datetime(2024, 6, 15, tzinfo=timezone.utc)
-        summary = ConversationSummary(
-            id=ConversationId("test"),
-            provider=Provider.UNKNOWN,
+        summary = SessionSummary(
+            id=SessionId("test"),
+            origin=Origin.UNKNOWN_EXPORT,
             created_at=created,
             updated_at=updated,
         )
         assert summary.display_date == updated
 
     def test_display_title_none_title_uses_id(self) -> None:
-        summary = ConversationSummary(id=ConversationId("abcdef12"), provider=Provider.UNKNOWN, title=None)
+        summary = SessionSummary(id=SessionId("abcdef12"), origin=Origin.UNKNOWN_EXPORT, title=None)
         assert summary.display_title == "abcdef12"
 
     def test_display_title_empty_title_uses_id(self) -> None:
-        summary = ConversationSummary(id=ConversationId("abcdef12"), provider=Provider.UNKNOWN, title="")
+        summary = SessionSummary(id=SessionId("abcdef12"), origin=Origin.UNKNOWN_EXPORT, title="")
         assert summary.display_title == "abcdef12"
 
     def test_display_title_from_metadata(self) -> None:
-        summary = ConversationSummary(
-            id=ConversationId("test"),
-            provider=Provider.UNKNOWN,
+        summary = SessionSummary(
+            id=SessionId("test"),
+            origin=Origin.UNKNOWN_EXPORT,
             title="Original",
             metadata={"title": "User Title"},
         )
         assert summary.display_title == "User Title"
 
     def test_display_title_from_provider_display_label(self) -> None:
-        summary = ConversationSummary(
-            id=ConversationId("test"),
-            provider=Provider.GEMINI,
+        summary = SessionSummary(
+            id=SessionId("test"),
+            origin=Origin.AISTUDIO_DRIVE,
             title="gemini-20250422-1234",
             provider_meta={"display_label": "Review the project plan"},
         )

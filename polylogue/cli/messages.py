@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from polylogue.api.archive import ConversationNotFoundError
+from polylogue.api.archive import SessionNotFoundError
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.message.roles import MessageRoleFilter, normalize_message_roles
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
@@ -18,7 +18,7 @@ def run_messages(
     env: AppEnv,
     request: RootModeRequest,
     *,
-    conversation_id: str,
+    session_id: str,
     message_role: tuple[str, ...] = (),
     message_type: str | None = None,
     limit: int = 50,
@@ -48,15 +48,15 @@ def run_messages(
 
             try:
                 messages, total = await api.get_messages_paginated(
-                    conversation_id,
+                    session_id,
                     message_role=roles,
                     message_type=cast(MessageTypeName, message_type),
                     limit=limit,
                     offset=offset,
                     content_projection=projection,
                 )
-            except ConversationNotFoundError:
-                env.ui.error(f"Conversation not found: {conversation_id}")
+            except SessionNotFoundError:
+                env.ui.error(f"Session not found: {session_id}")
                 return
 
             fmt = output_format or "markdown"
@@ -65,7 +65,7 @@ def run_messages(
                 import json as _json
 
                 payload = {
-                    "conversation_id": conversation_id,
+                    "session_id": session_id,
                     "messages": [
                         {
                             "id": str(m.id),
@@ -96,7 +96,7 @@ def run_raw(
     env: AppEnv,
     request: RootModeRequest,
     *,
-    conversation_id: str,
+    session_id: str,
     limit: int = 50,
     offset: int = 0,
     output_format: str = "json",
@@ -106,21 +106,21 @@ def run_raw(
 
     async def _run() -> None:
         async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
-            artifacts, total = await api.get_raw_artifacts_for_conversation(
-                conversation_id,
+            artifacts, total = await api.get_raw_artifacts_for_session(
+                session_id,
                 limit=limit,
                 offset=offset,
             )
 
             if not artifacts:
-                env.ui.error(f"No raw artifacts found for conversation: {conversation_id}")
+                env.ui.error(f"No raw artifacts found for session: {session_id}")
                 return
 
             if output_format == "json":
                 import json as _json
 
                 payload = {
-                    "conversation_id": conversation_id,
+                    "session_id": session_id,
                     "artifacts": [
                         {
                             "raw_id": r.get("raw_id", ""),

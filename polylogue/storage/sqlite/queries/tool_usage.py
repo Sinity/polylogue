@@ -4,7 +4,7 @@ These queries roll up tool calls per provider, per normalized tool name,
 without inferring anything the substrate has not already classified.
 
 The companion coverage query reports — for every provider observed in the
-``conversations`` table — whether the action_events substrate has any rows
+``sessions`` table — whether the action_events substrate has any rows
 for that provider. This is the load-bearing distinction the issue calls
 out: zero observed action_events for a provider may mean the provider does
 not expose tool data at all, not that the user has not used tools.
@@ -30,7 +30,7 @@ class ToolUsageRow(TypedDict):
     normalized_tool_name: str
     action_kind: str
     call_count: int
-    conversation_count: int
+    session_count: int
     message_count: int
     distinct_tool_ids: int
     affected_path_calls: int
@@ -41,7 +41,7 @@ class ToolUsageProviderCoverageRow(TypedDict):
     """Per-provider coverage signal — does the substrate carry tool data?"""
 
     source_name: str
-    conversation_count: int
+    session_count: int
     action_event_count: int
     distinct_tool_count: int
     distinct_action_kind_count: int
@@ -67,7 +67,7 @@ async def get_tool_usage_rows(
             normalized_tool_name                                        AS normalized_tool_name,
             action_kind                                                 AS action_kind,
             COUNT(*)                                                    AS call_count,
-            COUNT(DISTINCT conversation_id)                             AS conversation_count,
+            COUNT(DISTINCT session_id)                             AS session_count,
             COUNT(DISTINCT message_id)                                  AS message_count,
             COUNT(DISTINCT tool_id)                                     AS distinct_tool_ids,
             SUM(CASE WHEN affected_paths_json IS NOT NULL AND affected_paths_json != '[]' THEN 1 ELSE 0 END)
@@ -89,7 +89,7 @@ async def get_tool_usage_rows(
             "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
             "action_kind": str(row["action_kind"] or "unknown"),
             "call_count": int(row["call_count"] or 0),
-            "conversation_count": int(row["conversation_count"] or 0),
+            "session_count": int(row["session_count"] or 0),
             "message_count": int(row["message_count"] or 0),
             "distinct_tool_ids": int(row["distinct_tool_ids"] or 0),
             "affected_path_calls": int(row["affected_path_calls"] or 0),
@@ -104,9 +104,9 @@ async def get_tool_usage_provider_coverage_rows(
 ) -> list[ToolUsageProviderCoverageRow]:
     """Report tool-data coverage signals for every provider in the archive.
 
-    Returns one row per provider that has at least one conversation. The
+    Returns one row per provider that has at least one session. The
     ``action_event_count`` column is the load-bearing field — a provider
-    with conversations but zero action events is explicitly visible as a
+    with sessions but zero action events is explicitly visible as a
     coverage gap rather than collapsed into the rollup as a quiet zero.
     """
 
@@ -114,7 +114,7 @@ async def get_tool_usage_provider_coverage_rows(
         """
         SELECT
             c.source_name                                                AS source_name,
-            COUNT(DISTINCT c.conversation_id)                              AS conversation_count,
+            COUNT(DISTINCT c.session_id)                              AS session_count,
             COALESCE(COUNT(ae.event_id), 0)                                AS action_event_count,
             COUNT(DISTINCT ae.normalized_tool_name)                        AS distinct_tool_count,
             COUNT(DISTINCT ae.action_kind)                                 AS distinct_action_kind_count,
@@ -125,17 +125,17 @@ async def get_tool_usage_provider_coverage_rows(
                 THEN 1 ELSE 0 END)                                          AS has_affected_paths_signal,
             SUM(CASE WHEN ae.output_text IS NOT NULL AND ae.output_text != '' THEN 1 ELSE 0 END)
                                                                             AS has_output_text_signal
-        FROM conversations c
-        LEFT JOIN action_events ae ON ae.conversation_id = c.conversation_id
+        FROM sessions c
+        LEFT JOIN action_events ae ON ae.session_id = c.session_id
         GROUP BY c.source_name
-        ORDER BY action_event_count DESC, conversation_count DESC, c.source_name ASC
+        ORDER BY action_event_count DESC, session_count DESC, c.source_name ASC
         """
     )
     rows = await cursor.fetchall()
     return [
         {
             "source_name": str(row["source_name"] or "unknown"),
-            "conversation_count": int(row["conversation_count"] or 0),
+            "session_count": int(row["session_count"] or 0),
             "action_event_count": int(row["action_event_count"] or 0),
             "distinct_tool_count": int(row["distinct_tool_count"] or 0),
             "distinct_action_kind_count": int(row["distinct_action_kind_count"] or 0),

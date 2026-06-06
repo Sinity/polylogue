@@ -4,7 +4,6 @@ from polylogue.storage.sqlite.queries import (
     action_events,
     artifacts,
     attachments,
-    conversations,
     messages,
     provider_events,
     raw,
@@ -14,6 +13,7 @@ from polylogue.storage.sqlite.queries import (
     session_insight_thread_queries,
     session_insight_timeline_reads,
     session_insight_timeline_writes,
+    sessions,
     stats,
 )
 
@@ -21,7 +21,7 @@ __all__ = [
     "action_events",
     "artifacts",
     "attachments",
-    "conversations",
+    "sessions",
     "messages",
     "provider_events",
     "raw",

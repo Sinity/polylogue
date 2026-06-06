@@ -6,12 +6,12 @@ and concurrent access patterns.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from polylogue.mcp.server_support import _clamp_limit, _safe_call
-from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async
+from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async, make_mock_filter, make_polylogue_mock
 
 # =============================================================================
 # _clamp_limit boundary tests
@@ -113,19 +113,18 @@ class TestUnicodeHandling:
     @pytest.mark.asyncio
     async def test_unicode_tag(self, mcp_server: MCPServerUnderTest) -> None:
         """Unicode characters in tag names don't crash the server."""
-        from tests.infra.mcp import make_tag_store_mock
 
-        with patch("polylogue.mcp.server._get_tag_store") as mock_get_tag_store:
-            mock_tag_store = make_tag_store_mock()
-            mock_tag_store.add_tag = AsyncMock(return_value=True)
-            mock_get_tag_store.return_value = mock_tag_store
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.add_tag = AsyncMock(return_value=True)
+            mock_get_polylogue.return_value = mock_poly
 
             # This should not crash even with emoji/CJK/RTL
             for tag in ["bug-fix", "重要", "مهم", "critical"]:
                 result = await _invoke_tool(
                     mcp_server,
                     "add_tag",
-                    conversation_id="test-conv",
+                    session_id="test-conv",
                     tag=tag,
                 )
                 assert isinstance(result, str)
@@ -134,18 +133,17 @@ class TestUnicodeHandling:
     async def test_empty_query(self, mcp_server: MCPServerUnderTest) -> None:
         """Empty query string doesn't crash search."""
         from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
-        from tests.infra.mcp import make_mock_filter
 
         with (
-            patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops,
-            patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+            patch("polylogue.archive.filter.filters.SessionFilter") as mock_filter_cls,
         ):
-            mock_ops = AsyncMock()
-            mock_ops.search_conversation_hits = AsyncMock(return_value=[])
-            mock_ops.diagnose_query_miss = AsyncMock(
-                return_value=QueryMissDiagnostics(message="No conversations matched.", filters=(), reasons=())
+            mock_poly = AsyncMock()
+            mock_poly.search_session_hits = AsyncMock(return_value=[])
+            mock_poly.diagnose_query_miss = AsyncMock(
+                return_value=QueryMissDiagnostics(message="No sessions matched.", filters=(), reasons=())
             )
-            mock_get_archive_ops.return_value = mock_ops
+            mock_get_polylogue.return_value = mock_poly
             mock_filter_cls.return_value = make_mock_filter(results=[])
 
             result = await _invoke_tool(
@@ -166,25 +164,19 @@ class TestBoundaryParameters:
     @pytest.mark.asyncio
     async def test_limit_zero(self, mcp_server: MCPServerUnderTest) -> None:
         """limit=0 is clamped to 1 (returns minimal results)."""
-        from tests.infra.mcp import make_mock_filter, make_query_store_mock
-
         with (
-            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
-            patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops,
-            patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+            patch("polylogue.archive.filter.filters.SessionFilter") as mock_filter_cls,
         ):
-            mock_query_store = make_query_store_mock()
-            mock_query_store.list = AsyncMock(return_value=[])
-            mock_get_query_store.return_value = mock_query_store
-            mock_ops = MagicMock()
-            mock_ops.query_conversations = AsyncMock(return_value=[])
-            mock_ops.diagnose_query_miss = AsyncMock(return_value=None)
-            mock_get_archive_ops.return_value = mock_ops
+            mock_poly = make_polylogue_mock()
+            mock_poly.query_sessions = AsyncMock(return_value=[])
+            mock_poly.diagnose_query_miss = AsyncMock(return_value=None)
+            mock_get_polylogue.return_value = mock_poly
             mock_filter_cls.return_value = make_mock_filter(results=[])
 
             result = await _invoke_tool(
                 mcp_server,
-                "list_conversations",
+                "list_sessions",
                 limit=0,
             )
             assert isinstance(result, str)
@@ -192,25 +184,19 @@ class TestBoundaryParameters:
     @pytest.mark.asyncio
     async def test_limit_negative(self, mcp_server: MCPServerUnderTest) -> None:
         """Negative limit is clamped to 1."""
-        from tests.infra.mcp import make_mock_filter, make_query_store_mock
-
         with (
-            patch("polylogue.mcp.server._get_query_store") as mock_get_query_store,
-            patch("polylogue.mcp.server._get_archive_ops") as mock_get_archive_ops,
-            patch("polylogue.archive.filter.filters.ConversationFilter") as mock_filter_cls,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+            patch("polylogue.archive.filter.filters.SessionFilter") as mock_filter_cls,
         ):
-            mock_query_store = make_query_store_mock()
-            mock_query_store.list = AsyncMock(return_value=[])
-            mock_get_query_store.return_value = mock_query_store
-            mock_ops = MagicMock()
-            mock_ops.query_conversations = AsyncMock(return_value=[])
-            mock_ops.diagnose_query_miss = AsyncMock(return_value=None)
-            mock_get_archive_ops.return_value = mock_ops
+            mock_poly = make_polylogue_mock()
+            mock_poly.query_sessions = AsyncMock(return_value=[])
+            mock_poly.diagnose_query_miss = AsyncMock(return_value=None)
+            mock_get_polylogue.return_value = mock_poly
             mock_filter_cls.return_value = make_mock_filter(results=[])
 
             result = await _invoke_tool(
                 mcp_server,
-                "list_conversations",
+                "list_sessions",
                 limit=-1,
             )
             assert isinstance(result, str)

@@ -69,10 +69,10 @@ def _enrichment_provenance() -> ArchiveEnrichmentProvenance:
     )
 
 
-def _profile(conversation_id: str = "c1") -> SessionProfileInsight:
+def _profile(session_id: str = "c1") -> SessionProfileInsight:
     return SessionProfileInsight(
-        conversation_id=conversation_id,
-        logical_conversation_id=conversation_id,
+        session_id=session_id,
+        logical_session_id=session_id,
         source_name="claude-code",
         provenance=_provenance(),
         evidence=SessionEvidencePayload(message_count=10, word_count=200),
@@ -86,7 +86,7 @@ def _profile(conversation_id: str = "c1") -> SessionProfileInsight:
 def _work_event(*, fallback: bool, confidence: float) -> SessionWorkEventInsight:
     return SessionWorkEventInsight(
         event_id="e1",
-        conversation_id="c1",
+        session_id="c1",
         source_name="claude-code",
         event_index=0,
         provenance=_provenance(),
@@ -104,7 +104,7 @@ def _work_event(*, fallback: bool, confidence: float) -> SessionWorkEventInsight
 def _phase(*, fallback: bool, confidence: float) -> SessionPhaseInsight:
     return SessionPhaseInsight(
         phase_id="p1",
-        conversation_id="c1",
+        session_id="c1",
         source_name="claude-code",
         phase_index=0,
         provenance=_provenance(),
@@ -117,7 +117,7 @@ def _phase(*, fallback: bool, confidence: float) -> SessionPhaseInsight:
 def _tag_rollup() -> SessionTagRollupInsight:
     return SessionTagRollupInsight(
         tag="design",
-        conversation_count=3,
+        session_count=3,
         explicit_count=2,
         auto_count=1,
         provider_breakdown={"claude-code": 3},

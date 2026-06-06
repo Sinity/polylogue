@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 RAW_ARCHIVE_DDL = """
-        CREATE TABLE IF NOT EXISTS raw_conversations (
+        CREATE TABLE IF NOT EXISTS raw_sessions (
             raw_id TEXT PRIMARY KEY,
             payload_provider TEXT,
             source_name TEXT,
@@ -24,30 +24,30 @@ RAW_ARCHIVE_DDL = """
         );
 
         CREATE INDEX IF NOT EXISTS idx_raw_conv_source
-        ON raw_conversations(source_name);
+        ON raw_sessions(source_name);
 
         CREATE INDEX IF NOT EXISTS idx_raw_conv_payload_provider
-        ON raw_conversations(payload_provider)
+        ON raw_sessions(payload_provider)
         WHERE payload_provider IS NOT NULL;
 
         CREATE INDEX IF NOT EXISTS idx_raw_conv_source_mtime
-        ON raw_conversations(source_path, file_mtime)
+        ON raw_sessions(source_path, file_mtime)
         WHERE file_mtime IS NOT NULL;
 
         CREATE INDEX IF NOT EXISTS idx_raw_conv_source_path_raw_id
-        ON raw_conversations(source_path, raw_id);
+        ON raw_sessions(source_path, raw_id);
 
         CREATE INDEX IF NOT EXISTS idx_raw_conv_parse_ready
-        ON raw_conversations(raw_id)
+        ON raw_sessions(raw_id)
         WHERE parsed_at IS NULL
           AND validated_at IS NOT NULL
           AND (validation_status IS NULL OR validation_status != 'failed');
 """
 
 ARCHIVE_STORAGE_DDL = """
-        CREATE TABLE IF NOT EXISTS conversations (
-            conversation_id TEXT PRIMARY KEY,
-            provider_conversation_id TEXT NOT NULL,
+        CREATE TABLE IF NOT EXISTS sessions (
+            session_id TEXT PRIMARY KEY,
+            provider_session_id TEXT NOT NULL,
             title TEXT,
             created_at TEXT,
             updated_at TEXT,
@@ -60,33 +60,33 @@ ARCHIVE_STORAGE_DDL = """
             git_branch TEXT,
             git_repository_url TEXT,
             version INTEGER NOT NULL,
-            parent_conversation_id TEXT REFERENCES conversations(conversation_id) ON DELETE SET NULL,
+            parent_session_id TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
             branch_type TEXT CHECK (branch_type IN ('continuation', 'sidechain', 'fork', 'subagent') OR branch_type IS NULL),
-            raw_id TEXT REFERENCES raw_conversations(raw_id) ON DELETE SET NULL
+            raw_id TEXT REFERENCES raw_sessions(raw_id) ON DELETE SET NULL
         );
 
-        CREATE INDEX IF NOT EXISTS idx_conversations_source_name
-        ON conversations(source_name);
+        CREATE INDEX IF NOT EXISTS idx_sessions_source_name
+        ON sessions(source_name);
 
-        CREATE INDEX IF NOT EXISTS idx_conversations_source_provider_id
-        ON conversations(source_name, provider_conversation_id);
+        CREATE INDEX IF NOT EXISTS idx_sessions_source_provider_id
+        ON sessions(source_name, provider_session_id);
 
-        CREATE INDEX IF NOT EXISTS idx_conversations_parent
-        ON conversations(parent_conversation_id) WHERE parent_conversation_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_sessions_parent
+        ON sessions(parent_session_id) WHERE parent_session_id IS NOT NULL;
 
-        CREATE INDEX IF NOT EXISTS idx_conversations_content_hash
-        ON conversations(content_hash);
+        CREATE INDEX IF NOT EXISTS idx_sessions_content_hash
+        ON sessions(content_hash);
 
-        CREATE INDEX IF NOT EXISTS idx_conversations_sortkey
-        ON conversations(sort_key);
+        CREATE INDEX IF NOT EXISTS idx_sessions_sortkey
+        ON sessions(sort_key);
 
-        CREATE INDEX IF NOT EXISTS idx_conversations_raw_id
-        ON conversations(raw_id)
+        CREATE INDEX IF NOT EXISTS idx_sessions_raw_id
+        ON sessions(raw_id)
         WHERE raw_id IS NOT NULL;
 
         CREATE TABLE IF NOT EXISTS messages (
             message_id TEXT PRIMARY KEY,
-            conversation_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
             provider_message_id TEXT,
             role TEXT,
             text TEXT,
@@ -109,32 +109,32 @@ ARCHIVE_STORAGE_DDL = """
             paste_boundary_state TEXT CHECK (paste_boundary_state IN
                 ('exact', 'projected', 'whole_message_fallback', 'hash_only')
                 OR paste_boundary_state IS NULL),
-            FOREIGN KEY (conversation_id)
-                REFERENCES conversations(conversation_id) ON DELETE CASCADE
+            FOREIGN KEY (session_id)
+                REFERENCES sessions(session_id) ON DELETE CASCADE
         );
 
-        CREATE INDEX IF NOT EXISTS idx_messages_conversation
-        ON messages(conversation_id);
+        CREATE INDEX IF NOT EXISTS idx_messages_session
+        ON messages(session_id);
 
-        CREATE INDEX IF NOT EXISTS idx_messages_conversation_sortkey
-        ON messages(conversation_id, sort_key);
+        CREATE INDEX IF NOT EXISTS idx_messages_session_sortkey
+        ON messages(session_id, sort_key);
 
         CREATE INDEX IF NOT EXISTS idx_messages_parent
         ON messages(parent_message_id) WHERE parent_message_id IS NOT NULL;
 
-        CREATE INDEX IF NOT EXISTS idx_messages_conversation_message_type
-        ON messages(conversation_id, message_type);
+        CREATE INDEX IF NOT EXISTS idx_messages_session_message_type
+        ON messages(session_id, message_type);
 
         CREATE INDEX IF NOT EXISTS idx_messages_source_role
         ON messages(source_name, role);
 
         CREATE INDEX IF NOT EXISTS idx_messages_source_stats
-        ON messages(source_name, role, has_tool_use, has_thinking, word_count, conversation_id);
+        ON messages(source_name, role, has_tool_use, has_thinking, word_count, session_id);
 
         CREATE TABLE IF NOT EXISTS content_blocks (
             block_id TEXT PRIMARY KEY,
             message_id TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
-            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
             block_index INTEGER NOT NULL,
             type TEXT NOT NULL,
             text TEXT,
@@ -149,22 +149,22 @@ ARCHIVE_STORAGE_DDL = """
         CREATE INDEX IF NOT EXISTS idx_content_blocks_message
         ON content_blocks(message_id);
 
-        CREATE INDEX IF NOT EXISTS idx_content_blocks_conversation
-        ON content_blocks(conversation_id);
+        CREATE INDEX IF NOT EXISTS idx_content_blocks_session
+        ON content_blocks(session_id);
 
         CREATE INDEX IF NOT EXISTS idx_content_blocks_type
         ON content_blocks(type);
 
         CREATE INDEX IF NOT EXISTS idx_content_blocks_conv_type
-        ON content_blocks(conversation_id, type);
+        ON content_blocks(session_id, type);
 
-        CREATE INDEX IF NOT EXISTS idx_content_blocks_tool_use_conversation
-        ON content_blocks(conversation_id)
+        CREATE INDEX IF NOT EXISTS idx_content_blocks_tool_use_session
+        ON content_blocks(session_id)
         WHERE type = 'tool_use';
 
-        CREATE TABLE IF NOT EXISTS conversation_stats (
-            conversation_id       TEXT PRIMARY KEY
-                REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+        CREATE TABLE IF NOT EXISTS session_stats (
+            session_id       TEXT PRIMARY KEY
+                REFERENCES sessions(session_id) ON DELETE CASCADE,
             source_name           TEXT NOT NULL DEFAULT '',
             message_count         INTEGER NOT NULL DEFAULT 0,
             word_count            INTEGER NOT NULL DEFAULT 0,
@@ -180,19 +180,19 @@ ARCHIVE_STORAGE_DDL = """
         );
 
         CREATE INDEX IF NOT EXISTS idx_conv_stats_source
-        ON conversation_stats(source_name);
+        ON session_stats(source_name);
 
         CREATE INDEX IF NOT EXISTS idx_conv_stats_messages
-        ON conversation_stats(message_count);
+        ON session_stats(message_count);
 
         CREATE INDEX IF NOT EXISTS idx_conv_stats_words
-        ON conversation_stats(word_count);
+        ON session_stats(word_count);
 
         CREATE INDEX IF NOT EXISTS idx_conv_stats_tool_use
-        ON conversation_stats(tool_use_count);
+        ON session_stats(tool_use_count);
 
         CREATE INDEX IF NOT EXISTS idx_conv_stats_thinking
-        ON conversation_stats(thinking_count);
+        ON session_stats(thinking_count);
 
         -- Attachments carry first-class native identifier columns (#1252).
         -- Lookups by `provider_attachment_id` / `provider_file_id` /
@@ -218,7 +218,7 @@ ARCHIVE_STORAGE_DDL = """
         CREATE TABLE IF NOT EXISTS attachment_refs (
             ref_id TEXT PRIMARY KEY,
             attachment_id TEXT NOT NULL,
-            conversation_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
             message_id TEXT,
             provider_meta TEXT,
             provider_attachment_id TEXT,
@@ -227,14 +227,14 @@ ARCHIVE_STORAGE_DDL = """
             upload_origin TEXT,
             FOREIGN KEY (attachment_id)
                 REFERENCES attachments(attachment_id) ON DELETE CASCADE,
-            FOREIGN KEY (conversation_id)
-                REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            FOREIGN KEY (session_id)
+                REFERENCES sessions(session_id) ON DELETE CASCADE,
             FOREIGN KEY (message_id)
                 REFERENCES messages(message_id) ON DELETE SET NULL
         );
 
-        CREATE INDEX IF NOT EXISTS idx_attachment_refs_conversation
-        ON attachment_refs(conversation_id);
+        CREATE INDEX IF NOT EXISTS idx_attachment_refs_session
+        ON attachment_refs(session_id);
 
         CREATE INDEX IF NOT EXISTS idx_attachment_refs_attachment
         ON attachment_refs(attachment_id);
@@ -243,12 +243,12 @@ ARCHIVE_STORAGE_DDL = """
         ON attachment_refs(message_id)
         WHERE message_id IS NOT NULL;
 
-        -- #1199 attachment-library: composite index over the conversation
+        -- #1199 attachment-library: composite index over the session
         -- provider plus the attachment origin so the UI's grouping query
         -- "all attachments uploaded via drive in chatgpt sessions" answers
         -- from index without scanning attachments.
         CREATE INDEX IF NOT EXISTS idx_attachment_refs_upload_origin
-        ON attachment_refs(upload_origin, conversation_id)
+        ON attachment_refs(upload_origin, session_id)
         WHERE upload_origin IS NOT NULL;
 
 """
@@ -257,7 +257,7 @@ ARCHIVE_STORAGE_DDL = """
 MESSAGE_FTS_DDL = """
         CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
             message_id UNINDEXED,
-            conversation_id UNINDEXED,
+            session_id UNINDEXED,
             text,
             content='',
             contentless_delete=1,
@@ -266,8 +266,8 @@ MESSAGE_FTS_DDL = """
 
         CREATE TRIGGER IF NOT EXISTS messages_fts_ai
         AFTER INSERT ON messages BEGIN
-            INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
-            SELECT new.rowid, new.message_id, new.conversation_id, new.text
+            INSERT INTO messages_fts(rowid, message_id, session_id, text)
+            SELECT new.rowid, new.message_id, new.session_id, new.text
             WHERE new.text IS NOT NULL AND new.text != '';
         END;
 
@@ -279,8 +279,8 @@ MESSAGE_FTS_DDL = """
         CREATE TRIGGER IF NOT EXISTS messages_fts_au
         AFTER UPDATE ON messages BEGIN
             DELETE FROM messages_fts WHERE rowid = old.rowid;
-            INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
-            SELECT m.rowid, m.message_id, m.conversation_id, group_concat(source.part, char(10))
+            INSERT INTO messages_fts(rowid, message_id, session_id, text)
+            SELECT m.rowid, m.message_id, m.session_id, group_concat(source.part, char(10))
             FROM messages AS m
             JOIN (
                 SELECT m2.message_id, m2.text AS part, -1 AS block_index, 0 AS part_index
@@ -312,11 +312,11 @@ MESSAGE_FTS_DDL = """
         -- and UPDATE triggers still do full rebuilds — those are rare.
         CREATE TRIGGER IF NOT EXISTS content_blocks_fts_ai
         AFTER INSERT ON content_blocks BEGIN
-            INSERT OR REPLACE INTO messages_fts(rowid, message_id, conversation_id, text)
+            INSERT OR REPLACE INTO messages_fts(rowid, message_id, session_id, text)
             SELECT
                 msg.rowid,
                 new.message_id,
-                msg.conversation_id,
+                msg.session_id,
                 -- Preserve existing FTS text (if any), falling back to
                 -- message body text, falling back to empty string. Then
                 -- append the new block's text, tool_input, and metadata
@@ -341,8 +341,8 @@ MESSAGE_FTS_DDL = """
         AFTER DELETE ON content_blocks BEGIN
             DELETE FROM messages_fts
             WHERE rowid = (SELECT rowid FROM messages WHERE message_id = old.message_id);
-            INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
-            SELECT m.rowid, m.message_id, m.conversation_id, group_concat(source.part, char(10))
+            INSERT INTO messages_fts(rowid, message_id, session_id, text)
+            SELECT m.rowid, m.message_id, m.session_id, group_concat(source.part, char(10))
             FROM messages AS m
             JOIN (
                 SELECT m2.message_id, m2.text AS part, -1 AS block_index, 0 AS part_index
@@ -370,8 +370,8 @@ MESSAGE_FTS_DDL = """
         AFTER UPDATE ON content_blocks BEGIN
             DELETE FROM messages_fts
             WHERE rowid = (SELECT rowid FROM messages WHERE message_id = new.message_id);
-            INSERT INTO messages_fts(rowid, message_id, conversation_id, text)
-            SELECT m.rowid, m.message_id, m.conversation_id, group_concat(source.part, char(10))
+            INSERT INTO messages_fts(rowid, message_id, session_id, text)
+            SELECT m.rowid, m.message_id, m.session_id, group_concat(source.part, char(10))
             FROM messages AS m
             JOIN (
                 SELECT m2.message_id, m2.text AS part, -1 AS block_index, 0 AS part_index
@@ -399,8 +399,8 @@ MESSAGE_FTS_DDL = """
 
 # ---------------------------------------------------------------------------
 # Tags many-to-many (replaces JSON metadata['tags'] field)
-# MIGRATION NOTE: When schema version is bumped, migrate old JSON tag field
-# on conversations.metadata -> conversation_tags + tags rows.
+# Schema bumps update the canonical DDL directly; historical tag JSON is
+# re-derived from source/user tiers rather than patched in place.
 # ---------------------------------------------------------------------------
 
 TAGS_M2M_DDL = """
@@ -409,14 +409,14 @@ TAGS_M2M_DDL = """
             name TEXT    UNIQUE NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS conversation_tags (
-            conversation_id TEXT    NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+        CREATE TABLE IF NOT EXISTS session_tags (
+            session_id TEXT    NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
             tag_id          INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-            PRIMARY KEY (conversation_id, tag_id)
+            PRIMARY KEY (session_id, tag_id)
         );
 
-        CREATE INDEX IF NOT EXISTS idx_conversation_tags_tag
-            ON conversation_tags(tag_id);
+        CREATE INDEX IF NOT EXISTS idx_session_tags_tag
+            ON session_tags(tag_id);
 """
 
 # ---------------------------------------------------------------------------
@@ -442,22 +442,22 @@ BLOB_LEASE_DDL = """
 # User state — target-aware marks and annotations
 # ---------------------------------------------------------------------------
 
-# NOTE (#1114): ``user_marks`` and ``user_annotations`` survive the conversation
+# NOTE (#1114): ``user_marks`` and ``user_annotations`` survive the session
 # row's lifecycle.  ``identity_key`` is the stable surface identifier
-# (``conversation:{cid}`` or ``message:{cid}:{mid}``) used to repoint the
-# resolved ``conversation_id``/``message_id`` columns when a logically identical
-# conversation is re-imported after delete/reset.  Conversation row FKs use
+# (``session:{cid}`` or ``message:{cid}:{mid}``) used to repoint the
+# resolved ``session_id``/``message_id`` columns when a logically identical
+# session is re-imported after delete/reset.  Session row FKs use
 # ``ON DELETE SET NULL`` so marks/annotations persist across hard delete and are
-# rebound by ``repoint_user_state_by_identity`` once the conversation reappears.
+# rebound by ``repoint_user_state_by_identity`` once the session reappears.
 USER_MARKS_DDL = """
         CREATE TABLE IF NOT EXISTS user_marks (
             target_type     TEXT NOT NULL CHECK (target_type IN (
-                'conversation', 'message', 'session', 'work_event',
+                'session', 'message', 'session', 'work_event',
                 'thread', 'content_block', 'attachment', 'paste_span'
             )),
             target_id       TEXT NOT NULL,
             identity_key    TEXT NOT NULL,
-            conversation_id TEXT REFERENCES conversations(conversation_id) ON DELETE SET NULL,
+            session_id TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
             message_id      TEXT REFERENCES messages(message_id) ON DELETE SET NULL,
             mark_type       TEXT NOT NULL CHECK (mark_type IN ('star', 'pin', 'archive')),
             created_at      TEXT NOT NULL,
@@ -467,8 +467,8 @@ USER_MARKS_DDL = """
         CREATE INDEX IF NOT EXISTS idx_user_marks_type
             ON user_marks(mark_type);
 
-        CREATE INDEX IF NOT EXISTS idx_user_marks_conversation
-            ON user_marks(conversation_id);
+        CREATE INDEX IF NOT EXISTS idx_user_marks_session
+            ON user_marks(session_id);
 
         CREATE INDEX IF NOT EXISTS idx_user_marks_message
             ON user_marks(message_id);
@@ -481,12 +481,12 @@ USER_ANNOTATIONS_DDL = """
         CREATE TABLE IF NOT EXISTS user_annotations (
             annotation_id   TEXT PRIMARY KEY,
             target_type     TEXT NOT NULL CHECK (target_type IN (
-                'conversation', 'message', 'session', 'work_event',
+                'session', 'message', 'session', 'work_event',
                 'thread', 'content_block', 'attachment', 'paste_span'
             )),
             target_id       TEXT NOT NULL,
             identity_key    TEXT NOT NULL,
-            conversation_id TEXT REFERENCES conversations(conversation_id) ON DELETE SET NULL,
+            session_id TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
             message_id      TEXT REFERENCES messages(message_id) ON DELETE SET NULL,
             note_text       TEXT NOT NULL,
             created_at      TEXT NOT NULL,
@@ -496,8 +496,8 @@ USER_ANNOTATIONS_DDL = """
         CREATE INDEX IF NOT EXISTS idx_user_annotations_target
             ON user_annotations(target_type, target_id);
 
-        CREATE INDEX IF NOT EXISTS idx_user_annotations_conversation
-            ON user_annotations(conversation_id);
+        CREATE INDEX IF NOT EXISTS idx_user_annotations_session
+            ON user_annotations(session_id);
 
         CREATE INDEX IF NOT EXISTS idx_user_annotations_message
             ON user_annotations(message_id);
@@ -507,7 +507,7 @@ USER_ANNOTATIONS_DDL = """
 """
 
 # ---------------------------------------------------------------------------
-# Saved views — named query presets storing ConversationQuerySpec as JSON
+# Saved views — named query presets storing SessionQuerySpec as JSON
 # ---------------------------------------------------------------------------
 
 SAVED_VIEWS_DDL = """
@@ -520,14 +520,14 @@ SAVED_VIEWS_DDL = """
 """
 
 # ---------------------------------------------------------------------------
-# Recall packs — saved conversation selections with context-pack payloads
+# Recall packs — saved session selections with context-pack payloads
 # ---------------------------------------------------------------------------
 
 RECALL_PACKS_DDL = """
         CREATE TABLE IF NOT EXISTS recall_packs (
             pack_id               TEXT PRIMARY KEY,
             label                 TEXT NOT NULL,
-            conversation_ids_json TEXT NOT NULL DEFAULT '[]',
+            session_ids_json TEXT NOT NULL DEFAULT '[]',
             payload_json           TEXT NOT NULL DEFAULT '{}',
             created_at            TEXT NOT NULL
         );
@@ -562,14 +562,14 @@ READER_WORKSPACES_DDL = """
 # User corrections — learning-feedback loop (#1131)
 # ---------------------------------------------------------------------------
 # Corrections live outside the content-hashed payload by design: the table is
-# keyed by ``(conversation_id, insight_kind)`` and is consulted by insight
+# keyed by ``(session_id, insight_kind)`` and is consulted by insight
 # materialization paths after they compute their base suggestion. Applying or
-# removing a correction never touches the conversation's ``content_hash`` — the
+# removing a correction never touches the session's ``content_hash`` — the
 # archive's idempotency invariant is preserved (AC #1131).
 #
 # Schema:
 #   correction_id   surrogate identifier (uuid4 hex, stable across rebuilds).
-#   conversation_id target session.
+#   session_id target session.
 #   insight_kind    one of the closed enum values in
 #                   ``polylogue.insights.feedback.CorrectionKind`` (the
 #                   application layer enforces the closed set; storage is
@@ -579,23 +579,23 @@ READER_WORKSPACES_DDL = """
 #   note            optional free-form reason text from the user.
 #   created_at      ISO-8601 timestamp of the latest write (upsert refreshes).
 #
-# The ``(conversation_id, insight_kind)`` uniqueness contract is what makes
+# The ``(session_id, insight_kind)`` uniqueness contract is what makes
 # rebuilds deterministic: at most one correction of each kind per session,
 # and it always wins over the heuristic suggestion.
 
 USER_CORRECTIONS_DDL = """
         CREATE TABLE IF NOT EXISTS user_corrections (
             correction_id   TEXT PRIMARY KEY,
-            conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
             insight_kind    TEXT NOT NULL,
             payload_json    TEXT NOT NULL,
             note            TEXT,
             created_at      TEXT NOT NULL,
-            UNIQUE (conversation_id, insight_kind)
+            UNIQUE (session_id, insight_kind)
         );
 
-        CREATE INDEX IF NOT EXISTS idx_user_corrections_conversation
-            ON user_corrections(conversation_id);
+        CREATE INDEX IF NOT EXISTS idx_user_corrections_session
+            ON user_corrections(session_id);
 
         CREATE INDEX IF NOT EXISTS idx_user_corrections_kind
             ON user_corrections(insight_kind);
@@ -607,24 +607,24 @@ USER_CORRECTIONS_DDL = """
 # Persists every parent reference emitted by a parser as a typed row, including
 # references whose parent has not yet been ingested (out-of-order ingestion) or
 # never will be. The pre-existing fast path
-# (``conversations.parent_conversation_id``) is preserved unchanged; this table
+# (``sessions.parent_session_id``) is preserved unchanged; this table
 # is the durable record that always carries the original provider-native parent
 # id alongside the edge kind.
 #
 # Columns
 #   edge_id                       Synthetic primary key.
-#   src_conversation_id           The child conversation that asserted the
+#   src_session_id           The child session that asserted the
 #                                 parent reference. FK CASCADE: deleting the
 #                                 child drops the edge.
 #   dst_provider_native_id        The parent identifier as emitted by the
-#                                 provider (provider's native conversation id,
-#                                 not a polylogue conversation_id). Required.
+#                                 provider (provider's archive session id,
+#                                 not a polylogue session_id). Required.
 #   dst_provider_name             The provider name on which the resolver
 #                                 should look up dst_provider_native_id.
 #   edge_type                     Closed enum, see polylogue/archive/topology/
 #                                 edge.py::TopologyEdgeType.
-#   resolved_dst_conversation_id  When the parent has been ingested, the
-#                                 polylogue conversation_id. FK SET NULL so a
+#   resolved_dst_session_id  When the parent has been ingested, the
+#                                 polylogue session_id. FK SET NULL so a
 #                                 parent hard-delete demotes the edge to
 #                                 unresolved rather than dropping it.
 #   raw_evidence                  JSON blob of parsing-time evidence
@@ -635,14 +635,14 @@ USER_CORRECTIONS_DDL = """
 #   resolved_at                   ISO-8601 timestamp set on the unresolved →
 #                                 resolved transition.
 #
-# Uniqueness: (src_conversation_id, dst_provider_native_id, edge_type).
+# Uniqueness: (src_session_id, dst_provider_native_id, edge_type).
 # Re-ingesting the same child twice produces exactly one row.
 
 TOPOLOGY_EDGES_DDL = """
         CREATE TABLE IF NOT EXISTS topology_edges (
             edge_id                      TEXT PRIMARY KEY,
-            src_conversation_id          TEXT NOT NULL
-                REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            src_session_id          TEXT NOT NULL
+                REFERENCES sessions(session_id) ON DELETE CASCADE,
             dst_provider_native_id       TEXT NOT NULL,
             dst_provider_name            TEXT NOT NULL,
             edge_type                    TEXT NOT NULL
@@ -650,26 +650,26 @@ TOPOLOGY_EDGES_DDL = """
                     'continuation', 'sidechain', 'subagent',
                     'branch', 'fork', 'resume', 'repaired'
                 )),
-            resolved_dst_conversation_id TEXT
-                REFERENCES conversations(conversation_id) ON DELETE SET NULL,
+            resolved_dst_session_id TEXT
+                REFERENCES sessions(session_id) ON DELETE SET NULL,
             raw_evidence                 TEXT,
             confidence                   REAL NOT NULL DEFAULT 1.0,
             status                       TEXT NOT NULL
                 CHECK (status IN ('unresolved', 'resolved', 'repaired', 'quarantined')),
             observed_at                  TEXT NOT NULL,
             resolved_at                  TEXT,
-            UNIQUE (src_conversation_id, dst_provider_native_id, edge_type)
+            UNIQUE (src_session_id, dst_provider_native_id, edge_type)
         );
 
         CREATE INDEX IF NOT EXISTS idx_topology_edges_resolver
             ON topology_edges(status, dst_provider_name, dst_provider_native_id);
 
         CREATE INDEX IF NOT EXISTS idx_topology_edges_resolved_dst
-            ON topology_edges(resolved_dst_conversation_id)
-            WHERE resolved_dst_conversation_id IS NOT NULL;
+            ON topology_edges(resolved_dst_session_id)
+            WHERE resolved_dst_session_id IS NOT NULL;
 
         CREATE INDEX IF NOT EXISTS idx_topology_edges_src
-            ON topology_edges(src_conversation_id);
+            ON topology_edges(src_session_id);
 """
 
 OTLP_SPANS_DDL = """

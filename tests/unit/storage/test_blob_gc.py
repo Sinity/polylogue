@@ -2,7 +2,7 @@
 
 Verifies the two fatal GC bugs fixed in 1bd2f156 stay fixed:
 
-1. ``_still_referenced`` must check ``raw_conversations.raw_id``
+1. ``_still_referenced`` must check ``raw_sessions.raw_id``
 2. ``_candidate_blobs`` must walk all 256 prefix subdirectories
 """
 
@@ -12,10 +12,13 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.storage.blob_gc import (
+    GCRunEvidence,
     _candidate_blobs,
     _current_generation,
     _has_active_lease,
+    _reference_surfaces,
     _still_referenced,
+    read_gc_history,
     run_blob_gc,
 )
 from polylogue.storage.blob_store import BlobStore
@@ -31,12 +34,20 @@ def _make_db(path: str | Path | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(target)
     conn.row_factory = sqlite3.Row
     conn.execute(
-        """CREATE TABLE raw_conversations (
+        """CREATE TABLE raw_sessions (
             raw_id TEXT PRIMARY KEY,
             source_name TEXT NOT NULL DEFAULT '',
             source_path TEXT NOT NULL DEFAULT '',
+            blob_hash BLOB,
             blob_size INTEGER NOT NULL DEFAULT 0,
             acquired_at TEXT NOT NULL DEFAULT ''
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE blob_refs (
+            blob_hash BLOB NOT NULL,
+            raw_id TEXT NOT NULL,
+            ref_type TEXT NOT NULL DEFAULT 'raw_payload'
         )"""
     )
     conn.execute(
@@ -58,16 +69,38 @@ def _make_db(path: str | Path | None = None) -> sqlite3.Connection:
     return conn
 
 
+def _make_source_db(path: str | Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """CREATE TABLE raw_sessions (
+            raw_id TEXT PRIMARY KEY,
+            blob_hash BLOB NOT NULL,
+            blob_size INTEGER NOT NULL DEFAULT 0
+        ) STRICT"""
+    )
+    conn.execute(
+        """CREATE TABLE blob_refs (
+            ref_id TEXT PRIMARY KEY,
+            owner_kind TEXT NOT NULL,
+            owner_id TEXT NOT NULL,
+            blob_hash BLOB NOT NULL
+        ) STRICT"""
+    )
+    conn.commit()
+    return conn
+
+
 # ---------------------------------------------------------------------------
-# _still_referenced — regression: must check raw_conversations.raw_id
+# _still_referenced — regression: must check raw_sessions.raw_id
 # ---------------------------------------------------------------------------
 
 
 def test_still_referenced_recognizes_raw_id() -> None:
-    """A blob whose hash matches a raw_conversations.raw_id is still referenced."""
+    """A blob whose hash matches a raw_sessions.raw_id is still referenced."""
     conn = _make_db()
     conn.execute(
-        "INSERT INTO raw_conversations (raw_id, source_name, source_path, blob_size, acquired_at) "
+        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
         "VALUES ('abc123def456', 'claude', 'test.json', 42, '2024-01-01')"
     )
     conn.commit()
@@ -76,10 +109,10 @@ def test_still_referenced_recognizes_raw_id() -> None:
 
 
 def test_still_referenced_rejects_unknown_hash() -> None:
-    """A blob not in raw_conversations is not referenced."""
+    """A blob not in raw_sessions is not referenced."""
     conn = _make_db()
     conn.execute(
-        "INSERT INTO raw_conversations (raw_id, source_name, source_path, blob_size, acquired_at) "
+        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
         "VALUES ('known-hash-1', 'chatgpt', 'test.json', 10, '2024-01-01')"
     )
     conn.commit()
@@ -88,10 +121,25 @@ def test_still_referenced_rejects_unknown_hash() -> None:
 
 
 def test_still_referenced_empty_table() -> None:
-    """With no raw_conversations rows, nothing is referenced."""
+    """With no raw_sessions rows, nothing is referenced."""
     conn = _make_db()
     assert _still_referenced(conn, "any-hash") is False
     conn.close()
+
+
+def test_still_referenced_recognizes_archive_source_hash(tmp_path: Path) -> None:
+    """source references are BLOB hashes, not legacy raw_id text."""
+    blob_hash = "a" * 64
+    source_conn = _make_source_db(tmp_path / "source.db")
+    source_conn.execute(
+        "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size) VALUES (?, ?, ?)",
+        ("raw-1", bytes.fromhex(blob_hash), 42),
+    )
+    source_conn.commit()
+
+    assert _still_referenced(source_conn, blob_hash) is True
+    assert _reference_surfaces(source_conn, blob_hash) == ["current.raw_sessions"]
+    source_conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -234,17 +282,17 @@ def test_run_blob_gc_empty_store(tmp_path: Path) -> None:
 
 
 def test_run_blob_gc_preserves_referenced_blobs(tmp_path: Path) -> None:
-    """GC must not delete blobs that are still referenced in raw_conversations."""
+    """GC must not delete blobs that are still referenced in raw_sessions."""
     db_path = tmp_path / "archive.db"
     blob_root = tmp_path / "blobs"
     blob_store = BlobStore(blob_root)
 
-    # Create a blob and a matching raw_conversations row
+    # Create a blob and a matching raw_sessions row
     h, _ = blob_store.write_from_bytes(b"referenced content")
 
     conn = _make_db(db_path)
     conn.execute(
-        "INSERT INTO raw_conversations (raw_id, source_name, source_path, blob_size, acquired_at) "
+        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
         "VALUES (?, 'claude', 'test.json', ?, '2024-01-01')",
         (h, len(b"referenced content")),
     )
@@ -255,6 +303,39 @@ def test_run_blob_gc_preserves_referenced_blobs(tmp_path: Path) -> None:
     assert deleted == 0
     # Blob still on disk
     assert blob_store.exists(h)
+
+
+def test_run_blob_gc_preserves_archive_source_referenced_blobs(tmp_path: Path) -> None:
+    """GC run from ``index.db`` must preserve blobs referenced by sibling ``source.db``."""
+    index_db_path = tmp_path / "index.db"
+    source_db_path = tmp_path / "source.db"
+    blob_root = tmp_path / "blobs"
+    blob_store = BlobStore(blob_root)
+
+    blob_hash, _ = blob_store.write_from_bytes(b"archive referenced content")
+    _backdate(blob_store, blob_hash)
+
+    index_conn = _make_db(index_db_path)
+    index_conn.close()
+
+    source_conn = _make_source_db(source_db_path)
+    source_conn.execute(
+        "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size) VALUES (?, ?, ?)",
+        ("raw-v1", bytes.fromhex(blob_hash), len(b"archive referenced content")),
+    )
+    source_conn.commit()
+    source_conn.close()
+
+    deleted = run_blob_gc(str(index_db_path), str(blob_root), max_batch=10)
+
+    assert deleted == 0
+    assert blob_store.exists(blob_hash)
+    history = read_gc_history(str(index_db_path), limit=1)
+    assert len(history) == 1
+    evidence = history[0].evidence
+    assert evidence is not None
+    assert evidence.skipped_referenced == 1
+    assert evidence.reference_surfaces == ["source.db.raw_sessions"]
 
 
 def test_run_blob_gc_max_batch_bound(tmp_path: Path) -> None:
@@ -290,8 +371,6 @@ def test_run_blob_gc_nonexistent_blob_dir(tmp_path: Path) -> None:
 
 
 import json
-
-from polylogue.storage.blob_gc import GCRunEvidence, read_gc_history
 
 
 def _backdate(blob_store: BlobStore, blob_hash: str, *, seconds: float = 3600) -> None:
@@ -433,7 +512,7 @@ def test_run_blob_gc_records_structured_evidence(tmp_path: Path) -> None:
 
     conn = _make_db(db_path)
     conn.execute(
-        "INSERT INTO raw_conversations (raw_id, source_name, source_path, blob_size, acquired_at) "
+        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
         "VALUES (?, 'claude', 'x.json', 1, '2025-01-01')",
         (referenced_hash,),
     )

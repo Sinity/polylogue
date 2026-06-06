@@ -53,8 +53,8 @@ _UNTIL = datetime(2026, 2, 1, tzinfo=timezone.utc)
 
 def _canonical_filter() -> MaintenanceScopeFilter:
     return MaintenanceScopeFilter(
-        conversation_ids=("c1", "c2"),
-        provider="claude",
+        session_ids=("c1", "c2"),
+        provider="claude-code",
         source_family="claude-code-session",
         source_root=Path("/data/claude"),
         raw_artifact_id="raw-1",
@@ -124,12 +124,12 @@ def _invoke_cli_plan(operation: BackfillOperation, tmp_path: Path) -> tuple[dict
                 "plan",
                 "--target",
                 "session_insights",
-                "--conversation-id",
+                "--session-id",
                 "c1",
-                "--conversation-id",
+                "--session-id",
                 "c2",
-                "--provider",
-                "claude",
+                "--origin",
+                "claude-code-session",
                 "--source-family",
                 "claude-code-session",
                 "--source-root",
@@ -212,8 +212,8 @@ def _invoke_mcp_preview() -> tuple[dict[str, Any], MaintenanceScopeFilter]:
         result = asyncio.run(
             fn(
                 targets=["session_insights"],
-                conversation_ids=["c1", "c2"],
-                provider="claude",
+                session_ids=["c1", "c2"],
+                origin="claude-code-session",
                 source_family="claude-code-session",
                 source_root="/data/claude",
                 raw_artifact_id="raw-1",
@@ -247,8 +247,8 @@ class TestDaemonBodyBuildsScopeFilter:
     def test_flat_body_every_dimension_reaches_the_planner(self) -> None:
         body = {
             "targets": ["session_insights"],
-            "conversation_ids": ["c1", "c2"],
-            "provider": "claude",
+            "session_ids": ["c1", "c2"],
+            "provider": "claude-code",
             "source_family": "claude-code-session",
             "source_root": "/data/claude",
             "raw_artifact_id": "raw-1",

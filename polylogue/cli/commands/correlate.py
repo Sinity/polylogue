@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 
 @click.command("correlate")
-@click.argument("conversation_id")
+@click.argument("session_id")
 @click.option("--repo-path", "-r", default=None, help="Path to git repository. Defaults to current directory.")
 @click.option("--since-hours", "-w", type=int, default=2, help="Hours before/after session to scan for commits.")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 @click.pass_obj
 def correlate_command(
     env: AppEnv,
-    conversation_id: str,
+    session_id: str,
     repo_path: str | None,
     since_hours: int,
     output_format: str | None,
@@ -51,16 +51,16 @@ def correlate_command(
     from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.insights.session_commit import build_correlation_result
 
-    conv = run_coroutine_sync(env.polylogue.get_conversation(conversation_id))
+    conv = run_coroutine_sync(env.polylogue.get_session(session_id))
     if conv is None:
-        env.ui.error(f"Conversation not found: {conversation_id}")
+        env.ui.error(f"Session not found: {session_id}")
         raise SystemExit(1)
 
-    # Determine time window from conversation timestamps.
+    # Determine time window from session timestamps.
     start = conv.created_at
     end = conv.updated_at
     if start is None or end is None:
-        env.ui.error("Conversation has no timestamp data.")
+        env.ui.error("Session has no timestamp data.")
         raise SystemExit(1)
 
     # Determine repo path.
@@ -86,11 +86,11 @@ def correlate_command(
         msg_dict["content_blocks"] = list(content_blocks) if content_blocks else []
         messages.append(msg_dict)
 
-    # Use conversation messages directly — they carry full text and
+    # Use session messages directly — they carry full text and
     # content_blocks from the archive read path already.
 
     result = build_correlation_result(
-        session_id=conversation_id,
+        session_id=session_id,
         messages=messages,
         session_created_at=start,
         session_updated_at=end,
@@ -114,16 +114,16 @@ def correlate_command(
 
     # OTLP span evidence
     if otlp:
-        _print_otlp_evidence(env, conversation_id, output_format)
+        _print_otlp_evidence(env, session_id, output_format)
 
 
-def _print_otlp_evidence(env: AppEnv, conversation_id: str, output_format: str | None) -> None:
+def _print_otlp_evidence(env: AppEnv, session_id: str, output_format: str | None) -> None:
     """Print OTLP span evidence for a session, if available."""
     from polylogue.insights.otlp_correlation import get_session_tool_timing
-    from polylogue.paths import db_path
+    from polylogue.paths import active_index_db_path
 
     try:
-        timing = get_session_tool_timing(str(db_path()), conversation_id)
+        timing = get_session_tool_timing(str(active_index_db_path()), session_id)
     except Exception:
         env.ui.console.print("\n[dim]No OTLP data available.[/dim]")
         return

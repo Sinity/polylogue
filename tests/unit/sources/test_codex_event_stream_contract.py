@@ -26,9 +26,9 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.archive.conversation.branch_type import BranchType
 from polylogue.archive.message.roles import Role
-from polylogue.sources.parsers.base import ParsedConversation
+from polylogue.archive.session.branch_type import BranchType
+from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
 from polylogue.sources.parsers.codex import parse as _parse_impl
 from polylogue.sources.parsers.codex import parse_stream
@@ -53,7 +53,7 @@ def _load_catalog(name: str) -> list[object]:
     return records
 
 
-def _parse(payload: list[object], fallback_id: str = "fallback") -> ParsedConversation:
+def _parse(payload: list[object], fallback_id: str = "fallback") -> ParsedSession:
     return _parse_impl(payload, fallback_id)
 
 
@@ -81,11 +81,11 @@ def test_catalog_streams_are_detected_as_codex(fixture: str) -> None:
 )
 def test_catalog_streams_parse_without_raising(fixture: str) -> None:
     records = _load_catalog(fixture)
-    conversation = _parse(records, fixture)
-    assert conversation.source_name == "codex"
+    session = _parse(records, fixture)
+    assert session.source_name == "codex"
     # Each fixture must contribute at least one message — otherwise the
     # streaming envelope contract is silently dropping content.
-    assert conversation.messages, f"{fixture} produced zero messages"
+    assert session.messages, f"{fixture} produced zero messages"
 
 
 # ---------------------------------------------------------------------------
@@ -114,10 +114,10 @@ class TestStreamingEnvelopeShape:
                 },
             }
         ]
-        conversation = _parse(records)
-        assert len(conversation.messages) == 1
-        assert conversation.messages[0].role == Role.ASSISTANT
-        assert conversation.provider_events == []
+        session = _parse(records)
+        assert len(session.messages) == 1
+        assert session.messages[0].role == Role.ASSISTANT
+        assert session.provider_events == []
 
     def test_response_item_non_message_payload_routes_to_events(self) -> None:
         records: list[object] = [
@@ -126,9 +126,9 @@ class TestStreamingEnvelopeShape:
                 "payload": {"type": "token_count", "input_tokens": 1, "output_tokens": 2},
             }
         ]
-        conversation = _parse(records)
-        assert conversation.messages == []
-        assert [event.event_type for event in conversation.provider_events] == ["token_count"]
+        session = _parse(records)
+        assert session.messages == []
+        assert [event.event_type for event in session.provider_events] == ["token_count"]
 
     def test_unknown_inner_payload_type_still_recorded_as_provider_event(self) -> None:
         """Unknown payload type tokens must not be silently dropped.
@@ -143,8 +143,8 @@ class TestStreamingEnvelopeShape:
                 "payload": {"type": "future_event_kind", "data": 7},
             }
         ]
-        conversation = _parse(records)
-        assert [event.event_type for event in conversation.provider_events] == ["future_event_kind"]
+        session = _parse(records)
+        assert [event.event_type for event in session.provider_events] == ["future_event_kind"]
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +164,7 @@ class TestResponseCompletedContract:
       segments — there are no partial-token artifacts left over.
     - A subsequent ``token_count`` event marks the end-of-response boundary
       and does not corrupt the prior message.
-    - The terminal message timestamp drives ``conversation.updated_at``.
+    - The terminal message timestamp drives ``session.updated_at``.
     """
 
     def test_completed_message_concatenates_all_output_text_segments(self) -> None:
@@ -182,9 +182,9 @@ class TestResponseCompletedContract:
                 },
             }
         ]
-        conversation = _parse(records)
-        assert len(conversation.messages) == 1
-        text = conversation.messages[0].text or ""
+        session = _parse(records)
+        assert len(session.messages) == 1
+        text = session.messages[0].text or ""
         assert "Hello" in text and "world." in text
 
     def test_token_count_after_message_does_not_mutate_prior_message(self) -> None:
@@ -204,19 +204,19 @@ class TestResponseCompletedContract:
                 "payload": {"type": "token_count", "input_tokens": 5, "output_tokens": 2},
             },
         ]
-        conversation = _parse(records)
-        assert len(conversation.messages) == 1
-        assert conversation.messages[0].text == "Paris."
-        assert conversation.messages[0].timestamp == "2025-01-15T10:00:08Z"
-        assert [event.event_type for event in conversation.provider_events] == ["token_count"]
+        session = _parse(records)
+        assert len(session.messages) == 1
+        assert session.messages[0].text == "Paris."
+        assert session.messages[0].timestamp == "2025-01-15T10:00:08Z"
+        assert [event.event_type for event in session.provider_events] == ["token_count"]
 
-    def test_terminal_message_drives_conversation_updated_at(self) -> None:
+    def test_terminal_message_drives_session_updated_at(self) -> None:
         records = _load_catalog("text_only_stream.jsonl")
-        conversation = _parse(records)
-        assert conversation.created_at == "2025-01-15T10:00:00Z"
+        session = _parse(records)
+        assert session.created_at == "2025-01-15T10:00:00Z"
         # Updated_at must come from the last assistant message, not from the
         # trailing token_count event (which has no timestamp).
-        assert conversation.updated_at == "2025-01-15T10:00:08Z"
+        assert session.updated_at == "2025-01-15T10:00:08Z"
 
 
 # ---------------------------------------------------------------------------
@@ -236,11 +236,11 @@ class TestToolCallStreamingContract:
 
     def test_function_call_realizes_as_single_tool_use_block(self) -> None:
         records = _load_catalog("tool_call_stream.jsonl")
-        conversation = _parse(records, "tool_call_stream")
+        session = _parse(records, "tool_call_stream")
 
         tool_use_msgs = [
             msg
-            for msg in conversation.messages
+            for msg in session.messages
             if any(block.type == ContentBlockType.TOOL_USE for block in msg.content_blocks)
         ]
         assert len(tool_use_msgs) == 1
@@ -253,11 +253,11 @@ class TestToolCallStreamingContract:
 
     def test_function_call_output_produces_paired_tool_result(self) -> None:
         records = _load_catalog("tool_call_stream.jsonl")
-        conversation = _parse(records, "tool_call_stream")
+        session = _parse(records, "tool_call_stream")
 
         tool_results = [
             (msg, block)
-            for msg in conversation.messages
+            for msg in session.messages
             for block in msg.content_blocks
             if block.type == ContentBlockType.TOOL_RESULT
         ]
@@ -270,17 +270,17 @@ class TestToolCallStreamingContract:
     def test_call_id_pairs_tool_use_and_tool_result(self) -> None:
         """The cross-message contract: tool_use.tool_id == tool_result.tool_id."""
         records = _load_catalog("interleaved_stream.jsonl")
-        conversation = _parse(records, "interleaved_stream")
+        session = _parse(records, "interleaved_stream")
 
         tool_use_ids = [
             block.tool_id
-            for msg in conversation.messages
+            for msg in session.messages
             for block in msg.content_blocks
             if block.type == ContentBlockType.TOOL_USE
         ]
         tool_result_ids = [
             block.tool_id
-            for msg in conversation.messages
+            for msg in session.messages
             for block in msg.content_blocks
             if block.type == ContentBlockType.TOOL_RESULT
         ]
@@ -304,7 +304,7 @@ class TestStreamResilience:
 
     def test_truncated_stream_keeps_tool_use_without_paired_result(self) -> None:
         """A function_call with no following function_call_output must still
-        appear in the parsed conversation. Silent drop would be a contract
+        appear in the parsed session. Silent drop would be a contract
         violation — the operator needs to see the partial turn."""
         records: list[object] = [
             {
@@ -332,17 +332,17 @@ class TestStreamResilience:
             },
             # function_call_output intentionally absent — stream truncated.
         ]
-        conversation = _parse(records, "truncated")
+        session = _parse(records, "truncated")
 
         tool_use_ids = [
             block.tool_id
-            for msg in conversation.messages
+            for msg in session.messages
             for block in msg.content_blocks
             if block.type == ContentBlockType.TOOL_USE
         ]
         tool_result_ids = [
             block.tool_id
-            for msg in conversation.messages
+            for msg in session.messages
             for block in msg.content_blocks
             if block.type == ContentBlockType.TOOL_RESULT
         ]
@@ -350,7 +350,7 @@ class TestStreamResilience:
         assert tool_result_ids == []
         # The provider_events surface must record the unpaired function_call
         # so downstream consumers can detect the truncation.
-        assert "function_call" in {event.event_type for event in conversation.provider_events}
+        assert "function_call" in {event.event_type for event in session.provider_events}
 
     def test_out_of_order_tool_output_before_call_is_preserved(self) -> None:
         """Output arriving before its call must still be parsed — the parser
@@ -375,11 +375,11 @@ class TestStreamResilience:
                 },
             },
         ]
-        conversation = _parse(records, "out-of-order")
+        session = _parse(records, "out-of-order")
 
         tool_blocks = [
             (block.type, block.tool_id)
-            for msg in conversation.messages
+            for msg in session.messages
             for block in msg.content_blocks
             if block.type in (ContentBlockType.TOOL_USE, ContentBlockType.TOOL_RESULT)
         ]
@@ -401,8 +401,8 @@ class TestStreamResilience:
                 },
             },
         ]
-        conversation = _parse(records, "malformed")
-        assert [msg.text for msg in conversation.messages] == ["still here"]
+        session = _parse(records, "malformed")
+        assert [msg.text for msg in session.messages] == ["still here"]
 
     def test_parse_stream_is_equivalent_to_parse_for_truncated_input(self) -> None:
         """Streaming consumption (iterator) and list consumption must agree
@@ -436,20 +436,20 @@ class TestCrossMessageReferences:
                 },
             },
         ]
-        conversation = _parse(records, "fallback")
-        assert conversation.provider_conversation_id == "child"
-        assert conversation.parent_conversation_provider_id == "parent"
-        assert conversation.branch_type == BranchType.CONTINUATION
+        session = _parse(records, "fallback")
+        assert session.provider_session_id == "child"
+        assert session.parent_session_provider_id == "parent"
+        assert session.branch_type == BranchType.CONTINUATION
 
     def test_turn_context_cwd_changes_collected_into_working_directories(self) -> None:
         records = _load_catalog("interleaved_stream.jsonl")
-        conversation = _parse(records, "interleaved_stream")
-        assert conversation.working_directories == ["/repo/other", "/repo/polylogue"]
+        session = _parse(records, "interleaved_stream")
+        assert session.working_directories == ["/repo/other", "/repo/polylogue"]
 
     def test_compaction_event_surfaced_with_replacement_history_flag(self) -> None:
         records = _load_catalog("interleaved_stream.jsonl")
-        conversation = _parse(records, "interleaved_stream")
-        compactions = [e for e in conversation.provider_events if e.event_type == "compaction"]
+        session = _parse(records, "interleaved_stream")
+        compactions = [e for e in session.provider_events if e.event_type == "compaction"]
         assert len(compactions) == 1
         assert compactions[0].payload["replacement_history_count"] == 1
         assert compactions[0].payload["summary"] == "Conversation compacted"

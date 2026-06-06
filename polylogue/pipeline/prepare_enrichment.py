@@ -7,25 +7,25 @@ from polylogue.archive.topology.edge import (
     TopologyEdgeStatus,
     branch_type_to_edge_type,
 )
-from polylogue.pipeline.ids import conversation_id as make_conversation_id
 from polylogue.pipeline.ids import provider_event_id
+from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.prepare_models import (
     PrepareCache,
     PreparedBundle,
     RecordBundle,
     TransformResult,
 )
-from polylogue.sources.parsers.base import ParsedConversation
-from polylogue.storage.archive_views import ExistingConversation
+from polylogue.sources.parsers.base import ParsedSession
+from polylogue.storage.archive_views import ExistingSession
 from polylogue.storage.runtime import (
     AttachmentRecord,
     ContentBlockRecord,
-    ConversationRecord,
     MessageRecord,
     ProviderEventRecord,
+    SessionRecord,
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.types import ConversationId, MessageId
+from polylogue.types import MessageId, SessionId
 
 
 def _str_from_meta(provider_meta: dict[str, object] | None, key: str) -> str | None:
@@ -37,7 +37,7 @@ def _str_from_meta(provider_meta: dict[str, object] | None, key: str) -> str | N
 
 
 def enrich_bundle_from_db(
-    convo: ParsedConversation,
+    convo: ParsedSession,
     source_name: str,
     transform: TransformResult,
     cache: PrepareCache,
@@ -49,35 +49,35 @@ def enrich_bundle_from_db(
 
     existing = cache.existing.get(candidate_cid)
     if existing:
-        cid = ConversationId(existing.conversation_id)
+        cid = SessionId(existing.session_id)
         changed = existing.content_hash != content_hash
     else:
         cid = candidate_cid
         changed = False
 
-    # Resolve parent fast-path (conversations.parent_conversation_id) AND
+    # Resolve parent fast-path (sessions.parent_session_id) AND
     # always record an explicit topology edge when the parser asserted a
     # parent reference, so out-of-order ingest does not silently lose the
-    # edge (#1258). The fast-path semantics are preserved: parent_conversation_id
+    # edge (#1258). The fast-path semantics are preserved: parent_session_id
     # is set only when the parent is in cache; the topology edge is written
     # unconditionally.
-    parent_conversation_id: ConversationId | None = None
+    parent_session_id: SessionId | None = None
     topology_edges: list[TopologyEdgeRecord] = []
-    if convo.parent_conversation_provider_id:
-        candidate_parent = make_conversation_id(convo.source_name, convo.parent_conversation_provider_id)
+    if convo.parent_session_provider_id:
+        candidate_parent = make_session_id(convo.source_name, convo.parent_session_provider_id)
         parent_known = candidate_parent in cache.known_ids
         if parent_known:
-            parent_conversation_id = candidate_parent
+            parent_session_id = candidate_parent
         edge_type = branch_type_to_edge_type(convo.branch_type)
         topology_edges.append(
             TopologyEdgeRecord(
-                src_conversation_id=cid,
-                dst_provider_native_id=convo.parent_conversation_provider_id,
+                src_session_id=cid,
+                dst_provider_native_id=convo.parent_session_provider_id,
                 dst_provider_name=convo.source_name,
                 edge_type=edge_type,
-                resolved_dst_conversation_id=candidate_parent if parent_known else None,
+                resolved_dst_session_id=candidate_parent if parent_known else None,
                 status=(TopologyEdgeStatus.RESOLVED if parent_known else TopologyEdgeStatus.UNRESOLVED),
-                resolved_at=(transform.bundle.conversation.updated_at if parent_known else None),
+                resolved_at=(transform.bundle.session.updated_at if parent_known else None),
             )
         )
 
@@ -113,20 +113,20 @@ def enrich_bundle_from_db(
             git_branch = git_branch or git_obj.get("branch")
             git_repository_url = git_obj.get("repository_url")
 
-    conversation_record = ConversationRecord(
-        conversation_id=cid,
-        provider_conversation_id=convo.provider_conversation_id,
+    session_record = SessionRecord(
+        session_id=cid,
+        provider_session_id=convo.provider_session_id,
         title=convo.title,
-        created_at=transform.bundle.conversation.created_at,
-        updated_at=transform.bundle.conversation.updated_at,
-        sort_key=transform.bundle.conversation.sort_key,
+        created_at=transform.bundle.session.created_at,
+        updated_at=transform.bundle.session.updated_at,
+        sort_key=transform.bundle.session.sort_key,
         content_hash=content_hash,
         provider_meta=merged_provider_meta,
         source_name=source_name,
         working_directories_json=working_directories_json,
         git_branch=git_branch,
         git_repository_url=git_repository_url,
-        parent_conversation_id=parent_conversation_id,
+        parent_session_id=parent_session_id,
         branch_type=convo.branch_type,
         raw_id=raw_id,
     )
@@ -141,7 +141,7 @@ def enrich_bundle_from_db(
         patched_messages.append(
             MessageRecord(
                 message_id=mid,
-                conversation_id=cid,
+                session_id=cid,
                 provider_message_id=msg_rec.provider_message_id,
                 role=msg_rec.role,
                 text=msg_rec.text,
@@ -168,7 +168,7 @@ def enrich_bundle_from_db(
         ContentBlockRecord(
             block_id=ContentBlockRecord.make_id(reverse_mid.get(block.message_id, block.message_id), block.block_index),
             message_id=reverse_mid.get(block.message_id, block.message_id),
-            conversation_id=cid,
+            session_id=cid,
             block_index=block.block_index,
             type=block.type,
             text=block.text,
@@ -189,13 +189,13 @@ def enrich_bundle_from_db(
         # #1252: typed native identifiers flow from ParsedAttachment →
         # MaterializedAttachment → AttachmentRecord without re-reading
         # provider_meta. Fall back to the JSON envelope only for AttachmentRecords
-        # constructed by legacy code paths that have not yet been migrated to
+        # constructed by older code paths that have not yet adopted
         # populate the typed surface (the daemon ingest path always populates
         # the typed fields).
         patched_attachments.append(
             AttachmentRecord(
                 attachment_id=attachment.attachment_id,
-                conversation_id=cid,
+                session_id=cid,
                 message_id=att_message_id,
                 mime_type=attachment.mime_type,
                 size_bytes=attachment.size_bytes,
@@ -211,7 +211,7 @@ def enrich_bundle_from_db(
     patched_provider_events = [
         ProviderEventRecord(
             event_id=provider_event_id(cid, event.event_index),
-            conversation_id=cid,
+            session_id=cid,
             source_name=event.source_name,
             event_index=event.event_index,
             event_type=event.event_type,
@@ -231,7 +231,7 @@ def enrich_bundle_from_db(
 
     return PreparedBundle(
         bundle=RecordBundle(
-            conversation=conversation_record,
+            session=session_record,
             messages=patched_messages,
             attachments=patched_attachments,
             content_blocks=patched_blocks,
@@ -246,39 +246,39 @@ def enrich_bundle_from_db(
 
 async def _build_single_cache(
     backend: SQLiteBackend,
-    convo: ParsedConversation,
-    candidate_cid: ConversationId,
+    convo: ParsedSession,
+    candidate_cid: SessionId,
     _unused: object,
 ) -> PrepareCache:
     cache = PrepareCache()
 
     async with backend.connection() as conn:
         cursor = await conn.execute(
-            "SELECT conversation_id, content_hash FROM conversations WHERE conversation_id = ? LIMIT 1",
+            "SELECT session_id, content_hash FROM sessions WHERE session_id = ? LIMIT 1",
             (candidate_cid,),
         )
         row = await cursor.fetchone()
     if row:
-        cid = row["conversation_id"]
-        cache.existing[cid] = ExistingConversation(conversation_id=cid, content_hash=row["content_hash"])
+        cid = row["session_id"]
+        cache.existing[cid] = ExistingSession(session_id=cid, content_hash=row["content_hash"])
         cache.known_ids.add(cid)
 
-    if convo.parent_conversation_provider_id:
-        candidate_parent = make_conversation_id(convo.source_name, convo.parent_conversation_provider_id)
+    if convo.parent_session_provider_id:
+        candidate_parent = make_session_id(convo.source_name, convo.parent_session_provider_id)
         async with backend.connection() as conn:
             cursor = await conn.execute(
-                "SELECT 1 FROM conversations WHERE conversation_id = ?",
+                "SELECT 1 FROM sessions WHERE session_id = ?",
                 (candidate_parent,),
             )
             if await cursor.fetchone():
                 cache.known_ids.add(candidate_parent)
 
-    existing_cid: ConversationId | None = candidate_cid if candidate_cid in cache.known_ids else None
+    existing_cid: SessionId | None = candidate_cid if candidate_cid in cache.known_ids else None
     if existing_cid:
         async with backend.connection() as conn:
             cursor = await conn.execute(
                 "SELECT provider_message_id, message_id FROM messages "
-                "WHERE conversation_id = ? AND provider_message_id IS NOT NULL",
+                "WHERE session_id = ? AND provider_message_id IS NOT NULL",
                 (existing_cid,),
             )
             rows = await cursor.fetchall()

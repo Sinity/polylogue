@@ -3,7 +3,7 @@
 Blobs are stored as immutable files under a two-level directory structure:
 ``{root}/{hash[:2]}/{hash[2:]}``, where hash is the SHA-256 hex digest of
 the content. This is the same hash used as ``raw_id`` in the
-``raw_conversations`` table — no separate addressing scheme needed.
+``raw_sessions`` table — no separate addressing scheme needed.
 
 Writes are atomic (tempfile + ``os.replace``). Files are never modified
 after creation. Deduplication is free: identical content produces the
@@ -359,7 +359,7 @@ class BlobStore:
 
         Walks the blob store directory (one blob at a time, bounded
         memory) and compares against *db_referenced_ids* (the set of
-        ``raw_id`` values from ``raw_conversations``).
+        ``raw_id`` values from ``raw_sessions``).
 
         Returns count, total bytes, and a representative sample of
         orphan hashes.  Blob files that are temporary (``.blob.*``

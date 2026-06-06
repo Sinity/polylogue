@@ -136,16 +136,16 @@ class TestUrlBuilder:
             label="X",
             url_template="https://example.test/?p={prompt}",
         )
-        url = build_url(template, prompt="hello world & friends", conversation_id="c", message_id="m")
+        url = build_url(template, prompt="hello world & friends", session_id="c", message_id="m")
         assert "hello%20world%20%26%20friends" in url
 
-    def test_conversation_and_message_id_are_quoted(self) -> None:
+    def test_session_and_message_id_are_quoted(self) -> None:
         template = AgentTemplate(
             agent_id="x",
             label="X",
-            url_template="https://example.test/{conversation_id}/{message_id}",
+            url_template="https://example.test/{session_id}/{message_id}",
         )
-        url = build_url(template, prompt="", conversation_id="conv/with slash", message_id="m id")
+        url = build_url(template, prompt="", session_id="conv/with slash", message_id="m id")
         assert "conv%2Fwith%20slash" in url
         assert "m%20id" in url
 
@@ -155,7 +155,7 @@ class TestUrlBuilder:
             label="X",
             url_template="custom://send?text={prompt_plain}",
         )
-        url = build_url(template, prompt="hi & bye", conversation_id="c", message_id=None)
+        url = build_url(template, prompt="hi & bye", session_id="c", message_id=None)
         # The placeholder receives the raw text; the operator opted in
         # by configuring ``{prompt_plain}`` deliberately.
         assert "hi & bye" in url
@@ -166,7 +166,7 @@ class TestUrlBuilder:
             label="X",
             url_template="proto://?msg={message_id}",
         )
-        url = build_url(template, prompt="x", conversation_id="c", message_id=None)
+        url = build_url(template, prompt="x", session_id="c", message_id=None)
         assert url == "proto://?msg="
 
 

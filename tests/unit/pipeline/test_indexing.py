@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from polylogue.config import Config
 from polylogue.pipeline.services.indexing import IndexService
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from tests.infra.storage_records import make_content_block, make_conversation, make_message
+from tests.infra.storage_records import make_content_block, make_message, make_session
 
 
 def _config() -> Config:
@@ -25,32 +25,32 @@ class TestIndexService:
     """Test IndexService functionality."""
 
     async def test_update_index_empty_list(self, sqlite_backend: SQLiteBackend) -> None:
-        """Update index with empty conversation list."""
+        """Update index with empty session list."""
         service = IndexService(_config(), backend=sqlite_backend)
 
         result = await service.update_index([])
         assert result is True
 
-    async def test_update_index_with_conversations(self, sqlite_backend: SQLiteBackend) -> None:
-        """Update index with actual conversations."""
+    async def test_update_index_with_sessions(self, sqlite_backend: SQLiteBackend) -> None:
+        """Update index with actual sessions."""
 
         # Create test data using backend-compatible records
-        conv = make_conversation(
-            conversation_id="conv1",
+        conv = make_session(
+            session_id="conv1",
             source_name="chatgpt",
-            provider_conversation_id="prov_conv1",
+            provider_session_id="prov_conv1",
             title="Test",
             content_hash="hash123",
         )
         msg = make_message(
             message_id="msg1",
-            conversation_id="conv1",
+            session_id="conv1",
             role="user",
             text="Hello world",
             content_hash="msghash1",
         )
         # Insert using backend API
-        await sqlite_backend.save_conversation_record(conv)
+        await sqlite_backend.save_session_record(conv)
         await sqlite_backend.save_messages([msg])
 
         service = IndexService(_config(), backend=sqlite_backend)
@@ -59,13 +59,13 @@ class TestIndexService:
         assert result is True
 
     async def test_update_index_accepts_async_iterable(self, sqlite_backend: SQLiteBackend) -> None:
-        """Streaming conversation IDs can be indexed without prebuilding a list."""
+        """Streaming session IDs can be indexed without prebuilding a list."""
 
-        await sqlite_backend.save_conversation_record(
-            make_conversation(
-                conversation_id="conv-stream",
+        await sqlite_backend.save_session_record(
+            make_session(
+                session_id="conv-stream",
                 source_name="chatgpt",
-                provider_conversation_id="prov-conv-stream",
+                provider_session_id="prov-conv-stream",
                 title="Stream Test",
                 content_hash="hash-stream",
             )
@@ -74,7 +74,7 @@ class TestIndexService:
             [
                 make_message(
                     message_id="msg-stream",
-                    conversation_id="conv-stream",
+                    session_id="conv-stream",
                     role="user",
                     text="hello world",
                     content_hash="msghash-stream",
@@ -84,10 +84,10 @@ class TestIndexService:
 
         service = IndexService(_config(), backend=sqlite_backend)
 
-        async def conversation_ids() -> AsyncIterator[str]:
+        async def session_ids() -> AsyncIterator[str]:
             yield "conv-stream"
 
-        result = await service.update_index(conversation_ids())
+        result = await service.update_index(session_ids())
 
         assert result is True
         status = await service.get_index_status()
@@ -105,13 +105,13 @@ class TestIndexService:
         """Full rebuild skips the action phase when no action repair is needed."""
 
         for index in range(3):
-            conversation_id = f"conv-progress-{index}"
-            await sqlite_backend.save_conversation_record(
-                make_conversation(
-                    conversation_id=conversation_id,
+            session_id = f"conv-progress-{index}"
+            await sqlite_backend.save_session_record(
+                make_session(
+                    session_id=session_id,
                     source_name="chatgpt",
-                    provider_conversation_id=f"prov-{index}",
-                    title=f"Conversation {index}",
+                    provider_session_id=f"prov-{index}",
+                    title=f"Session {index}",
                     content_hash=f"hash-{index}",
                 )
             )
@@ -119,9 +119,9 @@ class TestIndexService:
                 [
                     make_message(
                         message_id=f"msg-progress-{index}",
-                        conversation_id=conversation_id,
+                        session_id=session_id,
                         role="user",
-                        text=f"Hello from conversation {index}",
+                        text=f"Hello from session {index}",
                         content_hash=f"message-hash-{index}",
                     )
                 ]
@@ -147,12 +147,12 @@ class TestIndexService:
     ) -> None:
         """Full rebuild still repairs action rows when tool-use blocks exist without action rows."""
 
-        await sqlite_backend.save_conversation_record(
-            make_conversation(
-                conversation_id="conv-plain",
+        await sqlite_backend.save_session_record(
+            make_session(
+                session_id="conv-plain",
                 source_name="chatgpt",
-                provider_conversation_id="prov-plain",
-                title="Plain Conversation",
+                provider_session_id="prov-plain",
+                title="Plain Session",
                 content_hash="hash-plain",
             )
         )
@@ -160,7 +160,7 @@ class TestIndexService:
             [
                 make_message(
                     message_id="msg-plain",
-                    conversation_id="conv-plain",
+                    session_id="conv-plain",
                     role="user",
                     text="No tool use here",
                     sort_key=0.5,
@@ -168,12 +168,12 @@ class TestIndexService:
                 )
             ]
         )
-        await sqlite_backend.save_conversation_record(
-            make_conversation(
-                conversation_id="conv-action",
+        await sqlite_backend.save_session_record(
+            make_session(
+                session_id="conv-action",
                 source_name="chatgpt",
-                provider_conversation_id="prov-action",
-                title="Action Conversation",
+                provider_session_id="prov-action",
+                title="Action Session",
                 content_hash="hash-action",
             )
         )
@@ -181,7 +181,7 @@ class TestIndexService:
             [
                 make_message(
                     message_id="msg-action",
-                    conversation_id="conv-action",
+                    session_id="conv-action",
                     role="assistant",
                     text="Ran rg",
                     sort_key=1.0,
@@ -193,7 +193,7 @@ class TestIndexService:
             [
                 make_content_block(
                     message_id="msg-action",
-                    conversation_id="conv-action",
+                    session_id="conv-action",
                     block_index=0,
                     block_type="tool_use",
                     tool_name="exec_command",
@@ -249,9 +249,9 @@ class TestIndexService:
         """Status after schema init shows index exists with zero-or-more entries."""
         service = IndexService(_config(), backend=sqlite_backend)
 
-        from polylogue.storage.query_models import ConversationRecordQuery
+        from polylogue.storage.query_models import SessionRecordQuery
 
-        await sqlite_backend.queries.list_conversations(ConversationRecordQuery())
+        await sqlite_backend.queries.list_sessions(SessionRecordQuery())
 
         status = await service.get_index_status()
         assert status["exists"] is True
@@ -270,7 +270,7 @@ class TestIndexServiceErrors:
         service = IndexService(config=config, backend=MagicMock())
 
         with patch(
-            "polylogue.pipeline.services.indexing.update_index_for_conversations",
+            "polylogue.pipeline.services.indexing.update_index_for_sessions",
             new_callable=AsyncMock,
             side_effect=sqlite3.DatabaseError("db locked"),
         ):
@@ -351,7 +351,7 @@ class TestIndexServiceErrors:
         service = IndexService(config=config, backend=mock_backend)
 
         with patch(
-            "polylogue.pipeline.services.indexing.update_index_for_conversations", new_callable=AsyncMock
+            "polylogue.pipeline.services.indexing.update_index_for_sessions", new_callable=AsyncMock
         ) as mock_update:
             result = await service.update_index([])
             assert result is True

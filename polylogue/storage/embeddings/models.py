@@ -7,9 +7,9 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class EmbeddingStatsSnapshot:
-    embedded_conversations: int = 0
+    embedded_sessions: int = 0
     embedded_messages: int = 0
-    pending_conversations: int = 0
+    pending_sessions: int = 0
     pending_messages: int = 0
     stale_messages: int = 0
     messages_missing_provenance: int = 0
