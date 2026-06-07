@@ -72,7 +72,7 @@ def test_hook_paste_enrichment_updates_archive_messages(
         assert session == (1,)
         span = conn.execute(
             """
-            SELECT start_offset, end_offset, boundary
+            SELECT start_offset, end_offset, boundary_state
             FROM paste_spans
             WHERE session_id = 'codex-session:codex-native-1'
             """

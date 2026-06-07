@@ -136,7 +136,7 @@ class _FakeRepo(RepositoryArchiveSearchMixin):
 def _memory_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, source_name TEXT NOT NULL)")
+    conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT NOT NULL)")
     conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, session_id TEXT NOT NULL)")
     return conn
 
@@ -144,7 +144,7 @@ def _memory_conn() -> sqlite3.Connection:
 def test_resolve_ranked_session_hits_preserves_order_and_provider_scope() -> None:
     conn = _memory_conn()
     conn.executemany(
-        "INSERT INTO sessions(session_id, source_name) VALUES (?, ?)",
+        "INSERT INTO sessions(session_id, origin) VALUES (?, ?)",
         [
             ("conv-a", "chatgpt"),
             ("conv-b", "claude"),

@@ -51,7 +51,9 @@ def test_archive_tiers_user_overlay_orphan_check_resolves_archive_targets(tmp_pa
     )
     message_id = f"{session_id}:m1"
     block_id = f"{message_id}:0"
-    attachment_id = f"{session_id}:attachment:att-1"
+    # Attachments are content-addressed; the stored attachment_id is the blob
+    # hash, not a generated token. Read it back so the "ok" mark resolves.
+    attachment_id = str(archive_conn.execute("SELECT attachment_id FROM attachments").fetchone()["attachment_id"])
     work_event = upsert_session_work_event(
         archive_conn,
         session_id=session_id,

@@ -121,7 +121,7 @@
   '''
   {
     "avg_messages_per_session": 5.0,
-    "db_size_bytes": 335872,
+    "db_size_bytes": 532480,
     "embedded_messages": 0,
     "embedded_sessions": 0,
     "embedding_coverage_percent": 0.0,
@@ -163,7 +163,7 @@
       "source": {
         "path": "<PATH>",
         "exists": true,
-        "size_bytes": 90112,
+        "size_bytes": 131072,
         "expected_user_version": 1,
         "user_version": 1,
         "version_status": "ok",
@@ -178,7 +178,7 @@
       "index": {
         "path": "<PATH>",
         "exists": true,
-        "size_bytes": 335872,
+        "size_bytes": 532480,
         "expected_user_version": 1,
         "user_version": 1,
         "version_status": "ok",
@@ -197,12 +197,11 @@
       "embeddings": {
         "path": "<PATH>",
         "exists": true,
-        "size_bytes": 69632,
+        "size_bytes": 57344,
         "expected_user_version": 1,
         "user_version": 1,
         "version_status": "ok",
         "table_counts": {
-          "embeddings_meta": 0,
           "embedding_status": 0
         }
       },
@@ -229,7 +228,7 @@
       "ops": {
         "path": "<PATH>",
         "exists": true,
-        "size_bytes": 114688,
+        "size_bytes": 118784,
         "expected_user_version": 1,
         "user_version": 1,
         "version_status": "ok",
@@ -259,7 +258,7 @@
         "missing_raw_session_count": 0,
         "message_count": 10,
         "text_block_count": 27,
-        "blocks_fts_count": 27,
+        "messages_fts_count": 27,
         "profile_row_count": 0,
         "missing_profile_row_count": 2,
         "work_event_row_count": 0,
@@ -295,7 +294,7 @@
           "blockers": [],
           "evidence": {
             "text_block_count": 27,
-            "blocks_fts_count": 27
+            "messages_fts_count": 27
           }
         },
         "session_profiles": {
@@ -330,7 +329,7 @@
             "missing_materialization_count": 2
           }
         },
-        "work_threads": {
+        "threads": {
           "ready": false,
           "blockers": [
             "missing_thread_materialization"
@@ -507,15 +506,15 @@
           "tier": "index",
           "detail": "reads latency profiles from index.db"
         },
-        "get_action_events": {
+        "get_actions": {
           "route": "archive_direct",
           "tier": "index",
-          "detail": "derives action events from index.db content blocks"
+          "detail": "derives actions from index.db content blocks"
         },
-        "get_action_events_batch": {
+        "get_actions_batch": {
           "route": "archive_direct",
           "tier": "index",
-          "detail": "batch-derives action events from index.db content blocks"
+          "detail": "batch-derives actions from index.db content blocks"
         },
         "get_ancestors": {
           "route": "archive_routed",
@@ -637,6 +636,11 @@
           "tier": "index",
           "detail": "reads session topology from index.db"
         },
+        "get_thread_insight": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads work threads from index.db"
+        },
         "get_view": {
           "route": "archive_routed",
           "tier": "user",
@@ -646,11 +650,6 @@
           "route": "archive_routed",
           "tier": "user",
           "detail": "reads saved views through user.db"
-        },
-        "get_work_thread_insight": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads work threads from index.db"
         },
         "get_workspace": {
           "route": "archive_routed",
@@ -757,6 +756,11 @@
           "tier": "user",
           "detail": "reads user tag counts through user.db"
         },
+        "list_thread_insights": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "reads work threads from index.db"
+        },
         "list_tool_usage_insights": {
           "route": "archive_routed",
           "tier": "index",
@@ -766,11 +770,6 @@
           "route": "archive_routed",
           "tier": "user",
           "detail": "reads saved views through user.db"
-        },
-        "list_work_thread_insights": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "reads work threads from index.db"
         },
         "list_workspaces": {
           "route": "archive_routed",
@@ -800,7 +799,7 @@
         "rebuild_index": {
           "route": "archive_routed",
           "tier": "index",
-          "detail": "rebuilds blocks_fts from index.db"
+          "detail": "rebuilds messages_fts from index.db"
         },
         "rebuild_insights": {
           "route": "archive_routed",

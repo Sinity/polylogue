@@ -12,69 +12,6 @@ VEC0_DDL = """
 """
 
 
-ARTIFACT_OBSERVATION_DDL = """
-        CREATE TABLE IF NOT EXISTS artifact_observations (
-            observation_id TEXT PRIMARY KEY,
-            raw_id TEXT NOT NULL REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
-            payload_provider TEXT,
-            source_name TEXT NOT NULL,
-            source_path TEXT NOT NULL,
-            source_index INTEGER,
-            file_mtime TEXT,
-            wire_format TEXT,
-            artifact_kind TEXT NOT NULL,
-            classification_reason TEXT NOT NULL,
-            parse_as_session INTEGER NOT NULL DEFAULT 0,
-            schema_eligible INTEGER NOT NULL DEFAULT 0,
-            support_status TEXT NOT NULL
-                CHECK (support_status IN (
-                    'supported_parseable',
-                    'recognized_unparsed',
-                    'unsupported_parseable',
-                    'decode_failed',
-                    'partial_decode',
-                    'unknown'
-                )),
-            malformed_jsonl_lines INTEGER NOT NULL DEFAULT 0,
-            decode_error TEXT,
-            bundle_scope TEXT,
-            cohort_id TEXT,
-            resolved_package_version TEXT,
-            resolved_element_kind TEXT,
-            resolution_reason TEXT,
-            link_group_key TEXT,
-            sidecar_agent_type TEXT,
-            first_observed_at TEXT NOT NULL,
-            last_observed_at TEXT NOT NULL
-        );
-
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_artifact_obs_source_identity
-        ON artifact_observations(
-            COALESCE(source_name, ''),
-            source_path,
-            COALESCE(source_index, -1)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_artifact_obs_raw_id
-        ON artifact_observations(raw_id);
-
-        CREATE INDEX IF NOT EXISTS idx_artifact_obs_provider_status
-        ON artifact_observations(payload_provider, support_status);
-
-        CREATE INDEX IF NOT EXISTS idx_artifact_obs_kind_status
-        ON artifact_observations(artifact_kind, support_status);
-
-        CREATE INDEX IF NOT EXISTS idx_artifact_obs_cohort
-        ON artifact_observations(cohort_id)
-        WHERE cohort_id IS NOT NULL;
-
-        CREATE INDEX IF NOT EXISTS idx_artifact_obs_link_group
-        ON artifact_observations(link_group_key)
-        WHERE link_group_key IS NOT NULL;
-"""
-
-
 __all__ = [
-    "ARTIFACT_OBSERVATION_DDL",
     "VEC0_DDL",
 ]

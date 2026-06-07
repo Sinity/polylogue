@@ -97,17 +97,20 @@ def test_message_fts_trigger_rowids_track_block_rowids(test_conn: sqlite3.Connec
         text="Ran command",
     )
 
-    row = test_conn.execute(
-        """
-        SELECT b.rowid AS block_rowid, f.rowid AS fts_rowid
-        FROM blocks b
-        JOIN messages_fts f ON f.block_id = b.block_id
-        WHERE b.message_id = ?
-        """,
+    # ``messages_fts`` is a contentless FTS5 table (content=''), so its stored
+    # columns are not retrievable via plain SELECT — only the rowid and MATCH
+    # are. The trigger keys each FTS row by the block rowid; prove the tracking
+    # by matching the indexed text and comparing the matched FTS rowid to the
+    # canonical block rowid.
+    block_rowid = test_conn.execute(
+        "SELECT rowid FROM blocks WHERE message_id = ?",
         (message_id,),
-    ).fetchone()
-    assert row is not None
-    assert row["block_rowid"] == row["fts_rowid"]
+    ).fetchone()["rowid"]
+    fts_rowid = test_conn.execute(
+        "SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?",
+        ("command",),
+    ).fetchone()["rowid"]
+    assert fts_rowid == block_rowid
 
     test_conn.execute("DELETE FROM blocks WHERE message_id = ?", (message_id,))
     remaining = test_conn.execute(

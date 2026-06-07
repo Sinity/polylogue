@@ -28,7 +28,7 @@ def _resolve_ranked_session_hits(
     if scope_names:
         scope_sql, scope_params = _build_provider_scope_filter(
             scope_names,
-            provider_column="sessions.source_name",
+            provider_column="sessions.origin",
         )
         scope_clause = f"WHERE {scope_sql}"
         params.extend(scope_params)

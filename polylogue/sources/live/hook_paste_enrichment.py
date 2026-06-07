@@ -146,8 +146,8 @@ def _enrich_archive_paste_from_hooks(index_db: Path, events: list[dict[str, obje
                     conn.execute(
                         """
                         INSERT OR IGNORE INTO paste_spans (
-                            message_id, session_id, start_offset, end_offset, content_hash, boundary_state
-                        ) VALUES (?, ?, 0, 0, ?, ?)
+                            message_id, session_id, position, start_offset, end_offset, content_hash, boundary_state
+                        ) VALUES (?, ?, 0, 0, 0, ?, ?)
                         """,
                         (message_id, matched_session_id, content_hash, PasteBoundary.HASH_ONLY.value),
                     )

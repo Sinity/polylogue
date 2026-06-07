@@ -52,8 +52,9 @@ def substantive_pair() -> list[Message]:
 
 @pytest.fixture
 def session_with_metadata() -> Session:
-    # Hydrated messages have no provider_meta (#1256). Session-level
-    # total_duration_ms is sourced from the session provider_meta envelope.
+    # Hydrated sessions carry no provider_meta envelope (#1256/#1743).
+    # total_duration_ms moved off the hydrated Session and onto the typed
+    # insight/session projections, so the runtime property is always 0.
     messages = [
         make_msg(id="u1", role="user", text="Can you help with this?"),
         make_msg(id="a1", role="assistant", text="Yes, I can help."),
@@ -68,7 +69,6 @@ def session_with_metadata() -> Session:
         created_at=datetime(2024, 1, 15, 10, 0),
         updated_at=datetime(2024, 1, 15, 12, 0),
         metadata={"tags": ["test", "comprehensive"], "summary": "A test session"},
-        provider_meta={"total_duration_ms": 5500},
     )
 
 
@@ -247,13 +247,11 @@ class TestSessionMetadataAndAggregation:
         assert titled.user_title == "User Override"
         assert titled.display_title == "User Override"
 
-        provider_labeled = session_with_metadata.model_copy(
-            update={
-                "title": "gemini-20250422-1234",
-                "provider_meta": {"display_label": "Review the project plan"},
-            }
-        )
-        assert provider_labeled.display_title == "Review the project plan"
+        # Provider-supplied display labels were carried on the removed
+        # provider_meta envelope; display_title now falls through to the
+        # stored title when there is no user override (no provider-label path).
+        provider_labeled = session_with_metadata.model_copy(update={"title": "gemini-20250422-1234"})
+        assert provider_labeled.display_title == "gemini-20250422-1234"
 
         fallback = make_conv(id="abc123def456", provider="test", title=None, messages=MessageCollection(messages=[]))
         assert fallback.display_title == "abc123de"
@@ -261,9 +259,10 @@ class TestSessionMetadataAndAggregation:
 
     def test_cost_duration_branch_and_equality_contract(self, session_with_metadata: Session) -> None:
         # total_cost_usd is always 0.0 post-#1256 (no Message-level cost);
-        # total_duration_ms reads the session provider_meta envelope.
+        # total_duration_ms moved to the typed insight/session projections,
+        # so the hydrated-session runtime property is always 0 (#1743).
         assert session_with_metadata.total_cost_usd == 0.0
-        assert session_with_metadata.total_duration_ms == 5500
+        assert session_with_metadata.total_duration_ms == 0
 
         branched = make_conv(
             id="branchy",
@@ -284,12 +283,13 @@ class TestSessionMetadataAndAggregation:
         assert session_with_metadata.model_copy() == session_with_metadata
 
     def test_total_cost_usd_does_not_fall_back_to_provider_meta(self) -> None:
-        """Per #1139: Session.total_cost_usd is message-only.
+        """Per #1139/#1743: no provider_meta cost/duration source survives.
 
-        Session-level cost in ``provider_meta`` must be consumed via the
-        typed ``pricing.estimate_session_cost`` /
-        ``harmonize_session_cost`` extractor path, not via a silent
-        runtime-property fallback.
+        The hydrated Session no longer carries a provider_meta envelope, and
+        neither the runtime ``total_cost_usd`` property nor the typed
+        ``harmonize_session_cost`` extractor reads a session-level reported
+        cost. Cost is sourced exclusively from typed message token usage;
+        with none present, every cost surface resolves to an estimated 0.0.
         """
 
         session = make_conv(
@@ -301,15 +301,15 @@ class TestSessionMetadataAndAggregation:
                     make_msg(id="a1", role="assistant", text="Answer"),
                 ]
             ),
-            provider_meta={"total_cost_usd": "0.75", "total_duration_ms": "3200"},
         )
 
-        # Runtime property no longer falls back to provider_meta for cost.
+        # Runtime property is message-only and has no provider_meta fallback.
         assert session.total_cost_usd == 0.0
-        # Duration still falls back (out of #1139 scope).
-        assert session.total_duration_ms == 3200
-        # The typed extractor path still surfaces the provider-reported cost.
-        assert harmonize_session_cost(session) == (0.75, False)
+        # Duration moved to the typed insight/session projections.
+        assert session.total_duration_ms == 0
+        # The typed extractor reads message token usage, not session totals;
+        # with no usage it reports an estimated zero cost.
+        assert harmonize_session_cost(session) == (0.0, True)
 
 
 VIEW_CASES = [

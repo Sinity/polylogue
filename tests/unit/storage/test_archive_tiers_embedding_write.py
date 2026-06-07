@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import Origin
+from polylogue.storage.embeddings.materialization import _record_archive_embedding_success
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.embedding_write import (
     ArchiveEmbeddingMeta,
@@ -47,7 +48,6 @@ def test_archive_tiers_embedding_writer_upserts_vector_meta_and_status(tmp_path:
         embedded_at_ms=1_767_225_700_000,
         content_hash=content_hash,
     )
-    status = read_embedding_status(conn, session_id)
 
     assert meta == ArchiveEmbeddingMeta(
         message_id=message_id,
@@ -57,15 +57,25 @@ def test_archive_tiers_embedding_writer_upserts_vector_meta_and_status(tmp_path:
         embedded_at_ms=1_767_225_700_000,
         needs_reindex=False,
     )
-    assert status == ArchiveEmbeddingStatus(
+    assert conn.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 1
+
+    # The per-message vector upsert intentionally does NOT touch
+    # ``embedding_status``; that row is materialized by the session-level
+    # orchestrator after a session's messages are embedded. Exercise that
+    # seam directly to confirm the status row reflects the embedded session.
+    _record_archive_embedding_success(
+        conn,
         session_id=session_id,
         origin="codex-session",
-        message_count_embedded=1,
-        last_embedded_at_ms=1_767_225_700_000,
-        needs_reindex=False,
-        error_message=None,
+        message_count=1,
     )
-    assert conn.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 1
+    status = read_embedding_status(conn, session_id)
+    assert status.session_id == session_id
+    assert status.origin == "codex-session"
+    assert status.message_count_embedded == 1
+    assert status.needs_reindex is False
+    assert status.error_message is None
+    assert isinstance(status.last_embedded_at_ms, int)
 
 
 def test_archive_tiers_embedding_writer_records_reindexable_errors(tmp_path: Path) -> None:

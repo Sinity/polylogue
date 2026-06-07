@@ -37,12 +37,15 @@ class TestHybridSearchProvider:
         # Create backend with some sessions and messages
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
-        # Add sessions and messages
+        # Add sessions and messages. Session/message IDs are the generated
+        # ``origin:native_id`` form so the message FK and the FTS->session
+        # resolution join line up with the stored rows.
         for i in range(5):
+            sid = f"unknown-export:conv-{i}"
             conv = make_session(
-                session_id=f"conv-{i}",
+                session_id=sid,
                 source_name="test",
-                provider_session_id=f"p{i}",
+                provider_session_id=f"conv-{i}",
                 content_hash=make_hash(f"conv-{i}"),
                 title=f"Conv {i}",
                 created_at=f"2024-01-0{i + 1}T00:00:00Z",
@@ -52,11 +55,11 @@ class TestHybridSearchProvider:
                 raw_id=None,
             )
             msg = make_message(
-                message_id=f"msg-{i}",
-                session_id=f"conv-{i}",
+                message_id=f"{sid}:msg-{i}",
+                session_id=sid,
                 content_hash=make_hash(f"msg-{i}"),
                 role="user",
-                provider_message_id=f"pm{i}",
+                provider_message_id=f"msg-{i}",
                 text=f"Message {i}",
                 timestamp=f"2024-01-0{i + 1}T00:00:00Z",
             )
@@ -65,11 +68,12 @@ class TestHybridSearchProvider:
 
         await backend.close()
 
-        # Create hybrid provider with mocks
+        # Create hybrid provider with mocks. The backend writes the split-file
+        # archive tier set, so the session-resolution query reads ``index.db``.
         fts_mock = MagicMock()
         # Return message IDs for all 5 sessions
-        fts_mock.search.return_value = [f"msg-{i}" for i in range(5)]
-        fts_mock.db_path = tmp_path / "test.db"
+        fts_mock.search.return_value = [f"unknown-export:conv-{i}:msg-{i}" for i in range(5)]
+        fts_mock.db_path = tmp_path / "index.db"
 
         vec_mock = MagicMock()
         vec_mock.query.return_value = []
@@ -107,23 +111,27 @@ class TestHybridSearchProvider:
         """Hybrid search respects provider filter."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
-        # Add sessions from different providers
-        for source_name in ["claude-ai", "chatgpt"]:
+        # Add sessions from different providers. The session-scope filter is an
+        # ``origin`` predicate now, so seed sessions whose origin token is the
+        # one we filter by and reference the generated ``origin:native_id`` ids.
+        for source_name, origin_token in [("claude-ai", "claude-ai-export"), ("chatgpt", "chatgpt-export")]:
             for i in range(2):
+                sid = f"{origin_token}:conv-{i}"
                 conv = make_session(
-                    session_id=f"{source_name}-conv-{i}",
+                    session_id=sid,
                     source_name=source_name,
-                    provider_session_id=f"p{i}",
+                    provider_session_id=f"conv-{i}",
                     content_hash=make_hash(f"{source_name}-{i}"),
                     title=f"{source_name} Conv {i}",
                     created_at=f"2024-01-0{i + 1}T00:00:00Z",
                     updated_at=f"2024-01-0{i + 1}T00:00:00Z",
                 )
                 msg = make_message(
-                    message_id=f"{source_name}-msg-{i}",
-                    session_id=f"{source_name}-conv-{i}",
+                    message_id=f"{sid}:msg-{i}",
+                    session_id=sid,
                     content_hash=make_hash(f"{source_name}-msg-{i}"),
                     role="user",
+                    provider_message_id=f"msg-{i}",
                     text="test message",
                     timestamp=f"2024-01-0{i + 1}T00:00:00Z",
                 )
@@ -135,22 +143,22 @@ class TestHybridSearchProvider:
         # Create hybrid provider with mocks
         fts_mock = MagicMock()
         fts_mock.search.return_value = [
-            "claude-ai-msg-0",
-            "chatgpt-msg-0",
-            "claude-ai-msg-1",
-            "chatgpt-msg-1",
+            "claude-ai-export:conv-0:msg-0",
+            "chatgpt-export:conv-0:msg-0",
+            "claude-ai-export:conv-1:msg-1",
+            "chatgpt-export:conv-1:msg-1",
         ]
-        fts_mock.db_path = tmp_path / "test.db"
+        fts_mock.db_path = tmp_path / "index.db"
 
         vec_mock = MagicMock()
         vec_mock.query.return_value = []
 
         provider = HybridSearchProvider(fts_provider=fts_mock, vector_provider=vec_mock)
 
-        # Search with provider filter
-        result = provider.search_sessions("test", limit=10, providers=["claude-ai"])
+        # Search with provider filter (origin token)
+        result = provider.search_sessions("test", limit=10, providers=["claude-ai-export"])
         # Should filter to only Claude AI sessions
-        assert set(result) == {"claude-ai-conv-0", "claude-ai-conv-1"}
+        assert set(result) == {"claude-ai-export:conv-0", "claude-ai-export:conv-1"}
 
 
 class TestReciprocalRankFusion:
@@ -543,8 +551,8 @@ class TestFTS5ProviderDirectFiltering:
 class TestSearchProviderSourceFiltering:
     """Tests that provider filters stay provider-scoped."""
 
-    async def test_hybrid_search_filters_by_source_name(self) -> None:
-        """HybridSearchProvider should not conflate provider filters with source_name."""
+    async def test_hybrid_search_filters_by_origin(self) -> None:
+        """HybridSearchProvider scopes the session filter to the origin column."""
         mock_fts = MagicMock()
         mock_fts.db_path = None
         mock_fts.search.return_value = ["msg-1", "msg-2"]
@@ -566,11 +574,11 @@ class TestSearchProviderSourceFiltering:
 
             provider.search_sessions("test", limit=10, providers=["specific-source"])
 
-            # Provider filtering should stay scoped to source_name only.
+            # Provider filtering should stay scoped to the origin column only.
             execute_call = mock_context.execute.call_args
             assert execute_call is not None
             sql = execute_call.args[0]
-            assert "sessions.source_name" in sql
+            assert "sessions.origin" in sql
             assert "sessions.provider_name" not in sql
 
 
@@ -587,11 +595,13 @@ class TestListSessionsByParent:
     async def test_single_child(self, tmp_path: Path) -> None:
         """Single child linked to parent."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        parent_id = "unknown-export:parent-conv"
+        child_id = "unknown-export:child-conv"
         await backend.save_session_record(
             make_session(
-                session_id="parent-conv",
+                session_id=parent_id,
                 source_name="test",
-                provider_session_id="p1",
+                provider_session_id="parent-conv",
                 content_hash=make_hash("parent-conv"),
                 title="Parent",
                 created_at="2024-01-01T00:00:00Z",
@@ -600,31 +610,32 @@ class TestListSessionsByParent:
         )
         await backend.save_session_record(
             make_session(
-                session_id="child-conv",
+                session_id=child_id,
                 source_name="test",
-                provider_session_id="p2",
+                provider_session_id="child-conv",
                 content_hash=make_hash("child-conv"),
                 title="Child",
                 created_at="2024-01-02T00:00:00Z",
                 updated_at="2024-01-02T00:00:00Z",
-                parent_session_id="parent-conv",
+                parent_session_id=parent_id,
                 branch_type=BranchType.CONTINUATION,
             )
         )
-        children = await backend.list_sessions_by_parent("parent-conv")
+        children = await backend.list_sessions_by_parent(parent_id)
         assert len(children) == 1
-        assert children[0].session_id == "child-conv"
-        assert children[0].parent_session_id == "parent-conv"
+        assert children[0].session_id == child_id
+        assert children[0].parent_session_id == parent_id
         await backend.close()
 
     async def test_multiple_children(self, tmp_path: Path) -> None:
         """Multiple children sorted by created_at."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        parent_id = "unknown-export:parent"
         await backend.save_session_record(
             make_session(
-                session_id="parent",
+                session_id=parent_id,
                 source_name="test",
-                provider_session_id="p",
+                provider_session_id="parent",
                 content_hash=make_hash("parent"),
                 title="Parent",
                 created_at="2024-01-01T00:00:00Z",
@@ -634,20 +645,20 @@ class TestListSessionsByParent:
         for i, ts in enumerate(["2024-01-03T00:00:00Z", "2024-01-02T00:00:00Z", "2024-01-04T00:00:00Z"]):
             await backend.save_session_record(
                 make_session(
-                    session_id=f"child-{i}",
+                    session_id=f"unknown-export:child-{i}",
                     source_name="test",
-                    provider_session_id=f"p{i}",
+                    provider_session_id=f"child-{i}",
                     content_hash=make_hash(f"child-{i}"),
                     title=f"Child {i}",
                     created_at=ts,
                     updated_at=ts,
-                    parent_session_id="parent",
+                    parent_session_id=parent_id,
                     branch_type=BranchType.FORK,
                 )
             )
-        children = await backend.list_sessions_by_parent("parent")
+        children = await backend.list_sessions_by_parent(parent_id)
         assert len(children) == 3
-        assert children[0].session_id == "child-1"
-        assert children[1].session_id == "child-0"
-        assert children[2].session_id == "child-2"
+        assert children[0].session_id == "unknown-export:child-1"
+        assert children[1].session_id == "unknown-export:child-0"
+        assert children[2].session_id == "unknown-export:child-2"
         await backend.close()

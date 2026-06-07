@@ -254,9 +254,6 @@ def test_repair_dangling_fts_uses_targeted_missing_row_repair(monkeypatch: pytes
                 return _Cursor(10)
             if "COUNT(*) FROM messages_fts_docsize" in sql:
                 return _Cursor(self.indexed_count)
-            if "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')" in sql:
-                self.indexed_count = 10
-                return _Cursor(1)
             raise AssertionError(f"unexpected SQL: {sql}")
 
         def commit(self) -> None:
@@ -267,6 +264,14 @@ def test_repair_dangling_fts_uses_targeted_missing_row_repair(monkeypatch: pytes
         yield FakeConn()
 
     monkeypatch.setattr(repair_mod, "_open_archive_index_connection", fake_connection_context)
+    # The contentless ``messages_fts`` index is repopulated by
+    # ``rebuild_fts_index_sync`` (delete-all + INSERT...SELECT over blocks plus
+    # the derived-surface rebuilds). That seam runs many statements against a
+    # real connection; stub it here and assert it was invoked.
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync",
+        lambda _conn: calls.append(("rebuild", ())),
+    )
     monkeypatch.setattr(
         "polylogue.storage.fts.dangling_repair._repair_session_work_events_fts_rows_sync",
         lambda _conn: (0, 0, 0, 0),
@@ -289,4 +294,5 @@ def test_repair_dangling_fts_uses_targeted_missing_row_repair(monkeypatch: pytes
 
     assert result.success is True
     assert "Rebuilt FTS index" in result.detail
+    assert ("rebuild", ()) in calls
     assert ("commit", ()) in calls

@@ -111,7 +111,9 @@ async def _seed_session(repository: SessionRepository, conv_id: str) -> None:
 
 
 def _archive_session_id(conv_id: str) -> str:
-    return f"claude-code-session:ext-{conv_id}"
+    # ``_seed_session`` persists via ``make_session`` whose native_id is the
+    # conv id itself, so the generated archive session_id is ``origin:conv_id``.
+    return f"claude-code-session:{conv_id}"
 
 
 async def _read_content_hash(
@@ -286,13 +288,14 @@ class TestFeedbackStorage:
 # ---------------------------------------------------------------------------
 
 
-def test_user_corrections_ddl_is_in_schema_ddl() -> None:
-    from polylogue.storage.sqlite.schema import SCHEMA_DDL
+def test_corrections_ddl_is_in_user_tier_ddl() -> None:
+    # The learning-corrections table lives in the user-durability tier
+    # (``user.db``) by construction — it carries irreplaceable human input and
+    # sits outside the content-hash boundary (#1131). The canonical table is
+    # named ``corrections`` in the split-file archive.
+    from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
 
-    assert "CREATE TABLE IF NOT EXISTS user_corrections" in SCHEMA_DDL
-    # Hash boundary documented in the DDL block so future readers see it
-    # next to the table definition.
-    assert "user_corrections" in SCHEMA_DDL
+    assert "CREATE TABLE IF NOT EXISTS corrections" in USER_DDL
 
 
 def _suppress_unused_import_warning() -> None:

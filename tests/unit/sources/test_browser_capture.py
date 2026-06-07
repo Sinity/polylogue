@@ -102,12 +102,14 @@ async def test_browser_capture_receiver_artifact_lands_in_archive(
 
     # The archive ingest path persists the captured session into the archive
     # ``index.db`` ``sessions`` table: ``origin`` carries the source family
-    # (chatgpt -> chatgpt-export), ``native_id`` the provider session id, and
-    # the browser-capture provenance lands in the ``origin_meta`` JSON.
+    # (chatgpt -> chatgpt-export) and ``native_id`` the provider session id.
+    # Per #1743 there is no metadata escape hatch on ``sessions`` (the former
+    # ``origin_meta`` JSON column is gone); capture provenance survives only in
+    # the raw source blob, not as a queryable session column.
     with open_index_db(config.archive_root / "index.db") as conn:
-        row = conn.execute("SELECT origin, native_id, origin_meta FROM sessions").fetchone()
+        row = conn.execute("SELECT origin, native_id, title FROM sessions").fetchone()
 
     assert row is not None
     assert row["origin"] == "chatgpt-export"
     assert row["native_id"] == "conv-123"
-    assert "browser_capture" in row["origin_meta"]
+    assert row["title"] == "Work plan"

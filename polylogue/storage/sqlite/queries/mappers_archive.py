@@ -29,7 +29,6 @@ from polylogue.types import (
     ArtifactSupportStatus,
     ContentBlockType,
     MessageId,
-    Provider,
     SemanticBlockType,
     SessionId,
     ValidationMode,
@@ -142,19 +141,20 @@ def _row_to_raw_session(row: sqlite3.Row) -> RawSessionRecord:
 
 
 def _row_to_artifact_observation(row: sqlite3.Row) -> ArtifactObservationRecord:
+    # ``raw_artifacts`` carries a single ``origin`` column (#1743) and drops the
+    # wire-format/bundle-scope/resolved-schema/file-mtime fields the record can
+    # still hold; those project as ``None`` on read and are recomputed by the
+    # inspection read model where fidelity is required.
+    provider = provider_from_origin(Origin.from_string(row["origin"]))
     return ArtifactObservationRecord(
-        observation_id=row["observation_id"],
+        observation_id=row["artifact_id"],
         raw_id=row["raw_id"],
-        payload_provider=(
-            Provider.from_string(_row_text(row, "payload_provider"))
-            if _row_text(row, "payload_provider") is not None
-            else None
-        ),
-        source_name=_row_text(row, "source_name"),
+        payload_provider=provider,
+        source_name=provider.value,
         source_path=row["source_path"],
         source_index=_row_int(row, "source_index"),
-        file_mtime=_row_text(row, "file_mtime"),
-        wire_format=_row_text(row, "wire_format"),
+        file_mtime=None,
+        wire_format=None,
         artifact_kind=row["artifact_kind"],
         classification_reason=row["classification_reason"],
         parse_as_session=bool(_row_get(row, "parse_as_session", 0)),
@@ -162,15 +162,15 @@ def _row_to_artifact_observation(row: sqlite3.Row) -> ArtifactObservationRecord:
         support_status=ArtifactSupportStatus.from_string(row["support_status"]),
         malformed_jsonl_lines=int(_row_get(row, "malformed_jsonl_lines", 0) or 0),
         decode_error=_row_text(row, "decode_error"),
-        bundle_scope=_row_text(row, "bundle_scope"),
+        bundle_scope=None,
         cohort_id=_row_text(row, "cohort_id"),
-        resolved_package_version=_row_text(row, "resolved_package_version"),
-        resolved_element_kind=_row_text(row, "resolved_element_kind"),
-        resolution_reason=_row_text(row, "resolution_reason"),
+        resolved_package_version=None,
+        resolved_element_kind=None,
+        resolution_reason=None,
         link_group_key=_row_text(row, "link_group_key"),
         sidecar_agent_type=_row_text(row, "sidecar_agent_type"),
-        first_observed_at=row["first_observed_at"],
-        last_observed_at=row["last_observed_at"],
+        first_observed_at=_ms_to_iso(row["first_observed_at_ms"]) or "",
+        last_observed_at=_ms_to_iso(row["last_observed_at_ms"]) or "",
     )
 
 

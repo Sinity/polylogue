@@ -45,10 +45,13 @@ class ArchiveLifecycleStateMachine(RuleBasedStateMachine):
 
     @rule(target=saved_sessions)
     def save_new_session(self) -> str:
-        cid = f"sm-conv-{self._next_id}"
+        # ``cid`` is the canonical generated ``origin:native_id`` session id so
+        # it matches the stored row; the native part is the provider id.
+        native = f"sm-conv-{self._next_id}"
+        cid = f"chatgpt-export:{native}"
         self._next_id += 1
 
-        conv = make_session(session_id=cid, source_name="chatgpt", title=f"Conv {cid}")
+        conv = make_session(session_id=cid, source_name="chatgpt", provider_session_id=native, title=f"Conv {cid}")
         msgs = [
             make_message(message_id=f"{cid}-m1", session_id=cid, role="user", text="Hello"),
             make_message(message_id=f"{cid}-m2", session_id=cid, role="assistant", text="Hi"),
@@ -65,7 +68,8 @@ class ArchiveLifecycleStateMachine(RuleBasedStateMachine):
     @rule(cid=saved_sessions)
     def re_save_same_session(self, cid: str) -> None:
         """Re-import should be idempotent if present, or resurrect if deleted."""
-        conv = make_session(session_id=cid, source_name="chatgpt", title=f"Conv {cid}")
+        native = cid.removeprefix("chatgpt-export:")
+        conv = make_session(session_id=cid, source_name="chatgpt", provider_session_id=native, title=f"Conv {cid}")
         msgs = [
             make_message(message_id=f"{cid}-m1", session_id=cid, role="user", text="Hello"),
             make_message(message_id=f"{cid}-m2", session_id=cid, role="assistant", text="Hi"),

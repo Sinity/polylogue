@@ -48,7 +48,7 @@ def _session(
     provider: Provider = Provider.CLAUDE_CODE,
     title: str = "Session",
     metadata: dict[str, object] | None = None,
-    provider_meta: dict[str, object] | None = None,
+    working_directories: list[str] | tuple[str, ...] | None = None,
     parent_id: str | None = None,
     branch_type: BranchType | None = None,
     updated_at: datetime | None = None,
@@ -58,7 +58,7 @@ def _session(
         provider=provider,
         title=title,
         metadata=metadata or {},
-        provider_meta=provider_meta,
+        working_directories=tuple(working_directories or ()),
         updated_at=updated_at,
         parent_id=parent_id,
         branch_type=branch_type,
@@ -264,7 +264,7 @@ def test_apply_full_filters_handles_message_type_and_since_session_scope() -> No
     reference = _session(
         "session-root",
         make_msg(id="ref-user", role="user", text="root", timestamp=reference_ts),
-        provider_meta={"working_directories": ["/repo"]},
+        working_directories=["/repo"],
         updated_at=reference_ts,
     )
     later_same_repo = _session(
@@ -276,7 +276,7 @@ def test_apply_full_filters_handles_message_type_and_since_session_scope() -> No
             timestamp=datetime(2026, 4, 23, 10, 2, tzinfo=timezone.utc),
             message_type="summary",
         ),
-        provider_meta={"working_directories": ["/repo/polylogue"]},
+        working_directories=["/repo/polylogue"],
         updated_at=datetime(2026, 4, 23, 10, 2, tzinfo=timezone.utc),
     )
     later_sibling_repo = _session(
@@ -288,7 +288,7 @@ def test_apply_full_filters_handles_message_type_and_since_session_scope() -> No
             timestamp=datetime(2026, 4, 23, 10, 4, tzinfo=timezone.utc),
             message_type="summary",
         ),
-        provider_meta={"working_directories": ["/repository"]},
+        working_directories=["/repository"],
         updated_at=datetime(2026, 4, 23, 10, 4, tzinfo=timezone.utc),
     )
     later_unknown_cwd = _session(
@@ -300,7 +300,7 @@ def test_apply_full_filters_handles_message_type_and_since_session_scope() -> No
             timestamp=datetime(2026, 4, 23, 10, 5, tzinfo=timezone.utc),
             message_type="summary",
         ),
-        provider_meta={},
+        working_directories=[],
         updated_at=datetime(2026, 4, 23, 10, 5, tzinfo=timezone.utc),
     )
     later_other_repo = _session(
@@ -312,7 +312,7 @@ def test_apply_full_filters_handles_message_type_and_since_session_scope() -> No
             timestamp=datetime(2026, 4, 23, 10, 3, tzinfo=timezone.utc),
             message_type="summary",
         ),
-        provider_meta={"working_directories": ["/other"]},
+        working_directories=["/other"],
         updated_at=datetime(2026, 4, 23, 10, 3, tzinfo=timezone.utc),
     )
     earlier_same_repo = _session(
@@ -324,7 +324,7 @@ def test_apply_full_filters_handles_message_type_and_since_session_scope() -> No
             timestamp=datetime(2026, 4, 23, 9, 59, tzinfo=timezone.utc),
             message_type="summary",
         ),
-        provider_meta={"working_directories": ["/repo"]},
+        working_directories=["/repo"],
         updated_at=datetime(2026, 4, 23, 9, 59, tzinfo=timezone.utc),
     )
 
@@ -362,10 +362,10 @@ def test_apply_full_filters_rejects_unknown_message_type() -> None:
 
 
 def test_apply_full_filters_cwd_prefix_is_path_component_bounded() -> None:
-    exact = _session("exact", provider_meta={"working_directories": ["/realm/project/polylogue"]})
-    child = _session("child", provider_meta={"working_directories": ["/realm/project/polylogue/src"]})
-    sibling = _session("sibling", provider_meta={"working_directories": ["/realm/project/polylogue2"]})
-    missing = _session("missing", provider_meta={})
+    exact = _session("exact", working_directories=["/realm/project/polylogue"])
+    child = _session("child", working_directories=["/realm/project/polylogue/src"])
+    sibling = _session("sibling", working_directories=["/realm/project/polylogue2"])
+    missing = _session("missing", working_directories=[])
 
     filtered = apply_full_filters(
         SessionQueryPlan(cwd_prefix="/realm/project/polylogue"),

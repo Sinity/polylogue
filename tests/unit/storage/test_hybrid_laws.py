@@ -46,7 +46,7 @@ def _messages_db(msg_to_conv: dict[str, str]) -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.execute("CREATE TABLE messages (message_id TEXT, session_id TEXT)")
-    conn.execute("CREATE TABLE sessions (session_id TEXT, source_name TEXT)")
+    conn.execute("CREATE TABLE sessions (session_id TEXT, origin TEXT)")
     conn.executemany(
         "INSERT INTO messages VALUES (?, ?)",
         list(msg_to_conv.items()),
@@ -333,7 +333,7 @@ def test_search_sessions_provider_filter() -> None:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.execute("CREATE TABLE messages (message_id TEXT, session_id TEXT)")
-    conn.execute("CREATE TABLE sessions (session_id TEXT, source_name TEXT)")
+    conn.execute("CREATE TABLE sessions (session_id TEXT, origin TEXT)")
     conn.executemany(
         "INSERT INTO messages VALUES (?, ?)",
         [

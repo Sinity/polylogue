@@ -52,6 +52,9 @@ _CANONICAL_FTS_TRIGGERS = frozenset(
         "session_work_events_fts_ai",
         "session_work_events_fts_ad",
         "session_work_events_fts_au",
+        "threads_fts_ai",
+        "threads_fts_ad",
+        "threads_fts_au",
     }
 )
 

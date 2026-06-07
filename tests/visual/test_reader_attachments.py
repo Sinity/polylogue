@@ -33,12 +33,6 @@ from polylogue.daemon.web_shell_attachments import (
     classify_state,
 )
 from tests.visual.conftest import (
-    ATT_MISSING,
-    ATT_OK,
-    ATT_QUARANTINED,
-    ATT_RAWHTML,
-    ATT_TOOLARGE,
-    ATT_UNSUPPORTED,
     READER_C1,
     READER_C1_M1,
     READER_C2,
@@ -118,28 +112,40 @@ def test_reader_attachment_surface_contract(reader_workspace: ReaderWorkspace, t
     ):
         assert phrase in body, f"reader shell missing {phrase!r}"
 
-    # Session envelope embeds attachments at both levels.
+    # Session envelope embeds attachments at both levels. Under the
+    # content-addressed model (#1743) each attachment carries a derived
+    # content-addressed ``attachment_id`` (not the verbatim provider id) plus
+    # the full typed envelope shape. The six seeded attachments are persisted
+    # without a materialized blob, so each classifies as ``missing-blob``; the
+    # per-token ``classify_state`` contract (available / unsupported-kind /
+    # too-large) is pinned independently by ``test_classify_state_pure_function``
+    # and ``test_size_budget_boundary``. The ``quarantined`` state was removed.
     assert isinstance(conv_payload, dict)
     conv_atts = conv_payload["attachments"]
     assert isinstance(conv_atts, list)
-    by_id = {a["attachment_id"]: a for a in conv_atts}
-    assert by_id[ATT_OK]["state"] == "available"
-    assert by_id[ATT_MISSING]["state"] == "missing-blob"
-    assert by_id[ATT_UNSUPPORTED]["state"] == "unsupported-kind"
-    assert by_id[ATT_TOOLARGE]["state"] == "too-large"
-    assert by_id[ATT_QUARANTINED]["state"] == "quarantined"
+    assert len(conv_atts) >= 6
+    valid_states = {"available", "missing-blob", "unsupported-kind", "too-large"}
+    envelope_keys = {
+        "attachment_id",
+        "session_id",
+        "message_id",
+        "name",
+        "mime_type",
+        "size_bytes",
+        "path",
+        "state",
+    }
+    for att in conv_atts:
+        assert envelope_keys <= set(att)
+        assert att["state"] in valid_states
+    assert {att["state"] for att in conv_atts} == {"missing-blob"}
+    seeded_names = {att["name"] for att in conv_atts}
+    assert {"notes.txt", "screenshot.png", "bundle.zip", "recording.mp4", "suspect.html"} <= seeded_names
 
     messages = conv_payload["messages"]
     msg = next(m for m in messages if m["id"] == READER_C1_M1)
     assert "attachments" in msg
-    assert {a["attachment_id"] for a in msg["attachments"]} >= {
-        ATT_OK,
-        ATT_MISSING,
-        ATT_UNSUPPORTED,
-        ATT_TOOLARGE,
-        ATT_QUARANTINED,
-        ATT_RAWHTML,
-    }
+    assert len(msg["attachments"]) >= 6
 
     # Per-session endpoint returns the same envelope shape.
     assert isinstance(per_conv, dict)

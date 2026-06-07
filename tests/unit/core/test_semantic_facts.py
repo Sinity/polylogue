@@ -950,7 +950,7 @@ def test_build_session_profile_ignores_persisted_output_paths_in_dialogue_text()
     session = make_conv(
         id="conv-user-path-noise",
         origin="claude-code",
-        provider_meta={"working_directories": [str(REPO_ROOT)]},
+        working_directories=(str(REPO_ROOT),),
         messages=MessageCollection(
             messages=[
                 make_msg(
@@ -1027,12 +1027,8 @@ def test_build_session_profile_uses_session_level_git_context() -> None:
     session = make_conv(
         id="conv-git-context",
         origin="codex",
-        provider_meta={
-            "git": {
-                "branch": "feature/runtime-cleanup",
-                "repository_url": str(REPO_ROOT),
-            }
-        },
+        git_branch="feature/runtime-cleanup",
+        git_repository_url=str(REPO_ROOT),
         messages=MessageCollection(
             messages=[
                 make_msg(
@@ -1119,18 +1115,12 @@ def test_build_mcp_summary_semantic_facts_uses_canonical_summary_shape() -> None
 
 
 def test_harmonize_session_cost_uses_canonical_harmonized_model_and_tokens() -> None:
-    # Per #1256, message-level provider_meta no longer exists; cost facts
-    # for hydrated sessions come from the session-level envelope.
+    # Per #1256/#1743, neither message- nor session-level provider_meta
+    # carries cost facts; the harmonized cost is computed from typed message
+    # token usage (model_name + input/output tokens) against the price map.
     session = make_conv(
         id="conv-cost",
         origin="chatgpt",
-        provider_meta={
-            "model": "gpt-4o",
-            "usage": {
-                "input_tokens": 1000,
-                "output_tokens": 500,
-            },
-        },
         messages=MessageCollection(
             messages=[
                 make_msg(
@@ -1138,6 +1128,9 @@ def test_harmonize_session_cost_uses_canonical_harmonized_model_and_tokens() -> 
                     role="assistant",
                     origin="chatgpt",
                     text="Estimated response",
+                    model_name="gpt-4o",
+                    input_tokens=1000,
+                    output_tokens=500,
                 )
             ]
         ),

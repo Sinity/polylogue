@@ -478,6 +478,12 @@ def test_session_insight_rebuild_materializes_message_token_costs(tmp_path: Path
 
 
 def test_session_insight_rebuild_preserves_session_provider_cost(tmp_path: Path) -> None:
+    # Provider-reported cost is sourced from typed per-message token usage now
+    # (#803/#1139): the legacy session-level ``provider_meta`` total/duration
+    # passthrough was removed, and ``Session.total_cost_usd`` /
+    # ``total_duration_ms`` are hardwired to 0 on the hydrated session. The
+    # materialized profile cost therefore comes from the provider-reported
+    # message token columns and carries the model in the per-model breakdown.
     db_path = tmp_path / "profile-provider-cost.db"
     with open_connection(db_path) as conn:
         store_records(
@@ -486,17 +492,17 @@ def test_session_insight_rebuild_preserves_session_provider_cost(tmp_path: Path)
                 source_name="claude-code",
                 title="Provider cost",
                 created_at="2026-05-12T09:00:00+00:00",
-                provider_meta={
-                    "total_cost_usd": 1.25,
-                    "total_duration_ms": 42_000,
-                    "models_used": ["claude-opus-4-5"],
-                },
             ),
             messages=[
                 make_message(
                     "conv-provider-cost:msg-1",
                     "conv-provider-cost",
                     text="Provider reported total",
+                    model_name="claude-opus-4-5",
+                    input_tokens=1_000,
+                    output_tokens=500,
+                    cache_read_tokens=200,
+                    cache_write_tokens=100,
                 ),
             ],
             attachments=[],
@@ -505,7 +511,7 @@ def test_session_insight_rebuild_preserves_session_provider_cost(tmp_path: Path)
         rebuild_session_insights_sync(conn)
         row = conn.execute(
             """
-            SELECT total_cost_usd, total_duration_ms, cost_provenance, per_model_cost_json
+            SELECT total_cost_usd, cost_provenance, per_model_cost_json
             FROM session_profiles
             WHERE session_id = ?
             """,
@@ -513,8 +519,7 @@ def test_session_insight_rebuild_preserves_session_provider_cost(tmp_path: Path)
         ).fetchone()
 
     assert row is not None
-    assert row["total_cost_usd"] == 1.25
-    assert row["total_duration_ms"] == 42_000
+    assert row["total_cost_usd"] > 0
     assert row["cost_provenance"] == "provider_reported"
     per_model = json.loads(row["per_model_cost_json"])
     assert per_model[0]["provider_model_name"] == "claude-opus-4-5"

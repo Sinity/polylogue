@@ -44,13 +44,10 @@ def test_parse_code_promotes_working_directories_to_typed_field() -> None:
     result = parse_code(items, "fallback")
 
     assert result.working_directories == ["/home/user/projectA", "/home/user/projectB"]
-    # Transitional: provider_meta still carries the same list until storage reads
-    # from the typed field directly (next step in #864 graduation).
-    assert result.provider_meta is not None
-    assert result.provider_meta["working_directories"] == [
-        "/home/user/projectA",
-        "/home/user/projectB",
-    ]
+    # parse_code has graduated to the typed field as the sole carrier: it no
+    # longer dual-writes working_directories into the provider_meta escape
+    # hatch (#1743 provider_meta elimination), so provider_meta is left unset.
+    assert result.provider_meta is None
 
 
 def test_parse_code_typed_working_directories_empty_when_no_cwd() -> None:

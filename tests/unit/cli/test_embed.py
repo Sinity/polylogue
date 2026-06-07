@@ -273,7 +273,7 @@ class TestEmbedBatch:
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
             embed_batch(mock_env, mock_repository, mock_vec_provider, rebuild=True)
-        assert any("ORDER BY COALESCE(c.updated_at, '')" in str(call) for call in mock_conn.execute.call_args_list)
+        assert any("ORDER BY COALESCE(c.updated_at_ms, 0)" in str(call) for call in mock_conn.execute.call_args_list)
 
     def testembed_batch_error_handling(
         self, mock_env: MagicMock, mock_repository: MagicMock, capsys: pytest.CaptureFixture[str]

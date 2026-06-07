@@ -67,8 +67,8 @@ TOOL_AFFECTED_PATHS: list[tuple[str, JSONDocument, list[str]]] = [
     ("Task", {"prompt": "do something"}, []),
 ]
 ATTACHMENT_NAME_CASES = [
-    ({"name": "file.txt"}, "file.txt"),
-    ({"name": 123}, "att1"),
+    ("file.txt", "file.txt"),
+    ("", "att1"),
     (None, "att1"),
 ]
 MESSAGE_ROLE_CASES = [
@@ -286,16 +286,16 @@ class TestPinnedSemanticRegressions:
 
 
 class TestAttachmentFromRecord:
-    @pytest.mark.parametrize(("provider_meta", "expected_name"), ATTACHMENT_NAME_CASES)
+    @pytest.mark.parametrize(("display_name", "expected_name"), ATTACHMENT_NAME_CASES)
     def test_from_record_derives_name(
         self,
-        provider_meta: dict[str, object] | None,
+        display_name: str | None,
         expected_name: str,
     ) -> None:
         record = make_attachment(
             attachment_id="att1",
             session_id="c1",
-            provider_meta=provider_meta,
+            name=display_name,
         )
         attachment = attachment_from_record(record)
         assert attachment.name == expected_name
@@ -405,7 +405,7 @@ class TestSessionFromRecords:
             attachment_id="att1",
             session_id="c1",
             message_id="m1",
-            provider_meta={"name": "file.txt"},
+            name="file.txt",
         )
 
         session = session_from_records(session_record, [message_record], [attachment_record])

@@ -11,39 +11,6 @@ from pathlib import Path
 
 from polylogue.storage.blob_store import BlobStore, get_blob_store
 
-_RAW_CANDIDATE_SQL = """
-WITH ranked AS (
-    SELECT
-        raw_id,
-        source_path,
-        source_index,
-        blob_size,
-        acquired_at,
-        ROW_NUMBER() OVER (
-            PARTITION BY source_path, source_index
-            ORDER BY acquired_at DESC, raw_id DESC
-        ) AS recency
-    FROM raw_sessions
-    WHERE source_index IN (-1, 0)
-      AND (? IS NULL OR source_path = ?)
-      AND (? IS NULL OR acquired_at >= ?)
-)
-SELECT raw_id, source_path, source_index, blob_size
-FROM ranked AS r
-WHERE r.recency > CASE WHEN r.source_index = 0 THEN ? ELSE ? END
-  AND NOT EXISTS (
-      SELECT 1 FROM sessions AS c WHERE c.raw_id = r.raw_id
-  )
-  AND NOT EXISTS (
-      SELECT 1 FROM artifact_observations AS ao WHERE ao.raw_id = r.raw_id
-  )
-  AND NOT EXISTS (
-      SELECT 1 FROM pending_blob_refs AS p WHERE p.blob_hash = r.raw_id
-  )
-ORDER BY r.blob_size DESC, r.acquired_at ASC, r.raw_id ASC
-LIMIT ?
-"""
-
 _V1_RAW_CANDIDATE_SQL = """
 WITH ranked AS (
     SELECT

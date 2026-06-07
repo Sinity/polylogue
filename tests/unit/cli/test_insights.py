@@ -116,22 +116,20 @@ def _seed_products(cli_workspace: CliWorkspace) -> None:
             role="assistant",
             text="Inspecting and editing files",
             timestamp="2026-03-01T10:05:00+00:00",
-            provider_meta={
-                "content_blocks": [
-                    {
-                        "type": "tool_use",
-                        "tool_name": "Read",
-                        "semantic_type": "file_read",
-                        "input": {"path": "/workspace/polylogue/README.md"},
-                    },
-                    {
-                        "type": "tool_use",
-                        "tool_name": "Edit",
-                        "semantic_type": "file_edit",
-                        "input": {"path": "/workspace/polylogue/README.md"},
-                    },
-                ]
-            },
+            content_blocks=[
+                {
+                    "type": "tool_use",
+                    "tool_name": "Read",
+                    "semantic_type": "file_read",
+                    "input": {"path": "/workspace/polylogue/README.md"},
+                },
+                {
+                    "type": "tool_use",
+                    "tool_name": "Edit",
+                    "semantic_type": "file_edit",
+                    "input": {"path": "/workspace/polylogue/README.md"},
+                },
+            ],
         )
         .save()
     )
@@ -154,16 +152,14 @@ def _seed_products(cli_workspace: CliWorkspace) -> None:
             role="assistant",
             text="Running pytest",
             timestamp="2026-03-01T11:04:00+00:00",
-            provider_meta={
-                "content_blocks": [
-                    {
-                        "type": "tool_use",
-                        "tool_name": "Bash",
-                        "semantic_type": "shell",
-                        "input": {"command": "pytest -q tests/unit/cli/test_insights.py"},
-                    }
-                ]
-            },
+            content_blocks=[
+                {
+                    "type": "tool_use",
+                    "tool_name": "Bash",
+                    "semantic_type": "shell",
+                    "input": {"command": "pytest -q tests/unit/cli/test_insights.py"},
+                }
+            ],
         )
         .save()
     )

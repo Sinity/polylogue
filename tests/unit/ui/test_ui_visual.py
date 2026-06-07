@@ -325,12 +325,38 @@ async def test_attachment_handling_comprehensive(
     if isinstance(expected, list):
         for exp in expected:
             assert exp in markdown_text, f"Failed {desc}: {exp} not found"
+    elif label in {"fallback ID", "empty meta"}:
+        # Content-addressed model (#1743): an attachment with no display_name
+        # renders with its content-addressed id as the label (the verbatim
+        # provider attachment id is not the domain identity), and the path is
+        # always a derived asset link.
+        attachments = [
+            att
+            for msg in _conv.messages  # type: ignore[attr-defined]
+            for att in (getattr(msg, "attachments", None) or [])
+        ]
+        assert len(attachments) == 1, f"Failed {desc}: attachment not persisted"
+        att = attachments[0]
+        assert att.name is None
+        assert str(att.id) in markdown_text, f"Failed {desc}: content-addressed id not rendered"
+        assert "assets/" in markdown_text, f"Failed {desc}: not rendered as asset link"
+    elif label == "path":
+        # Content-addressed storage has no verbatim path column; the renderer
+        # always emits a derived asset path, and the explicit display_name is
+        # the label. The verbatim input path never reaches the output.
+        assert "Doc.pdf" in markdown_text, f"Failed {desc}: display_name label missing"
+        assert expected not in markdown_text, f"Failed {desc}: verbatim path leaked"
+        assert "assets/" in markdown_text, f"Failed {desc}: asset path missing"
     else:
         assert expected in markdown_text, f"Failed {desc}"
 
 
 @pytest.mark.asyncio
-async def test_orphaned_attachments_section(workspace_env: WorkspaceEnv) -> None:
+async def test_message_less_attachments_are_not_persisted(workspace_env: WorkspaceEnv) -> None:
+    """Per #1743 ``attachment_refs.message_id`` is NOT NULL: an attachment with
+    no owning message cannot be persisted, so there is no orphaned-attachment
+    section in the rendered output and the attachment never reaches a message."""
+
     db_path = db_setup(workspace_env)
     conv_id = "orphan-att-conv"
     (
@@ -347,8 +373,14 @@ async def test_orphaned_attachments_section(workspace_env: WorkspaceEnv) -> None
         .save()
     )
     _conv, markdown_text = await _format_native(workspace_env["archive_root"], db_path, conv_id)
-    assert "## attachments" in markdown_text
-    assert "OrphanFile.png" in markdown_text
+    assert "## attachments" not in markdown_text
+    assert "OrphanFile.png" not in markdown_text
+    attachments = [
+        att
+        for msg in _conv.messages  # type: ignore[attr-defined]
+        for att in (getattr(msg, "attachments", None) or [])
+    ]
+    assert attachments == []
 
 
 METADATA_CASES = [
@@ -691,7 +723,7 @@ class TestGoldenMarkdownRendering:
                             "id": "att1",
                             "mime_type": "image/png",
                             "size_bytes": 12345,
-                            "meta": {"name": "screenshot.png"},
+                            "name": "screenshot.png",
                         },
                     ],
                 },

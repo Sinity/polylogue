@@ -40,31 +40,26 @@ def _insert_raw_record(
     raw_content: bytes,
 ) -> str:
     """Insert a raw record, writing content to blob store. Returns actual raw_id (hash)."""
+    from polylogue.core.sources import origin_from_provider
     from polylogue.storage.blob_store import get_blob_store
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
+    from polylogue.types import Provider
 
     blob_store = get_blob_store()
     raw_id, blob_size = blob_store.write_from_bytes(raw_content)
+    origin = origin_from_provider(Provider.from_string(payload_provider or source_name))
 
     with open_connection(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO raw_sessions (
-                raw_id, source_name, payload_provider, source_name, source_path, source_index,
-                blob_size, acquired_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                raw_id,
-                source_name,
-                payload_provider,
-                source_name,
-                source_path,
-                0,
-                blob_size,
-                datetime.now(tz=timezone.utc).isoformat(),
-            ),
+        write_source_raw_session_blob_ref(
+            conn,
+            origin=origin,
+            source_path=source_path,
+            source_index=0,
+            blob_hash=bytes.fromhex(raw_id),
+            blob_size=blob_size,
+            acquired_at_ms=int(datetime.now(tz=timezone.utc).timestamp() * 1000),
+            raw_id=raw_id,
         )
-        conn.commit()
     return raw_id
 
 
@@ -387,7 +382,7 @@ class TestProveRawArtifactCoverage:
     ) -> None:
         from polylogue.storage.sqlite.connection import open_connection
 
-        db_path = tmp_path / "proof.db"
+        db_path = tmp_path / "index.db"
         with open_connection(db_path):
             pass
 
@@ -504,7 +499,7 @@ class TestProveRawArtifactCoverage:
         assert chatgpt_stats.resolution_reasons == {"exact_structure": 1}
 
         with open_connection(db_path) as conn:
-            observation_count = conn.execute("SELECT COUNT(*) FROM artifact_observations").fetchone()[0]
+            observation_count = conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone()[0]
         assert observation_count == 5
 
     def test_refreshes_stale_existing_observation_resolution(
@@ -512,7 +507,7 @@ class TestProveRawArtifactCoverage:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        db_path = tmp_path / "stale-proof.db"
+        db_path = tmp_path / "index.db"
         with open_connection(db_path):
             pass
 
@@ -533,60 +528,44 @@ class TestProveRawArtifactCoverage:
         with open_connection(db_path) as conn:
             conn.execute(
                 """
-                INSERT INTO artifact_observations (
-                    observation_id,
+                INSERT INTO raw_artifacts (
+                    artifact_id,
                     raw_id,
-                    source_name,
-                    payload_provider,
-                    source_name,
+                    origin,
                     source_path,
                     source_index,
-                    file_mtime,
-                    wire_format,
                     artifact_kind,
+                    support_status,
                     classification_reason,
                     parse_as_session,
                     schema_eligible,
-                    support_status,
                     malformed_jsonl_lines,
                     decode_error,
-                    bundle_scope,
                     cohort_id,
-                    resolved_package_version,
-                    resolved_element_kind,
-                    resolution_reason,
                     link_group_key,
                     sidecar_agent_type,
-                    first_observed_at,
-                    last_observed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    first_observed_at_ms,
+                    last_observed_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     observation_id,
                     actual_raw_id,
-                    "chatgpt",
-                    "chatgpt",
-                    source_name,
+                    "chatgpt-export",
                     source_path,
                     0,
-                    None,
-                    "json",
                     "session_document",
+                    "unsupported_parseable",
                     "stale unsupported row",
                     1,
                     1,
-                    "unsupported_parseable",
                     0,
                     None,
-                    "chatgpt",
                     "stale-cohort",
                     None,
                     None,
-                    None,
-                    None,
-                    None,
-                    "2026-03-01T00:00:00+00:00",
-                    "2026-03-01T00:00:00+00:00",
+                    1740787200000,
+                    1740787200000,
                 ),
             )
             conn.commit()
@@ -647,28 +626,31 @@ class TestProveRawArtifactCoverage:
 
         assert report.total_records == 1
         assert report.contract_backed_records == 1
+        # Resolved schema-package fidelity is recomputed on read (raw_artifacts
+        # does not store it) and surfaces through the proof report.
         assert report.providers["chatgpt"].package_versions == {"v1": 1}
+        assert report.providers["chatgpt"].element_kinds == {"session_document": 1}
+        assert report.providers["chatgpt"].resolution_reasons == {"exact_structure": 1}
 
+        # The durable raw_artifacts row is refreshed in place: its stale
+        # support_status flips from unsupported to supported on re-proof.
         with open_connection(db_path) as conn:
             refreshed = conn.execute(
                 """
-                SELECT support_status, resolved_package_version, resolved_element_kind, resolution_reason
-                FROM artifact_observations
-                WHERE observation_id = ?
+                SELECT support_status
+                FROM raw_artifacts
+                WHERE artifact_id = ?
                 """,
                 (observation_id,),
             ).fetchone()
         assert refreshed["support_status"] == "supported_parseable"
-        assert refreshed["resolved_package_version"] == "v1"
-        assert refreshed["resolved_element_kind"] == "session_document"
-        assert refreshed["resolution_reason"] == "exact_structure"
 
     def test_lists_artifact_rows_and_cohorts_from_durable_control_plane(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        db_path = tmp_path / "artifacts.db"
+        db_path = tmp_path / "index.db"
         with open_connection(db_path):
             pass
 
@@ -777,7 +759,7 @@ class TestProveRawArtifactCoverage:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        db_path = tmp_path / "large-json-proof.db"
+        db_path = tmp_path / "index.db"
         with open_connection(db_path):
             pass
 

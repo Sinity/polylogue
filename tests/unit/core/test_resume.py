@@ -35,16 +35,14 @@ def _seed_resume_sessions(db_path: Path) -> None:
             role="assistant",
             text="I will inspect command wiring and insight surfaces.",
             timestamp="2026-04-20T10:05:00+00:00",
-            provider_meta={
-                "content_blocks": [
-                    {
-                        "type": "tool_use",
-                        "tool_name": "Read",
-                        "semantic_type": "file_read",
-                        "input": {"path": "/workspace/polylogue/polylogue/cli/click_app.py"},
-                    }
-                ]
-            },
+            content_blocks=[
+                {
+                    "type": "tool_use",
+                    "tool_name": "Read",
+                    "semantic_type": "file_read",
+                    "input": {"path": "/workspace/polylogue/polylogue/cli/click_app.py"},
+                }
+            ],
         )
         .save()
     )
@@ -67,16 +65,14 @@ def _seed_resume_sessions(db_path: Path) -> None:
             role="assistant",
             text="Continuing implementation and running pytest for resume tests.",
             timestamp="2026-04-20T11:15:00+00:00",
-            provider_meta={
-                "content_blocks": [
-                    {
-                        "type": "tool_use",
-                        "tool_name": "Bash",
-                        "semantic_type": "shell",
-                        "input": {"command": "pytest -q tests/unit/core/test_resume.py"},
-                    }
-                ]
-            },
+            content_blocks=[
+                {
+                    "type": "tool_use",
+                    "tool_name": "Bash",
+                    "semantic_type": "shell",
+                    "input": {"command": "pytest -q tests/unit/core/test_resume.py"},
+                }
+            ],
         )
         .save()
     )
@@ -197,6 +193,11 @@ async def test_resume_candidates_rank_and_dedupe_logical_sessions(cli_workspace:
 
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
     await archive.rebuild_insights()
+    # The candidate surfaces the lineage-strongest terminal_state/workflow_shape
+    # across every physical session in the logical group (root + continuation),
+    # so the ranking-signal override must cover both members; otherwise the
+    # root's computed "tool_left" (weight 1.0) outranks "question_left" (0.85).
+    _set_profile_state(db_path, ROOT_ID, terminal_state="question_left", workflow_shape="agentic_loop")
     _set_profile_state(db_path, CHILD_ID, terminal_state="question_left", workflow_shape="agentic_loop")
 
     candidates = await archive.find_resume_candidates(

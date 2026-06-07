@@ -134,7 +134,9 @@ def test_archive_tiers_archive_self_verify_envelope_is_stable(tmp_path: Path) ->
             "chatgpt-export:chatgpt-self-verify-1:msg-assistant:0",
         ],
         "session_event_ids": ["chatgpt-export:chatgpt-self-verify-1:0"],
-        "attachment_ids": ["chatgpt-export:chatgpt-self-verify-1:attachment:att-1"],
+        # Attachments are content-addressed: attachment_id is the deterministic
+        # blob hash over the attachment identity fields, not a generated token.
+        "attachment_ids": ["7851ae7672e51f490ce4aaaa7b082dc562e93a5b26f9c0cf40eb46be4cca80c7"],
         "tag_keys": ["auto:self-verify"],
         "insight_materialization_keys": ["session_profile:2"],
         "work_event_ids": ["chatgpt-export:chatgpt-self-verify-1:work_event:0"],
