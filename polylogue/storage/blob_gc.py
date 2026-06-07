@@ -108,12 +108,12 @@ def sweep_orphaned_blob_leases(
 
     Returns the number of orphaned lease rows removed.
     """
-    cutoff = int(time.time()) - int(max_age_s)
+    cutoff_ms = (int(time.time()) - int(max_age_s)) * 1000
     conn = open_connection(db_path)
     try:
         cursor = conn.execute(
-            "DELETE FROM pending_blob_refs WHERE acquired_at < ?",
-            (cutoff,),
+            "DELETE FROM pending_blob_refs WHERE acquired_at_ms < ?",
+            (cutoff_ms,),
         )
         removed = max(cursor.rowcount, 0)
         conn.commit()
@@ -126,9 +126,12 @@ def sweep_orphaned_blob_leases(
 
 def _has_active_lease(conn: sqlite3.Connection, blob_hash: str) -> bool:
     """Check if a blob hash has any active lease."""
+    blob_bytes = _blob_hash_bytes(blob_hash)
+    if blob_bytes is None:
+        return False
     row = conn.execute(
         "SELECT 1 FROM pending_blob_refs WHERE blob_hash = ? LIMIT 1",
-        (blob_hash,),
+        (blob_bytes,),
     ).fetchone()
     return row is not None
 
@@ -519,11 +522,16 @@ def acquire_blob_leases(
         return
     conn = open_connection(db_path)
     try:
-        now = int(time.time())
+        now_ms = int(time.time() * 1000)
         for blob_hash in blob_hashes:
+            blob_bytes = _blob_hash_bytes(blob_hash)
+            if blob_bytes is None:
+                continue
             conn.execute(
-                "INSERT OR IGNORE INTO pending_blob_refs (blob_hash, operation_id, acquired_at) VALUES (?, ?, ?)",
-                (blob_hash, operation_id, now),
+                "INSERT OR IGNORE INTO pending_blob_refs "
+                "(blob_hash, operation_id, ref_type, ref_id, acquired_at_ms) "
+                "VALUES (?, ?, 'raw_payload', ?, ?)",
+                (blob_bytes, operation_id, operation_id, now_ms),
             )
         conn.commit()
         logger.debug("Acquired %d blob lease(s) for operation %s", len(blob_hashes), operation_id)
