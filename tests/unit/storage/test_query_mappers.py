@@ -249,27 +249,30 @@ class TestRowToRawSession:
 
     def test_maps_all_fields(self: object) -> None:
         """All fields are mapped from row to RawSessionRecord."""
+        from polylogue.core.enums import Origin
+        from polylogue.core.sources import provider_from_origin
+
         row = make_row(
             {
                 "raw_id": "sha256hash",
-                "payload_provider": None,
-                "source_name": "inbox",
+                # raw_sessions carries a single origin column (#1743); source_name
+                # and payload_provider project from it on read.
+                "origin": "claude-ai-export",
                 "source_path": "/tmp/data.json",
-                "source_index": "0",
+                "source_index": 0,
                 "blob_size": 14,
-                "acquired_at": "2024-01-01T00:00:00Z",
-                "file_mtime": "2024-01-01T00:00:00Z",
-                "parsed_at": None,
+                "acquired_at_ms": 1704067200000,
+                "file_mtime_ms": 1704067200000,
+                "parsed_at_ms": None,
                 "parse_error": None,
-                "validated_at": None,
+                "validated_at_ms": None,
                 "validation_status": None,
                 "validation_error": None,
-                "validation_drift_count": None,
-                "validation_provider": None,
+                "validation_drift_count": 0,
                 "validation_mode": None,
             }
         )
         result = _row_to_raw_session(row)
         assert isinstance(result, RawSessionRecord)
         assert result.raw_id == "sha256hash"
-        assert result.source_name == "inbox"
+        assert result.source_name == provider_from_origin(Origin.from_string("claude-ai-export")).value

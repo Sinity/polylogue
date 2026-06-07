@@ -1235,7 +1235,7 @@ SEARCH_SINCE_VALID_CASES = [
         "2024-01-20T10:00:00",
         "message",
         "2024-01-15",
-        _archive_message_id("test", "conv:iso", "conv:iso:new"),
+        _archive_message_id("test", "conv:iso", "new"),
         "ISO date",
     ),
     (
@@ -1244,7 +1244,7 @@ SEARCH_SINCE_VALID_CASES = [
         "1706227200.0",
         "numeric",
         "2024-01-15",
-        _archive_message_id("test", "conv:numeric", "conv:numeric:new"),
+        _archive_message_id("test", "conv:numeric", "new"),
         "numeric timestamp",
     ),
 ]

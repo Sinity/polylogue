@@ -35,8 +35,8 @@ def test_cwd_prefix_propagates_to_record_query() -> None:
 def test_cwd_prefix_emits_sql_clause() -> None:
     where, params = _build_session_filters(cwd_prefix="/realm/project/polylogue")
     assert "session_working_dirs" in where
-    assert "working_directories" in where
-    assert "REPLACE(cwd.value" in where
+    assert "cwd.path" in where
+    assert "REPLACE(cwd.path" in where
     assert "/realm/project/polylogue" in params
     assert "/realm/project/polylogue/%" in params
 
@@ -50,7 +50,7 @@ def test_cwd_prefix_escapes_sql_wildcards() -> None:
 
 def test_cwd_prefix_absent_emits_no_clause() -> None:
     where, _ = _build_session_filters()
-    assert "working_directories" not in where
+    assert "session_working_dirs" not in where
 
 
 def test_cwd_prefix_combines_with_other_filters() -> None:
@@ -61,8 +61,8 @@ def test_cwd_prefix_combines_with_other_filters() -> None:
     )
     assert "origin = ?" in where
     assert "title LIKE" in where
-    assert "working_directories" in where
-    assert "claude-code" in params
+    assert "session_working_dirs" in where
+    assert "claude-code-session" in params
     assert any("bug" in str(p) for p in params)
 
 
@@ -122,4 +122,4 @@ async def test_cwd_prefix_sql_filter_is_path_component_bounded(tmp_path: Path) -
         )
 
     await backend.close()
-    assert {row.session_id for row in rows} == {"exact", "child"}
+    assert {row.session_id for row in rows} == {"unknown-export:exact", "unknown-export:child"}
