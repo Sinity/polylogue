@@ -19,6 +19,7 @@ import pytest
 
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime import RawSessionRecord
+from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.schema import (
     SCHEMA_VERSION,
@@ -123,7 +124,7 @@ class TestUpdateRawState:
 
         rec = await backend.get_raw_session("update-raw")
         assert rec is not None
-        assert rec.parsed_at == "2026-01-02T00:00:00Z"
+        assert rec.parsed_at == "2026-01-02T00:00:00+00:00"
         assert rec.parse_error is None
         assert rec.payload_provider == "chatgpt"
         assert rec.validation_status is None
@@ -254,8 +255,8 @@ class TestGetKnownSourceMtimes:
 
         mtimes = await backend.get_known_source_mtimes()
         assert len(mtimes) == 3
-        assert mtimes["/path/file0.json"] == "2026-01-01T00:00:00Z"
-        assert mtimes["/path/file2.json"] == "2026-01-03T00:00:00Z"
+        assert mtimes["/path/file0.json"] == "2026-01-01T00:00:00+00:00"
+        assert mtimes["/path/file2.json"] == "2026-01-03T00:00:00+00:00"
 
     async def test_excludes_null_mtimes(self, backend: SQLiteBackend) -> None:
         """Records without file_mtime are excluded from the mapping."""
@@ -348,9 +349,9 @@ class TestResetParseStatus:
         assert rec2.parsed_at is not None
 
     async def test_reset_by_source_scope(self, backend: SQLiteBackend) -> None:
-        """Reset specific sources only clears matching parsed records."""
+        """Reset scoped to specific origins only clears matching parsed records."""
         await self._populate(backend)
-        count = await backend.reset_parse_status(source_names=["inbox-a"])
+        count = await backend.reset_parse_status(source_names=["chatgpt-export", "claude-ai-export"])
         assert count == 2
 
         rec0 = await backend.get_raw_session("raw-0")
@@ -448,7 +449,7 @@ class TestResetValidationStatus:
 
     async def test_reset_validation_by_source_scope(self, backend: SQLiteBackend) -> None:
         await self._populate(backend)
-        count = await backend.reset_validation_status(source_names=["inbox-a"])
+        count = await backend.reset_validation_status(source_names=["chatgpt-export", "claude-ai-export"])
         assert count == 2
 
         rec0 = await backend.get_raw_session("raw-0")
@@ -552,28 +553,30 @@ class TestFreshSchema:
     """Test that fresh databases have all v12+v13+v14+v15 features."""
 
     def test_fresh_db_has_parse_tracking_columns(self, tmp_path: Path) -> None:
-        """A fresh database has parse+validation tracking and sort_key columns."""
+        """A fresh database has parse+validation tracking and ordering columns."""
         db_path = tmp_path / "fresh.db"
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
         _ensure_schema(conn)
+        # raw_sessions lives in the source durability tier (#1743).
+        conn.executescript(SOURCE_DDL)
 
         cursor = conn.execute("PRAGMA table_info(raw_sessions)")
         columns = {row[1] for row in cursor.fetchall()}
-        assert "parsed_at" in columns
+        assert "parsed_at_ms" in columns
         assert "parse_error" in columns
-        assert "validated_at" in columns
+        assert "validated_at_ms" in columns
         assert "validation_status" in columns
         assert "validation_error" in columns
-        assert "payload_provider" in columns
+        assert "origin" in columns
 
         cursor = conn.execute("PRAGMA table_info(messages)")
         msg_columns = {row[1] for row in cursor.fetchall()}
-        assert "sort_key" in msg_columns
+        assert "position" in msg_columns
 
         cursor = conn.execute("PRAGMA table_info(sessions)")
         conv_columns = {row[1] for row in cursor.fetchall()}
-        assert "sort_key" in conv_columns
+        assert "updated_at_ms" in conv_columns
 
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         assert version == SCHEMA_VERSION
@@ -586,27 +589,26 @@ class TestFreshSchema:
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
         _ensure_schema(conn)
+        # raw_sessions and its indices live in the source durability tier (#1743).
+        conn.executescript(SOURCE_DDL)
 
         cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
         indices = {row[0] for row in cursor.fetchall()}
 
         # raw_sessions indices
-        assert "idx_raw_conv_source_mtime" in indices
-        assert "idx_raw_conv_source_path_raw_id" in indices
-        assert "idx_raw_conv_parse_ready" in indices
-        assert "idx_raw_conv_payload_provider" in indices
+        assert "idx_raw_sessions_origin" in indices
+        assert "idx_raw_sessions_source_path" in indices
+        assert "idx_raw_sessions_parse_ready" in indices
 
         # sessions indices
-        assert "idx_sessions_content_hash" in indices
-        assert "idx_sessions_sortkey" in indices
+        assert "idx_sessions_origin_sort" in indices
         assert "idx_sessions_raw_id" in indices
 
         # messages indices
-        assert "idx_messages_session_sortkey" in indices
+        assert "idx_messages_session_position" in indices
 
-        # content_blocks indices
-        assert "idx_content_blocks_message" in indices
-        assert "idx_content_blocks_session" in indices
-        assert "idx_content_blocks_conv_type" in indices
+        # block indices
+        assert "idx_blocks_session_position" in indices
+        assert "idx_blocks_type" in indices
 
         conn.close()

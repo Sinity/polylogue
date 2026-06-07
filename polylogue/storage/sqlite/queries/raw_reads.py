@@ -6,11 +6,13 @@ from collections.abc import AsyncIterator, Iterable, Sequence
 
 import aiosqlite
 
+from polylogue.core.enums import Origin
+from polylogue.core.sources import provider_from_origin
 from polylogue.storage.raw.models import RawSessionState
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.connection import _build_source_scope_filter
-from polylogue.storage.sqlite.queries.mappers import _row_to_raw_session
-from polylogue.storage.sqlite.queries.raw_state import EFFECTIVE_RAW_PROVIDER_SQL
+from polylogue.storage.sqlite.queries.mappers import _ms_to_iso, _row_to_raw_session
+from polylogue.storage.sqlite.queries.raw_state import RAW_ORIGIN_FILTER_SQL, origin_filter_value
 
 
 def _raw_rows(rows: Iterable[object]) -> list[aiosqlite.Row]:
@@ -35,12 +37,12 @@ def _raw_select_query(
     params: list[str] = []
 
     if require_unparsed:
-        where_clauses.append("parsed_at IS NULL")
+        where_clauses.append("parsed_at_ms IS NULL")
     if require_unvalidated:
-        where_clauses.append("validated_at IS NULL")
+        where_clauses.append("validated_at_ms IS NULL")
     if source_name:
-        where_clauses.append(f"{EFFECTIVE_RAW_PROVIDER_SQL} = ?")
-        params.append(source_name)
+        where_clauses.append(f"{RAW_ORIGIN_FILTER_SQL} = ?")
+        params.append(origin_filter_value(source_name))
     if validation_statuses:
         placeholders = ",".join("?" for _ in validation_statuses)
         where_clauses.append(f"validation_status IN ({placeholders})")
@@ -48,7 +50,7 @@ def _raw_select_query(
 
     predicate, scope_params = _build_source_scope_filter(
         source_names,
-        source_column="source_name",
+        source_column="origin",
     )
     if predicate:
         where_clauses.append(predicate)
@@ -57,7 +59,7 @@ def _raw_select_query(
     sql = f"SELECT {select_columns} FROM raw_sessions"
     if where_clauses:
         sql += f" WHERE {' AND '.join(where_clauses)}"
-    sql += " ORDER BY acquired_at DESC, raw_id ASC"
+    sql += " ORDER BY acquired_at_ms DESC, raw_id ASC"
     return sql, tuple(params)
 
 
@@ -162,13 +164,15 @@ async def get_raw_session(conn: aiosqlite.Connection, raw_id: str) -> RawSession
 
 async def get_known_source_mtimes(conn: aiosqlite.Connection) -> dict[str, str]:
     result: dict[str, str] = {}
-    cursor = await conn.execute("SELECT source_path, file_mtime FROM raw_sessions WHERE file_mtime IS NOT NULL")
+    cursor = await conn.execute("SELECT source_path, file_mtime_ms FROM raw_sessions WHERE file_mtime_ms IS NOT NULL")
     while True:
         rows = list(await cursor.fetchmany(1000))
         if not rows:
             break
         for row in rows:
-            result[row["source_path"]] = row["file_mtime"]
+            mtime = _ms_to_iso(row["file_mtime_ms"])
+            if mtime is not None:
+                result[row["source_path"]] = mtime
     return result
 
 
@@ -212,32 +216,32 @@ async def get_raw_session_states(conn: aiosqlite.Connection, raw_ids: list[str])
         f"""
         SELECT
             raw_id,
-            source_name,
+            origin,
             source_path,
-            parsed_at,
+            parsed_at_ms,
             parse_error,
-            payload_provider,
-            validation_status,
-            validation_provider
+            validation_status
         FROM raw_sessions
         WHERE raw_id IN ({placeholders})
         """,
         raw_ids,
     )
     rows = await cursor.fetchall()
-    return {
-        row["raw_id"]: RawSessionState(
+
+    def _state(row: aiosqlite.Row) -> RawSessionState:
+        provider = provider_from_origin(Origin.from_string(row["origin"]))
+        return RawSessionState(
             raw_id=row["raw_id"],
-            source_name=row["source_name"],
+            source_name=provider.value,
             source_path=row["source_path"],
-            parsed_at=row["parsed_at"],
+            parsed_at=_ms_to_iso(row["parsed_at_ms"]),
             parse_error=row["parse_error"],
-            payload_provider=row["payload_provider"],
+            payload_provider=provider,
             validation_status=row["validation_status"],
-            validation_provider=row["validation_provider"],
+            validation_provider=provider,
         )
-        for row in rows
-    }
+
+    return {row["raw_id"]: _state(row) for row in rows}
 
 
 async def iter_raw_sessions(
@@ -252,9 +256,9 @@ async def iter_raw_sessions(
         query = "SELECT * FROM raw_sessions"
         params: list[str | int] = []
         if provider is not None:
-            query += f" WHERE {EFFECTIVE_RAW_PROVIDER_SQL} = ?"
-            params.append(provider)
-        query += " ORDER BY acquired_at DESC"
+            query += f" WHERE {RAW_ORIGIN_FILTER_SQL} = ?"
+            params.append(origin_filter_value(provider))
+        query += " ORDER BY acquired_at_ms DESC"
         chunk_size = 100
         query_with_limit = query + " LIMIT ? OFFSET ?"
         params.extend([chunk_size, offset])
@@ -304,7 +308,7 @@ async def get_raw_records_for_session(
     total = int(total_row["cnt"]) if total_row is not None else 0
 
     cursor = await conn.execute(
-        "SELECT * FROM raw_sessions WHERE raw_id = ? ORDER BY acquired_at DESC, raw_id ASC LIMIT ? OFFSET ?",
+        "SELECT * FROM raw_sessions WHERE raw_id = ? ORDER BY acquired_at_ms DESC, raw_id ASC LIMIT ? OFFSET ?",
         (raw_id, limit, offset),
     )
     records = [_row_to_raw_session(row) for row in await cursor.fetchall()]
@@ -315,8 +319,8 @@ async def get_raw_session_count(conn: aiosqlite.Connection, provider: str | None
     query = "SELECT COUNT(*) as cnt FROM raw_sessions"
     params: tuple[str, ...] = ()
     if provider is not None:
-        query += f" WHERE {EFFECTIVE_RAW_PROVIDER_SQL} = ?"
-        params = (provider,)
+        query += f" WHERE {RAW_ORIGIN_FILTER_SQL} = ?"
+        params = (origin_filter_value(provider),)
     cursor = await conn.execute(query, params)
     row = await cursor.fetchone()
     return int(row["cnt"]) if row is not None else 0

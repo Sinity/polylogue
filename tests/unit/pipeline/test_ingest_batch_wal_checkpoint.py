@@ -7,11 +7,13 @@ from pathlib import Path
 import pytest
 
 import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
+from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.services.ingest_batch import _process_ingest_batch_sync
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.storage.sqlite.wal_checkpoint import WalCheckpointObservation, maybe_checkpoint_wal
+from polylogue.types import Provider
 
 
 def test_process_ingest_batch_sync_records_wal_checkpoint_observation(
@@ -31,20 +33,23 @@ def test_process_ingest_batch_sync_records_wal_checkpoint_observation(
         acquired_at="2026-04-02T00:00:00Z",
     )
 
+    origin = origin_from_provider(Provider.from_string(raw_record.source_name)).value
     with open_connection(db_path) as conn:
         conn.execute(
             """
             INSERT INTO raw_sessions
-                (raw_id, payload_provider, source_name, source_path, blob_size, acquired_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (raw_id, origin, native_id, source_path, source_index,
+                 blob_hash, blob_size, acquired_at_ms)
+            VALUES (?, ?, ?, ?, 0, ?, ?, ?)
             """,
             (
                 raw_record.raw_id,
-                raw_record.source_name,
-                raw_record.source_name,
+                origin,
+                raw_record.raw_id,
                 raw_record.source_path,
+                b"\x00" * 32,
                 raw_record.blob_size,
-                raw_record.acquired_at,
+                1_775_433_600_000,
             ),
         )
         conn.commit()

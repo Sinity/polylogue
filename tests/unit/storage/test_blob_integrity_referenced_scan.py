@@ -13,6 +13,7 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.storage.blob_integrity import _raw_session_hashes
+from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.schema import _ensure_schema
 
 
@@ -21,18 +22,23 @@ def _init_db(tmp_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db))
     conn.row_factory = sqlite3.Row
     _ensure_schema(conn)
+    # raw_sessions lives in the source durability tier (#1743).
+    conn.executescript(SOURCE_DDL)
     conn.commit()
     return conn
 
 
 def _insert_raw(conn: sqlite3.Connection, raw_id: str, acquired_at: str) -> None:
+    # raw_sessions carries a single ``origin`` column, INTEGER-ms timestamps, and
+    # a 32-byte ``blob_hash`` (#1743). Ordering is irrelevant for this scan.
     conn.execute(
         """
         INSERT INTO raw_sessions (
-            raw_id, source_name, source_path, source_index, blob_size, acquired_at, file_mtime
-        ) VALUES (?, 'codex', ?, 0, 1, ?, ?)
+            raw_id, origin, source_path, source_index, blob_hash, blob_size,
+            acquired_at_ms, file_mtime_ms
+        ) VALUES (?, 'codex-session', ?, 0, ?, 1, 0, 0)
         """,
-        (raw_id, f"/src/{raw_id}.jsonl", acquired_at, acquired_at),
+        (raw_id, f"/src/{raw_id}.jsonl", bytes(32)),
     )
 
 

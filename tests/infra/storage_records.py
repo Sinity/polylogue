@@ -1149,6 +1149,8 @@ def make_message(
     **kwargs: object,
 ) -> MessageRecord:
     ts = timestamp or datetime.now(timezone.utc).isoformat()
+    if "provider_meta" in kwargs:
+        require_json_value(kwargs["provider_meta"], context="message provider_meta")
     existing_blocks = _normalize_content_blocks(
         raw_blocks=kwargs.pop("content_blocks", []),
         message_id=message_id,

@@ -38,7 +38,6 @@ class TestIndexService:
         conv = make_session(
             session_id="conv1",
             source_name="chatgpt",
-            provider_session_id="prov_conv1",
             title="Test",
             content_hash="hash123",
         )
@@ -65,7 +64,6 @@ class TestIndexService:
             make_session(
                 session_id="conv-stream",
                 source_name="chatgpt",
-                provider_session_id="prov-conv-stream",
                 title="Stream Test",
                 content_hash="hash-stream",
             )
@@ -110,7 +108,6 @@ class TestIndexService:
                 make_session(
                     session_id=session_id,
                     source_name="chatgpt",
-                    provider_session_id=f"prov-{index}",
                     title=f"Session {index}",
                     content_hash=f"hash-{index}",
                 )
@@ -141,17 +138,16 @@ class TestIndexService:
         assert descriptions[0] == "Indexing: full-text search 0/3"
         assert descriptions[-1] == "Indexing: full-text search 3/3"
 
-    async def test_rebuild_index_reports_action_phase_for_missing_action_rows(
+    async def test_rebuild_index_skips_action_phase_for_tool_use_blocks(
         self,
         sqlite_backend: SQLiteBackend,
     ) -> None:
-        """Full rebuild still repairs action rows when tool-use blocks exist without action rows."""
+        """Full rebuild reports FTS progress only; the action-event phase was removed (#1743)."""
 
         await sqlite_backend.save_session_record(
             make_session(
                 session_id="conv-plain",
                 source_name="chatgpt",
-                provider_session_id="prov-plain",
                 title="Plain Session",
                 content_hash="hash-plain",
             )
@@ -172,7 +168,6 @@ class TestIndexService:
             make_session(
                 session_id="conv-action",
                 source_name="chatgpt",
-                provider_session_id="prov-action",
                 title="Action Session",
                 content_hash="hash-action",
             )
@@ -213,9 +208,9 @@ class TestIndexService:
 
         assert result is True
         descriptions = [desc for _, desc in progress_events if desc is not None]
-        assert descriptions[0] == "Indexing: actions 0/3"
-        assert "Indexing: full-text search 1/3" in descriptions
-        assert descriptions[-1] == "Indexing: full-text search 3/3"
+        assert not any("actions" in desc or "action events" in desc for desc in descriptions)
+        assert descriptions[0] == "Indexing: full-text search 0/2"
+        assert descriptions[-1] == "Indexing: full-text search 2/2"
 
     async def test_ensure_index_exists_success(self, sqlite_backend: SQLiteBackend) -> None:
         """Ensure FTS5 index exists."""

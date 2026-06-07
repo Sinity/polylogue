@@ -247,7 +247,7 @@ class TestListArchiveCoverageInsights:
                 "tool-msg-1",
                 role="assistant",
                 text="Let me search for that",
-                provider_meta={"content_blocks": [{"type": "tool_use", "name": "search", "id": "toolu_123"}]},
+                content_blocks=[{"type": "tool_use", "name": "search", "id": "toolu_123"}],
             )
             .save()
         )
@@ -273,7 +273,7 @@ class TestListArchiveCoverageInsights:
                 "think-msg-1",
                 role="assistant",
                 text="Let me think about this",
-                provider_meta={"content_blocks": [{"type": "thinking", "thinking": "Reasoning..."}]},
+                content_blocks=[{"type": "thinking", "thinking": "Reasoning..."}],
             )
             .save()
         )
@@ -299,13 +299,13 @@ class TestListArchiveCoverageInsights:
                 "mt-msg-1",
                 role="assistant",
                 text="Tool 1",
-                provider_meta={"content_blocks": [{"type": "tool_use", "name": "a"}]},
+                content_blocks=[{"type": "tool_use", "name": "a"}],
             )
             .add_message(
                 "mt-msg-2",
                 role="assistant",
                 text="Tool 2",
-                provider_meta={"content_blocks": [{"type": "tool_use", "name": "b"}]},
+                content_blocks=[{"type": "tool_use", "name": "b"}],
             )
             .save()
         )
@@ -353,28 +353,30 @@ def _seed_db(
 ) -> Polylogue:
     """Seed a index.db from raw rows and return the reading archive.
 
-    Each row is ``(provider, role, text, provider_meta_or_None)``. Rows are
-    grouped by provider into one session per provider, mirroring the legacy
-    helper, then written through the ``SessionBuilder``.
+    Each row is ``(provider, role, text, meta_or_None)`` where ``meta`` may
+    carry a ``content_blocks`` list. Rows are grouped by provider into one
+    session per provider, then written through the ``SessionBuilder``. Content
+    blocks are passed via the typed ``content_blocks`` builder kwarg (#1743).
     """
     archive = _archive(tmp_path)
     db_path = archive.archive_root / "index.db"
 
     convos_by_provider: dict[str, list[tuple[str, str | None, dict[str, object] | None]]] = {}
-    for provider, role, text, provider_meta in rows:
-        convos_by_provider.setdefault(provider, []).append((role, text, provider_meta))
+    for provider, role, text, meta in rows:
+        convos_by_provider.setdefault(provider, []).append((role, text, meta))
 
     msg_counter = 0
     for provider, messages in convos_by_provider.items():
         builder = SessionBuilder(db_path, f"conv-{provider}").provider(provider).title(f"{provider} Test Session")
-        for role, text, provider_meta in messages:
+        for role, text, meta in messages:
             msg_counter += 1
+            content_blocks = (meta or {}).get("content_blocks", [])
             builder.add_message(
                 f"msg-{msg_counter}",
                 role=role,
                 text="" if text is None else text,
                 timestamp=None,
-                provider_meta=provider_meta,
+                content_blocks=content_blocks,
             )
         builder.save()
 

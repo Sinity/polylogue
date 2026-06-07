@@ -18,6 +18,49 @@ from polylogue.types import Provider
 from tests.infra.schema_access import schema_node
 
 
+def _archive_index_db(tmp_path: Path) -> Path:
+    """Initialize a split-file archive root and return its index.db path."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root):
+        pass
+    return root / "index.db"
+
+
+def _insert_raw_session(
+    *,
+    db_path: Path,
+    origin: str,
+    source_path: str,
+    raw_content: bytes,
+) -> str:
+    """Write raw content to the blob store and register a raw_sessions row.
+
+    Returns the generated ``raw_id``. The native ``raw_sessions`` row carries
+    the 32-byte ``blob_hash`` digest (BLOB) and millisecond timestamps (#1743).
+    """
+    from polylogue.storage.blob_store import get_blob_store
+    from polylogue.storage.sqlite.connection import open_connection
+
+    blob_store = get_blob_store()
+    hash_hex, blob_size = blob_store.write_from_bytes(raw_content)
+    raw_id = f"raw-{hash_hex[:16]}"
+    acquired_at_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+    with open_connection(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, source_path, source_index,
+                blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (raw_id, origin, source_path, 0, bytes.fromhex(hash_hex), blob_size, acquired_at_ms),
+        )
+        conn.commit()
+    return raw_id
+
+
 class TestProviderConfig:
     def test_init_minimal(self) -> None:
         config = ProviderConfig(
@@ -116,12 +159,8 @@ class TestLoadSamplesFromDb:
         assert result == []
 
     def test_empty_db_returns_empty(self, tmp_path: Path) -> None:
-        # Create a DB with schema but no data
-        from polylogue.storage.sqlite.connection import open_connection
-
-        db = tmp_path / "empty.db"
-        with open_connection(db):
-            pass
+        # Create a split-file archive with schema but no data
+        db = _archive_index_db(tmp_path)
         result = load_samples_from_db("chatgpt", db_path=db)
         assert result == []
 
@@ -135,9 +174,7 @@ class TestLoadSamplesFromDb:
             assert result == []
 
     def test_claude_ai_reads_db_rows_stored_under_claude(self, tmp_path: Path) -> None:
-        from polylogue.storage.sqlite.connection import open_connection
-
-        db = tmp_path / "claude.db"
+        db = _archive_index_db(tmp_path)
         raw_content = json.dumps(
             [
                 {
@@ -152,31 +189,12 @@ class TestLoadSamplesFromDb:
             ]
         ).encode("utf-8")
 
-        from polylogue.storage.blob_store import get_blob_store
-
-        blob_store = get_blob_store()
-        raw_id, blob_size = blob_store.write_from_bytes(raw_content)
-
-        with open_connection(db) as conn:
-            conn.execute(
-                """
-                INSERT INTO raw_sessions (
-                    raw_id, source_name, payload_provider, source_name, source_path,
-                    source_index, blob_size, acquired_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    raw_id,
-                    "claude-ai",
-                    "claude-ai",
-                    "claude-ai",
-                    "/tmp/sessions.json",
-                    0,
-                    blob_size,
-                    datetime.now(tz=timezone.utc).isoformat(),
-                ),
-            )
-            conn.commit()
+        _insert_raw_session(
+            db_path=db,
+            origin="claude-ai-export",
+            source_path="/tmp/sessions.json",
+            raw_content=raw_content,
+        )
 
         result = load_samples_from_db("claude-ai", db_path=db)
         assert len(result) == 1
@@ -187,9 +205,7 @@ class TestLoadSamplesFromDb:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from polylogue.storage.sqlite.connection import open_connection
-
-        db = tmp_path / "codex.db"
+        db = _archive_index_db(tmp_path)
         raw_content = "\n".join(
             json.dumps(record)
             for record in [
@@ -199,31 +215,12 @@ class TestLoadSamplesFromDb:
             ]
         ).encode("utf-8")
 
-        from polylogue.storage.blob_store import get_blob_store
-
-        blob_store = get_blob_store()
-        actual_raw_id, blob_size = blob_store.write_from_bytes(raw_content)
-
-        with open_connection(db) as conn:
-            conn.execute(
-                """
-                INSERT INTO raw_sessions (
-                    raw_id, source_name, payload_provider, source_name, source_path,
-                    source_index, blob_size, acquired_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    actual_raw_id,
-                    "codex",
-                    "codex",
-                    "codex",
-                    "/tmp/session.jsonl",
-                    0,
-                    blob_size,
-                    datetime.now(tz=timezone.utc).isoformat(),
-                ),
-            )
-            conn.commit()
+        _insert_raw_session(
+            db_path=db,
+            origin="codex-session",
+            source_path="/tmp/session.jsonl",
+            raw_content=raw_content,
+        )
 
         monkeypatch.setattr(
             "polylogue.schemas.sampling.build_raw_payload_envelope",

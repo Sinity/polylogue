@@ -259,11 +259,12 @@ class TestRawSessionStorage:
         )
         await backend.save_session_record(conv)
 
-        # Verify the link exists in database
+        # Verify the link exists in database. Session ids are generated as
+        # ``origin:native_id`` (#1743); source_name="test" → unknown-export.
         async with backend.connection() as conn:
             cursor = await conn.execute(
                 "SELECT raw_id FROM sessions WHERE session_id = ?",
-                ("conv-link-test",),
+                ("unknown-export:test-123",),
             )
             row = await cursor.fetchone()
 
@@ -281,11 +282,12 @@ class TestRawSessionStorage:
         )
         await backend.save_session_record(conv)
 
-        # Verify it saved correctly
+        # Verify it saved correctly. Session ids are generated as
+        # ``origin:native_id`` (#1743); source_name="test" → unknown-export.
         async with backend.connection() as conn:
             cursor = await conn.execute(
                 "SELECT raw_id FROM sessions WHERE session_id = ?",
-                ("conv-no-raw",),
+                ("unknown-export:test-456",),
             )
             row = await cursor.fetchone()
 

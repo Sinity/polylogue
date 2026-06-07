@@ -285,7 +285,7 @@ async def _seed_archive_source(tmp_path: Path) -> tuple[Path, Path]:
             conn.execute(
                 """
                 INSERT INTO blob_refs (
-                    blob_hash, raw_id, ref_type, source_path, size_bytes, acquired_at_ms
+                    blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms
                 ) VALUES (?, ?, 'raw_payload', ?, ?, ?)
                 """,
                 (blob_hash, blob_hash_hex, source_path, blob_size, acquired_at_ms),

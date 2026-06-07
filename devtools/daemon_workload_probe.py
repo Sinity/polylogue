@@ -52,7 +52,7 @@ _BOUNDARY_TABLES: tuple[str, ...] = (
     "messages_fts_docsize",
     "message_embeddings",
     "session_profiles",
-    "ingest_attempt",
+    "live_ingest_attempt",
     "convergence_debt",
     "pending_blob_refs",
     "repos",

@@ -27,9 +27,8 @@ from polylogue.sources.parsers.claude import (
     parse_sessions_index,
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.storage.sqlite.connection import connection_context
 from polylogue.storage.sqlite.schema import _ensure_schema
-from tests.infra.storage_records import make_hash, make_session
+from tests.infra.storage_records import make_hash, make_raw_session, make_session
 
 
 class TestEnsureVec0Table:
@@ -177,16 +176,17 @@ class TestRawSessionEdgeCases:
         blob_store = get_blob_store()
         _, blob_size = blob_store.write_from_bytes(b"content")
 
-        with connection_context(tmp_path / "test.db") as conn:
-            conn.execute(
-                """
-                INSERT INTO raw_sessions
-                (raw_id, source_name, source_path, blob_size, acquired_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                ("raw-123", "claude-ai", "/path/to/file.jsonl", blob_size, "2024-01-01T00:00:00Z"),
+        # raw_sessions lives in the source durability tier (#1743); write it
+        # through the backend rather than a direct INSERT.
+        await backend.save_raw_session(
+            make_raw_session(
+                raw_id="raw-123",
+                source_name="claude-ai",
+                source_path="/path/to/file.jsonl",
+                blob_size=blob_size,
+                acquired_at="2024-01-01T00:00:00Z",
             )
-            conn.commit()
+        )
 
         # Create session linked to raw data
         conv = make_session(
@@ -203,8 +203,9 @@ class TestRawSessionEdgeCases:
         )
         await backend.save_session_record(conv)
 
-        # Retrieve and verify
-        retrieved = await backend.get_session("conv-with-raw")
+        # Retrieve and verify. Session ids are generated as ``origin:native_id``
+        # (#1743); source_name="claude-ai" → claude-ai-export.
+        retrieved = await backend.get_session("claude-ai-export:claude-123")
         assert retrieved is not None
         assert retrieved.raw_id == "raw-123"
 
@@ -225,7 +226,9 @@ class TestRawSessionEdgeCases:
         )
         await backend.save_session_record(parent)
 
-        # Create child with branch_type
+        # Create child with branch_type. Session ids are generated as
+        # ``origin:native_id`` (#1743); source_name="test" → unknown-export, so
+        # the parent's generated id is ``unknown-export:p``.
         child = make_session(
             session_id="child",
             source_name="test",
@@ -234,13 +237,13 @@ class TestRawSessionEdgeCases:
             title="Child",
             created_at="2024-01-02T00:00:00Z",
             updated_at="2024-01-02T00:00:00Z",
-            parent_session_id="parent",
+            parent_session_id="unknown-export:p",
             branch_type=BranchType.SIDECHAIN,
         )
         await backend.save_session_record(child)
 
         # Query and verify branch_type is preserved
-        children = await backend.list_sessions_by_parent("parent")
+        children = await backend.list_sessions_by_parent("unknown-export:p")
         assert len(children) == 1
         assert children[0].branch_type == "sidechain"
 

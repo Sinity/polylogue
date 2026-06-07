@@ -95,10 +95,12 @@ class SQLiteRawMixin:
 
     async def save_raw_session(self, record: RawSessionRecord) -> bool:
         """Save a raw session record. Returns True if inserted."""
-        source_name = record.source_name or (
-            record.payload_provider.value if record.payload_provider is not None else None
-        )
-        origin = origin_from_provider(Provider.from_string(source_name or "unknown"))
+        # payload_provider wins when the payload has been classified; otherwise
+        # fall back to the source_name token (#1743 collapses both onto origin).
+        if record.payload_provider is not None:
+            origin = origin_from_provider(record.payload_provider)
+        else:
+            origin = origin_from_provider(Provider.from_string(record.source_name or "unknown"))
         try:
             blob_hash = bytes.fromhex(record.raw_id)
         except ValueError:

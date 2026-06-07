@@ -12,19 +12,32 @@ def _seed_archive_with_orphan_fts(db_path: Path) -> None:
     conn = sqlite3.connect(db_path)
     try:
         _ensure_schema(conn)
+        content_hash = b"\x00" * 32
+        # session_id is GENERATED as origin || ':' || native_id; insert the
+        # source columns instead of the generated id.
         conn.execute(
-            "INSERT INTO sessions(session_id, source_name, provider_session_id, title, "
-            "created_at, updated_at, content_hash, source_name, version) "
-            "VALUES('c1', 'codex', 'provider-c1', 'one', '2026-01-01T00:00:00+00:00', "
-            "'2026-01-01T00:00:00+00:00', 'h1', 'codex', 1)"
+            "INSERT INTO sessions(native_id, origin, title, content_hash, "
+            "created_at_ms, updated_at_ms) "
+            "VALUES('provider-c1', 'codex-session', 'one', ?, 1700000000000, 1700000000000)",
+            (content_hash,),
         )
+        session_id = "codex-session:provider-c1"
         conn.execute(
-            "INSERT INTO messages(rowid, message_id, session_id, role, text, source_name, version) "
-            "VALUES(1, 'm1', 'c1', 'user', 'hello', 'codex', 1)"
+            "INSERT INTO messages(session_id, native_id, position, role, content_hash) VALUES(?, 'm1', 0, 'user', ?)",
+            (session_id, content_hash),
+        )
+        # The messages_fts index is populated from blocks.search_text, so the
+        # orphan docsize entry is created by inserting a block, rebuilding, then
+        # deleting the block with the delete trigger dropped.
+        conn.execute(
+            "INSERT INTO blocks(message_id, session_id, position, block_type, text) "
+            "VALUES((SELECT message_id FROM messages WHERE session_id = ? AND position = 0 AND variant_index = 0), "
+            "?, 0, 'text', 'hello')",
+            (session_id, session_id),
         )
         rebuild_fts_index_sync(conn)
         conn.execute("DROP TRIGGER messages_fts_ad")
-        conn.execute("DELETE FROM messages WHERE rowid = 1")
+        conn.execute("DELETE FROM blocks WHERE session_id = ?", (session_id,))
         conn.commit()
     finally:
         conn.close()

@@ -57,13 +57,8 @@ from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite import SQLiteBackend, create_backend
 from polylogue.storage.sqlite.archive_tiers.archive import _provider_for_origin
-from polylogue.storage.sqlite.connection import (
-    _build_provider_scope_filter,
-    _build_source_scope_filter,
-    open_connection,
-)
+from polylogue.storage.sqlite.connection import open_connection
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-from polylogue.storage.sqlite.queries.raw_state import EFFECTIVE_RAW_PROVIDER_SQL
 from polylogue.types import Provider
 
 
@@ -264,41 +259,14 @@ def _fetch_archive_candidates(
     provider_filters: list[str],
     source_filters: list[str],
 ) -> list[RawSessionRecord]:
+    # raw_sessions lives in the split-file archive (source.db) under #1743; the
+    # file-set reader is the only supported acquisition surface.
     archive_file_set_records = _fetch_archive_file_set_candidates(
         db_path=db_path,
         provider_filters=provider_filters,
         source_filters=source_filters,
     )
-    if archive_file_set_records is not None:
-        return archive_file_set_records
-
-    where_clauses: list[str] = []
-    params: list[str] = []
-
-    provider_predicate, provider_params = _build_provider_scope_filter(
-        provider_filters or None,
-        provider_column=EFFECTIVE_RAW_PROVIDER_SQL,
-    )
-    if provider_predicate:
-        where_clauses.append(provider_predicate)
-        params.extend(provider_params)
-
-    source_predicate, source_params = _build_source_scope_filter(
-        source_filters or None,
-        source_column="source_name",
-    )
-    if source_predicate:
-        where_clauses.append(source_predicate)
-        params.extend(source_params)
-
-    sql = "SELECT * FROM raw_sessions"
-    if where_clauses:
-        sql += f" WHERE {' AND '.join(where_clauses)}"
-    sql += " ORDER BY acquired_at DESC, raw_id ASC"
-
-    with open_connection(db_path) as conn:
-        cursor = conn.execute(sql, tuple(params))
-        return [RawSessionRecord.model_validate(dict(row)) for row in cursor.fetchall()]
+    return archive_file_set_records or []
 
 
 def _raw_session_count(db_path: Path) -> int:

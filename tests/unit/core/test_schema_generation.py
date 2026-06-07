@@ -137,36 +137,18 @@ class TestGetSampleCountFromDb:
 
         db_path = tmp_path / "test.db"
         with open_connection(db_path) as conn:
+            # session_id and message_id are generated columns (origin:native_id);
+            # insert origin + native_id and let the schema compute the ids (#1743).
             conn.execute(
-                """INSERT INTO sessions
-                   (session_id, source_name, provider_session_id,
-                    title, created_at, updated_at, content_hash,
-                    provider_meta, metadata, version,
-                    parent_session_id, branch_type, raw_id)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    "c1",
-                    "chatgpt",
-                    "p1",
-                    "Test",
-                    None,
-                    None,
-                    "hash1",
-                    '{"source":"test"}',
-                    "{}",
-                    1,
-                    None,
-                    None,
-                    None,
-                ),
+                """INSERT INTO sessions (native_id, origin, title, content_hash)
+                   VALUES (?, ?, ?, ?)""",
+                ("c1", "chatgpt-export", "Test", bytes(32)),
             )
             conn.execute(
                 """INSERT INTO messages
-                   (message_id, session_id, provider_message_id,
-                    role, text, sort_key, content_hash,
-                    version, parent_message_id, branch_index)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                ("m1", "c1", "pm1", "user", "hello", None, "hash2", 1, None, 0),
+                   (session_id, native_id, position, role, content_hash)
+                   VALUES (?, ?, ?, ?, ?)""",
+                ("chatgpt-export:c1", "pm1", 0, "user", bytes(32)),
             )
             conn.commit()
 
@@ -178,21 +160,15 @@ class TestGetSampleCountFromDb:
         db_path = tmp_path / "test.db"
         with open_connection(db_path) as conn:
             conn.execute(
-                """INSERT INTO sessions
-                   (session_id, source_name, provider_session_id,
-                    title, created_at, updated_at, content_hash,
-                    provider_meta, metadata, version,
-                    parent_session_id, branch_type, raw_id)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                ("c1", "chatgpt", "p1", "Test", None, None, "hash1", None, "{}", 1, None, None, None),
+                """INSERT INTO sessions (native_id, origin, title, content_hash)
+                   VALUES (?, ?, ?, ?)""",
+                ("c1", "chatgpt-export", "Test", bytes(32)),
             )
             conn.execute(
                 """INSERT INTO messages
-                   (message_id, session_id, provider_message_id,
-                    role, text, sort_key, content_hash,
-                    version, parent_message_id, branch_index)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                ("m1", "c1", "pm1", "user", "hello", None, "hash2", 1, None, 0),
+                   (session_id, native_id, position, role, content_hash)
+                   VALUES (?, ?, ?, ?, ?)""",
+                ("chatgpt-export:c1", "pm1", 0, "user", bytes(32)),
             )
             conn.commit()
 

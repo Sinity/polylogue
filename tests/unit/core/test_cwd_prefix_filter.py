@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.core.json import dumps
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.queries.filter_builder import _build_session_filters
 from polylogue.storage.sqlite.queries.sessions_reads import list_sessions
@@ -33,7 +34,7 @@ def test_cwd_prefix_propagates_to_record_query() -> None:
 
 def test_cwd_prefix_emits_sql_clause() -> None:
     where, params = _build_session_filters(cwd_prefix="/realm/project/polylogue")
-    assert "json_each" in where
+    assert "session_working_dirs" in where
     assert "working_directories" in where
     assert "REPLACE(cwd.value" in where
     assert "/realm/project/polylogue" in params
@@ -58,7 +59,7 @@ def test_cwd_prefix_combines_with_other_filters() -> None:
         provider="claude-code",
         title_contains="bug",
     )
-    assert "source_name = ?" in where
+    assert "origin = ?" in where
     assert "title LIKE" in where
     assert "working_directories" in where
     assert "claude-code" in params
@@ -108,7 +109,7 @@ async def test_cwd_prefix_sql_filter_is_path_component_bounded(tmp_path: Path) -
             await backend.save_session_record(
                 make_session(
                     session_id,
-                    provider_meta={"working_directories": [cwd]},
+                    working_directories_json=dumps([cwd]),
                     content_hash=f"hash-{session_id}",
                 )
             )

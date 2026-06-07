@@ -371,10 +371,11 @@ async def count_sessions(
 
 async def list_sessions_by_parent(conn: aiosqlite.Connection, parent_id: str) -> list[SessionRecord]:
     cursor = await conn.execute(
-        """
-        SELECT * FROM sessions
+        f"""
+        SELECT {_SESSION_RECORD_SELECT}
+        FROM sessions
         WHERE parent_session_id = ?
-        ORDER BY created_at ASC
+        ORDER BY created_at_ms ASC
         """,
         (parent_id,),
     )

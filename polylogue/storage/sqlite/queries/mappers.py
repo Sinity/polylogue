@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from polylogue.storage.sqlite.queries.mappers_archive import (
+    _ms_to_iso,
     _row_to_artifact_observation,
     _row_to_content_block,
     _row_to_message,
@@ -33,6 +34,7 @@ from polylogue.storage.sqlite.queries.mappers_support import (
 )
 
 __all__ = [
+    "_ms_to_iso",
     "_parse_json",
     "_json_int_dict",
     "_json_object",

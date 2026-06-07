@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
+from polylogue.core.enums import Origin
+from polylogue.core.sources import provider_from_origin
 from polylogue.storage.runtime import (
     ArtifactObservationRecord,
     ContentBlockRecord,
@@ -104,30 +107,36 @@ def _row_to_content_block(row: sqlite3.Row) -> ContentBlockRecord:
     )
 
 
+def _ms_to_iso(value: object) -> str | None:
+    """Convert an INTEGER epoch-ms column value back to a canonical ISO-8601 string."""
+    if not isinstance(value, (int, float)):
+        return None
+    return datetime.fromtimestamp(value / 1000, tz=timezone.utc).isoformat()
+
+
 def _row_to_raw_session(row: sqlite3.Row) -> RawSessionRecord:
     validation_status = _row_text(row, "validation_status")
-    validation_provider = _row_text(row, "validation_provider")
     validation_mode = _row_text(row, "validation_mode")
+    # raw_sessions carries a single ``origin`` column (#1743). The in-memory
+    # record still exposes provider-wire ``source_name``/``payload_provider``;
+    # both project from the stored origin.
+    provider = provider_from_origin(Origin.from_string(row["origin"]))
     return RawSessionRecord(
         raw_id=row["raw_id"],
-        payload_provider=(
-            Provider.from_string(_row_text(row, "payload_provider"))
-            if _row_text(row, "payload_provider") is not None
-            else None
-        ),
-        source_name=row["source_name"],
+        payload_provider=provider,
+        source_name=provider.value,
         source_path=row["source_path"],
         source_index=row["source_index"],
         blob_size=row["blob_size"],
-        acquired_at=row["acquired_at"],
-        file_mtime=row["file_mtime"],
-        parsed_at=_row_text(row, "parsed_at"),
+        acquired_at=_ms_to_iso(row["acquired_at_ms"]) or "",
+        file_mtime=_ms_to_iso(row["file_mtime_ms"]),
+        parsed_at=_ms_to_iso(row["parsed_at_ms"]),
         parse_error=_row_text(row, "parse_error"),
-        validated_at=_row_text(row, "validated_at"),
+        validated_at=_ms_to_iso(row["validated_at_ms"]),
         validation_status=(ValidationStatus.from_string(validation_status) if validation_status is not None else None),
         validation_error=_row_text(row, "validation_error"),
         validation_drift_count=_row_int(row, "validation_drift_count"),
-        validation_provider=(Provider.from_string(validation_provider) if validation_provider is not None else None),
+        validation_provider=provider,
         validation_mode=(ValidationMode.from_string(validation_mode) if validation_mode is not None else None),
     )
 
@@ -166,6 +175,7 @@ def _row_to_artifact_observation(row: sqlite3.Row) -> ArtifactObservationRecord:
 
 
 __all__ = [
+    "_ms_to_iso",
     "_row_to_artifact_observation",
     "_row_to_content_block",
     "_row_to_session",

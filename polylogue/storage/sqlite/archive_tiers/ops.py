@@ -114,6 +114,38 @@ CREATE TABLE IF NOT EXISTS embedding_catchup_runs (
     estimated_cost_usd  REAL,
     error_message       TEXT
 ) STRICT;
+
+CREATE TABLE IF NOT EXISTS otlp_spans (
+    trace_id          TEXT NOT NULL,
+    span_id           TEXT NOT NULL,
+    parent_span_id    TEXT,
+    origin            TEXT CHECK ({nullable_check("origin", Origin)}),
+    name              TEXT NOT NULL,
+    kind              TEXT,
+    started_at_ms     INTEGER,
+    ended_at_ms       INTEGER,
+    attributes_json   TEXT NOT NULL DEFAULT '{{}}',
+    events_json       TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (trace_id, span_id)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_ops_otlp_spans_trace
+ON otlp_spans(trace_id, started_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS otlp_telemetry (
+    telemetry_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    received_at_ms    INTEGER NOT NULL,
+    signal_type       TEXT NOT NULL,
+    content_type      TEXT NOT NULL,
+    payload           BLOB,
+    resource_count    INTEGER NOT NULL DEFAULT 0 CHECK(resource_count >= 0),
+    span_count        INTEGER,
+    metric_count      INTEGER,
+    log_record_count  INTEGER
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_ops_otlp_telemetry_received
+ON otlp_telemetry(received_at_ms DESC);
 """
 
 __all__ = ["OPS_DDL", "OPS_SCHEMA_VERSION"]

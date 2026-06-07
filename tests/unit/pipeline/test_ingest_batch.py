@@ -49,6 +49,7 @@ from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.search.cache import get_cache_stats
 from polylogue.storage.search.runtime import search_messages
+from polylogue.storage.sqlite.archive_tiers.write import _attachment_id
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.types import ContentBlockType, Provider, SessionId
 
@@ -441,6 +442,8 @@ def test_write_session_replaces_runtime_rows_on_content_change(tmp_path: Path) -
             ).fetchone()[0]
             == 1
         )
+        att1_id = _attachment_id("codex-session:replace", _attachment_tuple("att-1"))
+        att2_id = _attachment_id("codex-session:replace", _attachment_tuple("att-2", mime_type="image/jpeg"))
         assert (
             conn.execute(
                 """
@@ -449,14 +452,14 @@ def test_write_session_replaces_runtime_rows_on_content_change(tmp_path: Path) -
                 JOIN messages m ON m.message_id = r.message_id
                 WHERE r.session_id = ? AND r.attachment_id = ?
                 """,
-                ("codex-session:replace", "codex-session:replace:attachment:att-1"),
+                ("codex-session:replace", att1_id),
             ).fetchone()[0]
             == "msg-1"
         )
         assert (
             conn.execute(
-                "SELECT COUNT(*) FROM attachments WHERE attachment_id = ?",
-                ("att-2",),
+                "SELECT COUNT(*) FROM attachment_refs WHERE session_id = ? AND attachment_id = ?",
+                ("codex-session:replace", att2_id),
             ).fetchone()[0]
             == 0
         )
@@ -983,14 +986,12 @@ def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cac
             ).fetchall()
         }
         assert {"messages_fts_ai", "messages_fts_ad", "messages_fts_au"}.issubset(trigger_names)
+        # messages_fts is a contentless FTS5 table (content=''); column values are
+        # not retrievable, so verify indexing via MATCH on the indexed block text.
         assert (
             conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM messages_fts
-                WHERE session_id = ?
-                """,
-                (session_id,),
+                "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH ?",
+                (needle,),
             ).fetchone()[0]
             == 1
         )

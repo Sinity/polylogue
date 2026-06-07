@@ -6,6 +6,7 @@ import pytest
 
 from polylogue.api import Polylogue
 from polylogue.core.identity_law import session_id as archive_session_id
+from polylogue.core.json import dumps
 from polylogue.core.sources import origin_from_provider
 from polylogue.errors import PolylogueError
 from polylogue.paths.sanitize import is_within_root, session_render_root
@@ -145,7 +146,8 @@ async def test_ingest_updates_metadata(
             title="Old",
             updated_at="2026-04-01T00:00:01+00:00",
             content_hash="hash-old",
-            provider_meta={"working_directories": ["/tmp/old"], "gitBranch": "old"},
+            git_branch="old",
+            working_directories_json=dumps(["/tmp/old"]),
         ),
         messages=[make_message("msg-update", "conv-update", text="hello", content_hash="msg-old")],
         attachments=[],
@@ -159,7 +161,8 @@ async def test_ingest_updates_metadata(
             title="New",
             updated_at="2026-04-02T00:00:02+00:00",
             content_hash="hash-new",
-            provider_meta={"working_directories": ["/tmp/new"], "gitBranch": "new"},
+            git_branch="new",
+            working_directories_json=dumps(["/tmp/new"]),
         ),
         messages=[make_message("msg-update", "conv-update", role="assistant", text="hello", content_hash="msg-new")],
         attachments=[],
@@ -204,7 +207,6 @@ async def test_ingest_updates_fields_without_hash_changes(
         title="Original",
         updated_at="2026-04-02T00:00:01+00:00",
         content_hash="hash-v1",
-        provider_meta={"source": "inbox"},
     )
     base_message = make_message("msg-stable", "conv-hash-stable", text="hello", content_hash="msg-v1")
     await save_current_archive_records(
@@ -222,7 +224,8 @@ async def test_ingest_updates_fields_without_hash_changes(
             title="Updated title",
             updated_at="2026-04-02T00:00:02+00:00",
             content_hash="hash-v2",
-            provider_meta={"working_directories": ["/tmp/current"], "gitBranch": "current"},
+            git_branch="current",
+            working_directories_json=dumps(["/tmp/current"]),
         ),
         messages=[
             make_message("msg-stable", "conv-hash-stable", role="assistant", text="hello", content_hash="msg-v2")
