@@ -45,19 +45,31 @@ def _make_db(path: str | Path | None = None) -> sqlite3.Connection:
     )
     conn.execute(
         """CREATE TABLE blob_refs (
-            blob_hash BLOB NOT NULL,
-            raw_id TEXT NOT NULL,
-            ref_type TEXT NOT NULL DEFAULT 'raw_payload'
+            blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
+            ref_id TEXT NOT NULL,
+            ref_type TEXT NOT NULL CHECK(ref_type IN ('raw_payload', 'attachment', 'sidecar')),
+            source_path TEXT,
+            size_bytes INTEGER NOT NULL DEFAULT 0 CHECK(size_bytes >= 0),
+            acquired_at_ms INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (blob_hash, ref_type, ref_id)
         )"""
     )
     conn.execute(
         """CREATE TABLE pending_blob_refs (
-            blob_hash TEXT NOT NULL,
+            blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
             operation_id TEXT NOT NULL,
-            acquired_at INTEGER NOT NULL,
-            PRIMARY KEY (blob_hash, operation_id)
+            ref_type TEXT NOT NULL,
+            ref_id TEXT NOT NULL,
+            acquired_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (blob_hash, operation_id, ref_type, ref_id)
         )"""
     )
+    # gc_generations is intentionally kept in the shape that production
+    # ``run_blob_gc`` / ``_current_generation`` read and write
+    # (``generation``/``completed_at``/``evidence``). The split-file source.db
+    # DDL has migrated this table to ``generation_id``/``*_at_ms``, but the
+    # production GC code has not (pending #1789), so the lease tests that drive
+    # ``run_blob_gc`` must mirror the columns the code actually uses.
     conn.execute(
         """CREATE TABLE gc_generations (
             generation INTEGER PRIMARY KEY,
@@ -227,13 +239,15 @@ def test_candidate_blobs_skips_non_two_char_prefix_dirs(tmp_path: Path) -> None:
 
 def test_has_active_lease() -> None:
     conn = _make_db()
+    leased = "a" * 64
     conn.execute(
-        "INSERT INTO pending_blob_refs (blob_hash, operation_id, acquired_at) "
-        "VALUES ('hash-under-lease', 'op-001', 1000)"
+        "INSERT INTO pending_blob_refs (blob_hash, operation_id, ref_type, ref_id, acquired_at_ms) "
+        "VALUES (?, 'op-001', 'raw_payload', 'op-001', 1000)",
+        (bytes.fromhex(leased),),
     )
     conn.commit()
-    assert _has_active_lease(conn, "hash-under-lease") is True
-    assert _has_active_lease(conn, "hash-not-leased") is False
+    assert _has_active_lease(conn, leased) is True
+    assert _has_active_lease(conn, "b" * 64) is False
     conn.close()
 
 

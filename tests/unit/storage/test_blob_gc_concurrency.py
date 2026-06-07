@@ -54,19 +54,28 @@ def _make_db(path: Path) -> sqlite3.Connection:
     )
     conn.execute(
         """CREATE TABLE blob_refs (
-            blob_hash BLOB NOT NULL,
-            raw_id TEXT NOT NULL,
-            ref_type TEXT NOT NULL DEFAULT 'raw_payload'
+            blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
+            ref_id TEXT NOT NULL,
+            ref_type TEXT NOT NULL CHECK(ref_type IN ('raw_payload', 'attachment', 'sidecar')),
+            source_path TEXT,
+            size_bytes INTEGER NOT NULL DEFAULT 0 CHECK(size_bytes >= 0),
+            acquired_at_ms INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (blob_hash, ref_type, ref_id)
         )"""
     )
     conn.execute(
         """CREATE TABLE pending_blob_refs (
-            blob_hash TEXT NOT NULL,
+            blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
             operation_id TEXT NOT NULL,
-            acquired_at INTEGER NOT NULL,
-            PRIMARY KEY (blob_hash, operation_id)
+            ref_type TEXT NOT NULL,
+            ref_id TEXT NOT NULL,
+            acquired_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (blob_hash, operation_id, ref_type, ref_id)
         )"""
     )
+    # gc_generations stays in the production ``run_blob_gc`` shape
+    # (``generation``/``completed_at``/``evidence``); the split-file
+    # ``generation_id``/``*_at_ms`` migration is pending (#1789).
     conn.execute(
         """CREATE TABLE gc_generations (
             generation INTEGER PRIMARY KEY,
@@ -333,12 +342,13 @@ def test_hypothesis_lease_invariant_under_random_interleavings(
 def test_helpers_reflect_lease_lifecycle(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.db"
     conn = _make_db(db_path)
+    blob = "a" * 64
     try:
-        acquire_blob_leases(db_path, ["abc"], operation_id="op-X")
-        assert _has_active_lease(conn, "abc") is True
-        assert _still_referenced(conn, "abc") is False
+        acquire_blob_leases(db_path, [blob], operation_id="op-X")
+        assert _has_active_lease(conn, blob) is True
+        assert _still_referenced(conn, blob) is False
         release_operation_leases(conn, "op-X")
         conn.commit()
-        assert _has_active_lease(conn, "abc") is False
+        assert _has_active_lease(conn, blob) is False
     finally:
         conn.close()

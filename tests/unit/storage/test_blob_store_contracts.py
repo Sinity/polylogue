@@ -63,16 +63,25 @@ def _make_gc_db(path: Path) -> sqlite3.Connection:
             acquired_at TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE blob_refs (
-            blob_hash BLOB NOT NULL,
-            raw_id TEXT NOT NULL,
-            ref_type TEXT NOT NULL DEFAULT 'raw_payload'
+            blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
+            ref_id TEXT NOT NULL,
+            ref_type TEXT NOT NULL CHECK(ref_type IN ('raw_payload', 'attachment', 'sidecar')),
+            source_path TEXT,
+            size_bytes INTEGER NOT NULL DEFAULT 0 CHECK(size_bytes >= 0),
+            acquired_at_ms INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (blob_hash, ref_type, ref_id)
         );
         CREATE TABLE pending_blob_refs (
-            blob_hash TEXT NOT NULL,
+            blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
             operation_id TEXT NOT NULL,
-            acquired_at INTEGER NOT NULL,
-            PRIMARY KEY (blob_hash, operation_id)
+            ref_type TEXT NOT NULL,
+            ref_id TEXT NOT NULL,
+            acquired_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (blob_hash, operation_id, ref_type, ref_id)
         );
+        -- gc_generations stays in the production run_blob_gc shape
+        -- (generation/completed_at/evidence); the split-file
+        -- generation_id/*_at_ms migration is pending (#1789).
         CREATE TABLE gc_generations (
             generation INTEGER PRIMARY KEY,
             completed_at INTEGER NOT NULL,
@@ -426,8 +435,9 @@ def test_lease_predicate_and_reference_predicate_are_independent(tmp_path: Path)
 
     # 3. Reference + lease.
     conn.execute(
-        "INSERT INTO pending_blob_refs (blob_hash, operation_id, acquired_at) VALUES (?, 'op', 0)",
-        (blob,),
+        "INSERT INTO pending_blob_refs (blob_hash, operation_id, ref_type, ref_id, acquired_at_ms) "
+        "VALUES (?, 'op', 'raw_payload', 'op', 0)",
+        (bytes.fromhex(blob),),
     )
     conn.commit()
     assert _still_referenced(conn, blob)
@@ -462,7 +472,7 @@ def test_acquire_blob_leases_is_durable_immediately(tmp_path: Path) -> None:
     reader.row_factory = sqlite3.Row
     row = reader.execute(
         "SELECT operation_id FROM pending_blob_refs WHERE blob_hash = ?",
-        (blob,),
+        (bytes.fromhex(blob),),
     ).fetchone()
     reader.close()
 
