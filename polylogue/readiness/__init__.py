@@ -30,8 +30,6 @@ READINESS_TTL_SECONDS = 600
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 
 _DERIVED_MODEL_READINESS_CHECKS: tuple[tuple[str, str], ...] = (
-    ("action_event_read_model", "action_events"),
-    ("action_event_fts", "action_events_fts"),
     ("fts_sync", "messages_fts"),
     ("retrieval_evidence", "retrieval_evidence"),
     ("retrieval_inference", "retrieval_inference"),
@@ -166,7 +164,7 @@ def _skipped_index_check(db_error: str) -> ReadinessCheck:
     )
 
 
-_BLOCKS_FTS_TRIGGERS: tuple[str, ...] = ("blocks_fts_ai", "blocks_fts_ad", "blocks_fts_au")
+_MESSAGE_FTS_TRIGGERS: tuple[str, ...] = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
 
 
 def _archive_table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -177,33 +175,33 @@ def _archive_table_exists(conn: sqlite3.Connection, name: str) -> bool:
     return row is not None
 
 
-def _blocks_fts_triggers_present(conn: sqlite3.Connection) -> bool:
-    placeholders = ",".join("?" for _ in _BLOCKS_FTS_TRIGGERS)
+def _message_fts_triggers_present(conn: sqlite3.Connection) -> bool:
+    placeholders = ",".join("?" for _ in _MESSAGE_FTS_TRIGGERS)
     present = {
         str(row[0])
         for row in conn.execute(
             f"SELECT name FROM sqlite_master WHERE type = 'trigger' AND name IN ({placeholders})",
-            _BLOCKS_FTS_TRIGGERS,
+            _MESSAGE_FTS_TRIGGERS,
         ).fetchall()
     }
-    return all(name in present for name in _BLOCKS_FTS_TRIGGERS)
+    return all(name in present for name in _MESSAGE_FTS_TRIGGERS)
 
 
-def _archive_blocks_fts_readiness(conn: sqlite3.Connection, *, exact_counts: bool) -> dict[str, int | bool]:
-    """Blocks FTS readiness over the ``blocks_fts`` table.
+def _archive_messages_fts_readiness(conn: sqlite3.Connection, *, exact_counts: bool) -> dict[str, int | bool]:
+    """Message FTS readiness over the ``messages_fts`` table.
 
-    The search index is ``blocks_fts`` (contentless FTS5 over ``blocks``),
-    maintained by ``blocks_fts_a{i,d,u}`` triggers.
+    The search index is ``messages_fts`` (contentless FTS5 over ``blocks``),
+    maintained by ``messages_fts_a{i,d,u}`` triggers.
     """
-    exists = _archive_table_exists(conn, "blocks_fts")
+    exists = _archive_table_exists(conn, "messages_fts")
     if not exists:
         return {"exists": False, "indexed_rows": 0, "total_rows": 0, "ready": False, "triggers_present": False}
 
-    triggers_present = _blocks_fts_triggers_present(conn)
+    triggers_present = _message_fts_triggers_present(conn)
     if exact_counts:
-        indexed_rows = int(conn.execute("SELECT COUNT(*) FROM blocks_fts").fetchone()[0] or 0)
+        indexed_rows = int(conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] or 0)
         total_rows = int(
-            conn.execute("SELECT COUNT(*) FROM blocks WHERE NULLIF(text, '') IS NOT NULL").fetchone()[0] or 0
+            conn.execute("SELECT COUNT(*) FROM blocks WHERE NULLIF(search_text, '') IS NOT NULL").fetchone()[0] or 0
         )
         ready = triggers_present and indexed_rows == total_rows
         return {
@@ -214,16 +212,16 @@ def _archive_blocks_fts_readiness(conn: sqlite3.Connection, *, exact_counts: boo
             "triggers_present": triggers_present,
         }
 
-    has_indexed_rows = bool(conn.execute("SELECT 1 FROM blocks_fts_docsize LIMIT 1").fetchone())
+    has_indexed_rows = bool(conn.execute("SELECT 1 FROM messages_fts_docsize LIMIT 1").fetchone())
     has_indexable_blocks = bool(
-        conn.execute("SELECT 1 FROM blocks WHERE NULLIF(text, '') IS NOT NULL LIMIT 1").fetchone()
+        conn.execute("SELECT 1 FROM blocks WHERE NULLIF(search_text, '') IS NOT NULL LIMIT 1").fetchone()
     )
     ready = triggers_present and (has_indexed_rows or not has_indexable_blocks)
     return {"exists": True, "indexed_rows": 0, "total_rows": 0, "ready": ready, "triggers_present": triggers_present}
 
 
 def _message_index_check(conn: sqlite3.Connection, *, exact_counts: bool) -> ReadinessCheck:
-    index_readiness = _archive_blocks_fts_readiness(conn, exact_counts=exact_counts)
+    index_readiness = _archive_messages_fts_readiness(conn, exact_counts=exact_counts)
     if not index_readiness["exists"]:
         return ReadinessCheck("index", VerifyStatus.WARNING, summary="index not built")
 
@@ -328,22 +326,22 @@ def _provider_distribution_check(conn: sqlite3.Connection) -> ReadinessCheck:
 
 
 def _fts_sync_check(conn: sqlite3.Connection) -> ReadinessCheck:
-    """Archive FTS sync check over ``blocks_fts``.
+    """Archive FTS sync check over ``messages_fts``.
 
-    Reports a warning when the blocks FTS table is absent (desynced/dropped)
+    Reports a warning when the message FTS table is absent (desynced/dropped)
     or when its maintenance triggers are missing.
     """
-    if not _archive_table_exists(conn, "blocks_fts"):
+    if not _archive_table_exists(conn, "messages_fts"):
         return ReadinessCheck(
             "fts_sync",
             VerifyStatus.WARNING,
-            summary="Blocks FTS missing — search index unavailable; run repair dangling_fts",
+            summary="Message FTS missing — search index unavailable; run repair dangling_fts",
         )
-    if not _blocks_fts_triggers_present(conn):
+    if not _message_fts_triggers_present(conn):
         return ReadinessCheck(
             "fts_sync",
             VerifyStatus.WARNING,
-            summary="Blocks FTS triggers missing — index is stale; run repair dangling_fts",
+            summary="Message FTS triggers missing — index is stale; run repair dangling_fts",
         )
     return ReadinessCheck("fts_sync", VerifyStatus.OK, summary="Messages FTS present")
 
@@ -372,32 +370,6 @@ def _orphaned_messages_check(conn: sqlite3.Connection) -> ReadinessCheck:
         VerifyStatus.OK if orphan_count == 0 else VerifyStatus.ERROR,
         count=orphan_count,
         summary="No orphaned messages" if orphan_count == 0 else f"{orphan_count} orphaned message(s)",
-    )
-
-
-def _orphaned_content_blocks_check(conn: sqlite3.Connection) -> ReadinessCheck:
-    """Blocks whose owning message is absent (deep check).
-
-    ``blocks.message_id`` references ``messages(message_id)`` with ``ON DELETE
-    CASCADE``. Like orphaned messages, this surfaces corruption or
-    foreign-key-disabled writes.
-    """
-    orphan_count = int(
-        conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM blocks b
-            LEFT JOIN messages m ON m.message_id = b.message_id
-            WHERE m.message_id IS NULL
-            """
-        ).fetchone()[0]
-        or 0
-    )
-    return ReadinessCheck(
-        "orphaned_content_blocks",
-        VerifyStatus.OK if orphan_count == 0 else VerifyStatus.ERROR,
-        count=orphan_count,
-        summary="No orphaned content blocks" if orphan_count == 0 else f"{orphan_count} orphaned content block(s)",
     )
 
 
@@ -540,8 +512,6 @@ def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: boo
 
         # Integrity probes over the archive tables.
         checks.append(_orphaned_messages_check(conn))
-        if deep:
-            checks.append(_orphaned_content_blocks_check(conn))
         checks.append(_fts_sync_check(conn))
         checks.append(_empty_sessions_check(conn))
         checks.append(_duplicate_sessions_check(conn))
@@ -624,9 +594,9 @@ def run_runtime_readiness(config: Config) -> ReadinessReport:
 
     try:
         with _open_readiness_probe_connection(config.db_path) as conn:
-            fts = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='blocks_fts'").fetchone()
+            fts = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
             if fts:
-                conn.execute("SELECT * FROM blocks_fts LIMIT 0")
+                conn.execute("SELECT * FROM messages_fts LIMIT 0")
                 checks.append(ReadinessCheck("fts_tables", VerifyStatus.OK, summary="FTS5 table present and queryable"))
             else:
                 checks.append(ReadinessCheck("fts_tables", VerifyStatus.WARNING, summary="FTS5 table not found"))

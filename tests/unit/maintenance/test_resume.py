@@ -66,7 +66,7 @@ def patched_dispatch() -> Iterator[dict[str, list[str]]]:
 
     calls: dict[str, list[str]] = {
         "session_insights": [],
-        "action_event_read_model": [],
+        "message_type_backfill": [],
         "dangling_fts": [],
     }
 
@@ -116,14 +116,14 @@ def test_kill_mid_run_resumes_from_persisted_cursor(tmp_path: Path, patched_disp
 
     fake_dispatch = {
         "session_insights": patched_dispatch_callable(patched_dispatch, "session_insights"),
-        "action_event_read_model": boom,
+        "message_type_backfill": boom,
         "dangling_fts": patched_dispatch_callable(patched_dispatch, "dangling_fts"),
     }
 
     with patch("polylogue.maintenance.replay._REPLAY_DISPATCH", fake_dispatch):
         first = execute_replay(
             config,
-            targets=("session_insights", "action_event_read_model", "dangling_fts"),
+            targets=("session_insights", "message_type_backfill", "dangling_fts"),
             operation_id="op-resume",
         )
 
@@ -147,7 +147,7 @@ def test_kill_mid_run_resumes_from_persisted_cursor(tmp_path: Path, patched_disp
     with patch("polylogue.maintenance.replay._REPLAY_DISPATCH", patched_dispatch_table(patched_dispatch)):
         second = execute_replay(
             config,
-            targets=("session_insights", "action_event_read_model", "dangling_fts"),
+            targets=("session_insights", "message_type_backfill", "dangling_fts"),
             operation_id="op-resume",
         )
 
@@ -156,7 +156,7 @@ def test_kill_mid_run_resumes_from_persisted_cursor(tmp_path: Path, patched_disp
     # session_insights was not invoked a second time.
     assert patched_dispatch["session_insights"] == ["live"]
     # The remaining two targets were executed exactly once on resume.
-    assert patched_dispatch["action_event_read_model"] == ["live"]
+    assert patched_dispatch["message_type_backfill"] == ["live"]
     assert patched_dispatch["dangling_fts"] == ["live", "live"]
     # State cleared after successful resume.
     assert not state_path_for(config, "op-resume").exists()

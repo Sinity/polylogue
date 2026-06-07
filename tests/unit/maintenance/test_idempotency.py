@@ -133,17 +133,17 @@ def test_single_target_failure_does_not_abort_others(tmp_path: Path) -> None:
     fake = {
         "session_insights": good("session_insights"),
         "dangling_fts": bad,
-        "action_event_read_model": good("action_event_read_model"),
+        "message_type_backfill": good("message_type_backfill"),
     }
     with patch("polylogue.maintenance.replay._REPLAY_DISPATCH", fake):
         op = execute_replay(
             config,
-            targets=("session_insights", "dangling_fts", "action_event_read_model"),
+            targets=("session_insights", "dangling_fts", "message_type_backfill"),
             operation_id="op-mixed",
         )
 
     # The bad target failed but the surrounding targets still ran.
-    assert calls == ["session_insights", "dangling_fts", "action_event_read_model"]
+    assert calls == ["session_insights", "dangling_fts", "message_type_backfill"]
     assert op.status is BackfillStatus.FAILED
     assert op.affected_rows == 6  # only the two good targets contributed
     assert len(op.failure_samples.samples) == 1
@@ -216,12 +216,11 @@ def test_unsupported_target_is_typed_failure_not_silent(tmp_path: Path) -> None:
 
 
 def test_supported_targets_cover_ac_required_set() -> None:
-    """The PR AC names FTS, action events, and session insights as the
-    targets supported in this PR. Pin the public contract."""
+    """Replay supports the durable maintenance targets advertised in the catalog."""
     supported = set(supported_replay_targets())
     required = {
         "session_insights",
-        "action_event_read_model",
+        "message_type_backfill",
         "dangling_fts",
         "orphaned_blobs",
     }

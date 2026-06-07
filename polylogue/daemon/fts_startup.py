@@ -3,13 +3,6 @@
 This module owns the SQLite + FTS-index health probe + recovery flow that
 runs once at daemon startup. See ``docs/internals.md`` "FTS5 Model" and
 "WAL Management" for the full lifecycle context.
-
-The pre-existing public re-exports (``polylogue.daemon.cli._missing_fts_triggers_sync``,
-``polylogue.daemon.cli._table_exists_sync``, ``polylogue.daemon.cli._record_fts_freshness_snapshot_sync``,
-``polylogue.daemon.cli._active_fts_triggers_sync``, ``polylogue.daemon.cli._ensure_fts_startup_readiness``,
-``polylogue.daemon.cli._ensure_fts_startup_readiness_sync``) are kept as
-thin proxies that forward to this module, so existing tests and any
-external code that imported through ``daemon.cli`` continue to work.
 """
 
 from __future__ import annotations
@@ -20,10 +13,15 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.logging import get_logger
-from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES as _EXPECTED_FTS_TRIGGERS
 
 logger = get_logger(__name__)
-_ARCHIVE_BLOCKS_FTS_TRIGGERS = ("blocks_fts_ai", "blocks_fts_ad", "blocks_fts_au")
+_ARCHIVE_MESSAGE_FTS_TRIGGERS = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
+_SESSION_WORK_EVENT_FTS_TRIGGERS = (
+    "session_work_events_fts_ai",
+    "session_work_events_fts_ad",
+    "session_work_events_fts_au",
+)
+_THREAD_FTS_TRIGGERS = ("threads_fts_ai", "threads_fts_ad", "threads_fts_au")
 
 
 def missing_fts_triggers_sync(conn: sqlite3.Connection) -> list[str]:
@@ -71,14 +69,11 @@ def record_fts_freshness_snapshot_sync(conn: sqlite3.Connection) -> None:
 def active_fts_triggers_sync(conn: sqlite3.Connection) -> tuple[str, ...]:
     """Return the FTS triggers that should exist given the schema present."""
     expected: list[str] = []
-    if table_exists_sync(conn, "blocks") and table_exists_sync(conn, "blocks_fts"):
-        expected.extend(_ARCHIVE_BLOCKS_FTS_TRIGGERS)
-    if table_exists_sync(conn, "messages") and table_exists_sync(conn, "messages_fts"):
-        expected.extend(_EXPECTED_FTS_TRIGGERS[: 6 if table_exists_sync(conn, "content_blocks") else 3])
+    if table_exists_sync(conn, "blocks") and table_exists_sync(conn, "messages_fts"):
+        expected.extend(_ARCHIVE_MESSAGE_FTS_TRIGGERS)
     for table_names, trigger_names in (
-        (("action_events", "action_events_fts"), _EXPECTED_FTS_TRIGGERS[6:9]),
-        (("session_work_events", "session_work_events_fts"), _EXPECTED_FTS_TRIGGERS[9:12]),
-        (("work_threads", "work_threads_fts"), _EXPECTED_FTS_TRIGGERS[12:15]),
+        (("session_work_events", "session_work_events_fts"), _SESSION_WORK_EVENT_FTS_TRIGGERS),
+        (("threads", "threads_fts"), _THREAD_FTS_TRIGGERS),
     ):
         if all(table_exists_sync(conn, table_name) for table_name in table_names):
             expected.extend(trigger_names)
@@ -108,8 +103,8 @@ def _active_fts_startup_db_path() -> Path:
     return paths.active_index_db_path()
 
 
-def _ensure_archive_blocks_fts_startup_readiness_sync(conn: sqlite3.Connection) -> bool:
-    """Run blocks FTS startup maintenance when applicable."""
+def _ensure_archive_messages_fts_startup_readiness_sync(conn: sqlite3.Connection) -> bool:
+    """Run message FTS startup maintenance when applicable."""
     try:
         has_blocks_table = table_exists_sync(conn, "blocks")
     except Exception:
@@ -122,21 +117,23 @@ def _ensure_archive_blocks_fts_startup_readiness_sync(conn: sqlite3.Connection) 
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     initialize_archive_tier(conn, ArchiveTier.INDEX)
-    source_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM blocks WHERE text IS NOT NULL")
-    fts_exists = table_exists_sync(conn, "blocks_fts")
-    docsize_exists = table_exists_sync(conn, "blocks_fts_docsize")
-    triggers_present = not _missing_named_triggers_sync(conn, _ARCHIVE_BLOCKS_FTS_TRIGGERS)
-    indexed_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM blocks_fts_docsize") if docsize_exists else 0
+    source_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''")
+    fts_exists = table_exists_sync(conn, "messages_fts")
+    docsize_exists = table_exists_sync(conn, "messages_fts_docsize")
+    triggers_present = not _missing_named_triggers_sync(conn, _ARCHIVE_MESSAGE_FTS_TRIGGERS)
+    indexed_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM messages_fts_docsize") if docsize_exists else 0
     if fts_exists and (not triggers_present or indexed_rows != source_rows):
-        logger.warning("daemon: archive blocks FTS drift detected on startup. Rebuilding once.")
-        conn.execute("INSERT INTO blocks_fts(blocks_fts) VALUES('rebuild')")
-        indexed_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM blocks_fts_docsize")
-        triggers_present = not _missing_named_triggers_sync(conn, _ARCHIVE_BLOCKS_FTS_TRIGGERS)
+        from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
+
+        logger.warning("daemon: archive message FTS drift detected on startup. Rebuilding once.")
+        rebuild_fts_index_sync(conn)
+        indexed_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM messages_fts_docsize")
+        triggers_present = not _missing_named_triggers_sync(conn, _ARCHIVE_MESSAGE_FTS_TRIGGERS)
 
     ready = fts_exists and triggers_present and indexed_rows == source_rows
     record_fts_surface_state_sync(
         conn,
-        surface="blocks_fts",
+        surface="messages_fts",
         state=READY if ready else STALE,
         source_rows=source_rows,
         indexed_rows=indexed_rows,
@@ -158,7 +155,7 @@ def ensure_fts_startup_readiness_sync() -> None:
     Three failure modes are recovered here:
 
     1. FTS table missing entirely (historical rows pre-date FTS) →
-       rebuild from messages/action_events.
+       rebuild from messages.
     2. FTS table exists but is empty while messages exist → rebuild.
     3. FTS triggers missing (the SIGKILL-during-bulk-suspend signature
        called out in ``docs/internals.md`` "FTS5 Model → Risk") →
@@ -182,72 +179,11 @@ def ensure_fts_startup_readiness_sync() -> None:
     conn: sqlite3.Connection | None = None
     try:
         conn = open_connection(db, timeout=10.0)
-        if _ensure_archive_blocks_fts_startup_readiness_sync(conn):
+        if _ensure_archive_messages_fts_startup_readiness_sync(conn):
             conn.commit()
             return
-        row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
-        has_fts_table = row is not None
-        # Fresh-init race guard (#1603): bootstrap may have committed
-        # ``messages_fts`` but not yet ``messages``; bailing keeps the
-        # operator log clean instead of panicking in repair_stale_fts_rows.
-        messages_row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'").fetchone()
-        if messages_row is None:
-            logger.info("daemon: FTS startup check skipped — fresh-init in flight.")
-            return
-
-        from polylogue.storage.fts.dangling_repair import (
-            configure_bounded_repair_connection,
-            repair_missing_fts_rows,
-            repair_stale_fts_rows,
-        )
-        from polylogue.storage.fts.freshness import (
-            ensure_fts_freshness_table_sync,
-        )
-        from polylogue.storage.fts.fts_lifecycle import (
-            ensure_fts_index_sync,
-            rebuild_fts_index_sync,
-            restore_fts_triggers_sync,
-        )
-
-        configure_bounded_repair_connection(conn)
-        ensure_fts_freshness_table_sync(conn)
-
-        if not has_fts_table:
-            logger.warning("daemon: message FTS table missing. Rebuilding once.")
-            rebuild_fts_index_sync(conn)
-            conn.commit()
-            logger.info("daemon: FTS rebuild complete.")
-            return
-
-        missing_triggers = missing_fts_triggers_sync(conn)
-        if missing_triggers:
-            logger.warning(
-                "daemon: FTS triggers missing on startup (%s). "
-                "SIGKILL-during-bulk-suspend signature; rebuilding before serving search.",
-                ", ".join(missing_triggers),
-            )
-            restore_fts_triggers_sync(conn)
-            outcome = repair_missing_fts_rows(conn)
-            if not outcome.success:
-                logger.warning("daemon: bounded FTS repair failed after trigger restore: %s", outcome.detail)
-                rebuild_fts_index_sync(conn)
-            record_fts_freshness_snapshot_sync(conn)
-            conn.commit()
-            logger.info("daemon: FTS trigger recovery complete.")
-            return
-
-        ensure_fts_index_sync(conn)
-        outcome = repair_stale_fts_rows(conn)
-        if not outcome.success:
-            logger.warning("daemon: bounded FTS startup repair failed: %s. Rebuilding.", outcome.detail)
-            restore_fts_triggers_sync(conn)
-            rebuild_fts_index_sync(conn)
-            conn.commit()
-            logger.info("daemon: FTS rebuild complete.")
-            return
-
-        record_fts_freshness_snapshot_sync(conn)
-        conn.commit()
+        logger.info("daemon: FTS startup check skipped — current archive blocks table absent.")
+        return
     except Exception:
         logger.warning("daemon: FTS startup check failed", exc_info=True)
     finally:

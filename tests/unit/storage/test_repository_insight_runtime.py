@@ -88,8 +88,8 @@ async def test_repository_insight_profile_reads_build_typed_queries() -> None:
 @pytest.mark.asyncio
 async def test_repository_insight_thread_and_timeline_reads_build_typed_queries() -> None:
     queries = SimpleNamespace(
-        get_work_thread=AsyncMock(return_value="thread-record"),
-        _list_work_threads_query=AsyncMock(return_value=["thread-record"]),
+        get_thread=AsyncMock(return_value="thread-record"),
+        _list_threads_query=AsyncMock(return_value=["thread-record"]),
         get_session_work_events=AsyncMock(return_value=["event-record"]),
         get_session_phases=AsyncMock(return_value=["phase-record"]),
         _list_session_work_events_query=AsyncMock(return_value=["event-record"]),
@@ -104,7 +104,7 @@ async def test_repository_insight_thread_and_timeline_reads_build_typed_queries(
 
     with (
         patch(
-            "polylogue.storage.repository.insight.thread_reads.hydrate_work_thread",
+            "polylogue.storage.repository.insight.thread_reads.hydrate_thread",
             side_effect=lambda record: f"thread:{record}",
         ),
         patch(
@@ -116,12 +116,12 @@ async def test_repository_insight_thread_and_timeline_reads_build_typed_queries(
             side_effect=lambda record: f"phase:{record}",
         ),
     ):
-        assert await repo.get_work_thread_record("thread-1") == "thread-record"
-        assert await repo.get_work_thread("thread-1") == "thread:thread-record"
-        assert await repo.list_work_threads(
-            since="2026-01-01", until="2026-01-02", limit=3, offset=1, query="repo"
-        ) == ["thread:thread-record"]
-        assert await repo.list_work_thread_records(query="repo") == ["thread-record"]
+        assert await repo.get_thread_record("thread-1") == "thread-record"
+        assert await repo.get_thread("thread-1") == "thread:thread-record"
+        assert await repo.list_threads(since="2026-01-01", until="2026-01-02", limit=3, offset=1, query="repo") == [
+            "thread:thread-record"
+        ]
+        assert await repo.list_thread_records(query="repo") == ["thread-record"]
 
         assert await repo.get_session_work_event_records("conv-1") == ["event-record"]
         assert await repo.get_session_phase_records("conv-1") == ["phase-record"]
@@ -151,10 +151,10 @@ async def test_repository_insight_thread_and_timeline_reads_build_typed_queries(
         ) == ["phase:phase-record"]
         assert await repo.list_session_phase_records(kind="planning") == ["phase-record"]
 
-    work_thread_query = queries._list_work_threads_query.await_args_list[0].args[0]
-    assert work_thread_query.since == "2026-01-01"
-    assert work_thread_query.offset == 1
-    assert work_thread_query.query == "repo"
+    thread_query = queries._list_threads_query.await_args_list[0].args[0]
+    assert thread_query.since == "2026-01-01"
+    assert thread_query.offset == 1
+    assert thread_query.query == "repo"
 
     timeline_query = queries._list_session_work_events_query.await_args_list[0].args[0]
     assert timeline_query.session_id == "conv-1"

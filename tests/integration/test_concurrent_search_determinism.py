@@ -7,39 +7,55 @@ OperationalError or corrupt index errors.
 
 from __future__ import annotations
 
+import hashlib
+import sqlite3
 import threading
 import time
 from pathlib import Path
 
 import pytest
 
-from polylogue.storage.sqlite.connection import open_read_connection
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.connection_profile import open_connection
+
+
+def _content_hash(value: str) -> bytes:
+    return hashlib.sha256(value.encode()).digest()
+
+
+def _insert_session_with_message(conn: sqlite3.Connection, native_id: str, position: int, text: str) -> str:
+    session_id = f"codex-session:{native_id}"
+    message_native_id = f"m{position}"
+    message_id = f"{session_id}:{message_native_id}"
+    conn.execute(
+        "INSERT INTO sessions (native_id, origin, title, content_hash, updated_at_ms) VALUES (?, ?, ?, ?, ?)",
+        (native_id, "codex-session", native_id, _content_hash(f"session:{native_id}"), position),
+    )
+    conn.execute(
+        "INSERT INTO messages (session_id, native_id, position, role, content_hash) VALUES (?, ?, ?, ?, ?)",
+        (session_id, message_native_id, position, "user", _content_hash(f"message:{message_id}")),
+    )
+    conn.execute(
+        "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, ?, ?, ?)",
+        (message_id, session_id, 0, "text", text),
+    )
+    return message_id
 
 
 @pytest.mark.slow
 @pytest.mark.integration
-def test_search_results_monotonic_under_concurrent_writes(workspace_env: None, tmp_path: Path) -> None:
+def test_search_results_monotonic_under_concurrent_writes(workspace_env: dict[str, Path], tmp_path: Path) -> None:
     """Concurrent writer + reader: already-indexed results must be stable."""
 
-    db_path = tmp_path / "test_search_determinism.db"
+    archive_root = tmp_path / "archive"
+    with ArchiveStore(archive_root):
+        pass
+    db_path = archive_root / "index.db"
 
     # Seed initial data
     conn = open_connection(db_path)
-    conn.execute("INSERT INTO sessions (id, source_name, sort_key) VALUES ('c1', 'test', 1.0)")
-    conn.execute("INSERT INTO sessions (id, source_name, sort_key) VALUES ('c2', 'test', 2.0)")
-    conn.execute(
-        "INSERT INTO messages (id, session_id, source_name, role, text, sort_key) "
-        "VALUES ('m1', 'c1', 'test', 'user', 'hello world', 1.0)"
-    )
-    conn.execute(
-        "INSERT INTO messages (id, session_id, source_name, role, text, sort_key) "
-        "VALUES ('m2', 'c2', 'test', 'user', 'another test message', 2.0)"
-    )
-    conn.execute(
-        "INSERT INTO messages_fts(messages_fts, rowid, message_id, session_id, text) "
-        "VALUES ('rebuild', NULL, NULL, NULL, NULL)"
-    )
+    first_message_id = _insert_session_with_message(conn, "c1", 1, "hello world")
+    _insert_session_with_message(conn, "c2", 2, "another test message")
     conn.commit()
     conn.close()
 
@@ -49,7 +65,7 @@ def test_search_results_monotonic_under_concurrent_writes(workspace_env: None, t
     stop_flag = threading.Event()
 
     def reader() -> None:
-        with open_read_connection(db_path) as rconn:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as rconn:
             while not stop_flag.is_set():
                 try:
                     rows = rconn.execute(
@@ -68,21 +84,8 @@ def test_search_results_monotonic_under_concurrent_writes(workspace_env: None, t
         wconn = open_connection(db_path)
         try:
             for i in range(50):
-                mid = f"m{i + 3}"
                 cid = f"c{i + 3}"
-                wconn.execute(
-                    "INSERT INTO sessions (id, source_name, sort_key) VALUES (?, 'test', ?)",
-                    (cid, float(i + 3)),
-                )
-                wconn.execute(
-                    "INSERT INTO messages (id, session_id, source_name, role, text, sort_key) "
-                    "VALUES (?, ?, 'test', 'user', ?, ?)",
-                    (mid, cid, f"hello concurrent message {i}", float(i + 3)),
-                )
-                wconn.execute(
-                    "INSERT INTO messages_fts(messages_fts, rowid, message_id, session_id, text) "
-                    "VALUES ('rebuild', NULL, NULL, NULL, NULL)"
-                )
+                _insert_session_with_message(wconn, cid, i + 3, f"hello concurrent message {i}")
                 wconn.commit()
                 time.sleep(0.005)
         finally:
@@ -101,7 +104,9 @@ def test_search_results_monotonic_under_concurrent_writes(workspace_env: None, t
     assert len(search_results) > 0, "Reader never produced any search results"
 
     for i, result_set in enumerate(search_results):
-        assert "m1" in result_set, f"Result set {i} lost pre-existing message 'm1': {result_set}"
+        assert first_message_id in result_set, (
+            f"Result set {i} lost pre-existing message {first_message_id!r}: {result_set}"
+        )
 
     for i in range(1, len(search_results)):
         prev = set(search_results[i - 1])

@@ -7,15 +7,15 @@ from collections.abc import AsyncIterator, Iterable, Iterator, Sequence
 
 import aiosqlite
 
-from polylogue.archive.session.documents import WorkThreadDocument
-from polylogue.archive.session.threads import WorkThread, WorkThreadPayload, build_session_threads
-from polylogue.insights.archive_models import WorkThreadPayload as ArchivedWorkThreadPayload
+from polylogue.archive.session.documents import ThreadDocument
+from polylogue.archive.session.threads import Thread, ThreadPayload, build_session_threads
+from polylogue.insights.archive_models import ThreadPayload as ArchivedThreadPayload
 from polylogue.insights.temporal_source import classify_thread_hwm_source
 from polylogue.storage.insights.session.profiles import hydrate_session_profile, now_iso
 from polylogue.storage.runtime import (
     SESSION_INSIGHT_MATERIALIZER_VERSION,
     SessionProfileRecord,
-    WorkThreadRecord,
+    ThreadRecord,
 )
 from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
 from polylogue.types import SessionId
@@ -93,7 +93,7 @@ _ROOT_BATCH_SIZE = 200
 # ---------------------------------------------------------------------------
 
 
-def thread_search_text(thread: WorkThread) -> str:
+def thread_search_text(thread: Thread) -> str:
     parts = [
         thread.thread_id,
         thread.root_id,
@@ -108,15 +108,15 @@ def thread_search_text(thread: WorkThread) -> str:
     return search_text or thread.thread_id
 
 
-def build_work_thread_record(
-    thread: WorkThread,
+def build_thread_record(
+    thread: Thread,
     *,
     materialized_at: str | None = None,
-) -> WorkThreadRecord:
+) -> ThreadRecord:
     built_at = materialized_at or now_iso()
     payload = _thread_payload(thread)
     source_updated_at = thread.end_time.isoformat() if thread.end_time else None
-    return WorkThreadRecord(
+    return ThreadRecord(
         thread_id=thread.thread_id,
         root_id=SessionId(thread.root_id),
         materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
@@ -136,20 +136,20 @@ def build_work_thread_record(
         total_cost_usd=thread.total_cost_usd,
         wall_duration_ms=thread.wall_duration_ms,
         work_event_breakdown=thread.work_event_breakdown,
-        payload=ArchivedWorkThreadPayload.model_validate(payload),
+        payload=ArchivedThreadPayload.model_validate(payload),
         search_text=thread_search_text(thread),
     )
 
 
-def hydrate_work_thread(record: WorkThreadRecord) -> WorkThread:
-    return WorkThread.from_payload(_thread_payload_document(record))
+def hydrate_thread(record: ThreadRecord) -> Thread:
+    return Thread.from_payload(_thread_payload_document(record))
 
 
-def _thread_payload(thread: WorkThread) -> WorkThreadPayload:
+def _thread_payload(thread: Thread) -> ThreadPayload:
     return thread.to_dict()
 
 
-def _thread_payload_document(record: WorkThreadRecord) -> WorkThreadDocument:
+def _thread_payload_document(record: ThreadRecord) -> ThreadDocument:
     payload = record.payload
     return {
         "thread_id": record.thread_id,
@@ -290,17 +290,17 @@ def _group_profile_records_by_root(
 
 def _thread_records_from_profile_records(
     profile_records: Sequence[SessionProfileRecord],
-) -> dict[str, WorkThreadRecord]:
+) -> dict[str, ThreadRecord]:
     if not profile_records:
         return {}
     profiles = [hydrate_session_profile(record) for record in profile_records]
-    return {thread.thread_id: build_work_thread_record(thread) for thread in build_session_threads(profiles)}
+    return {thread.thread_id: build_thread_record(thread) for thread in build_session_threads(profiles)}
 
 
 def _thread_record_for_root(
     root_id: str,
     profile_records: Sequence[SessionProfileRecord],
-) -> WorkThreadRecord | None:
+) -> ThreadRecord | None:
     return _thread_records_from_profile_records(profile_records).get(str(root_id))
 
 
@@ -361,7 +361,7 @@ async def load_thread_profile_records_by_root_async(
 def build_thread_records_for_roots_sync(
     conn: sqlite3.Connection,
     root_ids: Sequence[str],
-) -> dict[str, WorkThreadRecord]:
+) -> dict[str, ThreadRecord]:
     profile_records_by_root = load_thread_profile_records_by_root_sync(conn, root_ids)
     return {
         str(root_id): record
@@ -379,7 +379,7 @@ def build_thread_records_for_roots_sync(
 async def build_thread_records_for_roots_async(
     conn: aiosqlite.Connection,
     root_ids: Sequence[str],
-) -> dict[str, WorkThreadRecord]:
+) -> dict[str, ThreadRecord]:
     profile_records_by_root = await load_thread_profile_records_by_root_async(conn, root_ids)
     return {
         str(root_id): record
@@ -394,16 +394,16 @@ async def build_thread_records_for_roots_async(
     }
 
 
-def build_all_thread_records_sync(conn: sqlite3.Connection) -> list[WorkThreadRecord]:
-    records: list[WorkThreadRecord] = []
+def build_all_thread_records_sync(conn: sqlite3.Connection) -> list[ThreadRecord]:
+    records: list[ThreadRecord] = []
     for root_chunk in iter_root_id_pages_sync(conn):
         records_by_root = build_thread_records_for_roots_sync(conn, root_chunk)
         records.extend(records_by_root[root_id] for root_id in root_chunk if root_id in records_by_root)
     return records
 
 
-async def build_all_thread_records_async(conn: aiosqlite.Connection) -> list[WorkThreadRecord]:
-    records: list[WorkThreadRecord] = []
+async def build_all_thread_records_async(conn: aiosqlite.Connection) -> list[ThreadRecord]:
+    records: list[ThreadRecord] = []
     async for root_chunk in iter_root_id_pages_async(conn):
         records_by_root = await build_thread_records_for_roots_async(conn, root_chunk)
         records.extend(records_by_root[root_id] for root_id in root_chunk if root_id in records_by_root)
@@ -415,8 +415,8 @@ __all__ = [
     "build_all_thread_records_sync",
     "build_thread_records_for_roots_async",
     "build_thread_records_for_roots_sync",
-    "build_work_thread_record",
-    "hydrate_work_thread",
+    "build_thread_record",
+    "hydrate_thread",
     "iter_root_id_pages_async",
     "iter_root_id_pages_sync",
     "load_thread_profile_records_async",

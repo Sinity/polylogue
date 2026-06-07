@@ -1,7 +1,7 @@
 """Shell-completion aggregates exposed through the archive facade.
 
 Surface-side completion callbacks (CLI repo/cwd/tool name completions)
-historically reached into ``session_profiles`` / ``action_events`` via
+historically reached into ``session_profiles`` / ``actions`` via
 raw SQL. These typed aggregates own the SQL inside the operation
 boundary so the surface stays a leaf adapter (#860).
 """

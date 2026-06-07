@@ -20,7 +20,6 @@ if TYPE_CHECKING:
 
 
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_-]{2,}", re.IGNORECASE)
-_ATTACHMENT_IDENTITY_KEYS = frozenset(("provider_id", "id", "fileId", "driveId"))
 _STOPWORDS = frozenset(
     {
         "about",
@@ -214,8 +213,12 @@ def _attachment_identities(session: Session) -> tuple[str, ...]:
         for attachment in message.attachments:
             if attachment.id:
                 identities.add(attachment.id)
-            for key, value in (attachment.provider_meta or {}).items():
-                if key not in _ATTACHMENT_IDENTITY_KEYS or value is None:
+            for value in (
+                getattr(attachment, "source_url", None),
+                getattr(attachment, "path", None),
+                getattr(attachment, "name", None),
+            ):
+                if value is None:
                     continue
                 text = str(value).strip()
                 if text:

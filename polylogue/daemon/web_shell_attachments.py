@@ -13,12 +13,9 @@ Owns:
   ``build_library_payload``) consumed by ``daemon/http.py``.
 
 The substrate exposes ``attachments`` per message via the
-``session_from_records`` hydrator (an ``AttachmentRecord`` with
-``mime_type``, ``size_bytes``, ``path``, and ``provider_meta``). This
-slice surfaces that record as a typed envelope plus an MK3 state token
-derived purely from substrate fields — no new storage columns are
-required for #1199; #1252 (first-class identifiers) will plug in later
-without breaking the envelope contract.
+``session_from_records`` hydrator. This slice surfaces typed attachment
+fields as an envelope plus an MK3 state token derived purely from substrate
+fields.
 
 State derivation (from ``docs/design/mk3/docs/08-state-matrix.md:89``):
 
@@ -29,8 +26,6 @@ State derivation (from ``docs/design/mk3/docs/08-state-matrix.md:89``):
   (executables, archives we won't render inline)
 - ``too-large`` — size exceeds the preview budget; preview suppressed
   but metadata still visible
-- ``quarantined`` — provider_meta carries an explicit quarantine flag
-  (set by the ingest path when a blob fails safety checks)
 """
 
 from __future__ import annotations
@@ -67,8 +62,7 @@ UNSUPPORTED_MIME_EXACT = frozenset(
 def _attachment_name(attachment: Any) -> str:
     """Best-effort display name for an attachment envelope/record.
 
-    Looks at ``name`` (domain model), ``provider_meta.name``,
-    ``provider_meta.title``, then falls back to the attachment id.
+    Looks at ``name`` (domain model), then falls back to the attachment id.
     """
 
     if attachment is None:
@@ -76,12 +70,6 @@ def _attachment_name(attachment: Any) -> str:
     name = getattr(attachment, "name", None)
     if isinstance(name, str) and name.strip():
         return name
-    meta = getattr(attachment, "provider_meta", None) or {}
-    if isinstance(meta, dict):
-        for key in ("name", "title", "filename"):
-            value = meta.get(key)
-            if isinstance(value, str) and value.strip():
-                return value
     aid = getattr(attachment, "id", None) or getattr(attachment, "attachment_id", None)
     return str(aid or "")
 
@@ -91,19 +79,14 @@ def classify_state(
     path: str | None,
     size_bytes: int | None,
     mime_type: str | None,
-    provider_meta: dict[str, Any] | None,
 ) -> str:
     """Return the MK3 attachment state token for an attachment.
 
-    The order is deliberate: quarantine wins over every other state
-    (the safety boundary must show first); missing-blob is observable
-    independently of mime/size; mime check precedes size so an
-    unsupported binary doesn't masquerade as a too-large preview.
+    Missing-blob is observable independently of mime/size; mime check
+    precedes size so an unsupported binary doesn't masquerade as a
+    too-large preview.
     """
 
-    meta = provider_meta or {}
-    if meta.get("quarantined"):
-        return "quarantined"
     if not path:
         return "missing-blob"
     if isinstance(mime_type, str):
@@ -135,14 +118,10 @@ def attachment_to_envelope(
     mime_type = getattr(attachment, "mime_type", None)
     size_bytes = getattr(attachment, "size_bytes", None)
     path = getattr(attachment, "path", None)
-    provider_meta = getattr(attachment, "provider_meta", None) or {}
-    if not isinstance(provider_meta, dict):
-        provider_meta = {}
     state = classify_state(
         path=path,
         size_bytes=size_bytes,
         mime_type=mime_type,
-        provider_meta=provider_meta,
     )
     return {
         "attachment_id": aid,
@@ -220,12 +199,10 @@ ATTACHMENT_CSS = r"""
   color: var(--text-muted);
 }
 .msg-attachment.state-available .att-state { color: var(--ok); border-color: var(--ok); }
-.msg-attachment.state-missing-blob .att-state,
-.msg-attachment.state-quarantined .att-state { color: var(--err); border-color: var(--err); }
+.msg-attachment.state-missing-blob .att-state { color: var(--err); border-color: var(--err); }
 .msg-attachment.state-unsupported-kind .att-state,
 .msg-attachment.state-too-large .att-state { color: var(--warn); border-color: var(--warn); }
-.msg-attachment.state-missing-blob,
-.msg-attachment.state-quarantined { opacity: 0.7; }
+.msg-attachment.state-missing-blob { opacity: 0.7; }
 
 .att-inspector-list {
   display: flex; flex-direction: column; gap: 4px;
@@ -261,8 +238,7 @@ var _POLY_ATTACHMENT_STATE_LABEL = {
   'available': 'ok',
   'missing-blob': 'missing',
   'unsupported-kind': 'unsupported',
-  'too-large': 'too large',
-  'quarantined': 'quarantined'
+  'too-large': 'too large'
 };
 
 function _polyFormatBytes(size) {
@@ -511,12 +487,10 @@ main { padding: 16px 24px; max-width: 1100px; }
   padding: 2px 6px; border-radius: 2px; border: 1px solid var(--border);
   color: var(--text-muted); justify-self: end; }
 .att-row.state-available .att-state { color: var(--ok); border-color: var(--ok); }
-.att-row.state-missing-blob .att-state,
-.att-row.state-quarantined .att-state { color: var(--err); border-color: var(--err); }
+.att-row.state-missing-blob .att-state { color: var(--err); border-color: var(--err); }
 .att-row.state-unsupported-kind .att-state,
 .att-row.state-too-large .att-state { color: var(--warn); border-color: var(--warn); }
-.att-row.state-missing-blob,
-.att-row.state-quarantined { opacity: 0.7; }
+.att-row.state-missing-blob { opacity: 0.7; }
 </style>
 </head>
 <body>
@@ -534,7 +508,6 @@ main { padding: 16px 24px; max-width: 1100px; }
     <option value="missing-blob">missing-blob</option>
     <option value="unsupported-kind">unsupported-kind</option>
     <option value="too-large">too-large</option>
-    <option value="quarantined">quarantined</option>
   </select>
   <label for="att-filter-session">session</label>
   <input id="att-filter-session" type="text" placeholder="session id">

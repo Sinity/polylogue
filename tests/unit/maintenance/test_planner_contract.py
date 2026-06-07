@@ -214,9 +214,6 @@ class TestInvalidationKeysOnTargets:
 
         assert "messages_fts" in by_name["dangling_fts"].invalidation_keys
         assert "session.profile" in by_name["session_insights"].invalidation_keys
-        action_events = by_name["action_event_read_model"]
-        assert "action_events" in action_events.invalidation_keys
-        assert "action_events_fts" in action_events.invalidation_keys
         embeddings = by_name["message_embeddings"]
         assert "message_embeddings" in embeddings.invalidation_keys
 

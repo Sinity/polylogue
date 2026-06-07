@@ -154,26 +154,21 @@ def select_pending_session_window(
         params.extend(unique_ids)
 
     status_exists = _table_exists(conn, "embedding_status")
-    stats_exists = max_messages is None and _table_exists(conn, "session_stats")
     where_clause = "1 = 1" if rebuild or not status_exists else "(e.session_id IS NULL OR e.needs_reindex = 1)"
 
     join_clause = "LEFT JOIN embedding_status e ON c.session_id = e.session_id" if status_exists else ""
-    if stats_exists:
+    if max_messages is None:
         cursor = conn.execute(
             f"""
             SELECT
                 c.session_id,
                 c.title,
-                COALESCE(
-                    cs.message_count,
-                    (SELECT COUNT(*) FROM messages m WHERE m.session_id = c.session_id)
-                ) AS message_count
+                c.message_count AS message_count
             FROM sessions c
             {join_clause}
-            LEFT JOIN session_stats cs ON cs.session_id = c.session_id
             WHERE {where_clause}
               {id_filter}
-            ORDER BY COALESCE(c.updated_at, ''), c.session_id
+            ORDER BY COALESCE(c.updated_at_ms, 0), c.session_id
             """,
             tuple(params),
         )
@@ -188,7 +183,7 @@ def select_pending_session_window(
             {join_clause}
             WHERE {where_clause}
               {id_filter}
-            ORDER BY COALESCE(c.updated_at, ''), c.session_id
+            ORDER BY COALESCE(c.updated_at_ms, 0), c.session_id
             """,
             tuple(params),
         )
@@ -434,6 +429,12 @@ def embed_archive_session_sync(
                 embedded_at_ms=now_ms,
                 content_hash=bytes(row["content_hash"]) if row["content_hash"] is not None else None,
             )
+        _record_archive_embedding_success(
+            embeddings_conn,
+            session_id=session_id,
+            origin=str(session["origin"]),
+            message_count=len(embeddable),
+        )
     except Exception as exc:
         try:
             from polylogue.storage.sqlite.archive_tiers.embedding_write import mark_session_embedding_error

@@ -7,13 +7,14 @@ from collections.abc import Mapping, Sequence
 
 from pydantic import BaseModel
 
+from polylogue.core.timestamps import parse_timestamp
 from polylogue.storage.runtime import (
     SessionLatencyProfileRecord,
     SessionPhaseRecord,
     SessionProfileRecord,
     SessionTagRollupRecord,
     SessionWorkEventRecord,
-    WorkThreadRecord,
+    ThreadRecord,
     _json_array_or_none,
     _json_or_none,
 )
@@ -119,57 +120,34 @@ _SESSION_LATENCY_PROFILE_COLUMNS = (
     "search_text",
 )
 _SESSION_WORK_EVENT_BASE_COLUMNS = (
-    "event_id",
     "session_id",
-    "materializer_version",
-    "materialized_at",
-    "source_updated_at",
-    "source_sort_key",
-    "input_high_water_mark",
-    "input_high_water_mark_source",
-    "input_row_count",
-    "source_name",
-    "event_index",
-    "heuristic_label",
+    "position",
+    "work_event_type",
+    "summary",
     "confidence",
     "start_index",
     "end_index",
-    "start_time",
-    "end_time",
+    "started_at_ms",
+    "ended_at_ms",
     "duration_ms",
-    "canonical_session_date",
-    "summary",
     "file_paths_json",
     "tools_used_json",
 )
 _TIMELINE_PAYLOAD_COLUMNS = (
-    "evidence_payload_json",
-    "inference_payload_json",
+    "evidence_json",
+    "inference_json",
     "search_text",
-    "inference_version",
-    "inference_family",
 )
 _SESSION_PHASE_BASE_COLUMNS = (
-    "phase_id",
     "session_id",
-    "materializer_version",
-    "materialized_at",
-    "source_updated_at",
-    "source_sort_key",
-    "input_high_water_mark",
-    "input_high_water_mark_source",
-    "input_row_count",
-    "source_name",
-    "phase_index",
-    "kind",
+    "position",
+    "phase_type",
+    "confidence",
     "start_index",
     "end_index",
-    "start_time",
-    "end_time",
+    "started_at_ms",
+    "ended_at_ms",
     "duration_ms",
-    "canonical_session_date",
-    "confidence",
-    "evidence_reasons_json",
     "tool_counts_json",
     "word_count",
 )
@@ -372,6 +350,13 @@ def _fallback_timeline_payload_json(
     )
 
 
+def _epoch_ms_or_none(value: str | None) -> int | None:
+    if not value:
+        return None
+    parsed = parse_timestamp(value)
+    return int(parsed.timestamp() * 1000) if parsed is not None else None
+
+
 def session_work_event_insert_columns(
     *,
     has_fallback_payload: bool,
@@ -389,41 +374,29 @@ def session_work_event_insert_values(
     has_fallback_payload: bool,
 ) -> SqlBindings:
     base_values: list[SqlValue] = [
-        record.event_id,
         record.session_id,
-        record.materializer_version,
-        record.materialized_at,
-        record.source_updated_at,
-        record.source_sort_key,
-        record.input_high_water_mark,
-        record.input_high_water_mark_source,
-        record.input_row_count,
-        record.source_name,
         record.event_index,
         record.heuristic_label,
+        record.summary,
         record.confidence,
         record.start_index,
         record.end_index,
-        record.start_time,
-        record.end_time,
+        _epoch_ms_or_none(record.start_time),
+        _epoch_ms_or_none(record.end_time),
         record.duration_ms,
-        record.canonical_session_date,
-        record.summary,
-        _json_array_or_none(record.file_paths),
-        _json_array_or_none(record.tools_used),
+        _json_array_or_none(record.file_paths) or "[]",
+        _json_array_or_none(record.tools_used) or "[]",
     ]
     payload_values: tuple[SqlValue, ...] = (
         _json_or_none(record.evidence_payload),
         _json_or_none(record.inference_payload),
         record.search_text,
-        record.inference_version,
-        record.inference_family,
     )
     return _compose_bindings(
         base_values,
         payload_values,
         has_fallback_payload=has_fallback_payload,
-        fallback_payload_json=_fallback_timeline_payload_json(record.evidence_payload, record.inference_payload),
+        fallback_payload_json=None,
     )
 
 
@@ -444,26 +417,15 @@ def session_phase_insert_values(
     has_fallback_payload: bool,
 ) -> SqlBindings:
     base_values: list[SqlValue] = [
-        record.phase_id,
         record.session_id,
-        record.materializer_version,
-        record.materialized_at,
-        record.source_updated_at,
-        record.source_sort_key,
-        record.input_high_water_mark,
-        record.input_high_water_mark_source,
-        record.input_row_count,
-        record.source_name,
         record.phase_index,
         record.kind,
+        record.confidence,
         record.start_index,
         record.end_index,
-        record.start_time,
-        record.end_time,
+        _epoch_ms_or_none(record.start_time),
+        _epoch_ms_or_none(record.end_time),
         record.duration_ms,
-        record.canonical_session_date,
-        record.confidence,
-        _json_array_or_none(record.evidence_reasons) or "[]",
         _json_or_none(record.tool_counts),
         record.word_count,
     ]
@@ -471,21 +433,18 @@ def session_phase_insert_values(
         _json_or_none(record.evidence_payload),
         _json_or_none(record.inference_payload),
         record.search_text,
-        record.inference_version,
-        record.inference_family,
     )
     return _compose_bindings(
         base_values,
         payload_values,
         has_fallback_payload=has_fallback_payload,
-        fallback_payload_json=_fallback_timeline_payload_json(record.evidence_payload, record.inference_payload),
+        fallback_payload_json=None,
     )
 
 
-def work_thread_insert_values(record: WorkThreadRecord) -> SqlBindings:
+def thread_insert_values(record: ThreadRecord) -> SqlBindings:
     return (
         record.thread_id,
-        record.root_id,
         record.materializer_version,
         record.materialized_at,
         record.source_updated_at,
@@ -647,19 +606,18 @@ def replace_session_phases_bulk_sync(
 # ---------------------------------------------------------------------------
 
 
-def replace_work_thread_sync(
+def replace_thread_sync(
     conn: sqlite3.Connection,
     thread_id: str,
-    record: WorkThreadRecord | None,
+    record: ThreadRecord | None,
 ) -> None:
-    conn.execute("DELETE FROM work_threads WHERE thread_id = ?", (thread_id,))
+    conn.execute("DELETE FROM threads WHERE thread_id = ?", (thread_id,))
     if record is not None:
         conn.execute(
             build_insert_sql(
-                "work_threads",
+                "threads",
                 (
                     "thread_id",
-                    "root_id",
                     "materializer_version",
                     "materialized_at",
                     "source_updated_at",
@@ -681,25 +639,24 @@ def replace_work_thread_sync(
                     "search_text",
                 ),
             ),
-            work_thread_insert_values(record),
+            thread_insert_values(record),
         )
 
 
-def replace_work_threads_bulk_sync(
+def replace_threads_bulk_sync(
     conn: sqlite3.Connection,
-    records_by_thread_id: Mapping[str, WorkThreadRecord | None],
+    records_by_thread_id: Mapping[str, ThreadRecord | None],
 ) -> None:
     if not records_by_thread_id:
         return
-    _delete_where_in(conn, "work_threads", "thread_id", tuple(records_by_thread_id))
+    _delete_where_in(conn, "threads", "thread_id", tuple(records_by_thread_id))
     records = [record for record in records_by_thread_id.values() if record is not None]
     if records:
         conn.executemany(
             build_insert_sql(
-                "work_threads",
+                "threads",
                 (
                     "thread_id",
-                    "root_id",
                     "materializer_version",
                     "materialized_at",
                     "source_updated_at",
@@ -721,7 +678,7 @@ def replace_work_threads_bulk_sync(
                     "search_text",
                 ),
             ),
-            [work_thread_insert_values(record) for record in records],
+            [thread_insert_values(record) for record in records],
         )
 
 
@@ -774,8 +731,8 @@ __all__ = [
     "replace_session_tag_rollup_rows_sync",
     "replace_session_work_events_bulk_sync",
     "replace_session_work_events_sync",
-    "replace_work_threads_bulk_sync",
-    "replace_work_thread_sync",
+    "replace_threads_bulk_sync",
+    "replace_thread_sync",
     "session_phase_insert_columns",
     "session_phase_insert_values",
     "session_profile_insert_columns",
@@ -785,5 +742,5 @@ __all__ = [
     "session_work_event_insert_columns",
     "session_work_event_insert_values",
     "table_has_column",
-    "work_thread_insert_values",
+    "thread_insert_values",
 ]

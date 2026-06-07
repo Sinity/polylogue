@@ -406,10 +406,6 @@ def build_verify_steps(
                 ("render-all", _devtools_cmd("render-all", "--check")),
                 ("verify-topology", _devtools_cmd("verify-topology")),
                 ("verify-layering", _devtools_cmd("verify-layering")),
-                (
-                    "verify-provider-meta-policy",
-                    _devtools_cmd("verify-provider-meta-policy"),
-                ),
                 ("verify-closure-matrix", _devtools_cmd("verify-closure-matrix")),
                 ("verify-schema-roundtrip", _devtools_cmd("verify-schema-roundtrip", "--all")),
                 ("verify-manifests", _devtools_cmd("verify-manifests")),

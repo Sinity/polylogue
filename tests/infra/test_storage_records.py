@@ -54,9 +54,6 @@ def test_store_records_commits_within_lock(monkeypatch: pytest.MonkeyPatch) -> N
     # The in-memory test connection has no schema, so suppress the stats
     # upsert that store_records now performs to mirror production.
     monkeypatch.setattr(storage_helpers, "_upsert_session_stats_sync", lambda *_, **__: None)
-    # Same for the identity-preserving user-state repoint pass (#1114): the
-    # in-memory test DB has no user_marks / user_annotations tables.
-    monkeypatch.setattr(storage_helpers, "_repoint_user_state_by_identity_sync", lambda *_, **__: None)
 
     result = storage_helpers.store_records(
         session=make_session("test:1", title="Test", content_hash="abc123"),

@@ -44,12 +44,6 @@ ORDER BY r.blob_size DESC, r.acquired_at ASC, r.raw_id ASC
 LIMIT ?
 """
 
-_PROVIDER_EVENT_RAW_INDEX_SQL = """
-CREATE INDEX IF NOT EXISTS idx_provider_events_raw_id
-ON provider_events(raw_id)
-WHERE raw_id IS NOT NULL
-"""
-
 _V1_RAW_CANDIDATE_SQL = """
 WITH ranked AS (
     SELECT
@@ -96,14 +90,8 @@ class RawSnapshotCleanupResult:
     deleted_blob_count: int
     deleted_raw_bytes: int
     deleted_blob_bytes: int
-    provider_event_links_cleared: int
     skipped_missing_source_count: int
     errors: tuple[str, ...] = ()
-
-
-def ensure_provider_event_raw_index(conn: sqlite3.Connection) -> None:
-    """Ensure parent raw deletes do not scan provider_events repeatedly."""
-    conn.execute(_PROVIDER_EVENT_RAW_INDEX_SQL)
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -232,7 +220,6 @@ def cleanup_superseded_raw_snapshots(
             deleted_blob_count=0,
             deleted_raw_bytes=0,
             deleted_blob_bytes=0,
-            provider_event_links_cleared=0,
             skipped_missing_source_count=0,
         )
 
@@ -245,22 +232,11 @@ def cleanup_superseded_raw_snapshots(
             deleted_blob_count=0,
             deleted_raw_bytes=raw_bytes,
             deleted_blob_bytes=0,
-            provider_event_links_cleared=0,
             skipped_missing_source_count=0,
         )
 
     placeholders = ", ".join("?" for _ in raw_ids)
-    archive_source = _table_exists(conn, "raw_sessions")
-    provider_links = 0
-    if archive_source:
-        conn.execute(f"DELETE FROM raw_sessions WHERE raw_id IN ({placeholders})", raw_ids)
-    else:
-        ensure_provider_event_raw_index(conn)
-        provider_links = conn.execute(
-            f"UPDATE provider_events SET raw_id = NULL WHERE raw_id IN ({placeholders})",
-            raw_ids,
-        ).rowcount
-        conn.execute(f"DELETE FROM raw_sessions WHERE raw_id IN ({placeholders})", raw_ids)
+    conn.execute(f"DELETE FROM raw_sessions WHERE raw_id IN ({placeholders})", raw_ids)
     conn.commit()
 
     store = blob_store if blob_store is not None else get_blob_store()
@@ -289,7 +265,6 @@ def cleanup_superseded_raw_snapshots(
         deleted_blob_count=deleted_blob_count,
         deleted_raw_bytes=raw_bytes,
         deleted_blob_bytes=deleted_blob_bytes,
-        provider_event_links_cleared=max(0, int(provider_links or 0)),
         skipped_missing_source_count=0,
         errors=tuple(errors),
     )
@@ -309,7 +284,6 @@ def compact_paths_superseded_raw_snapshots(
         deleted_blob_count=0,
         deleted_raw_bytes=0,
         deleted_blob_bytes=0,
-        provider_event_links_cleared=0,
         skipped_missing_source_count=0,
     )
     errors: list[str] = []
@@ -329,7 +303,6 @@ def compact_paths_superseded_raw_snapshots(
             deleted_blob_count=totals.deleted_blob_count + result.deleted_blob_count,
             deleted_raw_bytes=totals.deleted_raw_bytes + result.deleted_raw_bytes,
             deleted_blob_bytes=totals.deleted_blob_bytes + result.deleted_blob_bytes,
-            provider_event_links_cleared=totals.provider_event_links_cleared + result.provider_event_links_cleared,
             skipped_missing_source_count=totals.skipped_missing_source_count + result.skipped_missing_source_count,
             errors=tuple(errors),
         )
@@ -341,6 +314,5 @@ __all__ = [
     "RawSnapshotCleanupResult",
     "cleanup_superseded_raw_snapshots",
     "compact_paths_superseded_raw_snapshots",
-    "ensure_provider_event_raw_index",
     "superseded_raw_snapshot_candidates",
 ]

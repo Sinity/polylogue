@@ -290,7 +290,7 @@ def _collect_range_signals(
                 )
                 if matched is not None:
                     best_text_signal_index, text_signal, text_signal_name = matched
-        for action in message.action_events:
+        for action in message.actions:
             category = action.kind.value
             action_category_counts[category] = action_category_counts.get(category, 0) + 1
 
@@ -383,7 +383,7 @@ def _compute_phase_ranges(
         sub_start = start
         prev_dominant = None
         for i in range(start, end):
-            actions = messages[i].action_events
+            actions = messages[i].actions
             dominant = actions[0].kind.value if actions else None
             if prev_dominant is not None and dominant is not None and dominant != prev_dominant and i - sub_start >= 3:
                 ranges.append((sub_start, i))
@@ -405,7 +405,7 @@ def _collect_range_artifacts(
     file_paths: list[str] = []
     tools_used: list[str] = []
     for message in message_range.iter_messages(messages):
-        for action in message.action_events:
+        for action in message.actions:
             tools_used.append(action.tool_name)
             file_paths.extend(action.affected_paths)
     return WorkEventArtifacts(

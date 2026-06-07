@@ -1,15 +1,14 @@
-"""Tool usage insight contract — per-provider, per-tool rollups with coverage.
+"""Tool usage insight contract — per-origin, per-tool rollups with coverage.
 
 The contract has two halves that are surfaced together:
 
 * a per-tool aggregation entry (``ToolUsageEntry``) — call counts,
   session counts, MCP-server identity when present, and which
   optional substrate fields are populated;
-* a per-provider coverage entry (``ToolUsageCoverageEntry``) — for every
-  provider that appears in the archive, whether the canonical
-  ``action_events`` substrate has any rows. A provider with sessions
-  but zero events is the explicit "data unavailable" signal the issue
-  asks for, not a quiet zero.
+* a per-origin coverage entry (``ToolUsageCoverageEntry``) — for every
+  origin that appears in the archive, whether the canonical ``actions``
+  view exposes any rows. An origin with sessions but zero actions is the
+  explicit "data unavailable" signal, not a quiet zero.
 
 Both halves are returned in a single ``ToolUsageInsight`` envelope so MCP
 and CLI consumers always see usage and coverage together. The presence of
@@ -61,7 +60,7 @@ def extract_mcp_server(tool_name: str) -> str | None:
 
 
 class ToolUsageEntry(ArchiveInsightModel):
-    """One per-(provider, tool, action_kind) rollup row."""
+    """One per-(origin, tool, action_kind) rollup row."""
 
     source_name: str
     normalized_tool_name: str
@@ -76,18 +75,18 @@ class ToolUsageEntry(ArchiveInsightModel):
 
 
 class ToolUsageCoverageEntry(ArchiveInsightModel):
-    """Per-provider tool-data coverage signal."""
+    """Per-origin tool-data coverage signal."""
 
     source_name: str
     session_count: int
-    action_event_count: int
+    action_count: int
     distinct_tool_count: int
     distinct_action_kind_count: int
     has_tool_id_signal: bool
     has_affected_paths_signal: bool
     has_output_text_signal: bool
     data_available: bool
-    """True when the provider exposes any action-event rows in the archive."""
+    """True when the provider exposes any action rows in the archive."""
 
 
 class ToolUsageInsight(ArchiveInsightModel):
@@ -145,17 +144,17 @@ def _tool_usage_entry(row: ToolUsageRow) -> ToolUsageEntry:
 
 
 def _tool_usage_coverage(row: ToolUsageProviderCoverageRow) -> ToolUsageCoverageEntry:
-    action_event_count = row["action_event_count"]
+    action_count = row["action_count"]
     return ToolUsageCoverageEntry(
         source_name=row["source_name"],
         session_count=row["session_count"],
-        action_event_count=action_event_count,
+        action_count=action_count,
         distinct_tool_count=row["distinct_tool_count"],
         distinct_action_kind_count=row["distinct_action_kind_count"],
         has_tool_id_signal=row["has_tool_id_signal"] > 0,
         has_affected_paths_signal=row["has_affected_paths_signal"] > 0,
         has_output_text_signal=row["has_output_text_signal"] > 0,
-        data_available=action_event_count > 0,
+        data_available=action_count > 0,
     )
 
 

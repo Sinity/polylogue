@@ -288,15 +288,6 @@ def test_status_json_detail_mode_runs_exact_retrieval_accounting(
     _seed_archive_without_embedding_ledgers(db_path)
 
     monkeypatch.setattr(
-        "polylogue.storage.embeddings.embedding_stats.action_event_read_model_status_sync",
-        lambda _conn: {
-            "count": 0,
-            "action_fts_count": 0,
-            "action_fts_ready": True,
-            "stale_count": 0,
-        },
-    )
-    monkeypatch.setattr(
         "polylogue.storage.embeddings.embedding_stats.session_insight_status_sync",
         lambda _conn: SessionInsightStatusSnapshot(),
     )

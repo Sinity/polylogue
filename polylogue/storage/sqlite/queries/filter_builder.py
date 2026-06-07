@@ -6,7 +6,8 @@ from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.query.fields import storage_filters_require_stats_join
 from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.viewport.viewports import ToolCategory
-from polylogue.storage.sqlite.connection import _build_provider_scope_filter
+from polylogue.core.sources import origin_from_provider
+from polylogue.types import Provider
 
 _SEMANTIC_ACTION_TYPES = tuple(category.value for category in ToolCategory)
 
@@ -26,6 +27,10 @@ def _iso_to_epoch(iso_str: str) -> float:
         return float(iso_str)
     except (ValueError, TypeError):
         raise ValueError(f"Invalid date filter value {iso_str!r}. Use ISO 8601 format (e.g., 2026-01-01).") from None
+
+
+def _origin_value(value: str) -> str:
+    return origin_from_provider(Provider.from_string(value)).value
 
 
 def _build_session_filters(
@@ -55,83 +60,81 @@ def _build_session_filters(
 ) -> tuple[str, list[str | int | float]]:
     """Build WHERE clause and params for session queries.
 
-    Stats-based filters (has_tool_use, has_thinking, min_messages, max_messages,
-    min_words) emit a LEFT JOIN on session_stats and filter on cs columns.
-    Path and semantic filters emit EXISTS subqueries against content_blocks.
-    Callers must prefix session columns with 'c.' when using stats filters.
+    Aggregate filters (has_tool_use, has_thinking, min_messages, max_messages,
+    min_words) read the current aggregate columns on sessions.
     """
     where_clauses: list[str] = []
     params: list[str | int | float] = []
-    needs_stats_join = storage_filters_require_stats_join(locals())
+    needs_stats_alias = storage_filters_require_stats_join(locals())
 
     if source is not None:
-        where_clauses.append("c.source_name = ?" if needs_stats_join else "source_name = ?")
-        params.append(source)
+        where_clauses.append("c.origin = ?" if needs_stats_alias else "origin = ?")
+        params.append(_origin_value(source))
     if provider is not None:
-        where_clauses.append("c.source_name = ?" if needs_stats_join else "source_name = ?")
-        params.append(provider)
+        where_clauses.append("c.origin = ?" if needs_stats_alias else "origin = ?")
+        params.append(_origin_value(provider))
     if providers:
-        source_scope_sql, source_scope_params = _build_provider_scope_filter(
-            providers,
-            provider_column="c.source_name" if needs_stats_join else "source_name",
-        )
+        source_scope_params = [_origin_value(provider_name) for provider_name in providers]
+        placeholders = ",".join("?" for _ in source_scope_params)
+        origin_column = "c.origin" if needs_stats_alias else "origin"
+        source_scope_sql = f"{origin_column} IN ({placeholders})"
         where_clauses.append(source_scope_sql)
         params.extend(source_scope_params)
     if parent_id is not None:
-        where_clauses.append("c.parent_session_id = ?" if needs_stats_join else "parent_session_id = ?")
+        where_clauses.append("c.parent_session_id = ?" if needs_stats_alias else "parent_session_id = ?")
         params.append(parent_id)
     if since is not None:
-        where_clauses.append("c.sort_key >= ?" if needs_stats_join else "sort_key >= ?")
-        params.append(_iso_to_epoch(since))
+        where_clauses.append("c.sort_key_ms >= ?" if needs_stats_alias else "sort_key_ms >= ?")
+        params.append(_iso_to_epoch(since) * 1000.0)
     if until is not None:
-        where_clauses.append("c.sort_key <= ?" if needs_stats_join else "sort_key <= ?")
-        params.append(_iso_to_epoch(until))
+        where_clauses.append("c.sort_key_ms <= ?" if needs_stats_alias else "sort_key_ms <= ?")
+        params.append(_iso_to_epoch(until) * 1000.0)
     if title_contains is not None:
         escaped = title_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        where_clauses.append("c.title LIKE ? ESCAPE '\\'" if needs_stats_join else "title LIKE ? ESCAPE '\\'")
+        where_clauses.append("c.title LIKE ? ESCAPE '\\'" if needs_stats_alias else "title LIKE ? ESCAPE '\\'")
         params.append(f"%{escaped}%")
 
-    # Stats-based filters (require session_stats JOIN)
+    aggregate_column = "c" if needs_stats_alias else "sessions"
     if has_tool_use:
-        where_clauses.append("cs.tool_use_count > 0")
+        where_clauses.append(f"{aggregate_column}.tool_use_count > 0")
     if has_thinking:
-        where_clauses.append("cs.thinking_count > 0")
+        where_clauses.append(f"{aggregate_column}.thinking_count > 0")
     if has_paste:
-        where_clauses.append("cs.paste_count > 0")
+        where_clauses.append(f"{aggregate_column}.paste_count > 0")
     if typed_only:
-        where_clauses.append("cs.paste_count = 0")
+        where_clauses.append(f"{aggregate_column}.paste_count = 0")
     if min_messages is not None:
-        where_clauses.append("cs.message_count >= ?")
+        where_clauses.append(f"{aggregate_column}.message_count >= ?")
         params.append(min_messages)
     if max_messages is not None:
-        where_clauses.append("cs.message_count <= ?")
+        where_clauses.append(f"{aggregate_column}.message_count <= ?")
         params.append(max_messages)
     if min_words is not None:
-        where_clauses.append("cs.word_count >= ?")
+        where_clauses.append(f"{aggregate_column}.word_count >= ?")
         params.append(min_words)
 
-    # Semantic filters via EXISTS subquery on durable action_events.
+    # Semantic filters via EXISTS subquery on the canonical actions view.
     # When using stats join, outer table is aliased as 'c'; otherwise use fully qualified
     # table name to prevent ambiguity.
-    conv_id_col = "c.session_id" if needs_stats_join else "sessions.session_id"
+    conv_id_col = "c.session_id" if needs_stats_alias else "sessions.session_id"
     if referenced_path:
         for term in referenced_path:
             normalized = str(term).replace("\\", "/").lower()
             escaped = normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             where_clauses.append(
-                f"EXISTS (SELECT 1 FROM action_events ae "
-                f"JOIN json_each(COALESCE(ae.affected_paths_json, '[]')) path "
-                f"WHERE ae.session_id = {conv_id_col} "
-                f"AND REPLACE(LOWER(path.value), char(92), '/') LIKE ? ESCAPE '\\')"
+                f"EXISTS (SELECT 1 FROM actions a "
+                f"WHERE a.session_id = {conv_id_col} "
+                f"AND REPLACE(LOWER(COALESCE(a.tool_path, '')), char(92), '/') LIKE ? ESCAPE '\\')"
             )
             params.append(f"%{escaped}%")
     if cwd_prefix:
-        cwd_col = "c.working_directories_json" if needs_stats_join else "sessions.working_directories_json"
+        session_id_col = "c.session_id" if needs_stats_alias else "sessions.session_id"
         exact_prefix, child_prefix = escaped_sql_path_prefix_patterns(cwd_prefix)
         where_clauses.append(
-            f"EXISTS (SELECT 1 FROM json_each(COALESCE({cwd_col}, '[]')) cwd "
-            f"WHERE REPLACE(cwd.value, char(92), '/') = ? "
-            f"OR REPLACE(cwd.value, char(92), '/') LIKE ? ESCAPE '\\')"
+            "EXISTS (SELECT 1 FROM session_working_dirs cwd "
+            f"WHERE cwd.session_id = {session_id_col} "
+            "AND (REPLACE(cwd.path, char(92), '/') = ? "
+            "OR REPLACE(cwd.path, char(92), '/') LIKE ? ESCAPE '\\'))"
         )
         params.extend([exact_prefix, child_prefix])
     if action_terms:
@@ -139,14 +142,13 @@ def _build_session_filters(
             if str(term) == "none":
                 placeholders = ",".join("?" for _ in _SEMANTIC_ACTION_TYPES)
                 where_clauses.append(
-                    f"NOT EXISTS (SELECT 1 FROM action_events ae WHERE ae.session_id = {conv_id_col}"
-                    f" AND ae.action_kind IN ({placeholders}))"
+                    f"NOT EXISTS (SELECT 1 FROM actions a WHERE a.session_id = {conv_id_col}"
+                    f" AND a.semantic_type IN ({placeholders}))"
                 )
                 params.extend(_SEMANTIC_ACTION_TYPES)
             else:
                 where_clauses.append(
-                    f"EXISTS (SELECT 1 FROM action_events ae WHERE ae.session_id = {conv_id_col}"
-                    " AND ae.action_kind = ?)"
+                    f"EXISTS (SELECT 1 FROM actions a WHERE a.session_id = {conv_id_col} AND a.semantic_type = ?)"
                 )
                 params.append(str(term))
     if excluded_action_terms:
@@ -154,34 +156,32 @@ def _build_session_filters(
             if str(term) == "none":
                 placeholders = ",".join("?" for _ in _SEMANTIC_ACTION_TYPES)
                 where_clauses.append(
-                    f"EXISTS (SELECT 1 FROM action_events ae WHERE ae.session_id = {conv_id_col}"
-                    f" AND ae.action_kind IN ({placeholders}))"
+                    f"EXISTS (SELECT 1 FROM actions a WHERE a.session_id = {conv_id_col}"
+                    f" AND a.semantic_type IN ({placeholders}))"
                 )
                 params.extend(_SEMANTIC_ACTION_TYPES)
             else:
                 where_clauses.append(
-                    f"NOT EXISTS (SELECT 1 FROM action_events ae WHERE ae.session_id = {conv_id_col}"
-                    " AND ae.action_kind = ?)"
+                    f"NOT EXISTS (SELECT 1 FROM actions a WHERE a.session_id = {conv_id_col} AND a.semantic_type = ?)"
                 )
                 params.append(str(term))
     if tool_terms:
         for term in tool_terms:
             if str(term) == "none":
-                where_clauses.append(f"NOT EXISTS (SELECT 1 FROM action_events ae WHERE ae.session_id = {conv_id_col})")
+                where_clauses.append(f"NOT EXISTS (SELECT 1 FROM actions a WHERE a.session_id = {conv_id_col})")
             else:
                 where_clauses.append(
-                    f"EXISTS (SELECT 1 FROM action_events ae WHERE ae.session_id = {conv_id_col}"
-                    " AND ae.normalized_tool_name = ?)"
+                    f"EXISTS (SELECT 1 FROM actions a WHERE a.session_id = {conv_id_col} AND lower(a.tool_name) = ?)"
                 )
                 params.append(str(term).lower())
     if excluded_tool_terms:
         for term in excluded_tool_terms:
             if str(term) == "none":
-                where_clauses.append(f"EXISTS (SELECT 1 FROM action_events ae WHERE ae.session_id = {conv_id_col})")
+                where_clauses.append(f"EXISTS (SELECT 1 FROM actions a WHERE a.session_id = {conv_id_col})")
             else:
                 where_clauses.append(
-                    f"NOT EXISTS (SELECT 1 FROM action_events ae WHERE ae.session_id = {conv_id_col}"
-                    " AND ae.normalized_tool_name = ?)"
+                    f"NOT EXISTS (SELECT 1 FROM actions a WHERE a.session_id = {conv_id_col}"
+                    " AND lower(a.tool_name) = ?)"
                 )
                 params.append(str(term).lower())
     if repo_names:
@@ -211,5 +211,5 @@ def _needs_stats_join(
     max_messages: int | None = None,
     min_words: int | None = None,
 ) -> bool:
-    """Return True when the query requires a JOIN on session_stats."""
+    """Return True when the query should alias sessions as ``c``."""
     return storage_filters_require_stats_join(locals())

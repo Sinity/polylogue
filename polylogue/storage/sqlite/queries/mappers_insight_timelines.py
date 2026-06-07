@@ -7,11 +7,11 @@ import sqlite3
 from polylogue.insights.archive_models import (
     SessionPhaseEvidencePayload,
     SessionPhaseInferencePayload,
+    ThreadPayload,
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
-    WorkThreadPayload,
 )
-from polylogue.storage.runtime import SessionPhaseRecord, SessionWorkEventRecord, WorkThreadRecord
+from polylogue.storage.runtime import SessionPhaseRecord, SessionWorkEventRecord, ThreadRecord
 from polylogue.storage.sqlite.queries.mappers_insight_fallback import (
     parse_fallback_payload_dict,
     parse_payload_model,
@@ -142,8 +142,8 @@ def _row_to_session_phase_record(row: sqlite3.Row) -> SessionPhaseRecord:
     )
 
 
-def _row_to_work_thread_record(row: sqlite3.Row) -> WorkThreadRecord:
-    return WorkThreadRecord(
+def _row_to_thread_record(row: sqlite3.Row) -> ThreadRecord:
+    return ThreadRecord(
         thread_id=row["thread_id"],
         root_id=SessionId(row["root_id"]),
         materializer_version=int(_row_int(row, "materializer_version", 1) or 1),
@@ -163,7 +163,7 @@ def _row_to_work_thread_record(row: sqlite3.Row) -> WorkThreadRecord:
         total_cost_usd=float(_row_float(row, "total_cost_usd", 0.0) or 0.0),
         wall_duration_ms=int(_row_int(row, "wall_duration_ms", 0) or 0),
         work_event_breakdown=_json_int_dict(_parse_json(_row_get(row, "work_event_breakdown_json"))),
-        payload=WorkThreadPayload.model_validate(
+        payload=ThreadPayload.model_validate(
             _parse_json(row["payload_json"], field="payload_json", record_id=row["thread_id"]) or {}
         ),
         search_text=row["search_text"],
@@ -173,5 +173,5 @@ def _row_to_work_thread_record(row: sqlite3.Row) -> WorkThreadRecord:
 __all__ = [
     "_row_to_session_phase_record",
     "_row_to_session_work_event_record",
-    "_row_to_work_thread_record",
+    "_row_to_thread_record",
 ]

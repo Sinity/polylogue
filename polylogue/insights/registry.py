@@ -35,7 +35,7 @@ from polylogue.insights.archive import (
     SessionProfileInsightQuery,
     SessionTagRollupQuery,
     SessionWorkEventInsightQuery,
-    WorkThreadInsightQuery,
+    ThreadInsightQuery,
 )
 from polylogue.insights.tool_usage import ToolUsageInsightQuery
 from polylogue.types import Provider
@@ -475,14 +475,14 @@ register(
 
 register(
     InsightType(
-        name="work_threads",
+        name="threads",
         display_name="Work Threads",
-        json_key="work_threads",
+        json_key="threads",
         empty_message="No work threads matched.",
-        query_model=WorkThreadInsightQuery,
-        operations_method_name="list_work_thread_insights",
+        query_model=ThreadInsightQuery,
+        operations_method_name="list_thread_insights",
         cli_command_name="threads",
-        cli_help="List durable work-thread insights.",
+        cli_help="List durable thread insights.",
         cli_options=(_QUERY_OPTION,),
         fields=(
             InsightField("", _attr("thread_id"), group=0),
@@ -560,7 +560,7 @@ register(
         query_model=ToolUsageInsightQuery,
         operations_method_name="list_tool_usage_insights",
         cli_command_name="tool-usage",
-        cli_help="Per-tool, per-origin rollups over canonical action events with coverage map.",
+        cli_help="Per-tool, per-origin rollups over canonical actions with coverage map.",
         readiness_exempt=True,
         cli_options=(
             CliOption("tool", ("--tool",), help="Only entries for this normalized tool name"),

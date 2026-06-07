@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from polylogue.archive.action_event.action_events import ActionEvent
+from polylogue.archive.actions.actions import Action
 from polylogue.archive.message.roles import Role
 from polylogue.archive.models import SessionSummary
 from polylogue.archive.query.search_hits import SessionSearchHit
@@ -77,9 +77,9 @@ def _action(
     tool_name: str = "read_file",
     search_text: str = "shell read_file /tmp/demo.py",
     affected_paths: tuple[str, ...] = ("/tmp/demo.py",),
-) -> ActionEvent:
-    return ActionEvent(
-        event_id="event-1",
+) -> Action:
+    return Action(
+        action_id="action-1",
         message_id="message-1",
         timestamp=datetime(2026, 4, 23, 9, 0, tzinfo=timezone.utc),
         sequence_index=0,
@@ -242,10 +242,10 @@ def test_query_semantic_matches_none_blocked_text_and_referenced_path() -> None:
 
 
 @pytest.mark.asyncio
-async def test_query_semantic_stats_render_from_native_action_events() -> None:
+async def test_query_semantic_stats_render_from_native_actions() -> None:
     env = _env()
     fake_poly = SimpleNamespace(
-        get_action_events_batch=AsyncMock(return_value={"conv-1": (_action(),), "conv-2": ()}),
+        get_actions_batch=AsyncMock(return_value={"conv-1": (_action(),), "conv-2": ()}),
     )
 
     with patch.object(type(env), "polylogue", property(lambda self: fake_poly)):

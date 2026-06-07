@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib
 import json
 import shutil
@@ -22,6 +23,7 @@ from typing_extensions import TypedDict, Unpack
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
+from polylogue.core.sources import origin_from_provider
 from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import (
@@ -39,6 +41,7 @@ from polylogue.types import (
     ContentBlockType,
     ContentHash,
     MessageId,
+    Provider,
     SemanticBlockType,
     SessionId,
 )
@@ -100,7 +103,11 @@ def _attachment_id(value: str) -> AttachmentId:
 
 
 def _content_hash(value: str) -> ContentHash:
-    return ContentHash(value)
+    try:
+        raw = bytes.fromhex(value)
+    except ValueError:
+        return ContentHash(hashlib.sha256(value.encode("utf-8")).hexdigest())
+    return ContentHash(value if len(raw) == 32 else hashlib.sha256(value.encode("utf-8")).hexdigest())
 
 
 def _content_block(
@@ -151,24 +158,22 @@ def _content_block(
 def _session_record(
     *,
     session_id: str,
-    source_name: str,
-    provider_session_id: str,
+    origin: str,
+    native_id: str,
     content_hash: str,
     title: str | None = None,
     created_at: str | None = None,
     updated_at: str | None = None,
-    provider_meta: dict[str, object] | None = None,
     metadata: dict[str, object] | None = None,
 ) -> SessionRecord:
     return SessionRecord(
         session_id=_session_id(session_id),
-        source_name=source_name,
-        provider_session_id=provider_session_id,
+        origin=origin,
+        native_id=native_id,
         title=title,
         created_at=created_at,
         updated_at=updated_at,
         content_hash=_content_hash(content_hash),
-        provider_meta=provider_meta,
         metadata=metadata,
     )
 
@@ -180,7 +185,7 @@ def _attachment_record(
     message_id: str | None,
     mime_type: str,
     size_bytes: int | None,
-    provider_meta: dict[str, object] | None = None,
+    display_name: str | None = None,
 ) -> AttachmentRecord:
     return AttachmentRecord(
         attachment_id=_attachment_id(attachment_id),
@@ -188,7 +193,8 @@ def _attachment_record(
         message_id=None if message_id is None else _message_id(message_id),
         mime_type=mime_type,
         size_bytes=size_bytes,
-        provider_meta=provider_meta,
+        display_name=display_name,
+        attachment_native_id=attachment_id,
     )
 
 
@@ -210,8 +216,8 @@ def _session_model(session_id: str) -> Session:
 
 def _session_row(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row | None:
     row = conn.execute(
-        "SELECT * FROM sessions WHERE session_id = ?",
-        (session_id,),
+        "SELECT * FROM sessions WHERE session_id = ? OR native_id = ? ORDER BY session_id LIMIT 1",
+        (session_id, session_id),
     ).fetchone()
     if row is not None and not isinstance(row, sqlite3.Row):
         raise TypeError(f"expected sqlite3.Row, got {type(row).__name__}")
@@ -219,9 +225,11 @@ def _session_row(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row | Non
 
 
 def _message_count(conn: sqlite3.Connection, session_id: str) -> int:
+    session_row = _session_row(conn, session_id)
+    resolved_session_id = str(session_row["session_id"]) if session_row is not None else session_id
     row = conn.execute(
         "SELECT COUNT(*) FROM messages WHERE session_id = ?",
-        (session_id,),
+        (resolved_session_id,),
     ).fetchone()
     assert row is not None
     return int(row[0])
@@ -229,8 +237,20 @@ def _message_count(conn: sqlite3.Connection, session_id: str) -> int:
 
 def _attachment_row(conn: sqlite3.Connection, attachment_id: str) -> sqlite3.Row | None:
     row = conn.execute(
-        "SELECT * FROM attachments WHERE attachment_id = ?",
-        (attachment_id,),
+        """
+        SELECT
+            a.*,
+            a.media_type AS mime_type,
+            a.byte_count AS size_bytes,
+            COALESCE(r.source_url, a.display_name) AS path
+        FROM attachments a
+        LEFT JOIN attachment_refs r ON r.attachment_id = a.attachment_id
+        LEFT JOIN attachment_native_ids ani ON ani.ref_id = r.ref_id
+        WHERE a.attachment_id = ? OR (ani.id_kind = 'attachment' AND ani.native_id = ?)
+        ORDER BY a.attachment_id
+        LIMIT 1
+        """,
+        (attachment_id, attachment_id),
     ).fetchone()
     if row is not None and not isinstance(row, sqlite3.Row):
         raise TypeError(f"expected sqlite3.Row, got {type(row).__name__}")
@@ -450,10 +470,11 @@ async def test_backend_referenced_path_filter_contract(workspace_env: dict[str, 
 
 
 @pytest.mark.asyncio
-async def test_list_summaries_by_query_omits_large_provider_meta_payloads(tmp_path: Path) -> None:
-    db_path = tmp_path / "summary-provider-meta.db"
-    large_meta = {"raw": "x" * 100_000, "source": "codex"}
+async def test_list_summaries_by_query_uses_current_session_columns(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
+    initialize_active_archive_root(tmp_path)
+    db_path = tmp_path / "index.db"
     with open_connection(db_path) as conn:
         upsert_session(
             conn,
@@ -461,7 +482,6 @@ async def test_list_summaries_by_query_omits_large_provider_meta_payloads(tmp_pa
                 "conv-large-meta",
                 source_name="codex",
                 title="Large Meta Session",
-                provider_meta=large_meta,
                 metadata={"tag": "kept"},
             ),
         )
@@ -473,44 +493,39 @@ async def test_list_summaries_by_query_omits_large_provider_meta_payloads(tmp_pa
         summaries = await repo.list_summaries_by_query(_record_query(provider="codex", limit=1))
         assert len(summaries) == 1
         summary = summaries[0]
-        assert str(summary.id) == "conv-large-meta"
+        assert str(summary.id) == "codex-session:conv-large-meta"
+        assert summary.origin.value == "codex-session"
         assert summary.title == "Large Meta Session"
-        assert summary.metadata == {"tag": "kept"}
-        assert summary.provider_meta is None
+        assert summary.metadata == {}
+        assert "provider_meta" not in summary.model_dump()
     finally:
         await repo.close()
 
 
-def test_action_event_rebuild_omits_large_provider_meta_payloads(workspace_env: dict[str, Path]) -> None:
-    """The archive action surface derives from blocks and never carries provider_meta.
+def test_actions_view_uses_blocks_without_session_payload_bloat(workspace_env: dict[str, Path]) -> None:
+    """The archive actions surface derives from blocks and has no session payload column.
 
-    The legacy ``action_events`` read-model table and its
-    ``rebuild_action_event_read_model_sync`` materializer were retired; the
-    archive ``actions`` view derives tool/semantic facts directly from
-    ``blocks``. There is no provider_meta column on that surface, so even a
-    multi-hundred-KB session ``provider_meta`` cannot bloat it.
+    The archive ``actions`` view derives tool/semantic facts directly from
+    ``blocks``. Session working-directory and git facts live in typed columns
+    and child tables, so large raw payloads stay in source storage.
     """
     from tests.infra.archive_scenarios import native_session_id_for, open_index_db
     from tests.infra.storage_records import SessionBuilder, db_setup
 
     db_path = db_setup(workspace_env)
 
-    huge_provider_meta: dict[str, object] = {
-        "cwd": "/realm/project/sinex",
-        "raw": {"payload": "x" * 200_000},
-        "git": {"branch": "master", "repository_url": "git@github.com:Sinity/sinex.git"},
-    }
-
     (
         SessionBuilder(db_path, "conv-heavy-action")
         .provider("codex")
         .title("Heavy Action Event Source")
-        .provider_meta(huge_provider_meta)
+        .working_directories(["/realm/project/sinex"])
+        .git_branch("master")
+        .git_repository_url("git@github.com:Sinity/sinex.git")
         .add_message(
             "m-heavy-action",
             role="assistant",
             content_blocks=[
-                {"type": "text", "text": "Searching the repo for provider-meta handling."},
+                {"type": "text", "text": "Searching the repo for current archive handling."},
                 _tool_block(
                     message_id="m-heavy-action",
                     session_id="conv-heavy-action",
@@ -525,7 +540,7 @@ def test_action_event_rebuild_omits_large_provider_meta_payloads(workspace_env: 
     session_id = native_session_id_for("codex", "conv-heavy-action")
     with open_index_db(db_path) as conn:
         action_columns = {row["name"] for row in conn.execute("PRAGMA table_info(actions)")}
-        assert "provider_meta" not in action_columns
+        assert "payload" not in action_columns
         row = conn.execute(
             "SELECT tool_name, semantic_type FROM actions WHERE session_id = ?",
             (session_id,),
@@ -839,7 +854,7 @@ def test_store_records_roundtrip_contract(test_conn: sqlite3.Connection) -> None
     updated_row = _session_row(test_conn, "conv-create")
     assert updated_row is not None
     assert updated_row["title"] == "Updated Title"
-    assert updated_row["content_hash"] == "hash-updated"
+    assert updated_row["content_hash"].hex() == hashlib.sha256(b"hash-updated").hexdigest()
 
     multi = store_records(
         session=make_session("conv-multi", title="Multi Message"),
@@ -871,17 +886,17 @@ def test_store_records_roundtrip_contract(test_conn: sqlite3.Connection) -> None
     )
     assert sparse["sessions"] == 1
     assert sparse["messages"] == 0
-    assert sparse["attachments"] == 1
+    assert sparse["attachments"] == 0
+    assert sparse["skipped_attachments"] == 1
     sparse_attachment = _attachment_row(test_conn, "att-empty")
-    assert sparse_attachment is not None
-    assert sparse_attachment["ref_count"] == 1
+    assert sparse_attachment is None
 
 
 def test_prune_attachment_refs_contract(test_conn: sqlite3.Connection) -> None:
     """Pruning refs must keep requested refs, recalculate counts, and delete zero-ref attachments."""
     conv = make_session("conv-prune", title="Prune Test")
-    msg1 = make_message("msg-prune-1", "conv-prune", provider_message_id="ext-1", text="First")
-    msg2 = make_message("msg-prune-2", "conv-prune", provider_message_id="ext-2", text="Second")
+    msg1 = make_message("msg-prune-1", "conv-prune", text="First")
+    msg2 = make_message("msg-prune-2", "conv-prune", text="Second")
     att1 = make_attachment("att-prune-1", "conv-prune", "msg-prune-1", mime_type="image/png")
     att2 = make_attachment("att-prune-2", "conv-prune", "msg-prune-2", mime_type="image/jpeg", size_bytes=2048)
     shared_att_1 = make_attachment("att-shared", "conv-prune", "msg-prune-1", mime_type="image/png")
@@ -893,15 +908,26 @@ def test_prune_attachment_refs_contract(test_conn: sqlite3.Connection) -> None:
         conn=test_conn,
     )
 
-    keep_ref = _ref_id("att-prune-1", "conv-prune", "msg-prune-1")
-    keep_shared = _ref_id("att-shared", "conv-prune", "msg-prune-1")
-    _prune_attachment_refs(test_conn, "conv-prune", {keep_ref, keep_shared})
+    current_session_id = "unknown-export:conv-prune"
+    keep_rows = test_conn.execute(
+        """
+        SELECT ar.ref_id, ani.native_id
+        FROM attachment_refs ar
+        JOIN attachment_native_ids ani ON ani.ref_id = ar.ref_id AND ani.id_kind = 'attachment'
+        WHERE ar.session_id = ? AND ar.message_id = ? AND ani.native_id IN ('att-prune-1', 'att-shared')
+        ORDER BY ani.native_id
+        """,
+        (current_session_id, f"{current_session_id}:msg-prune-1"),
+    ).fetchall()
+    keep_refs = {str(row["ref_id"]) for row in keep_rows}
+    assert len(keep_refs) == 2
+    _prune_attachment_refs(test_conn, current_session_id, keep_refs)
 
     remaining_refs = test_conn.execute(
         "SELECT ref_id FROM attachment_refs WHERE session_id = ? ORDER BY ref_id",
-        ("conv-prune",),
+        (current_session_id,),
     ).fetchall()
-    assert [row["ref_id"] for row in remaining_refs] == sorted([keep_ref, keep_shared])
+    assert [row["ref_id"] for row in remaining_refs] == sorted(keep_refs)
     pruned_attachment = _attachment_row(test_conn, "att-prune-1")
     shared_attachment = _attachment_row(test_conn, "att-shared")
     assert pruned_attachment is not None
@@ -915,20 +941,19 @@ def test_upsert_optional_and_attachment_contracts(test_conn: sqlite3.Connection)
     """Optional-field upserts and attachment metadata updates must round-trip cleanly."""
     session = _session_record(
         session_id="conv-optional",
-        source_name="test",
-        provider_session_id="ext-conv1",
+        origin=origin_from_provider(Provider.from_string("test")).value,
+        native_id="conv-optional",
         title=None,
         created_at=None,
         updated_at=None,
         content_hash="hash1",
-        provider_meta=None,
     )
     assert upsert_session(test_conn, session) is True
     conv_row = _session_row(test_conn, "conv-optional")
     assert conv_row is not None
     assert conv_row["title"] is None
-    assert conv_row["created_at"] is None
-    assert conv_row["provider_meta"] is None
+    assert conv_row["created_at_ms"] is None
+    assert "provider_meta" not in conv_row.keys()  # noqa: SIM118 — sqlite3.Row membership is over values
 
     message = MessageRecord(
         message_id=_message_id("msg-optional"),
@@ -945,15 +970,19 @@ def test_upsert_optional_and_attachment_contracts(test_conn: sqlite3.Connection)
     )
     assert upsert_message(test_conn, message) is True
     msg_row = test_conn.execute(
-        "SELECT * FROM messages WHERE message_id = ?",
+        "SELECT * FROM messages WHERE native_id = ?",
         ("msg-optional",),
     ).fetchone()
     assert msg_row is not None
-    assert msg_row["role"] is None
-    assert msg_row["text"] is None
-    assert msg_row["provider_message_id"] is None
+    assert msg_row["message_id"] == "unknown-export:conv-optional:msg-optional"
+    assert msg_row["role"] == "unknown"
+    assert msg_row["native_id"] == "msg-optional"
+    assert (
+        test_conn.execute("SELECT COUNT(*) FROM blocks WHERE message_id = ?", (msg_row["message_id"],)).fetchone()[0]
+        == 0
+    )
 
-    msg2 = make_message("msg-attachment-2", "conv-optional", provider_message_id="ext-msg-2", text="Second")
+    msg2 = make_message("msg-attachment-2", "conv-optional", text="Second")
     assert upsert_message(test_conn, msg2) is True
     first = make_attachment("att-meta", "conv-optional", "msg-optional", mime_type="image/png")
     second = make_attachment(
@@ -971,7 +1000,20 @@ def test_upsert_optional_and_attachment_contracts(test_conn: sqlite3.Connection)
     assert att_row is not None
     assert att_row["mime_type"] == "image/jpeg"
     assert att_row["size_bytes"] == 2048
-    assert att_row["path"] == "new/path.jpg"
+    assert att_row["path"] == "path.jpg"
+    source_native = test_conn.execute(
+        """
+        SELECT ani.native_id
+        FROM attachment_refs ar
+        JOIN attachment_native_ids ani ON ani.ref_id = ar.ref_id
+        WHERE ar.attachment_id = ? AND ani.id_kind = 'source'
+        ORDER BY ani.native_id DESC
+        LIMIT 1
+        """,
+        (att_row["attachment_id"],),
+    ).fetchone()
+    assert source_native is not None
+    assert source_native["native_id"] == "new/path.jpg"
     assert att_row["ref_count"] == 2
 
 
@@ -1106,13 +1148,25 @@ def test_concurrent_upsert_same_attachment_ref_count_correct(test_db: Path) -> N
         list(executor.map(create_session, range(10)))
 
     with open_connection(test_db) as conn:
+        attachment_row = conn.execute(
+            """
+            SELECT ar.attachment_id
+            FROM attachment_refs ar
+            JOIN attachment_native_ids ani ON ani.ref_id = ar.ref_id
+            WHERE ani.id_kind = 'attachment' AND ani.native_id = ?
+            LIMIT 1
+            """,
+            (shared_attachment_id,),
+        ).fetchone()
+        assert attachment_row is not None
+        attachment_id = str(attachment_row["attachment_id"])
         stored_ref_count = conn.execute(
             "SELECT ref_count FROM attachments WHERE attachment_id = ?",
-            (shared_attachment_id,),
+            (attachment_id,),
         ).fetchone()[0]
         actual_refs = conn.execute(
             "SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?",
-            (shared_attachment_id,),
+            (attachment_id,),
         ).fetchone()[0]
 
     assert stored_ref_count == 10
@@ -1139,7 +1193,6 @@ def test_attachment_size_bytes_contract(size_bytes: int | None, valid: bool) -> 
             message_id="msg1",
             mime_type="text/plain",
             size_bytes=size_bytes,
-            provider_meta=None,
         )
         assert record.size_bytes == size_bytes
     else:
@@ -1150,21 +1203,20 @@ def test_attachment_size_bytes_contract(size_bytes: int | None, valid: bool) -> 
                 message_id=_message_id("msg1"),
                 mime_type="text/plain",
                 size_bytes=size_bytes,
-                provider_meta=None,
             )
 
 
 @pytest.mark.parametrize("name", ["claude-ai", "claude-code", "Provider123"])
-def test_source_name_accepts_valid(name: str) -> None:
-    """Representative provider-name formats should validate."""
+def test_origin_accepts_provider_tokens(name: str) -> None:
+    """Representative parser provider tokens should normalize to origins."""
     record = _session_record(
         session_id="test",
-        source_name=name,
-        provider_session_id="ext1",
+        origin=origin_from_provider(Provider.from_string(name)).value,
+        native_id="ext1",
         title="Test",
         content_hash="hash123",
     )
-    assert record.source_name == name
+    assert record.origin == origin_from_provider(Provider.from_string(name))
 
 
 # ============================================================================
@@ -1222,8 +1274,8 @@ class TestCrudLaws:
 
             retrieved = await backend.get_session(conv_id)
             assert retrieved is not None
-            assert retrieved.session_id == conv_id
-            assert retrieved.source_name == provider
+            assert retrieved.session_id.endswith(f":{conv_id}")
+            assert retrieved.origin == origin_from_provider(Provider.from_string(provider))
 
             retrieved_msgs = await backend.get_messages(conv_id)
             assert len(retrieved_msgs) == len(messages)
@@ -1257,7 +1309,8 @@ class TestCrudLaws:
 
             # Should still be exactly one session
             all_convs = await backend.queries.list_sessions(_record_query(limit=100))
-            matching = [c for c in all_convs if c.session_id == conv_id]
+            expected_session_id = f"{origin_from_provider(Provider.from_string(raw_provider)).value}:{conv_id}"
+            matching = [c for c in all_convs if c.session_id == expected_session_id]
             assert len(matching) == 1
 
             await backend.close()
@@ -1620,17 +1673,18 @@ class TestRepositoryOperations:
         with open_index_db(db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT ar.session_id, ar.provider_attachment_id, a.mime_type
+                SELECT ar.session_id, ani.native_id AS attachment_native_id, a.media_type
                 FROM attachment_refs ar
                 JOIN attachments a ON a.attachment_id = ar.attachment_id
+                JOIN attachment_native_ids ani ON ani.ref_id = ar.ref_id AND ani.id_kind = 'attachment'
                 WHERE ar.session_id = ?
                 """,
                 (session_id,),
             ).fetchall()
         assert len(rows) == 1
         assert rows[0]["session_id"] == session_id
-        assert rows[0]["provider_attachment_id"] == "att1"
-        assert rows[0]["mime_type"] == "image/png"
+        assert rows[0]["attachment_native_id"] == "att1"
+        assert rows[0]["media_type"] == "image/png"
 
     async def test_get_eager_multiple_attachments(self, workspace_env: dict[str, Path]) -> None:
         """Multiple attachments persist grouped by their owning message."""
@@ -1663,19 +1717,23 @@ class TestRepositoryOperations:
         session_id = native_session_id_for("test", "c-multi-att")
         with open_index_db(db_path) as conn:
             rows = conn.execute(
-                "SELECT message_id, provider_attachment_id FROM attachment_refs WHERE session_id = ?",
+                """
+                SELECT ar.message_id, ani.native_id AS attachment_native_id
+                FROM attachment_refs ar
+                JOIN attachment_native_ids ani ON ani.ref_id = ar.ref_id AND ani.id_kind = 'attachment'
+                WHERE ar.session_id = ?
+                """,
                 (session_id,),
             ).fetchall()
         by_message: dict[str, set[str]] = {}
         for row in rows:
-            by_message.setdefault(str(row["message_id"]), set()).add(str(row["provider_attachment_id"]))
+            by_message.setdefault(str(row["message_id"]), set()).add(str(row["attachment_native_id"]))
 
         assert by_message[f"{session_id}:m1"] == {"att1", "att2"}
         assert by_message[f"{session_id}:m2"] == {"att3"}
 
-    async def test_get_eager_attachment_metadata_decoded(self, workspace_env: dict[str, Path]) -> None:
-        """Attachment provider_meta JSON round-trips through the archive store."""
-        from polylogue.core.json import loads
+    async def test_get_eager_attachment_metadata_not_stored_in_index(self, workspace_env: dict[str, Path]) -> None:
+        """Attachment metadata is not an index-tier escape hatch."""
         from tests.infra.archive_scenarios import native_session_id_for, open_index_db
         from tests.infra.storage_records import DbFactory, db_setup
 
@@ -1698,16 +1756,17 @@ class TestRepositoryOperations:
         with open_index_db(db_path) as conn:
             row = conn.execute(
                 """
-                SELECT a.provider_meta
+                SELECT a.display_name, a.media_type, ani.native_id AS attachment_native_id
                 FROM attachment_refs ar
                 JOIN attachments a ON a.attachment_id = ar.attachment_id
+                JOIN attachment_native_ids ani ON ani.ref_id = ar.ref_id AND ani.id_kind = 'attachment'
                 WHERE ar.session_id = ?
                 """,
                 (session_id,),
             ).fetchone()
         assert row is not None
-        stored_meta = loads(row["provider_meta"]) if row["provider_meta"] else {}
-        assert stored_meta == meta
+        assert row["attachment_native_id"] == "att-meta"
+        assert row["media_type"] == "image/png"
 
 
 class TestCacheThreadSafety:

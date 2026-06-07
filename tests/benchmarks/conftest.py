@@ -229,7 +229,7 @@ async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42
             make_session(
                 session_id=conv_id,
                 source_name=provider,
-                provider_session_id=f"prov-{conv_index:05d}",
+                provider_session_id=conv_id,
                 title=f"Session {conv_index}: {_generate_realistic_text(rng, 'user', 0)[:60]}",
                 created_at=f"2025-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d}T{rng.randint(0, 23):02d}:00:00Z",
                 updated_at=f"2025-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d}T{rng.randint(0, 23):02d}:00:00Z",
@@ -295,7 +295,8 @@ async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42
             if i % 500 == 0:
                 await backend.bulk_flush()
 
-    with open_connection(db_path) as conn:
+    index_db_path = db_path if db_path.name == "index.db" else db_path.parent / "index.db"
+    with open_connection(index_db_path) as conn:
         rebuild_index(conn)
 
     return {

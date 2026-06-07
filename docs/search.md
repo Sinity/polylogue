@@ -144,7 +144,7 @@ elevate — see below).
 |------|-------------|------------|
 | `auto` | Surface left the lane to the planner. May elevate to `hybrid` when embeddings are enabled and an FTS query is present (see [Auto Elevation](#auto-elevation)). | depends on chosen lane |
 | `dialogue` | FTS5 over message text (`messages_fts` virtual table, `unicode61` tokenizer). Default lexical lane. | `bm25` |
-| `actions` | FTS5 over action event text (`action_events_fts`). Targets tool/file/shell evidence rather than prose. Public ranked-hit payloads currently carry action rank/evidence without a numeric action BM25 score. | `null` |
+| `actions` | FTS5 over tool-use/tool-result block text in `messages_fts`. Targets tool/file/shell evidence rather than prose. Public ranked-hit payloads currently carry action rank/evidence without a numeric action BM25 score. | `null` |
 | `hybrid` | Reciprocal Rank Fusion combining FTS5 and vector similarity (requires embeddings). | `rrf` |
 | `semantic` | Pure vector similarity over Voyage-4 embeddings via sqlite-vec. Triggered by `--similar` or `--semantic`. | `vector_distance` |
 
@@ -166,12 +166,12 @@ Implementation: `polylogue/storage/search_providers/fts5.py`,
 - Match evidence: `matched_terms`, `snippet`, `match_surface="message"`,
   `message_id`, and `target_ref` point at the hit message.
 
-#### `actions` (FTS5 over action events)
+#### `actions` (FTS5 over action blocks)
 
-- Same FTS5 mechanics as `dialogue`, but the indexed surface is
-  `action_events_fts` — normalized records of file reads/writes/edits,
-  shell commands, web fetches, agent invocations, and other tool
-  evidence (see `--action` / `--tool` filters above).
+- Same FTS5 mechanics as `dialogue`, but the query is restricted to
+  `tool_use` and `tool_result` blocks inside `messages_fts`. The normalized
+  `actions` view remains the structured action surface for filters and
+  analytics.
 - Current public action-lane hits preserve rank and action match surface
   but do not expose the underlying action FTS BM25 score in the shared
   `SearchEnvelope`; consumers should treat `score_kind=null` as the
@@ -195,7 +195,7 @@ Implementation: `polylogue/storage/search_providers/fts5.py`,
   that contributed adds a `<lane>_rank` (1-based rank within that lane)
   and a matching `<lane>_rrf` (the `1 / (k + rank)` contribution that was
   summed into the fused score). Lane names are `text` (FTS5 dialogue),
-  `action` (FTS5 action events), and `vector` (semantic). A hit that
+  `action` (FTS5 action blocks), and `vector` (semantic). A hit that
   appeared only in the lexical lane carries `{text_rank, text_rrf}` and
   nothing else; a hit that survived both lanes carries the full
   `(text|action|vector)_(rank|rrf)` set, so consumers can show "ranked
@@ -286,7 +286,7 @@ Every `SearchEnvelope` declares its `ranking_policy` and
 
 - `dialogue` orders hits by FTS5 BM25 (lower is better; raw scores are
   usually negative).
-- `actions` orders through the action-event FTS read model, but the
+- `actions` orders through the action FTS read model, but the
   public action-lane hit payload does not currently expose a numeric
   action score.
 - `hybrid` fuses dialogue + action + semantic lanes with RRF at `k=60`
@@ -362,7 +362,7 @@ the hit:
 | Lane | `matched_terms` | `score_kind` | `score_components` |
 |------|-----------------|--------------|--------------------|
 | `dialogue` (FTS5 over messages) | tokenized query terms (lowercased, FTS5 operators stripped) | `bm25` | `{"bm25_raw": <relevance>}` |
-| `actions` (FTS5 over action events) | tokenized query terms | `null` today | `{}` today; action rank is preserved, but action BM25 is not part of the public hit evidence contract yet |
+| `actions` (FTS5 over action blocks) | tokenized query terms | `null` today | `{}` today; action rank is preserved, but action BM25 is not part of the public hit evidence contract yet |
 | `hybrid` (RRF fusion) | tokenized query terms | `rrf` | `<lane>_rank` and `<lane>_rrf` for every contributing lane (`text` / `action` / `vector`); `score` equals the sum of `*_rrf` |
 | `semantic` (vector-only) | the query string passed to `--similar` / `--semantic` (single term) | `vector_distance` | `{}` (raw distance lives in `score`) |
 | `attachment` (identity lookup) | the matched identifier (single term) | `null` | `{}` (identity hits have no numeric rank) |

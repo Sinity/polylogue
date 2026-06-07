@@ -11,7 +11,8 @@ class Attachment(BaseModel):
     mime_type: str | None = None
     size_bytes: int | None = None
     path: str | None = None
-    provider_meta: dict[str, object] | None = None
+    source_url: str | None = None
+    caption: str | None = None
 
 
 __all__ = ["Attachment"]

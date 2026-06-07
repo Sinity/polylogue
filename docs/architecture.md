@@ -311,8 +311,8 @@ attachments, exports):
 
 - Archive SQLite file set, WAL mode.
 - Schema is fresh-first: version mismatches are rejected and the affected tier
-  is rebuilt from source/user evidence. `SCHEMA_VERSION` lives in
-  `storage/sqlite/schema_ddl.py`.
+  is rebuilt from source/user evidence. Tier DDL and versions live under
+  `storage/sqlite/archive_tiers/`.
 - FTS5 with `unicode61` tokenizer (no porter stemmer in this SQLite build).
 
 ## Placement Rules

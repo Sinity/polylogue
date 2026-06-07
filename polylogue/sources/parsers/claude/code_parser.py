@@ -17,8 +17,8 @@ from polylogue.types import ContentBlockType, Provider
 from ..base import (
     ParsedContentBlock,
     ParsedMessage,
-    ParsedProviderEvent,
     ParsedSession,
+    ParsedSessionEvent,
     content_blocks_from_segments,
 )
 from .common import (
@@ -131,7 +131,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
     first_duplicate_uuid: str | None = None
     first_duplicate_index: int | None = None
     session_id: str | None = None
-    provider_events: list[ParsedProviderEvent] = []
+    session_events: list[ParsedSessionEvent] = []
     total_cost = 0.0
     total_duration = 0
     saw_cost_field = False
@@ -152,8 +152,8 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
                 raw_timestamp if isinstance(raw_timestamp, str | int | float) else None
             )
             context_compaction = dict(compaction)
-            provider_events.append(
-                ParsedProviderEvent(
+            session_events.append(
+                ParsedSessionEvent(
                     event_type="compaction",
                     timestamp=compaction_timestamp,
                     payload=context_compaction,
@@ -200,7 +200,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
         # consumer surface and inflate every messages-table count by
         # ~23%. See #1617 for the full forensic. We drop them here at the
         # parser; the hook payload, if useful for analytics, belongs in
-        # a future ``provider_event`` capture, not in the messages table.
+        # a future ``session_event`` capture, not in the messages table.
         if record_type in {"init", "file-history-snapshot", "queue-operation", "progress"}:
             continue
 
@@ -284,14 +284,6 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
         composed_session_id = session_id or fallback_id
 
     provider_meta: ClaudeCodeProviderMeta = {}
-    if saw_cost_field:
-        provider_meta["total_cost_usd"] = total_cost
-    if saw_duration_field:
-        provider_meta["total_duration_ms"] = total_duration
-    if cwds:
-        provider_meta["working_directories"] = sorted(cwds)
-    if models:
-        provider_meta["models_used"] = sorted(models)
 
     if is_subagent:
         branch_type: BranchType | None = BranchType.SUBAGENT
@@ -329,9 +321,12 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
         messages=messages,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
         provider_meta=provider_meta if provider_meta else None,
-        provider_events=provider_events,
+        session_events=session_events,
         parent_session_provider_id=parent_session_id,
         branch_type=branch_type,
+        reported_cost_usd=total_cost if saw_cost_field else None,
+        reported_duration_ms=total_duration if saw_duration_field else None,
+        models_used=sorted(models),
         working_directories=sorted(cwds),
     )
 

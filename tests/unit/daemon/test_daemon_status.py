@@ -539,7 +539,7 @@ def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> N
         }
     )
     blob_info = Mock(return_value=0)
-    fts_info = Mock(return_value={"messages_ready": True, "action_events_ready": True})
+    fts_info = Mock(return_value={"messages_ready": True})
     freshness_info = Mock(return_value={"sessions_with_profiles": 3, "total_sessions": 4})
 
     with (
@@ -560,7 +560,6 @@ def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> N
     fts_readiness = payload["fts_readiness"]
     assert isinstance(fts_readiness, dict)
     assert fts_readiness["messages_ready"] is True
-    assert fts_readiness["action_events_ready"] is True
     assert db_info.call_count == 1
     assert blob_info.call_count == 1
     assert fts_info.call_count == 1
@@ -609,7 +608,6 @@ def test_daemon_status_fts_readiness_uses_lightweight_table_probe(tmp_path: Path
         conn.executescript(
             """
             CREATE TABLE messages_fts (text TEXT);
-            CREATE TABLE action_events_fts (text TEXT);
             """
         )
 
@@ -617,7 +615,6 @@ def test_daemon_status_fts_readiness_uses_lightweight_table_probe(tmp_path: Path
         readiness = status_module._fts_readiness_info()
 
     assert readiness["messages_ready"] is False
-    assert readiness["action_events_ready"] is False
     assert readiness["invariant_ready"] is False
 
 
@@ -650,15 +647,13 @@ def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(t
     with patch("polylogue.daemon.status.db_path", return_value=db_anchor):
         readiness = status_module._fts_readiness_info()
 
-    assert readiness["indexed_surface"] == "blocks_fts"
-    assert readiness["action_events_required"] is False
+    assert readiness["indexed_surface"] == "messages_fts"
     assert readiness["messages_ready"] is True
-    assert readiness["action_events_ready"] is True
     assert readiness["invariant_ready"] is True
     assert readiness["coverage_exact"] is False
     surfaces = readiness["surfaces"]
     assert isinstance(surfaces, dict)
-    blocks = surfaces["blocks_fts"]
+    blocks = surfaces["messages_fts"]
     assert isinstance(blocks, dict)
     assert blocks["source_exists"] is True
     assert blocks["exists"] is True
@@ -684,13 +679,12 @@ def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path
     ):
         readiness = status_module._fts_readiness_info()
 
-    assert readiness["indexed_surface"] == "blocks_fts"
-    assert readiness["action_events_required"] is False
+    assert readiness["indexed_surface"] == "messages_fts"
     assert readiness["messages_ready"] is True
     assert readiness["invariant_ready"] is True
     surfaces = readiness["surfaces"]
     assert isinstance(surfaces, dict)
-    assert set(surfaces) == {"blocks_fts"}
+    assert set(surfaces) == {"messages_fts"}
 
 
 def test_daemon_status_fts_readiness_uses_bounded_structural_probes(tmp_path: Path) -> None:
@@ -699,21 +693,15 @@ def test_daemon_status_fts_readiness_uses_bounded_structural_probes(tmp_path: Pa
     with sqlite3.connect(db) as conn:
         conn.executescript(
             """
-            CREATE TABLE messages (text TEXT);
-            CREATE TABLE session_stats (session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL);
+            CREATE TABLE blocks (text TEXT);
+            CREATE TABLE sessions (session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL);
             CREATE TABLE messages_fts (text TEXT);
             CREATE TABLE messages_fts_docsize (id INTEGER PRIMARY KEY, sz BLOB);
-            CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages BEGIN SELECT 1; END;
-            CREATE TABLE action_events (event_id TEXT);
-            CREATE TABLE action_events_fts (text TEXT);
-            CREATE TABLE action_events_fts_docsize (id INTEGER PRIMARY KEY, sz BLOB);
-            CREATE TRIGGER action_events_fts_ai AFTER INSERT ON action_events BEGIN SELECT 1; END;
-            CREATE TRIGGER action_events_fts_ad AFTER DELETE ON action_events BEGIN SELECT 1; END;
-            CREATE TRIGGER action_events_fts_au AFTER UPDATE ON action_events BEGIN SELECT 1; END;
-            INSERT INTO session_stats VALUES ('c1', 2), ('c2', 3);
-            INSERT INTO messages(rowid, text) VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e');
+            CREATE TRIGGER messages_fts_ai AFTER INSERT ON blocks BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_ad AFTER DELETE ON blocks BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_au AFTER UPDATE ON blocks BEGIN SELECT 1; END;
+            INSERT INTO sessions VALUES ('c1', 2), ('c2', 3);
+            INSERT INTO blocks(rowid, text) VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e');
             INSERT INTO messages_fts_docsize VALUES (1, x''), (2, x''), (3, x''), (4, x''), (5, x'');
             """
         )
@@ -732,30 +720,42 @@ def test_daemon_status_fts_readiness_uses_bounded_structural_probes(tmp_path: Pa
         readiness = status_module._fts_readiness_info()
 
     assert readiness["messages_ready"] is True
-    assert readiness["action_events_ready"] is True
     assert readiness["invariant_ready"] is True
     assert readiness["coverage_exact"] is False
-    assert all("COUNT(*) FROM messages" not in query for query in queries)
+    assert all("COUNT(*) FROM blocks" not in query for query in queries)
     assert all("COUNT(*) FROM messages_fts_docsize" not in query for query in queries)
     assert all("LEFT JOIN messages_fts_docsize" not in query for query in queries)
 
 
 def test_fts_readiness_exact_detects_missing_docsize_row(tmp_path: Path) -> None:
     from polylogue.daemon.fts_status import fts_readiness_info
-    from polylogue.storage.sqlite.connection import open_connection
 
     db_path = tmp_path / "index.db"
-    with open_connection(db_path) as conn:
+    initialize_archive_database(db_path, ArchiveTier.INDEX)
+    with sqlite3.connect(db_path) as conn:
         conn.execute(
-            "INSERT INTO sessions(session_id, source_name, provider_session_id, version) VALUES(?,?,?,1)",
-            ("conv-stale-fts", "codex", "provider-conv"),
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
+            ("native-1", "codex-session", bytes(32)),
         )
         conn.execute(
-            "INSERT INTO messages(message_id, session_id, role, text, source_name, version) VALUES(?,?,?,?,?,1)",
-            ("msg-stale-fts", "conv-stale-fts", "user", "needle stale index", "codex"),
+            """
+            INSERT INTO messages (
+                session_id, native_id, position, role, message_type, content_hash
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("codex-session:native-1", "message-1", 0, "user", "message", bytes(32)),
         )
-        conn.commit()
-        rowid = conn.execute("SELECT rowid FROM messages WHERE message_id = ?", ("msg-stale-fts",)).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO blocks (message_id, session_id, position, block_type, text)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("codex-session:native-1:message-1", "codex-session:native-1", 0, "text", "needle stale index"),
+        )
+        rowid = conn.execute(
+            "SELECT rowid FROM blocks WHERE block_id = ?",
+            ("codex-session:native-1:message-1:0",),
+        ).fetchone()[0]
         conn.execute("DELETE FROM messages_fts WHERE rowid = ?", (rowid,))
         conn.commit()
 
@@ -772,7 +772,7 @@ def test_fts_readiness_exact_detects_missing_docsize_row(tmp_path: Path) -> None
     assert messages["ready"] is False
 
 
-def test_fts_readiness_exact_detects_archive_missing_blocks_fts_row(tmp_path: Path) -> None:
+def test_fts_readiness_exact_detects_archive_missing_messages_fts_row(tmp_path: Path) -> None:
     from polylogue.daemon.fts_status import fts_readiness_info
 
     archive_db = tmp_path / "index.db"
@@ -801,13 +801,12 @@ def test_fts_readiness_exact_detects_archive_missing_blocks_fts_row(tmp_path: Pa
             "SELECT rowid FROM blocks WHERE block_id = ?",
             ("codex-session:native-1:message-1:0",),
         ).fetchone()[0]
-        conn.execute("DELETE FROM blocks_fts WHERE rowid = ?", (rowid,))
+        conn.execute("DELETE FROM messages_fts WHERE rowid = ?", (rowid,))
         conn.commit()
 
     readiness = fts_readiness_info(archive_db, exact=True)
 
-    assert readiness["indexed_surface"] == "blocks_fts"
-    assert readiness["action_events_required"] is False
+    assert readiness["indexed_surface"] == "messages_fts"
     assert readiness["messages_ready"] is False
     assert readiness["invariant_ready"] is False
     assert readiness["message_indexable_count"] == 1
@@ -815,7 +814,7 @@ def test_fts_readiness_exact_detects_archive_missing_blocks_fts_row(tmp_path: Pa
     assert readiness["coverage_pct"] == 0.0
     surfaces = readiness["surfaces"]
     assert isinstance(surfaces, dict)
-    blocks = surfaces["blocks_fts"]
+    blocks = surfaces["messages_fts"]
     assert isinstance(blocks, dict)
     assert blocks["missing_rows"] == 1
     assert blocks["ready"] is False
@@ -828,11 +827,11 @@ def test_fts_readiness_requires_recorded_freshness_when_available(tmp_path: Path
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
             """
-            CREATE TABLE messages (message_id TEXT, text TEXT);
+            CREATE TABLE blocks (text TEXT);
             CREATE TABLE messages_fts (text TEXT);
-            CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_ai AFTER INSERT ON blocks BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_ad AFTER DELETE ON blocks BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_au AFTER UPDATE ON blocks BEGIN SELECT 1; END;
             CREATE TABLE fts_freshness_state (
                 surface TEXT PRIMARY KEY,
                 state TEXT NOT NULL,
@@ -863,18 +862,12 @@ def test_fts_readiness_reports_recorded_freshness_counts_without_exact_scan(tmp_
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
             """
-            CREATE TABLE messages (message_id TEXT, text TEXT);
+            CREATE TABLE blocks (text TEXT);
             CREATE TABLE messages_fts (text TEXT);
             CREATE TABLE messages_fts_docsize (id INTEGER PRIMARY KEY, sz BLOB);
-            CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages BEGIN SELECT 1; END;
-            CREATE TABLE action_events (event_id TEXT);
-            CREATE TABLE action_events_fts (text TEXT);
-            CREATE TABLE action_events_fts_docsize (id INTEGER PRIMARY KEY, sz BLOB);
-            CREATE TRIGGER action_events_fts_ai AFTER INSERT ON action_events BEGIN SELECT 1; END;
-            CREATE TRIGGER action_events_fts_ad AFTER DELETE ON action_events BEGIN SELECT 1; END;
-            CREATE TRIGGER action_events_fts_au AFTER UPDATE ON action_events BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_ai AFTER INSERT ON blocks BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_ad AFTER DELETE ON blocks BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_au AFTER UPDATE ON blocks BEGIN SELECT 1; END;
             CREATE TABLE fts_freshness_state (
                 surface TEXT PRIMARY KEY,
                 state TEXT NOT NULL,
@@ -889,8 +882,7 @@ def test_fts_readiness_reports_recorded_freshness_counts_without_exact_scan(tmp_
             INSERT INTO fts_freshness_state
                 (surface, state, checked_at, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows, detail)
             VALUES
-                ('messages_fts', 'ready', '2026-05-24T00:00:00+00:00', 200, 199, 1, 0, 0, 'repair pending'),
-                ('action_events_fts', 'ready', '2026-05-24T00:00:00+00:00', 7, 7, 0, 0, 0, NULL);
+                ('messages_fts', 'ready', '2026-05-24T00:00:00+00:00', 200, 199, 1, 0, 0, 'repair pending');
             """
         )
 
@@ -906,8 +898,6 @@ def test_fts_readiness_reports_recorded_freshness_counts_without_exact_scan(tmp_
 
     assert readiness["message_indexable_count"] == 200
     assert readiness["message_indexed_count"] == 199
-    assert readiness["action_event_count"] == 7
-    assert readiness["action_event_indexed_count"] == 7
     assert readiness["coverage_pct"] == 99.5
     assert readiness["messages_ready"] is False
     assert readiness["invariant_ready"] is False
@@ -920,7 +910,7 @@ def test_fts_readiness_reports_recorded_freshness_counts_without_exact_scan(tmp_
     assert messages["freshness_recorded_state"] == "ready"
     assert messages["freshness_trusted"] is False
     assert messages["freshness_detail"] == "repair pending"
-    assert all("COUNT(*) FROM messages" not in query for query in queries)
+    assert all("COUNT(*) FROM blocks" not in query for query in queries)
     assert all("messages_fts_docsize" not in query for query in queries)
 
 
@@ -932,12 +922,12 @@ def test_fts_readiness_rejects_zero_count_ready_freshness_when_source_has_rows(t
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
             """
-            CREATE TABLE messages (message_id TEXT, text TEXT);
+            CREATE TABLE blocks (text TEXT);
             CREATE TABLE messages_fts (text TEXT);
-            CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages BEGIN SELECT 1; END;
-            INSERT INTO messages VALUES ('m1', 'needs indexing');
+            CREATE TRIGGER messages_fts_ai AFTER INSERT ON blocks BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_ad AFTER DELETE ON blocks BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_au AFTER UPDATE ON blocks BEGIN SELECT 1; END;
+            INSERT INTO blocks VALUES ('needs indexing');
             CREATE TABLE fts_freshness_state (
                 surface TEXT PRIMARY KEY,
                 state TEXT NOT NULL,
@@ -985,11 +975,11 @@ def test_fts_readiness_tolerates_malformed_recorded_counts(tmp_path: Path) -> No
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
             """
-            CREATE TABLE messages (message_id TEXT, text TEXT);
+            CREATE TABLE blocks (text TEXT);
             CREATE TABLE messages_fts (text TEXT);
-            CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_ai AFTER INSERT ON blocks BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_ad AFTER DELETE ON blocks BEGIN SELECT 1; END;
+            CREATE TRIGGER messages_fts_au AFTER UPDATE ON blocks BEGIN SELECT 1; END;
             CREATE TABLE fts_freshness_state (
                 surface TEXT PRIMARY KEY,
                 state TEXT NOT NULL,

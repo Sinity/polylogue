@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from polylogue.archive.action_event.action_events import ActionEvent
+from polylogue.archive.actions.actions import Action
 from polylogue.archive.viewport.viewports import ReasoningTrace, ToolCall
 from polylogue.core.json import JSONDocument, json_document
 
@@ -29,14 +29,14 @@ class MessageSemanticFacts:
     is_tool_use: bool
     is_substantive: bool
     tool_calls: tuple[ToolCall, ...]
-    action_events: tuple[ActionEvent, ...]
+    actions: tuple[Action, ...]
     tool_category_counts: dict[str, int]
     reasoning_traces: tuple[ReasoningTrace, ...]
 
     @property
     def affected_paths(self) -> tuple[str, ...]:
         paths: list[str] = []
-        for action in self.action_events:
+        for action in self.actions:
             paths.extend(action.affected_paths)
         return tuple(dict.fromkeys(paths))
 
@@ -89,7 +89,7 @@ class SessionSemanticFacts:
     branch_messages: int
     word_count: int
     tool_category_counts: dict[str, int]
-    action_events: tuple[ActionEvent, ...]
+    actions: tuple[Action, ...]
     first_message_at: datetime | None
     last_message_at: datetime | None
     wall_duration_ms: int

@@ -104,7 +104,14 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
 
 
 def _scalar_int(conn: sqlite3.Connection, sql: str) -> int:
-    row = conn.execute(sql).fetchone()
+    from polylogue.storage.embeddings.support import is_missing_table_error
+
+    try:
+        row = conn.execute(sql).fetchone()
+    except sqlite3.OperationalError as exc:
+        if is_missing_table_error(exc):
+            return 0
+        raise
     if row is None:
         return 0
     return _payload_int(row[0])

@@ -1,4 +1,4 @@
-"""Candidate selection and action-read-model readiness for query retrieval."""
+"""Candidate selection for query retrieval."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ if TYPE_CHECKING:
     from polylogue.archive.models import Session, SessionSummary
     from polylogue.archive.query.plan import SessionQueryPlan
     from polylogue.protocols import SessionQueryRuntimeStore
-    from polylogue.storage.action_events.artifacts import ActionEventArtifactState
     from polylogue.storage.query_models import SessionRecordQuery
 
 
@@ -23,12 +22,11 @@ async def candidate_record_query_for(
     plan: SessionQueryPlan,
     repository: SessionQueryRuntimeStore,
 ) -> tuple[SessionRecordQuery, bool]:
-    if await action_event_rows_ready(plan, repository):
-        return plan.record_query, plan.sql_pushed
-    return plan.record_query.without_unstable_semantic_filters(), False
+    del repository
+    return plan.record_query, plan.sql_pushed
 
 
-def uses_action_read_model(plan: SessionQueryPlan) -> bool:
+def uses_actions(plan: SessionQueryPlan) -> bool:
     return bool(
         plan.referenced_path
         or plan.action_terms
@@ -40,36 +38,28 @@ def uses_action_read_model(plan: SessionQueryPlan) -> bool:
     )
 
 
-async def _action_event_state(
-    plan: SessionQueryPlan,
-    repository: SessionQueryRuntimeStore,
-) -> ActionEventArtifactState | None:
-    if not uses_action_read_model(plan):
-        return None
-    return await repository.get_action_event_artifact_state()
-
-
-async def action_event_rows_ready(
+async def actions_ready(
     plan: SessionQueryPlan,
     repository: SessionQueryRuntimeStore,
 ) -> bool:
-    state = await _action_event_state(plan, repository)
-    return True if state is None else state.rows_ready
+    del plan, repository
+    return True
 
 
 async def action_search_ready(
     plan: SessionQueryPlan,
     repository: SessionQueryRuntimeStore,
 ) -> bool:
-    state = await _action_event_state(plan, repository)
-    return True if state is None else state.ready
+    del plan, repository
+    return True
 
 
-async def can_use_action_event_stats_with(
+async def can_use_action_stats_with(
     plan: SessionQueryPlan,
     repository: SessionQueryRuntimeStore,
 ) -> bool:
-    return plan.can_use_action_event_stats() and await action_event_rows_ready(plan, repository)
+    del repository
+    return plan.can_use_action_stats()
 
 
 async def fetch_record_query_for(
@@ -257,9 +247,9 @@ async def fetch_candidates(
 
 
 __all__ = [
-    "action_event_rows_ready",
     "action_search_ready",
-    "can_use_action_event_stats_with",
+    "actions_ready",
+    "can_use_action_stats_with",
     "candidate_batch_limit",
     "candidate_record_query",
     "candidate_record_query_for",
@@ -269,5 +259,5 @@ __all__ = [
     "fetch_search_results",
     "search_limit",
     "should_batch_post_filter_fetch",
-    "uses_action_read_model",
+    "uses_actions",
 ]

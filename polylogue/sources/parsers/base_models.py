@@ -41,6 +41,17 @@ class ParsedContentBlock(BaseModel):
         return ContentBlockType.from_string(str(v))
 
 
+class ParsedPasteEvidence(BaseModel):
+    position: int = 0
+    start_offset: int | None = None
+    end_offset: int | None = None
+    boundary_state: str = "hash_only"
+    source_event_id: str | None = None
+    source_marker: str | None = None
+    content_hash: bytes | None = None
+    observed_at_ms: int | None = None
+
+
 class ParsedMessage(BaseModel):
     provider_message_id: str
     role: Role
@@ -71,6 +82,7 @@ class ParsedMessage(BaseModel):
     model_name: str | None = None
     model_effort: str | None = None
     duration_ms: int | None = None
+    paste_spans: list[ParsedPasteEvidence] = Field(default_factory=list)
 
     @field_validator("role", mode="before")
     @classmethod
@@ -108,7 +120,7 @@ class ParsedAttachment(BaseModel):
     `upload_origin` are typed top-level fields. They live alongside
     `provider_meta` for narrative content; downstream storage promotes them
     into stored columns so attachment lookups never JSON-extract on the hot
-    path. See `polylogue/storage/sqlite/schema_ddl_archive.py:attachments`.
+    path. See `polylogue/storage/sqlite/archive_tiers/index.py:attachments`.
 
     `upload_origin` is a closed vocabulary ({"drive","paste","url","oauth"}
     or None); the attachment-library UI (#1199) groups by `(source_name,
@@ -125,6 +137,8 @@ class ParsedAttachment(BaseModel):
     provider_file_id: str | None = None
     provider_drive_id: str | None = None
     upload_origin: str | None = None
+    source_url: str | None = None
+    caption: str | None = None
 
     @field_validator("path")
     @classmethod
@@ -148,8 +162,8 @@ class ParsedAttachment(BaseModel):
         return v if v else None
 
 
-class ParsedProviderEvent(BaseModel):
-    """Non-message semantic artifact from a provider (compaction, turn context, etc.)."""
+class ParsedSessionEvent(BaseModel):
+    """Non-message semantic artifact in the session timeline."""
 
     event_type: str  # "compaction", "turn_context", etc.
     timestamp: str | None = None
@@ -170,14 +184,14 @@ class ParsedSession(BaseModel):
     active_leaf_message_provider_id: str | None = None
     attachments: list[ParsedAttachment] = Field(default_factory=list)
     provider_meta: dict[str, object] | None = None
-    provider_events: list[ParsedProviderEvent] = Field(default_factory=list)
+    session_events: list[ParsedSessionEvent] = Field(default_factory=list)
     parent_session_provider_id: str | None = None
     branch_type: BranchType | None = None
-    # Universal session-context semantics graduated out of provider_meta.
-    # Parsers populate both these typed fields and the corresponding provider_meta
-    # keys (`working_directories`, `gitBranch`, `git.repository_url`) until all
-    # downstream readers (storage write path, attribution, insight rebuild) read
-    # from the typed surface. See #864 and docs/plans/schema-inventory.md.
+    title_source: str | None = None
+    reported_duration_ms: int | None = None
+    reported_cost_usd: float | None = None
+    models_used: list[str] = Field(default_factory=list)
+    # Universal session-context semantics graduated out of provider metadata.
     working_directories: list[str] = Field(default_factory=list)
     git_branch: str | None = None
     git_repository_url: str | None = None
@@ -193,6 +207,13 @@ class ParsedSession(BaseModel):
         if isinstance(v, Provider):
             return v
         return Provider.from_string(str(v) if v is not None else "unknown")
+
+    @field_validator("reported_cost_usd")
+    @classmethod
+    def non_negative_optional_float(cls, value: float | None) -> float | None:
+        if value is not None and value < 0:
+            raise ValueError("reported_cost_usd cannot be negative")
+        return value
 
 
 class RawSessionData(BaseModel):

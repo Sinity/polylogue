@@ -15,7 +15,7 @@ import click
 from polylogue.cli.query_feedback import emit_no_results
 
 if TYPE_CHECKING:
-    from polylogue.archive.action_event.action_events import ActionEvent
+    from polylogue.archive.actions.actions import Action
     from polylogue.archive.filter.filters import SessionFilter
     from polylogue.archive.models import Session, SessionSummary
     from polylogue.archive.query.spec import SessionQuerySpec
@@ -443,7 +443,7 @@ def output_stats_by_grouped_sessions(
 # ---------------------------------------------------------------------------
 
 
-def _action_kind_name(action: ActionEvent) -> str:
+def _action_kind_name(action: Action) -> str:
     return action.kind.value
 
 
@@ -451,13 +451,13 @@ def _semantic_grouped_payload(
     results: list[Session],
     *,
     selection: SessionQuerySpec | None,
-    key_for_action: Callable[[ActionEvent], str],
+    key_for_action: Callable[[Action], str],
 ) -> GroupedStatsPayload:
     from polylogue.archive.semantic.facts import build_session_semantic_facts
     from polylogue.cli.query_semantic import (
         SemanticStatsSlice,
         action_matches_slice,
-        filtered_action_events,
+        filtered_actions,
     )
 
     semantic_slice = SemanticStatsSlice.from_selection(selection)
@@ -467,8 +467,8 @@ def _semantic_grouped_payload(
 
     for conv in results:
         facts = build_session_semantic_facts(conv)
-        filtered_actions = filtered_action_events(facts, semantic_slice)
-        fact_counts = Counter(key_for_action(action) for action in filtered_actions)
+        conv_actions = filtered_actions(facts, semantic_slice)
+        fact_counts = Counter(key_for_action(action) for action in conv_actions)
         if not fact_counts:
             groups["none"]["convs"] += 1
             continue
@@ -477,15 +477,13 @@ def _semantic_grouped_payload(
         matched_messages += sum(
             1
             for message in facts.message_facts
-            if any(action_matches_slice(action, semantic_slice) for action in message.action_events)
+            if any(action_matches_slice(action, semantic_slice) for action in message.actions)
         )
 
         message_groups: dict[str, set[str]] = defaultdict(set)
         for message in facts.message_facts:
             for key in {
-                key_for_action(action)
-                for action in message.action_events
-                if action_matches_slice(action, semantic_slice)
+                key_for_action(action) for action in message.actions if action_matches_slice(action, semantic_slice)
             }:
                 message_groups[key].add(message.message_id)
 

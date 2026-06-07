@@ -91,10 +91,9 @@ def count_orphaned_blobs_sync(conn: sqlite3.Connection, *, db_path: Path | str |
 
 def repair_orphaned_blobs_data(config: Config, dry_run: bool = False) -> BlobRepairOutcome:
     from polylogue.storage.blob_store import get_blob_store
-    from polylogue.storage.sqlite.connection import open_read_connection
 
     blob_store = get_blob_store()
-    with open_read_connection(config.db_path) as conn:
+    with sqlite3.connect(f"file:{config.db_path}?mode=ro", uri=True) as conn:
         referenced_hashes, surfaces = _referenced_blob_hashes(conn, db_path=config.db_path)
 
     surface_detail = _surface_detail(surfaces)

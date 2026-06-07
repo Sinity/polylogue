@@ -43,20 +43,19 @@ def test_render_scenario_projections_text_lists_authored_sources() -> None:
     rendered = scenario_projections.render_scenario_projections(as_json=False)
 
     assert "Scenario Projections (" in rendered
-    assert "exercise:json-doctor-action-event-preview" in rendered
     assert "exercise:gen-schema-list" in rendered
     assert "validation-lane:machine-contract" in rendered
     assert "mutation-campaign:filters" in rendered
     assert "benchmark-campaign:search-filters" in rendered
-    assert "synthetic-benchmark:action-event-materialization" in rendered
+    assert "synthetic-benchmark:session-insight-materialization" in rendered
     assert "inferred-corpus-scenario:chatgpt:v1" in rendered
 
 
 def test_render_scenario_projections_json_is_machine_readable() -> None:
     payload = json.loads(scenario_projections.render_scenario_projections(as_json=True))
 
-    assert any(
-        entry["source_kind"] == "exercise" and entry["name"] == "json-doctor-action-event-preview" for entry in payload
+    assert not any(
+        entry["source_kind"] == "exercise" and entry["name"] == "json-doctor-action-preview" for entry in payload
     )
     assert any(entry["source_kind"] == "validation-lane" and entry["name"] == "machine-contract" for entry in payload)
     assert any(entry["source_kind"] == "mutation-campaign" and entry["name"] == "filters" for entry in payload)
@@ -81,16 +80,15 @@ def test_render_scenario_projections_supports_targeted_filters() -> None:
     rendered = scenario_projections.render_scenario_projections(
         as_json=False,
         source_kinds=("exercise",),
-        path_target="action-event-repair-loop",
-        artifact_target="action_event_rows",
-        operation_target="project-action-event-readiness",
+        path_target="session-insight-repair-loop",
+        artifact_target="session_insight_rows",
+        operation_target="project-session-insight-readiness",
         tag="maintenance",
     )
 
-    assert "exercise:json-doctor-action-event-preview" in rendered
-    assert "synthetic-benchmark:action-event-materialization" not in rendered
-    assert "exercise:json-doctor-session-insights-preview" not in rendered
-    assert "path targets: action-event-repair-loop" in rendered
+    assert "exercise:json-doctor-session-insights-preview" in rendered
+    assert "synthetic-benchmark:session-insight-materialization" not in rendered
+    assert "path targets: session-insight-repair-loop" in rendered
 
 
 def test_all_projection_operation_targets_are_declared() -> None:

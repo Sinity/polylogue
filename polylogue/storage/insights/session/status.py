@@ -178,9 +178,9 @@ SESSION_WORK_EVENT_COUNT_SQL = "SELECT COUNT(*) FROM session_work_events"
 SESSION_WORK_EVENT_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT event_id) FROM session_work_events_fts"
 SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT event_id) FROM session_work_events_fts"
 SESSION_PHASE_COUNT_SQL = "SELECT COUNT(*) FROM session_phases"
-WORK_THREAD_COUNT_SQL = "SELECT COUNT(*) FROM work_threads"
-WORK_THREAD_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT thread_id) FROM work_threads_fts"
-WORK_THREAD_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT thread_id) FROM work_threads_fts"
+THREAD_COUNT_SQL = "SELECT COUNT(*) FROM threads"
+THREAD_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT thread_id) FROM threads_fts"
+THREAD_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT thread_id) FROM threads_fts"
 SESSION_TAG_ROLLUP_COUNT_SQL = "SELECT COUNT(*) FROM session_tag_rollups"
 TOTAL_SESSIONS_SQL = "SELECT COUNT(*) FROM sessions"
 HOT_SOURCE_GRACE_SECONDS = 600
@@ -196,17 +196,17 @@ MISSING_SESSION_PROFILE_COUNT_SQL = """
     FROM sessions c
     LEFT JOIN session_profiles sp ON sp.session_id = c.session_id
     WHERE sp.session_id IS NULL
-      AND COALESCE(c.sort_key, 0.0) < {cutoff}
+      AND COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {cutoff}
 """
 MISSING_SESSION_PROFILE_COUNT_SQL = MISSING_SESSION_PROFILE_COUNT_SQL.format(cutoff=HOT_SOURCE_READY_CUTOFF_SQL)
 STALE_SESSION_PROFILE_COUNT_SQL = f"""
     SELECT COUNT(*)
     FROM sessions c
     JOIN session_profiles sp ON sp.session_id = c.session_id
-    WHERE COALESCE(c.sort_key, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
+    WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
       AND (
            sp.materializer_version != ?
-        OR ABS(COALESCE(sp.source_sort_key, 0.0) - COALESCE(c.sort_key, 0.0)) > 0.000001
+        OR ABS(COALESCE(sp.source_sort_key, 0.0) - COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0)) > 0.000001
       )
 """
 ORPHAN_SESSION_PROFILE_COUNT_SQL = """
@@ -221,16 +221,16 @@ MISSING_SESSION_LATENCY_PROFILE_COUNT_SQL = f"""
     JOIN sessions c ON c.session_id = sp.session_id
     LEFT JOIN session_latency_profiles slp ON slp.session_id = sp.session_id
     WHERE slp.session_id IS NULL
-      AND COALESCE(c.sort_key, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
+      AND COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
 """
 STALE_SESSION_LATENCY_PROFILE_COUNT_SQL = f"""
     SELECT COUNT(*)
     FROM session_latency_profiles slp
     JOIN sessions c ON c.session_id = slp.session_id
-    WHERE COALESCE(c.sort_key, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
+    WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
       AND (
            slp.materializer_version != ?
-        OR ABS(COALESCE(slp.source_sort_key, 0.0) - COALESCE(c.sort_key, 0.0)) > 0.000001
+        OR ABS(COALESCE(slp.source_sort_key, 0.0) - COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0)) > 0.000001
       )
 """
 ORPHAN_SESSION_LATENCY_PROFILE_COUNT_SQL = """
@@ -245,10 +245,10 @@ STALE_WORK_EVENT_COUNT_SQL = f"""
     SELECT COUNT(*)
     FROM session_work_events swe
     JOIN sessions c ON c.session_id = swe.session_id
-    WHERE COALESCE(c.sort_key, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
+    WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
       AND (
            swe.materializer_version != ?
-        OR ABS(COALESCE(swe.source_sort_key, 0.0) - COALESCE(c.sort_key, 0.0)) > 0.000001
+        OR ABS(COALESCE(swe.source_sort_key, 0.0) - COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0)) > 0.000001
       )
 """
 ORPHAN_SESSION_WORK_EVENT_COUNT_SQL = """
@@ -262,7 +262,7 @@ STALE_SESSION_PHASE_COUNT_SQL = """
     FROM session_phases sph
     JOIN sessions c ON c.session_id = sph.session_id
     WHERE sph.materializer_version != ?
-       OR ABS(COALESCE(sph.source_sort_key, 0.0) - COALESCE(c.sort_key, 0.0)) > 0.000001
+       OR ABS(COALESCE(sph.source_sort_key, 0.0) - COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0)) > 0.000001
 """
 ORPHAN_SESSION_PHASE_COUNT_SQL = """
     SELECT COUNT(*)
@@ -270,7 +270,7 @@ ORPHAN_SESSION_PHASE_COUNT_SQL = """
     LEFT JOIN sessions c ON c.session_id = sph.session_id
     WHERE c.session_id IS NULL
 """
-STALE_WORK_THREAD_COUNT_SQL = """
+STALE_THREAD_COUNT_SQL = """
     WITH RECURSIVE roots(root_id) AS (
         SELECT c.session_id
         FROM sessions c
@@ -285,7 +285,7 @@ STALE_WORK_THREAD_COUNT_SQL = """
         JOIN descendants d ON c.parent_session_id = d.session_id
     )
     SELECT COUNT(*)
-    FROM work_threads wt
+    FROM threads wt
     WHERE wt.materializer_version != ?
        OR EXISTS (
             SELECT 1
@@ -295,10 +295,10 @@ STALE_WORK_THREAD_COUNT_SQL = """
               AND sp.materialized_at > wt.materialized_at
        )
 """
-ORPHAN_WORK_THREAD_COUNT_SQL = """
+ORPHAN_THREAD_COUNT_SQL = """
     SELECT COUNT(*)
-    FROM work_threads wt
-    LEFT JOIN sessions c ON c.session_id = wt.root_id
+    FROM threads wt
+    LEFT JOIN sessions c ON c.session_id = wt.thread_id
     WHERE c.session_id IS NULL
 """
 EXPECTED_SESSION_TAG_ROLLUP_COUNT_SQL = f"""
@@ -354,11 +354,11 @@ SESSION_PROFILE_REPAIR_CANDIDATES_SQL = """
     SELECT c.session_id
     FROM sessions c
     LEFT JOIN session_profiles sp ON sp.session_id = c.session_id
-    WHERE COALESCE(c.sort_key, 0.0) < {cutoff}
+    WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {cutoff}
       AND (
            sp.session_id IS NULL
         OR sp.materializer_version != ?
-        OR ABS(COALESCE(sp.source_sort_key, 0.0) - COALESCE(c.sort_key, 0.0)) > 0.000001
+        OR ABS(COALESCE(sp.source_sort_key, 0.0) - COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0)) > 0.000001
       )
     ORDER BY c.session_id
 """
@@ -394,14 +394,14 @@ _TABLE_DESCRIPTORS: tuple[SessionInsightTableDescriptor, ...] = (
         count_sql=SESSION_PHASE_COUNT_SQL,
     ),
     SessionInsightTableDescriptor(
-        key="work_threads",
-        table_name="work_threads",
+        key="threads",
+        table_name="threads",
         count_key="thread_count",
-        count_sql=WORK_THREAD_COUNT_SQL,
+        count_sql=THREAD_COUNT_SQL,
     ),
     SessionInsightTableDescriptor(
-        key="work_threads_fts",
-        table_name="work_threads_fts",
+        key="threads_fts",
+        table_name="threads_fts",
     ),
     SessionInsightTableDescriptor(
         key="session_tag_rollups",
@@ -423,13 +423,13 @@ _FTS_DESCRIPTORS: tuple[SessionInsightFtsDescriptor, ...] = (
         ready_key="work_event_inference_fts_ready",
     ),
     SessionInsightFtsDescriptor(
-        table_key="work_threads_fts",
-        table_name="work_threads_fts",
+        table_key="threads_fts",
+        table_name="threads_fts",
         count_key="thread_fts_count",
         duplicate_count_key="thread_fts_duplicate_count",
         source_count_key="thread_count",
-        distinct_sql=WORK_THREAD_FTS_DOC_COUNT_SQL,
-        duplicate_sql=WORK_THREAD_FTS_DUPLICATE_COUNT_SQL,
+        distinct_sql=THREAD_FTS_DOC_COUNT_SQL,
+        duplicate_sql=THREAD_FTS_DUPLICATE_COUNT_SQL,
         ready_key="threads_fts_ready",
     ),
 )
@@ -511,15 +511,15 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
     ),
     SessionInsightCountDescriptor(
         count_key="stale_thread_count",
-        table_key="work_threads",
-        sql=STALE_WORK_THREAD_COUNT_SQL,
+        table_key="threads",
+        sql=STALE_THREAD_COUNT_SQL,
         params=(SESSION_INSIGHT_MATERIALIZER_VERSION,),
         requires_freshness=True,
     ),
     SessionInsightCountDescriptor(
         count_key="orphan_thread_count",
-        table_key="work_threads",
-        sql=ORPHAN_WORK_THREAD_COUNT_SQL,
+        table_key="threads",
+        sql=ORPHAN_THREAD_COUNT_SQL,
         requires_freshness=True,
     ),
     SessionInsightCountDescriptor(
@@ -568,7 +568,7 @@ _READY_DESCRIPTORS: tuple[SessionInsightReadyDescriptor, ...] = (
     ),
     SessionInsightReadyDescriptor(
         ready_key="threads_ready",
-        table_key="work_threads",
+        table_key="threads",
         equal_counts=(("thread_count", "root_threads"),),
         zero_counts=("stale_thread_count", "orphan_thread_count"),
     ),

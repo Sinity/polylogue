@@ -109,13 +109,13 @@ def test_build_document_includes_live_registry_sections() -> None:
             ),
             ScenarioProjectionEntry(
                 source_kind=ScenarioProjectionSourceKind.EXERCISE,
-                name="json-doctor-action-event-preview",
-                description="Action-event doctor preview.",
+                name="json-doctor-session-insights-preview",
+                description="Session-insight doctor preview.",
                 origin="generated.json-contract",
-                path_targets=("action-event-repair-loop",),
-                artifact_targets=("action_event_rows",),
-                operation_targets=("project-action-event-readiness",),
-                maintenance_targets=("action_event_read_model",),
+                path_targets=("session-insight-repair-loop",),
+                artifact_targets=("session_insight_rows",),
+                operation_targets=("project-session-insight-readiness",),
+                maintenance_targets=("session_insights",),
                 tags=("generated", "json-contract"),
             ),
             ScenarioProjectionEntry(
@@ -169,10 +169,10 @@ def test_build_document_includes_live_registry_sections() -> None:
     assert "  - inferred-corpus-scenario: `1`" in rendered
     assert "  - validation-lane: `1`" in rendered
     assert "## Scenario Projection Catalog" in rendered
-    assert "| `exercise` | `json-doctor-action-event-preview` |" in rendered
+    assert "| `exercise` | `json-doctor-session-insights-preview` |" in rendered
     assert "| `validation-lane` | `runtime-substrate-hardening` |" in rendered
     assert "| `inferred-corpus-scenario` | `chatgpt:v1` |" in rendered
-    assert "`action-event-repair-loop`" in rendered
+    assert "`session-insight-repair-loop`" in rendered
 
 
 def test_build_document_includes_runtime_coverage_section() -> None:
@@ -190,10 +190,10 @@ def test_build_document_includes_runtime_coverage_section() -> None:
     )
     coverage = RuntimeScenarioCoverage(
         artifacts={
-            "action_event_rows": (
+            "session_insight_rows": (
                 ScenarioCoverageRef(
                     source="exercise",
-                    name="json-doctor-action-event-preview",
+                    name="json-doctor-session-insights-preview",
                     origin="generated.json-contract",
                 ),
             ),
@@ -202,23 +202,23 @@ def test_build_document_includes_runtime_coverage_section() -> None:
         maintenance_targets={},
         declared_operations={},
         paths={
-            "action-event-repair-loop": RuntimePathCoverage(
-                name="action-event-repair-loop",
+            "session-insight-repair-loop": RuntimePathCoverage(
+                name="session-insight-repair-loop",
                 refs=(
                     ScenarioCoverageRef(
                         source="exercise",
-                        name="json-doctor-action-event-preview",
+                        name="json-doctor-session-insights-preview",
                         origin="generated.json-contract",
                     ),
                 ),
-                uncovered_artifacts=("tool_use_source_blocks",),
-                uncovered_operations=("materialize-action-events",),
+                uncovered_artifacts=("session_insight_fts",),
+                uncovered_operations=("materialize-session-insights",),
             ),
         },
-        uncovered_artifacts=("tool_use_source_blocks",),
-        uncovered_operations=("materialize-action-events",),
+        uncovered_artifacts=("session_insight_fts",),
+        uncovered_operations=("materialize-session-insights",),
         uncovered_maintenance_targets=("wal_checkpoint",),
-        uncovered_declared_operations=("benchmark.repair.action-events",),
+        uncovered_declared_operations=("benchmark.pipeline.index-and-helpers",),
     )
 
     rendered = render_quality_reference.build_document(registry, runtime_coverage=coverage)
@@ -228,11 +228,11 @@ def test_build_document_includes_runtime_coverage_section() -> None:
     assert "- covered runtime artifacts: `1`" in rendered
     assert "- covered maintenance targets: `0`" in rendered
     assert "- covered declared operation targets: `0`" in rendered
-    assert "- uncovered runtime paths: `action-event-repair-loop`" in rendered
-    assert "- uncovered runtime artifacts: `tool_use_source_blocks`" in rendered
-    assert "- uncovered runtime operations: `materialize-action-events`" in rendered
+    assert "- uncovered runtime paths: `session-insight-repair-loop`" in rendered
+    assert "- uncovered runtime artifacts: `session_insight_fts`" in rendered
+    assert "- uncovered runtime operations: `materialize-session-insights`" in rendered
     assert "- uncovered maintenance targets: `wal_checkpoint`" in rendered
-    assert "- uncovered declared operation targets: `benchmark.repair.action-events`" in rendered
+    assert "- uncovered declared operation targets: `benchmark.pipeline.index-and-helpers`" in rendered
     assert "devtools artifact-graph" in rendered
 
 

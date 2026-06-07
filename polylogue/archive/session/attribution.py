@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
-from polylogue.archive.action_event.action_events import ActionEvent
+from polylogue.archive.actions.actions import Action
 from polylogue.archive.semantic.facts import SessionSemanticFacts, build_session_semantic_facts
 from polylogue.archive.session.repo_identity import (
     normalize_repo_name,
@@ -177,12 +177,14 @@ class SessionAttribution:
     languages_detected: tuple[str, ...]
 
 
-def extract_attribution_from_action_events(
-    actions: tuple[ActionEvent, ...] | list[ActionEvent],
+def extract_attribution_from_actions(
+    actions: tuple[Action, ...] | list[Action],
     *,
-    provider_meta: dict[str, object] | None = None,
+    working_directories: tuple[str, ...] | list[str] = (),
+    git_branch: str | None = None,
+    git_repository_url: str | None = None,
 ) -> SessionAttribution:
-    """Extract attribution from canonical action events plus optional provider metadata."""
+    """Extract attribution from canonical actions plus typed session context."""
     repo_paths: set[str] = set()
     repo_names: set[str] = set()
     cwd_paths: set[str] = set()
@@ -190,30 +192,14 @@ def extract_attribution_from_action_events(
     file_paths: set[str] = set()
     languages: set[str] = set()
 
-    provider_meta = provider_meta if isinstance(provider_meta, dict) else {}
-    cwd_value = provider_meta.get("cwd")
-    if isinstance(cwd_value, str) and cwd_value:
-        cwd_paths.add(cwd_value)
-        _add_repo_candidate_from_path(cwd_value, repo_paths=repo_paths, repo_names=repo_names)
-    working_dirs = provider_meta.get("working_directories") or []
-    if isinstance(working_dirs, (list, tuple)):
-        for working_directory in working_dirs:
-            if isinstance(working_directory, str) and working_directory:
-                cwd_paths.add(working_directory)
-                _add_repo_candidate_from_path(working_directory, repo_paths=repo_paths, repo_names=repo_names)
-
-    git_branch = provider_meta.get("gitBranch")
     if isinstance(git_branch, str) and git_branch:
         branch_names.add(git_branch)
-
-    git_meta = provider_meta.get("git")
-    if isinstance(git_meta, dict):
-        branch = git_meta.get("branch")
-        if isinstance(branch, str) and branch:
-            branch_names.add(branch)
-        repository_url = git_meta.get("repository_url")
-        if isinstance(repository_url, str) and repository_url:
-            _add_repo_candidate_from_hint(repository_url, repo_paths=repo_paths, repo_names=repo_names)
+    if isinstance(git_repository_url, str) and git_repository_url:
+        _add_repo_candidate_from_hint(git_repository_url, repo_paths=repo_paths, repo_names=repo_names)
+    for working_directory in working_directories:
+        if working_directory:
+            cwd_paths.add(working_directory)
+            _add_repo_candidate_from_path(working_directory, repo_paths=repo_paths, repo_names=repo_names)
 
     for action in actions:
         if action.cwd_path:
@@ -250,9 +236,11 @@ def extract_attribution(
 ) -> SessionAttribution:
     """Extract path/repo/branch attribution from all tool calls in a session."""
     semantic_facts = facts or build_session_semantic_facts(session)
-    base = extract_attribution_from_action_events(
-        semantic_facts.action_events,
-        provider_meta=session.provider_meta if isinstance(session.provider_meta, dict) else None,
+    base = extract_attribution_from_actions(
+        semantic_facts.actions,
+        working_directories=session.working_directories,
+        git_branch=session.git_branch,
+        git_repository_url=session.git_repository_url,
     )
     repo_paths = set(base.repo_paths)
     repo_names = set(base.repo_names)

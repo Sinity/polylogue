@@ -13,7 +13,7 @@ from polylogue.sources.assembly import SidecarData, get_assembly_spec
 from polylogue.sources.assembly_claude_code import ClaudeCodeAssemblySpec
 from polylogue.sources.assembly_codex import CodexAssemblySpec, _parse_codex_session_index
 from polylogue.sources.assembly_gemini import GeminiAssemblySpec
-from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedProviderEvent, ParsedSession
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.sources.parsers.claude.index import (
     SessionIndexEntry,
     _looks_like_git_branch,
@@ -294,8 +294,8 @@ class TestClaudeCodeAssemblySpec:
             created_at="2025-01-01T00:00:00Z",
             updated_at="2025-01-01T00:00:00Z",
             messages=[_parsed_message("m1", "user", "hello")],
-            provider_events=[
-                ParsedProviderEvent(
+            session_events=[
+                ParsedSessionEvent(
                     event_type="compaction",
                     timestamp="2025-01-01T00:00:01Z",
                     payload={"summary": "compact"},
@@ -319,7 +319,7 @@ class TestClaudeCodeAssemblySpec:
 
         enriched = enrich_session_from_index(session, entry)
 
-        assert enriched.provider_events == session.provider_events
+        assert enriched.session_events == session.session_events
         assert enriched.parent_session_provider_id == "parent-session"
         assert enriched.branch_type == BranchType.SIDECHAIN
 

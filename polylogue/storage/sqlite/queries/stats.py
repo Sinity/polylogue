@@ -5,7 +5,6 @@ from __future__ import annotations
 import aiosqlite
 from typing_extensions import TypedDict
 
-from polylogue.core.common import SQL_STATS_UPSERT as _STATS_UPSERT_SQL
 from polylogue.storage.runtime import MessageRecord
 
 
@@ -133,7 +132,7 @@ async def aggregate_message_stats(
 
         date_row = await (
             await conn.execute(
-                f"SELECT MIN(sort_key) as min_sk, MAX(sort_key) as max_sk FROM sessions "
+                f"SELECT MIN(sort_key_ms) / 1000.0 as min_sk, MAX(sort_key_ms) / 1000.0 as max_sk FROM sessions "
                 f"WHERE session_id IN ({placeholders})",
                 cid_params,
             )
@@ -141,9 +140,9 @@ async def aggregate_message_stats(
 
         prov_rows = await (
             await conn.execute(
-                f"SELECT source_name, COUNT(*) as cnt FROM sessions "
+                f"SELECT origin AS source_name, COUNT(*) as cnt FROM sessions "
                 f"WHERE session_id IN ({placeholders}) "
-                "GROUP BY source_name ORDER BY cnt DESC",
+                "GROUP BY origin ORDER BY cnt DESC",
                 cid_params,
             )
         ).fetchall()
@@ -167,20 +166,13 @@ async def aggregate_message_stats(
             "providers": providers,
         }
 
-    # Unfiltered path — #1678: total/words moved from a full messages scan
-    # to session_stats (pre-aggregated, ~1 row per session).
-    # The role-level splits still scan messages, but the query is index-only
-    # (role is in idx_messages_provider_stats) — no table access for word_count.
-    # Provider counts also move to session_stats; this is consistent with
-    # get_provider_session_counts which queries sessions directly
-    # because zero-message sessions have no stats row.
     stats_row = await (
         await conn.execute(
             """
             SELECT
                 COALESCE(SUM(message_count), 0)  AS total_msgs,
                 COALESCE(SUM(word_count), 0)     AS total_words
-            FROM session_stats
+            FROM sessions
             """
         )
     ).fetchone()
@@ -207,12 +199,14 @@ async def aggregate_message_stats(
     }
 
     date_row = await (
-        await conn.execute("SELECT MIN(sort_key) as min_sk, MAX(sort_key) as max_sk FROM sessions")
+        await conn.execute(
+            "SELECT MIN(sort_key_ms) / 1000.0 as min_sk, MAX(sort_key_ms) / 1000.0 as max_sk FROM sessions"
+        )
     ).fetchone()
 
     prov_rows = await (
         await conn.execute(
-            "SELECT source_name, COUNT(*) as cnt FROM session_stats GROUP BY source_name ORDER BY cnt DESC"
+            "SELECT origin AS source_name, COUNT(*) as cnt FROM sessions GROUP BY origin ORDER BY cnt DESC"
         )
     ).fetchall()
     providers = {str(r["source_name"]): _row_int(r, "cnt") for r in prov_rows}
@@ -239,11 +233,11 @@ async def aggregate_message_stats(
 async def upsert_session_stats(
     conn: aiosqlite.Connection,
     session_id: str,
-    source_name: str,
+    _source_name: str,
     messages: list[MessageRecord],
     transaction_depth: int,
 ) -> None:
-    """Upsert precomputed per-session aggregate stats including per-role counts."""
+    """Update the current per-session aggregate columns on ``sessions``."""
     message_count = len(messages)
     word_count = sum(m.word_count for m in messages)
     tool_use_count = sum(1 for m in messages if m.has_tool_use)
@@ -258,10 +252,22 @@ async def upsert_session_stats(
     user_word_count = sum(m.word_count for m in messages if m.role == Role.USER)
     assistant_word_count = sum(m.word_count for m in messages if m.role == Role.ASSISTANT)
     await conn.execute(
-        _STATS_UPSERT_SQL,
+        """
+        UPDATE sessions
+        SET message_count = ?,
+            word_count = ?,
+            tool_use_count = ?,
+            thinking_count = ?,
+            paste_count = ?,
+            user_message_count = ?,
+            assistant_message_count = ?,
+            system_message_count = ?,
+            tool_message_count = ?,
+            user_word_count = ?,
+            assistant_word_count = ?
+        WHERE session_id = ?
+        """,
         (
-            session_id,
-            source_name,
             message_count,
             word_count,
             tool_use_count,
@@ -273,6 +279,7 @@ async def upsert_session_stats(
             tool_msg_count,
             user_word_count,
             assistant_word_count,
+            session_id,
         ),
     )
     if transaction_depth == 0:
@@ -296,36 +303,36 @@ async def get_stats_by(conn: aiosqlite.Connection, group_by: str = "provider") -
     if group_by == "day":
         cursor = await conn.execute(
             """
-            SELECT strftime('%Y-%m-%d', updated_at) as period, COUNT(*) as count
+            SELECT strftime('%Y-%m-%d', updated_at_ms / 1000.0, 'unixepoch') as period, COUNT(*) as count
             FROM sessions
-            WHERE updated_at IS NOT NULL
+            WHERE updated_at_ms IS NOT NULL
             GROUP BY period ORDER BY period DESC
             """
         )
     elif group_by == "month":
         cursor = await conn.execute(
             """
-            SELECT strftime('%Y-%m', updated_at) as period, COUNT(*) as count
+            SELECT strftime('%Y-%m', updated_at_ms / 1000.0, 'unixepoch') as period, COUNT(*) as count
             FROM sessions
-            WHERE updated_at IS NOT NULL
+            WHERE updated_at_ms IS NOT NULL
             GROUP BY period ORDER BY period DESC
             """
         )
     elif group_by == "year":
         cursor = await conn.execute(
             """
-            SELECT strftime('%Y', updated_at) as period, COUNT(*) as count
+            SELECT strftime('%Y', updated_at_ms / 1000.0, 'unixepoch') as period, COUNT(*) as count
             FROM sessions
-            WHERE updated_at IS NOT NULL
+            WHERE updated_at_ms IS NOT NULL
             GROUP BY period ORDER BY period DESC
             """
         )
     elif group_by == "provider":
         cursor = await conn.execute(
             """
-            SELECT source_name as period, COUNT(*) as count
+            SELECT origin as period, COUNT(*) as count
             FROM sessions
-            GROUP BY source_name ORDER BY count DESC
+            GROUP BY origin ORDER BY count DESC
             """
         )
     else:
@@ -340,9 +347,9 @@ async def get_provider_session_counts(
     """Return session counts per provider — fast, sessions-table-only query."""
     cursor = await conn.execute(
         """
-        SELECT source_name, COUNT(*) AS session_count
+        SELECT origin AS source_name, COUNT(*) AS session_count
         FROM sessions
-        GROUP BY source_name
+        GROUP BY origin
         ORDER BY session_count DESC
         """
     )
@@ -359,31 +366,24 @@ async def get_provider_session_counts(
 async def get_provider_metrics_rows(
     conn: aiosqlite.Connection,
 ) -> list[ProviderMetricsRow]:
-    """Return raw provider aggregation rows for analytics reporting.
-
-    All aggregates come from ``session_stats`` — one row per
-    session, far smaller than ``messages``. As of schema v21,
-    per-role message counts and word sums are also pre-aggregated,
-    eliminating the former messages-table scan (#1314 companion).
-    """
-    stats_cursor = await conn.execute(
-        """
+    """Return raw origin aggregation rows for analytics reporting."""
+    stats_sql = """
         SELECT
-            COALESCE(NULLIF(cs.source_name, ''), 'unknown')        AS source_name,
-            COUNT(*)                                                  AS session_count,
-            COALESCE(SUM(cs.message_count), 0)                        AS message_count,
-            COALESCE(SUM(cs.tool_use_count), 0)                       AS tool_use_count,
-            COALESCE(SUM(cs.thinking_count), 0)                       AS thinking_count,
-            SUM(CASE WHEN cs.tool_use_count > 0 THEN 1 ELSE 0 END)    AS sessions_with_tools,
-            SUM(CASE WHEN cs.thinking_count > 0 THEN 1 ELSE 0 END)    AS sessions_with_thinking,
-            COALESCE(SUM(cs.user_msg_count), 0)                       AS user_message_count,
-            COALESCE(SUM(cs.assistant_msg_count), 0)                  AS assistant_message_count,
-            COALESCE(SUM(cs.user_word_count), 0)                      AS user_word_sum,
-            COALESCE(SUM(cs.assistant_word_count), 0)                 AS assistant_word_sum
-        FROM session_stats cs
-        GROUP BY COALESCE(NULLIF(cs.source_name, ''), 'unknown')
+            origin AS source_name,
+            COUNT(*) AS session_count,
+            COALESCE(SUM(message_count), 0) AS message_count,
+            COALESCE(SUM(tool_use_count), 0) AS tool_use_count,
+            COALESCE(SUM(thinking_count), 0) AS thinking_count,
+            SUM(CASE WHEN tool_use_count > 0 THEN 1 ELSE 0 END) AS sessions_with_tools,
+            SUM(CASE WHEN thinking_count > 0 THEN 1 ELSE 0 END) AS sessions_with_thinking,
+            COALESCE(SUM(user_message_count), 0) AS user_message_count,
+            COALESCE(SUM(assistant_message_count), 0) AS assistant_message_count,
+            COALESCE(SUM(user_word_count), 0) AS user_word_sum,
+            COALESCE(SUM(assistant_word_count), 0) AS assistant_word_sum
+        FROM sessions
+        GROUP BY origin
         """
-    )
+    stats_cursor = await conn.execute(stats_sql)
     stats_rows = await stats_cursor.fetchall()
 
     merged: list[ProviderMetricsRow] = []

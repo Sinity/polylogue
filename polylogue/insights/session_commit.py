@@ -450,12 +450,12 @@ def build_correlation_result(
 # ── Database operations ─────────────────────────────────────────────────
 
 
-async def persist_session_commit_edges(
+async def persist_session_commits(
     edges: list[SessionCommitEdge],
     *,
     repo_id: int | None = None,
 ) -> None:
-    """Persist session_commit_edges to the database (placeholder).
+    """Persist session_commits to the database (placeholder).
 
     This is called by the MCP tool after detection. The actual write
     path is through the Polylogue facade / repository. This function

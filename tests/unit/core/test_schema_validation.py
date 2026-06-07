@@ -562,7 +562,7 @@ def test_live_observed_codex_records_validate(source_path: str, sample: dict[str
                                     "name": "Edit",
                                     "input": {
                                         "replace_all": False,
-                                        "file_path": "/realm/project/polylogue/polylogue/storage/sqlite/schema_ddl.py",
+                                        "file_path": "/realm/project/polylogue/polylogue/storage/sqlite/archive_tiers/index.py",
                                         "old_string": "old",
                                         "new_string": "new",
                                     },

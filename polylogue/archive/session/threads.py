@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TypeAlias, cast
 
-from polylogue.archive.session.documents import WorkThreadDocument, WorkThreadMemberEvidenceDocument
+from polylogue.archive.session.documents import ThreadDocument, ThreadMemberEvidenceDocument
 from polylogue.archive.session.repo_identity import normalize_repo_names
 from polylogue.archive.session.session_profile import SessionProfile
 from polylogue.core.payload_coercion import (
@@ -21,10 +21,10 @@ from polylogue.core.payload_coercion import (
     string_sequence,
 )
 
-WorkThreadPayload: TypeAlias = WorkThreadDocument
+ThreadPayload: TypeAlias = ThreadDocument
 
 
-def _work_thread_payload(thread: WorkThread) -> WorkThreadPayload:
+def _thread_payload(thread: Thread) -> ThreadPayload:
     return {
         "thread_id": thread.thread_id,
         "root_id": thread.root_id,
@@ -43,14 +43,12 @@ def _work_thread_payload(thread: WorkThread) -> WorkThreadPayload:
         "confidence": thread.confidence,
         "support_level": thread.support_level,
         "support_signals": list(thread.support_signals),
-        "member_evidence": [
-            cast(WorkThreadMemberEvidenceDocument, member.to_dict()) for member in thread.member_evidence
-        ],
+        "member_evidence": [cast(ThreadMemberEvidenceDocument, member.to_dict()) for member in thread.member_evidence],
     }
 
 
-def _work_thread_from_mapping(payload: Mapping[str, object]) -> WorkThread:
-    return WorkThread(
+def _thread_from_mapping(payload: Mapping[str, object]) -> Thread:
+    return Thread(
         thread_id=str(payload["thread_id"]),
         root_id=str(payload["root_id"]),
         session_ids=string_sequence(payload.get("session_ids")),
@@ -68,13 +66,13 @@ def _work_thread_from_mapping(payload: Mapping[str, object]) -> WorkThread:
         support_level=optional_string(payload.get("support_level")) or "weak",
         support_signals=string_sequence(payload.get("support_signals")),
         member_evidence=tuple(
-            WorkThreadMemberEvidence.from_dict(item) for item in mapping_sequence(payload.get("member_evidence"))
+            ThreadMemberEvidence.from_dict(item) for item in mapping_sequence(payload.get("member_evidence"))
         ),
     )
 
 
 @dataclass(frozen=True)
-class WorkThreadMemberEvidence:
+class ThreadMemberEvidence:
     session_id: str
     parent_id: str | None
     role: str
@@ -95,7 +93,7 @@ class WorkThreadMemberEvidence:
         }
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, object]) -> WorkThreadMemberEvidence:
+    def from_dict(cls, payload: Mapping[str, object]) -> ThreadMemberEvidence:
         return cls(
             session_id=str(payload["session_id"]),
             parent_id=optional_string(payload.get("parent_id")),
@@ -108,7 +106,7 @@ class WorkThreadMemberEvidence:
 
 
 @dataclass(frozen=True)
-class WorkThread:
+class Thread:
     thread_id: str
     root_id: str
     session_ids: tuple[str, ...]
@@ -125,18 +123,18 @@ class WorkThread:
     confidence: float
     support_level: str
     support_signals: tuple[str, ...]
-    member_evidence: tuple[WorkThreadMemberEvidence, ...]
+    member_evidence: tuple[ThreadMemberEvidence, ...]
 
-    def to_dict(self) -> WorkThreadPayload:
-        return _work_thread_payload(self)
-
-    @classmethod
-    def from_payload(cls, payload: WorkThreadPayload) -> WorkThread:
-        return _work_thread_from_mapping(payload)
+    def to_dict(self) -> ThreadPayload:
+        return _thread_payload(self)
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, object]) -> WorkThread:
-        return _work_thread_from_mapping(payload)
+    def from_payload(cls, payload: ThreadPayload) -> Thread:
+        return _thread_from_mapping(payload)
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> Thread:
+        return _thread_from_mapping(payload)
 
 
 def _bfs_depth(adjacency: dict[str, list[str]], root: str) -> int:
@@ -177,8 +175,8 @@ def _thread_member_evidence(
     *,
     root_id: str,
     depths: Mapping[str, int],
-) -> tuple[WorkThreadMemberEvidence, ...]:
-    members: list[WorkThreadMemberEvidence] = []
+) -> tuple[ThreadMemberEvidence, ...]:
+    members: list[ThreadMemberEvidence] = []
     for profile in thread_profiles:
         session_id = profile.session_id
         parent_id = profile.parent_id
@@ -191,7 +189,7 @@ def _thread_member_evidence(
             signals = ("parent_session_id", "explicit_lineage")
             evidence = (f"parent_id={parent_id}", f"root_id={root_id}")
         members.append(
-            WorkThreadMemberEvidence(
+            ThreadMemberEvidence(
                 session_id=session_id,
                 parent_id=parent_id,
                 role=role,
@@ -232,7 +230,7 @@ def _thread_confidence(*, session_count: int) -> float:
     return 1.0 if session_count > 1 else 0.85
 
 
-def build_session_threads(profiles: Iterable[SessionProfile]) -> list[WorkThread]:
+def build_session_threads(profiles: Iterable[SessionProfile]) -> list[Thread]:
     all_profiles = list(profiles)
     by_id = {profile.session_id: profile for profile in all_profiles}
     children: dict[str, list[str]] = defaultdict(list)
@@ -242,7 +240,7 @@ def build_session_threads(profiles: Iterable[SessionProfile]) -> list[WorkThread
     child_ids = {child_id for child_list in children.values() for child_id in child_list}
     roots = [profile for profile in all_profiles if profile.session_id not in child_ids]
 
-    threads: list[WorkThread] = []
+    threads: list[Thread] = []
     for root in roots:
         thread_ids: list[str] = []
         frontier = [root.session_id]
@@ -288,7 +286,7 @@ def build_session_threads(profiles: Iterable[SessionProfile]) -> list[WorkThread
         )
 
         threads.append(
-            WorkThread(
+            Thread(
                 thread_id=root.session_id,
                 root_id=root.session_id,
                 session_ids=tuple(thread_ids),
@@ -311,4 +309,4 @@ def build_session_threads(profiles: Iterable[SessionProfile]) -> list[WorkThread
     return threads
 
 
-__all__ = ["WorkThread", "WorkThreadMemberEvidence", "build_session_threads"]
+__all__ = ["Thread", "ThreadMemberEvidence", "build_session_threads"]

@@ -3,10 +3,6 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Sequence
 
-from polylogue.storage.action_events.rebuild_runtime import (
-    action_event_repair_candidates_sync,
-    rebuild_action_event_read_model_sync,
-)
 from polylogue.storage.fts.fts_lifecycle import (
     _chunked as _chunked,
 )
@@ -29,9 +25,6 @@ def rebuild_index(conn: sqlite3.Connection | None = None) -> None:
     """Rebuild the entire FTS5 search index from persisted message rows."""
 
     def _do(db_conn: sqlite3.Connection) -> None:
-        action_targets = action_event_repair_candidates_sync(db_conn)
-        if action_targets:
-            rebuild_action_event_read_model_sync(db_conn, session_ids=action_targets)
         rebuild_fts_index_sync(db_conn)
         db_conn.commit()
         invalidate_search_cache()
@@ -45,8 +38,6 @@ def update_index_for_sessions(session_ids: Sequence[str], conn: sqlite3.Connecti
     changed = bool(session_ids)
 
     def _do(db_conn: sqlite3.Connection) -> None:
-        if session_ids:
-            rebuild_action_event_read_model_sync(db_conn, session_ids=session_ids)
         repair_fts_index_sync(db_conn, session_ids)
         db_conn.commit()
         if changed:

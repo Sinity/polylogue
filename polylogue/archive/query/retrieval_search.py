@@ -53,7 +53,7 @@ def session_action_search_score(
     facts = build_session_semantic_facts(session)
     matches = [
         score_action_search_text(action.search_text, query_text=query_text, terms=terms)
-        for action in facts.action_events
+        for action in facts.actions
         if action.search_text
     ]
     positive = [score for score in matches if score > 0]

@@ -84,6 +84,13 @@ def _schema_lock_for_path(path: Path) -> threading.Lock:
         return lock
 
 
+def _is_initialized_archive_index(path: Path) -> bool:
+    if path.name != "index.db":
+        return False
+    root = path.parent
+    return all((root / filename).exists() for filename in ("source.db", "index.db", "user.db", "ops.db"))
+
+
 def _get_cached_connection(path: Path) -> sqlite3.Connection:
     """Return a thread-local cached connection for the given path.
 
@@ -99,6 +106,11 @@ def _get_cached_connection(path: Path) -> sqlite3.Connection:
     if key in cache:
         return cache[key]
 
+    if path.name == "index.db" and not _is_initialized_archive_index(path):
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+        initialize_active_archive_root(path.parent)
+
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=DB_TIMEOUT)
     try:
@@ -107,7 +119,10 @@ def _get_cached_connection(path: Path) -> sqlite3.Connection:
         _apply_pragma_statements(conn, WRITE_CONNECTION_PRAGMA_STATEMENTS)
         _load_sqlite_vec(conn)
         with _schema_lock_for_path(path):
-            _ensure_schema(conn)
+            if path.name == "index.db" and not _is_initialized_archive_index(path):
+                raise RuntimeError(f"Archive root was not initialized for {path}")
+            if path.name != "index.db":
+                _ensure_schema(conn)
     except BaseException:
         # Pragma/schema setup can fail (e.g. locked database). Close the
         # just-opened connection before propagating so it is neither cached
@@ -185,7 +200,8 @@ def open_read_connection(db_path: Path | str | None = None) -> Iterator[sqlite3.
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=READ_DB_TIMEOUT)
     _configure_read_connection(conn)
     try:
-        assert_readable_archive_layout(conn)
+        if not _is_initialized_archive_index(path):
+            assert_readable_archive_layout(conn)
         yield conn
     finally:
         conn.close()

@@ -523,12 +523,13 @@ function setChipQuality(el, quality) {
 function renderFtsChip(fts) {
   var el = document.getElementById('status-fts');
   var msgReady = !!fts.messages_ready;
-  var actionRequired = fts.action_events_required !== false;
-  var actReady = actionRequired ? !!fts.action_events_ready : true;
+  var indexed = Number(fts.message_indexed_count || 0);
+  var indexable = Number(fts.message_indexable_count || 0);
+  var partial = !msgReady && (indexed > 0 || indexable > 0 || Object.keys(fts.surfaces || {}).length > 0);
   var label;
   var quality;
-  if (msgReady && actReady) { label = 'FTS: ok'; quality = 'canonical'; }
-  else if (msgReady || actReady) { label = 'FTS: partial'; quality = 'partial'; }
+  if (msgReady) { label = 'FTS: ok'; quality = 'canonical'; }
+  else if (partial) { label = 'FTS: partial'; quality = 'partial'; }
   else { label = 'FTS: unavailable'; quality = 'unavailable'; }
   el.textContent = label;
   setChipQuality(el, quality);
@@ -943,7 +944,7 @@ function renderInsightThreads(convId, body) {
   if (state.insightsCollapsed[insightSectionKey(convId, 'threads')]) return html;
   var threads = body.threads || [];
   if (!threads.length) {
-    html += '<div class="inspector-field"><span class="value muted">No work-thread membership recorded.</span></div>';
+    html += '<div class="inspector-field"><span class="value muted">No thread membership recorded.</span></div>';
     return html;
   }
   threads.forEach(function(th) {
@@ -1314,9 +1315,13 @@ async function loadRawData() {
     var raw = state.selectedRaw;
     if (!raw) { area.innerHTML = '<div class="inspector-empty">No raw data available</div>'; return; }
     var html = '';
-    if (raw.provider_meta && Object.keys(raw.provider_meta).length > 0) {
-      html += '<div class="inspector-section"><h4>Provider Meta</h4>'
-        + '<div class="raw-block">' + esc(JSON.stringify(raw.provider_meta, null, 2)) + '</div></div>';
+    var sessionFacts = {};
+    if (raw.git_repository_url) sessionFacts.git_repository_url = raw.git_repository_url;
+    if (raw.git_branch) sessionFacts.git_branch = raw.git_branch;
+    if (raw.working_directories && raw.working_directories.length > 0) sessionFacts.working_directories = raw.working_directories;
+    if (Object.keys(sessionFacts).length > 0) {
+      html += '<div class="inspector-section"><h4>Session Facts</h4>'
+        + '<div class="raw-block">' + esc(JSON.stringify(sessionFacts, null, 2)) + '</div></div>';
     }
     var artifacts = raw.raw_artifacts || [];
     if (artifacts.length > 0) {

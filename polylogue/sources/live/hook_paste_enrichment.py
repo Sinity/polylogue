@@ -181,50 +181,9 @@ def enrich_paste_from_hooks(db_path: Path) -> int:
         return 0
 
     archive_index = _archive_index_path(db_path)
-    if archive_index is not None:
-        updated = _enrich_archive_paste_from_hooks(archive_index, events)
-        if updated:
-            logger.info("hook_paste: enriched %d archive message(s) from hook sidecar events", updated)
-        return updated
-
-    conn = sqlite3.connect(str(db_path))
-    updated = 0
-    try:
-        for event in events:
-            session_id = _hook_field(event, "session_id")
-            hook_epoch_ms = _hook_epoch_ms(event)
-            if not session_id or hook_epoch_ms <= 0:
-                continue
-
-            # Find messages whose session carries this session_id
-            # and whose sort_key falls within the tolerance window.
-            rows = conn.execute(
-                """
-                SELECT m.message_id
-                FROM messages m
-                JOIN sessions c ON c.session_id = m.session_id
-                WHERE c.provider_meta IS NOT NULL
-                  AND json_extract(c.provider_meta, '$.session_id') = ?
-                  AND m.role = 'user'
-                  AND m.has_paste = 0
-                  AND abs(m.sort_key - ?) < ?
-                LIMIT 1
-                """,
-                (str(session_id), hook_epoch_ms, _TIMESTAMP_TOLERANCE_MS),
-            ).fetchall()
-
-            for (message_id,) in rows:
-                conn.execute(
-                    "UPDATE messages SET has_paste = 1 WHERE message_id = ?",
-                    (message_id,),
-                )
-                updated += 1
-
-        if updated:
-            conn.commit()
-    finally:
-        conn.close()
-
+    if archive_index is None:
+        return 0
+    updated = _enrich_archive_paste_from_hooks(archive_index, events)
     if updated:
-        logger.info("hook_paste: enriched %d message(s) from hook sidecar events", updated)
+        logger.info("hook_paste: enriched %d archive message(s) from hook sidecar events", updated)
     return updated

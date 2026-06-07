@@ -86,7 +86,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
             "polylogue.pipeline.services.parsing_workflow.parse_from_raw",
             "polylogue.pipeline.prepare.prepare_records",
             "polylogue.pipeline.prepare.persist_prepared_bundle",
-            "polylogue.storage.repository.archive.writes.sessions.save_via_backend",
+            "polylogue.storage.repository.archive.repository_writes.RepositoryWriteMixin.save_parsed_session",
             "polylogue.storage.repository.raw.repository_raw.RepositoryRawMixin.mark_raw_parsed",
         ),
     ),
@@ -148,50 +148,6 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         readiness_surfaces=("embed", "retrieval", "query"),
     ),
     ArtifactNode(
-        name="tool_use_source_blocks",
-        layer=ArtifactLayer.SOURCE,
-        description="Tool-use content blocks anchored to valid sessions.",
-        depends_on=("archive_session_rows",),
-        code_refs=("polylogue.storage.action_events.status",),
-    ),
-    ArtifactNode(
-        name="action_event_rows",
-        layer=ArtifactLayer.DERIVED,
-        description="Materialized action-event read model derived from tool-use source blocks.",
-        depends_on=("tool_use_source_blocks",),
-        code_refs=(
-            "polylogue.storage.action_events.artifacts.ActionEventArtifactState",
-            "polylogue.storage.action_events.status",
-        ),
-        repair_targets=("action_event_read_model",),
-        readiness_surfaces=("doctor", "archive_debt"),
-    ),
-    ArtifactNode(
-        name="action_event_fts",
-        layer=ArtifactLayer.INDEX,
-        description="FTS projection over the action-event read model.",
-        depends_on=("action_event_rows",),
-        code_refs=(
-            "polylogue.storage.action_events.artifacts.ActionEventArtifactState",
-            "polylogue.storage.derived.insights.build_action_statuses",
-        ),
-        repair_targets=("action_event_read_model",),
-        readiness_surfaces=("doctor", "archive_debt", "retrieval_evidence"),
-    ),
-    ArtifactNode(
-        name="action_event_readiness",
-        layer=ArtifactLayer.PROJECTION,
-        description="Projected readiness, debt, and repair semantics over action-event rows and FTS.",
-        depends_on=("action_event_rows", "action_event_fts"),
-        code_refs=(
-            "polylogue.storage.derived.derived_status",
-            "polylogue.storage.repair",
-            "polylogue.storage.embeddings.support",
-        ),
-        repair_targets=("action_event_read_model",),
-        readiness_surfaces=("doctor", "archive_debt", "retrieval_evidence"),
-    ),
-    ArtifactNode(
         name="session_insight_source_sessions",
         layer=ArtifactLayer.SOURCE,
         description="Hydratable session/message/attachment/block rows that feed durable session-insight rebuilds.",
@@ -232,7 +188,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         depends_on=("session_work_event_rows",),
         code_refs=(
             "polylogue.storage.insights.session.status",
-            "polylogue.storage.sqlite.schema_ddl_insight_timelines",
+            "polylogue.storage.sqlite.archive_tiers.index",
         ),
         repair_targets=("session_insights",),
         readiness_surfaces=("doctor", "archive_debt", "insights"),
@@ -250,9 +206,9 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         readiness_surfaces=("doctor", "archive_debt", "insights"),
     ),
     ArtifactNode(
-        name="work_thread_rows",
+        name="thread_rows",
         layer=ArtifactLayer.DERIVED,
-        description="Durable work-thread rows materialized from session profile families.",
+        description="Durable thread rows materialized from session profile families.",
         depends_on=("session_profile_rows",),
         code_refs=(
             "polylogue.storage.insights.session.threads.build_thread_records_for_roots_sync",
@@ -262,13 +218,13 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         readiness_surfaces=("doctor", "archive_debt", "insights"),
     ),
     ArtifactNode(
-        name="work_thread_fts",
+        name="thread_fts",
         layer=ArtifactLayer.INDEX,
-        description="Work-thread FTS projection over durable work-thread rows.",
-        depends_on=("work_thread_rows",),
+        description="Thread FTS projection over durable thread rows.",
+        depends_on=("thread_rows",),
         code_refs=(
             "polylogue.storage.insights.session.status",
-            "polylogue.storage.sqlite.schema_ddl_insight_aggregates",
+            "polylogue.storage.sqlite.archive_tiers.index",
         ),
         repair_targets=("session_insights",),
         readiness_surfaces=("doctor", "archive_debt", "insights"),
@@ -293,7 +249,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
             "session_profile_rows",
             "session_work_event_rows",
             "session_phase_rows",
-            "work_thread_rows",
+            "thread_rows",
             "session_tag_rollup_rows",
         ),
         code_refs=(
@@ -309,7 +265,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         description="The session-insight FTS family over profiles, work events, and threads.",
         depends_on=(
             "session_work_event_fts",
-            "work_thread_fts",
+            "thread_fts",
         ),
         code_refs=(
             "polylogue.storage.insights.session.status",
@@ -339,7 +295,6 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
             "embedding_metadata_rows",
             "embedding_status_rows",
             "message_embedding_vectors",
-            "action_event_readiness",
             "session_insight_readiness",
         ),
         code_refs=(
@@ -399,12 +354,12 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         readiness_surfaces=("insights", "facade", "mcp"),
     ),
     ArtifactNode(
-        name="work_thread_results",
+        name="thread_results",
         layer=ArtifactLayer.PROJECTION,
-        description="Query/read results for durable work threads.",
-        depends_on=("work_thread_rows", "work_thread_fts"),
+        description="Query/read results for durable threads.",
+        depends_on=("thread_rows", "thread_fts"),
         code_refs=(
-            "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.list_work_thread_insights",
+            "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.list_thread_insights",
             "polylogue.cli.commands.insights",
         ),
         readiness_surfaces=("insights", "facade", "mcp"),
@@ -446,8 +401,8 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
     ArtifactNode(
         name="tool_usage_results",
         layer=ArtifactLayer.PROJECTION,
-        description="Query/read results for per-provider tool usage analytics with explicit coverage map.",
-        depends_on=("action_event_rows",),
+        description="Query/read results for per-origin tool usage analytics from the canonical actions view.",
+        depends_on=("archive_session_rows",),
         code_refs=(
             "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.list_tool_usage_insights",
             "polylogue.cli.commands.insights",
@@ -458,7 +413,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         name="archive_debt_results",
         layer=ArtifactLayer.PROJECTION,
         description="Query/read results for archive debt views derived from projected readiness and maintenance state.",
-        depends_on=("action_event_readiness", "session_insight_readiness", "archive_readiness"),
+        depends_on=("session_insight_readiness", "archive_readiness"),
         code_refs=(
             "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.list_archive_debt_insights",
             "polylogue.cli.commands.insights",
@@ -551,13 +506,13 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         name="archive_readiness",
         layer=ArtifactLayer.PROJECTION,
         description="Projected archive-wide readiness and maintenance view over message FTS and durable derived-model readiness.",
-        depends_on=("message_fts", "action_event_readiness", "session_insight_readiness", "retrieval_band_readiness"),
+        depends_on=("message_fts", "session_insight_readiness", "retrieval_band_readiness"),
         code_refs=(
             "polylogue.readiness.run_archive_readiness",
             "polylogue.storage.derived.derived_status.collect_derived_model_statuses_sync",
             "polylogue.storage.repair.collect_archive_debt_statuses_sync",
         ),
-        repair_targets=("dangling_fts", "action_event_read_model", "session_insights"),
+        repair_targets=("dangling_fts", "session_insights"),
         readiness_surfaces=("doctor", "archive_debt", "maintenance"),
     ),
 )
@@ -596,18 +551,7 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
             "parse_quarantine",
             "archive_session_rows",
             "message_source_rows",
-            "tool_use_source_blocks",
             "session_insight_source_sessions",
-        ),
-    ),
-    ArtifactPath(
-        name="action-event-repair-loop",
-        description="Tool-use source blocks through action-event rows, FTS, and projected repair semantics.",
-        nodes=(
-            "tool_use_source_blocks",
-            "action_event_rows",
-            "action_event_fts",
-            "action_event_readiness",
         ),
     ),
     ArtifactPath(
@@ -629,8 +573,8 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
             "session_work_event_rows",
             "session_work_event_fts",
             "session_phase_rows",
-            "work_thread_rows",
-            "work_thread_fts",
+            "thread_rows",
+            "thread_fts",
             "session_tag_rollup_rows",
             "session_insight_rows",
             "session_insight_fts",
@@ -651,7 +595,7 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
             "session_profile_rows",
             "session_work_event_rows",
             "session_phase_rows",
-            "work_thread_rows",
+            "thread_rows",
             "session_tag_rollup_rows",
             "session_insight_rows",
             "session_insight_fts",
@@ -660,12 +604,11 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
     ),
     ArtifactPath(
         name="retrieval-band-readiness-loop",
-        description="Embedding state plus action/session-insight readiness through retrieval-band and archive readiness projections.",
+        description="Embedding state plus session-insight readiness through retrieval-band and archive readiness projections.",
         nodes=(
             "embedding_metadata_rows",
             "embedding_status_rows",
             "message_embedding_vectors",
-            "action_event_readiness",
             "session_insight_readiness",
             "retrieval_band_readiness",
             "archive_readiness",
@@ -697,12 +640,12 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
         ),
     ),
     ArtifactPath(
-        name="work-thread-query-loop",
-        description="Durable work-thread rows through work-thread FTS and query results.",
+        name="thread-query-loop",
+        description="Durable thread rows through thread FTS and query results.",
         nodes=(
-            "work_thread_rows",
-            "work_thread_fts",
-            "work_thread_results",
+            "thread_rows",
+            "thread_fts",
+            "thread_results",
         ),
     ),
     ArtifactPath(
@@ -732,9 +675,9 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
     ),
     ArtifactPath(
         name="tool-usage-query-loop",
-        description="Canonical action event rows through tool-usage analytics query results.",
+        description="Canonical actions view over archive rows through tool-usage analytics query results.",
         nodes=(
-            "action_event_rows",
+            "archive_session_rows",
             "tool_usage_results",
         ),
     ),
@@ -753,7 +696,6 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
         name="archive-debt-query-loop",
         description="Projected derived-model readiness through archive debt query results.",
         nodes=(
-            "action_event_readiness",
             "session_insight_readiness",
             "archive_readiness",
             "archive_debt_results",
@@ -765,7 +707,6 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
         nodes=(
             "message_source_rows",
             "message_fts",
-            "action_event_readiness",
             "session_insight_readiness",
             "archive_readiness",
         ),

@@ -33,46 +33,43 @@ def _session(*, messages: list[ParsedMessage] | None = None) -> ParsedSession:
 
 
 @pytest.mark.asyncio
-async def test_save_bundle_passes_records_to_repository_and_wraps_counts() -> None:
-    bundle = SimpleNamespace(
-        session="session-record",
-        messages=["message-record"],
-        attachments=["attachment-record"],
-        content_blocks=["content-block-record"],
-        provider_events=["provider-event-record"],
-        topology_edges=[],
+async def test_persist_prepared_bundle_passes_parsed_session_to_repository() -> None:
+    session = _session(messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hi")])
+    prepared = PreparedBundle(
+        session=session,
+        materialization_plan=AttachmentMaterializationPlan(),
+        content_hash="hash-1",
+        cid="cid-1",
+        changed=True,
     )
     repository = SimpleNamespace(
-        save_session=AsyncMock(
+        save_parsed_session=AsyncMock(
             return_value={
                 "sessions": 1,
-                "messages": 2,
-                "attachments": 3,
-                "skipped_sessions": 4,
-                "skipped_messages": 5,
-                "skipped_attachments": 6,
+                "messages": 1,
+                "attachments": 0,
+                "session_events": 0,
+                "skipped_sessions": 0,
+                "skipped_messages": 0,
+                "skipped_attachments": 0,
+                "skipped_session_events": 0,
             }
         )
     )
 
-    result = await prepare_module.save_bundle(bundle, repository=repository)
+    result = await prepare_module.persist_prepared_bundle(prepared, repository=repository)
 
-    assert result == SaveResult(
+    assert result.save_result == SaveResult(
         sessions=1,
-        messages=2,
-        attachments=3,
-        skipped_sessions=4,
-        skipped_messages=5,
-        skipped_attachments=6,
+        messages=1,
+        attachments=0,
+        session_events=0,
+        skipped_sessions=0,
+        skipped_messages=0,
+        skipped_attachments=0,
+        skipped_session_events=0,
     )
-    repository.save_session.assert_awaited_once_with(
-        session="session-record",
-        messages=["message-record"],
-        attachments=["attachment-record"],
-        content_blocks=["content-block-record"],
-        provider_events=["provider-event-record"],
-        topology_edges=[],
-    )
+    repository.save_parsed_session.assert_awaited_once_with(session, "hash-1")
 
 
 @pytest.mark.asyncio
@@ -84,8 +81,9 @@ async def test_prepare_bundle_requires_context_and_can_construct_repository(tmp_
     repository = SimpleNamespace(backend=backend)
     transform = SimpleNamespace(candidate_cid="cid-1")
     prepared = PreparedBundle(
-        bundle=SimpleNamespace(),
+        session=_session(messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hi")]),
         materialization_plan=AttachmentMaterializationPlan(),
+        content_hash="hash-1",
         cid="cid-1",
         changed=False,
     )
@@ -116,8 +114,9 @@ async def test_prepare_bundle_uses_repository_backend_and_skips_cache_build_when
     repository = SimpleNamespace(backend="repo-backend")
     transform = SimpleNamespace(candidate_cid="cid-1")
     prepared = PreparedBundle(
-        bundle=SimpleNamespace(),
+        session=_session(messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hi")]),
         materialization_plan=AttachmentMaterializationPlan(),
+        content_hash="hash-1",
         cid="cid-1",
         changed=True,
     )
@@ -147,11 +146,12 @@ async def test_persist_prepared_bundle_rolls_back_failed_moves_and_cleans_duplic
     duplicate = tmp_path / "duplicate.bin"
     duplicate.write_text("dup", encoding="utf-8")
     prepared = PreparedBundle(
-        bundle=SimpleNamespace(),
+        session=_session(messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hi")]),
         materialization_plan=AttachmentMaterializationPlan(
             move_before_save=[(source, target)],
             delete_after_save=[duplicate],
         ),
+        content_hash="hash-1",
         cid="cid-1",
         changed=True,
     )
@@ -159,21 +159,20 @@ async def test_persist_prepared_bundle_rolls_back_failed_moves_and_cleans_duplic
     def materialize(source_path: Path, target_path: Path) -> None:
         target_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
 
+    repository = SimpleNamespace(
+        save_parsed_session=AsyncMock(
+            return_value={
+                "sessions": 1,
+                "messages": 2,
+                "attachments": 1,
+                "skipped_sessions": 0,
+                "skipped_messages": 0,
+                "skipped_attachments": 0,
+            }
+        )
+    )
     with patch("polylogue.pipeline.prepare.materialize_attachment_path", side_effect=materialize):
-        with patch(
-            "polylogue.pipeline.prepare.save_bundle",
-            new=AsyncMock(
-                return_value=SaveResult(
-                    sessions=1,
-                    messages=2,
-                    attachments=1,
-                    skipped_sessions=0,
-                    skipped_messages=0,
-                    skipped_attachments=0,
-                )
-            ),
-        ):
-            result = await prepare_module.persist_prepared_bundle(prepared, repository=SimpleNamespace())
+        result = await prepare_module.persist_prepared_bundle(prepared, repository=repository)
 
     assert result == PersistedSessionResult(
         session_id="cid-1",
@@ -189,11 +188,11 @@ async def test_persist_prepared_bundle_rolls_back_failed_moves_and_cleans_duplic
     )
     assert not duplicate.exists()
 
+    failing_repository = SimpleNamespace(save_parsed_session=AsyncMock(side_effect=RuntimeError("save failed")))
     with patch("polylogue.pipeline.prepare.materialize_attachment_path", side_effect=materialize):
-        with patch("polylogue.pipeline.prepare.save_bundle", new=AsyncMock(side_effect=RuntimeError("save failed"))):
-            with patch("polylogue.pipeline.prepare.move_attachment_to_archive") as move_back:
-                with pytest.raises(RuntimeError, match="save failed"):
-                    await prepare_module.persist_prepared_bundle(prepared, repository=SimpleNamespace())
+        with patch("polylogue.pipeline.prepare.move_attachment_to_archive") as move_back:
+            with pytest.raises(RuntimeError, match="save failed"):
+                await prepare_module.persist_prepared_bundle(prepared, repository=failing_repository)
 
     move_back.assert_called_once_with(target, source)
 

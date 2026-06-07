@@ -24,7 +24,7 @@ class MarkdownAttachment:
 
     attachment_id: str
     path: str | Path | None
-    provider_meta: object = None
+    display_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,15 +62,7 @@ def _escape_message_section_markers(text: str) -> str:
 
 def append_attachment_markdown(att: MarkdownAttachment, lines: list[str], archive_root: Path) -> None:
     """Append a single attachment line to a markdown output buffer."""
-    name = None
-    meta = att.provider_meta
-    if meta:
-        try:
-            meta_dict = meta if isinstance(meta, dict) else json.loads(meta) if isinstance(meta, str) else {}
-            name = meta_dict.get("name") or meta_dict.get("provider_id") or meta_dict.get("drive_id")
-        except (json.JSONDecodeError, TypeError):
-            name = None
-    label = name or att.attachment_id
+    label = att.display_name or att.attachment_id
     path_value = att.path or str(asset_path(archive_root, att.attachment_id))
     lines.append(f"- Attachment: {label} ({path_value})")
 
@@ -137,12 +129,12 @@ def _normalize_markdown_attachment(
     *,
     attachment_id: str,
     path: str | Path | None,
-    provider_meta: object,
+    display_name: str | None,
 ) -> MarkdownAttachment:
     return MarkdownAttachment(
         attachment_id=attachment_id,
         path=path,
-        provider_meta=provider_meta,
+        display_name=display_name,
     )
 
 
@@ -174,7 +166,7 @@ def _group_projection_attachments(
             _normalize_markdown_attachment(
                 attachment_id=attachment.attachment_id,
                 path=attachment.path,
-                provider_meta=attachment.provider_meta,
+                display_name=attachment.display_name,
             )
         )
     return attachments_by_message
@@ -202,7 +194,7 @@ def format_session_markdown(conv: Session) -> str:
                 _normalize_markdown_attachment(
                     attachment_id=str(att.id),
                     path=att.path,
-                    provider_meta=att.provider_meta,
+                    display_name=att.name,
                 )
                 for att in msg.attachments
             ]
@@ -212,7 +204,7 @@ def format_session_markdown(conv: Session) -> str:
             _normalize_markdown_attachment(
                 attachment_id=str(att.id),
                 path=att.path,
-                provider_meta=att.provider_meta,
+                display_name=att.name,
             )
             for att in conv.attachments
         ]

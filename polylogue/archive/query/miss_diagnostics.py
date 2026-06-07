@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
-from polylogue.archive.query.retrieval_candidates import uses_action_read_model
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.core.enums import Origin
 from polylogue.core.json import JSONDocument
@@ -179,44 +178,12 @@ def _readiness_index_reason(config: Config | None, selection: SessionQuerySpec) 
     )
 
 
-def _state_ready(state: object) -> bool:
-    ready = getattr(state, "ready", True)
-    return bool(ready)
-
-
-def _state_repair_count(state: object) -> int | None:
-    return _int_value(getattr(state, "repair_item_count", None))
-
-
-def _state_repair_detail(state: object) -> str | None:
-    repair_detail = getattr(state, "repair_detail", None)
-    if not callable(repair_detail):
-        return None
-    detail = repair_detail()
-    return str(detail) if detail else None
-
-
 async def _action_read_model_reason(
     repository: object,
     selection: SessionQuerySpec,
 ) -> QueryMissReason | None:
-    try:
-        plan = selection.to_plan()
-    except Exception:
-        logger.exception("_action_read_model_reason: selection.to_plan() failed")
-        return None
-    if not uses_action_read_model(plan):
-        return None
-    state = await _call_optional(repository, "get_action_event_artifact_state")
-    if state is None or _state_ready(state):
-        return None
-    return QueryMissReason(
-        code="action_read_model_degraded",
-        severity="warning",
-        summary="Action-event read model is not ready.",
-        detail=_state_repair_detail(state),
-        count=_state_repair_count(state),
-    )
+    del repository, selection
+    return None
 
 
 def _archive_empty_reason(archive_count: int | None) -> QueryMissReason | None:

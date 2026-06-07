@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,7 +13,7 @@ from polylogue.pipeline.prepare import prepare_records
 from polylogue.pipeline.prepare_models import PersistedSessionResult
 from polylogue.pipeline.services.validation import ValidationService
 from polylogue.schemas import ValidationResult
-from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedProviderEvent, ParsedSession
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.types import Provider
@@ -72,10 +71,10 @@ async def test_prepare_records_new_session(
     assert counts["messages"] == 1
     assert counts["skipped_sessions"] == 0
     assert changed is False
-    assert session_id == "unknown:new-conv-1"
+    assert session_id == "unknown-export:new-conv-1"
 
 
-async def test_prepare_records_persists_provider_events(
+async def test_prepare_records_persists_compaction_session_events(
     async_backend: SQLiteBackend,
     test_repository: SessionRepository,
     tmp_path: Path,
@@ -83,7 +82,7 @@ async def test_prepare_records_persists_provider_events(
     session = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="conv-events",
-        title="Provider events",
+        title="Session events",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         messages=[
@@ -94,11 +93,11 @@ async def test_prepare_records_persists_provider_events(
                 timestamp="2024-01-01T00:00:00Z",
             )
         ],
-        provider_events=[
-            ParsedProviderEvent(
-                event_type="turn_context",
+        session_events=[
+            ParsedSessionEvent(
+                event_type="compaction",
                 timestamp="2024-01-01T00:00:00Z",
-                payload={"cwd": "/repo/polylogue"},
+                payload={"summary": "Older turns compacted"},
                 source_message_provider_id="msg-1",
             )
         ],
@@ -115,31 +114,26 @@ async def test_prepare_records_persists_provider_events(
         )
     )
 
-    assert counts["provider_events"] == 1
+    assert counts["session_events"] == 1
+    archive_session_id = "codex-session:conv-events"
     async with async_backend.connection() as conn:
         row = await (
             await conn.execute(
                 """
-                SELECT pe.event_type, tc.cwd, pe.source_message_id
-                FROM provider_events pe
-                JOIN provider_event_turn_contexts tc ON tc.event_id = pe.event_id
-                WHERE pe.session_id = ?
+                SELECT event_type, summary, source_message_id
+                FROM session_events
+                WHERE session_id = ?
                 """,
-                (session_id,),
+                (archive_session_id,),
             )
         ).fetchone()
     assert row is not None
-    assert row["event_type"] == "turn_context"
-    assert row["cwd"] == "/repo/polylogue"
-    assert row["source_message_id"] == f"{session_id}:msg-1"
-    stored = await test_repository.get(session_id)
-    assert stored is not None
-    assert [event.event_type for event in stored.provider_events] == ["turn_context"]
-    assert stored.provider_events[0].payload == {"cwd": "/repo/polylogue"}
-    assert str(stored.provider_events[0].source_message_id) == f"{session_id}:msg-1"
+    assert row["event_type"] == "compaction"
+    assert row["summary"] == "Older turns compacted"
+    assert row["source_message_id"] == f"{archive_session_id}:msg-1"
 
 
-async def test_prepare_records_projects_provider_events_without_raw_payload_json(
+async def test_prepare_records_projects_agent_policy_events(
     async_backend: SQLiteBackend,
     test_repository: SessionRepository,
     tmp_path: Path,
@@ -147,7 +141,7 @@ async def test_prepare_records_projects_provider_events_without_raw_payload_json
     session = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="conv-event-raw",
-        title="Provider event raw",
+        title="Agent policy event",
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         messages=[
@@ -158,11 +152,11 @@ async def test_prepare_records_projects_provider_events_without_raw_payload_json
                 timestamp="2024-01-01T00:00:00Z",
             )
         ],
-        provider_events=[
-            ParsedProviderEvent(
-                event_type="function_call_output",
+        session_events=[
+            ParsedSessionEvent(
+                event_type="agent_policy",
                 timestamp="2024-01-01T00:00:01Z",
-                payload={"raw": {"type": "function_call_output", "call_id": "call-1", "output": "x" * 100_000}},
+                payload={"approval": "on-request", "sandbox": "workspace-write", "network": "restricted"},
                 source_message_provider_id="msg-1",
             )
         ],
@@ -178,37 +172,25 @@ async def test_prepare_records_projects_provider_events_without_raw_payload_json
         )
     )
 
-    assert counts["provider_events"] == 1
+    assert counts["session_events"] == 1
+    archive_session_id = "codex-session:conv-event-raw"
     async with async_backend.connection() as conn:
-        columns = {
-            str(row["name"]) for row in await (await conn.execute("PRAGMA table_info(provider_events)")).fetchall()
-        }
-        detail = await (
+        row = await (
             await conn.execute(
                 """
-                SELECT tc.call_id, tc.output_chars, tc.has_output_body
-                FROM provider_events pe
-                JOIN provider_event_tool_calls tc ON tc.event_id = pe.event_id
-                WHERE pe.session_id = ?
+                SELECT approval_policy, sandbox_policy, network_policy, source_message_id
+                FROM session_agent_policies
+                WHERE session_id = ?
                 """,
-                (session_id,),
+                (archive_session_id,),
             )
         ).fetchone()
 
-    assert "payload_json" not in columns
-    assert detail is not None
-    assert detail["call_id"] == "call-1"
-    assert detail["output_chars"] == 100_000
-    assert detail["has_output_body"] == 1
-
-    stored = await test_repository.get(session_id)
-    assert stored is not None
-    assert stored.provider_events[0].payload == {
-        "call_id": "call-1",
-        "output_chars": 100_000,
-        "has_input_body": False,
-        "has_output_body": True,
-    }
+    assert row is not None
+    assert row["approval_policy"] == "on-request"
+    assert row["sandbox_policy"] == "workspace-write"
+    assert row["network_policy"] == "restricted"
+    assert row["source_message_id"] == f"{archive_session_id}:msg-1"
 
 
 async def test_prepare_records_unchanged_session_skips(
@@ -372,7 +354,7 @@ async def test_prepare_records_creates_message_records(
     assert len(rows) == 2
 
 
-async def test_prepare_records_handles_empty_provider_message_ids(
+async def test_prepare_records_handles_empty_parser_message_ids(
     async_backend: SQLiteBackend,
     test_repository: SessionRepository,
     tmp_path: Path,
@@ -409,16 +391,16 @@ async def test_prepare_records_handles_empty_provider_message_ids(
     async with async_backend.connection() as conn:
         rows = await (
             await conn.execute(
-                "SELECT provider_message_id FROM messages WHERE session_id = ? ORDER BY rowid",
+                "SELECT native_id FROM messages WHERE session_id = ? ORDER BY rowid",
                 (session_id,),
             )
         ).fetchall()
-    provider_ids = [row["provider_message_id"] for row in rows]
-    assert "msg-1" in provider_ids
-    assert "msg-explicit" in provider_ids
+    native_ids = [row["native_id"] for row in rows]
+    assert None in native_ids
+    assert "msg-explicit" in native_ids
 
 
-async def test_prepare_records_stores_source_metadata(
+async def test_prepare_records_stores_typed_origin(
     async_backend: SQLiteBackend,
     test_repository: SessionRepository,
     tmp_path: Path,
@@ -448,18 +430,12 @@ async def test_prepare_records_stores_source_metadata(
     )
 
     async with async_backend.connection() as conn:
-        row = await (
-            await conn.execute(
-                "SELECT provider_meta FROM sessions WHERE session_id = ?",
-                (session_id,),
-            )
-        ).fetchone()
+        row = await (await conn.execute("SELECT origin FROM sessions WHERE session_id = ?", (session_id,))).fetchone()
     assert row is not None
-    meta = json.loads(row["provider_meta"]) if isinstance(row["provider_meta"], str) else row["provider_meta"]
-    assert meta.get("source") == "my-export"
+    assert row["origin"] == "chatgpt-export"
 
 
-async def test_prepare_records_backfills_structured_blocks_from_provider_meta(
+async def test_prepare_records_persists_structured_blocks(
     async_backend: SQLiteBackend,
     test_repository: SessionRepository,
     tmp_path: Path,
@@ -476,23 +452,18 @@ async def test_prepare_records_backfills_structured_blocks_from_provider_meta(
                 role=Role.ASSISTANT,
                 text=None,
                 timestamp="2024-01-01T00:00:00Z",
-                provider_meta={
-                    "content_blocks": [
-                        {"type": "text", "text": "inline"},
-                        {"type": "code", "text": "print('ok')", "language": "python"},
-                        {"type": "tool_result", "text": "ok"},
-                    ]
-                },
+                content_blocks=[
+                    {"type": "text", "text": "inline"},
+                    {"type": "code", "text": "print('ok')", "metadata": {"language": "python"}},
+                    {"type": "tool_result", "text": "ok"},
+                ],
             ),
             ParsedMessage(
                 provider_message_id="msg-2",
                 role=Role.ASSISTANT,
                 text=None,
                 timestamp="2024-01-01T00:00:01Z",
-                provider_meta={
-                    "content_blocks": [{"type": "thinking", "text": "reasoning"}],
-                    "reasoning_traces": [{"text": "reasoning", "token_count": 12, "provider": "gemini"}],
-                },
+                content_blocks=[{"type": "thinking", "text": "reasoning"}],
             ),
         ],
         attachments=[],
@@ -516,31 +487,36 @@ async def test_prepare_records_backfills_structured_blocks_from_provider_meta(
         block_rows = await (
             await conn.execute(
                 """
-                SELECT m.provider_message_id, cb.type, cb.text
-                FROM content_blocks cb
-                JOIN messages m ON m.message_id = cb.message_id
-                WHERE cb.session_id = ?
-                ORDER BY m.provider_message_id, cb.block_index
+                SELECT m.native_id, b.block_type, b.text
+                FROM blocks b
+                JOIN messages m ON m.message_id = b.message_id
+                WHERE b.session_id = ?
+                ORDER BY m.native_id, b.position
                 """,
                 (session_id,),
             )
         ).fetchall()
         message_rows = await (
             await conn.execute(
-                "SELECT provider_message_id, text, has_thinking FROM messages WHERE session_id = ? ORDER BY provider_message_id",
+                """
+                SELECT native_id, has_thinking
+                FROM messages
+                WHERE session_id = ?
+                ORDER BY position
+                """,
                 (session_id,),
             )
         ).fetchall()
 
-    assert [(row["provider_message_id"], row["type"], row["text"]) for row in block_rows] == [
+    assert [(row["native_id"], row["block_type"], row["text"]) for row in block_rows] == [
         ("msg-1", "text", "inline"),
         ("msg-1", "code", "print('ok')"),
         ("msg-1", "tool_result", "ok"),
         ("msg-2", "thinking", "reasoning"),
     ]
-    assert [(row["provider_message_id"], row["text"], row["has_thinking"]) for row in message_rows] == [
-        ("msg-1", None, 0),
-        ("msg-2", None, 1),
+    assert [(row["native_id"], row["has_thinking"]) for row in message_rows] == [
+        ("msg-1", 0),
+        ("msg-2", 1),
     ]
 
 
@@ -581,7 +557,7 @@ async def test_prepare_records_multiple_messages_get_unique_hashes(
         rows = list(
             await (
                 await conn.execute(
-                    "SELECT content_hash FROM messages WHERE session_id = ? ORDER BY provider_message_id",
+                    "SELECT content_hash FROM messages WHERE session_id = ? ORDER BY native_id",
                     (session_id,),
                 )
             ).fetchall()
@@ -635,7 +611,7 @@ async def test_prepare_records_with_attachments(
         attachment_refs = list(
             await (
                 await conn.execute(
-                    "SELECT ar.*, a.mime_type FROM attachment_refs ar "
+                    "SELECT ar.*, a.media_type FROM attachment_refs ar "
                     "JOIN attachments a ON ar.attachment_id = a.attachment_id "
                     "WHERE ar.session_id = ?",
                     (session_id,),
@@ -643,7 +619,7 @@ async def test_prepare_records_with_attachments(
             ).fetchall()
         )
     assert len(attachment_refs) == 1
-    assert attachment_refs[0]["mime_type"] == "application/pdf"
+    assert attachment_refs[0]["media_type"] == "application/pdf"
 
 
 async def test_prepare_records_rolls_back_attachment_move_on_save_failure(
@@ -682,7 +658,7 @@ async def test_prepare_records_rolls_back_attachment_move_on_save_failure(
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    with patch("polylogue.pipeline.prepare.save_bundle", new=AsyncMock(side_effect=RuntimeError("save failed"))):
+    with patch.object(test_repository, "save_parsed_session", new=AsyncMock(side_effect=RuntimeError("save failed"))):
         with pytest.raises(RuntimeError, match="save failed"):
             await prepare_records(
                 session,

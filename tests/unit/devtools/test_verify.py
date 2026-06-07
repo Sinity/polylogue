@@ -34,7 +34,6 @@ def test_quick_verify_omits_pytest() -> None:
         "render-all",
         "verify-topology",
         "verify-layering",
-        "verify-provider-meta-policy",
         "verify-closure-matrix",
         "verify-schema-roundtrip",
         "verify-manifests",

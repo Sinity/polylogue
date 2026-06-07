@@ -417,7 +417,7 @@ class TestReadinessProbeContract:
         import sqlite3
 
         self._patch_healthy_fast(monkeypatch)
-        # The readiness probe reads the index.db blocks_fts surface; a
+        # The readiness probe reads the index.db messages_fts surface; a
         # fresh, trigger-backed surface is ready and the bounded path must not
         # fall back to an exact ``fts_invariant_snapshot_sync`` scan.
         index_db = workspace_env["archive_root"] / "index.db"
@@ -425,17 +425,13 @@ class TestReadinessProbeContract:
         with sqlite3.connect(index_db) as conn:
             conn.executescript(
                 """
-                CREATE TABLE blocks (block_id TEXT, text TEXT);
-                CREATE TABLE blocks_fts (text TEXT);
-                CREATE TRIGGER blocks_fts_ai AFTER INSERT ON blocks BEGIN SELECT 1; END;
-                CREATE TRIGGER blocks_fts_ad AFTER DELETE ON blocks BEGIN SELECT 1; END;
-                CREATE TRIGGER blocks_fts_au AFTER UPDATE ON blocks BEGIN SELECT 1; END;
-                CREATE TABLE fts_freshness_state (
+                CREATE TABLE IF NOT EXISTS fts_freshness_state (
                     surface TEXT PRIMARY KEY,
                     state TEXT NOT NULL,
                     checked_at TEXT NOT NULL
                 );
-                INSERT INTO fts_freshness_state VALUES ('blocks_fts', 'ready', '2026-05-24T00:00:00+00:00');
+                INSERT OR REPLACE INTO fts_freshness_state
+                VALUES ('messages_fts', 'ready', '2026-05-24T00:00:00+00:00');
                 """
             )
         monkeypatch.setattr(
@@ -491,15 +487,22 @@ class TestReadinessProbeContract:
         import sqlite3
 
         self._patch_healthy_fast(monkeypatch)
-        # Native index.db with a blocks source but no blocks_fts surface ⇒
-        # the blocks_fts invariant is not ready ⇒ the probe must return 503.
+        # index.db with a block source but no fresh messages_fts state means the
+        # message FTS invariant is not ready, so the probe must return 503.
         index_db = workspace_env["archive_root"] / "index.db"
         index_db.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(index_db) as conn:
             conn.executescript(
                 """
-                CREATE TABLE blocks (block_id TEXT, text TEXT);
-                INSERT INTO blocks VALUES ('b1', 'missing from fts');
+                CREATE TABLE IF NOT EXISTS fts_freshness_state (
+                    surface TEXT PRIMARY KEY,
+                    state TEXT NOT NULL,
+                    checked_at TEXT NOT NULL
+                );
+                DELETE FROM fts_freshness_state WHERE surface = 'messages_fts';
+                INSERT INTO blocks (
+                    message_id, session_id, position, block_type, text
+                ) VALUES ('message-1', 'session-1', 0, 'text', 'missing from fts');
                 """
             )
 

@@ -166,7 +166,7 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
         artifacts=("session_phases",),
     ),
     InsightReadinessSpec(
-        insight_name="work_threads",
+        insight_name="threads",
         display_name="Work Threads",
         table_name="threads",
         row_count_attr="thread_count",
@@ -203,7 +203,7 @@ _ALIASES = {
     "profiles": "session_profiles",
     "work-events": "session_work_events",
     "phases": "session_phases",
-    "threads": "work_threads",
+    "threads": "threads",
     "tags": "session_tag_rollups",
     "coverage": "archive_coverage",
 }

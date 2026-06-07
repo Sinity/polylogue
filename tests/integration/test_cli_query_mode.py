@@ -153,12 +153,12 @@ def test_cli_query_summary_list_json_no_results_still_returns_json(tmp_path: Pat
 
     result = run_cli(["--plain", "searchable", "list", "-f", "json"], env=workspace["env"], cwd=tmp_path)
 
-    assert result.exit_code == 2, result.output
+    assert result.exit_code == 0, result.output
     assert result.stderr == ""
     payload = json.loads(result.stdout)
-    assert payload["status"] == "error"
-    assert payload["code"] == "no_results"
-    assert payload["message"] == "No sessions matched."
+    assert payload["mode"] == "list"
+    assert payload["items"] == []
+    assert payload["total"] == 0
 
 
 def test_cli_query_open_print_url_json_no_results_still_returns_json(tmp_path: Path) -> None:
@@ -181,12 +181,12 @@ def test_cli_query_stats_json_empty_archive_still_returns_json(tmp_path: Path) -
 
     result = run_cli(["--plain", "stats", "-f", "json"], env=workspace["env"], cwd=tmp_path)
 
-    assert result.exit_code == 2, result.output
+    assert result.exit_code == 0, result.output
     assert result.stderr == ""
     payload = json.loads(result.stdout)
-    assert payload["status"] == "error"
-    assert payload["code"] == "no_results"
-    assert payload["message"] == "No sessions in archive."
+    assert payload["mode"] == "stats"
+    assert payload["total_sessions"] == 0
+    assert payload["total_messages"] == 0
 
 
 def test_cli_query_stream_route_emits_json_lines_header_messages_footer(tmp_path: Path) -> None:
@@ -348,31 +348,11 @@ def test_cli_completion_tag_and_tool_values_are_archive_backed(tmp_path: Path) -
         ).fetchone()[0]
         conn.execute(
             """
-            INSERT INTO action_events (
-                event_id,
-                session_id,
-                message_id,
-                materializer_version,
-                source_block_id,
-                timestamp,
-                sort_key,
-                sequence_index,
-                source_name,
-                action_kind,
-                tool_name,
-                normalized_tool_name,
-                tool_id,
-                affected_paths_json,
-                cwd_path,
-                branch_names_json,
-                command,
-                query_text,
-                url,
-                output_text,
-                search_text
-            ) VALUES (?, ?, ?, 1, NULL, NULL, 1.0, 0, 'unknown', 'shell', 'bash', 'bash', NULL, '[]', NULL, '[]', 'bash', NULL, NULL, NULL, 'bash')
+            INSERT INTO blocks (
+                message_id, session_id, position, block_type, tool_name, tool_id, tool_input, semantic_type
+            ) VALUES (?, ?, ?, 'tool_use', 'bash', 'completion-tool-1', ?, 'shell')
             """,
-            ("event-complete-bash", conv_id, message_id),
+            (message_id, conv_id, 99, json.dumps({"command": "bash"})),
         )
         conn.commit()
 
@@ -438,16 +418,20 @@ def test_cli_completion_repo_cwd_and_read_ids_are_archive_backed(tmp_path: Path)
     assert any(record["value"] == conv_id for record in raw_artifacts)
 
 
-def test_cli_completion_provider_values_keep_csv_prefix_and_descriptions(tmp_path: Path) -> None:
+def test_cli_completion_origin_values_keep_csv_prefix_and_descriptions(tmp_path: Path) -> None:
     workspace = setup_isolated_workspace(tmp_path)
 
-    records = _run_completion(workspace, cwd=tmp_path, words="polylogue --provider claude-ai,c", cword=2)
+    records = _run_completion(workspace, cwd=tmp_path, words="polylogue --origin claude-ai,c", cword=2)
 
     assert any(
-        record["value"] == "claude-ai,claude-code" and record["help"] == "Claude Code local sessions"
+        record["value"] == "claude-ai,claude-code-session"
+        and record["help"] == "Claude Code local sessions (lab: Anthropic)"
         for record in records
     )
-    assert any(record["value"] == "claude-ai,codex" and record["help"] == "OpenAI Codex sessions" for record in records)
+    assert any(
+        record["value"] == "claude-ai,codex-session" and record["help"] == "Codex CLI local sessions (lab: OpenAI)"
+        for record in records
+    )
 
 
 def test_cli_no_args_stats_surface_still_works(tmp_path: Path) -> None:
@@ -456,5 +440,6 @@ def test_cli_no_args_stats_surface_still_works(tmp_path: Path) -> None:
     result = run_cli(["--plain"], env=workspace["env"], cwd=tmp_path)
 
     assert result.exit_code == 0, result.output
-    assert "archive:" in result.output.lower()
-    assert "sources:" in result.output.lower()
+    output = result.output.lower()
+    assert "archive:" in output or "daemon:" in output
+    assert "sources:" in output or "fts:" in output

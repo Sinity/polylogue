@@ -28,8 +28,8 @@ from polylogue.insights.archive import (
     SessionTagRollupQuery,
     SessionWorkEventInsight,
     SessionWorkEventInsightQuery,
-    WorkThreadInsight,
-    WorkThreadInsightQuery,
+    ThreadInsight,
+    ThreadInsightQuery,
 )
 from polylogue.insights.archive_rollups import aggregate_cost_rollup_insights
 from polylogue.insights.cost_enrichment import enrich_session_cost_insights
@@ -75,12 +75,12 @@ if TYPE_CHECKING:
             query: SessionPhaseInsightQuery | None = None,
         ) -> list[SessionPhaseInsight]: ...
 
-        async def get_work_thread_insight(self, thread_id: str) -> WorkThreadInsight | None: ...
+        async def get_thread_insight(self, thread_id: str) -> ThreadInsight | None: ...
 
-        async def list_work_thread_insights(
+        async def list_thread_insights(
             self,
-            query: WorkThreadInsightQuery | None = None,
-        ) -> list[WorkThreadInsight]: ...
+            query: ThreadInsightQuery | None = None,
+        ) -> list[ThreadInsight]: ...
 
         async def list_archive_coverage_insights(
             self,
@@ -214,17 +214,17 @@ def _archive_session_topology(archive: object, session_id: str) -> SessionTopolo
 
     # Surface unresolved parent links (#866/#1258): a parser asserted a
     # provider-native parent pointer that does not (yet) resolve to a stored
-    # session. These rows live in session_links with dst_session_id IS NULL;
+    # session. These rows live in session_links with resolved_dst_session_id IS NULL;
     # they must be reported so late repair has something to reconcile.
     placeholders = ", ".join("?" for _ in by_id)
     if placeholders:
         unresolved_rows = archive_store._conn.execute(
             f"""
-            SELECT src_session_id, dst_session_native_id, link_type
+            SELECT src_session_id, dst_native_id, link_type
             FROM session_links
-            WHERE dst_session_id IS NULL
+            WHERE resolved_dst_session_id IS NULL
               AND src_session_id IN ({placeholders})
-            ORDER BY observed_at_ms IS NULL, observed_at_ms, dst_session_native_id, link_type
+            ORDER BY observed_at_ms IS NULL, observed_at_ms, dst_native_id, link_type
             """,
             tuple(by_id),
         ).fetchall()
@@ -233,7 +233,7 @@ def _archive_session_topology(archive: object, session_id: str) -> SessionTopolo
                 TopologyEdge(
                     child_id=SessionId(str(row["src_session_id"])),
                     parent_id=None,
-                    parent_native_id=str(row["dst_session_native_id"]),
+                    parent_native_id=str(row["dst_native_id"]),
                     kind=TopologyEdgeKind.UNRESOLVED_NATIVE,
                     resolved=False,
                 )
@@ -385,17 +385,17 @@ class PolylogueInsightsMixin:
                 offset=request.offset,
             )
 
-    async def get_work_thread_insight(self, thread_id: str) -> WorkThreadInsight | None:
+    async def get_thread_insight(self, thread_id: str) -> ThreadInsight | None:
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.get_work_thread_insight(thread_id)
+            return archive.get_thread_insight(thread_id)
 
-    async def list_work_thread_insights(
+    async def list_thread_insights(
         self,
-        query: WorkThreadInsightQuery | None = None,
-    ) -> list[WorkThreadInsight]:
-        request = query or WorkThreadInsightQuery()
+        query: ThreadInsightQuery | None = None,
+    ) -> list[ThreadInsight]:
+        request = query or ThreadInsightQuery()
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.list_work_thread_insights(
+            return archive.list_thread_insights(
                 query=request.query,
                 since_ms=_archive_query_date_ms("since", request.since),
                 until_ms=_archive_query_date_ms("until", request.until),

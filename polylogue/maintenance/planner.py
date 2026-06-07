@@ -474,7 +474,7 @@ def preview_backfill(
         total_rows += preview.get(name, 0)
 
     # Rough estimate: ~50 rows/s for complex rebuilds (session insights,
-    # action events), ~500 rows/s for simple repairs (FTS, WAL).
+    # actions), ~500 rows/s for simple repairs (FTS, WAL).
     estimated_time_s = total_rows / 50.0 if total_rows > 0 else 0.0
 
     # Build per-target preview results from debt statuses

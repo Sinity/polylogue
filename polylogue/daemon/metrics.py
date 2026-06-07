@@ -1216,84 +1216,12 @@ def _format_ops_only_metrics(lines: list[str], ops_db: Path) -> str | None:
 
 
 def _emit_archive_metrics(lines: list[str], conn: sqlite3.Connection) -> None:
-    """Archive-level session and message counts, per provider."""
+    """Archive-level session and message counts by origin."""
     if _table_exists(conn, "sessions"):
         _emit_archive_index_metrics(lines, conn)
         return
-    if not _table_exists(conn, "sessions"):
-        for name in ("polylogue_archive_sessions_total", "polylogue_archive_messages_total"):
-            _emit_metric(lines, name=name, help_text=name, metric_type="gauge", samples=[])
-        return
-
-    # Per-provider session counts (resilient to missing column)
-    conv_cols = _columns(conn, "sessions")
-    if "source_name" in conv_cols:
-        provider_rows = conn.execute(
-            "SELECT source_name, COUNT(*) FROM sessions GROUP BY source_name ORDER BY source_name"
-        ).fetchall()
-    else:
-        provider_rows = []
-    if provider_rows:
-        _emit_metric(
-            lines,
-            name="polylogue_archive_sessions_total",
-            help_text="Total sessions in the archive by source family.",
-            metric_type="gauge",
-            samples=[({"source": str(row[0])}, int(row[1])) for row in provider_rows],
-        )
-    else:
-        _emit_metric(
-            lines,
-            name="polylogue_archive_sessions_total",
-            help_text="Total sessions.",
-            metric_type="gauge",
-            samples=[(None, 0)],
-        )
-
-    # Per-provider message counts. Aggregate through ``session_stats``
-    # instead of a full GROUP BY scan over ``messages`` — on a 3.7 M-row
-    # archive that scan took ~3.5 s on every scrape (#1629) even with the
-    # ``idx_messages_source_role`` covering index. ``session_stats``
-    # is maintained per-session by ``upsert_session_stats`` and
-    # is two orders of magnitude smaller; the ~5-row drift versus the
-    # exact count is acceptable for a metric.
-    if (
-        _table_exists(conn, "sessions")
-        and "source_name" in _columns(conn, "sessions")
-        and _table_exists(conn, "session_stats")
-        and "message_count" in _columns(conn, "session_stats")
-    ):
-        msg_rows = conn.execute(
-            """
-            SELECT c.source_name, COALESCE(SUM(cs.message_count), 0)
-            FROM sessions AS c
-            LEFT JOIN session_stats AS cs ON cs.session_id = c.session_id
-            GROUP BY c.source_name
-            ORDER BY c.source_name
-            """
-        ).fetchall()
-    elif _table_exists(conn, "messages") and "source_name" in _columns(conn, "messages"):
-        msg_rows = conn.execute(
-            "SELECT source_name, COUNT(*) FROM messages GROUP BY source_name ORDER BY source_name"
-        ).fetchall()
-    else:
-        msg_rows = []
-    if msg_rows:
-        _emit_metric(
-            lines,
-            name="polylogue_archive_messages_total",
-            help_text="Total messages in the archive by source family.",
-            metric_type="gauge",
-            samples=[({"source": str(row[0])}, int(row[1])) for row in msg_rows],
-        )
-    else:
-        _emit_metric(
-            lines,
-            name="polylogue_archive_messages_total",
-            help_text="Total messages.",
-            metric_type="gauge",
-            samples=[(None, 0)],
-        )
+    for name in ("polylogue_archive_sessions_total", "polylogue_archive_messages_total"):
+        _emit_metric(lines, name=name, help_text=name, metric_type="gauge", samples=[])
 
 
 def _emit_archive_index_metrics(lines: list[str], conn: sqlite3.Connection) -> None:
@@ -1806,51 +1734,6 @@ def _emit_raw_record_metrics(lines: list[str], conn: sqlite3.Connection, *, db_p
             lines, name="polylogue_raw_records_total", help_text="Total raw records.", metric_type="gauge", samples=[]
         )
         return
-
-    # #1629: one scan of raw_sessions instead of four separate COUNT(*).
-    counts = conn.execute(
-        """SELECT
-            COUNT(*) AS total,
-            SUM(CASE WHEN parsed_at IS NOT NULL THEN 1 ELSE 0 END) AS parsed,
-            SUM(CASE WHEN validated_at IS NOT NULL THEN 1 ELSE 0 END) AS validated,
-            SUM(CASE WHEN parse_error IS NOT NULL OR validation_status = 'failed'
-                THEN 1 ELSE 0 END) AS errors
-        FROM raw_sessions"""
-    ).fetchone()
-    total = counts["total"]
-    parsed = counts["parsed"]
-    validated = counts["validated"]
-    with_errors = counts["errors"]
-
-    _emit_metric(
-        lines,
-        name="polylogue_raw_records_total",
-        help_text="Total raw session records in the archive.",
-        metric_type="gauge",
-        samples=[
-            ({"state": "total"}, total),
-            ({"state": "parsed"}, parsed),
-            ({"state": "validated"}, validated),
-            ({"state": "errors"}, with_errors),
-        ],
-    )
-
-    # Per-provider raw record counts (resilient to missing column)
-    raw_cols = _columns(conn, "raw_sessions")
-    if "source_name" in raw_cols:
-        provider_rows = conn.execute(
-            "SELECT source_name, COUNT(*) FROM raw_sessions GROUP BY source_name ORDER BY source_name"
-        ).fetchall()
-    else:
-        provider_rows = []
-    if provider_rows:
-        _emit_metric(
-            lines,
-            name="polylogue_raw_records_by_source",
-            help_text="Raw session records by source family.",
-            metric_type="gauge",
-            samples=[({"source": str(row[0])}, int(row[1])) for row in provider_rows],
-        )
 
 
 def _emit_archive_raw_record_metrics(lines: list[str], conn: sqlite3.Connection) -> None:

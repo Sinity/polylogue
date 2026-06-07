@@ -264,7 +264,7 @@ class SessionMessagePayload(SurfacePayloadModel):
     metadata, and disabled actions without per-endpoint special cases.
 
     Every field beyond the original id/role/text/target_ref/anchor/
-    actions/timestamp/message_type/content_blocks/parent_id set is
+    actions/timestamp/message_type/blocks/parent_id set is
     additive with sensible default — so existing callers that only
     set the original fields continue to work unchanged.
     """
@@ -486,8 +486,8 @@ class SessionListRowPayload(SurfacePayloadModel):
             tags=tuple(session.tags),
             summary=session.summary,
             words=sum(message.word_count for message in session.messages),
-            repo=_extract_repo(session.provider_meta),
-            cwd_display=_extract_cwd(session.provider_meta),
+            repo=_session_repo(session),
+            cwd_display=_session_cwd(session),
             flags=_build_flags_from_session(session),
         )
 
@@ -520,8 +520,8 @@ class SessionListRowPayload(SurfacePayloadModel):
             tags=tuple(summary.tags),
             summary=summary.summary,
             words=word_count,
-            repo=repo or _extract_repo(summary.provider_meta),
-            cwd_display=cwd_display or _extract_cwd(summary.provider_meta),
+            repo=repo or _session_repo(summary),
+            cwd_display=cwd_display or _session_cwd(summary),
             flags=flags,
         )
 
@@ -1295,18 +1295,18 @@ class MutationResultPayload(SurfacePayloadModel):
 # ---------------------------------------------------------------------------
 
 
-def _extract_repo(provider_meta: dict[str, object] | None) -> str | None:
-    if provider_meta is None:
-        return None
-    repo = provider_meta.get("repo") or provider_meta.get("repository") or provider_meta.get("git_repo")
+def _session_repo(session: object) -> str | None:
+    repo = getattr(session, "git_repository_url", None)
     return str(repo) if repo else None
 
 
-def _extract_cwd(provider_meta: dict[str, object] | None) -> str | None:
-    if provider_meta is None:
-        return None
-    cwd = provider_meta.get("cwd") or provider_meta.get("working_directory") or provider_meta.get("cwd_display")
-    return str(cwd) if cwd else None
+def _session_cwd(session: object) -> str | None:
+    directories = getattr(session, "working_directories", ()) or ()
+    for directory in directories:
+        text = str(directory).strip()
+        if text:
+            return text
+    return None
 
 
 def _build_flags_from_session(session: object) -> SessionFlagsPayload | None:

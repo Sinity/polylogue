@@ -15,7 +15,6 @@ from polylogue.archive.stats import ArchiveStats
 from polylogue.config import Config
 from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.readiness import ReadinessReport
-from polylogue.storage.action_events.artifacts import ActionEventArtifactState
 
 
 def _codes(diagnostics: QueryMissDiagnostics) -> list[str]:
@@ -58,26 +57,17 @@ async def test_diagnose_query_miss_reports_raw_backlog_for_selected_origin() -> 
 
 
 @pytest.mark.asyncio
-async def test_diagnose_query_miss_reports_degraded_action_readiness() -> None:
+async def test_diagnose_query_miss_does_not_require_action_read_model() -> None:
     repo = MagicMock()
     repo.get_archive_stats = AsyncMock(return_value=ArchiveStats(total_sessions=5, total_messages=20))
     repo.get_raw_session_count = AsyncMock(return_value=0)
-    repo.get_action_event_artifact_state = AsyncMock(
-        return_value=ActionEventArtifactState(
-            source_sessions=5,
-            materialized_sessions=3,
-            materialized_rows=4,
-            fts_rows=1,
-        )
-    )
+    repo.get_action_artifact_state = AsyncMock(side_effect=AssertionError("old action readiness must not be read"))
     selection = SessionQuerySpec(action_terms=("file_edit",))
 
     diagnostics = await diagnose_query_miss(repo, selection)
 
-    assert _codes(diagnostics) == ["action_read_model_degraded"]
-    reason = diagnostics.reasons[0]
-    assert reason.count == 5
-    assert "missing sessions" in str(reason.detail)
+    assert _codes(diagnostics) == ["no_matching_session"]
+    repo.get_action_artifact_state.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -20,9 +20,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.api import Polylogue
-from polylogue.storage.sqlite.queries.sessions_identity import (
-    user_state_identity_key,
-)
+from polylogue.core.user_state_targets import identity_key
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 
@@ -57,29 +55,29 @@ def _annotation_row(user_db: Path, annotation_id: str) -> tuple[str, str, str]:
 # ---------------------------------------------------------------------------
 
 
-def test_user_state_identity_key_matches_payload_convention() -> None:
-    """``identity_key`` storage matches the ``TargetRefPayload`` surface token."""
+def test_identity_key_matches_payload_convention() -> None:
+    """The canonical ``identity_key`` token matches the surface ``TargetRefPayload``.
+
+    Marks/annotations store deterministic public target ids (``origin:native_id``);
+    the recall-pack/workspace identity token is derived from the same canonical
+    builder so storage- and surface-level tokens are wire-compatible.
+    """
     assert (
-        user_state_identity_key(
-            target_type="session",
+        identity_key(
+            "session",
             session_id="chatgpt:1",
-            message_id=None,
+            target_id="chatgpt:1",
         )
         == "session:chatgpt:1"
     )
     assert (
-        user_state_identity_key(
-            target_type="message",
+        identity_key(
+            "message",
             session_id="chatgpt:1",
-            message_id="chatgpt:1:m1",
+            target_id="chatgpt:1:m1",
         )
         == "message:chatgpt:1:chatgpt:1:m1"
     )
-
-
-def test_user_state_identity_key_rejects_message_without_message_id() -> None:
-    with pytest.raises(ValueError, match="message_id is required"):
-        user_state_identity_key(target_type="message", session_id="c", message_id=None)
 
 
 # ---------------------------------------------------------------------------

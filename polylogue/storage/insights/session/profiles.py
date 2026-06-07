@@ -138,7 +138,7 @@ def session_enrichment_payload(
     input_band_summary = {
         "user_turns": len(user_turns),
         "assistant_turns": len(assistant_turns),
-        "action_events": len(analysis.facts.action_events) if analysis is not None else 0,
+        "actions": len(analysis.facts.actions) if analysis is not None else 0,
         "touched_paths": len(profile.file_paths_touched),
         "repo_names": len(profile.repo_names),
     }
@@ -146,7 +146,7 @@ def session_enrichment_payload(
         0.95,
         0.2
         + (0.2 if user_turns else 0.0)
-        + (0.15 if analysis is not None and analysis.facts.action_events else 0.0)
+        + (0.15 if analysis is not None and analysis.facts.actions else 0.0)
         + (0.15 if profile.file_paths_touched else 0.0)
         + (0.15 if profile.repo_names else 0.0)
         + (0.1 if profile.work_events else 0.0)
@@ -766,8 +766,8 @@ def enrichment_support_signals(
     bands = text_bands or _collect_enrichment_text_bands(analysis)
     if bands.user_turns:
         signals.append("user_turns")
-    if analysis is not None and analysis.facts.action_events:
-        signals.append("action_events")
+    if analysis is not None and analysis.facts.actions:
+        signals.append("actions")
     if profile.file_paths_touched:
         signals.append("touched_paths")
     if profile.repo_names:

@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -34,6 +35,7 @@ import pytest
 
 import polylogue.sources.live.watcher as live_watcher
 from polylogue.sources.live.batch import LiveBatchProcessor
+from polylogue.sources.live.batch_support import _AppendResult, _FullIngestResult
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
 from tests.infra.io_counter import ReadCounter, read_counter
@@ -81,6 +83,41 @@ def _append_jsonl(path: Path, records: list[dict[str, object]]) -> int:
     return len(payload)
 
 
+@contextmanager
+def _mock_live_ingest(
+    proc: LiveBatchProcessor, existing_ids: dict[Path, str] | None = None
+) -> Iterator[dict[Path, str]]:
+    existing_ids = existing_ids if existing_ids is not None else {}
+
+    async def fake_full_ingest(
+        paths: list[Path],
+        *,
+        source_name: str,
+        heartbeat: Any,
+        attempt_id: str,
+    ) -> _FullIngestResult:
+        del source_name, heartbeat, attempt_id
+        return _FullIngestResult(
+            succeeded=paths,
+            failed=[],
+            source_payload_read_bytes=sum(path.stat().st_size for path in paths),
+            raw_byte_sizes={path: path.stat().st_size for path in paths},
+        )
+
+    def fake_append_ingest(plans: list[Any]) -> _AppendResult:
+        return _AppendResult(succeeded=plans, failed=[], worker_count=1)
+
+    def fake_existing_provider_session_id(path: Path) -> str | None:
+        return existing_ids.get(path)
+
+    with (
+        patch.object(proc, "_ingest_full_paths", fake_full_ingest),
+        patch.object(proc, "_ingest_append_plans", fake_append_ingest),
+        patch.object(proc, "_existing_provider_session_id", fake_existing_provider_session_id),
+    ):
+        yield existing_ids
+
+
 @pytest.fixture
 def processor(tmp_path: Path) -> Iterator[tuple[LiveBatchProcessor, Path, Path]]:
     """Real ``LiveBatchProcessor`` with mocked heavyweight ingest.
@@ -100,61 +137,18 @@ def processor(tmp_path: Path) -> Iterator[tuple[LiveBatchProcessor, Path, Path]]
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
 
-    # Mock the heavyweight ingest to a no-op success. File reads BEFORE this
-    # call (the ones we're measuring) still happen against the real FS.
-    fake_summary = SimpleNamespace(
-        failed_raw_ids=[],
-        parse_failures=0,
-        worker_count=1,
-        worker_progress_total=0,
-        worker_progress_in_flight=0,
-        worker_progress_completed=0,
-    )
-    with patch("polylogue.sources.live.batch._process_ingest_batch_sync", return_value=fake_summary):
+    existing_ids: dict[Path, str] = {}
+    cast(Any, proc)._test_existing_ids = existing_ids
+    with _mock_live_ingest(proc, existing_ids):
         yield proc, root, root
 
 
 def _seed_initial_ingest(proc: LiveBatchProcessor, path: Path, *, session_id: str = "session-abc") -> None:
-    """Run a first full ingest so the cursor + raw_sessions are populated.
-
-    For Claude Code tests we also seed a ``sessions`` row so that
-    ``_existing_provider_session_id`` returns the expected value.
-    """
+    """Run a first full ingest so the cursor is populated."""
     import asyncio
 
     asyncio.run(proc.ingest_files([path], emit_event=False))
-    # Seed the sessions row that ``_existing_provider_session_id``
-    # queries — the mocked ingest pipeline doesn't write it.
-    with proc._cursor._connect() as conn:
-        from polylogue.storage.sqlite.schema import _ensure_schema
-
-        _ensure_schema(conn)
-        row = conn.execute(
-            "SELECT raw_id FROM raw_sessions WHERE source_path = ? ORDER BY acquired_at DESC LIMIT 1",
-            (str(path),),
-        ).fetchone()
-        assert row is not None, "first ingest must produce a raw_sessions row"
-        raw_id = row[0]
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO sessions
-                (session_id, source_name, provider_session_id, title,
-                 content_hash, version, raw_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                f"claude-code:{session_id}",
-                "claude-code",
-                session_id,
-                "test session",
-                "deadbeef" * 8,
-                1,
-                raw_id,
-                "2026-05-10T00:00:00Z",
-                "2026-05-10T00:00:00Z",
-            ),
-        )
-        conn.commit()
+    cast(Any, proc)._test_existing_ids[path] = session_id
 
 
 # ---------------------------------------------------------------------------
@@ -282,15 +276,7 @@ class TestMtimeDriftCatchUp:
             cursor=cursor,
             parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         )
-        fake_summary = SimpleNamespace(
-            failed_raw_ids=[],
-            parse_failures=0,
-            worker_count=1,
-            worker_progress_total=0,
-            worker_progress_in_flight=0,
-            worker_progress_completed=0,
-        )
-        with patch("polylogue.sources.live.batch._process_ingest_batch_sync", return_value=fake_summary):
+        with _mock_live_ingest(proc):
             asyncio.run(proc.ingest_files([path], emit_event=False))
 
         # Drift the mtime — nothing else.
@@ -394,14 +380,6 @@ class TestCatchUpReadsEachFileAtMostOnce:
             cursor=cursor,
             parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         )
-        fake_summary = SimpleNamespace(
-            failed_raw_ids=[],
-            parse_failures=0,
-            worker_count=1,
-            worker_progress_total=0,
-            worker_progress_in_flight=0,
-            worker_progress_completed=0,
-        )
         paths: list[Path] = []
         for i in range(file_count):
             session_id = f"session-{i:04d}"
@@ -411,7 +389,7 @@ class TestCatchUpReadsEachFileAtMostOnce:
                 [_claude_code_record(session_id=session_id, uuid=f"msg-{j}") for j in range(3)],
             )
             paths.append(path)
-        with patch("polylogue.sources.live.batch._process_ingest_batch_sync", return_value=fake_summary):
+        with _mock_live_ingest(proc):
             asyncio.run(proc.ingest_files(paths, emit_event=False))
 
         # Drift mtime on every file (simulating filesystem touch ops

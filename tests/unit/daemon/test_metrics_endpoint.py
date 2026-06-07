@@ -169,10 +169,9 @@ class TestFormatMetricsExpositionShape:
         assert "polylogue_archive_ready 1" in body
         assert "polylogue_archive_blocker_count 0" in body
         assert 'polylogue_archive_blocker{blocker="missing_archive_tiers"} 0' in body
-        assert 'polylogue_fts_trigger_present{trigger="blocks_fts_ai"} 1' in body
-        assert 'polylogue_fts_trigger_present{trigger="blocks_fts_ad"} 1' in body
-        assert 'polylogue_fts_trigger_present{trigger="blocks_fts_au"} 1' in body
-        assert 'polylogue_fts_trigger_present{trigger="action_events_fts_ai"}' not in body
+        assert 'polylogue_fts_trigger_present{trigger="messages_fts_ai"} 1' in body
+        assert 'polylogue_fts_trigger_present{trigger="messages_fts_ad"} 1' in body
+        assert 'polylogue_fts_trigger_present{trigger="messages_fts_au"} 1' in body
 
     def test_archive_storage_metrics_report_layout_blockers(self, tmp_path: Path) -> None:
         """Partial archive roots expose blockers without activating unrelated files."""
@@ -254,10 +253,17 @@ class TestFormatMetricsReadsArchiveState:
                     operation_id TEXT,
                     acquired_at INTEGER
                 );
-                CREATE TABLE messages (message_id TEXT PRIMARY KEY);
-                CREATE TABLE messages_fts (message_id TEXT PRIMARY KEY);
+                CREATE TABLE blocks (
+                    block_id TEXT PRIMARY KEY,
+                    message_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    text TEXT,
+                    search_text TEXT
+                );
+                CREATE TABLE messages_fts (block_id TEXT PRIMARY KEY, text TEXT);
                 CREATE TABLE sessions (
                     session_id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL DEFAULT 'codex-session',
                     message_count INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE embedding_status (
@@ -267,11 +273,11 @@ class TestFormatMetricsReadsArchiveState:
                     error_message TEXT
                 );
                 CREATE TABLE message_embeddings_rowids (message_id TEXT PRIMARY KEY);
-                CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages
+                CREATE TRIGGER messages_fts_ai AFTER INSERT ON blocks
                     BEGIN SELECT 1; END;
-                CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages
+                CREATE TRIGGER messages_fts_ad AFTER DELETE ON blocks
                     BEGIN SELECT 1; END;
-                CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages
+                CREATE TRIGGER messages_fts_au AFTER UPDATE ON blocks
                     BEGIN SELECT 1; END;
                 """
             )
@@ -295,7 +301,6 @@ class TestFormatMetricsReadsArchiveState:
                 "INSERT INTO fts_freshness_state (surface, state, checked_at) VALUES (?, ?, ?)",
                 [
                     ("messages_fts", "ready", "2026-05-01T00:00:04Z"),
-                    ("action_events_fts", "stale", "2026-05-01T00:00:04Z"),
                 ],
             )
             conn.executemany(
@@ -526,16 +531,14 @@ class TestFormatMetricsReadsArchiveState:
 
     def test_fts_trigger_presence_partial(self, tmp_path: Path) -> None:
         body = format_metrics(self._make_db(tmp_path))
-        # The fixture has only the existing message FTS surface, so only its
+        # The fixture has only the message FTS surface, so only its
         # active triggers are exported.
         assert 'polylogue_fts_trigger_present{trigger="messages_fts_ai"} 1' in body
-        assert 'polylogue_fts_trigger_present{trigger="action_events_fts_ai"}' not in body
         assert "polylogue_fts_triggers_all_present 1" in body
 
     def test_fts_freshness_and_memory_state(self, tmp_path: Path) -> None:
         body = format_metrics(self._make_db(tmp_path))
         assert 'polylogue_fts_freshness_ready{surface="messages_fts"} 1' in body
-        assert 'polylogue_fts_freshness_ready{surface="action_events_fts"} 0' in body
         assert 'polylogue_live_ingest_memory_mebibytes{kind="rss_current"} 44.0' in body
         assert 'polylogue_live_ingest_memory_mebibytes{kind="cgroup_file"} 23.0' in body
 

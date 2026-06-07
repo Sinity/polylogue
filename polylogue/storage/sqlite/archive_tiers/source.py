@@ -29,8 +29,7 @@ CREATE TABLE IF NOT EXISTS raw_sessions (
     validation_error        TEXT,
     validation_drift_count  INTEGER NOT NULL DEFAULT 0 CHECK(validation_drift_count >= 0),
     validation_mode         TEXT CHECK ({nullable_check("validation_mode", ValidationMode)}),
-    detection_warnings_json TEXT NOT NULL DEFAULT '[]',
-    origin_meta             TEXT NOT NULL DEFAULT '{{}}'
+    detection_warnings_json TEXT NOT NULL DEFAULT '[]'
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_raw_sessions_origin
@@ -51,16 +50,36 @@ WHERE parsed_at_ms IS NULL
 
 CREATE TABLE IF NOT EXISTS blob_refs (
     blob_hash       BLOB NOT NULL CHECK(length(blob_hash) = 32),
-    raw_id          TEXT NOT NULL REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+    ref_id          TEXT NOT NULL,
     ref_type        TEXT NOT NULL CHECK(ref_type IN ('raw_payload', 'attachment', 'sidecar')),
     source_path     TEXT,
     size_bytes      INTEGER NOT NULL CHECK(size_bytes >= 0),
     acquired_at_ms  INTEGER NOT NULL,
-    PRIMARY KEY(blob_hash, raw_id, ref_type)
+    PRIMARY KEY(blob_hash, ref_type, ref_id)
 ) STRICT;
 
-CREATE INDEX IF NOT EXISTS idx_blob_refs_raw_id
-ON blob_refs(raw_id);
+CREATE INDEX IF NOT EXISTS idx_blob_refs_ref_id
+ON blob_refs(ref_id);
+
+CREATE TABLE IF NOT EXISTS pending_blob_refs (
+    blob_hash       BLOB NOT NULL CHECK(length(blob_hash) = 32),
+    operation_id    TEXT NOT NULL,
+    ref_type        TEXT NOT NULL,
+    ref_id          TEXT NOT NULL,
+    acquired_at_ms  INTEGER NOT NULL,
+    PRIMARY KEY(blob_hash, operation_id, ref_type, ref_id)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_pending_blob_refs_operation
+ON pending_blob_refs(operation_id);
+
+CREATE TABLE IF NOT EXISTS gc_generations (
+    generation_id    TEXT PRIMARY KEY,
+    started_at_ms    INTEGER NOT NULL,
+    completed_at_ms  INTEGER,
+    reclaimed_count  INTEGER NOT NULL DEFAULT 0 CHECK(reclaimed_count >= 0),
+    reclaimed_bytes  INTEGER NOT NULL DEFAULT 0 CHECK(reclaimed_bytes >= 0)
+) STRICT;
 
 CREATE TABLE IF NOT EXISTS raw_artifacts (
     artifact_id              TEXT PRIMARY KEY,
@@ -101,6 +120,28 @@ CREATE TABLE IF NOT EXISTS raw_hook_events (
 
 CREATE INDEX IF NOT EXISTS idx_raw_hook_events_session
 ON raw_hook_events(origin, session_native_id, observed_at_ms);
+
+CREATE TABLE IF NOT EXISTS otlp_spans (
+    span_id           TEXT PRIMARY KEY,
+    trace_id          TEXT NOT NULL,
+    parent_span_id    TEXT,
+    origin            TEXT CHECK ({nullable_check("origin", Origin)}),
+    session_native_id TEXT,
+    name              TEXT NOT NULL,
+    kind              TEXT,
+    attributes_json   TEXT NOT NULL DEFAULT '{{}}',
+    events_json       TEXT NOT NULL DEFAULT '[]',
+    started_at_ms     INTEGER,
+    ended_at_ms       INTEGER,
+    received_at_ms    INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_otlp_spans_trace
+ON otlp_spans(trace_id, started_at_ms DESC);
+
+CREATE INDEX IF NOT EXISTS idx_otlp_spans_session
+ON otlp_spans(origin, session_native_id, started_at_ms DESC)
+WHERE session_native_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS history_sidecars (
     sidecar_id      TEXT PRIMARY KEY,

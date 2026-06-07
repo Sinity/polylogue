@@ -503,11 +503,9 @@ def estimate_message_cost(
 ) -> CostEstimatePayload:
     """Estimate one message cost with explicit uncertainty.
 
-    Hydrated ``Message`` instances no longer carry ``provider_meta`` (#1256);
-    typed cost/usage facts come from the harmonized projection and the
-    ``message_token_usage`` provenance. Session-level provider metadata
-    is still consulted via ``_session_level_estimate`` for legacy
-    blob-shaped totals.
+    Typed cost/usage facts come from message columns and the
+    ``message_token_usage`` provenance. Provider-reported session totals are
+    stored in typed archive cost rows and are not read from hydrated sessions.
     """
 
     model_name = (
@@ -535,56 +533,7 @@ def estimate_message_cost(
 
 
 def _session_level_estimate(session: Session) -> CostEstimatePayload | None:
-    return estimate_cost_from_provider_meta(
-        source_name=_provider_text(session.origin),
-        session_id=str(session.id),
-        provider_meta=session.provider_meta,
-    )
-
-
-def estimate_cost_from_provider_meta(
-    *,
-    source_name: str,
-    session_id: str,
-    provider_meta: object,
-) -> CostEstimatePayload | None:
-    """Estimate session cost from ``provider_meta`` alone — no messages required.
-
-    Returns ``None`` when ``provider_meta`` carries neither a ``total_cost_usd``
-    value nor enough usage/model evidence to estimate. Callers that have the
-    full message stream may fall through to ``estimate_session_cost``
-    for a per-message aggregation; bulk/aggregate callers (#1621) that want
-    bounded cost without loading messages should accept a ``None`` here as
-    "unavailable for this session" and report it as such.
-    """
-    pm = _record(provider_meta)
-    raw = _record(pm.get("raw")) or pm
-    exact = (
-        _coerce_float(raw.get("total_cost_usd"))
-        or _coerce_float(raw.get("costUSD"))
-        or _coerce_float(raw.get("cost_usd"))
-    )
-    raw_models_used = raw.get("models_used")
-    models_used = raw_models_used if isinstance(raw_models_used, list) else []
-    first_model = next((item for item in models_used if isinstance(item, str) and item.strip()), None)
-    model_name = str(raw.get("model") or raw.get("model_slug") or first_model or "").strip() or None
-    usage = _usage_payload(raw.get("usage") or raw.get("tokens") or raw)
-    if exact is not None and exact > 0.0:
-        return _exact_estimate(
-            source_name=source_name,
-            session_id=session_id,
-            model_name=model_name,
-            usage=usage,
-            total_usd=exact,
-        )
-    if usage.billable_tokens > 0 or model_name:
-        return _estimate_from_usage(
-            source_name=source_name,
-            session_id=session_id,
-            model_name=model_name,
-            usage=usage,
-            provenance=("session_provider_meta",),
-        )
+    del session
     return None
 
 
@@ -734,7 +683,6 @@ __all__ = [
     "_normalize_model",
     "estimate_session_cost",
     "estimate_cost",
-    "estimate_cost_from_provider_meta",
     "estimate_message_cost",
     "generated_at",
     "harmonize_session_cost",

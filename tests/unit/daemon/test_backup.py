@@ -71,7 +71,6 @@ def test_backup_archive_includes_archive_files(
     data_home.mkdir(parents=True, exist_ok=True)
     archive_root.mkdir(parents=True, exist_ok=True)
     db_anchor = data_home / "index.db"
-    source_db = archive_root / "source.db"
     user_db = archive_root / "user.db"
     embeddings_db = archive_root / "embeddings.db"
     index_db = archive_root / "index.db"
@@ -79,16 +78,14 @@ def test_backup_archive_includes_archive_files(
     with sqlite3.connect(db_anchor) as conn:
         conn.execute("CREATE TABLE marker (value TEXT NOT NULL)")
         conn.execute("INSERT INTO marker VALUES ('legacy')")
-    with sqlite3.connect(source_db) as conn:
-        conn.execute("CREATE TABLE blob_refs (blob_hash BLOB NOT NULL)")
     with sqlite3.connect(user_db) as conn:
-        conn.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS marker (value TEXT NOT NULL)")
         conn.execute("INSERT INTO marker VALUES ('native-user')")
     with sqlite3.connect(embeddings_db) as conn:
-        conn.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS marker (value TEXT NOT NULL)")
         conn.execute("INSERT INTO marker VALUES ('native-embeddings')")
     with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS marker (value TEXT NOT NULL)")
         conn.execute("INSERT INTO marker VALUES ('native')")
 
     result = backup_archive(output_dir=tmp_path / "backups")
@@ -118,48 +115,31 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
     source_db = archive_root / "source.db"
     user_db = archive_root / "user.db"
     embeddings_db = archive_root / "embeddings.db"
-    index_db = archive_root / "index.db"
-    ops_db = archive_root / "ops.db"
 
     payload = b"precious raw payload"
     blob_hash, _ = BlobStore(workspace_env["data_root"] / "polylogue" / "blob").write_from_bytes(payload)
     blob_hash_bytes = bytes.fromhex(blob_hash)
 
     with sqlite3.connect(source_db) as conn:
-        conn.executescript(
+        conn.execute(
             """
-            CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                blob_hash BLOB NOT NULL
-            );
-            CREATE TABLE blob_refs (
-                blob_hash BLOB NOT NULL,
-                raw_id TEXT NOT NULL,
-                ref_type TEXT NOT NULL,
-                source_path TEXT,
-                size_bytes INTEGER NOT NULL,
-                acquired_at_ms INTEGER NOT NULL,
-                PRIMARY KEY(blob_hash, raw_id, ref_type)
-            );
-            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, validation_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("raw-one", "codex-session", "one", "/tmp/raw.jsonl", 0, blob_hash_bytes, len(payload), 1, "passed"),
         )
-        conn.execute("INSERT INTO raw_sessions VALUES (?, ?)", ("raw-one", blob_hash_bytes))
         conn.execute(
             "INSERT INTO blob_refs VALUES (?, ?, ?, ?, ?, ?)",
             (blob_hash_bytes, "raw-one", "raw_payload", "/tmp/raw.jsonl", len(payload), 1),
         )
     with sqlite3.connect(user_db) as conn:
-        conn.execute("CREATE TABLE marks (mark_id TEXT PRIMARY KEY)")
-        conn.execute("INSERT INTO marks VALUES ('mark-one')")
+        conn.execute("CREATE TABLE IF NOT EXISTS backup_test_marks (mark_id TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO backup_test_marks VALUES ('mark-one')")
     with sqlite3.connect(embeddings_db) as conn:
-        conn.execute("CREATE TABLE embedding_status (session_id TEXT PRIMARY KEY)")
-        conn.execute("INSERT INTO embedding_status VALUES ('codex-session:one')")
-    with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
-        conn.execute("INSERT INTO sessions VALUES ('rebuildable-index')")
-    with sqlite3.connect(ops_db) as conn:
-        conn.execute("CREATE TABLE ingest_attempts (attempt_id TEXT PRIMARY KEY)")
-        conn.execute("INSERT INTO ingest_attempts VALUES ('throwaway-ops')")
+        conn.execute("CREATE TABLE IF NOT EXISTS backup_test_embedding_status (session_id TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO backup_test_embedding_status VALUES ('codex-session:one')")
 
     result = backup_archive(output_dir=tmp_path / "backups", verify=True)
 
@@ -189,9 +169,9 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
     with sqlite3.connect(backup_root / "user.db") as conn:
-        assert conn.execute("SELECT mark_id FROM marks").fetchone()[0] == "mark-one"
+        assert conn.execute("SELECT mark_id FROM backup_test_marks").fetchone()[0] == "mark-one"
     with sqlite3.connect(backup_root / "embeddings.db") as conn:
-        assert conn.execute("SELECT session_id FROM embedding_status").fetchone()[0] == "codex-session:one"
+        assert conn.execute("SELECT session_id FROM backup_test_embedding_status").fetchone()[0] == "codex-session:one"
 
     manifest = json.loads((backup_root / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["mode"] == "archive_file_set"
@@ -202,7 +182,7 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
 def test_backup_archive_requires_precious_tiers(workspace_env: dict[str, Path], tmp_path: Path) -> None:
     archive_root = workspace_env["archive_root"]
     archive_root.mkdir(parents=True, exist_ok=True)
-    sqlite3.connect(archive_root / "index.db").close()
+    (archive_root / "source.db").unlink()
 
     result = backup_archive(output_dir=tmp_path / "backups")
 
@@ -221,9 +201,7 @@ def test_backup_archive_verify_marks_failed_artifact_unhealthy(
     archive_root.mkdir(parents=True, exist_ok=True)
     for name in ("source.db", "user.db", "embeddings.db"):
         with sqlite3.connect(archive_root / name) as conn:
-            conn.execute("CREATE TABLE marker (value TEXT NOT NULL)")
-    with sqlite3.connect(archive_root / "source.db") as conn:
-        conn.execute("CREATE TABLE blob_refs (blob_hash BLOB NOT NULL)")
+            conn.execute("CREATE TABLE IF NOT EXISTS marker (value TEXT NOT NULL)")
 
     monkeypatch.setattr(
         "polylogue.daemon.backup._verify_archive_file_set_backup", lambda _path: {"ok": False, "error": "bad"}

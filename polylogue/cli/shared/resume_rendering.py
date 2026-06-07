@@ -59,8 +59,8 @@ def render_resume_brief(brief: ResumeBrief) -> None:
             f"  Phase {phase.phase_index}: messages {phase.message_range[0]}-{phase.message_range[1]} "
             f"support={phase.support_level}"
         )
-    if inferences.work_thread is not None:
-        thread = inferences.work_thread
+    if inferences.thread is not None:
+        thread = inferences.thread
         click.echo(
             f"  Work thread: {thread.thread_id} sessions={thread.session_count} repo={thread.dominant_repo or '-'}"
         )

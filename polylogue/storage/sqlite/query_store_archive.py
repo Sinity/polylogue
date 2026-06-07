@@ -14,13 +14,14 @@ from polylogue.storage.runtime import (
     AttachmentRecord,
     ContentBlockRecord,
     MessageRecord,
-    ProviderEventRecord,
+    SessionEventRecord,
     SessionRecord,
 )
 from polylogue.storage.search.models import SessionSearchEvidenceRow, SessionSearchResult
 from polylogue.storage.sqlite.queries import attachments as attachments_q
 from polylogue.storage.sqlite.queries import messages as messages_q
-from polylogue.storage.sqlite.queries import provider_events as provider_events_q
+from polylogue.storage.sqlite.queries import session_events as session_events_q
+from polylogue.storage.sqlite.queries import session_links as session_links_q
 from polylogue.storage.sqlite.queries import sessions as sessions_q
 from polylogue.storage.sqlite.queries import stats as stats_q
 from polylogue.storage.sqlite.queries import tool_usage as tool_usage_q
@@ -56,6 +57,10 @@ class SQLiteQueryStoreArchiveMixin:
     async def get_sessions_batch(self, ids: list[str]) -> list[SessionRecord]:
         async with self._connection_factory() as conn:
             return await sessions_q.get_sessions_batch(conn, ids)
+
+    async def list_session_links_for_session(self, session_id: str) -> list[dict[str, object]]:
+        async with self._connection_factory() as conn:
+            return await session_links_q.list_session_links_for_session(conn, session_id)
 
     async def list_sessions(
         self,
@@ -213,16 +218,16 @@ class SQLiteQueryStoreArchiveMixin:
         async with self._connection_factory() as conn:
             return await attachments_q.get_attachments_batch(conn, session_ids)
 
-    async def get_provider_events(self, session_id: str) -> list[ProviderEventRecord]:
+    async def get_session_events(self, session_id: str) -> list[SessionEventRecord]:
         async with self._connection_factory() as conn:
-            return await provider_events_q.get_provider_events(conn, session_id)
+            return await session_events_q.get_session_events(conn, session_id)
 
-    async def get_provider_events_batch(
+    async def get_session_events_batch(
         self,
         session_ids: list[str],
-    ) -> dict[str, list[ProviderEventRecord]]:
+    ) -> dict[str, list[SessionEventRecord]]:
         async with self._connection_factory() as conn:
-            return await provider_events_q.get_provider_events_batch(conn, session_ids)
+            return await session_events_q.get_session_events_batch(conn, session_ids)
 
     async def iter_messages(
         self,

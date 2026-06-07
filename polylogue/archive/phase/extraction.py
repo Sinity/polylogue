@@ -108,18 +108,18 @@ def extract_phases(
         return phases
 
     # Fallback for sources where messages carry no timestamps but
-    # provider_events do (codex pre-Dec-2025, hermes per-request dumps).
+    # session_events do (codex pre-Dec-2025, hermes per-request dumps).
     # See #1624 — without this, session_phases is empty for 30% of the
     # archive, blinding `find_resume_candidates`, the phases lens, and
     # workflow_shape_distribution to anything codex/hermes.
-    return _phases_from_provider_events(session, messages)
+    return _phases_from_session_events(session, messages)
 
 
-def _phases_from_provider_events(
+def _phases_from_session_events(
     session: Session,
     messages: Sequence[MessageSemanticFacts],
 ) -> list[SessionPhase]:
-    event_timestamps = sorted(event.timestamp for event in session.provider_events if event.timestamp is not None)
+    event_timestamps = sorted(event.timestamp for event in session.session_events if event.timestamp is not None)
     if not event_timestamps:
         return []
 

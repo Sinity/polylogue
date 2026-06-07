@@ -383,6 +383,11 @@ def workspace_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
     # contract strictness. Keep validation deterministic and opt-in per test.
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
 
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with ArchiveStore(archive_root):
+        pass
+
     return {
         "archive_root": archive_root,
         "data_root": data_dir,
@@ -692,8 +697,10 @@ async def sqlite_backend(tmp_path: Path) -> AsyncIterator[SQLiteBackend]:
     """Create a SQLite backend for testing."""
 
     from polylogue.storage.sqlite import SQLiteBackend
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-    db_path = tmp_path / "test.db"
+    initialize_active_archive_root(tmp_path)
+    db_path = tmp_path / "index.db"
     backend = SQLiteBackend(db_path=db_path)
     yield backend
     await backend.close()
@@ -811,14 +818,15 @@ def seeded_db(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
         # Re-check after acquiring the lock — another worker may have
         # finished building while we waited.
         done_marker = shared_root / ".build.done"
-        if done_marker.exists() and db_path.exists():
+        blob_root = shared_root / "blob"
+        if done_marker.exists() and db_path.exists() and any(blob_root.glob("*/*")):
             return db_path
 
         # We hold the lock and the DB doesn't exist yet — build it.
         # Intermediate artifacts use a per-worker tmpdir; only the
         # final SQLite file lives in the shared location.
         tmp_dir = tmp_path_factory.mktemp(f"seeded-build-{worker_id}")
-        blob_store = BlobStore(tmp_dir / "blob")
+        blob_store = BlobStore(blob_root)
 
         with open_connection(db_path):
             pass

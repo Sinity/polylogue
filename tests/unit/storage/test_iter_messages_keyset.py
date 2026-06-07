@@ -1,4 +1,4 @@
-"""Old-vs-new equivalence for keyset-paginated ``iter_messages`` (#1750 F1).
+"""Equivalence checks for keyset-paginated ``iter_messages`` (#1750 F1).
 
 ``iter_messages`` was converted from ``LIMIT ? OFFSET ?`` chunking to keyset
 pagination seeded by the previous chunk's last ``(sort_key, message_id)``. The
@@ -15,15 +15,17 @@ and the optional ``limit``.
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import aiosqlite
 import pytest
 
 from polylogue.archive.message.roles import MessageRoleFilter, Role, message_role_sql_values
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.queries.message_query_reads import get_messages, iter_messages
-from polylogue.storage.sqlite.schema import _ensure_schema
 
-CONV = "conv-keyset"
+CONV = "codex-session:keyset"
 
 # (message_id, sort_key, role) fixtures covering every ordering edge case.
 _SCENARIOS: dict[str, list[tuple[str, float | None, str]]] = {
@@ -71,26 +73,37 @@ def _seed(conn: sqlite3.Connection, rows: list[tuple[str, float | None, str]]) -
     conn.execute(
         """
         INSERT INTO sessions (
-            session_id, provider_session_id, source_name, title, version
-        ) VALUES (?, 'p1', 'codex', 'Keyset', 1)
+            native_id, origin, title, content_hash
+        ) VALUES ('keyset', 'codex-session', 'Keyset', zeroblob(32))
         """,
-        (CONV,),
     )
     conn.executemany(
         """
-        INSERT INTO messages (message_id, session_id, role, sort_key, version, content_hash)
-        VALUES (?, ?, ?, ?, 1, ?)
+        INSERT INTO messages (session_id, native_id, role, position, occurred_at_ms, content_hash)
+        VALUES (?, ?, ?, ?, ?, zeroblob(32))
         """,
-        [(mid, CONV, role, sort_key, mid) for mid, sort_key, role in rows],
+        [
+            (CONV, mid, role, idx, None if sort_key is None else int(sort_key * 1000))
+            for idx, (mid, sort_key, role) in enumerate(rows)
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO blocks (message_id, session_id, position, block_type, text)
+        SELECT message_id, session_id, 0, 'text', native_id
+        FROM messages
+        WHERE session_id = ? AND native_id = ?
+        """,
+        [(CONV, mid) for mid, _sort_key, _role in rows],
     )
     conn.commit()
 
 
 def _make_db(tmp_path: object, rows: list[tuple[str, float | None, str]]) -> str:
     db_path = str(tmp_path) + "/keyset.db"
+    initialize_archive_database(Path(db_path), ArchiveTier.INDEX)
     sync_conn = sqlite3.connect(db_path)
     sync_conn.row_factory = sqlite3.Row
-    _ensure_schema(sync_conn)
     _seed(sync_conn, rows)
     sync_conn.close()
     return db_path
@@ -108,13 +121,13 @@ async def _reference_offset_walk(
     offset = 0
     yielded = 0
     while True:
-        query = "SELECT * FROM messages WHERE session_id = ?"
+        query = "SELECT message_id FROM messages WHERE session_id = ?"
         params: list[str | int] = [session_id]
         if role_values:
             placeholders = ",".join("?" for _ in role_values)
             query += f" AND role IN ({placeholders})"
             params.extend(role_values)
-        query += " ORDER BY (sort_key IS NULL), sort_key, message_id"
+        query += " ORDER BY (occurred_at_ms IS NULL), occurred_at_ms, message_id"
         fetch_limit = chunk_size
         if limit is not None:
             remaining = limit - yielded
@@ -195,34 +208,37 @@ async def test_keyset_empty_session(tmp_path: object) -> None:
 async def test_keyset_isolates_sessions(tmp_path: object) -> None:
     """The keyset cursor must not bleed rows from a sibling session."""
     db_path = str(tmp_path) + "/iso.db"
+    initialize_archive_database(Path(db_path), ArchiveTier.INDEX)
     sync_conn = sqlite3.connect(db_path)
     sync_conn.row_factory = sqlite3.Row
-    _ensure_schema(sync_conn)
     for cid, rows in (
-        ("convA", [("a1", 1.0, "user"), ("a2", None, "user"), ("a3", 2.0, "user")]),
-        ("convB", [("b1", 1.0, "user"), ("b2", None, "user")]),
+        ("codex-session:convA", [("a1", 1.0, "user"), ("a2", None, "user"), ("a3", 2.0, "user")]),
+        ("codex-session:convB", [("b1", 1.0, "user"), ("b2", None, "user")]),
     ):
         sync_conn.execute(
             """
             INSERT INTO sessions (
-                session_id, provider_session_id, source_name, title, version
-            ) VALUES (?, 'p', 'codex', 't', 1)
+                native_id, origin, title, content_hash
+            ) VALUES (?, 'codex-session', 't', zeroblob(32))
             """,
-            (cid,),
+            (cid.split(":", 1)[1],),
         )
         sync_conn.executemany(
-            "INSERT INTO messages (message_id, session_id, role, sort_key, version, content_hash) VALUES (?, ?, ?, ?, 1, ?)",
-            [(mid, cid, role, sk, mid) for mid, sk, role in rows],
+            """
+            INSERT INTO messages (session_id, native_id, role, position, occurred_at_ms, content_hash)
+            VALUES (?, ?, ?, ?, ?, zeroblob(32))
+            """,
+            [(cid, mid, role, idx, None if sk is None else int(sk * 1000)) for idx, (mid, sk, role) in enumerate(rows)],
         )
     sync_conn.commit()
     sync_conn.close()
 
     async with aiosqlite.connect(db_path) as conn:
         conn.row_factory = aiosqlite.Row
-        got = [m.message_id async for m in iter_messages(conn, "convA", chunk_size=2)]
-        canonical = [m.message_id for m in await get_messages(conn, "convA")]
+        got = [m.message_id async for m in iter_messages(conn, "codex-session:convA", chunk_size=2)]
+        canonical = [m.message_id for m in await get_messages(conn, "codex-session:convA")]
     assert got == canonical
-    assert set(got) == {"a1", "a2", "a3"}
+    assert {message_id.rsplit(":", 1)[1] for message_id in got} == {"a1", "a2", "a3"}
 
 
 __all__: list[str] = []

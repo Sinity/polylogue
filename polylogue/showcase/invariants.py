@@ -203,7 +203,7 @@ def check_provider_meta_roundtrip(db_path: str | Path) -> DbInvariantResult:
 def check_schema_consistency(db_path: str | Path) -> DbInvariantResult:
     from polylogue.storage.sqlite.connection import open_connection
 
-    _allow_empty = frozenset({"action_events_fts", "_litestream_seq", "_litestream_lock"})
+    _allow_empty = frozenset({"_litestream_seq", "_litestream_lock"})
     try:
         with open_connection(str(db_path)) as conn:
             table_rows = conn.execute(

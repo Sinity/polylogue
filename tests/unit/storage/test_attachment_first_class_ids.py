@@ -1,15 +1,16 @@
 """Contracts pinned by #1252 — first-class attachment native identifiers.
 
 These tests pin the architectural promotion of attachment native identifiers
-out of `provider_meta` into typed columns on `attachments` / `attachment_refs`:
+out of metadata buckets into typed attachment/reference tables:
 
-- `provider_attachment_id`, `provider_file_id`, `provider_drive_id`, and
-  `upload_origin` exist as real columns on both tables.
+- `attachment_native_ids` stores `(ref_id, id_kind, native_id)` values.
+- `upload_origin`, `source_url`, and `caption` are real columns on
+  `attachment_refs`.
 - Native identifiers flow as typed fields from the parser through
   `ParsedAttachment` → `MaterializedAttachment` → `AttachmentRecord` and into
   the stored rows.
 - The hot-path attachment identity lookup (`search_attachment_identity_evidence_hits`)
-  resolves against stored columns, not `json_extract` on `provider_meta`.
+  resolves against stored rows, not `json_extract` on metadata.
 - The composite `(upload_origin, session_id)` index that the #1199
   attachment library UI relies on exists in the canonical schema.
 
@@ -30,7 +31,7 @@ from polylogue.sources.parsers.base_models import ParsedAttachment
 from polylogue.storage.sqlite.queries.attachment_records import (
     search_attachment_identity_evidence_hits,
 )
-from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
+from polylogue.storage.sqlite.schema import SCHEMA_DDL
 
 
 @pytest.fixture()
@@ -49,24 +50,28 @@ def fresh_schema_db() -> Generator[Mapping[str, sqlite3.Connection], None, None]
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("table", ["attachments", "attachment_refs"])
-def test_native_identifier_columns_are_first_class(
-    table: str,
+def test_native_identifier_rows_are_first_class(
     fresh_schema_db: Mapping[str, sqlite3.Connection],
 ) -> None:
-    """#1252: provider_attachment_id / provider_file_id / provider_drive_id /
-    upload_origin are TEXT columns on attachments and attachment_refs."""
+    """#1252: attachment native IDs are stored in a typed child table."""
     conn = fresh_schema_db["conn"]
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    rows = conn.execute("PRAGMA table_info(attachment_native_ids)").fetchall()
     cols = {row["name"]: row["type"] for row in rows}
-    for expected in (
-        "provider_attachment_id",
-        "provider_file_id",
-        "provider_drive_id",
-        "upload_origin",
-    ):
-        assert expected in cols, f"#1252: {table}.{expected} must be a real column"
-        assert cols[expected] == "TEXT", f"#1252: {table}.{expected} must be TEXT, got {cols[expected]}"
+    assert cols == {"ref_id": "TEXT", "id_kind": "TEXT", "native_id": "TEXT"}
+    pk_cols = [row["name"] for row in rows if row["pk"]]
+    assert pk_cols == ["ref_id", "id_kind", "native_id"]
+
+
+def test_attachment_ref_context_columns_are_first_class(
+    fresh_schema_db: Mapping[str, sqlite3.Connection],
+) -> None:
+    """Attachment refs carry reference context as typed columns."""
+    conn = fresh_schema_db["conn"]
+    rows = conn.execute("PRAGMA table_info(attachment_refs)").fetchall()
+    cols = {row["name"]: row["type"] for row in rows}
+    for expected in ("upload_origin", "source_url", "caption"):
+        assert expected in cols, f"#1252: attachment_refs.{expected} must be a real column"
+        assert cols[expected] == "TEXT", f"#1252: attachment_refs.{expected} must be TEXT, got {cols[expected]}"
 
 
 def test_upload_origin_index_supports_attachment_library_grouping(
@@ -194,31 +199,56 @@ def _insert_attachment_row(
     conn.execute(
         """
         INSERT INTO attachments (
-            attachment_id, mime_type, size_bytes, path, ref_count, provider_meta,
-            provider_attachment_id, provider_file_id, provider_drive_id, upload_origin
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            attachment_id, display_name, media_type, byte_count, blob_hash, ref_count
+        ) VALUES (?, ?, ?, ?, zeroblob(32), ?)
         """,
         (
             attachment_id,
             None,
             None,
-            None,
             0,
-            None,
-            provider_attachment_id,
-            provider_file_id,
-            provider_drive_id,
-            upload_origin,
+            1,
         ),
+    )
+    conn.execute(
+        """
+        INSERT INTO sessions (native_id, origin, content_hash)
+        VALUES ('session-1', 'gemini-cli-session', zeroblob(32))
+        """,
+    )
+    conn.execute(
+        """
+        INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash)
+        VALUES ('gemini-cli-session:session-1', 'message-1', 0, 'user', 'message', zeroblob(32))
+        """,
+    )
+    conn.execute(
+        """
+        INSERT INTO attachment_refs (
+            attachment_id, session_id, message_id, position, upload_origin
+        ) VALUES (?, 'gemini-cli-session:session-1', 'gemini-cli-session:session-1:message-1', 0, ?)
+        """,
+        (attachment_id, upload_origin),
+    )
+    ref_id = "gemini-cli-session:session-1:message-1:attachment:0"
+    native_rows = [
+        ("attachment", provider_attachment_id),
+        ("file", provider_file_id),
+        ("drive", provider_drive_id),
+    ]
+    conn.executemany(
+        """
+        INSERT INTO attachment_native_ids (ref_id, id_kind, native_id)
+        VALUES (?, ?, ?)
+        """,
+        [(ref_id, kind, value) for kind, value in native_rows if value is not None],
     )
 
 
 def test_attachment_record_columns_persist_and_read_back(
     fresh_schema_db: Mapping[str, sqlite3.Connection],
 ) -> None:
-    """Inserts using the canonical column shape must roundtrip every typed
-    identifier — provider_attachment_id, provider_file_id, provider_drive_id,
-    upload_origin."""
+    """The canonical attachment shape roundtrips native IDs and ref context."""
     conn = fresh_schema_db["conn"]
     _insert_attachment_row(
         conn,
@@ -228,15 +258,22 @@ def test_attachment_record_columns_persist_and_read_back(
         provider_drive_id="pd-1",
         upload_origin="drive",
     )
-    row = conn.execute(
-        "SELECT provider_attachment_id, provider_file_id, provider_drive_id, upload_origin "
-        "FROM attachments WHERE attachment_id = ?",
+    rows = conn.execute(
+        """
+        SELECT ani.id_kind, ani.native_id, ar.upload_origin
+        FROM attachment_refs ar
+        JOIN attachment_native_ids ani ON ani.ref_id = ar.ref_id
+        WHERE ar.attachment_id = ?
+        ORDER BY ani.id_kind
+        """,
         ("att-1",),
-    ).fetchone()
-    assert row["provider_attachment_id"] == "pa-1"
-    assert row["provider_file_id"] == "pf-1"
-    assert row["provider_drive_id"] == "pd-1"
-    assert row["upload_origin"] == "drive"
+    ).fetchall()
+    assert [(row["id_kind"], row["native_id"]) for row in rows] == [
+        ("attachment", "pa-1"),
+        ("drive", "pd-1"),
+        ("file", "pf-1"),
+    ]
+    assert {row["upload_origin"] for row in rows} == {"drive"}
 
 
 # ---------------------------------------------------------------------------
@@ -247,11 +284,7 @@ def test_attachment_record_columns_persist_and_read_back(
 @pytest.mark.asyncio
 async def test_attachment_identity_lookup_uses_stored_columns(tmp_path: Path) -> None:
     """#1252: search_attachment_identity_evidence_hits must locate the
-    attachment via stored columns even when provider_meta is empty/NULL.
-
-    The previous implementation read identifiers through `json_extract`
-    against `provider_meta`; storing the identifiers in their canonical
-    columns and leaving `provider_meta = NULL` is now sufficient to find them.
+    attachment via stored rows without any metadata bucket.
     """
     import aiosqlite
 
@@ -261,23 +294,31 @@ async def test_attachment_identity_lookup_uses_stored_columns(tmp_path: Path) ->
     try:
         bootstrap.executescript(SCHEMA_DDL)
         bootstrap.execute(
-            "INSERT INTO sessions (session_id, source_name, provider_session_id, "
-            "content_hash, version) VALUES (?, ?, ?, ?, ?)",
-            ("conv-1", "gemini", "gemini-1", "deadbeef", 1),
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, zeroblob(32))",
+            ("gemini-1", "gemini-cli-session"),
         )
         bootstrap.execute(
             """INSERT INTO attachments (
-                attachment_id, mime_type, size_bytes, path, ref_count, provider_meta,
-                provider_attachment_id, provider_file_id, provider_drive_id, upload_origin
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            ("att-1", None, None, None, 1, None, "prov-att-1", "drive-file-1", "drive-root-1", "drive"),
+                attachment_id, display_name, media_type, byte_count, blob_hash, ref_count
+            ) VALUES (?, ?, ?, ?, zeroblob(32), ?)""",
+            ("att-1", "drive doc", None, 0, 1),
+        )
+        bootstrap.execute(
+            """
+            INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash)
+            VALUES ('gemini-cli-session:gemini-1', 'msg-1', 0, 'user', 'message', zeroblob(32))
+            """
         )
         bootstrap.execute(
             """INSERT INTO attachment_refs (
-                ref_id, attachment_id, session_id, message_id, provider_meta,
-                provider_attachment_id, provider_file_id, provider_drive_id, upload_origin
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            ("ref-1", "att-1", "conv-1", None, None, "prov-att-1", "drive-file-1", "drive-root-1", "drive"),
+                attachment_id, session_id, message_id, position, upload_origin
+            ) VALUES (?, ?, ?, ?, ?)""",
+            ("att-1", "gemini-cli-session:gemini-1", "gemini-cli-session:gemini-1:msg-1", 0, "drive"),
+        )
+        bootstrap.executemany(
+            """INSERT INTO attachment_native_ids (ref_id, id_kind, native_id)
+            VALUES ('gemini-cli-session:gemini-1:msg-1:attachment:0', ?, ?)""",
+            [("attachment", "prov-att-1"), ("file", "drive-file-1"), ("drive", "drive-root-1")],
         )
         bootstrap.commit()
     finally:
@@ -286,13 +327,13 @@ async def test_attachment_identity_lookup_uses_stored_columns(tmp_path: Path) ->
     async with aiosqlite.connect(db_path) as conn:
         conn.row_factory = aiosqlite.Row
         for query, expected_field in (
-            ("prov-att-1", "attachment.provider_attachment_id"),
-            ("drive-file-1", "attachment.provider_file_id"),
-            ("drive-root-1", "attachment.provider_drive_id"),
+            ("prov-att-1", "native.attachment"),
+            ("drive-file-1", "native.file"),
+            ("drive-root-1", "native.drive"),
         ):
             hits = await search_attachment_identity_evidence_hits(conn, query=query, limit=10)
             assert len(hits) == 1, f"#1252: stored-column lookup for {query!r} must find one hit"
-            assert hits[0].session_id == "conv-1"
+            assert hits[0].session_id == "gemini-cli-session:gemini-1"
             assert hits[0].match_surface == "attachment"
             assert expected_field in (hits[0].snippet or ""), (
                 f"#1252: snippet must name the typed column {expected_field}, got {hits[0].snippet!r}"

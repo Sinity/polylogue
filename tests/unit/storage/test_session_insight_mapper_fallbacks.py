@@ -75,7 +75,7 @@ def test_row_to_session_profile_record_falls_back_to_fallback_payloads(typed_pay
         "engaged_duration_ms": 240000,
         "engaged_minutes": 4.0,
         "support_level": "strong",
-        "support_signals": ["user_turns", "action_events"],
+        "support_signals": ["user_turns", "actions"],
         "engaged_duration_source": "timeline",
         "repo_inference_strength": "strong",
         "auto_tags": ["bugfix"],
@@ -117,11 +117,11 @@ def test_row_to_session_profile_record_falls_back_to_fallback_payloads(typed_pay
     assert record.inference_payload.support_level == "strong"
     assert record.inference_payload.auto_tags == ("bugfix",)
     assert record.enrichment_payload.intent_summary == "Fallback Profile"
-    assert record.enrichment_payload.support_signals == ("user_turns", "action_events")
+    assert record.enrichment_payload.support_signals == ("user_turns", "actions")
     assert record.enrichment_payload.input_band_summary == {
         "user_turns": 0,
         "assistant_turns": 0,
-        "action_events": 0,
+        "actions": 0,
         "touched_paths": 2,
         "repo_names": 1,
     }

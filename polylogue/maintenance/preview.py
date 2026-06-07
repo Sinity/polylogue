@@ -14,17 +14,16 @@ preview).
 
 Models inventoried:
 
-* ``messages_fts``, ``action_events``, ``action_events_fts``,
+* ``messages_fts``,
   ``session_profile_rows``, ``session_work_event_inference``,
   ``session_work_event_inference_fts``, ``session_phase_inference``,
-  ``work_threads``, ``work_threads_fts``, ``session_tag_rollups`` — derived read
+  ``threads``, ``threads_fts``, ``session_tag_rollups`` — derived read
   models reported by ``collect_derived_model_statuses_sync``.
 * ``transcript_embeddings``, ``retrieval_evidence``,
   ``retrieval_inference``, ``retrieval_enrichment`` — retrieval-layer
   read models.
-* ``orphaned_messages``, ``orphaned_content_blocks``,
-  ``empty_sessions``, ``orphaned_attachments`` — archive-cleanup
-  scopes (orphan rows only).
+* ``orphaned_messages``, ``empty_sessions``, ``orphaned_attachments`` —
+  archive-cleanup scopes (orphan rows only).
 * ``message_type_backfill`` — message-type classification backlog.
 
 The inventory is produced at the model granularity reported by the
@@ -48,7 +47,6 @@ from polylogue.storage.repair import (
     count_empty_sessions_sync,
     count_orphaned_attachments_sync,
     count_orphaned_blobs_sync,
-    count_orphaned_content_blocks_sync,
     count_orphaned_messages_sync,
 )
 
@@ -261,14 +259,12 @@ def _model_items(
 _DERIVED_MODEL_NAMES: frozenset[str] = frozenset(
     {
         "messages_fts",
-        "action_events",
-        "action_events_fts",
         "session_profile_rows",
         "session_work_event_inference",
         "session_work_event_inference_fts",
         "session_phase_inference",
-        "work_threads",
-        "work_threads_fts",
+        "threads",
+        "threads_fts",
         "session_tag_rollups",
     }
 )
@@ -305,7 +301,6 @@ def _archive_cleanup_items(
             )
             for model in (
                 "orphaned_messages",
-                "orphaned_content_blocks",
                 "empty_sessions",
                 "orphaned_attachments",
                 "orphaned_blobs",
@@ -313,7 +308,6 @@ def _archive_cleanup_items(
         ]
 
     orphan_messages = count_orphaned_messages_sync(conn)
-    orphan_content_blocks = count_orphaned_content_blocks_sync(conn)
     empty_sessions = count_empty_sessions_sync(conn)
     orphan_attachments = count_orphaned_attachments_sync(conn)
 
@@ -322,11 +316,6 @@ def _archive_cleanup_items(
             "orphaned_messages",
             orphan_messages,
             "messages referencing missing sessions",
-        ),
-        (
-            "orphaned_content_blocks",
-            orphan_content_blocks,
-            "content blocks referencing missing sessions or messages",
         ),
         (
             "empty_sessions",

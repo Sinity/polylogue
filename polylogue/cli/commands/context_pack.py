@@ -20,7 +20,7 @@ from polylogue.mcp.context_pack import (
     ContextPackQueryContext,
     ContextPackSession,
     _build_project_context,
-    _summarize_action_events,
+    _summarize_actions,
     archive_context_pack_active,
     query_archive_context_pack,
     select_context_pack_sessions,
@@ -111,18 +111,18 @@ def context_pack_command(
     total_matching = len(sessions)
     conv_ids = [str(conv.id) for conv in sessions]
 
-    all_action_events: dict[str, tuple[Any, ...]] = {}
+    all_actions: dict[str, tuple[Any, ...]] = {}
     if conv_ids:
         try:
-            all_action_events = run_coroutine_sync(env.polylogue.get_action_events_batch(conv_ids))
+            all_actions = run_coroutine_sync(env.polylogue.get_actions_batch(conv_ids))
         except Exception:
-            all_action_events = {}
+            all_actions = {}
 
     aggregated_events: list[Any] = []
-    for events in all_action_events.values():
+    for events in all_actions.values():
         aggregated_events.extend(events)
 
-    action_summaries = _summarize_action_events(aggregated_events, redact=not no_redact)
+    action_summaries = _summarize_actions(aggregated_events, redact=not no_redact)
 
     dates: list[str] = []
     for conv in sessions:

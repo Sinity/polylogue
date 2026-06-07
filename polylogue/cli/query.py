@@ -29,6 +29,9 @@ def handle_query_mode(
     """Handle query mode: run the archive query executor."""
     env: AppEnv = ctx.obj
     request = RootModeRequest.from_context(ctx)
+    if request.should_show_stats() and callable(show_stats):
+        show_stats(env, verbose=request.verbose)
+        return
     execute_query_request(env, request)
 
 

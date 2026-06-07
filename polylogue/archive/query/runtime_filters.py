@@ -204,11 +204,7 @@ def _apply_since_session(
     if reference_conv is None:
         return []
 
-    ref_cwds: list[str] = []
-    ref_meta = getattr(reference_conv, "provider_meta", None) or {}
-    if isinstance(ref_meta, dict):
-        wds = ref_meta.get("working_directories") or []
-        ref_cwds = [str(wd) for wd in wds if isinstance(wd, str) and wd]
+    ref_cwds = [str(wd) for wd in getattr(reference_conv, "working_directories", ()) or () if str(wd)]
 
     last_ts = reference_conv.updated_at
     if reference_conv.messages:
@@ -226,25 +222,19 @@ def _apply_since_session(
         if last_ts and c.updated_at and c.updated_at <= last_ts:
             continue
         if ref_cwds:
-            c_meta = getattr(c, "provider_meta", None) or {}
-            if isinstance(c_meta, dict):
-                c_wds = c_meta.get("working_directories") or []
-                c_wd_strs = [str(wd) for wd in c_wds if isinstance(wd, str) and wd]
-                if not c_wd_strs:
-                    continue
-                if not any(path_matches_prefix(cwd, ref_cwd) for cwd in c_wd_strs for ref_cwd in ref_cwds):
-                    continue
+            c_wd_strs = [str(wd) for wd in getattr(c, "working_directories", ()) or () if str(wd)]
+            if not c_wd_strs:
+                continue
+            if not any(path_matches_prefix(cwd, ref_cwd) for cwd in c_wd_strs for ref_cwd in ref_cwds):
+                continue
         results.append(c)
 
     return results
 
 
 def _session_matches_cwd_prefix(session: Session, cwd_prefix: str) -> bool:
-    meta = getattr(session, "provider_meta", None) or {}
-    if not isinstance(meta, dict):
-        return False
-    cwd_values = meta.get("working_directories") or []
-    return any(path_matches_prefix(cwd, cwd_prefix) for cwd in cwd_values if isinstance(cwd, str) and cwd)
+    cwd_values = getattr(session, "working_directories", ()) or ()
+    return any(path_matches_prefix(str(cwd), cwd_prefix) for cwd in cwd_values if str(cwd))
 
 
 __all__ = ["FilterableSessionLike", "apply_common_filters", "apply_full_filters"]

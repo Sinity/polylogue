@@ -204,7 +204,7 @@ rows:
   - domain: storage.schema_policy
     target_files:
       - polylogue/storage/sqlite/schema.py
-      - polylogue/storage/sqlite/schema_ddl.py
+      - polylogue/storage/sqlite/archive_tiers/index.py
       - polylogue/storage/sqlite/schema_bootstrap.py
     representative_tests:
       - tests/unit/storage/test_schema_safety.py

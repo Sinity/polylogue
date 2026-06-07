@@ -1260,7 +1260,7 @@ class TestReaderInformability:
         """``renderFtsChip`` must distinguish ok / partial / unavailable
         rather than collapsing partial readiness into the ok bucket. The
         prior code rendered ``messages_ready ? 'ok' : '--'`` which hides
-        action-event FTS drift entirely.
+        partial message FTS readiness entirely.
         """
         with _running_server(workspace_env) as (_, base_url):
             _, _, body = _get_text(base_url, "/")

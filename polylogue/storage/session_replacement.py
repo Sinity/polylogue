@@ -72,90 +72,32 @@ async def _purge_message_fts_async(conn: aiosqlite.Connection, session_id: str) 
     await conn.execute(delete_session_rows_sql(1), (session_id,))
 
 
-def _purge_action_fts_sync(conn: sqlite3.Connection, session_id: str) -> None:
-    if _trigger_exists_sync(conn, "action_events_fts_ad"):
-        return
-    if (
-        not _table_exists_sync(conn, "action_events")
-        or not _table_exists_sync(conn, "action_events_fts")
-        or not _table_exists_sync(conn, "action_events_fts_docsize")
-    ):
-        return
-    conn.execute(
-        """
-        INSERT INTO action_events_fts(
-            action_events_fts, rowid, event_id, message_id, session_id,
-            action_kind, normalized_tool_name, search_text
-        )
-        SELECT
-            'delete', ae.rowid, ae.event_id, ae.message_id, ae.session_id,
-            ae.action_kind, ae.normalized_tool_name, ae.search_text
-        FROM action_events AS ae
-        JOIN action_events_fts_docsize AS d ON d.id = ae.rowid
-        WHERE ae.session_id = ?
-        """,
-        (session_id,),
-    )
-
-
-async def _purge_action_fts_async(conn: aiosqlite.Connection, session_id: str) -> None:
-    if await _trigger_exists_async(conn, "action_events_fts_ad"):
-        return
-    if (
-        not await _table_exists_async(conn, "action_events")
-        or not await _table_exists_async(conn, "action_events_fts")
-        or not await _table_exists_async(conn, "action_events_fts_docsize")
-    ):
-        return
-    await conn.execute(
-        """
-        INSERT INTO action_events_fts(
-            action_events_fts, rowid, event_id, message_id, session_id,
-            action_kind, normalized_tool_name, search_text
-        )
-        SELECT
-            'delete', ae.rowid, ae.event_id, ae.message_id, ae.session_id,
-            ae.action_kind, ae.normalized_tool_name, ae.search_text
-        FROM action_events AS ae
-        JOIN action_events_fts_docsize AS d ON d.id = ae.rowid
-        WHERE ae.session_id = ?
-        """,
-        (session_id,),
-    )
-
-
 def _invalidate_embedding_state_sync(conn: sqlite3.Connection, session_id: str) -> None:
-    if _table_exists_sync(conn, "embeddings_meta"):
+    if _table_exists_sync(conn, "message_embeddings_meta"):
         conn.execute(
             """
-            DELETE FROM embeddings_meta
-            WHERE (target_type = 'message' AND target_id IN (
+            DELETE FROM message_embeddings_meta
+            WHERE message_id IN (
                 SELECT message_id FROM messages WHERE session_id = ?
-            ))
-               OR (target_type = 'session' AND target_id = ?)
+            )
             """,
-            (session_id, session_id),
+            (session_id,),
         )
-    if _table_exists_sync(conn, "embedding_status"):
-        conn.execute("DELETE FROM embedding_status WHERE session_id = ?", (session_id,))
     if _table_exists_sync(conn, "message_embeddings"):
         conn.execute("DELETE FROM message_embeddings WHERE session_id = ?", (session_id,))
 
 
 async def _invalidate_embedding_state_async(conn: aiosqlite.Connection, session_id: str) -> None:
-    if await _table_exists_async(conn, "embeddings_meta"):
+    if await _table_exists_async(conn, "message_embeddings_meta"):
         await conn.execute(
             """
-            DELETE FROM embeddings_meta
-            WHERE (target_type = 'message' AND target_id IN (
+            DELETE FROM message_embeddings_meta
+            WHERE message_id IN (
                 SELECT message_id FROM messages WHERE session_id = ?
-            ))
-               OR (target_type = 'session' AND target_id = ?)
+            )
             """,
-            (session_id, session_id),
+            (session_id,),
         )
-    if await _table_exists_async(conn, "embedding_status"):
-        await conn.execute("DELETE FROM embedding_status WHERE session_id = ?", (session_id,))
     if await _table_exists_async(conn, "message_embeddings") and await _ensure_sqlite_vec_async(conn):
         await conn.execute("DELETE FROM message_embeddings WHERE session_id = ?", (session_id,))
 
@@ -174,10 +116,8 @@ def replace_session_runtime_state_sync(
     }
     _invalidate_embedding_state_sync(conn, session_id)
     conn.execute("DELETE FROM attachment_refs WHERE session_id = ?", (session_id,))
-    _purge_action_fts_sync(conn, session_id)
     _purge_message_fts_sync(conn, session_id)
     conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-    conn.execute("DELETE FROM session_stats WHERE session_id = ?", (session_id,))
     return affected_attachment_ids
 
 
@@ -195,10 +135,8 @@ async def replace_session_runtime_state_async(
     affected_attachment_ids = {str(row[0]) for row in rows}
     await _invalidate_embedding_state_async(conn, session_id)
     await conn.execute("DELETE FROM attachment_refs WHERE session_id = ?", (session_id,))
-    await _purge_action_fts_async(conn, session_id)
     await _purge_message_fts_async(conn, session_id)
     await conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-    await conn.execute("DELETE FROM session_stats WHERE session_id = ?", (session_id,))
     return affected_attachment_ids
 
 

@@ -140,7 +140,7 @@ def session_profile_enrichment_from_fallback(
             "input_band_summary": {
                 "user_turns": 0,
                 "assistant_turns": 0,
-                "action_events": 0,
+                "actions": 0,
                 "touched_paths": len(repo_paths),
                 "repo_names": len(repo_names),
             },

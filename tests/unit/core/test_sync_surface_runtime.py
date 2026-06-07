@@ -163,8 +163,8 @@ def test_sync_product_queries_forward_through_sync_bridge() -> None:
         list_session_work_event_insights=lambda query=None: ("events-list", query),
         get_session_phase_insights=lambda session_id: ("phases", session_id),
         list_session_phase_insights=lambda query=None: ("phases-list", query),
-        get_work_thread_insight=lambda thread_id: ("thread", thread_id),
-        list_work_thread_insights=lambda query=None: ("threads", query),
+        get_thread_insight=lambda thread_id: ("thread", thread_id),
+        list_thread_insights=lambda query=None: ("threads", query),
         list_archive_coverage_insights=lambda query=None: ("coverage", query),
         list_tool_usage_insights=lambda query=None: ("tool-usage", query),
         list_session_cost_insights=lambda query=None: ("session-costs", query),
@@ -188,8 +188,8 @@ def test_sync_product_queries_forward_through_sync_bridge() -> None:
         assert archive.list_session_work_event_insights("query") == ("events-list", "query")
         assert archive.get_session_phase_insights("conv-1") == ("phases", "conv-1")
         assert archive.list_session_phase_insights("query") == ("phases-list", "query")
-        assert archive.get_work_thread_insight("thread-1") == ("thread", "thread-1")
-        assert archive.list_work_thread_insights("query") == ("threads", "query")
+        assert archive.get_thread_insight("thread-1") == ("thread", "thread-1")
+        assert archive.list_thread_insights("query") == ("threads", "query")
         assert archive.list_archive_coverage_insights("query") == ("coverage", "query")
         assert archive.list_tool_usage_insights("query") == ("tool-usage", "query")
         assert archive.list_session_cost_insights("query") == ("session-costs", "query")
@@ -238,8 +238,8 @@ async def test_polylogue_products_mixin_forwards_all_product_calls(tmp_path: Pat
     archive.list_session_work_event_insights.return_value = ["events-list"]
     archive.get_session_phase_insights.return_value = ["phases"]
     archive.list_session_phase_insights.return_value = ["phases-list"]
-    archive.get_work_thread_insight.return_value = "thread"
-    archive.list_work_thread_insights.return_value = ["threads"]
+    archive.get_thread_insight.return_value = "thread"
+    archive.list_thread_insights.return_value = ["threads"]
     archive.list_archive_coverage_insights.return_value = ["coverage"]
     archive.list_tool_usage_insights.return_value = ["tool-usage"]
     archive.list_session_cost_insights.return_value = []
@@ -270,8 +270,8 @@ async def test_polylogue_products_mixin_forwards_all_product_calls(tmp_path: Pat
         assert await harness.list_session_work_event_insights() == ["events-list"]
         assert await harness.get_session_phase_insights("conv-1") == ["phases"]
         assert await harness.list_session_phase_insights() == ["phases-list"]
-        assert await harness.get_work_thread_insight("thread-1") == "thread"
-        assert await harness.list_work_thread_insights() == ["threads"]
+        assert await harness.get_thread_insight("thread-1") == "thread"
+        assert await harness.list_thread_insights() == ["threads"]
         assert await harness.list_archive_coverage_insights() == ["coverage"]
         assert await harness.list_tool_usage_insights() == ["tool-usage"]
         assert await harness.list_session_cost_insights() == []
@@ -283,8 +283,8 @@ async def test_polylogue_products_mixin_forwards_all_product_calls(tmp_path: Pat
     archive.list_session_work_event_insights.assert_called_once()
     archive.get_session_phase_insights.assert_called_once_with("conv-1")
     archive.list_session_phase_insights.assert_called_once()
-    archive.get_work_thread_insight.assert_called_once_with("thread-1")
-    archive.list_work_thread_insights.assert_called_once()
+    archive.get_thread_insight.assert_called_once_with("thread-1")
+    archive.list_thread_insights.assert_called_once()
     archive.list_archive_coverage_insights.assert_called_once()
     archive.list_tool_usage_insights.assert_called_once()
     archive.list_session_cost_insights.assert_called()  # also called by cost-rollup derivation

@@ -91,10 +91,16 @@ def _native_session_id(origin: str, native_id: str) -> str:
     return archive_session_id(origin, native_id)
 
 
+def _session_parts(session_id: str, origin: str) -> tuple[str, str]:
+    prefix = f"{origin}:"
+    native_id = session_id[len(prefix) :] if session_id.startswith(prefix) else session_id
+    return native_id, _native_session_id(origin, native_id)
+
+
 def _seed_archive_provenance(
     *,
     session_id: str,
-    origin: str = "claude-code",
+    origin: str = "claude-code-session",
     raw_id: str | None,
     raw_blob_id: str | None = None,
     source_path: str,
@@ -108,7 +114,7 @@ def _seed_archive_provenance(
     validation_error: str | None = None,
     content_hash: bytes = b"x" * 32,
     write_source_tier: bool = True,
-) -> None:
+) -> str:
     """Seed a index.db session row + source.db raw_sessions row.
 
     Mirrors the archive source/index tiers the provenance reader joins
@@ -116,6 +122,7 @@ def _seed_archive_provenance(
     """
     archive_db = _index_db()
     archive_db.parent.mkdir(parents=True, exist_ok=True)
+    native_id, archive_session_id = _session_parts(session_id, origin)
     # The blob store keys raw blobs by their SHA-256 hash; ``raw_id`` from
     # ``_seed_raw_blob`` IS that hash, so default the source-tier blob_hash
     # reference to it when not given explicitly.
@@ -168,19 +175,16 @@ def _seed_archive_provenance(
     with sqlite3.connect(archive_db) as conn:
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS sessions (
-                session_id TEXT PRIMARY KEY,
-                origin TEXT NOT NULL,
-                raw_id TEXT,
-                content_hash BLOB NOT NULL
-            );
-            """
-        )
-        conn.execute(
-            "INSERT INTO sessions (session_id, origin, raw_id, content_hash) VALUES (?, ?, ?, ?)",
-            (session_id, origin, raw_id, content_hash),
+            INSERT INTO sessions (native_id, origin, raw_id, content_hash)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(origin, native_id) DO UPDATE SET
+                raw_id = excluded.raw_id,
+                content_hash = excluded.content_hash
+            """,
+            (native_id, origin, raw_id, content_hash),
         )
         conn.commit()
+    return archive_session_id
 
 
 # ---------------------------------------------------------------------------
@@ -218,26 +222,20 @@ class TestProvenancePayload:
     def test_returns_metadata_envelope_without_raw_preview(self, workspace_env: dict[str, Path]) -> None:
         payload_bytes = b'{"hello": "world"}'
         raw_id = _seed_raw_blob(payload_bytes)
-        _seed_archive_provenance(
+        session_id = _seed_archive_provenance(
             session_id="c1",
             raw_id=raw_id,
             source_path="/home/example/exports/c1.json",
             blob_size=len(payload_bytes),
         )
 
-        result = build_provenance_payload("c1")
+        result = build_provenance_payload(session_id)
         assert result is not None
-        assert result["session_id"] == "c1"
+        assert result["session_id"] == session_id
         assert result["raw_id"] == raw_id
         assert result["content_hash"]
         assert result["blob_size_bytes"] == len(payload_bytes)
-        # The provenance envelope echoes ``raw_sessions.source_name``
-        # (the canonical origin/source identity), not the file basename.
-        # The seed sets it to "claude-code"; the assertion historically
-        # encoded a duplicate-column accident in the seed INSERT where the
-        # author expected the filename to override but SQLite takes the
-        # first value of a duplicate column.
-        assert result["source_name"] == "claude-code"
+        assert result["source_name"] == "claude-code-session"
         assert result["raw_preview_included"] is False
         assert "raw_preview" not in result
         assert result["raw_preview_cap_bytes"] == RAW_PREVIEW_MAX_BYTES
@@ -246,7 +244,7 @@ class TestProvenancePayload:
     def test_reads_archive_file_set_from_archive_tiers(self, workspace_env: dict[str, Path]) -> None:
         payload_bytes = b'{"archive": "current"}'
         raw_blob_id = _seed_raw_blob(payload_bytes)
-        _seed_archive_provenance(
+        session_id = _seed_archive_provenance(
             session_id="codex-session:v1",
             origin="codex-session",
             raw_id="raw-v1",
@@ -255,7 +253,7 @@ class TestProvenancePayload:
             blob_size=len(payload_bytes),
         )
 
-        result = build_provenance_payload("codex-session:v1", include_raw=True)
+        result = build_provenance_payload(session_id, include_raw=True)
 
         assert result is not None
         assert result["session_id"] == "codex-session:v1"
@@ -272,7 +270,7 @@ class TestProvenancePayload:
         assert raw_preview["text"] == payload_bytes.decode()
 
     def test_archive_session_survives_missing_source_tier(self, workspace_env: dict[str, Path]) -> None:
-        _seed_archive_provenance(
+        session_id = _seed_archive_provenance(
             session_id="codex-session:missing-source",
             origin="codex-session",
             raw_id="raw-missing",
@@ -282,7 +280,7 @@ class TestProvenancePayload:
             write_source_tier=False,
         )
 
-        result = build_provenance_payload("codex-session:missing-source", include_raw=True)
+        result = build_provenance_payload(session_id, include_raw=True)
 
         assert result is not None
         assert result["session_id"] == "codex-session:missing-source"
@@ -302,7 +300,7 @@ class TestProvenancePayload:
         """A client asking for a billion bytes still gets at most the cap."""
         payload_bytes = b"a" * (RAW_PREVIEW_MAX_BYTES * 4)
         raw_id = _seed_raw_blob(payload_bytes)
-        _seed_archive_provenance(
+        session_id = _seed_archive_provenance(
             session_id="c-big",
             raw_id=raw_id,
             source_path="/tmp/large.bin",
@@ -310,7 +308,7 @@ class TestProvenancePayload:
         )
 
         result = build_provenance_payload(
-            "c-big",
+            session_id,
             include_raw=True,
             requested_bytes=10**9,
         )
@@ -325,14 +323,14 @@ class TestProvenancePayload:
     def test_raw_preview_decodes_utf8_when_possible(self, workspace_env: dict[str, Path]) -> None:
         payload_bytes = b'{"greeting": "hello"}'
         raw_id = _seed_raw_blob(payload_bytes)
-        _seed_archive_provenance(
+        session_id = _seed_archive_provenance(
             session_id="c-utf",
             raw_id=raw_id,
             source_path="/tmp/x.json",
             blob_size=len(payload_bytes),
         )
 
-        result = build_provenance_payload("c-utf", include_raw=True)
+        result = build_provenance_payload(session_id, include_raw=True)
         assert result is not None
         preview = result["raw_preview"]
         assert isinstance(preview, dict)
@@ -343,14 +341,14 @@ class TestProvenancePayload:
     def test_raw_preview_falls_back_to_base64_for_binary(self, workspace_env: dict[str, Path]) -> None:
         payload_bytes = b"\xff\xfe\x00\x01\x02non-utf-8\x80"
         raw_id = _seed_raw_blob(payload_bytes)
-        _seed_archive_provenance(
+        session_id = _seed_archive_provenance(
             session_id="c-bin",
             raw_id=raw_id,
             source_path="/tmp/x.bin",
             blob_size=len(payload_bytes),
         )
 
-        result = build_provenance_payload("c-bin", include_raw=True)
+        result = build_provenance_payload(session_id, include_raw=True)
         assert result is not None
         preview = result["raw_preview"]
         assert isinstance(preview, dict)
@@ -361,7 +359,7 @@ class TestProvenancePayload:
     def test_quarantine_surfaces_when_parse_error(self, workspace_env: dict[str, Path]) -> None:
         payload_bytes = b"corrupt"
         raw_id = _seed_raw_blob(payload_bytes)
-        _seed_archive_provenance(
+        session_id = _seed_archive_provenance(
             session_id="c-q",
             raw_id=raw_id,
             source_path="/tmp/x.json",
@@ -370,7 +368,7 @@ class TestProvenancePayload:
             validation_status=None,
         )
 
-        result = build_provenance_payload("c-q")
+        result = build_provenance_payload(session_id)
         assert result is not None
         assert result["quarantined"] is True
         assert result["quarantine_reason"] == "parse_error"
@@ -379,7 +377,7 @@ class TestProvenancePayload:
     def test_quarantine_surfaces_when_validation_failed(self, workspace_env: dict[str, Path]) -> None:
         payload_bytes = b"{}"
         raw_id = _seed_raw_blob(payload_bytes)
-        _seed_archive_provenance(
+        session_id = _seed_archive_provenance(
             session_id="c-v",
             raw_id=raw_id,
             source_path="/tmp/x.json",
@@ -387,13 +385,13 @@ class TestProvenancePayload:
             validation_status="failed",
         )
 
-        result = build_provenance_payload("c-v")
+        result = build_provenance_payload(session_id)
         assert result is not None
         assert result["quarantined"] is True
         assert result["quarantine_reason"] == "validation_failed"
 
     def test_quarantine_surfaces_when_no_raw_artifact(self, workspace_env: dict[str, Path]) -> None:
-        _seed_archive_provenance(
+        session_id = _seed_archive_provenance(
             session_id="c-orphan",
             raw_id=None,
             source_path="",
@@ -401,7 +399,7 @@ class TestProvenancePayload:
             validation_status=None,
         )
 
-        result = build_provenance_payload("c-orphan", include_raw=True)
+        result = build_provenance_payload(session_id, include_raw=True)
         assert result is not None
         assert result["quarantined"] is True
         assert result["quarantine_reason"] == "no_raw_artifact"
@@ -419,14 +417,14 @@ class TestProvenancePayload:
         monkeypatch.setenv("HOME", "/home/example")
         payload_bytes = b"{}"
         raw_id = _seed_raw_blob(payload_bytes)
-        _seed_archive_provenance(
+        session_id = _seed_archive_provenance(
             session_id="c-home",
             raw_id=raw_id,
             source_path="/home/example/exports/c-home.json",
             blob_size=len(payload_bytes),
         )
 
-        result = build_provenance_payload("c-home")
+        result = build_provenance_payload(session_id)
         assert result is not None
         assert result["source_path_display"] == "~/exports/c-home.json"
         assert result["source_path_contains_home"] is True
@@ -458,14 +456,14 @@ class TestProvenanceEndpoint:
     def test_default_request_omits_raw_preview(self, workspace_env: dict[str, Path]) -> None:
         payload_bytes = b"hello"
         raw_id = _seed_raw_blob(payload_bytes)
-        _seed_archive_provenance(
+        session_id = _seed_archive_provenance(
             session_id="c1",
             raw_id=raw_id,
             source_path="/tmp/c1.json",
             blob_size=len(payload_bytes),
         )
 
-        handler = _make_handler("GET", "/api/sessions/c1/provenance")
+        handler = _make_handler("GET", f"/api/sessions/{session_id}/provenance")
         _, send_json = _capture_responses(handler)
         handler.do_GET()
 
@@ -481,14 +479,14 @@ class TestProvenanceEndpoint:
     def test_include_raw_query_param_attaches_preview(self, workspace_env: dict[str, Path]) -> None:
         payload_bytes = b'{"x": 1}'
         raw_id = _seed_raw_blob(payload_bytes)
-        _seed_archive_provenance(
+        session_id = _seed_archive_provenance(
             session_id="c1",
             raw_id=raw_id,
             source_path="/tmp/c1.json",
             blob_size=len(payload_bytes),
         )
 
-        handler = _make_handler("GET", "/api/sessions/c1/provenance?include_raw=1")
+        handler = _make_handler("GET", f"/api/sessions/{session_id}/provenance?include_raw=1")
         _, send_json = _capture_responses(handler)
         handler.do_GET()
 
@@ -508,7 +506,7 @@ class TestProvenanceEndpoint:
         """
         payload_bytes = b"X" * (RAW_PREVIEW_MAX_BYTES * 8)
         raw_id = _seed_raw_blob(payload_bytes)
-        _seed_archive_provenance(
+        session_id = _seed_archive_provenance(
             session_id="c-big",
             raw_id=raw_id,
             source_path="/tmp/big.bin",
@@ -517,7 +515,7 @@ class TestProvenanceEndpoint:
 
         handler = _make_handler(
             "GET",
-            "/api/sessions/c-big/provenance?include_raw=1&bytes=999999999",
+            f"/api/sessions/{session_id}/provenance?include_raw=1&bytes=999999999",
         )
         _, send_json = _capture_responses(handler)
         handler.do_GET()

@@ -15,6 +15,10 @@ from polylogue.storage.sqlite.connection import open_connection
 T = TypeVar("T")
 
 
+def _index_db_path(db_path: Path) -> Path:
+    return db_path if db_path.name == "index.db" else db_path.parent / "index.db"
+
+
 class BenchmarkFixture(Protocol):
     def __call__(self, func: Callable[[], T]) -> T: ...
 
@@ -33,7 +37,7 @@ class BenchAsyncStore:
 def open_bench_store(db_path: Path) -> Iterator[BenchAsyncStore]:
     """Open a benchmark backend/repository pair without touching private APIs."""
     loop = asyncio.new_event_loop()
-    backend = SQLiteBackend(db_path=db_path)
+    backend = SQLiteBackend(db_path=_index_db_path(db_path))
     repository = SessionRepository(backend=backend)
     store = BenchAsyncStore(loop=loop, backend=backend, repository=repository)
     try:
@@ -59,5 +63,5 @@ def benchmark_connection_call(
     operation: Callable[[Connection], T],
 ) -> None:
     """Benchmark one sync sqlite/index operation against a seeded DB."""
-    with open_connection(db_path) as conn:
+    with open_connection(_index_db_path(db_path)) as conn:
         benchmark(lambda: operation(conn))

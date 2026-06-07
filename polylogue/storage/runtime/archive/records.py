@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
+from polylogue.core.enums import Origin
 from polylogue.core.hashing import hash_text
 from polylogue.core.json import json_document
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
@@ -18,9 +19,8 @@ from polylogue.types import (
     ContentBlockType,
     ContentHash,
     MessageId,
-    Provider,
-    ProviderEventId,
     SemanticBlockType,
+    SessionEventId,
     SessionId,
 )
 
@@ -41,35 +41,37 @@ def _coerce_json_object(value: object) -> JSONObject | None:
 
 class SessionRecord(BaseModel):
     session_id: SessionId
-    provider_session_id: str
+    native_id: str
+    origin: Origin
     title: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
     sort_key: float | None = None
     content_hash: ContentHash
-    provider_meta: JSONObject | None = None
     metadata: JSONObject | None = None
     version: int = 1
     parent_session_id: SessionId | None = None
     branch_type: BranchType | None = None
     raw_id: str | None = None
-    source_name: str = ""
     working_directories_json: str | None = None
     git_branch: str | None = None
     git_repository_url: str | None = None
 
-    @property
-    def provider(self) -> Provider:
-        return Provider.from_string(self.source_name)
+    @field_validator("origin", mode="before")
+    @classmethod
+    def coerce_origin(cls, value: object) -> Origin:
+        if isinstance(value, Origin):
+            return value
+        return Origin.from_string(str(value))
 
-    @field_validator("session_id", "provider_session_id", "content_hash")
+    @field_validator("session_id", "native_id", "content_hash")
     @classmethod
     def non_empty_string(cls, v: str) -> str:
         if not v or not v.strip():
             raise ValueError("Field cannot be empty")
         return v
 
-    @field_validator("provider_meta", "metadata", mode="before")
+    @field_validator("metadata", mode="before")
     @classmethod
     def coerce_json_document(cls, value: object) -> JSONObject | None:
         return _coerce_json_object(value)
@@ -181,10 +183,12 @@ class AttachmentRecord(BaseModel):
     mime_type: str | None = None
     size_bytes: int | None = None
     path: str | None = None
-    provider_meta: JSONObject | None = None
-    provider_attachment_id: str | None = None
-    provider_file_id: str | None = None
-    provider_drive_id: str | None = None
+    display_name: str | None = None
+    source_url: str | None = None
+    caption: str | None = None
+    attachment_native_id: str | None = None
+    file_native_id: str | None = None
+    drive_native_id: str | None = None
     upload_origin: str | None = None
 
     @field_validator("attachment_id", "session_id")
@@ -208,16 +212,11 @@ class AttachmentRecord(BaseModel):
             raise ValueError("size_bytes cannot be negative")
         return v
 
-    @field_validator("provider_meta", mode="before")
-    @classmethod
-    def coerce_provider_meta(cls, value: object) -> JSONObject | None:
-        return _coerce_json_object(value)
 
-
-class ProviderEventRecord(BaseModel):
-    event_id: ProviderEventId
+class SessionEventRecord(BaseModel):
+    event_id: SessionEventId
     session_id: SessionId
-    source_name: str
+    origin: str
     event_index: int
     event_type: str
     timestamp: str | None = None
@@ -227,7 +226,7 @@ class ProviderEventRecord(BaseModel):
     raw_id: str | None = None
     materializer_version: int = 1
 
-    @field_validator("event_id", "session_id", "source_name", "event_type")
+    @field_validator("event_id", "session_id", "origin", "event_type")
     @classmethod
     def non_empty_string(cls, v: str) -> str:
         if not v or not v.strip():

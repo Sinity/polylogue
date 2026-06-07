@@ -79,7 +79,7 @@ def test_session_enrichment_payload_reuses_text_band_outputs() -> None:
     assert payload.input_band_summary == {
         "user_turns": 1,
         "assistant_turns": 1,
-        "action_events": 1,
+        "actions": 1,
         "touched_paths": 1,
         "repo_names": 1,
     }
@@ -87,7 +87,7 @@ def test_session_enrichment_payload_reuses_text_band_outputs() -> None:
     assert isinstance(support_signals, tuple)
     assert support_signals == (
         "user_turns",
-        "action_events",
+        "actions",
         "touched_paths",
         "repo_names",
         "heuristic_work_events",

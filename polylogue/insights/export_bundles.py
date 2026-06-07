@@ -19,7 +19,7 @@ from polylogue.insights.archive import (
     SessionProfileInsight,
     SessionTagRollupInsight,
     SessionWorkEventInsight,
-    WorkThreadInsight,
+    ThreadInsight,
 )
 from polylogue.insights.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION, ArchiveInsightModel
 from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport
@@ -32,7 +32,7 @@ DEFAULT_EXPORT_INSIGHTS: tuple[str, ...] = (
     "session_profiles",
     "session_work_events",
     "session_phases",
-    "work_threads",
+    "threads",
     "session_tag_rollups",
     "archive_coverage",
 )
@@ -40,7 +40,7 @@ _INSIGHT_MODEL_BY_NAME: dict[str, type[ArchiveInsightModel]] = {
     "session_profiles": SessionProfileInsight,
     "session_work_events": SessionWorkEventInsight,
     "session_phases": SessionPhaseInsight,
-    "work_threads": WorkThreadInsight,
+    "threads": ThreadInsight,
     "session_tag_rollups": SessionTagRollupInsight,
     "archive_coverage": ArchiveCoverageInsight,
 }

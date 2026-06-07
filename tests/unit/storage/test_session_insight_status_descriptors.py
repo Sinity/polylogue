@@ -98,17 +98,17 @@ def test_count_descriptor_uses_fallback_when_freshness_is_disabled() -> None:
 def test_ready_descriptor_combines_table_equalities_and_zero_counts() -> None:
     descriptor = SessionInsightReadyDescriptor(
         ready_key="threads_ready",
-        table_key="work_threads",
+        table_key="threads",
         equal_counts=(("thread_count", "root_threads"),),
         zero_counts=("stale_thread_count", "orphan_thread_count"),
     )
 
     assert descriptor.ready(
-        {"work_threads": True},
+        {"threads": True},
         {"thread_count": 3, "root_threads": 3, "stale_thread_count": 0, "orphan_thread_count": 0},
     )
     assert not descriptor.ready(
-        {"work_threads": True},
+        {"threads": True},
         {"thread_count": 3, "root_threads": 3, "stale_thread_count": 1, "orphan_thread_count": 0},
     )
 
@@ -120,8 +120,8 @@ def test_profile_repair_candidates_match_sort_key_freshness() -> None:
             """
             CREATE TABLE sessions (
                 session_id TEXT PRIMARY KEY,
-                sort_key REAL,
-                updated_at TEXT
+                sort_key_ms INTEGER,
+                updated_at_ms INTEGER
             );
             CREATE TABLE session_profiles (
                 session_id TEXT PRIMARY KEY,
@@ -130,17 +130,17 @@ def test_profile_repair_candidates_match_sort_key_freshness() -> None:
                 source_updated_at TEXT
             );
 
-            INSERT INTO sessions (session_id, sort_key, updated_at)
-            VALUES ('ready-even-if-updated-at-differs', 1.0, '2026-05-01T12:00:00Z');
+            INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms)
+            VALUES ('ready-even-if-updated-at-differs', 1000, 1777636800000);
 
-            INSERT INTO sessions (session_id, sort_key, updated_at)
-            VALUES ('stale-sort-key', 2.0, '2026-05-01T12:00:00Z');
-            INSERT INTO sessions (session_id, sort_key, updated_at)
-            VALUES ('missing-profile', 3.0, '2026-05-01T12:00:00Z');
-            INSERT INTO sessions (session_id, sort_key, updated_at)
-            VALUES ('hot-missing-profile', 4102444800.0, '2100-01-01T00:00:00Z');
-            INSERT INTO sessions (session_id, sort_key, updated_at)
-            VALUES ('hot-stale-sort-key', 4102444800.0, '2100-01-01T00:00:00Z');
+            INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms)
+            VALUES ('stale-sort-key', 2000, 1777636800000);
+            INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms)
+            VALUES ('missing-profile', 3000, 1777636800000);
+            INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms)
+            VALUES ('hot-missing-profile', 4102444800000, 4102444800000);
+            INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms)
+            VALUES ('hot-stale-sort-key', 4102444800000, 4102444800000);
             """
         )
         conn.execute(
@@ -194,8 +194,8 @@ def test_profile_repair_candidates_do_not_require_row_factory() -> None:
             """
             CREATE TABLE sessions (
                 session_id TEXT PRIMARY KEY,
-                sort_key REAL,
-                updated_at TEXT
+                sort_key_ms INTEGER,
+                updated_at_ms INTEGER
             );
             CREATE TABLE session_profiles (
                 session_id TEXT PRIMARY KEY,
@@ -204,8 +204,8 @@ def test_profile_repair_candidates_do_not_require_row_factory() -> None:
                 source_updated_at TEXT
             );
 
-            INSERT INTO sessions (session_id, sort_key, updated_at)
-            VALUES ('missing-profile', 3.0, '2026-05-01T12:00:00Z');
+            INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms)
+            VALUES ('missing-profile', 3000, 1777636800000);
             """
         )
 
@@ -221,8 +221,8 @@ def test_profile_repair_candidates_ignore_hot_recent_sources() -> None:
             CREATE TABLE sessions (
                 session_id TEXT PRIMARY KEY,
                 parent_session_id TEXT,
-                sort_key REAL,
-                updated_at TEXT
+                sort_key_ms INTEGER,
+                updated_at_ms INTEGER
             );
             CREATE TABLE session_profiles (
                 session_id TEXT PRIMARY KEY,
@@ -231,10 +231,10 @@ def test_profile_repair_candidates_ignore_hot_recent_sources() -> None:
                 source_updated_at TEXT
             );
 
-            INSERT INTO sessions (session_id, sort_key, updated_at)
-            VALUES ('cold-missing-profile', 3.0, '2026-05-01T12:00:00Z');
-            INSERT INTO sessions (session_id, sort_key, updated_at)
-            VALUES ('hot-missing-profile', strftime('%s', 'now'), '2026-05-24T07:00:00Z');
+            INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms)
+            VALUES ('cold-missing-profile', 3000, 1777636800000);
+            INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms)
+            VALUES ('hot-missing-profile', strftime('%s', 'now') * 1000, strftime('%s', 'now') * 1000);
             """
         )
 
@@ -250,8 +250,8 @@ def test_session_insight_status_requires_latency_rows_for_ready_profiles() -> No
             CREATE TABLE sessions (
                 session_id TEXT PRIMARY KEY,
                 parent_session_id TEXT,
-                sort_key REAL,
-                updated_at TEXT
+                sort_key_ms INTEGER,
+                updated_at_ms INTEGER
             );
             CREATE TABLE session_profiles (
                 session_id TEXT PRIMARY KEY,
@@ -274,12 +274,12 @@ def test_session_insight_status_requires_latency_rows_for_ready_profiles() -> No
                 source_sort_key REAL
             );
 
-            INSERT INTO sessions (session_id, parent_session_id, sort_key, updated_at)
-            VALUES ('ready', NULL, 1.0, '2026-05-01T12:00:00Z');
-            INSERT INTO sessions (session_id, parent_session_id, sort_key, updated_at)
-            VALUES ('missing-latency', NULL, 2.0, '2026-05-01T12:00:00Z');
-            INSERT INTO sessions (session_id, parent_session_id, sort_key, updated_at)
-            VALUES ('stale-latency', NULL, 3.0, '2026-05-01T12:00:00Z');
+            INSERT INTO sessions (session_id, parent_session_id, sort_key_ms, updated_at_ms)
+            VALUES ('ready', NULL, 1000, 1777636800000);
+            INSERT INTO sessions (session_id, parent_session_id, sort_key_ms, updated_at_ms)
+            VALUES ('missing-latency', NULL, 2000, 1777636800000);
+            INSERT INTO sessions (session_id, parent_session_id, sort_key_ms, updated_at_ms)
+            VALUES ('stale-latency', NULL, 3000, 1777636800000);
 
             INSERT INTO session_profiles (
                 session_id, source_name, canonical_session_date, tags_json, auto_tags_json,
@@ -326,13 +326,13 @@ async def test_status_sync_and_async_match_when_product_tables_are_absent(tmp_pa
             CREATE TABLE sessions (
                 session_id TEXT PRIMARY KEY,
                 parent_session_id TEXT,
-                sort_key REAL,
-                updated_at TEXT
+                sort_key_ms INTEGER,
+                updated_at_ms INTEGER
             );
-            INSERT INTO sessions (session_id, parent_session_id, sort_key, updated_at)
-            VALUES ('root', NULL, 1.0, '2026-04-01T00:00:00Z');
-            INSERT INTO sessions (session_id, parent_session_id, sort_key, updated_at)
-            VALUES ('child', 'root', 2.0, '2026-04-01T00:01:00Z');
+            INSERT INTO sessions (session_id, parent_session_id, sort_key_ms, updated_at_ms)
+            VALUES ('root', NULL, 1000, 1775001600000);
+            INSERT INTO sessions (session_id, parent_session_id, sort_key_ms, updated_at_ms)
+            VALUES ('child', 'root', 2000, 1775001660000);
             """
         )
         sync_status = session_insight_status_sync(conn)
@@ -357,8 +357,8 @@ async def test_lightweight_status_sync_and_async_match_with_freshness_tables(tmp
             CREATE TABLE sessions (
                 session_id TEXT PRIMARY KEY,
                 parent_session_id TEXT,
-                sort_key REAL,
-                updated_at TEXT
+                sort_key_ms INTEGER,
+                updated_at_ms INTEGER
             );
             CREATE TABLE session_profiles (
                 session_id TEXT PRIMARY KEY,
@@ -366,14 +366,14 @@ async def test_lightweight_status_sync_and_async_match_with_freshness_tables(tmp
                 phase_count INTEGER NOT NULL
             );
             CREATE TABLE session_profiles_fts (session_id TEXT NOT NULL);
-            CREATE TABLE work_threads (thread_id TEXT PRIMARY KEY);
+            CREATE TABLE threads (thread_id TEXT PRIMARY KEY);
 
-            INSERT INTO sessions (session_id, parent_session_id, sort_key, updated_at)
-            VALUES ('root', NULL, 1.0, '2026-04-01T00:00:00Z');
+            INSERT INTO sessions (session_id, parent_session_id, sort_key_ms, updated_at_ms)
+            VALUES ('root', NULL, 1000, 1775001600000);
             INSERT INTO session_profiles (session_id, work_event_count, phase_count)
             VALUES ('root', 0, 0);
             INSERT INTO session_profiles_fts (session_id) VALUES ('root'), ('root');
-            INSERT INTO work_threads (thread_id) VALUES ('root');
+            INSERT INTO threads (thread_id) VALUES ('root');
             """
         )
         sync_status = session_insight_status_sync(conn, verify_freshness=False)

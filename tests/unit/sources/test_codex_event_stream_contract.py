@@ -117,7 +117,7 @@ class TestStreamingEnvelopeShape:
         session = _parse(records)
         assert len(session.messages) == 1
         assert session.messages[0].role == Role.ASSISTANT
-        assert session.provider_events == []
+        assert session.session_events == []
 
     def test_response_item_non_message_payload_routes_to_events(self) -> None:
         records: list[object] = [
@@ -128,13 +128,13 @@ class TestStreamingEnvelopeShape:
         ]
         session = _parse(records)
         assert session.messages == []
-        assert [event.event_type for event in session.provider_events] == ["token_count"]
+        assert [event.event_type for event in session.session_events] == ["token_count"]
 
-    def test_unknown_inner_payload_type_still_recorded_as_provider_event(self) -> None:
+    def test_unknown_inner_payload_type_still_recorded_as_session_event(self) -> None:
         """Unknown payload type tokens must not be silently dropped.
 
         This is the canary for OpenAI introducing a new event class — the
-        parser must still surface it as a provider event so downstream
+        parser must still surface it as a session event so downstream
         consumers can see something is happening.
         """
         records: list[object] = [
@@ -144,7 +144,7 @@ class TestStreamingEnvelopeShape:
             }
         ]
         session = _parse(records)
-        assert [event.event_type for event in session.provider_events] == ["future_event_kind"]
+        assert [event.event_type for event in session.session_events] == ["future_event_kind"]
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +208,7 @@ class TestResponseCompletedContract:
         assert len(session.messages) == 1
         assert session.messages[0].text == "Paris."
         assert session.messages[0].timestamp == "2025-01-15T10:00:08Z"
-        assert [event.event_type for event in session.provider_events] == ["token_count"]
+        assert [event.event_type for event in session.session_events] == ["token_count"]
 
     def test_terminal_message_drives_session_updated_at(self) -> None:
         records = _load_catalog("text_only_stream.jsonl")
@@ -348,9 +348,9 @@ class TestStreamResilience:
         ]
         assert tool_use_ids == ["call_truncated"]
         assert tool_result_ids == []
-        # The provider_events surface must record the unpaired function_call
+        # The session_events surface must record the unpaired function_call
         # so downstream consumers can detect the truncation.
-        assert "function_call" in {event.event_type for event in session.provider_events}
+        assert "function_call" in {event.event_type for event in session.session_events}
 
     def test_out_of_order_tool_output_before_call_is_preserved(self) -> None:
         """Output arriving before its call must still be parsed — the parser
@@ -446,10 +446,10 @@ class TestCrossMessageReferences:
         session = _parse(records, "interleaved_stream")
         assert session.working_directories == ["/repo/other", "/repo/polylogue"]
 
-    def test_compaction_event_surfaced_with_replacement_history_flag(self) -> None:
+    def test_compaction_surfaced_with_replacement_history_flag(self) -> None:
         records = _load_catalog("interleaved_stream.jsonl")
         session = _parse(records, "interleaved_stream")
-        compactions = [e for e in session.provider_events if e.event_type == "compaction"]
+        compactions = [e for e in session.session_events if e.event_type == "compaction"]
         assert len(compactions) == 1
         assert compactions[0].payload["replacement_history_count"] == 1
         assert compactions[0].payload["summary"] == "Conversation compacted"

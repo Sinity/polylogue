@@ -115,7 +115,6 @@ class ArchiveRawSessionEnvelope:
     validation_drift_count: int
     validation_mode: str | None
     detection_warnings: tuple[str, ...]
-    origin_meta: dict[str, object]
     blob_refs: tuple[ArchiveSourceBlobRef, ...]
     artifact_ids: tuple[str, ...]
     hook_event_ids: tuple[str, ...]
@@ -210,7 +209,6 @@ def write_source_raw_session(
     validation_drift_count: int = 0,
     validation_mode: ValidationMode | str | None = None,
     detection_warnings: tuple[str, ...] = (),
-    origin_meta: dict[str, object] | None = None,
     additional_blob_refs: tuple[ArchiveSourceBlobRef, ...] = (),
     artifact: ArchiveSourceArtifact | None = None,
     hook_event: ArchiveHookEvent | None = None,
@@ -235,8 +233,8 @@ def write_source_raw_session(
                 raw_id, origin, native_id, source_path, source_index, blob_hash,
                 blob_size, acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error,
                 validated_at_ms, validation_status, validation_error, validation_drift_count,
-                validation_mode, detection_warnings_json, origin_meta
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                validation_mode, detection_warnings_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 resolved_raw_id,
@@ -256,7 +254,6 @@ def write_source_raw_session(
                 validation_drift_count,
                 _enum_value(validation_mode),
                 _json_dumps(detection_warnings),
-                _json_dumps(origin_meta or {}),
             ),
         )
         _insert_blob_ref(
@@ -356,7 +353,7 @@ def read_archive_raw_session_envelope(conn: sqlite3.Connection, raw_id: str) -> 
             raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
             acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error, validated_at_ms,
             validation_status, validation_error, validation_drift_count, validation_mode,
-            detection_warnings_json, origin_meta
+            detection_warnings_json
         FROM raw_sessions
         WHERE raw_id = ?
         """,
@@ -376,9 +373,9 @@ def read_archive_raw_session_envelope(conn: sqlite3.Connection, raw_id: str) -> 
         )
         for row in conn.execute(
             """
-            SELECT blob_hash, raw_id, ref_type, source_path, size_bytes, acquired_at_ms
+            SELECT blob_hash, ref_id AS raw_id, ref_type, source_path, size_bytes, acquired_at_ms
             FROM blob_refs
-            WHERE raw_id = ?
+            WHERE ref_id = ?
             ORDER BY ref_type, source_path
             """,
             (raw_id,),
@@ -436,7 +433,6 @@ def read_archive_raw_session_envelope(conn: sqlite3.Connection, raw_id: str) -> 
         validation_drift_count=row["validation_drift_count"],
         validation_mode=row["validation_mode"],
         detection_warnings=tuple(json.loads(row["detection_warnings_json"] or "[]")),
-        origin_meta=_json_loads(row["origin_meta"]),
         blob_refs=blob_refs,
         artifact_ids=artifact_ids,
         hook_event_ids=hook_event_ids,
@@ -567,7 +563,7 @@ def _insert_blob_ref(conn: sqlite3.Connection, ref: ArchiveSourceBlobRef) -> Non
     conn.execute(
         """
         INSERT OR REPLACE INTO blob_refs (
-            blob_hash, raw_id, ref_type, source_path, size_bytes, acquired_at_ms
+            blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms
         ) VALUES (?, ?, ?, ?, ?, ?)
         """,
         (

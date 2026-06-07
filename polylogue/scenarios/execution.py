@@ -70,7 +70,7 @@ _INSIGHT_OPERATION_BY_METHOD = {
     "list_session_profile_insights": "query-session-profiles",
     "list_session_work_event_insights": "query-session-work-events",
     "list_session_phase_insights": "query-session-phases",
-    "list_work_thread_insights": "query-work-threads",
+    "list_thread_insights": "query-threads",
     "list_session_tag_rollup_insights": "query-session-tag-rollups",
     "list_archive_coverage_insights": "query-archive-coverage",
     "list_tool_usage_insights": "query-tool-usage",

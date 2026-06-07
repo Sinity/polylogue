@@ -27,13 +27,11 @@ def _block_texts(blocks: Iterable[Mapping[str, object]], *, block_type: str) -> 
 class MessageRuntimeMixin:
     """Runtime behavior for the hydrated domain ``Message``.
 
-    Per #1256 (#864 slice F), hydrated ``Message`` instances never carry a
-    ``provider_meta`` payload: canonical archive storage keeps message
-    semantics in ``content_blocks`` and the typed columns on ``messages``.
-    All runtime decisions therefore read content_blocks, the persisted
-    ``message_type``, and the precomputed ``has_*`` flags. Provider-shaped
-    raw payloads remain available through ``raw_sessions`` / the blob
-    store, never through the hydrated domain model.
+    Canonical archive storage keeps message semantics in content-block rows
+    and typed columns on ``messages``. Runtime decisions read content blocks,
+    the persisted ``message_type``, and the precomputed ``has_*`` flags.
+    Provider-shaped raw payloads remain available through ``raw_sessions`` /
+    the blob store, never through the hydrated domain model.
     """
 
     id: str

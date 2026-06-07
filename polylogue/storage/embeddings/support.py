@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 
 import aiosqlite
 
@@ -52,7 +52,6 @@ def build_retrieval_bands_from_status(
     pending_sessions: int,
     stale_messages: int,
     missing_provenance: int,
-    action_status: Mapping[str, object],
     session_status: SessionInsightStatusSnapshot,
 ) -> dict[str, dict[str, object]]:
     transcript_ready = total_sessions == 0 or (
@@ -63,9 +62,9 @@ def build_retrieval_bands_from_status(
     )
     transcript_status = "empty" if total_sessions == 0 else ("ready" if transcript_ready else "pending")
 
-    evidence_source_rows = _coerce_int(action_status["count"]) + session_status.profile_row_count
-    evidence_materialized_rows = _coerce_int(action_status["action_fts_count"]) + session_status.profile_row_count
-    evidence_ready = bool(action_status["action_fts_ready"])
+    evidence_source_rows = session_status.profile_row_count
+    evidence_materialized_rows = session_status.profile_row_count
+    evidence_ready = True
 
     inference_source_rows = (
         session_status.profile_row_count
@@ -107,15 +106,13 @@ def build_retrieval_bands_from_status(
             "source_rows": evidence_source_rows,
             "materialized_rows": evidence_materialized_rows,
             "pending_rows": max(0, evidence_source_rows - evidence_materialized_rows),
-            "stale_rows": session_status.profile_evidence_fts_duplicate_count
-            + _coerce_int(action_status["stale_count"])
-            + _coerce_int(action_status.get("action_fts_stale_rows", 0)),
+            "stale_rows": session_status.profile_evidence_fts_duplicate_count,
             "detail": (
                 f"Evidence retrieval ready ({evidence_materialized_rows:,}/{evidence_source_rows:,} supporting rows)"
                 if evidence_ready
                 else (
                     f"Evidence retrieval pending ({evidence_materialized_rows:,}/{evidence_source_rows:,} supporting rows; "
-                    f"action_event_fts={_coerce_int(action_status['action_fts_count']):,}/{_coerce_int(action_status['count']):,})"
+                    "profile evidence FTS pending)"
                 )
             ),
         },

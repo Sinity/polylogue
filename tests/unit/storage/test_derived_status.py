@@ -37,7 +37,7 @@ def test_collect_derived_statuses_skips_retrieval_band_recomputation(
         conn.close()
 
 
-def test_build_retrieval_statuses_counts_stale_action_event_fts_rows() -> None:
+def test_build_retrieval_statuses_counts_stale_session_insight_rows() -> None:
     from polylogue.storage.derived.derived_status import build_retrieval_statuses
 
     statuses = build_retrieval_statuses(
@@ -55,25 +55,18 @@ def test_build_retrieval_statuses_counts_stale_action_event_fts_rows() -> None:
             "profile_evidence_fts_rows": 0,
             "profile_evidence_fts_duplicates": 0,
             "profile_rows": 0,
-            "action_fts_rows": 13,
-            "action_rows": 10,
-            "action_source_documents": 4,
-            "action_documents": 4,
-            "action_stale_rows": 0,
-            "action_fts_stale_rows": 3,
-            "action_orphan_rows": 0,
             "orphan_profile_rows": 0,
             "inference_retrieval_ready": True,
             "inference_retrieval_rows": 0,
             "expected_inference_retrieval_rows": 0,
             "profile_inference_fts_rows": 0,
             "profile_inference_fts_duplicates": 0,
-            "work_event_fts_rows": 0,
-            "work_event_fts_duplicates": 0,
-            "work_event_rows": 0,
+            "work_event_fts_rows": 4,
+            "work_event_fts_duplicates": 2,
+            "work_event_rows": 4,
             "phase_rows": 0,
-            "stale_work_event_rows": 0,
-            "stale_phase_rows": 0,
+            "stale_work_event_rows": 1,
+            "stale_phase_rows": 2,
             "orphan_work_event_rows": 0,
             "orphan_phase_rows": 0,
             "enrichment_retrieval_ready": True,
@@ -84,7 +77,7 @@ def test_build_retrieval_statuses_counts_stale_action_event_fts_rows() -> None:
         }
     )
 
-    evidence = statuses["retrieval_evidence"]
-    assert evidence.ready is False
-    assert evidence.pending_rows == 0
-    assert evidence.stale_rows == 3
+    inference = statuses["retrieval_inference"]
+    assert inference.ready is True
+    assert inference.pending_rows == 0
+    assert inference.stale_rows == 5

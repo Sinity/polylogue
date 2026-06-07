@@ -17,14 +17,13 @@ from polylogue.types import Provider, ValidationMode, ValidationStatus
 if TYPE_CHECKING:
     import aiosqlite
 
-    from polylogue.archive.action_event.action_events import ActionEvent
+    from polylogue.archive.actions.actions import Action
     from polylogue.archive.message.models import Message
     from polylogue.archive.message.roles import MessageRoleFilter
     from polylogue.archive.query.search_hits import SessionSearchHit
     from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.archive.session.session_profile import SessionProfile
     from polylogue.archive.stats import ArchiveStats
-    from polylogue.storage.action_events.artifacts import ActionEventArtifactState
     from polylogue.storage.archive_views import SessionRenderProjection
     from polylogue.storage.query_models import SessionRecordQuery
     from polylogue.storage.runtime import (
@@ -212,17 +211,9 @@ class SearchStore(Protocol):
 
 
 @runtime_checkable
-class ActionEventArtifactReader(Protocol):
-    """Read-only action-event artifact readiness surface."""
-
-    async def get_action_event_artifact_state(self) -> ActionEventArtifactState: ...
-
-
-@runtime_checkable
 class SessionQueryRuntimeStore(
     SessionReader,
     SearchStore,
-    ActionEventArtifactReader,
     Protocol,
 ):
     """Repository/query runtime surface consumed by canonical query execution."""
@@ -313,8 +304,8 @@ class SessionOutputStore(SessionReader, Protocol):
 
 
 @runtime_checkable
-class SessionSemanticStatsStore(ActionEventArtifactReader, Protocol):
-    """Semantic stats surface for action-event-backed grouped output."""
+class SessionSemanticStatsStore(Protocol):
+    """Semantic stats surface derived from sessions, messages, and blocks."""
 
     async def get_sessions_batch(self, ids: list[str]) -> list[SessionRecord]: ...
 
@@ -332,10 +323,10 @@ class SessionSemanticStatsStore(ActionEventArtifactReader, Protocol):
         session_ids: list[str],
     ) -> dict[str, list[AttachmentRecord]]: ...
 
-    async def get_action_events_batch(
+    async def get_actions_batch(
         self,
         session_ids: list[str],
-    ) -> dict[str, tuple[ActionEvent, ...]]: ...
+    ) -> dict[str, tuple[Action, ...]]: ...
 
 
 @runtime_checkable
@@ -442,7 +433,6 @@ __all__ = [
     "ProgressCallback",
     "SessionReader",
     "SearchStore",
-    "ActionEventArtifactReader",
     "SessionQueryRuntimeStore",
     "ArchiveMessageQueryStore",
     "SemanticArchiveQueryStore",

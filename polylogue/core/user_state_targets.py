@@ -51,10 +51,10 @@ _KINDS: Final[tuple[TargetKind, ...]] = (
         identity_template="message:{session_id}:{target_id}",
     ),
     TargetKind(
-        name="session",
-        unit="session_id (session root)",
+        name="phase",
+        unit="phase_id from session_phases",
         requires_message_id=False,
-        identity_template="session:{target_id}",
+        identity_template="phase:{session_id}:{target_id}",
     ),
     TargetKind(
         name="work_event",
@@ -64,7 +64,7 @@ _KINDS: Final[tuple[TargetKind, ...]] = (
     ),
     TargetKind(
         name="thread",
-        unit="thread_id from work_threads",
+        unit="thread_id from threads",
         requires_message_id=False,
         identity_template="thread:{target_id}",
     ),

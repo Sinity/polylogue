@@ -10,7 +10,6 @@ from polylogue.storage.raw_retention import (
     cleanup_superseded_raw_snapshots,
     superseded_raw_snapshot_candidates,
 )
-from polylogue.storage.sqlite.schema import _ensure_schema
 
 
 def _write_blob(store: BlobStore, payload: bytes) -> tuple[str, int]:
@@ -95,7 +94,6 @@ def test_superseded_raw_snapshot_cleanup_keeps_newest_per_source(tmp_path: Path)
     # Archive file-set retention is recency-only: it keeps the newest snapshot per
     # (source_path, source_index) and supersedes the rest. There is no legacy
     # live-reference / lease preservation — sessions point at current raws, and
-    # provider_events is a retired single-file table absent from archive — so any
     # superseded snapshot whose source file still exists is a candidate.
     def _seed(raw_id: str, source_path: Path, source_index: int, blob_size: int, acquired_at_ms: int) -> None:
         _insert_archive_raw_session(
@@ -146,19 +144,8 @@ def test_superseded_raw_snapshot_cleanup_keeps_newest_per_source(tmp_path: Path)
     assert remaining_raw_ids == {full_new, append_current, missing_old, missing_new}
 
 
-def test_provider_event_raw_index_is_ensured_on_existing_archive(tmp_path: Path) -> None:
-    conn = sqlite3.connect(tmp_path / "archive.db")
-    conn.row_factory = sqlite3.Row
-    _ensure_schema(conn)
-
-    indexes = {str(row[1]) for row in conn.execute("PRAGMA index_list(provider_events)").fetchall()}
-    assert "idx_provider_events_raw_id" in indexes
-
-
-def test_archive_cleanup_compacts_append_snapshot_without_provider_events(tmp_path: Path) -> None:
-    # Archive file-set storage has no ``provider_events`` table (a retired single-file construct), so
-    # cleanup never manages a provider-event index or clears provider-event
-    # links; it simply compacts the superseded append snapshot.
+def test_archive_cleanup_compacts_append_snapshot_without_session_events(tmp_path: Path) -> None:
+    # Archive file-set cleanup simply compacts the superseded append snapshot.
     db_path = tmp_path / "source.db"
     source = tmp_path / "rollout.jsonl"
     source.write_text('{"type":"message"}\n', encoding="utf-8")
@@ -196,7 +183,6 @@ def test_archive_cleanup_compacts_append_snapshot_without_provider_events(tmp_pa
 
     result = cleanup_superseded_raw_snapshots(conn, dry_run=False, blob_store=blob_store)
     assert result.deleted_raw_count == 1
-    assert result.provider_event_links_cleared == 0
     assert not blob_store.exists(old_raw)
     assert blob_store.exists(current_raw)
     assert conn.execute("SELECT 1 FROM raw_sessions WHERE raw_id = ?", (old_raw,)).fetchone() is None
@@ -245,7 +231,6 @@ def test_superseded_raw_snapshot_cleanup_uses_archive_blob_hashes(tmp_path: Path
 
     assert result.deleted_raw_count == 1
     assert result.deleted_blob_count == 1
-    assert result.provider_event_links_cleared == 0
     assert not blob_store.exists(old_blob)
     assert blob_store.exists(current_blob)
     assert conn.execute("SELECT 1 FROM raw_sessions WHERE raw_id = 'raw-old-not-a-blob-hash'").fetchone() is None

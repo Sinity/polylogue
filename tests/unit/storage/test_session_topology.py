@@ -23,10 +23,10 @@ from polylogue.types import ContentHash, SessionId
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 
-# Archive session ids derive from the builder's provider_session_id
-# (``ext-<conv_id>``) and the claude-code origin. Parent references are the
-# parent's provider-native id (``ext-<parent>``) so the archive link
-# resolver can match ``dst_session_native_id`` against ``sessions.native_id``.
+# Archive session ids derive from the builder's native id (``ext-<conv_id>``)
+# and the claude-code origin. Parent references carry the parent's native id
+# (``ext-<parent>``) so the archive link resolver can match
+# ``dst_native_id`` against ``sessions.native_id``.
 def _native(token: str) -> str:
     return f"claude-code-session:ext-{token}"
 
@@ -129,10 +129,10 @@ async def test_topology_missing_session_returns_none(workspace_env: dict[str, Pa
 
 
 @pytest.mark.asyncio
-async def test_topology_unresolved_native_parent_via_provider_meta(workspace_env: dict[str, Path]) -> None:
+async def test_topology_unresolved_native_parent_via_session_links(workspace_env: dict[str, Path]) -> None:
     db_path = db_setup(workspace_env)
 
-    # An orphan: it asserts a provider-native parent pointer whose parent
+    # An orphan: it asserts a native parent pointer whose parent
     # session has not been ingested, so the archive link resolver leaves
     # the session_links row unresolved (dst_session_id IS NULL). The topology
     # must surface this as an unresolved edge so late repair (#866 AC) has
@@ -164,15 +164,15 @@ def test_topology_sync_derivation_cycle_detected() -> None:
 
     a = SessionRecord(
         session_id=SessionId("A"),
-        source_name="test",
-        provider_session_id="ext-A",
+        origin="unknown-export",
+        native_id="ext-A",
         content_hash=ContentHash("hash-a"),
         parent_session_id=SessionId("B"),
     )
     b = SessionRecord(
         session_id=SessionId("B"),
-        source_name="test",
-        provider_session_id="ext-B",
+        origin="unknown-export",
+        native_id="ext-B",
         content_hash=ContentHash("hash-b"),
         parent_session_id=SessionId("A"),
     )
@@ -194,14 +194,14 @@ def test_topology_sync_derivation_resolves_full_tree() -> None:
 
     root = SessionRecord(
         session_id=SessionId("root"),
-        source_name="codex",
-        provider_session_id="ext-root",
+        origin="codex-session",
+        native_id="ext-root",
         content_hash=ContentHash("h-root"),
     )
     cont = SessionRecord(
         session_id=SessionId("cont"),
-        source_name="codex",
-        provider_session_id="ext-cont",
+        origin="codex-session",
+        native_id="ext-cont",
         content_hash=ContentHash("h-cont"),
         parent_session_id=SessionId("root"),
         branch_type=None,

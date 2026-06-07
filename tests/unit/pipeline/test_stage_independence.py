@@ -143,11 +143,11 @@ class TestParseStageIndependence:
 
         backend, _ = _make_backend(tmp_path)
         archive_root = tmp_path / "archive"
-        archive_root.mkdir()
+        archive_root.mkdir(exist_ok=True)
         repo = SessionRepository(backend=backend)
 
         render_root = tmp_path / "render"
-        render_root.mkdir()
+        render_root.mkdir(exist_ok=True)
         config = Config(
             sources=[],
             archive_root=archive_root,
@@ -172,9 +172,9 @@ class TestParseStageIndependence:
 
         backend, _ = _make_backend(tmp_path)
         archive_root = tmp_path / "archive"
-        archive_root.mkdir()
+        archive_root.mkdir(exist_ok=True)
         render_root = tmp_path / "render"
-        render_root.mkdir()
+        render_root.mkdir(exist_ok=True)
         repo = SessionRepository(backend=backend)
 
         config = Config(

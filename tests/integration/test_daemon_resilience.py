@@ -111,12 +111,12 @@ def _write_large_session(path: Path, session_id: str, n_messages: int) -> int:
 def _db_path() -> Path:
     """Return the resolved polylogue database path.
 
-    Uses the same resolution as ``polylogue.paths.db_path()``:
-    ``XDG_DATA_HOME / "polylogue" / "index.db"``.
-    When ``XDG_DATA_HOME`` is not set in the environment, falls back
-    to ``~/.local/share`` (matching the ``_xdg_path`` default in
-    ``polylogue.paths._roots``).
+    Prefer the active archive root when the test fixture sets one; otherwise
+    fall back to the XDG data root.
     """
+    archive_root = os.environ.get("POLYLOGUE_ARCHIVE_ROOT")
+    if archive_root:
+        return Path(archive_root) / "index.db"
     xdg_data = os.environ.get("XDG_DATA_HOME")
     data_polylogue = Path(xdg_data) / "polylogue" if xdg_data else Path.home() / ".local" / "share" / "polylogue"
     return data_polylogue / "index.db"
@@ -204,6 +204,21 @@ def _wait_for_messages(
     )
 
 
+def _daemon_debug(proc: subprocess.Popen[bytes], *, db: Path, corpus_root: Path) -> str:
+    if proc.poll() is None:
+        _cleanup_process(proc)
+    try:
+        stderr_text = proc.stderr.read().decode(errors="replace")[:4000] if proc.stderr else "(no stderr)"
+    except Exception:
+        stderr_text = "(could not read stderr)"
+    files = sorted(str(path) for path in corpus_root.glob("**/*") if path.is_file())[:20]
+    return (
+        f"returncode={proc.poll()} db={db} db_exists={db.exists()} "
+        f"source_exists={db.with_name('source.db').exists()} corpus_files={files}\n"
+        f"stderr:\n{stderr_text}"
+    )
+
+
 def _wait_for_sessions(
     db: Path,
     *,
@@ -264,9 +279,6 @@ def _expected_fts_triggers() -> set[str]:
         "messages_fts_ai",
         "messages_fts_au",
         "messages_fts_ad",
-        "action_events_fts_ai",
-        "action_events_fts_au",
-        "action_events_fts_ad",
     }
 
 
@@ -364,7 +376,7 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
     """
     archive_root = workspace_env["archive_root"]
     corpus_root = archive_root / "corpus" / "projects"
-    db = _db_path()
+    db = archive_root / "index.db"
 
     # 1. Create source files.
     N_SESSIONS = 5
@@ -486,7 +498,7 @@ def test_wal_checkpoint_recovery(workspace_env: dict[str, Path]) -> None:
     """
     archive_root = workspace_env["archive_root"]
     corpus_root = archive_root / "corpus" / "projects"
-    db = _db_path()
+    db = archive_root / "index.db"
 
     # Write enough sessions to keep the daemon busy.
     N_SESSIONS = 10
@@ -607,7 +619,7 @@ def test_daemon_memory_pressure(workspace_env: dict[str, Path]) -> None:
     """
     archive_root = workspace_env["archive_root"]
     corpus_root = archive_root / "corpus" / "projects"
-    db = _db_path()
+    db = archive_root / "index.db"
 
     N_SESSIONS = 8
     MESSAGES_PER_SESSION = 100
@@ -683,7 +695,7 @@ def test_large_session_file(workspace_env: dict[str, Path]) -> None:
     """
     archive_root = workspace_env["archive_root"]
     corpus_root = archive_root / "corpus" / "projects"
-    db = _db_path()
+    db = archive_root / "index.db"
 
     session_id = "large-session-000000000000"
     n_messages = 50_000
@@ -759,7 +771,7 @@ def test_large_session_file(workspace_env: dict[str, Path]) -> None:
         while time.monotonic() < fts_deadline:
             try:
                 with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
-                    fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+                    fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
                 if fts_count >= n_messages:
                     break
             except sqlite3.OperationalError as exc:
@@ -794,7 +806,7 @@ def test_concurrent_access_safety(workspace_env: dict[str, Path]) -> None:
     """
     archive_root = workspace_env["archive_root"]
     corpus_root = archive_root / "corpus" / "projects"
-    db = _db_path()
+    db = archive_root / "index.db"
 
     # Write sessions so the daemon stays busy.
     N_SESSIONS = 5
@@ -830,7 +842,10 @@ def test_concurrent_access_safety(workspace_env: dict[str, Path]) -> None:
         _assert_daemon_alive(proc)
 
         # Wait for ingest to begin.
-        _wait_for_messages(db, min_count=1, timeout_s=60.0)
+        try:
+            _wait_for_messages(db, min_count=1, timeout_s=60.0)
+        except TimeoutError as exc:
+            raise TimeoutError(f"{exc}\n{_daemon_debug(proc, db=db, corpus_root=corpus_root)}") from exc
 
         # 1. Second daemon should fail (pidfile lock).
         result = subprocess.run(

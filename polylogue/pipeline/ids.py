@@ -10,9 +10,10 @@ from typing import TypeAlias
 from polylogue.assets import asset_path
 from polylogue.core.hashing import hash_file, hash_payload, hash_text
 from polylogue.core.json import JSONValue
+from polylogue.core.sources import origin_from_provider
 from polylogue.sources import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.base import ParsedContentBlock
-from polylogue.types import ContentHash, MessageId, ProviderEventId, SessionId
+from polylogue.types import ContentHash, MessageId, Provider, SessionEventId, SessionId
 
 # Sentinel values to distinguish None from empty in hash computations
 _NULL_SENTINEL = "__POLYLOGUE_NULL__"
@@ -134,7 +135,7 @@ def attachment_content_id(
 
 
 def session_id(source_name: str, provider_session_id: str) -> SessionId:
-    """Generate deterministic session ID from provider info.
+    """Generate the archive session ID from source/provider input.
 
     Args:
         provider_session_id: Provider's session identifier.
@@ -149,15 +150,16 @@ def session_id(source_name: str, provider_session_id: str) -> SessionId:
         raise ValueError("source_name cannot be empty")
     if not provider_session_id or not provider_session_id.strip():
         raise ValueError("provider_session_id cannot be empty")
-    return SessionId(f"{source_name}:{provider_session_id}")
+    origin = origin_from_provider(Provider.from_string(source_name))
+    return SessionId(f"{origin.value}:{provider_session_id}")
 
 
 def message_id(session_id: SessionId, provider_message_id: str) -> MessageId:
     return MessageId(f"{session_id}:{provider_message_id}")
 
 
-def provider_event_id(session_id: SessionId, event_index: int) -> ProviderEventId:
-    return ProviderEventId(f"{session_id}:provider-event:{event_index:06d}")
+def session_event_id(session_id: SessionId, event_index: int) -> SessionEventId:
+    return SessionEventId(f"{session_id}:session-event:{event_index:06d}")
 
 
 def _content_block_payload(block: ParsedContentBlock) -> dict[str, JSONValue]:
@@ -197,7 +199,7 @@ def _session_hash_payload(
     updated_at: str | None,
     messages: list[dict[str, JSONValue]],
     attachments: list[dict[str, JSONValue]],
-    provider_events: list[dict[str, JSONValue]],
+    session_events: list[dict[str, JSONValue]],
 ) -> dict[str, object]:
     """Build the content-hash payload dict shared by pipeline and async write paths."""
     return {
@@ -205,7 +207,7 @@ def _session_hash_payload(
         "created_at": _normalize_for_hash(created_at),
         "updated_at": _normalize_for_hash(updated_at),
         "messages": messages,
-        "provider_events": provider_events,
+        "session_events": session_events,
         "attachments": sorted(
             attachments,
             key=lambda item: (
@@ -256,7 +258,7 @@ def session_content_hashes(convo: ParsedSession) -> tuple[ContentHash, dict[str,
         }
         for att in convo.attachments
     ]
-    provider_events_payload = [
+    session_events_payload = [
         {
             "event_index": event_index,
             "event_type": _normalize_for_hash(event.event_type),
@@ -264,7 +266,7 @@ def session_content_hashes(convo: ParsedSession) -> tuple[ContentHash, dict[str,
             "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
             "payload": hash_payload(event.payload),
         }
-        for event_index, event in enumerate(convo.provider_events)
+        for event_index, event in enumerate(convo.session_events)
     ]
     return (
         ContentHash(
@@ -275,7 +277,7 @@ def session_content_hashes(convo: ParsedSession) -> tuple[ContentHash, dict[str,
                     updated_at=convo.updated_at,
                     messages=messages_payload,
                     attachments=attachments_payload,
-                    provider_events=provider_events_payload,
+                    session_events=session_events_payload,
                 )
             )
         ),

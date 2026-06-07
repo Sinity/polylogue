@@ -67,7 +67,7 @@ def test_session_action_search_score_uses_best_match_and_bonus(monkeypatch: pyte
     monkeypatch.setattr(
         "polylogue.archive.semantic.facts.build_session_semantic_facts",
         lambda _session: SimpleNamespace(
-            action_events=[
+            actions=[
                 SimpleNamespace(search_text="alpha beta"),
                 SimpleNamespace(search_text="beta only"),
                 SimpleNamespace(search_text=None),

@@ -73,7 +73,7 @@ First-class structured content within messages. One row per block.
 | `metadata` | TEXT | Block metadata JSON; carries media type for image/document blocks |
 | `semantic_type` | TEXT | Inferred semantic type: `file_read`, `file_write`, `file_edit`, `shell`, `git`, `search`, `web`, `agent`, `subagent`, `thinking`, `other` |
 
-### action_events
+### actions
 
 Normalized action records derived from content blocks.
 
@@ -118,15 +118,13 @@ Used for pushdown filters (`--min-messages`, `--min-words`, `--has-tool-use`,
 
 | Virtual Table | Content | Tokenizer |
 |---------------|---------|-----------|
-| `messages_fts` | Message text | `unicode61` |
-| `action_events_fts` | Action event text | `unicode61` |
+| `messages_fts` | Block text, including tool-use/tool-result action evidence | `unicode61` |
 | `session_work_events_fts` | Work event search text | `unicode61` |
 | `work_threads_fts` | Thread search text | `unicode61` |
 
-All FTS tables use `unicode61` tokenizer (no porter stemmer). The message and
-action-event indexes are external-content FTS5 tables backed by
-`messages`/`action_events`; FTS sync triggers maintain the indexes and startup
-repair verifies the trigger set.
+All FTS tables use `unicode61` tokenizer (no porter stemmer). `messages_fts`
+is contentless and populated from `blocks`; action search is a filtered read
+over tool-use/tool-result blocks in that same index.
 
 ## Vector Table
 
@@ -171,12 +169,12 @@ a `search_text` column for FTS indexing.
 Polylogue uses fresh-first schema initialization:
 
 - **Version match**: open database normally
-- **New database**: create all tables at current `SCHEMA_VERSION`
+- **New database**: create the current split archive tier files
 - **Version mismatch**: rejected with an error; rebuild the archive from source
 
-Schema version is declared in `polylogue/storage/sqlite/schema_ddl.py` as
-`SCHEMA_VERSION`. The bootstrap branching logic in `schema_bootstrap.py` handles
-both sync and async backends.
+Tier schema versions and DDL live under
+`polylogue/storage/sqlite/archive_tiers/`. The bootstrap branching logic in
+`schema_bootstrap.py` handles sync and async index-tier backends.
 
 ## Schema Drift Detection
 

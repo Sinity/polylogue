@@ -209,13 +209,7 @@ def _still_referenced(
     *,
     source_db_path: Path | None = None,
 ) -> bool:
-    """Return True if the blob hash is referenced by any archive row.
-
-    stores source blob references in ``source.db`` tables
-    with BLOB-typed hashes. Legacy archives store the same hash as
-    ``raw_sessions.raw_id``. GC treats either representation as
-    load-bearing.
-    """
+    """Return True if the blob hash is referenced by any archive row."""
     return bool(_reference_surfaces(conn, blob_hash, source_db_path=source_db_path))
 
 

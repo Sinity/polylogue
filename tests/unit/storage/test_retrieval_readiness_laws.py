@@ -322,7 +322,12 @@ class TestRetrievalIndexInvariants:
                 str(row[0])
                 for row in conn.execute("SELECT block_id FROM blocks WHERE NULLIF(text, '') IS NOT NULL").fetchall()
             }
-            indexed_blocks = {str(row[0]) for row in conn.execute("SELECT block_id FROM blocks_fts").fetchall()}
+            indexed_blocks = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT b.block_id FROM messages_fts f JOIN blocks b ON b.rowid = f.rowid"
+                ).fetchall()
+            }
         assert indexed_blocks == indexable_blocks
 
     @pytest.mark.asyncio

@@ -37,13 +37,13 @@ The story follows this template:
    2 weeks of completion.
 
 Discovery: the user provides a file path, branch name, or keyword. The story
-engine searches `action_events.affected_paths` and `session_profiles.repo_paths_json`
+engine searches `actions.affected_paths` and `session_profiles.repo_paths_json`
 for matches, traces the sessions forward in time, and assembles the narrative.
 
 CLI:
 
 ```
-polylogue story feature-birth --path polylogue/storage/sqlite/schema_ddl.py
+polylogue story feature-birth --path polylogue/storage/sqlite/archive_tiers/index.py
 polylogue story feature-birth --branch feature/feat/time-machine
 polylogue story feature-birth --keyword "content hash"
 ```
@@ -71,7 +71,7 @@ The story template:
 
 Discovery: the user provides a date. The story engine queries `session_profiles`
 with `canonical_session_date = :date`, orders by `first_message_at`, enriches
-with `action_events.affected_paths` for each session, and renders the template.
+with `actions.affected_paths` for each session, and renders the template.
 
 CLI:
 
@@ -105,7 +105,7 @@ Discovery: the user provides a branch name. The story engine:
 2. Orders them by date.
 3. Detects phase boundaries (gaps >2 days without a session touching the
    branch).
-4. For each phase, collects affected paths from `action_events`.
+4. For each phase, collects affected paths from `actions`.
 5. Computes cumulative word count, tool usage, and cost per phase.
 6. Renders the template.
 
@@ -171,7 +171,7 @@ SELECT
     sp.session_id, sp.canonical_session_date, sp.title,
     ae.affected_paths
 FROM session_profiles sp
-JOIN action_events ae ON sp.session_id = ae.session_id
+JOIN actions ae ON sp.session_id = ae.session_id
 WHERE ae.affected_paths LIKE '%' || :file_path || '%'
 ORDER BY sp.canonical_session_date ASC;
 ```
@@ -188,7 +188,7 @@ SELECT
     sp.total_cost_usd, sp.repo_names_json, sp.tags_json,
     ae.affected_paths
 FROM session_profiles sp
-LEFT JOIN action_events ae ON sp.session_id = ae.session_id
+LEFT JOIN actions ae ON sp.session_id = ae.session_id
 WHERE sp.canonical_session_date = :date
 ORDER BY sp.first_message_at ASC;
 ```
@@ -202,7 +202,7 @@ SELECT
     sp.first_message_at, sp.word_count, sp.tool_use_count,
     ae.affected_paths
 FROM session_profiles sp
-JOIN action_events ae ON sp.session_id = ae.session_id
+JOIN actions ae ON sp.session_id = ae.session_id
 WHERE sp.session_id IN (
     SELECT DISTINCT session_id
     FROM session_profiles

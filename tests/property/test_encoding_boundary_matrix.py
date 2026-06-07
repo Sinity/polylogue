@@ -35,7 +35,6 @@ from polylogue.pipeline.ids import (
     message_content_hash,
     session_content_hash,
 )
-from polylogue.pipeline.prepare import RecordBundle, save_bundle
 from polylogue.sources.decoder_json import decode_json_bytes
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.index import rebuild_index
@@ -43,7 +42,7 @@ from polylogue.storage.repository import SessionRepository
 from polylogue.storage.search import search_messages
 from polylogue.storage.search.query_support import escape_fts5_query
 from polylogue.types import Provider
-from tests.infra.storage_records import make_message, make_session
+from tests.infra.storage_records import make_message, make_session, save_current_archive_records
 
 # ---------------------------------------------------------------------------
 # Edge-case catalog
@@ -281,14 +280,16 @@ class TestFtsUnicodeTokenizer:
     ) -> None:
         conv = make_session("conv-ar", source_name="claude-ai", title="Arabic")
         msg = make_message("conv-ar-m1", "conv-ar", text=ARABIC_HELLO)
-        await save_bundle(
-            RecordBundle(session=conv, messages=[msg], attachments=[]),
-            repository=storage_repository,
+        await save_current_archive_records(
+            storage_repository,
+            session=conv,
+            messages=[msg],
+            attachments=[],
         )
         rebuild_index()
         results = search_messages(ARABIC_HELLO, archive_root=workspace_env["archive_root"], limit=10)
         assert len(results.hits) == 1
-        assert results.hits[0].session_id == "conv-ar"
+        assert results.hits[0].session_id == "claude-ai-export:conv-ar"
 
     async def test_indexes_cjk_text_without_crashing(
         self,
@@ -302,16 +303,18 @@ class TestFtsUnicodeTokenizer:
         # sentinel mixed in to give the test a positive observation.
         conv = make_session("conv-cjk", source_name="claude-ai", title="CJK")
         msg = make_message("conv-cjk-m1", "conv-cjk", text=f"{CJK_TEXT} cjkmarker")
-        await save_bundle(
-            RecordBundle(session=conv, messages=[msg], attachments=[]),
-            repository=storage_repository,
+        await save_current_archive_records(
+            storage_repository,
+            session=conv,
+            messages=[msg],
+            attachments=[],
         )
         rebuild_index()
         # The English sentinel proves the row reached the FTS index even
         # though the CJK run itself is not substring-searchable.
         results = search_messages("cjkmarker", archive_root=workspace_env["archive_root"], limit=10)
         assert len(results.hits) == 1
-        assert results.hits[0].session_id == "conv-cjk"
+        assert results.hits[0].session_id == "claude-ai-export:conv-cjk"
 
     async def test_indexing_zero_width_and_bidi_does_not_crash(
         self,
@@ -322,9 +325,11 @@ class TestFtsUnicodeTokenizer:
         # even though zero-width characters are interleaved.
         conv = make_session("conv-zw", source_name="claude-ai", title="zerowidth")
         msg = make_message("conv-zw-m1", "conv-zw", text=ZERO_WIDTH + " " + BIDI_OVERRIDE)
-        await save_bundle(
-            RecordBundle(session=conv, messages=[msg], attachments=[]),
-            repository=storage_repository,
+        await save_current_archive_records(
+            storage_repository,
+            session=conv,
+            messages=[msg],
+            attachments=[],
         )
         # Indexing must not raise. We do not assert on tokenizer-internal
         # decisions about whether ZWJ/ZWNJ split tokens.
@@ -340,9 +345,11 @@ class TestFtsUnicodeTokenizer:
         # documents that contract.
         conv = make_session("conv-nfc", source_name="claude-ai", title="cafe")
         msg = make_message("conv-nfc-m1", "conv-nfc", text=NFC_CAFE)
-        await save_bundle(
-            RecordBundle(session=conv, messages=[msg], attachments=[]),
-            repository=storage_repository,
+        await save_current_archive_records(
+            storage_repository,
+            session=conv,
+            messages=[msg],
+            attachments=[],
         )
         rebuild_index()
         results = search_messages(NFC_CAFE, archive_root=workspace_env["archive_root"], limit=10)

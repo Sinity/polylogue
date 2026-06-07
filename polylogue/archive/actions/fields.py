@@ -1,11 +1,11 @@
-"""Field extraction helpers for action-event normalization."""
+"""Field extraction helpers for action normalization."""
 
 from __future__ import annotations
 
 import re
 from pathlib import PurePosixPath
 
-from polylogue.archive.action_event.parsing import _clean_str, _extract_first_string
+from polylogue.archive.actions.parsing import _clean_str, _extract_first_string
 from polylogue.archive.viewport.viewports import ToolCall, ToolCategory
 from polylogue.core.hashing import hash_text_short
 
@@ -106,7 +106,7 @@ def build_search_text(
     return " | ".join(part for part in parts if part)
 
 
-def make_action_event_id(message_id: str, sequence_index: int, tool_id: str | None, tool_name: str) -> str:
+def make_action_id(message_id: str, sequence_index: int, tool_id: str | None, tool_name: str) -> str:
     seed = f"{message_id}:{sequence_index}:{tool_id or ''}:{tool_name}"
     return f"act-{hash_text_short(seed)}"
 
@@ -118,6 +118,6 @@ __all__ = [
     "extract_cwd_path",
     "extract_search_query",
     "extract_url",
-    "make_action_event_id",
+    "make_action_id",
     "normalize_output_text",
 ]

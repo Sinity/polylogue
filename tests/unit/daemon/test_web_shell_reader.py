@@ -75,56 +75,55 @@ def _index_db_path(workspace: dict[str, Path]) -> Path:
 def _seed_test_db(workspace: dict[str, Path]) -> None:
     import sqlite3
 
-    from polylogue.storage.sqlite.schema_ddl_archive import (
-        ARCHIVE_STORAGE_DDL,
-        MESSAGE_FTS_DDL,
-    )
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.types import Provider
 
     db = _index_db_path(workspace)
     db.parent.mkdir(parents=True, exist_ok=True)
+    initialize_archive_database(db, ArchiveTier.INDEX)
     conn = sqlite3.connect(str(db))
-    conn.executescript(ARCHIVE_STORAGE_DDL)
-    conn.executescript(MESSAGE_FTS_DDL)
     for cid, prov, title in [
         ("c1", "claude-code", "Claude Code session about authentication"),
         ("c2", "chatgpt", "ChatGPT debugging session"),
         ("c3", "claude-ai", "Claude AI brainstorm thread"),
     ]:
+        provider = Provider.from_string(prov)
+        origin = origin_from_provider(provider).value
         conn.execute(
-            "INSERT INTO sessions(session_id, source_name, provider_session_id, title, content_hash, version) VALUES(?,?,?,?,?,?)",
-            (cid, prov, f"p-{cid}", title, f"hash-{cid}", 1),
+            """
+            INSERT INTO sessions(native_id, origin, title, content_hash, created_at_ms, updated_at_ms)
+            VALUES(?, ?, ?, ?, 1770000000000, 1770000000000)
+            """,
+            (cid, origin, title, f"hash-{cid}".encode().ljust(32, b"x")[:32]),
+        )
+        session_id = f"{origin}:{cid}"
+        conn.execute(
+            """
+            INSERT INTO messages(session_id, native_id, position, role, content_hash)
+            VALUES(?, ?, 0, 'user', ?)
+            """,
+            (session_id, f"m-{cid}", f"mhash-{cid}".encode().ljust(32, b"y")[:32]),
         )
         conn.execute(
-            "INSERT INTO messages(message_id, session_id, role, text, source_name, content_hash, version) VALUES(?,?,?,?,?,?,?)",
-            (f"m-{cid}", cid, "user", "Hello reader", prov, f"mhash-{cid}", 1),
+            """
+            INSERT INTO blocks(message_id, session_id, position, block_type, text)
+            VALUES(?, ?, 0, 'text', 'Hello reader')
+            """,
+            (f"{session_id}:m-{cid}", session_id),
         )
     conn.commit()
     conn.close()
 
 
 def _seed_empty_schema(workspace: dict[str, Path]) -> None:
-    import sqlite3
-
-    from polylogue.storage.sqlite.schema_ddl_archive import (
-        ARCHIVE_STORAGE_DDL,
-        MESSAGE_FTS_DDL,
-        RECALL_PACKS_DDL,
-        SAVED_VIEWS_DDL,
-        USER_ANNOTATIONS_DDL,
-        USER_MARKS_DDL,
-    )
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     db = _index_db_path(workspace)
     db.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db))
-    conn.executescript(ARCHIVE_STORAGE_DDL)
-    conn.executescript(MESSAGE_FTS_DDL)
-    conn.executescript(USER_MARKS_DDL)
-    conn.executescript(USER_ANNOTATIONS_DDL)
-    conn.executescript(SAVED_VIEWS_DDL)
-    conn.executescript(RECALL_PACKS_DDL)
-    conn.commit()
-    conn.close()
+    initialize_archive_database(db, ArchiveTier.INDEX)
 
 
 def _get_text(base_url: str, path: str) -> tuple[int, str, str]:

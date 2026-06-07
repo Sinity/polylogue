@@ -1,4 +1,4 @@
-"""Provider-level event domain models."""
+"""Session timeline event domain models."""
 
 from __future__ import annotations
 
@@ -6,17 +6,19 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
+from polylogue.core.enums import Origin
 from polylogue.core.json import json_document
+from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.types import MessageId, Provider, ProviderEventId, SessionId
+from polylogue.types import MessageId, Provider, SessionEventId, SessionId
 
 
-class ProviderEvent(BaseModel):
-    """Semantic provider artifact that is not itself a dialogue message."""
+class SessionEvent(BaseModel):
+    """Semantic session artifact that is not itself a dialogue message."""
 
-    id: ProviderEventId
+    id: SessionEventId
     session_id: SessionId
-    provider: Provider
+    origin: Origin
     event_index: int
     event_type: str
     timestamp: datetime | None = None
@@ -26,12 +28,18 @@ class ProviderEvent(BaseModel):
     raw_id: str | None = None
     materializer_version: int = 1
 
-    @field_validator("provider", mode="before")
+    @field_validator("origin", mode="before")
     @classmethod
-    def coerce_provider(cls, value: object) -> Provider:
-        if isinstance(value, Provider):
+    def coerce_origin(cls, value: object) -> Origin:
+        if isinstance(value, Origin):
             return value
-        return Provider.from_string(str(value) if value is not None else None)
+        if isinstance(value, Provider):
+            return origin_from_provider(value)
+        text = str(value) if value is not None else "unknown"
+        try:
+            return Origin(text)
+        except ValueError:
+            return origin_from_provider(Provider.from_string(text))
 
     @field_validator("timestamp", mode="before")
     @classmethod
@@ -48,4 +56,4 @@ class ProviderEvent(BaseModel):
         return dict(json_document(value))
 
 
-__all__ = ["ProviderEvent"]
+__all__ = ["SessionEvent"]

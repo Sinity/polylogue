@@ -389,7 +389,7 @@ def test_run_live_watcher_stops_on_keyboard_interrupt() -> None:
     assert stopped == [True]
 
 
-def test_ensure_fts_startup_readiness_runs_bounded_repair(
+def test_ensure_fts_startup_readiness_skips_old_non_blocks_shape(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -424,20 +424,13 @@ def test_ensure_fts_startup_readiness_runs_bounded_repair(
                 return FakeCursor(("messages",))
             if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
                 name = str(_params[0]) if isinstance(_params, tuple) and _params else ""
-                return (
-                    FakeCursor((1,))
-                    if name in {"messages", "messages_fts", "action_events", "action_events_fts"}
-                    else FakeCursor(None)
-                )
+                return FakeCursor((1,)) if name in {"messages", "messages_fts"} else FakeCursor(None)
             if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
                 # All six FTS triggers present — no SIGKILL-drift recovery.
                 triggers: list[tuple[object, ...]] = [
                     ("messages_fts_ai",),
                     ("messages_fts_ad",),
                     ("messages_fts_au",),
-                    ("action_events_fts_ai",),
-                    ("action_events_fts_ad",),
-                    ("action_events_fts_au",),
                 ]
                 return FakeCursor(triggers[0], rows=triggers)
             raise AssertionError(f"unexpected query: {query}")
@@ -481,17 +474,15 @@ def test_ensure_fts_startup_readiness_runs_bounded_repair(
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
-    assert ensured == [conn]
+    assert ensured == []
     assert rebuilds == []
-    assert repairs == [conn]
-    assert conn.committed is True
+    assert repairs == []
+    assert conn.committed is False
     assert conn.closed is True
-    # #1628: healthy path must write freshness snapshot so /healthz/ready
-    # stops returning 503 on a fully populated archive.
-    assert freshness_calls == [conn]
+    assert freshness_calls == []
 
 
-def test_ensure_fts_startup_readiness_rebuilds_when_bounded_repair_fails(
+def test_ensure_fts_startup_readiness_does_not_rebuild_old_non_blocks_shape(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -526,19 +517,12 @@ def test_ensure_fts_startup_readiness_rebuilds_when_bounded_repair_fails(
                 return FakeCursor(("messages",))
             if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
                 name = str(_params[0]) if isinstance(_params, tuple) and _params else ""
-                return (
-                    FakeCursor((1,))
-                    if name in {"messages", "messages_fts", "action_events", "action_events_fts"}
-                    else FakeCursor(None)
-                )
+                return FakeCursor((1,)) if name in {"messages", "messages_fts"} else FakeCursor(None)
             if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
                 triggers: list[tuple[object, ...]] = [
                     ("messages_fts_ai",),
                     ("messages_fts_ad",),
                     ("messages_fts_au",),
-                    ("action_events_fts_ai",),
-                    ("action_events_fts_ad",),
-                    ("action_events_fts_au",),
                 ]
                 return FakeCursor(triggers[0], rows=triggers)
             raise AssertionError(f"unexpected query: {query}")
@@ -576,21 +560,19 @@ def test_ensure_fts_startup_readiness_rebuilds_when_bounded_repair_fails(
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
-    assert restored == [conn]
-    assert rebuilds == [conn]
-    assert conn.committed is True
+    assert restored == []
+    assert rebuilds == []
+    assert conn.committed is False
     assert conn.closed is True
 
 
-def test_ensure_fts_startup_readiness_skips_when_messages_table_absent(
+def test_ensure_fts_startup_readiness_skips_when_blocks_table_absent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Fresh-init guard (#1603): if ``messages_fts`` was created but the
-    base ``messages`` table is not yet visible (the bootstrap is still
-    in flight on another connection), the readiness check must skip the
-    repair path instead of raising ``OperationalError: no such table:
-    messages`` into the daemon log.
+    """Fresh-init/current-shape guard: if the canonical ``blocks`` table is not
+    visible, startup skips FTS repair instead of probing an old monolithic
+    shape.
     """
     from polylogue.daemon import cli as daemon_cli
 
@@ -613,11 +595,7 @@ def test_ensure_fts_startup_readiness_skips_when_messages_table_absent(
         def execute(self, sql: str, _params: object = ()) -> FakeCursor:
             query = " ".join(sql.split())
             self.queries.append(query)
-            if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'":
-                return FakeCursor(("messages_fts",))
-            if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'":
-                return FakeCursor(("messages",))
-            if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'":
+            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
                 return FakeCursor(None)
             raise AssertionError(f"unexpected query: {query}")
 
@@ -632,22 +610,21 @@ def test_ensure_fts_startup_readiness_skips_when_messages_table_absent(
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr(
         "polylogue.storage.fts.dangling_repair.repair_stale_fts_rows",
-        lambda _conn: pytest.fail("repair_stale_fts_rows must not run when messages table is absent"),
+        lambda _conn: pytest.fail("repair_stale_fts_rows must not run when blocks table is absent"),
     )
     monkeypatch.setattr(
         "polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync",
-        lambda _conn: pytest.fail("rebuild_fts_index_sync must not run when messages table is absent"),
+        lambda _conn: pytest.fail("rebuild_fts_index_sync must not run when blocks table is absent"),
     )
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
-    assert "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'" in conn.queries
-    assert "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'" in conn.queries
+    assert "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1" in conn.queries
     assert conn.committed is False
     assert conn.closed is True
 
 
-def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
+def test_ensure_fts_startup_readiness_skips_non_current_archive_shape(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -682,11 +659,7 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
                 return FakeCursor(("messages",))
             if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
                 name = str(_params[0]) if isinstance(_params, tuple) and _params else ""
-                return (
-                    FakeCursor((1,))
-                    if name in {"messages", "messages_fts", "action_events", "action_events_fts"}
-                    else FakeCursor(None)
-                )
+                return FakeCursor((1,)) if name in {"messages", "messages_fts"} else FakeCursor(None)
             if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
                 # One missing trigger must send startup through trigger restore
                 # before bounded repair can mark the FTS surfaces fresh.
@@ -694,8 +667,6 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
                     ("messages_fts_ai",),
                     ("messages_fts_ad",),
                     ("messages_fts_au",),
-                    ("action_events_fts_ai",),
-                    ("action_events_fts_ad",),
                 ]
                 return FakeCursor(triggers[0], rows=triggers)
             if query == "SELECT 1 FROM messages WHERE text IS NOT NULL LIMIT 1":
@@ -717,24 +688,6 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
     monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", lambda fake_conn: None)
-    monkeypatch.setattr(
-        "polylogue.storage.fts.fts_lifecycle.restore_fts_triggers_sync",
-        lambda fake_conn: restored.append(fake_conn),
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync",
-        lambda fake_conn: rebuilds.append(fake_conn),
-    )
-
-    monkeypatch.setattr("polylogue.storage.fts.freshness.ensure_fts_freshness_table_sync", lambda fake_conn: None)
-    monkeypatch.setattr(
-        "polylogue.storage.fts.dangling_repair.configure_bounded_repair_connection",
-        lambda fake_conn: None,
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.fts.dangling_repair.repair_missing_fts_rows",
-        lambda fake_conn: SimpleNamespace(success=True, repaired_count=3, detail="repaired"),
-    )
     freshness_calls: list[FakeConnection] = []
     monkeypatch.setattr(
         "polylogue.daemon.fts_startup.record_fts_freshness_snapshot_sync",
@@ -743,12 +696,11 @@ def test_ensure_fts_startup_readiness_rebuilds_when_triggers_missing(
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
-    assert restored == [conn]
+    assert restored == []
     assert rebuilds == []
-    assert conn.committed is True
+    assert conn.committed is False
     assert conn.closed is True
-    # #1628: trigger-recovery path must also write freshness snapshot rows.
-    assert freshness_calls == [conn]
+    assert freshness_calls == []
 
 
 def test_periodic_db_optimize_does_not_run_on_startup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -866,12 +818,12 @@ def test_ensure_fts_startup_readiness_handles_archive(
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT name FROM sqlite_master WHERE name='messages_fts'").fetchone() is None
+        assert conn.execute("SELECT name FROM sqlite_master WHERE name='messages_fts'").fetchone() is not None
         row = conn.execute(
             """
             SELECT state, source_rows, indexed_rows
             FROM fts_freshness_state
-            WHERE surface = 'blocks_fts'
+            WHERE surface = 'messages_fts'
             """
         ).fetchone()
     assert row == ("ready", 1, 1)

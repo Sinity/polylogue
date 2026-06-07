@@ -15,14 +15,14 @@ from polylogue.archive.query.fields import (
 )
 from polylogue.archive.query.plan_description import describe_plan, effective_fetch_limit, plan_has_filters
 from polylogue.archive.query.retrieval import (
-    action_event_rows_ready,
-    can_use_action_event_stats_with,
+    actions_ready,
+    can_use_action_stats_with,
     candidate_record_query,
     candidate_record_query_for,
     fetch_record_query_for,
     search_limit,
     should_batch_post_filter_fetch,
-    uses_action_read_model,
+    uses_actions,
 )
 from polylogue.archive.query.runtime import (
     apply_common_filters,
@@ -33,7 +33,7 @@ from polylogue.archive.query.runtime import (
     matches_referenced_path,
     matches_tool_terms,
     plan_can_count_in_sql,
-    plan_can_use_action_event_stats,
+    plan_can_use_action_stats,
     plan_has_post_filters,
     plan_needs_content_loading,
 )
@@ -176,8 +176,8 @@ class SessionQueryPlan:
     def can_count_in_sql(self) -> bool:
         return plan_can_count_in_sql(self)
 
-    def can_use_action_event_stats(self) -> bool:
-        return plan_can_use_action_event_stats(self)
+    def can_use_action_stats(self) -> bool:
+        return plan_can_use_action_stats(self)
 
     def _matches_referenced_path(self, session: Session) -> bool:
         return matches_referenced_path(self, session)
@@ -227,13 +227,13 @@ class SessionQueryPlan:
         return record_query.with_limit(self.effective_fetch_limit())
 
     def _uses_action_read_model(self) -> bool:
-        return uses_action_read_model(self)
+        return uses_actions(self)
 
-    async def _action_event_rows_ready(self, repository: SessionQueryRuntimeStore) -> bool:
-        return await action_event_rows_ready(self, repository)
+    async def _actions_ready(self, repository: SessionQueryRuntimeStore) -> bool:
+        return await actions_ready(self, repository)
 
-    async def can_use_action_event_stats_with(self, repository: SessionQueryRuntimeStore) -> bool:
-        return await can_use_action_event_stats_with(self, repository)
+    async def can_use_action_stats_with(self, repository: SessionQueryRuntimeStore) -> bool:
+        return await can_use_action_stats_with(self, repository)
 
     async def _candidate_record_query_for(
         self,

@@ -1,26 +1,25 @@
-"""Tests for the ``topology_edges`` table and resolver (#1258 / #866 slice A).
+"""Tests for current archive session-link resolution (#1258 / #866).
 
 Covers all four ACs from #1258:
 
-1. Claude Code subagent fixture: parent absent → ``unresolved`` row with
-   ``edge_type=subagent``.
-2. Claude Code sidechain fixture: parent absent → ``unresolved`` row with
-   ``edge_type=sidechain``.
-3. Codex continuation fixture: parent absent → ``unresolved`` row with
-   ``edge_type=continuation``.
+1. Claude Code subagent fixture: parent absent -> ``unresolved`` row with
+   ``link_type=subagent``.
+2. Claude Code sidechain fixture: parent absent -> ``unresolved`` row with
+   ``link_type=sidechain``.
+3. Codex continuation fixture: parent absent -> ``unresolved`` row with
+   ``link_type=continuation``.
 4. ChatGPT branched session referencing an unimported parent
-   session → ``unresolved`` row.
+   session -> ``unresolved`` row.
 
 Plus the structural invariants the issue calls out:
 
 - Fast-path preservation: when the parent IS already ingested, the
   session's ``parent_session_id`` is still set AND a corresponding
-  ``topology_edges`` row exists with ``status=resolved``.
-- Out-of-order resolve: ingest child first, then parent → edge flips to
-  ``resolved`` and ``resolved_dst_session_id`` / ``resolved_at`` are
-  populated.
+  ``session_links`` row exists with ``status=resolved``.
+- Out-of-order resolve: ingest child first, then parent -> link flips to
+  ``resolved`` and ``dst_session_id`` is populated.
 - Idempotency: re-ingesting the same child twice produces exactly one
-  ``topology_edges`` row.
+  ``session_links`` row.
 """
 
 from __future__ import annotations
@@ -34,6 +33,8 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.topology.edge import TopologyEdgeStatus, TopologyEdgeType
+from polylogue.core.identity_law import session_id as archive_session_id
+from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.prepare import prepare_records
 from polylogue.sources import iter_source_sessions
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
@@ -67,11 +68,25 @@ def _parse_single(source_name: str, source_path: Path) -> ParsedSession:
 def _fetch_edges(db_path: Path) -> list[sqlite3.Row]:
     with open_connection(db_path) as conn:
         cursor = conn.execute(
-            "SELECT src_session_id, dst_provider_native_id, dst_provider_name, "
-            "edge_type, resolved_dst_session_id, status, resolved_at "
-            "FROM topology_edges ORDER BY src_session_id, edge_type"
+            """
+            SELECT src_session_id,
+                   dst_native_id AS dst_session_native_id,
+                   link_type,
+                   resolved_dst_session_id AS dst_session_id,
+                   CASE
+                       WHEN status IS NOT NULL THEN status
+                       WHEN resolved_dst_session_id IS NOT NULL THEN 'resolved'
+                       ELSE 'unresolved'
+                   END AS status
+              FROM session_links
+             ORDER BY src_session_id, link_type
+            """
         )
         return list(cursor.fetchall())
+
+
+def _archive_session_id(provider: Provider, native_id: str) -> str:
+    return archive_session_id(origin_from_provider(provider).value, native_id)
 
 
 async def _ingest_synthetic_child(
@@ -92,14 +107,14 @@ async def _ingest_synthetic_child(
         parent_session_provider_id=parent_id,
         branch_type=branch_type,
     )
-    result = await prepare_records(
+    await prepare_records(
         parsed,
         source_name=source_name,
         archive_root=tmp_path,
         backend=repo.backend,
         repository=repo,
     )
-    return result.session_id
+    return _archive_session_id(provider, child_id)
 
 
 class TestTopologyEdgeUnresolvedAC:
@@ -126,12 +141,10 @@ class TestTopologyEdgeUnresolvedAC:
         edges = _fetch_edges(db_path)
         assert len(edges) == 1
         edge = edges[0]
-        assert edge["dst_provider_native_id"] == "missing-parent-sess"
-        assert edge["dst_provider_name"] == str(Provider.CLAUDE_CODE)
-        assert edge["edge_type"] == TopologyEdgeType.SUBAGENT.value
+        assert edge["dst_session_native_id"] == "missing-parent-sess"
+        assert edge["link_type"] == TopologyEdgeType.SUBAGENT.value
         assert edge["status"] == TopologyEdgeStatus.UNRESOLVED.value
-        assert edge["resolved_dst_session_id"] is None
-        assert edge["resolved_at"] is None
+        assert edge["dst_session_id"] is None
 
     @pytest.mark.asyncio
     async def test_claude_code_sidechain_parent_absent_unresolved(
@@ -153,7 +166,7 @@ class TestTopologyEdgeUnresolvedAC:
 
         edges = _fetch_edges(db_path)
         assert len(edges) == 1
-        assert edges[0]["edge_type"] == TopologyEdgeType.SIDECHAIN.value
+        assert edges[0]["link_type"] == TopologyEdgeType.SIDECHAIN.value
         assert edges[0]["status"] == TopologyEdgeStatus.UNRESOLVED.value
 
     @pytest.mark.asyncio
@@ -176,9 +189,9 @@ class TestTopologyEdgeUnresolvedAC:
 
         edges = _fetch_edges(db_path)
         assert len(edges) == 1
-        assert edges[0]["edge_type"] == TopologyEdgeType.CONTINUATION.value
+        assert edges[0]["link_type"] == TopologyEdgeType.CONTINUATION.value
         assert edges[0]["status"] == TopologyEdgeStatus.UNRESOLVED.value
-        assert edges[0]["dst_provider_native_id"] == "missing-codex-parent"
+        assert edges[0]["dst_session_native_id"] == "missing-codex-parent"
 
     @pytest.mark.asyncio
     async def test_chatgpt_branch_parent_session_absent_unresolved(
@@ -206,11 +219,7 @@ class TestTopologyEdgeUnresolvedAC:
 
         edges = _fetch_edges(db_path)
         assert len(edges) == 1
-        # FORK maps via branch_type_to_edge_type to FORK; if the test intent is
-        # specifically a BRANCH edge type, a parser-level classification would
-        # need to emit BranchType.FORK or a future BRANCH branch_type. For
-        # slice A we assert the round-trip is preserved.
-        assert edges[0]["edge_type"] == TopologyEdgeType.FORK.value
+        assert edges[0]["link_type"] == TopologyEdgeType.FORK.value
         assert edges[0]["status"] == TopologyEdgeStatus.UNRESOLVED.value
 
 
@@ -229,13 +238,14 @@ class TestTopologyEdgeFastPathPreserved:
                 title="Parent",
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
             )
-            parent_result = await prepare_records(
+            await prepare_records(
                 parent_parsed,
                 source_name="codex",
                 archive_root=tmp_path,
                 backend=repo.backend,
                 repository=repo,
             )
+            parent_session_id = _archive_session_id(Provider.CODEX, "parent-id")
             child_cid = await _ingest_synthetic_child(
                 repo=repo,
                 tmp_path=tmp_path,
@@ -252,13 +262,13 @@ class TestTopologyEdgeFastPathPreserved:
                 "SELECT parent_session_id FROM sessions WHERE session_id = ?",
                 (child_cid,),
             ).fetchone()
-        assert row["parent_session_id"] == parent_result.session_id
+        assert row["parent_session_id"] == parent_session_id
 
         edges = _fetch_edges(db_path)
         assert len(edges) == 1
         edge = edges[0]
         assert edge["status"] == TopologyEdgeStatus.RESOLVED.value
-        assert edge["resolved_dst_session_id"] == parent_result.session_id
+        assert edge["dst_session_id"] == parent_session_id
 
 
 class TestTopologyEdgeOutOfOrderResolve:
@@ -284,7 +294,7 @@ class TestTopologyEdgeOutOfOrderResolve:
             edges_before = _fetch_edges(db_path)
             assert len(edges_before) == 1
             assert edges_before[0]["status"] == TopologyEdgeStatus.UNRESOLVED.value
-            assert edges_before[0]["resolved_dst_session_id"] is None
+            assert edges_before[0]["dst_session_id"] is None
 
             # Now the parent lands.
             parent_parsed = ParsedSession(
@@ -293,21 +303,21 @@ class TestTopologyEdgeOutOfOrderResolve:
                 title="Parent (late)",
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
             )
-            parent_result = await prepare_records(
+            await prepare_records(
                 parent_parsed,
                 source_name="codex",
                 archive_root=tmp_path,
                 backend=repo.backend,
                 repository=repo,
             )
+            parent_session_id = _archive_session_id(Provider.CODEX, "ooo-parent")
 
         edges_after = _fetch_edges(db_path)
         # The edge should flip; there should still be one row for the child.
         child_edges = [e for e in edges_after if e["src_session_id"] == child_cid]
         assert len(child_edges) == 1
         assert child_edges[0]["status"] == TopologyEdgeStatus.RESOLVED.value
-        assert child_edges[0]["resolved_dst_session_id"] == parent_result.session_id
-        assert child_edges[0]["resolved_at"] is not None
+        assert child_edges[0]["dst_session_id"] == parent_session_id
 
         # Slice B (#1259 / #866): the late-arriving parent now backfills
         # the child's ``sessions.parent_session_id`` and
@@ -318,7 +328,7 @@ class TestTopologyEdgeOutOfOrderResolve:
                 "SELECT parent_session_id, branch_type FROM sessions WHERE session_id = ?",
                 (child_cid,),
             ).fetchone()
-        assert row["parent_session_id"] == parent_result.session_id
+        assert row["parent_session_id"] == parent_session_id
         assert row["branch_type"] == BranchType.CONTINUATION.value
 
 
@@ -353,8 +363,7 @@ class TestTopologyLateParentRepair:
     Covers the slice B acceptance criteria:
 
     - On insert of the parent session, the previously-unresolved edge is
-      repaired (resolved_dst_session_id set, status=resolved,
-      resolved_at populated) AND the child session's
+              repaired (dst_session_id set, status=resolved) AND the child session's
       ``parent_session_id`` + ``branch_type`` columns are backfilled.
     - Running the resolver twice produces the same result (idempotent).
     - When the parent never arrives, the edge stays unresolved and the
@@ -402,13 +411,14 @@ class TestTopologyLateParentRepair:
                 title="Late parent",
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
             )
-            parent_result = await prepare_records(
+            await prepare_records(
                 parent_parsed,
                 source_name="codex",
                 archive_root=tmp_path,
                 backend=repo.backend,
                 repository=repo,
             )
+            parent_session_id = _archive_session_id(Provider.CODEX, "late-parent")
 
         # After parent arrives: fast-path AND branch_type backfilled.
         with open_connection(db_path) as conn:
@@ -416,7 +426,7 @@ class TestTopologyLateParentRepair:
                 "SELECT parent_session_id, branch_type FROM sessions WHERE session_id = ?",
                 (child_cid,),
             ).fetchone()
-        assert row["parent_session_id"] == parent_result.session_id
+        assert row["parent_session_id"] == parent_session_id
         assert row["branch_type"] == BranchType.SIDECHAIN.value
 
     @pytest.mark.asyncio
@@ -444,33 +454,34 @@ class TestTopologyLateParentRepair:
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
             )
             # Ingest the parent twice.
-            parent_result = await prepare_records(
+            await prepare_records(
                 parent_parsed,
                 source_name="codex",
                 archive_root=tmp_path,
                 backend=repo.backend,
                 repository=repo,
             )
-            parent_result = await prepare_records(
+            await prepare_records(
                 parent_parsed,
                 source_name="codex",
                 archive_root=tmp_path,
                 backend=repo.backend,
                 repository=repo,
             )
+            parent_session_id = _archive_session_id(Provider.CODEX, "idem-repair-parent")
 
         edges_after = _fetch_edges(db_path)
         child_edges = [e for e in edges_after if e["src_session_id"] == child_cid]
         assert len(child_edges) == 1
         assert child_edges[0]["status"] == TopologyEdgeStatus.RESOLVED.value
-        assert child_edges[0]["resolved_dst_session_id"] == parent_result.session_id
+        assert child_edges[0]["dst_session_id"] == parent_session_id
 
         with open_connection(db_path) as conn:
             row = conn.execute(
                 "SELECT parent_session_id, branch_type FROM sessions WHERE session_id = ?",
                 (child_cid,),
             ).fetchone()
-        assert row["parent_session_id"] == parent_result.session_id
+        assert row["parent_session_id"] == parent_session_id
         assert row["branch_type"] == BranchType.SUBAGENT.value
 
     @pytest.mark.asyncio
@@ -511,7 +522,7 @@ class TestTopologyLateParentRepair:
         child_edges = [e for e in edges if e["src_session_id"] == child_cid]
         assert len(child_edges) == 1
         assert child_edges[0]["status"] == TopologyEdgeStatus.UNRESOLVED.value
-        assert child_edges[0]["resolved_dst_session_id"] is None
+        assert child_edges[0]["dst_session_id"] is None
 
         with open_connection(db_path) as conn:
             row = conn.execute(
@@ -553,19 +564,20 @@ class TestTopologyLateParentRepair:
                 title="Shared parent",
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
             )
-            parent_result = await prepare_records(
+            await prepare_records(
                 parent_parsed,
                 source_name="codex",
                 archive_root=tmp_path,
                 backend=repo.backend,
                 repository=repo,
             )
+            parent_session_id = _archive_session_id(Provider.CODEX, "shared-parent")
 
         edges = _fetch_edges(db_path)
         repaired = [e for e in edges if e["src_session_id"] in (child_a, child_b)]
         assert len(repaired) == 2
         assert all(e["status"] == TopologyEdgeStatus.RESOLVED.value for e in repaired)
-        assert all(e["resolved_dst_session_id"] == parent_result.session_id for e in repaired)
+        assert all(e["dst_session_id"] == parent_session_id for e in repaired)
 
         with open_connection(db_path) as conn:
             rows = conn.execute(
@@ -576,9 +588,9 @@ class TestTopologyLateParentRepair:
             ).fetchall()
 
         by_id = {row["session_id"]: row for row in rows}
-        assert by_id[child_a]["parent_session_id"] == parent_result.session_id
+        assert by_id[child_a]["parent_session_id"] == parent_session_id
         assert by_id[child_a]["branch_type"] == BranchType.SIDECHAIN.value
-        assert by_id[child_b]["parent_session_id"] == parent_result.session_id
+        assert by_id[child_b]["parent_session_id"] == parent_session_id
         assert by_id[child_b]["branch_type"] == BranchType.SUBAGENT.value
 
     @pytest.mark.asyncio
@@ -596,13 +608,14 @@ class TestTopologyLateParentRepair:
                 title="Parent",
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
             )
-            parent_result = await prepare_records(
+            await prepare_records(
                 parent_parsed,
                 source_name="codex",
                 archive_root=tmp_path,
                 backend=repo.backend,
                 repository=repo,
             )
+            parent_session_id = _archive_session_id(Provider.CODEX, "preserve-parent")
             child_cid = await _ingest_synthetic_child(
                 repo=repo,
                 tmp_path=tmp_path,
@@ -628,7 +641,7 @@ class TestTopologyLateParentRepair:
                 "SELECT parent_session_id, branch_type FROM sessions WHERE session_id = ?",
                 (child_cid,),
             ).fetchone()
-        assert row["parent_session_id"] == parent_result.session_id
+        assert row["parent_session_id"] == parent_session_id
         assert row["branch_type"] == BranchType.FORK.value
 
     @pytest.mark.asyncio
@@ -642,7 +655,7 @@ class TestTopologyLateParentRepair:
         SQLite serializes writes per connection, so the two ``prepare_records``
         coroutines below execute in some interleaved order. Regardless of which
         one wins the race, the post-condition is the same: the topology edge
-        is resolved, ``resolved_dst_session_id`` points at the parent,
+        is resolved, ``dst_session_id`` points at the parent,
         and the child's ``parent_session_id`` is backfilled.
         """
         import asyncio
@@ -678,20 +691,22 @@ class TestTopologyLateParentRepair:
                 backend=repo.backend,
                 repository=repo,
             )
-            child_result, parent_result = await asyncio.gather(child_task, parent_task)
+            await asyncio.gather(child_task, parent_task)
+            child_session_id = _archive_session_id(Provider.CODEX, "race-child")
+            parent_session_id = _archive_session_id(Provider.CODEX, "race-parent")
 
         edges = _fetch_edges(db_path)
-        child_edges = [e for e in edges if e["src_session_id"] == child_result.session_id]
+        child_edges = [e for e in edges if e["src_session_id"] == child_session_id]
         assert len(child_edges) == 1
         assert child_edges[0]["status"] == TopologyEdgeStatus.RESOLVED.value
-        assert child_edges[0]["resolved_dst_session_id"] == parent_result.session_id
+        assert child_edges[0]["dst_session_id"] == parent_session_id
 
         with open_connection(db_path) as conn:
             row = conn.execute(
                 "SELECT parent_session_id, branch_type FROM sessions WHERE session_id = ?",
-                (child_result.session_id,),
+                (child_session_id,),
             ).fetchone()
-        assert row["parent_session_id"] == parent_result.session_id
+        assert row["parent_session_id"] == parent_session_id
         assert row["branch_type"] == BranchType.CONTINUATION.value
 
 

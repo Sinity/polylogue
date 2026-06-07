@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from pydantic import Field, field_validator
 
-from polylogue.archive.action_event.action_events import build_tool_calls_from_content_blocks
+from polylogue.archive.actions.actions import build_tool_calls_from_content_blocks
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.sources import provider_from_origin
 from polylogue.insights.archive import (
@@ -19,8 +19,8 @@ from polylogue.insights.archive import (
     SessionProfileInsight,
     SessionProfileInsightQuery,
     SessionWorkEventInsight,
-    WorkThreadInsight,
-    WorkThreadInsightQuery,
+    ThreadInsight,
+    ThreadInsightQuery,
 )
 from polylogue.insights.archive_models import ArchiveInsightModel
 from polylogue.storage.search.query_support import normalize_fts5_query
@@ -82,7 +82,7 @@ class ResumePhase(ArchiveInsightModel):
     support_level: str
 
 
-class ResumeWorkThread(ArchiveInsightModel):
+class ResumeThread(ArchiveInsightModel):
     thread_id: str
     root_id: str
     dominant_repo: str | None = None
@@ -103,7 +103,7 @@ class ResumeInferences(ArchiveInsightModel):
     auto_tags: tuple[str, ...] = ()
     work_events: tuple[ResumeWorkEvent, ...] = ()
     phases: tuple[ResumePhase, ...] = ()
-    work_thread: ResumeWorkThread | None = None
+    thread: ResumeThread | None = None
 
 
 class ResumeRelatedSession(ArchiveInsightModel):
@@ -134,7 +134,7 @@ class ResumeProvenance(ArchiveInsightModel):
     cited_message_ids: tuple[str, ...] = ()
     cited_work_event_ids: tuple[str, ...] = ()
     cited_phase_ids: tuple[str, ...] = ()
-    cited_work_thread_id: str | None = None
+    cited_thread_id: str | None = None
 
 
 class ResumeBrief(ArchiveInsightModel):
@@ -190,10 +190,10 @@ class ResumeOperations(Protocol):
 
     async def get_session_phase_insights(self, session_id: str) -> list[SessionPhaseInsight]: ...
 
-    async def list_work_thread_insights(
+    async def list_thread_insights(
         self,
-        query: WorkThreadInsightQuery | None = None,
-    ) -> list[WorkThreadInsight]: ...
+        query: ThreadInsightQuery | None = None,
+    ) -> list[ThreadInsight]: ...
 
     async def list_session_profile_insights(
         self,
@@ -416,10 +416,10 @@ def _phase_summary(phases: Sequence[SessionPhaseInsight]) -> tuple[ResumePhase, 
     )
 
 
-def _work_thread_summary(thread: WorkThreadInsight | None) -> ResumeWorkThread | None:
+def _thread_summary(thread: ThreadInsight | None) -> ResumeThread | None:
     if thread is None:
         return None
-    return ResumeWorkThread(
+    return ResumeThread(
         thread_id=thread.thread_id,
         root_id=thread.root_id,
         dominant_repo=thread.dominant_repo,
@@ -435,7 +435,7 @@ def _inferences(
     profile: SessionProfileInsight | None,
     events: Sequence[SessionWorkEventInsight],
     phases: Sequence[SessionPhaseInsight],
-    work_thread: WorkThreadInsight | None,
+    thread: ThreadInsight | None,
 ) -> ResumeInferences:
     profile_inference = profile.inference if profile is not None else None
     enrichment_payload = profile.enrichment if profile is not None else None
@@ -450,29 +450,29 @@ def _inferences(
         auto_tags=profile_inference.auto_tags if profile_inference is not None else (),
         work_events=_event_summary(events),
         phases=_phase_summary(phases),
-        work_thread=_work_thread_summary(work_thread),
+        thread=_thread_summary(thread),
     )
 
 
-def _relation(target: Session, candidate: Session, work_thread_ids: set[str]) -> str:
+def _relation(target: Session, candidate: Session, thread_ids: set[str]) -> str:
     candidate_id = str(candidate.id)
     if target.parent_id is not None and candidate_id == str(target.parent_id):
         return "parent"
     if candidate.parent_id is not None and str(candidate.parent_id) == str(target.id):
         return str(candidate.branch_type or "child")
-    if candidate_id in work_thread_ids:
-        return "work_thread"
+    if candidate_id in thread_ids:
+        return "thread"
     return "session_tree"
 
 
 def _related_session(
     target: Session,
     candidate: Session,
-    work_thread_ids: set[str],
+    thread_ids: set[str],
 ) -> ResumeRelatedSession:
     return ResumeRelatedSession(
         session_id=str(candidate.id),
-        relation=_relation(target, candidate, work_thread_ids),
+        relation=_relation(target, candidate, thread_ids),
         source_name=provider_from_origin(candidate.origin).value,
         title=candidate.title,
         updated_at=_iso(candidate.updated_at or candidate.created_at),
@@ -483,47 +483,45 @@ def _related_session(
 async def _related_sessions(
     operations: ResumeOperations,
     target: Session,
-    work_thread: WorkThreadInsight | None,
+    thread: ThreadInsight | None,
     *,
     related_limit: int,
 ) -> tuple[ResumeRelatedSession, ...]:
-    work_thread_ids = set(work_thread.thread.session_ids if work_thread is not None else ())
+    thread_ids = set(thread.thread.session_ids if thread is not None else ())
     sessions_by_id: dict[str, Session] = {}
 
     for session in await operations.get_session_tree(str(target.id)):
         sessions_by_id[str(session.id)] = session
 
-    missing_work_thread_ids = [session_id for session_id in work_thread_ids if session_id not in sessions_by_id]
-    if missing_work_thread_ids:
-        for session in await operations.get_sessions(missing_work_thread_ids):
+    missing_thread_ids = [session_id for session_id in thread_ids if session_id not in sessions_by_id]
+    if missing_thread_ids:
+        for session in await operations.get_sessions(missing_thread_ids):
             sessions_by_id[str(session.id)] = session
 
     sessions_by_id.pop(str(target.id), None)
-    related = [_related_session(target, session, work_thread_ids) for session in sessions_by_id.values()]
+    related = [_related_session(target, session, thread_ids) for session in sessions_by_id.values()]
     related.sort(key=lambda item: item.updated_at or "", reverse=True)
     return tuple(related[:related_limit])
 
 
-async def _find_work_thread(
+async def _find_thread(
     operations: ResumeOperations,
     session_id: str,
     uncertainties: list[ResumeUncertainty],
-) -> WorkThreadInsight | None:
+) -> ThreadInsight | None:
     fts_query = normalize_fts5_query(session_id)
     if fts_query is not None:
         try:
-            for candidate in await operations.list_work_thread_insights(
-                WorkThreadInsightQuery(query=fts_query, limit=10)
-            ):
+            for candidate in await operations.list_thread_insights(ThreadInsightQuery(query=fts_query, limit=10)):
                 if session_id in candidate.thread.session_ids:
                     return candidate
         except ArchiveInsightUnavailableError:
             pass
 
     try:
-        candidates = await operations.list_work_thread_insights(WorkThreadInsightQuery(limit=None))
+        candidates = await operations.list_thread_insights(ThreadInsightQuery(limit=None))
     except ArchiveInsightUnavailableError as exc:
-        uncertainties.append(ResumeUncertainty(source="work_thread", detail=str(exc)))
+        uncertainties.append(ResumeUncertainty(source="thread", detail=str(exc)))
         return None
 
     for candidate in candidates:
@@ -597,17 +595,17 @@ async def build_resume_brief(
     except ArchiveInsightUnavailableError as exc:
         uncertainties.append(ResumeUncertainty(source="phases", detail=str(exc)))
 
-    work_thread = await _find_work_thread(operations, session_id, uncertainties)
+    thread = await _find_thread(operations, session_id, uncertainties)
     inferences = _inferences(
         profile=profile,
         events=events,
         phases=phases,
-        work_thread=work_thread,
+        thread=thread,
     )
     related_sessions = await _related_sessions(
         operations,
         session,
-        work_thread,
+        thread,
         related_limit=related_limit,
     )
 
@@ -622,7 +620,7 @@ async def build_resume_brief(
         cited_message_ids=cited_message_ids,
         cited_work_event_ids=cited_work_event_ids,
         cited_phase_ids=cited_phase_ids,
-        cited_work_thread_id=work_thread.thread_id if work_thread is not None else None,
+        cited_thread_id=thread.thread_id if thread is not None else None,
     )
 
     return ResumeBrief(
@@ -769,7 +767,7 @@ __all__ = [
     "ResumeRelatedSession",
     "ResumeUncertainty",
     "ResumeWorkEvent",
-    "ResumeWorkThread",
+    "ResumeThread",
     "build_resume_brief",
     "find_resume_candidates",
 ]

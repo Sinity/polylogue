@@ -103,7 +103,7 @@ Details: Derived panels are issue-linked and statusful. They should never show f
 
 Purpose: make every row explainable and recoverable.
 
-Primary data: raw artifacts, source path, raw id, acquisition time, parser/validator state, content hash, provider events, hook events, blob/attachment links.
+Primary data: raw artifacts, source path, raw id, acquisition time, parser/validator state, content hash, session events, hook events, blob/attachment links.
 
 States: raw missing, raw quarantined, parse failed, validation drift, path redacted, source offline, blob missing, raw too large.
 

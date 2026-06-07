@@ -45,11 +45,10 @@ _DAEMON_EMBED_MAX_ERRORS = 3
 @dataclass(frozen=True, slots=True)
 class _FtsRepairNeeds:
     messages: bool = False
-    actions: bool = False
 
     @property
     def any(self) -> bool:
-        return self.messages or self.actions
+        return self.messages
 
 
 # ── Stage: FTS ─────────────────────────────────────────────────────
@@ -80,10 +79,6 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
                     return True
                 if total == 0:
                     return False
-                if _table_exists(conn, "action_events") and _table_exists(conn, "action_events_fts_docsize"):
-                    action_total = int(conn.execute("SELECT COUNT(*) FROM action_events").fetchone()[0])
-                    action_fts_count = _fts_doc_count(conn, "action_events_fts_docsize")
-                    return action_fts_count != action_total
                 return False
             finally:
                 conn.close()
@@ -557,52 +552,22 @@ def _fts_repair_needs_for_sessions(
         return _FtsRepairNeeds()
     if not _table_exists(conn, "messages_fts_docsize"):
         return _FtsRepairNeeds(messages=True)
-    messages_missing = False
     placeholders = ", ".join("?" for _ in session_ids)
     params = tuple(session_ids)
-    missing_messages = int(
+    missing_blocks = int(
         conn.execute(
             f"""
             SELECT COUNT(*)
-            FROM messages AS m
-            LEFT JOIN messages_fts_docsize AS d ON d.id = m.rowid
-            WHERE m.session_id IN ({placeholders})
+            FROM blocks AS b
+            LEFT JOIN messages_fts_docsize AS d ON d.id = b.rowid
+            WHERE b.session_id IN ({placeholders})
               AND d.id IS NULL
-              AND (
-                  NULLIF(m.text, '') IS NOT NULL
-                  OR EXISTS (
-                      SELECT 1
-                      FROM content_blocks AS cb
-                      WHERE cb.message_id = m.message_id
-                        AND (
-                            NULLIF(cb.text, '') IS NOT NULL
-                            OR NULLIF(cb.tool_input, '') IS NOT NULL
-                            OR NULLIF(cb.metadata, '') IS NOT NULL
-                        )
-                  )
-              )
+              AND NULLIF(b.search_text, '') IS NOT NULL
             """,
             params,
         ).fetchone()[0]
     )
-    messages_missing = missing_messages > 0
-    if not _table_exists(conn, "action_events") or not _table_exists(conn, "action_events_fts"):
-        return _FtsRepairNeeds(messages=messages_missing)
-    if not _table_exists(conn, "action_events_fts_docsize"):
-        return _FtsRepairNeeds(messages=messages_missing, actions=True)
-    missing_actions = int(
-        conn.execute(
-            f"""
-            SELECT COUNT(*)
-            FROM action_events AS ae
-            LEFT JOIN action_events_fts_docsize AS d ON d.id = ae.rowid
-            WHERE ae.session_id IN ({placeholders})
-              AND d.id IS NULL
-            """,
-            params,
-        ).fetchone()[0]
-    )
-    return _FtsRepairNeeds(messages=messages_missing, actions=missing_actions > 0)
+    return _FtsRepairNeeds(messages=missing_blocks > 0)
 
 
 def _fts_needs_repair_for_sessions(conn: sqlite3.Connection, session_ids: Sequence[str]) -> bool:
@@ -681,20 +646,11 @@ def _repair_changed_session_fts(
     *,
     needs: _FtsRepairNeeds | None = None,
 ) -> None:
-    from polylogue.storage.fts.fts_lifecycle import (
-        insert_missing_action_fts_index_sync,
-        repair_action_fts_index_sync,
-        repair_message_fts_index_sync,
-    )
+    from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
 
     needs = needs or _fts_repair_needs_for_sessions(conn, session_ids)
     if needs.messages:
         repair_message_fts_index_sync(conn, session_ids)
-    if needs.actions:
-        if _action_events_exist_for_sessions(conn, session_ids):
-            repair_action_fts_index_sync(conn, session_ids)
-        else:
-            insert_missing_action_fts_index_sync(conn, session_ids)
 
 
 def _mark_message_fts_ready_after_targeted_repair(conn: sqlite3.Connection) -> None:
@@ -734,22 +690,6 @@ def _mark_message_fts_ready_after_targeted_repair(conn: sqlite3.Connection) -> N
             else "targeted changed-session repair left structural FTS readiness false"
         ),
     )
-
-
-def _action_events_exist_for_sessions(conn: sqlite3.Connection, session_ids: Sequence[str]) -> bool:
-    if not session_ids or not _table_exists(conn, "action_events"):
-        return False
-    placeholders = ", ".join("?" for _ in session_ids)
-    row = conn.execute(
-        f"""
-        SELECT 1
-        FROM action_events
-        WHERE session_id IN ({placeholders})
-        LIMIT 1
-        """,
-        tuple(session_ids),
-    ).fetchone()
-    return row is not None
 
 
 def _session_ids_missing_profiles(conn: sqlite3.Connection) -> list[str]:
@@ -843,13 +783,13 @@ def _stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Sequence[s
               sp.session_id IS NULL
               OR sp.materializer_version != ?
               OR (
-                  c.sort_key IS NOT NULL
-                  AND ABS(COALESCE(sp.source_sort_key, 0.0) - c.sort_key) > 0.000001
+                  c.sort_key_ms IS NOT NULL
+                  AND ABS(COALESCE(sp.source_sort_key, 0.0) - (CAST(c.sort_key_ms AS REAL) / 1000.0)) > 0.000001
               )
               OR (
-                  c.sort_key IS NULL
+                  c.sort_key_ms IS NULL
                   AND COALESCE(strftime('%s', sp.source_updated_at), sp.source_updated_at, '') !=
-                      COALESCE(strftime('%s', c.updated_at), c.updated_at, '')
+                      COALESCE(CAST(c.updated_at_ms / 1000 AS TEXT), '')
               )
           )
         ORDER BY c.session_id
@@ -967,8 +907,7 @@ def _archive_text_block_count(conn: sqlite3.Connection, session_ids: Sequence[st
         f"""
         SELECT COUNT(*)
         FROM blocks
-        WHERE text IS NOT NULL
-          AND text != ''
+        WHERE search_text != ''
           {filter_sql}
         """,
         params,
@@ -976,26 +915,25 @@ def _archive_text_block_count(conn: sqlite3.Connection, session_ids: Sequence[st
     return int(row[0] or 0) if row is not None else 0
 
 
-def _archive_blocks_fts_doc_count(conn: sqlite3.Connection) -> int:
-    return _fts_doc_count(conn, "blocks_fts_docsize")
+def _archive_messages_fts_doc_count(conn: sqlite3.Connection) -> int:
+    return _fts_doc_count(conn, "messages_fts_docsize")
 
 
 def _archive_fts_needs_repair(conn: sqlite3.Connection, session_ids: Sequence[str] | None = None) -> bool:
-    if not _table_exists(conn, "blocks_fts") or not _table_exists(conn, "blocks_fts_docsize"):
+    if not _table_exists(conn, "messages_fts") or not _table_exists(conn, "messages_fts_docsize"):
         return _archive_text_block_count(conn, session_ids) > 0
     ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids or () if session_id))
     if not ids:
-        return _archive_blocks_fts_doc_count(conn) != _archive_text_block_count(conn)
+        return _archive_messages_fts_doc_count(conn) != _archive_text_block_count(conn)
     placeholders = ", ".join("?" for _ in ids)
     missing = int(
         conn.execute(
             f"""
             SELECT COUNT(*)
             FROM blocks AS b
-            LEFT JOIN blocks_fts_docsize AS d ON d.id = b.rowid
+            LEFT JOIN messages_fts_docsize AS d ON d.id = b.rowid
             WHERE b.session_id IN ({placeholders})
-              AND b.text IS NOT NULL
-              AND b.text != ''
+              AND b.search_text != ''
               AND d.id IS NULL
             """,
             ids,
@@ -1004,10 +942,12 @@ def _archive_fts_needs_repair(conn: sqlite3.Connection, session_ids: Sequence[st
     return missing > 0
 
 
-def _archive_rebuild_blocks_fts(conn: sqlite3.Connection) -> None:
-    if not _table_exists(conn, "blocks_fts"):
+def _archive_rebuild_messages_fts(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "messages_fts"):
         return
-    conn.execute("INSERT INTO blocks_fts(blocks_fts) VALUES('rebuild')")
+    from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
+
+    rebuild_fts_index_sync(conn)
 
 
 def _archive_fts_check(db_path: Path, path: Path) -> bool:
@@ -1027,9 +967,9 @@ def _archive_fts_execute(db_path: Path, path: Path) -> bool:
         conn = sqlite3.connect(db_path, timeout=30.0)
         try:
             session_ids = _schema_archive_session_ids_for_source_path(conn, path)
-            _archive_rebuild_blocks_fts(conn)
+            _archive_rebuild_messages_fts(conn)
             conn.commit()
-            logger.info("fts: archive rebuilt blocks_fts sessions=%d", len(session_ids))
+            logger.info("fts: archive rebuilt messages_fts sessions=%d", len(session_ids))
             return not _archive_fts_needs_repair(conn, session_ids or None)
         finally:
             conn.close()
@@ -1062,9 +1002,9 @@ def _archive_fts_execute_many(db_path: Path, paths: Sequence[Path]) -> bool:
         try:
             by_path = _schema_archive_session_ids_for_source_paths(conn, paths)
             session_ids = list(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
-            _archive_rebuild_blocks_fts(conn)
+            _archive_rebuild_messages_fts(conn)
             conn.commit()
-            logger.info("fts: archive batch rebuilt blocks_fts paths=%d sessions=%d", len(paths), len(session_ids))
+            logger.info("fts: archive batch rebuilt messages_fts paths=%d sessions=%d", len(paths), len(session_ids))
             return not _archive_fts_needs_repair(conn, session_ids or None)
         finally:
             conn.close()
@@ -1092,9 +1032,9 @@ def _archive_fts_execute_sessions(db_path: Path, session_ids: Sequence[str]) -> 
             ids = _archive_existing_session_ids(conn, session_ids)
             if not ids:
                 return True
-            _archive_rebuild_blocks_fts(conn)
+            _archive_rebuild_messages_fts(conn)
             conn.commit()
-            logger.info("fts: archive rebuilt blocks_fts session debt sessions=%d", len(ids))
+            logger.info("fts: archive rebuilt messages_fts session debt sessions=%d", len(ids))
             return not _archive_fts_needs_repair(conn, ids)
         finally:
             conn.close()

@@ -17,46 +17,40 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "raw-archive-ingest-loop" in rendered
     assert "message-fts-readiness-loop" in rendered
     assert "session-query-loop" in rendered
-    assert "action-event-repair-loop" in rendered
     assert "session-insight-repair-loop" in rendered
     assert "session-profile-query-loop" in rendered
     assert "session-work-event-query-loop" in rendered
-    assert "work-thread-query-loop" in rendered
+    assert "thread-query-loop" in rendered
     assert "archive_session_rows [durable] <- raw_validation_state" in rendered
     assert "message_source_rows [source] <- archive_session_rows" in rendered
     assert "message_fts [index] <- message_source_rows" in rendered
-    assert "action_event_fts [index] <- action_event_rows" in rendered
     # session_profile_*_fts tables were removed; merged search now flows
     # through session_work_event_fts.
     assert "session_work_event_fts [index] <- session_work_event_rows" in rendered
-    assert "work_thread_fts [index] <- work_thread_rows" in rendered
+    assert "thread_fts [index] <- thread_rows" in rendered
     assert "plan-validation-backlog [planning]" in rendered
     assert "ingest-archive-runtime [materialization]" in rendered
     assert "index-message-fts" in rendered
     assert "query-sessions" in rendered
     assert "query-session-profiles" in rendered
     assert "query-session-work-events" in rendered
-    assert "query-work-threads" in rendered
+    assert "query-threads" in rendered
     assert "query-session-insight-status" in rendered
     assert "query-archive-debt" in rendered
-    assert "project-action-event-readiness" in rendered
     assert "project-session-insight-readiness" in rendered
     assert "project-archive-readiness" in rendered
-    assert "json-doctor-action-event-preview" in rendered
     assert "json-doctor-session-insights-preview" in rendered
     assert "startup-readiness" in rendered
     assert "retrieval-checks" in rendered
-    assert "synthetic-benchmark:action-event-materialization" in rendered
     assert "synthetic-benchmark:session-insight-materialization" in rendered
     assert "exercise:json-insights-profiles" in rendered
     assert "exercise:json-insights-work-events" in rendered
     assert "validation-lane:live-insights-status" in rendered
     assert "validation-lane:live-insights-debt" in rendered
-    assert "maintenance action_event_read_model:" in rendered
     assert "maintenance dangling_fts:" in rendered
     assert "maintenance session_insights:" in rendered
     assert (
-        "uncovered maintenance targets: empty_sessions, message_embeddings, message_type_backfill, orphaned_attachments, orphaned_blobs, orphaned_content_blocks, orphaned_messages, superseded_raw_snapshots, wal_checkpoint"
+        "uncovered maintenance targets: empty_sessions, message_embeddings, message_type_backfill, orphaned_attachments, orphaned_blobs, orphaned_messages, superseded_raw_snapshots, wal_checkpoint"
         in rendered
     )
     assert "uncovered artifacts:" not in rendered
@@ -70,12 +64,11 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "raw-archive-ingest-loop",
         "message-fts-readiness-loop",
         "session-query-loop",
-        "action-event-repair-loop",
         "session-insight-repair-loop",
         "session-profile-query-loop",
         "session-work-event-query-loop",
         "session-phase-query-loop",
-        "work-thread-query-loop",
+        "thread-query-loop",
         "session-tag-rollup-query-loop",
         "archive-coverage-query-loop",
         "session-insight-status-query-loop",
@@ -86,36 +79,12 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert any(node["name"] == "message_fts" for node in payload["nodes"])
     assert {target["name"] for target in payload["maintenance_targets"]} >= {
         "session_insights",
-        "action_event_read_model",
         "dangling_fts",
     }
     assert any(operation["name"] == "plan-parse-backlog" for operation in payload["operations"])
     assert any(operation["name"] == "ingest-archive-runtime" for operation in payload["operations"])
     assert any(operation["name"] == "index-message-fts" for operation in payload["operations"])
     assert any(operation["kind"] == "projection" for operation in payload["operations"])
-    assert {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["artifacts"]["action_event_rows"]
-    } >= {
-        ("exercise", "json-doctor-action-event-preview", "generated.json-contract"),
-        ("synthetic-benchmark", "action-event-materialization", "authored.synthetic-benchmark"),
-    }
-    assert (
-        "exercise",
-        "json-doctor-action-event-preview",
-        "generated.json-contract",
-    ) in {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["operations"]["project-action-event-readiness"]
-    }
-    assert (
-        "exercise",
-        "json-doctor-action-event-preview",
-        "generated.json-contract",
-    ) in {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["maintenance_targets"]["action_event_read_model"]
-    }
     assert {
         (ref["source"], ref["name"], ref["origin"])
         for ref in payload["scenario_coverage"]["artifacts"]["session_insight_rows"]
@@ -186,22 +155,6 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     )
     assert (
         "synthetic-benchmark",
-        "action-event-materialization",
-        "authored.synthetic-benchmark",
-    ) in {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["artifacts"]["tool_use_source_blocks"]
-    }
-    assert (
-        "synthetic-benchmark",
-        "action-event-materialization",
-        "authored.synthetic-benchmark",
-    ) in {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["operations"]["materialize-action-events"]
-    }
-    assert (
-        "synthetic-benchmark",
         "session-insight-materialization",
         "authored.synthetic-benchmark",
     ) in {
@@ -238,7 +191,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "generated.json-contract",
     ) in {
         (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["operations"]["query-work-threads"]
+        for ref in payload["scenario_coverage"]["operations"]["query-threads"]
     }
     assert (
         "validation-lane",
@@ -259,7 +212,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert payload["scenario_coverage"]["paths"]["session-profile-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["session-work-event-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["session-phase-query-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["paths"]["work-thread-query-loop"]["complete"] is True
+    assert payload["scenario_coverage"]["paths"]["thread-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["session-tag-rollup-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["archive-coverage-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["uncovered_maintenance_targets"] == [
@@ -268,14 +221,12 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "message_type_backfill",
         "orphaned_attachments",
         "orphaned_blobs",
-        "orphaned_content_blocks",
         "orphaned_messages",
         "superseded_raw_snapshots",
         "wal_checkpoint",
     ]
     assert payload["scenario_coverage"]["paths"]["session-insight-status-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["archive-debt-query-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["paths"]["action-event-repair-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["message-fts-readiness-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["session-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["raw-reparse-loop"]["complete"] is True

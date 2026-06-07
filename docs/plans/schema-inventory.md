@@ -133,17 +133,21 @@ All fields are canonical and properly modeled. No provider_meta column — this 
 
 ---
 
-## 4. Action Events (`action_events`)
+## 4. Actions (`actions`)
 
 ### A1 — Already canonical
 
-All fields are universal action semantics: `event_id`, `session_id`, `message_id`, `source_block_id`, `timestamp`, `sort_key`, `sequence_index`, `provider_name`, `action_kind`, `tool_name`, `normalized_tool_name`, `tool_id`, `affected_paths_json`, `cwd_path`, `branch_names_json`, `command`, `query_text`, `url`, `output_text`, `search_text`.
+`actions` is a view over `blocks`, keyed by the tool-use block and paired
+with the matching tool-result block through `tool_id`. Its fields are current
+action semantics: `session_id`, `message_id`, `tool_use_block_id`,
+`tool_name`, `semantic_type`, `tool_command`, `tool_path`, `tool_input`,
+`output_text`, and `tool_result_block_id`.
 
-The table correctly models working directory (`cwd_path`) and branch names (`branch_names_json`) as first-class columns — these are the same semantics that remain trapped in session `provider_meta` for non-action-event contexts.
+The table correctly models working directory (`cwd_path`) and branch names (`branch_names_json`) as first-class columns — these are the same semantics that remain trapped in session `provider_meta` for non-action contexts.
 
 ---
 
-## 5. Provider Events (`provider_events`)
+## 5. Provider Events (`session_events`)
 
 ### A1 — Already canonical
 
@@ -207,7 +211,7 @@ The table **properly** has `total_cost_usd`, `total_duration_ms`, `tool_active_d
 
 The insight rebuild SQL (`rebuild.py:107-109`) extracts `cwd`, `gitBranch`, `git` from `provider_meta` via `json_extract()` to pass through to `SessionRecord.provider_meta`, which then feeds into attribution and profile building. These three keys represent the only `provider_meta` dependency in the insight rebuild path, and they are used to build: `cwd_paths`, `branch_names`, `repo_paths`, `repo_names`.
 
-**All four of these insight fields already have first-class columns** in `session_profiles` (`repo_paths_json`, `repo_names_json`) and `action_events` (`cwd_path`, `branch_names_json`). The `provider_meta` extraction is a **legacy bootstrapping path** for sessions that pre-date action_events. Owned by [#864](https://github.com/Sinity/polylogue/issues/864).
+**All four of these insight fields already have first-class columns** in `session_profiles` (`repo_paths_json`, `repo_names_json`) and `actions` (`cwd_path`, `branch_names_json`). The `provider_meta` extraction is a **legacy bootstrapping path** for sessions that pre-date actions. Owned by [#864](https://github.com/Sinity/polylogue/issues/864).
 
 ### 8.2 `session_work_events`, `session_phases`
 
@@ -257,12 +261,11 @@ Adding or renaming a column requires synchronized changes across all 5.
 
 | Table | DDL | Record | Mapper | Tuple | SQL |
 |-------|-----|--------|--------|-------|-----|
-| sessions | `schema_ddl_archive.py:45` | `archive/records.py:39` | `mappers_archive.py:41` | `ingest_worker.py:783` | `common.py:22` |
-| messages | `schema_ddl_archive.py:78` | `archive/records.py:103` | `mappers_archive.py:64` | `ingest_worker.py:802` | `common.py:52` |
-| content_blocks | `schema_ddl_archive.py:117` | `archive/records.py:72` | `mappers_archive.py:88` | `ingest_worker.py:827` | `common.py:85` |
-| action_events | `schema_ddl_actions.py:5` | `action/records.py:11` | `mappers_archive.py:169` | `ingest_worker.py:1008+` | `common.py:115` |
-| provider_events | `schema_ddl_provider_events.py:5` | `archive/records.py:186` | `mappers_archive.py:195` | `ingest_worker.py:893` | `common.py:125` |
-| attachments | `schema_ddl_archive.py:181` | `archive/records.py:150` | (inline in rebuild.py) | `ingest_worker.py:916` | `common.py:133` |
+| sessions | `archive_tiers/index.py` | `sources/parsers/base.py` | `queries/mappers_archive.py` | `archive_tiers/write.py` | `archive_tiers/write.py` |
+| messages | `archive_tiers/index.py` | `sources/parsers/base.py` | `queries/mappers_archive.py` | `archive_tiers/write.py` | `archive_tiers/write.py` |
+| blocks | `archive_tiers/index.py` | `sources/parsers/base.py` | `queries/attachment_content_blocks.py` | `archive_tiers/write.py` | `archive_tiers/write.py` |
+| actions view | `archive_tiers/index.py` | derived from `blocks` | `queries/tool_usage.py` | derived from `blocks` | `archive_tiers/index.py` |
+| attachments | `archive_tiers/index.py` | `sources/parsers/base.py` | `queries/attachment_records.py` | `archive_tiers/write.py` | `archive_tiers/write.py` |
 
 ### Assessment
 
@@ -343,7 +346,7 @@ Tracked in [#864](https://github.com/Sinity/polylogue/issues/864) (shrink after 
 | Browser capture `session`/`capture` metadata | Provider-specific | Intentional |
 | `display_label` fallback | Provider-specific | Intentional |
 | `is_archived` (ChatGPT UI state) | Provider-specific | Intentional |
-| `provider_events.source_message_id` / `raw_id` | Optional provenance | Intentional |
+| `session_events.source_message_id` / `raw_id` | Optional provenance | Intentional |
 | `work_threads.payload_json` (legacy single payload) | Legacy, intentional | None (revisit if thread search needs split) |
 | Mapper/tuple/DDL repetition (table descriptor) | Decision deferred | This issue (#840) |
 
@@ -388,5 +391,5 @@ the next graduation step under #864.
 ### Deferred to owning issues
 - Model/token/cost/duration → #803
 - ChatGPT message-level metadata → promoted to content_block metadata (#842)
-- Action event cwd/branch/path context → #866 (lineage graph)
+- Action cwd/branch/path context → #866 (lineage graph)
 | Full ORM adoption | Rejected | This issue (#840) |

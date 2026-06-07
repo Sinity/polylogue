@@ -490,7 +490,7 @@ def test_payload_with_secrets_not_misclassified() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Edge cases: codex provider events
+# Edge cases: codex session events
 # ---------------------------------------------------------------------------
 
 

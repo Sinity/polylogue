@@ -28,13 +28,13 @@ def plan_can_count_in_sql(plan: SessionQueryPlan) -> bool:
     return not plan_has_fields_matching(plan, lambda descriptor: descriptor.blocks_sql_count)
 
 
-def plan_can_use_action_event_stats(plan: SessionQueryPlan) -> bool:
-    return not plan_has_fields_matching(plan, lambda descriptor: descriptor.blocks_action_event_stats)
+def plan_can_use_action_stats(plan: SessionQueryPlan) -> bool:
+    return not plan_has_fields_matching(plan, lambda descriptor: descriptor.blocks_action_stats)
 
 
 __all__ = [
     "plan_can_count_in_sql",
-    "plan_can_use_action_event_stats",
+    "plan_can_use_action_stats",
     "plan_has_post_filters",
     "plan_needs_content_loading",
 ]

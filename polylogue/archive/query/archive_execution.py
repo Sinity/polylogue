@@ -139,7 +139,9 @@ def _summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary:
         title=summary.title,
         created_at=_parse_archive_datetime(summary.created_at),
         updated_at=_parse_archive_datetime(summary.updated_at),
-        provider_meta={"native_id": summary.native_id, "origin": summary.origin},
+        working_directories=tuple(summary.working_directories),
+        git_branch=summary.git_branch,
+        git_repository_url=summary.git_repository_url,
         message_count=summary.message_count,
         tags_m2m=summary.tags,
     )
@@ -190,6 +192,7 @@ def _message_to_domain(message: ArchiveMessageRow, *, provider: Provider) -> Mes
         has_tool_use=message.has_tool_use,
         has_thinking=message.has_thinking,
         has_paste=message.has_paste,
+        duration_ms=message.duration_ms,
         branch_index=message.variant_index,
         parent_id=message.parent_message_id,
     )
@@ -208,11 +211,9 @@ def _session_to_session(session: ArchiveSessionEnvelope) -> Session:
         messages=MessageCollection(messages=messages),
         created_at=min(timestamps) if timestamps else None,
         updated_at=max(timestamps) if timestamps else None,
-        provider_meta={
-            "native_id": session.native_id,
-            "origin": session.origin,
-            "active_leaf_message_id": session.active_leaf_message_id,
-        },
+        working_directories=tuple(session.working_directories),
+        git_branch=session.git_branch,
+        git_repository_url=session.git_repository_url,
         parent_id=SessionId(session.parent_session_id) if session.parent_session_id else None,
         branch_type=BranchType(session.branch_type) if session.branch_type else None,
     )

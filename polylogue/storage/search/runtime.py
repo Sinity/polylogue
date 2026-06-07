@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
@@ -12,11 +13,21 @@ from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts
 from polylogue.storage.search.cache import SearchCacheKey
 from polylogue.storage.search.models import SearchHit, SearchResult
 from polylogue.storage.search.query_builders import build_ranked_session_search_query, session_web_url
-from polylogue.storage.search.query_support import sort_key_to_iso
+from polylogue.storage.search.query_support import normalize_fts5_query, sort_key_to_iso
 from polylogue.storage.sqlite.connection import open_read_connection
 
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 _MESSAGE_SEARCH_REPAIR_HINT = _MAINTENANCE_TARGET_CATALOG.repair_hint(("dangling_fts",), include_run_all=True)
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1",
+            (table_name,),
+        ).fetchone()
+        is not None
+    )
 
 
 @lru_cache(maxsize=128)
@@ -55,14 +66,22 @@ def search_messages_impl(
         readiness = message_fts_search_readiness_sync(conn)
         check_fts_readiness(readiness, _MESSAGE_SEARCH_REPAIR_HINT)
         try:
-            rows = conn.execute(sql, tuple(params)).fetchall()
+            if _table_exists(conn, "messages_fts") and _table_exists(conn, "blocks"):
+                rows = _search_archive_blocks(conn, query=query, limit=limit, source=source, since=since)
+            else:
+                rows = conn.execute(sql, tuple(params)).fetchall()
         except sqlite3.Error as exc:
             raise DatabaseError(f"Invalid search query: {exc}") from exc
-        fallback_snippets = {
-            row["message_id"]: _fallback_snippet(conn, row["message_id"], query)
-            for row in rows
-            if row["snippet"] is None
-        }
+        try:
+            fallback_snippets = {
+                row["message_id"]: (
+                    _row_text(row, "fallback_text") or _fallback_snippet(conn, row["message_id"], query)
+                )
+                for row in rows
+                if not row["snippet"]
+            }
+        except sqlite3.Error as exc:
+            raise DatabaseError(f"Invalid search query: {exc}") from exc
 
     hits: list[SearchHit] = []
     for row in rows:
@@ -81,22 +100,82 @@ def search_messages_impl(
     return SearchResult(hits=hits)
 
 
+def _search_archive_blocks(
+    conn: sqlite3.Connection,
+    *,
+    query: str,
+    limit: int,
+    source: str | None,
+    since: str | None,
+) -> list[sqlite3.Row]:
+    normalized = normalize_fts5_query(query)
+    if normalized is None:
+        return []
+    clauses = ["messages_fts MATCH ?"]
+    params: list[object] = [normalized]
+    if source is not None:
+        clauses.append("s.origin = ?")
+        params.append(source)
+    if since is not None:
+        clauses.append("COALESCE(m.occurred_at_ms, s.sort_key_ms, s.updated_at_ms, s.created_at_ms, 0) >= ?")
+        try:
+            since_ms = int(datetime.fromisoformat(since).timestamp() * 1000)
+        except ValueError as exc:
+            raise ValueError(f"Invalid --since date '{since}': {exc}. Use ISO format") from exc
+        params.append(since_ms)
+    params.append(limit)
+    return conn.execute(
+        f"""
+        WITH candidate_hits AS (
+            SELECT
+                b.message_id AS message_id,
+                b.session_id AS session_id,
+                s.origin AS source_name,
+                s.title AS title,
+                COALESCE(m.occurred_at_ms, s.sort_key_ms, s.updated_at_ms, s.created_at_ms) / 1000.0 AS sort_key,
+                b.search_text AS fallback_text,
+                snippet(messages_fts, 4, '[', ']', '...', 24) AS snippet,
+                bm25(messages_fts) AS relevance
+            FROM messages_fts
+            JOIN blocks AS b ON b.rowid = messages_fts.rowid
+            JOIN messages AS m ON m.message_id = b.message_id
+            JOIN sessions AS s ON s.session_id = b.session_id
+            WHERE {" AND ".join(clauses)}
+        ),
+        ranked_hits AS (
+            SELECT
+                *,
+                ROW_NUMBER() OVER (
+                    PARTITION BY session_id
+                    ORDER BY relevance ASC, sort_key DESC, message_id ASC
+                ) AS session_rank
+            FROM candidate_hits
+        )
+        SELECT message_id, session_id, source_name, title, sort_key, snippet, fallback_text
+        FROM ranked_hits
+        WHERE session_rank = 1
+        ORDER BY relevance ASC, sort_key DESC, message_id ASC
+        LIMIT ?
+        """,
+        tuple(params),
+    ).fetchall()
+
+
 def _fallback_snippet(conn: sqlite3.Connection, message_id: str, query: str) -> str | None:
-    row = conn.execute("SELECT text FROM messages WHERE message_id = ?", (message_id,)).fetchone()
     parts: list[str] = []
-    if row is not None and row["text"]:
-        parts.append(str(row["text"]))
+    if not _table_exists(conn, "blocks"):
+        return None
     block_rows = conn.execute(
         """
-        SELECT text, tool_input, metadata
-        FROM content_blocks
+        SELECT text, tool_input
+        FROM blocks
         WHERE message_id = ?
-        ORDER BY block_index
+        ORDER BY position
         """,
         (message_id,),
     ).fetchall()
     for block in block_rows:
-        parts.extend(str(block[key]) for key in ("text", "tool_input", "metadata") if block[key])
+        parts.extend(str(block[key]) for key in ("text", "tool_input") if block[key])
     text = "\n".join(parts).strip()
     if not text:
         return None
@@ -109,6 +188,14 @@ def _fallback_snippet(conn: sqlite3.Connection, message_id: str, query: str) -> 
     prefix = "..." if start else ""
     suffix = "..." if end < len(text) else ""
     return f"{prefix}{text[start:end]}{suffix}"
+
+
+def _row_text(row: sqlite3.Row, key: str) -> str | None:
+    try:
+        value = row[key]
+    except (IndexError, KeyError):
+        return None
+    return str(value) if value else None
 
 
 def search_messages(

@@ -48,8 +48,8 @@ def _search_ids_from_connection(conn: sqlite3.Connection, search_text: str) -> t
     rows = conn.execute(
         """
         SELECT DISTINCT session_id
-        FROM blocks_fts
-        WHERE blocks_fts MATCH ?
+        FROM messages_fts
+        WHERE messages_fts MATCH ?
         ORDER BY session_id
         """,
         (search_text,),

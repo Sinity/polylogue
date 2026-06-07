@@ -151,7 +151,7 @@ Enabled by default on `127.0.0.1:8765`. Disable with `--no-browser-capture`.
 | `source_lag` | Per-source file counts and availability |
 | `failing_files` | Files that failed ingestion |
 | `fts_readiness.messages_ready` | FTS index covers all messages |
-| `fts_readiness.action_events_ready` | FTS index covers all action events |
+| `fts_readiness.actions_ready` | FTS index covers tool-use/tool-result action blocks |
 | `insight_freshness` | Sessions with profiles vs. total |
 | `embedding_readiness` | Embedding enabled, coverage, pending/stale, failures, cost |
 | `db_size_bytes` | Database file size |
@@ -169,8 +169,8 @@ Enabled by default on `127.0.0.1:8765`. Disable with `--no-browser-capture`.
 - `disk_space` — free disk space (warns at 500 MB, critical at 100 MB)
 - `wal_size` — WAL file size (warns at 50 MB, errors at 200 MB)
 - `source_availability` — watch roots exist and are readable
-- `fts_trigger_drift` — checks the six canonical FTS sync triggers
-  (`messages_fts_a{i,d,u}`, `action_events_fts_a{i,d,u}`); critical when
+- `fts_trigger_drift` — checks the three canonical message/block FTS sync
+  triggers (`messages_fts_a{i,d,u}`); critical when
   any are missing. With `[health] fts_auto_restore = true` (or
   `POLYLOGUE_HEALTH_FTS_AUTO_RESTORE=1`), the daemon restores triggers
   and rebuilds the FTS index in place, then emits a WARNING-level
@@ -296,7 +296,7 @@ these — operators are responsible for scheduling them:
 
 | Task | Tool | Frequency | Description |
 |------|------|-----------|-------------|
-| Durability-tier backup | `polylogue backup` | Daily | archives copy `source.db`, `user.db`, `embeddings.db`, and referenced blobs while omitting rebuildable `index.db` and disposable `ops.db`. Legacy archives fall back to a clean single-database copy. |
+| Durability-tier backup | `polylogue backup` | Daily | archives copy `source.db`, `user.db`, `embeddings.db`, and referenced blobs while omitting rebuildable `index.db` and disposable `ops.db`. |
 | Blob store backup | `polylogue backup` | Weekly | backup copies referenced blob files. For large archives, restic or similar incremental backup tools can also target `blob/` directly. |
 | Database vacuum | `sqlite3 <db> "VACUUM"` | Monthly | Reclaims space after large deletes or updates. Requires downtime or `VACUUM INTO` to a new file while the daemon runs. |
 | Litestream replication | Litestream | Continuous | Real-time WAL replication to S3-compatible storage. Configure Litestream to watch the database and WAL files; the daemon's periodic WAL checkpoint is compatible with Litestream's replication model. |

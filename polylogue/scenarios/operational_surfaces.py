@@ -34,19 +34,6 @@ OPERATIONAL_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
         ),
     ),
     CliSurfaceFamily(
-        slug="doctor-action-event-preview",
-        command_args=("doctor", "--format", "json", "--repair", "--preview", "--target", "action_event_read_model"),
-        tags=("maintenance", "action-events"),
-        exercise=CliSurfaceVariant(
-            name="json-doctor-action-event-preview",
-            description="doctor JSON contract",
-            suffix_args=(),
-            needs_data=False,
-            tier=0,
-            env="any",
-        ),
-    ),
-    CliSurfaceFamily(
         slug="doctor-session-insights-preview",
         command_args=("doctor", "--format", "json", "--repair", "--preview", "--target", "session_insights"),
         tags=("maintenance", "session-insights"),

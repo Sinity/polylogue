@@ -24,16 +24,6 @@ def _metadata_string(metadata: dict[str, object], key: str) -> str | None:
     return str(value) if value is not None else None
 
 
-def _provider_meta_string(provider_meta: dict[str, object] | None, key: str) -> str | None:
-    if provider_meta is None:
-        return None
-    value = provider_meta.get(key)
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
 def _metadata_tags(metadata: dict[str, object]) -> list[str]:
     raw_tags = metadata.get("tags", [])
     if not isinstance(raw_tags, list):
@@ -47,7 +37,6 @@ class SessionRuntimeMixin:
     messages: MessageCollection
     created_at: datetime | None
     updated_at: datetime | None
-    provider_meta: dict[str, object] | None
     metadata: dict[str, object]
     parent_id: SessionId | None
     branch_type: BranchType | None
@@ -81,9 +70,6 @@ class SessionRuntimeMixin:
         user_title = self.user_title
         if user_title:
             return user_title
-        provider_label = _provider_meta_string(self.provider_meta, "display_label")
-        if provider_label:
-            return provider_label
         if self.title:
             return self.title
         return self.id[:8]
@@ -199,42 +185,19 @@ class SessionRuntimeMixin:
     def total_cost_usd(self) -> float:
         """Sum of per-message ``cost_usd`` values.
 
-        Hydrated ``Message`` instances no longer carry ``provider_meta``
-        (#1256), and message-level cost/duration is sourced through the
-        typed cost projection (``polylogue.archive.semantic.pricing``) per
-        #803/#1139. This property is retained for legacy callers and
-        always returns ``0.0`` for hydrated sessions; downstream
-        readers consume ``CostEstimatePayload`` from the typed insight
-        layer instead.
+        Message-level cost/duration is sourced through typed message and
+        insight projections (``polylogue.archive.semantic.pricing``) per
+        #803/#1139. This property is retained for callers that still expect
+        a scalar on the hydrated session and always returns ``0.0``;
+        downstream readers consume ``CostEstimatePayload`` from the typed
+        insight layer instead.
         """
 
         return 0.0
 
     @property
     def total_duration_ms(self) -> int:
-        """Total duration of the session in milliseconds.
-
-        Falls back to ``provider_meta['total_duration_ms']`` on the
-        ``Session`` envelope when present (session-level
-        provider metadata is still persisted). Per-message duration was
-        previously sourced from ``Message.provider_meta`` which no longer
-        exists (#1256); the typed cost projection now owns that data.
-        """
-
-        if self.provider_meta is None:
-            return 0
-        value = self.provider_meta.get("total_duration_ms")
-        if isinstance(value, bool):
-            return 0
-        if isinstance(value, int):
-            return value
-        if isinstance(value, float):
-            return int(value)
-        if isinstance(value, str):
-            try:
-                return int(float(value))
-            except ValueError:
-                return 0
+        """Total duration belongs to typed insight/session projections."""
         return 0
 
     def project(self) -> SessionProjection:

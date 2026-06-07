@@ -1,25 +1,4 @@
-"""Closed enums and the runtime record for cross-session topology edges.
-
-Drop site context
------------------
-Before this module existed, ``polylogue/pipeline/prepare_enrichment.py``
-silently dropped a parsed ``parent_session_provider_id`` whenever the
-referenced parent session was not present in the in-batch
-``PrepareCache.known_ids`` set (or in the database). That meant sidechain,
-subagent, continuation, and branch edges were lost whenever the parent had
-not yet been ingested (out-of-order ingestion) or had been hard-deleted.
-
-The ``topology_edges`` table — populated from ``TopologyEdgeRecord`` rows
-built at ingest time — preserves every parent reference, including those that
-cannot be resolved at write time. A subsequent ingest of the parent flips the
-edge from ``unresolved`` to ``resolved`` via
-``resolve_topology_edges_for_session``.
-
-The pre-existing fast-path (``sessions.parent_session_id`` set when
-the parent is known at child-write time) is preserved unchanged; the topology
-edge table is an *additional* durable record that always carries the original
-provider-native parent id.
-"""
+"""Closed enums and runtime record for cross-session session links."""
 
 from __future__ import annotations
 
@@ -29,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import LinkType as TopologyEdgeType
-from polylogue.core.enums import TopologyEdgeStatus
+from polylogue.core.enums import Origin, TopologyEdgeStatus
 from polylogue.types import SessionId
 
 
@@ -63,31 +42,30 @@ def _now_isoformat() -> str:
 
 
 class TopologyEdgeRecord(BaseModel):
-    """Runtime row for the ``topology_edges`` table.
+    """Runtime row for the ``session_links`` table.
 
-    Identity (``src_session_id``, ``dst_provider_native_id``, ``edge_type``)
-    is enforced as a SQL ``UNIQUE`` constraint so re-ingesting the same child
-    twice is idempotent — the second ingest upserts the same row.
+    Identity is the natural unresolved assertion:
+    ``(src_session_id, dst_origin, dst_native_id, link_type)``.
     """
 
     model_config = ConfigDict(use_enum_values=False)
 
     src_session_id: SessionId
-    dst_provider_native_id: str
-    dst_provider_name: str
-    edge_type: TopologyEdgeType
+    dst_origin: Origin
+    dst_native_id: str
+    link_type: TopologyEdgeType
     resolved_dst_session_id: SessionId | None = None
-    raw_evidence: str | None = None
+    evidence_json: str = "[]"
     confidence: float = 1.0
     status: TopologyEdgeStatus = TopologyEdgeStatus.UNRESOLVED
     observed_at: str = Field(default_factory=_now_isoformat)
     resolved_at: str | None = None
 
-    @field_validator("src_session_id", "dst_provider_native_id", "dst_provider_name")
+    @field_validator("src_session_id", "dst_native_id")
     @classmethod
     def _non_empty(cls, value: str) -> str:
         if not value or not value.strip():
-            raise ValueError("topology edge identity column cannot be empty")
+            raise ValueError("session link identity column cannot be empty")
         return value
 
     @field_validator("confidence")

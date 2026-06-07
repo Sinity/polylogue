@@ -8,9 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.message.messages import MessageCollection
-from polylogue.archive.provider.events import ProviderEvent
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_runtime import SessionRuntimeMixin
+from polylogue.archive.session.events import SessionEvent
 from polylogue.archive.session.summary_runtime import SessionSummaryRuntimeMixin
 from polylogue.core.enums import Origin
 from polylogue.core.sources import origin_from_provider
@@ -35,8 +35,10 @@ class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):
     title: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
-    provider_meta: dict[str, object] | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
+    working_directories: tuple[str, ...] = ()
+    git_branch: str | None = None
+    git_repository_url: str | None = None
     parent_id: SessionId | None = None
     branch_type: BranchType | None = None
     message_count: int | None = None
@@ -61,9 +63,11 @@ class Session(SessionRuntimeMixin, BaseModel):
     messages: MessageCollection
     created_at: datetime | None = None
     updated_at: datetime | None = None
-    provider_meta: dict[str, object] | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
-    provider_events: tuple[ProviderEvent, ...] = ()
+    working_directories: tuple[str, ...] = ()
+    git_branch: str | None = None
+    git_repository_url: str | None = None
+    session_events: tuple[SessionEvent, ...] = ()
     parent_id: SessionId | None = None
     branch_type: BranchType | None = None
     # #1240: tags hydrated from session_tags M2M; see SessionSummary.

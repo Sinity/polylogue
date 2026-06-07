@@ -21,8 +21,8 @@ from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
     ParsedMessage,
-    ParsedProviderEvent,
     ParsedSession,
+    ParsedSessionEvent,
 )
 from polylogue.storage.search.query_support import normalize_fts5_query
 
@@ -38,16 +38,19 @@ class ArchiveBlockRow:
     semantic_type: str | None = None
     tool_input: str | None = None
     metadata: str | None = None
+    language: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ArchiveAttachmentRow:
     attachment_id: str
     message_id: str | None
-    mime_type: str | None = None
-    size_bytes: int | None = None
-    path: str | None = None
-    provider_meta: str | None = None
+    display_name: str | None = None
+    media_type: str | None = None
+    byte_count: int = 0
+    upload_origin: str | None = None
+    source_url: str | None = None
+    caption: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +69,7 @@ class ArchiveMessageRow:
     has_thinking: bool = False
     has_paste: bool = False
     occurred_at: str | None = None
+    duration_ms: int = 0
     parent_message_id: str | None = None
     attachments: tuple[ArchiveAttachmentRow, ...] = ()
 
@@ -81,9 +85,11 @@ class ArchiveSessionEnvelope:
     parent_session_id: str | None = None
     root_session_id: str | None = None
     branch_type: str | None = None
-    origin_meta: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    working_directories: tuple[str, ...] = ()
+    git_branch: str | None = None
+    git_repository_url: str | None = None
     orphan_attachments: tuple[ArchiveAttachmentRow, ...] = ()
 
 
@@ -152,6 +158,7 @@ def write_parsed_session_to_archive(
     conn: sqlite3.Connection,
     session: ParsedSession,
     *,
+    content_hash: str | None = None,
     raw_id: str | None = None,
     merge_append: bool = False,
 ) -> str:
@@ -162,27 +169,31 @@ def write_parsed_session_to_archive(
     session_id = archive_session_id(origin.value, native_id)
     messages = _normalized_messages(session.messages)
     active_leaf_message_id = _active_leaf_message_id(session_id, messages, session.active_leaf_message_provider_id)
+    session_content_hash = (
+        bytes.fromhex(content_hash) if content_hash is not None else _hash_bytes("session", origin.value, native_id)
+    )
 
     with conn:
         conn.execute(
             """
             INSERT INTO sessions (
                 native_id, origin, raw_id, branch_type, active_leaf_message_id,
-                title, origin_meta, git_branch, git_repository_url, commit_hash,
+                title, title_source, git_branch, git_repository_url, commit_hash, reported_duration_ms,
                 message_count, word_count, tool_use_count, thinking_count,
                 paste_count, user_message_count, assistant_message_count, system_message_count,
                 tool_message_count, user_word_count, assistant_word_count,
                 content_hash, created_at_ms, updated_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(origin, native_id) DO UPDATE SET
                 raw_id = excluded.raw_id,
                 branch_type = excluded.branch_type,
                 active_leaf_message_id = excluded.active_leaf_message_id,
                 title = COALESCE(excluded.title, sessions.title),
-                origin_meta = excluded.origin_meta,
+                title_source = COALESCE(excluded.title_source, sessions.title_source),
                 git_branch = excluded.git_branch,
                 git_repository_url = excluded.git_repository_url,
                 commit_hash = excluded.commit_hash,
+                reported_duration_ms = excluded.reported_duration_ms,
                 content_hash = excluded.content_hash,
                 created_at_ms = COALESCE(sessions.created_at_ms, excluded.created_at_ms),
                 updated_at_ms = MAX(COALESCE(sessions.updated_at_ms, 0), COALESCE(excluded.updated_at_ms, 0))
@@ -194,10 +205,11 @@ def write_parsed_session_to_archive(
                 _enum_value(session.branch_type),
                 active_leaf_message_id,
                 session.title,
-                _json_dumps(session.provider_meta or {}),
+                session.title_source,
                 session.git_branch,
                 session.git_repository_url,
                 session.git_commit_hash,
+                session.reported_duration_ms,
                 len(messages),
                 sum(_word_count(message.text) for message in messages),
                 sum(_has_block(message, ContentBlockType.TOOL_USE) for message in messages),
@@ -209,7 +221,7 @@ def write_parsed_session_to_archive(
                 sum(1 for message in messages if _enum_value(message.role) == "tool"),
                 sum(_word_count(message.text) for message in messages if _enum_value(message.role) == "user"),
                 sum(_word_count(message.text) for message in messages if _enum_value(message.role) == "assistant"),
-                _hash_bytes("session", origin.value, native_id),
+                session_content_hash,
                 _timestamp_ms(session.created_at),
                 _timestamp_ms(session.updated_at),
             ),
@@ -241,9 +253,10 @@ def write_parsed_session_to_archive(
         _write_paste_spans(conn, session_id, messages, position_offset=position_offset)
         _write_parent_links(conn, session_id, messages, position_offset=position_offset)
         _write_session_link(conn, session_id, session)
-        _write_session_events(conn, session_id, messages, session.provider_events, position_offset=position_offset)
+        _write_session_events(conn, session_id, messages, session.session_events, position_offset=position_offset)
         _write_working_dirs(conn, session_id, session.working_directories)
         _write_repo_edges(conn, session_id, session)
+        _write_reported_costs(conn, session_id, session)
         _refresh_session_counts(conn, session_id)
         _resolve_session_graph(conn, session_id, native_id, origin.value)
     return session_id
@@ -257,6 +270,8 @@ def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) ->
         "session_working_dirs",
         "session_repos",
         "session_commits",
+        "session_reported_costs",
+        "session_model_usage",
     ):
         conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM session_links WHERE src_session_id = ?", (session_id,))
@@ -666,8 +681,8 @@ def read_archive_session_envelope(conn: sqlite3.Connection, session_id: str) -> 
     session = conn.execute(
         """
         SELECT session_id, native_id, origin, title, active_leaf_message_id,
-               parent_session_id, root_session_id, branch_type, origin_meta,
-               created_at_ms, updated_at_ms
+               parent_session_id, root_session_id, branch_type,
+               created_at_ms, updated_at_ms, git_branch, git_repository_url
         FROM sessions
         WHERE session_id = ?
         """,
@@ -675,12 +690,24 @@ def read_archive_session_envelope(conn: sqlite3.Connection, session_id: str) -> 
     ).fetchone()
     if session is None:
         raise KeyError(session_id)
+    working_directories = tuple(
+        str(row["path"])
+        for row in conn.execute(
+            """
+            SELECT path
+            FROM session_working_dirs
+            WHERE session_id = ?
+            ORDER BY position, path
+            """,
+            (session_id,),
+        ).fetchall()
+    )
 
     attachment_rows = conn.execute(
         """
         SELECT r.message_id AS message_id, a.attachment_id AS attachment_id,
-               a.mime_type AS mime_type, a.size_bytes AS size_bytes, a.path AS path,
-               a.provider_meta AS provider_meta
+               a.display_name AS display_name, a.media_type AS media_type, a.byte_count AS byte_count,
+               r.upload_origin AS upload_origin, r.source_url AS source_url, r.caption AS caption
         FROM attachment_refs r
         JOIN attachments a ON a.attachment_id = r.attachment_id
         WHERE r.session_id = ?
@@ -694,10 +721,12 @@ def read_archive_session_envelope(conn: sqlite3.Connection, session_id: str) -> 
             ArchiveAttachmentRow(
                 attachment_id=attachment["attachment_id"],
                 message_id=attachment["message_id"],
-                mime_type=attachment["mime_type"],
-                size_bytes=attachment["size_bytes"],
-                path=attachment["path"],
-                provider_meta=attachment["provider_meta"],
+                display_name=attachment["display_name"],
+                media_type=attachment["media_type"],
+                byte_count=int(attachment["byte_count"] or 0),
+                upload_origin=attachment["upload_origin"],
+                source_url=attachment["source_url"],
+                caption=attachment["caption"],
             )
         )
 
@@ -705,7 +734,7 @@ def read_archive_session_envelope(conn: sqlite3.Connection, session_id: str) -> 
         """
         SELECT message_id, native_id, role, position, variant_index, is_active_path, is_active_leaf,
                message_type, word_count, has_tool_use, has_thinking, has_paste, occurred_at_ms,
-               parent_message_id
+               duration_ms, parent_message_id
         FROM messages
         WHERE session_id = ?
         ORDER BY position, variant_index
@@ -717,7 +746,7 @@ def read_archive_session_envelope(conn: sqlite3.Connection, session_id: str) -> 
         block_rows = conn.execute(
             """
             SELECT block_id, message_id, block_type, text, tool_name, tool_id, semantic_type,
-                   tool_input, metadata
+                   tool_input, language
             FROM blocks
             WHERE message_id = ?
             ORDER BY position
@@ -743,7 +772,7 @@ def read_archive_session_envelope(conn: sqlite3.Connection, session_id: str) -> 
                         tool_id=block["tool_id"],
                         semantic_type=block["semantic_type"],
                         tool_input=block["tool_input"],
-                        metadata=block["metadata"],
+                        language=block["language"],
                     )
                     for block in block_rows
                 ),
@@ -753,6 +782,7 @@ def read_archive_session_envelope(conn: sqlite3.Connection, session_id: str) -> 
                 has_thinking=bool(message["has_thinking"]),
                 has_paste=bool(message["has_paste"]),
                 occurred_at=_iso_from_ms(message["occurred_at_ms"]),
+                duration_ms=int(message["duration_ms"] or 0),
                 parent_message_id=message["parent_message_id"],
                 attachments=tuple(attachments_by_message.get(message["message_id"], ())),
             )
@@ -768,24 +798,27 @@ def read_archive_session_envelope(conn: sqlite3.Connection, session_id: str) -> 
         parent_session_id=session["parent_session_id"],
         root_session_id=session["root_session_id"],
         branch_type=session["branch_type"],
-        origin_meta=session["origin_meta"],
         created_at=_iso_from_ms(session["created_at_ms"]),
         updated_at=_iso_from_ms(session["updated_at_ms"]),
+        working_directories=working_directories,
+        git_branch=session["git_branch"],
+        git_repository_url=session["git_repository_url"],
         orphan_attachments=tuple(attachments_by_message.get(None, ())),
     )
 
 
 def search_archive_blocks(conn: sqlite3.Connection, query: str) -> list[str]:
-    """Return block ids matched by the archive external-content FTS table."""
+    """Return block ids matched by the archive contentless FTS table."""
     match_query = normalize_fts5_query(query)
     if match_query is None:
         return []
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         """
-        SELECT block_id
-        FROM blocks_fts
-        WHERE blocks_fts MATCH ?
+        SELECT b.block_id
+        FROM messages_fts f
+        JOIN blocks b ON b.rowid = f.rowid
+        WHERE f.text MATCH ?
         ORDER BY rank
         """,
         (match_query,),
@@ -793,10 +826,18 @@ def search_archive_blocks(conn: sqlite3.Connection, query: str) -> list[str]:
     return [row["block_id"] for row in rows]
 
 
-def rebuild_archive_blocks_fts(conn: sqlite3.Connection) -> int:
-    """Rebuild the archive block FTS index from the canonical ``blocks`` table."""
-    conn.execute("INSERT INTO blocks_fts(blocks_fts) VALUES('rebuild')")
-    row = conn.execute("SELECT COUNT(*) FROM blocks_fts").fetchone()
+def rebuild_archive_messages_fts(conn: sqlite3.Connection) -> int:
+    """Rebuild the archive message FTS index from canonical ``blocks`` rows."""
+    conn.execute("DELETE FROM messages_fts")
+    conn.execute(
+        """
+        INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
+        SELECT rowid, block_id, message_id, session_id, block_type, search_text
+        FROM blocks
+        WHERE search_text != ''
+        """
+    )
+    row = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()
     return int(row[0] if row is not None else 0)
 
 
@@ -863,7 +904,7 @@ def _write_blocks(
                 """
                 INSERT OR REPLACE INTO blocks (
                     message_id, session_id, position, block_type, text, tool_name,
-                    tool_id, tool_input, semantic_type, media_type, metadata
+                    tool_id, tool_input, semantic_type, media_type, language
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -877,7 +918,7 @@ def _write_blocks(
                     _json_dumps(block.tool_input) if block.tool_input is not None else None,
                     _semantic_type(block),
                     block.media_type,
-                    _json_dumps(block.metadata or {}),
+                    _block_language(block),
                 ),
             )
 
@@ -935,53 +976,46 @@ def _write_attachments(
         message_id = (
             by_native_message_id.get(attachment.message_provider_id) if attachment.message_provider_id else None
         )
+        if message_id is None:
+            continue
         conn.execute(
             """
             INSERT INTO attachments (
-                attachment_id, mime_type, size_bytes, path, provider_meta,
-                provider_attachment_id, provider_file_id, provider_drive_id, upload_origin, ref_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                attachment_id, display_name, media_type, byte_count, blob_hash, ref_count
+            ) VALUES (?, ?, ?, ?, ?, 0)
             ON CONFLICT(attachment_id) DO UPDATE SET
-                mime_type = COALESCE(excluded.mime_type, attachments.mime_type),
-                size_bytes = COALESCE(excluded.size_bytes, attachments.size_bytes),
-                path = COALESCE(excluded.path, attachments.path),
-                provider_meta = excluded.provider_meta,
-                provider_attachment_id = COALESCE(excluded.provider_attachment_id, attachments.provider_attachment_id),
-                provider_file_id = COALESCE(excluded.provider_file_id, attachments.provider_file_id),
-                provider_drive_id = COALESCE(excluded.provider_drive_id, attachments.provider_drive_id),
-                upload_origin = COALESCE(excluded.upload_origin, attachments.upload_origin)
+                display_name = COALESCE(excluded.display_name, attachments.display_name),
+                media_type = COALESCE(excluded.media_type, attachments.media_type),
+                byte_count = excluded.byte_count,
+                blob_hash = excluded.blob_hash
             """,
             (
                 attachment_id,
+                attachment.name,
                 attachment.mime_type,
-                attachment.size_bytes,
-                attachment.path,
-                _json_dumps(attachment.provider_meta or {}),
-                attachment.provider_attachment_id,
-                attachment.provider_file_id,
-                attachment.provider_drive_id,
-                attachment.upload_origin,
+                attachment.size_bytes or 0,
+                _attachment_blob_hash(attachment_id, attachment),
             ),
         )
+        ref_position = _attachment_position(attachment)
         conn.execute(
             """
             INSERT OR REPLACE INTO attachment_refs (
-                ref_id, attachment_id, session_id, message_id, provider_meta,
-                provider_attachment_id, provider_file_id, provider_drive_id, upload_origin
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                attachment_id, session_id, message_id, position, upload_origin, source_url, caption
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                _attachment_ref_id(session_id, attachment),
                 attachment_id,
                 session_id,
                 message_id,
-                _json_dumps(attachment.provider_meta or {}),
-                attachment.provider_attachment_id,
-                attachment.provider_file_id,
-                attachment.provider_drive_id,
+                ref_position,
                 attachment.upload_origin,
+                _attachment_source_url(attachment),
+                _attachment_caption(attachment),
             ),
         )
+        ref_id = f"{message_id}:attachment:{ref_position}"
+        _write_attachment_native_ids(conn, ref_id, attachment)
     conn.execute(
         """
         UPDATE attachments
@@ -1004,22 +1038,34 @@ def _write_paste_spans(
             continue
         message_id = _message_id(session_id, message, fallback_position, position_offset=position_offset)
         text = message.text or ""
-        boundary = PasteBoundary.WHOLE_MESSAGE_FALLBACK if text else PasteBoundary.HASH_ONLY
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO paste_spans (
-                message_id, session_id, start_offset, end_offset, content_hash, boundary
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                message_id,
-                session_id,
-                0,
-                len(text),
-                _hash_bytes("paste", message_id, text),
-                boundary.value,
-            ),
-        )
+        for evidence in message.paste_spans:
+            boundary = PasteBoundary(evidence.boundary_state)
+            start_offset = evidence.start_offset if evidence.start_offset is not None else 0
+            end_offset = evidence.end_offset if evidence.end_offset is not None else len(text)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO paste_spans (
+                    message_id, session_id, position, start_offset, end_offset, boundary_state,
+                    source_event_id, source_marker, content_hash, observed_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message_id,
+                    session_id,
+                    evidence.position,
+                    start_offset,
+                    end_offset,
+                    boundary.value,
+                    evidence.source_event_id,
+                    evidence.source_marker,
+                    evidence.content_hash or _hash_bytes("paste", message_id, str(evidence.position), text),
+                    evidence.observed_at_ms
+                    if evidence.observed_at_ms is not None
+                    else message.occurred_at_ms
+                    if message.occurred_at_ms is not None
+                    else _timestamp_ms(message.timestamp),
+                ),
+            )
 
 
 def _write_parent_links(
@@ -1062,18 +1108,18 @@ def _write_session_link(conn: sqlite3.Connection, session_id: str, session: Pars
     conn.execute(
         """
         INSERT OR REPLACE INTO session_links (
-            src_session_id, dst_session_native_id, link_type, status, method, confidence, evidence_json, observed_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            src_session_id, dst_origin, dst_native_id, link_type, status, method, confidence, evidence_json, observed_at_ms
+        ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?)
         """,
         (
             session_id,
+            origin_from_provider(session.source_name).value,
             session.parent_session_provider_id,
             link_type,
-            "unresolved",
             "parser-parent",
             1.0,
             _json_dumps({"parent_session_provider_id": session.parent_session_provider_id}),
-            _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at),
+            _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at) or 0,
         ),
     )
 
@@ -1092,10 +1138,9 @@ def _resolve_session_graph(conn: sqlite3.Connection, session_id: str, native_id:
         """
         SELECT links.src_session_id
         FROM session_links links
-        JOIN sessions src ON src.session_id = links.src_session_id
-        WHERE links.dst_session_native_id = ?
-          AND links.dst_session_id IS NULL
-          AND src.origin = ?
+        WHERE links.dst_native_id = ?
+          AND links.resolved_dst_session_id IS NULL
+          AND links.dst_origin = ?
         """,
         (native_id, origin),
     ).fetchall()
@@ -1103,10 +1148,11 @@ def _resolve_session_graph(conn: sqlite3.Connection, session_id: str, native_id:
         conn.execute(
             """
             UPDATE session_links
-            SET dst_session_id = ?, status = 'resolved'
+            SET resolved_dst_session_id = ?,
+                resolved_at_ms = COALESCE(resolved_at_ms, observed_at_ms)
             WHERE src_session_id = ?
-              AND dst_session_native_id = ?
-              AND dst_session_id IS NULL
+              AND dst_native_id = ?
+              AND resolved_dst_session_id IS NULL
             """,
             (session_id, row[0], native_id),
         )
@@ -1124,24 +1170,24 @@ def _resolve_outbound_session_links(conn: sqlite3.Connection, session_id: str, o
     conn.execute(
         """
         UPDATE session_links
-        SET dst_session_id = (
+        SET resolved_dst_session_id = (
                 SELECT dst.session_id
                 FROM sessions dst
-                WHERE dst.native_id = session_links.dst_session_native_id
-                  AND dst.origin = ?
+                WHERE dst.native_id = session_links.dst_native_id
+                  AND dst.origin = session_links.dst_origin
                 LIMIT 1
             ),
-            status = 'resolved'
+            resolved_at_ms = COALESCE(resolved_at_ms, observed_at_ms)
         WHERE src_session_id = ?
-          AND dst_session_id IS NULL
+          AND resolved_dst_session_id IS NULL
           AND EXISTS (
                 SELECT 1
                 FROM sessions dst
-                WHERE dst.native_id = session_links.dst_session_native_id
-                  AND dst.origin = ?
+                WHERE dst.native_id = session_links.dst_native_id
+                  AND dst.origin = session_links.dst_origin
           )
         """,
-        (origin, session_id, origin),
+        (session_id,),
     )
 
 
@@ -1151,24 +1197,43 @@ def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, se
     seen.add(session_id)
     parent_link = conn.execute(
         """
-        SELECT dst_session_id, link_type
+        SELECT resolved_dst_session_id, link_type
         FROM session_links
-        WHERE src_session_id = ? AND dst_session_id IS NOT NULL
-        ORDER BY observed_at_ms IS NULL, observed_at_ms, dst_session_native_id, link_type
+        WHERE src_session_id = ? AND resolved_dst_session_id IS NOT NULL
+        ORDER BY observed_at_ms IS NULL, observed_at_ms, dst_origin, dst_native_id, link_type
         LIMIT 1
         """,
         (session_id,),
     ).fetchone()
     if parent_link is None:
+        unresolved_link = conn.execute(
+            """
+            SELECT link_type
+            FROM session_links
+            WHERE src_session_id = ?
+            ORDER BY observed_at_ms IS NULL, observed_at_ms, dst_origin, dst_native_id, link_type
+            LIMIT 1
+            """,
+            (session_id,),
+        ).fetchone()
+        branch_type: str | None
+        if unresolved_link is not None:
+            branch_type = str(unresolved_link[0])
+        else:
+            existing_branch = conn.execute(
+                "SELECT branch_type FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            branch_type = str(existing_branch[0]) if existing_branch is not None and existing_branch[0] else None
         conn.execute(
             """
             UPDATE sessions
             SET parent_session_id = NULL,
                 root_session_id = session_id,
-                branch_type = NULL
+                branch_type = ?
             WHERE session_id = ?
             """,
-            (session_id,),
+            (branch_type, session_id),
         )
         return
 
@@ -1212,15 +1277,12 @@ def _refresh_thread(conn: sqlite3.Connection, root_session_id: str) -> None:
         return
     conn.execute(
         """
-        INSERT INTO threads (thread_id, root_session_id, origin, created_at_ms, updated_at_ms, session_count)
-        VALUES (?, ?, ?, ?, ?, 0)
+        INSERT INTO threads (thread_id, created_at_ms, session_count, depth)
+        VALUES (?, ?, 0, 0)
         ON CONFLICT(thread_id) DO UPDATE SET
-            root_session_id = excluded.root_session_id,
-            origin = excluded.origin,
-            created_at_ms = excluded.created_at_ms,
-            updated_at_ms = excluded.updated_at_ms
+            created_at_ms = excluded.created_at_ms
         """,
-        (root_session_id, root_session_id, root[1], root[2], root[3]),
+        (root_session_id, root[2] or root[3] or 0),
     )
     conn.execute("DELETE FROM thread_sessions WHERE thread_id = ?", (root_session_id,))
     session_rows = conn.execute(
@@ -1244,14 +1306,10 @@ def _refresh_thread(conn: sqlite3.Connection, root_session_id: str) -> None:
         """
         UPDATE threads
         SET session_count = ?,
-            updated_at_ms = (
-                SELECT MAX(updated_at_ms)
-                FROM sessions
-                WHERE COALESCE(root_session_id, session_id) = ?
-            )
+            depth = ?
         WHERE thread_id = ?
         """,
-        (len(session_rows), root_session_id, root_session_id),
+        (len(session_rows), max(len(session_rows) - 1, 0), root_session_id),
     )
 
 
@@ -1275,7 +1333,7 @@ def _write_session_events(
     conn: sqlite3.Connection,
     session_id: str,
     messages: list[ParsedMessage],
-    events: Iterable[ParsedProviderEvent],
+    events: Iterable[ParsedSessionEvent],
     *,
     position_offset: int = 0,
 ) -> None:
@@ -1288,25 +1346,42 @@ def _write_session_events(
     }
     position = 0
     for event in events:
-        if event.event_type not in {"compaction", "ghost_commit", "agent_policy"}:
-            continue
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO session_events (
-                session_id, source_message_id, position, event_type, summary, payload, occurred_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                session_id,
-                by_native_id.get(event.source_message_provider_id or ""),
-                position,
-                event.event_type,
-                _event_summary(event),
-                _json_dumps(event.payload),
-                _timestamp_ms(event.timestamp),
-            ),
-        )
-        position += 1
+        if event.event_type == "compaction":
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO session_events (
+                    session_id, source_message_id, position, event_type, summary, occurred_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    by_native_id.get(event.source_message_provider_id or ""),
+                    position,
+                    event.event_type,
+                    _event_summary(event) or "",
+                    _timestamp_ms(event.timestamp),
+                ),
+            )
+            position += 1
+        elif event.event_type == "agent_policy":
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO session_agent_policies (
+                    session_id, source_message_id, position, approval_policy,
+                    sandbox_policy, network_policy, observed_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    by_native_id.get(event.source_message_provider_id or ""),
+                    position,
+                    _payload_string(event.payload, "approval", "approval_policy"),
+                    _payload_string(event.payload, "sandbox", "sandbox_policy"),
+                    _payload_string(event.payload, "network", "network_policy"),
+                    _timestamp_ms(event.timestamp),
+                ),
+            )
+            position += 1
 
 
 def _write_working_dirs(conn: sqlite3.Connection, session_id: str, working_directories: Iterable[str]) -> None:
@@ -1320,57 +1395,82 @@ def _write_working_dirs(conn: sqlite3.Connection, session_id: str, working_direc
         )
 
 
+def _write_reported_costs(conn: sqlite3.Connection, session_id: str, session: ParsedSession) -> None:
+    observed_at_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at)
+    if session.reported_cost_usd is not None:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO session_reported_costs (
+                session_id, cost_kind, amount, source, observed_at_ms
+            ) VALUES (?, 'usd', ?, 'origin_reported', ?)
+            """,
+            (session_id, session.reported_cost_usd, observed_at_ms),
+        )
+    model_names = {model_name.strip() for model_name in session.models_used if model_name.strip()}
+    model_names.update(message.model_name.strip() for message in session.messages if message.model_name)
+    for model_name in sorted(model_names):
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO session_model_usage (
+                session_id, model_name, cost_provenance
+            ) VALUES (?, ?, 'origin_reported')
+            """,
+            (session_id, model_name),
+        )
+
+
 def _write_repo_edges(conn: sqlite3.Connection, session_id: str, session: ParsedSession) -> None:
     observed_at_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at)
     root_paths = tuple(dict.fromkeys(path.strip() for path in session.working_directories if path.strip()))
     if not root_paths and not session.git_repository_url:
         return
 
-    repository_url = (session.git_repository_url or "").strip()
+    origin_url = (session.git_repository_url or "").strip()
     for root_path in root_paths or ("",):
-        repo_name = _repo_name(repository_url, root_path)
+        repo_name = _repo_name(origin_url, root_path)
+        repo_id = _repo_id(origin_url, root_path)
         conn.execute(
             """
-            INSERT INTO repos (repository_url, root_path, repo_name, first_seen_at_ms, last_seen_at_ms)
+            INSERT INTO repos (origin_url, root_path, repo_name, first_seen_at_ms, last_seen_at_ms)
             VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(repository_url, root_path) DO UPDATE SET
+            ON CONFLICT(origin_url, root_path) DO UPDATE SET
                 repo_name = COALESCE(excluded.repo_name, repos.repo_name),
                 first_seen_at_ms = MIN(repos.first_seen_at_ms, excluded.first_seen_at_ms),
                 last_seen_at_ms = MAX(repos.last_seen_at_ms, excluded.last_seen_at_ms)
             """,
-            (repository_url, root_path, repo_name, observed_at_ms or 0, observed_at_ms or 0),
+            (origin_url, root_path, repo_name, observed_at_ms or 0, observed_at_ms or 0),
         )
         conn.execute(
             """
             INSERT OR REPLACE INTO session_repos (
-                session_id, repository_url, root_path, branch_name, observed_at_ms
-            ) VALUES (?, ?, ?, ?, ?)
+                session_id, repo_id, branch_name, observed_at_ms
+            ) VALUES (?, ?, ?, ?)
             """,
-            (session_id, repository_url, root_path, session.git_branch, observed_at_ms),
+            (session_id, repo_id, session.git_branch or "", observed_at_ms or 0),
         )
         if session.git_commit_hash:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO session_commits (
-                    session_id, repository_url, root_path, commit_hash, detection_method,
-                    confidence, evidence_json, observed_at_ms
+                    session_id, commit_sha, repo_id, detection_type, method,
+                    confidence, evidence_json, created_at_ms
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
-                    repository_url,
-                    root_path,
                     session.git_commit_hash,
+                    repo_id,
+                    "explicit_ref",
                     "parser-git-meta",
                     1.0,
                     _json_dumps(
                         {
-                            "git_repository_url": repository_url or None,
+                            "git_repository_url": origin_url or None,
                             "root_path": root_path or None,
                             "git_branch": session.git_branch,
                         }
                     ),
-                    observed_at_ms,
+                    observed_at_ms or 0,
                 ),
             )
 
@@ -1447,6 +1547,12 @@ def _block_type(block: ParsedContentBlock) -> BlockType:
     return BlockType.TEXT
 
 
+def _block_language(block: ParsedContentBlock) -> str | None:
+    metadata = block.metadata or {}
+    value = metadata.get("language")
+    return str(value) if value is not None else None
+
+
 def _semantic_type(block: ParsedContentBlock) -> str | None:
     if _block_type(block) is not BlockType.TOOL_USE or not block.tool_name:
         return None
@@ -1460,8 +1566,7 @@ def _has_block(message: ParsedMessage, block_type: ContentBlockType) -> int:
 
 
 def _has_paste(message: ParsedMessage) -> int:
-    meta = message.provider_meta or {}
-    return int(bool(meta.get("claude_code_history_paste") or meta.get("has_paste")))
+    return int(bool(message.paste_spans))
 
 
 def _word_count(text: str | None) -> int:
@@ -1473,9 +1578,17 @@ def _timestamp_ms(value: str | None) -> int | None:
     return int(parsed.timestamp() * 1000) if parsed is not None else None
 
 
-def _event_summary(event: ParsedProviderEvent) -> str | None:
+def _event_summary(event: ParsedSessionEvent) -> str | None:
     summary = event.payload.get("summary") or event.payload.get("text")
     return str(summary) if summary is not None else None
+
+
+def _payload_string(payload: Mapping[str, object], *keys: str) -> str | None:
+    for key in keys:
+        value = payload.get(key)
+        if value is not None:
+            return str(value)
+    return None
 
 
 def _repo_name(repository_url: str, root_path: str) -> str | None:
@@ -1485,13 +1598,58 @@ def _repo_name(repository_url: str, root_path: str) -> str | None:
     return candidate or None
 
 
-def _attachment_id(session_id: str, attachment: ParsedAttachment) -> str:
-    return f"{session_id}:attachment:{attachment.provider_attachment_id}"
+def _repo_id(origin_url: str, root_path: str) -> str:
+    return f"{origin_url}\x1f{root_path}"
 
 
-def _attachment_ref_id(session_id: str, attachment: ParsedAttachment) -> str:
-    message_part = attachment.message_provider_id or "session"
-    return f"{session_id}:attachment-ref:{message_part}:{attachment.provider_attachment_id}"
+def _attachment_id(_session_id: str, attachment: ParsedAttachment) -> str:
+    return _hash_bytes(
+        "attachment",
+        attachment.provider_attachment_id,
+        attachment.provider_file_id or "",
+        attachment.provider_drive_id or "",
+        attachment.path or "",
+        attachment.name or "",
+        attachment.mime_type or "",
+        str(attachment.size_bytes or 0),
+    ).hex()
+
+
+def _attachment_position(attachment: ParsedAttachment) -> int:
+    digest = hashlib.sha256()
+    digest.update(attachment.provider_attachment_id.encode("utf-8", errors="surrogatepass"))
+    return int.from_bytes(digest.digest()[:4], "big")
+
+
+def _attachment_blob_hash(attachment_id: str, attachment: ParsedAttachment) -> bytes:
+    del attachment
+    return bytes.fromhex(attachment_id)
+
+
+def _attachment_source_url(attachment: ParsedAttachment) -> str | None:
+    return attachment.source_url
+
+
+def _attachment_caption(attachment: ParsedAttachment) -> str | None:
+    return attachment.caption
+
+
+def _write_attachment_native_ids(conn: sqlite3.Connection, ref_id: str, attachment: ParsedAttachment) -> None:
+    native_values = (
+        ("attachment", attachment.provider_attachment_id),
+        ("file", attachment.provider_file_id),
+        ("drive", attachment.provider_drive_id),
+        ("url", _attachment_source_url(attachment)),
+    )
+    for id_kind, native_id in native_values:
+        if native_id:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO attachment_native_ids (ref_id, id_kind, native_id)
+                VALUES (?, ?, ?)
+                """,
+                (ref_id, id_kind, native_id),
+            )
 
 
 def _hash_bytes(*parts: str) -> bytes:
@@ -1575,7 +1733,7 @@ __all__ = [
     "read_session_phases",
     "read_session_tags",
     "read_session_work_events",
-    "rebuild_archive_blocks_fts",
+    "rebuild_archive_messages_fts",
     "upsert_session_profile_costs",
     "upsert_insight_materialization",
     "upsert_session_phase",

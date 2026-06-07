@@ -16,9 +16,20 @@ from polylogue.storage.insights.session.refresh import (
     _apply_session_insight_session_updates_async,
     _refresh_thread_roots_async,
 )
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.storage_records import make_message, make_session, store_records
+
+
+def _current_index_db(tmp_path: Path, name: str) -> Path:
+    archive_root = tmp_path / name
+    initialize_active_archive_root(archive_root)
+    return archive_root / "index.db"
+
+
+def _sid(native_id: str, origin: str = "unknown-export") -> str:
+    return f"{origin}:{native_id}"
 
 
 def _chunk_metric(chunk_observation: object, key: str) -> float:
@@ -31,7 +42,7 @@ def _chunk_metric(chunk_observation: object, key: str) -> float:
 async def test_apply_session_insight_session_updates_async_batches_hydrated_sessions(
     tmp_path: Path,
 ) -> None:
-    db_path = tmp_path / "refresh.db"
+    db_path = _current_index_db(tmp_path, "refresh")
     with open_connection(db_path) as conn:
         store_records(
             session=make_session("conv-refresh", title="Refresh Test"),
@@ -53,13 +64,13 @@ async def test_apply_session_insight_session_updates_async_batches_hydrated_sess
     async with backend.connection() as conn:
         update = await _apply_session_insight_session_updates_async(
             conn,
-            ["conv-refresh"],
+            [_sid("conv-refresh")],
             transaction_depth=1,
             page_size=10,
         )
 
     assert update.counts.profiles == 1
-    assert update.thread_root_ids == {"conv-refresh"}
+    assert update.thread_root_ids == {_sid("conv-refresh")}
     assert update.affected_groups
     assert len(update.chunk_observations) == 1
     assert _chunk_metric(update.chunk_observations[0], "load_ms") >= 0.0
@@ -72,7 +83,7 @@ async def test_apply_session_insight_session_updates_async_batches_hydrated_sess
 async def test_session_insight_refresh_materializes_logical_session_identity(
     tmp_path: Path,
 ) -> None:
-    db_path = tmp_path / "logical-session.db"
+    db_path = _current_index_db(tmp_path, "logical-session")
     with open_connection(db_path) as conn:
         for session_id, parent_id in (("root", None), ("continuation", "root"), ("fork", "continuation")):
             store_records(
@@ -100,7 +111,11 @@ async def test_session_insight_refresh_materializes_logical_session_identity(
     async with backend.connection() as conn:
         await _apply_session_insight_session_updates_async(
             conn,
-            ["root", "continuation", "fork"],
+            [
+                _sid("root", "claude-code-session"),
+                _sid("continuation", "claude-code-session"),
+                _sid("fork", "claude-code-session"),
+            ],
             transaction_depth=1,
             page_size=10,
         )
@@ -130,28 +145,28 @@ async def test_session_insight_refresh_materializes_logical_session_identity(
         ).fetchone()
 
     assert {tuple(row) for row in profile_rows} == {
-        ("continuation", "root"),
-        ("fork", "root"),
-        ("root", "root"),
+        (_sid("continuation", "claude-code-session"), _sid("root", "claude-code-session")),
+        (_sid("fork", "claude-code-session"), _sid("root", "claude-code-session")),
+        (_sid("root", "claude-code-session"), _sid("root", "claude-code-session")),
     }
     assert tag_rollup is not None
     assert int(tag_rollup["session_count"]) == 3
     assert int(tag_rollup["logical_session_count"]) == 1
-    assert json.loads(tag_rollup["logical_session_ids_json"]) == ["root"]
+    assert json.loads(tag_rollup["logical_session_ids_json"]) == [_sid("root", "claude-code-session")]
 
 
 @pytest.mark.asyncio
-async def test_apply_session_insight_session_updates_async_counts_provider_event_compactions(
+async def test_apply_session_insight_session_updates_async_counts_session_event_compactions(
     tmp_path: Path,
 ) -> None:
-    db_path = tmp_path / "refresh-provider-events.db"
+    db_path = _current_index_db(tmp_path, "refresh-session-events")
     with open_connection(db_path) as conn:
         store_records(
-            session=make_session("conv-provider-event", source_name="codex", title="Compaction Test"),
+            session=make_session("conv-session-event", source_name="codex", title="Compaction Test"),
             messages=[
                 make_message(
-                    "conv-provider-event:msg-1",
-                    "conv-provider-event",
+                    "conv-session-event:msg-1",
+                    "conv-session-event",
                     text="Continue after compaction",
                 )
             ],
@@ -160,32 +175,23 @@ async def test_apply_session_insight_session_updates_async_counts_provider_event
         )
         conn.execute(
             """
-            INSERT INTO provider_events (
-                event_id,
+            INSERT INTO session_events (
                 session_id,
-                source_name,
-                event_index,
+                source_message_id,
+                position,
                 event_type,
-                timestamp,
-                materializer_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                summary,
+                occurred_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
-                "conv-provider-event:provider-event:000000",
-                "conv-provider-event",
-                "codex",
+                "codex-session:conv-session-event",
+                None,
                 0,
                 "compaction",
-                "2026-04-01T10:05:00+00:00",
-                1,
+                "Earlier context",
+                1775037900000,
             ),
-        )
-        conn.execute(
-            """
-            INSERT INTO provider_event_compactions (event_id, summary)
-            VALUES (?, ?)
-            """,
-            ("conv-provider-event:provider-event:000000", "Earlier context"),
         )
         conn.commit()
 
@@ -193,7 +199,7 @@ async def test_apply_session_insight_session_updates_async_counts_provider_event
     async with backend.connection() as conn:
         update = await _apply_session_insight_session_updates_async(
             conn,
-            ["conv-provider-event"],
+            ["codex-session:conv-session-event"],
             transaction_depth=1,
             page_size=10,
         )
@@ -203,7 +209,7 @@ async def test_apply_session_insight_session_updates_async_counts_provider_event
     with open_connection(db_path) as conn:
         row = conn.execute(
             "SELECT evidence_payload_json FROM session_profiles WHERE session_id = ?",
-            ("conv-provider-event",),
+            ("codex-session:conv-session-event",),
         ).fetchone()
 
     assert row is not None
@@ -211,10 +217,10 @@ async def test_apply_session_insight_session_updates_async_counts_provider_event
 
 
 @pytest.mark.asyncio
-async def test_apply_session_insight_session_updates_async_uses_provider_events_for_terminal_state(
+async def test_apply_session_insight_session_updates_async_uses_session_events_for_terminal_state(
     tmp_path: Path,
 ) -> None:
-    db_path = tmp_path / "refresh-provider-terminal.db"
+    db_path = _current_index_db(tmp_path, "refresh-provider-terminal")
     with open_connection(db_path) as conn:
         store_records(
             session=make_session(
@@ -228,32 +234,18 @@ async def test_apply_session_insight_session_updates_async_uses_provider_events_
                     "conv-provider-terminal:msg-1",
                     "conv-provider-terminal",
                     text="Run the command",
+                    content_blocks=[
+                        {
+                            "type": "tool_use",
+                            "tool_name": "bash",
+                            "tool_id": "call-1",
+                            "tool_input": {"command": "sleep 30"},
+                        }
+                    ],
                 )
             ],
             attachments=[],
             conn=conn,
-        )
-        conn.execute(
-            """
-            INSERT INTO provider_events (
-                event_id,
-                session_id,
-                source_name,
-                event_index,
-                event_type,
-                timestamp,
-                materializer_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "conv-provider-terminal:provider-event:000000",
-                "conv-provider-terminal",
-                "codex",
-                0,
-                "function_call",
-                "2026-04-01T10:05:00+00:00",
-                1,
-            ),
         )
         conn.commit()
 
@@ -261,7 +253,7 @@ async def test_apply_session_insight_session_updates_async_uses_provider_events_
     async with backend.connection() as conn:
         await _apply_session_insight_session_updates_async(
             conn,
-            ["conv-provider-terminal"],
+            ["codex-session:conv-provider-terminal"],
             transaction_depth=1,
             page_size=10,
         )
@@ -270,11 +262,11 @@ async def test_apply_session_insight_session_updates_async_uses_provider_events_
     with open_connection(db_path) as conn:
         row = conn.execute(
             "SELECT evidence_payload_json FROM session_profiles WHERE session_id = ?",
-            ("conv-provider-terminal",),
+            ("codex-session:conv-provider-terminal",),
         ).fetchone()
         latency_row = conn.execute(
             "SELECT stuck_tool_count FROM session_latency_profiles WHERE session_id = ?",
-            ("conv-provider-terminal",),
+            ("codex-session:conv-provider-terminal",),
         ).fetchone()
 
     assert row is not None
@@ -332,8 +324,8 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
             ("sentinel tag untouched", "claude-ai-export"),
         )
         conn.execute(
-            "UPDATE work_threads SET search_text = ? WHERE thread_id = ?",
-            ("sentinel thread untouched", "conv-claude-a"),
+            "UPDATE threads SET search_text = ? WHERE thread_id = ?",
+            ("sentinel thread untouched", _sid("conv-claude-a", "claude-ai-export")),
         )
         store_records(
             session=make_session(
@@ -354,7 +346,7 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
             attachments=[],
             conn=conn,
         )
-        counts = rebuild_session_insights_sync(conn, session_ids=["conv-chatgpt-b"])
+        counts = rebuild_session_insights_sync(conn, session_ids=[_sid("conv-chatgpt-b", "chatgpt-export")])
         tag_rows = conn.execute(
             """
             SELECT source_name, bucket_day, session_count, search_text
@@ -364,8 +356,8 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
             """
         ).fetchall()
         claude_thread = conn.execute(
-            "SELECT search_text FROM work_threads WHERE thread_id = ?",
-            ("conv-claude-a",),
+            "SELECT search_text FROM threads WHERE thread_id = ?",
+            (_sid("conv-claude-a", "claude-ai-export"),),
         ).fetchone()
 
     assert counts.profiles == 1
@@ -418,7 +410,7 @@ def test_session_insight_rebuild_fills_profile_time_from_session_timestamp(
             FROM session_profiles
             WHERE session_id = ?
             """,
-            ("conv-codex-untimestamped",),
+            (_sid("conv-codex-untimestamped", "codex-session"),),
         ).fetchone()
 
     assert row is not None
@@ -470,7 +462,7 @@ def test_session_insight_rebuild_materializes_message_token_costs(tmp_path: Path
             FROM session_profiles
             WHERE session_id = ?
             """,
-            ("conv-token-costs",),
+            (_sid("conv-token-costs", "claude-code-session"),),
         ).fetchone()
 
     assert row is not None
@@ -517,7 +509,7 @@ def test_session_insight_rebuild_preserves_session_provider_cost(tmp_path: Path)
             FROM session_profiles
             WHERE session_id = ?
             """,
-            ("conv-provider-cost",),
+            (_sid("conv-provider-cost", "claude-code-session"),),
         ).fetchone()
 
     assert row is not None
@@ -558,20 +550,20 @@ def test_session_insight_load_skips_plain_text_blocks(tmp_path: Path) -> None:
             attachments=[],
             conn=conn,
         )
-        batch = load_sync_batch(conn, ["conv-blocks"])
+        batch = load_sync_batch(conn, [_sid("conv-blocks", "codex-session")])
 
-    assert [str(block.message_id) for block in batch.blocks] == ["conv-blocks:msg-2"]
+    assert [str(block.message_id) for block in batch.blocks] == [_sid("conv-blocks", "codex-session") + ":msg-2"]
 
 
-def test_session_insight_load_includes_provider_events_for_profile_classifiers(tmp_path: Path) -> None:
-    db_path = tmp_path / "refresh-provider-event-load.db"
+def test_session_insight_load_includes_compaction_session_events_for_profile_classifiers(tmp_path: Path) -> None:
+    db_path = _current_index_db(tmp_path, "refresh-session-event-load")
     with open_connection(db_path) as conn:
         store_records(
-            session=make_session("conv-provider-event-load", source_name="codex", title="Event Load"),
+            session=make_session("conv-session-event-load", source_name="codex", title="Event Load"),
             messages=[
                 make_message(
-                    "conv-provider-event-load:msg-1",
-                    "conv-provider-event-load",
+                    "conv-session-event-load:msg-1",
+                    "conv-session-event-load",
                     text="Run the tool",
                 )
             ],
@@ -580,30 +572,28 @@ def test_session_insight_load_includes_provider_events_for_profile_classifiers(t
         )
         conn.execute(
             """
-            INSERT INTO provider_events (
-                event_id,
+            INSERT INTO session_events (
                 session_id,
-                source_name,
-                event_index,
+                source_message_id,
+                position,
                 event_type,
-                timestamp,
-                materializer_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                summary,
+                occurred_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
-                "conv-provider-event-load:provider-event:000000",
-                "conv-provider-event-load",
-                "codex",
+                "codex-session:conv-session-event-load",
+                None,
                 0,
-                "function_call",
-                "2026-04-01T10:05:00+00:00",
-                1,
+                "compaction",
+                "Earlier context",
+                1775037900000,
             ),
         )
-        batch = load_sync_batch(conn, ["conv-provider-event-load"])
-        hydrated = batch.provider_events_by_session["conv-provider-event-load"]
+        batch = load_sync_batch(conn, ["codex-session:conv-session-event-load"])
+        hydrated = batch.session_events_by_session["codex-session:conv-session-event-load"]
 
-    assert [event.event_type for event in hydrated] == ["function_call"]
+    assert [event.event_type for event in hydrated] == ["compaction"]
 
 
 def test_session_insight_load_bounds_large_text_payloads(tmp_path: Path) -> None:
@@ -621,17 +611,21 @@ def test_session_insight_load_bounds_large_text_payloads(tmp_path: Path) -> None
                     text=large_message,
                     content_blocks=[
                         {
+                            "type": "text",
+                            "text": large_message,
+                        },
+                        {
                             "type": "tool_result",
                             "tool_id": "call-1",
                             "text": large_tool_output,
-                        }
+                        },
                     ],
                 )
             ],
             attachments=[],
             conn=conn,
         )
-        batch = load_sync_batch(conn, ["conv-large-text"])
+        batch = load_sync_batch(conn, [_sid("conv-large-text", "codex-session")])
 
     assert batch.messages[0].text == large_message[:_SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS]
     assert batch.blocks[0].text == large_tool_output[:_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS]
@@ -645,7 +639,7 @@ def test_targeted_session_insight_rebuild_splits_large_message_batches(
     with open_connection(db_path) as conn:
         for index in range(3):
             session_id = f"conv-rebuild-budget-{index:02d}"
-            session_ids.append(session_id)
+            session_ids.append(_sid(session_id))
             store_records(
                 session=make_session(session_id, title=f"Rebuild Budget {index:02d}"),
                 messages=[
@@ -660,19 +654,14 @@ def test_targeted_session_insight_rebuild_splits_large_message_batches(
             )
         conn.executemany(
             """
-            INSERT OR REPLACE INTO session_stats (
-                session_id,
-                source_name,
-                message_count,
-                word_count,
-                tool_use_count,
-                thinking_count
-            ) VALUES (?, ?, ?, ?, ?, ?)
+            UPDATE sessions
+            SET message_count = ?
+            WHERE session_id = ?
             """,
             [
-                ("conv-rebuild-budget-00", "chatgpt", 4_000, 4_000, 0, 0),
-                ("conv-rebuild-budget-01", "chatgpt", 4_000, 4_000, 0, 0),
-                ("conv-rebuild-budget-02", "chatgpt", 100, 100, 0, 0),
+                (4_000, _sid("conv-rebuild-budget-00")),
+                (4_000, _sid("conv-rebuild-budget-01")),
+                (100, _sid("conv-rebuild-budget-02")),
             ],
         )
         conn.commit()
@@ -698,7 +687,7 @@ def test_targeted_session_insight_rebuild_splits_large_message_batches(
 async def test_apply_session_insight_session_updates_async_preserves_thread_roots_for_children(
     tmp_path: Path,
 ) -> None:
-    db_path = tmp_path / "refresh-thread.db"
+    db_path = _current_index_db(tmp_path, "refresh-thread")
     with open_connection(db_path) as conn:
         store_records(
             session=make_session("conv-root", title="Root"),
@@ -722,13 +711,13 @@ async def test_apply_session_insight_session_updates_async_preserves_thread_root
     async with backend.connection() as conn:
         update = await _apply_session_insight_session_updates_async(
             conn,
-            ["conv-root", "conv-child"],
+            [_sid("conv-root"), _sid("conv-child")],
             transaction_depth=1,
             page_size=10,
         )
 
     assert update.counts.profiles == 2
-    assert update.thread_root_ids == {"conv-root"}
+    assert update.thread_root_ids == {_sid("conv-root")}
     assert len(update.chunk_observations) == 1
 
 
@@ -736,12 +725,12 @@ async def test_apply_session_insight_session_updates_async_preserves_thread_root
 async def test_apply_session_insight_session_updates_async_uses_small_default_chunks(
     tmp_path: Path,
 ) -> None:
-    db_path = tmp_path / "refresh-default-chunks.db"
+    db_path = _current_index_db(tmp_path, "refresh-default-chunks")
     session_ids: list[str] = []
     with open_connection(db_path) as conn:
         for index in range(11):
             session_id = f"conv-{index:02d}"
-            session_ids.append(session_id)
+            session_ids.append(_sid(session_id))
             store_records(
                 session=make_session(session_id, title=f"Session {index:02d}"),
                 messages=[
@@ -776,12 +765,12 @@ async def test_apply_session_insight_session_updates_async_uses_small_default_ch
 async def test_apply_session_insight_session_updates_async_splits_large_message_batches(
     tmp_path: Path,
 ) -> None:
-    db_path = tmp_path / "refresh-message-budget.db"
+    db_path = _current_index_db(tmp_path, "refresh-message-budget")
     session_ids: list[str] = []
     with open_connection(db_path) as conn:
         for index in range(3):
             session_id = f"conv-budget-{index:02d}"
-            session_ids.append(session_id)
+            session_ids.append(_sid(session_id))
             store_records(
                 session=make_session(session_id, title=f"Budget {index:02d}"),
                 messages=[
@@ -796,19 +785,14 @@ async def test_apply_session_insight_session_updates_async_splits_large_message_
             )
         conn.executemany(
             """
-            INSERT OR REPLACE INTO session_stats (
-                session_id,
-                source_name,
-                message_count,
-                word_count,
-                tool_use_count,
-                thinking_count
-            ) VALUES (?, ?, ?, ?, ?, ?)
+            UPDATE sessions
+            SET message_count = ?
+            WHERE session_id = ?
             """,
             [
-                ("conv-budget-00", "chatgpt", 4_000, 4_000, 0, 0),
-                ("conv-budget-01", "chatgpt", 4_000, 4_000, 0, 0),
-                ("conv-budget-02", "chatgpt", 100, 100, 0, 0),
+                (4_000, _sid("conv-budget-00")),
+                (4_000, _sid("conv-budget-01")),
+                (100, _sid("conv-budget-02")),
             ],
         )
         conn.commit()
@@ -833,7 +817,7 @@ async def test_apply_session_insight_session_updates_async_splits_large_message_
 async def test_apply_session_insight_session_updates_async_clears_deleted_sessions(
     tmp_path: Path,
 ) -> None:
-    db_path = tmp_path / "refresh-delete.db"
+    db_path = _current_index_db(tmp_path, "refresh-delete")
     with open_connection(db_path) as conn:
         store_records(
             session=make_session("conv-stale", title="Stale"),
@@ -847,7 +831,7 @@ async def test_apply_session_insight_session_updates_async_clears_deleted_sessio
     async with backend.connection() as conn:
         first_update = await _apply_session_insight_session_updates_async(
             conn,
-            ["conv-stale"],
+            [_sid("conv-stale")],
             transaction_depth=1,
             page_size=10,
         )
@@ -856,14 +840,14 @@ async def test_apply_session_insight_session_updates_async_clears_deleted_sessio
     assert first_update.counts.profiles == 1
 
     with open_connection(db_path) as conn:
-        conn.execute("DELETE FROM messages WHERE session_id = ?", ("conv-stale",))
-        conn.execute("DELETE FROM sessions WHERE session_id = ?", ("conv-stale",))
+        conn.execute("DELETE FROM messages WHERE session_id = ?", (_sid("conv-stale"),))
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", (_sid("conv-stale"),))
         conn.commit()
 
     async with backend.connection() as conn:
         second_update = await _apply_session_insight_session_updates_async(
             conn,
-            ["conv-stale"],
+            [_sid("conv-stale")],
             transaction_depth=1,
             page_size=10,
         )
@@ -875,15 +859,15 @@ async def test_apply_session_insight_session_updates_async_clears_deleted_sessio
     with open_connection(db_path) as conn:
         profile_count = conn.execute(
             "SELECT COUNT(*) FROM session_profiles WHERE session_id = ?",
-            ("conv-stale",),
+            (_sid("conv-stale"),),
         ).fetchone()[0]
         work_event_count = conn.execute(
             "SELECT COUNT(*) FROM session_work_events WHERE session_id = ?",
-            ("conv-stale",),
+            (_sid("conv-stale"),),
         ).fetchone()[0]
         phase_count = conn.execute(
             "SELECT COUNT(*) FROM session_phases WHERE session_id = ?",
-            ("conv-stale",),
+            (_sid("conv-stale"),),
         ).fetchone()[0]
 
     assert profile_count == 0
@@ -895,7 +879,7 @@ async def test_apply_session_insight_session_updates_async_clears_deleted_sessio
 async def test_refresh_thread_roots_async_batches_root_rebuilds(
     tmp_path: Path,
 ) -> None:
-    db_path = tmp_path / "refresh-thread-roots.db"
+    db_path = _current_index_db(tmp_path, "refresh-thread-roots")
     with open_connection(db_path) as conn:
         store_records(
             session=make_session("conv-root-a", title="Root A"),
@@ -935,7 +919,7 @@ async def test_refresh_thread_roots_async_batches_root_rebuilds(
     async with backend.connection() as conn:
         update = await _apply_session_insight_session_updates_async(
             conn,
-            ["conv-root-a", "conv-child-a", "conv-root-b", "conv-child-b"],
+            [_sid("conv-root-a"), _sid("conv-child-a"), _sid("conv-root-b"), _sid("conv-child-b")],
             transaction_depth=1,
             page_size=10,
         )
@@ -951,15 +935,15 @@ async def test_refresh_thread_roots_async_batches_root_rebuilds(
     with open_connection(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT thread_id, root_id, session_count
-            FROM work_threads
+            SELECT thread_id, thread_id AS root_id, session_count
+            FROM threads
             ORDER BY thread_id
             """
         ).fetchall()
 
     assert [(row["thread_id"], row["root_id"], row["session_count"]) for row in rows] == [
-        ("conv-root-a", "conv-root-a", 2),
-        ("conv-root-b", "conv-root-b", 2),
+        (_sid("conv-root-a"), _sid("conv-root-a"), 2),
+        (_sid("conv-root-b"), _sid("conv-root-b"), 2),
     ]
 
 
@@ -967,7 +951,7 @@ async def test_refresh_thread_roots_async_batches_root_rebuilds(
 async def test_refresh_async_provider_day_aggregates_batches_multiple_groups(
     tmp_path: Path,
 ) -> None:
-    db_path = tmp_path / "refresh-provider-day-groups.db"
+    db_path = _current_index_db(tmp_path, "refresh-provider-day-groups")
     with open_connection(db_path) as conn:
         store_records(
             session=make_session(
@@ -1032,7 +1016,11 @@ async def test_refresh_async_provider_day_aggregates_batches_multiple_groups(
     async with backend.connection() as conn:
         update = await _apply_session_insight_session_updates_async(
             conn,
-            ["conv-chatgpt-a", "conv-chatgpt-b", "conv-claude-a"],
+            [
+                _sid("conv-chatgpt-a", "chatgpt-export"),
+                _sid("conv-chatgpt-b", "chatgpt-export"),
+                _sid("conv-claude-a", "claude-ai-export"),
+            ],
             transaction_depth=1,
             page_size=10,
         )

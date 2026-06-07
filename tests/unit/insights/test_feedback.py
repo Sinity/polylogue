@@ -29,7 +29,7 @@ from polylogue.insights.feedback import (
 )
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.queries import sessions as sessions_q
-from tests.infra.storage_records import make_message, make_session
+from tests.infra.storage_records import make_message, make_session, save_current_archive_records
 
 # ---------------------------------------------------------------------------
 # Pure-function semantics — no DB
@@ -107,7 +107,11 @@ class TestApplyCorrectionToSummary:
 async def _seed_session(repository: SessionRepository, conv_id: str) -> None:
     conv = make_session(conv_id, source_name="claude-code", title="Original title")
     msgs = [make_message(f"{conv_id}-msg", conv_id, text="Hello world.")]
-    await repository.save_session(session=conv, messages=msgs, attachments=[])
+    await save_current_archive_records(repository, session=conv, messages=msgs, attachments=[])
+
+
+def _archive_session_id(conv_id: str) -> str:
+    return f"claude-code-session:ext-{conv_id}"
 
 
 async def _read_content_hash(
@@ -203,7 +207,8 @@ class TestFeedbackStorage:
 
         del workspace_env
         await _seed_session(storage_repository, "conv-C")
-        original_hash = await _read_content_hash(storage_repository, "conv-C")
+        session_id = _archive_session_id("conv-C")
+        original_hash = await _read_content_hash(storage_repository, session_id)
         assert original_hash is not None and len(original_hash) > 0
 
         from polylogue.storage.insights.feedback import (
@@ -219,12 +224,12 @@ class TestFeedbackStorage:
                 payload={"tag": "costly"},
                 note="not actually expensive work",
             )
-        after_record = await _read_content_hash(storage_repository, "conv-C")
+        after_record = await _read_content_hash(storage_repository, session_id)
         assert after_record == original_hash
 
         async with storage_repository.backend.connection() as conn:
             await clear_corrections(conn, session_id="conv-C")
-        after_clear = await _read_content_hash(storage_repository, "conv-C")
+        after_clear = await _read_content_hash(storage_repository, session_id)
         assert after_clear == original_hash
 
     async def test_list_filters_by_kind(
@@ -282,7 +287,7 @@ class TestFeedbackStorage:
 
 
 def test_user_corrections_ddl_is_in_schema_ddl() -> None:
-    from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
+    from polylogue.storage.sqlite.schema import SCHEMA_DDL
 
     assert "CREATE TABLE IF NOT EXISTS user_corrections" in SCHEMA_DDL
     # Hash boundary documented in the DDL block so future readers see it

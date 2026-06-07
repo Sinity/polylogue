@@ -16,7 +16,7 @@ from hypothesis import strategies as st
 from polylogue.archive.message.roles import Role
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.sources.parsers.base_models import ParsedProviderEvent
+from polylogue.sources.parsers.base_models import ParsedSessionEvent
 from polylogue.types import ContentBlockType
 from tests.infra.strategies.schema_driven import schema_conformant_payload
 
@@ -81,24 +81,24 @@ def test_parse_title_is_stable(provider: str, data: st.DataObject) -> None:
     assert titles1 == titles2, f"Title instability for {provider}: {titles1!r} vs {titles2!r}"
 
 
-class TestProviderEventRoundtrip:
-    """ParsedProviderEvent serialization round-trips correctly."""
+class TestSessionEventRoundtrip:
+    """ParsedSessionEvent serialization round-trips correctly."""
 
-    def test_compaction_event_roundtrips(self) -> None:
-        event = ParsedProviderEvent(
+    def test_compaction_roundtrips(self) -> None:
+        event = ParsedSessionEvent(
             event_type="compaction",
             timestamp="2026-01-01T00:00:00Z",
             payload={"trigger": "auto", "pre_tokens": 4096, "summary_text": "Session compacted"},
         )
         data = event.model_dump()
-        restored = ParsedProviderEvent.model_validate(data)
+        restored = ParsedSessionEvent.model_validate(data)
         assert restored.event_type == event.event_type
         assert restored.timestamp == event.timestamp
         assert restored.payload == event.payload
 
     def test_empty_event_roundtrips(self) -> None:
-        event = ParsedProviderEvent(event_type="turn_context")
+        event = ParsedSessionEvent(event_type="turn_context")
         data = event.model_dump()
-        restored = ParsedProviderEvent.model_validate(data)
+        restored = ParsedSessionEvent.model_validate(data)
         assert restored.event_type == "turn_context"
         assert restored.payload == {}

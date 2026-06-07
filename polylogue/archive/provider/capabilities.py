@@ -93,7 +93,7 @@ PROVIDER_CAPABILITIES: tuple[ProviderCapability, ...] = (
             "Session.created_at",
             "Session.updated_at",
             "Message.provider_message_id",
-            "Session.provider_meta.git.repository_url",
+            "Session.git_repository_url",
         ),
         identity_mappings=(
             IdentityMapping(
@@ -108,8 +108,8 @@ PROVIDER_CAPABILITIES: tuple[ProviderCapability, ...] = (
             ),
             IdentityMapping(
                 native="git.repository_url",
-                canonical="Session.provider_meta.git.repository_url",
-                note="Repository attribution is retained in provider metadata instead of folded into canonical ids.",
+                canonical="Session.git_repository_url",
+                note="Repository attribution is retained as a typed session fact instead of folded into canonical ids.",
             ),
         ),
         timestamp_semantics="Session and message timestamps are parsed with parse_timestamp() and stored as canonical created/updated timestamps.",
@@ -149,8 +149,8 @@ PROVIDER_CAPABILITIES: tuple[ProviderCapability, ...] = (
             "Session.provider_session_id",
             "Message.provider_message_id",
             "Message.parent_message_provider_id",
-            "Session.provider_meta.working_directories",
-            "Session.provider_meta.models_used",
+            "Session.working_directories",
+            "session_model_usage.model_name",
             "Session.created_at",
             "Session.updated_at",
         ),
@@ -172,8 +172,8 @@ PROVIDER_CAPABILITIES: tuple[ProviderCapability, ...] = (
             ),
             IdentityMapping(
                 native="cwd",
-                canonical="Session.provider_meta.working_directories",
-                note="Working directory facts are retained as provider-native metadata.",
+                canonical="Session.working_directories",
+                note="Working directory facts are retained as typed session facts.",
             ),
         ),
         timestamp_semantics="Record timestamps are parsed per message and collapsed into session created/updated bounds.",
@@ -195,7 +195,7 @@ PROVIDER_CAPABILITIES: tuple[ProviderCapability, ...] = (
             "polylogue/sources/providers/chatgpt.py",
         ),
         sidecar_spec="none; attachments and tool facts are embedded in mapping-node metadata",
-        tool_use_variant="author/recipient/status metadata plus citations and code_execution provider_meta",
+        tool_use_variant="author/recipient/status metadata plus citations and code_execution blocks",
         reasoning_capability="supported when exported as thoughts or reasoning_recap content types",
         streaming_capability="snapshot mapping graph, not an append-only stream",
         native_identity_fields=(

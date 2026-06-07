@@ -50,7 +50,6 @@ class RepositoryArchiveQueryMixin:
         max_messages: int | None = None,
         min_words: int | None = None,
         message_type: str | None = None,
-        include_provider_meta: bool = False,
     ) -> list[SessionSummary]:
         return await self.list_summaries_by_query(
             SessionRecordQuery(
@@ -74,7 +73,6 @@ class RepositoryArchiveQueryMixin:
                 max_messages=max_messages,
                 min_words=min_words,
                 message_type=message_type,
-                include_provider_meta=include_provider_meta,
             )
         )
 

@@ -43,8 +43,7 @@ def compose_command(env: AppEnv, session_id: str, related_limit: int) -> None:
     # Recent related sessions.
     related: list[dict[str, object]] = []
     try:
-        meta = conv.provider_meta or {}
-        repo: object = meta.get("git_repository_url")
+        repo: object = getattr(conv, "git_repository_url", None)
         candidates = run_coroutine_sync(
             env.polylogue.find_resume_candidates(
                 repo_path=str(repo) if repo else ".",
@@ -64,15 +63,13 @@ def compose_command(env: AppEnv, session_id: str, related_limit: int) -> None:
 
     # Project state.
     project: dict[str, object] = {}
-    meta = conv.provider_meta or {}
-    if isinstance(meta, dict):
-        git_repo = meta.get("git_repository_url")
-        git_branch = meta.get("git_branch")
-        if git_repo or git_branch:
-            project = {
-                "repo": str(git_repo) if git_repo else None,
-                "branch": str(git_branch) if git_branch else None,
-            }
+    git_repo = getattr(conv, "git_repository_url", None)
+    git_branch = getattr(conv, "git_branch", None)
+    if git_repo or git_branch:
+        project = {
+            "repo": str(git_repo) if git_repo else None,
+            "branch": str(git_branch) if git_branch else None,
+        }
 
     preamble: dict[str, object] = {
         "preamble_version": "1.0",

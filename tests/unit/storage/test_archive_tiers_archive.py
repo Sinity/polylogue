@@ -5,7 +5,7 @@ from pathlib import Path
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
-from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedPasteEvidence, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.write import read_session_tags
 from polylogue.types import ContentBlockType, Provider
@@ -275,7 +275,7 @@ def test_archive_tiers_archive_facade_lists_and_searches_session_summaries(tmp_p
             ParsedMessage(
                 provider_message_id="m1",
                 role=Role.USER,
-                provider_meta={"has_paste": True},
+                paste_spans=[ParsedPasteEvidence(position=0, start_offset=0, end_offset=4, boundary_state="exact")],
                 content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="beta read token")],
             )
         ],

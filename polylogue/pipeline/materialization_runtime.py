@@ -19,8 +19,8 @@ from polylogue.core.timestamps import canonical_timestamp_text, parse_timestamp
 from polylogue.pipeline.ids import (
     attachment_content_id,
     message_content_hash,
-    provider_event_id,
     session_content_hashes,
+    session_event_id,
 )
 from polylogue.pipeline.ids import message_id as make_message_id
 from polylogue.pipeline.ids import session_id as make_session_id
@@ -34,8 +34,8 @@ from polylogue.types import (
     ContentHash,
     MessageId,
     Provider,
-    ProviderEventId,
     SemanticBlockType,
+    SessionEventId,
     SessionId,
 )
 
@@ -96,8 +96,8 @@ class MaterializedAttachment:
 
 
 @dataclass(frozen=True, slots=True)
-class MaterializedProviderEvent:
-    event_id: ProviderEventId
+class MaterializedSessionEvent:
+    event_id: SessionEventId
     session_id: SessionId
     source_name: Provider
     event_index: int
@@ -132,7 +132,7 @@ class MaterializedSession:
     branch_type: BranchType | None
     messages: list[MaterializedMessage]
     attachments: list[MaterializedAttachment]
-    provider_events: list[MaterializedProviderEvent]
+    session_events: list[MaterializedSessionEvent]
     stats: MaterializedSessionStats
     working_directories_json: str | None = None
     git_branch: str | None = None
@@ -169,22 +169,22 @@ def _merged_session_provider_meta(
     return merged_provider_meta
 
 
-def _materialize_provider_events(
+def _materialize_session_events(
     convo: ParsedSession,
     *,
     session_id: SessionId,
     message_id_map: dict[str, MessageId],
-) -> list[MaterializedProviderEvent]:
-    events: list[MaterializedProviderEvent] = []
-    for event_index, event in enumerate(convo.provider_events):
+) -> list[MaterializedSessionEvent]:
+    events: list[MaterializedSessionEvent] = []
+    for event_index, event in enumerate(convo.session_events):
         source_message_id = (
             message_id_map.get(event.source_message_provider_id)
             if event.source_message_provider_id is not None
             else None
         )
         events.append(
-            MaterializedProviderEvent(
-                event_id=provider_event_id(session_id, event_index),
+            MaterializedSessionEvent(
+                event_id=session_event_id(session_id, event_index),
                 session_id=session_id,
                 source_name=convo.source_name,
                 event_index=event_index,
@@ -467,7 +467,7 @@ def materialize_session(
         branch_type=normalized_convo.branch_type,
         messages=messages,
         attachments=attachments,
-        provider_events=_materialize_provider_events(
+        session_events=_materialize_session_events(
             normalized_convo,
             session_id=session_id,
             message_id_map=message_id_map,
@@ -506,7 +506,7 @@ __all__ = [
     "MaterializedSession",
     "MaterializedSessionStats",
     "MaterializedMessage",
-    "MaterializedProviderEvent",
+    "MaterializedSessionEvent",
     "ProviderMetadata",
     "_timestamp_sort_key",
     "materialize_session",

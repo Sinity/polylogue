@@ -62,9 +62,7 @@ class RepositoryArchiveSearchMixin:
         hits, records = await self._search_records(query, limit=limit, providers=providers)
         if not hits.hits:
             return []
-        # #1630: hydrate message_count from session_stats so the
-        # daemon HTTP /api/sessions search path and any other
-        # ``search_summaries`` caller see a real total instead of None.
+        # Hydrate message_count from the current sessions aggregate.
         ids = [str(record.session_id) for record in records]
         counts_by_id = await self.queries.get_message_counts_batch(ids)
         return [
@@ -100,8 +98,6 @@ class RepositoryArchiveSearchMixin:
                 since=since,
             )
         except DatabaseError:
-            if not attachment_hits:
-                raise
             message_hits = []
 
         evidence_hits = _merge_evidence_hits(
@@ -113,8 +109,7 @@ class RepositoryArchiveSearchMixin:
             return []
 
         records = await self.queries.get_sessions_batch([hit.session_id for hit in evidence_hits])
-        # #1630: hydrate message_count from session_stats so search
-        # hit summaries carry a real total instead of None.
+        # Hydrate message_count from the current sessions aggregate.
         ids = [str(record.session_id) for record in records]
         counts_by_id = await self.queries.get_message_counts_batch(ids) if ids else {}
         summaries_by_id = {

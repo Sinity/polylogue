@@ -10,9 +10,8 @@ hosts and CI shapes.
 2. ``search_session_hits`` must skip archive-scale FTS COUNT(*) probes
    when the daemon-maintained freshness ledger says the message FTS surface is
    ready, and must fall back to exact verification when that row is absent.
-3. ``get_provider_metrics_rows`` must read ``session_stats`` for
-   the per-session pre-aggregates instead of scanning ``messages``
-   for them.
+3. ``get_provider_metrics_rows`` must read the per-session aggregates on
+   ``sessions`` instead of scanning ``messages``.
 4. The hydration path (``get_messages*``) must not call pydantic
    ``model_copy`` per message — in-place attachment of content blocks
    is the load-bearing invariant.
@@ -97,7 +96,7 @@ def test_search_session_hits_uses_freshness_ledger_before_match(tier_small_db: P
         with _capture_aiosqlite_sql() as statements:
             store.run(_run(statements))
 
-        lowered = [sql.lower() for sql in statements]
+        lowered = [" ".join(sql.lower().split()) for sql in statements]
         match_index = next(i for i, sql in enumerate(lowered) if "messages_fts match" in sql)
         assert all("count(*) from messages_fts_docsize" not in sql for sql in lowered[:match_index])
         assert all("count(*) from messages where text is not null" not in sql for sql in lowered[:match_index])
@@ -120,25 +119,23 @@ def test_search_session_hits_falls_back_to_exact_freshness(tier_small_db: Path) 
 
         lowered = [sql.lower() for sql in statements]
         docsize_count_index = next(i for i, sql in enumerate(lowered) if "count(*) from messages_fts_docsize" in sql)
-        message_count_index = next(i for i, sql in enumerate(lowered) if "from messages as m" in sql)
+        block_probe_index = next(
+            i for i, sql in enumerate(lowered) if "from blocks" in sql and ("count(*)" in sql or "limit 1" in sql)
+        )
         match_index = next(i for i, sql in enumerate(lowered) if "messages_fts match" in sql)
         assert docsize_count_index < match_index
-        assert message_count_index < match_index
+        assert block_probe_index < match_index
 
 
 # ---------------------------------------------------------------------------
-# Item 3: provider metrics reads session_stats.
+# Item 3: provider metrics reads sessions aggregates.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.scale_small
-def test_provider_metrics_reads_session_stats(tier_small_db: Path) -> None:
+def test_provider_metrics_reads_sessions_aggregates(tier_small_db: Path) -> None:
     """Provider metrics must source the per-session pre-aggregates from
-    ``session_stats`` rather than scanning ``messages``.
-
-    The aggregates were already precomputed (#1314); the only column types
-    that still warrant scanning ``messages`` are the role-keyed splits
-    (user/assistant counts and word sums).
+    ``sessions`` rather than scanning ``messages``.
     """
     with open_bench_store(tier_small_db) as store:
         backend = store.backend
@@ -153,10 +150,9 @@ def test_provider_metrics_reads_session_stats(tier_small_db: Path) -> None:
 
         assert rows, "scale_small fixture should produce at least one provider row"
         joined = "\n".join(statements).lower()
-        assert "session_stats" in joined, (
-            "get_provider_metrics_rows no longer reads session_stats — "
-            "the per-session pre-aggregates fell back to scanning messages."
-        )
+        assert "from sessions" in joined
+        assert "session_stats" not in joined
+        assert "from messages" not in joined
 
         # Result envelope must keep the contract intact.
         first = rows[0]

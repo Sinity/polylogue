@@ -43,13 +43,13 @@ from polylogue.insights.archive import (
     SessionProfileInsight,
     SessionTagRollupInsight,
     SessionWorkEventInsight,
+    ThreadInsight,
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
-    WorkThreadInsight,
 )
 from polylogue.insights.archive_models import (
-    WorkThreadMemberEvidencePayload,
-    WorkThreadPayload,
+    ThreadMemberEvidencePayload,
+    ThreadPayload,
 )
 from polylogue.insights.confidence import ConfidenceBand
 from polylogue.mcp.archive_support import (
@@ -875,19 +875,19 @@ class TestInsightTools:
             evidence=SessionPhaseEvidencePayload(message_range=(0, 2), tool_counts={"edit": 1}),
             inference=SessionPhaseInferencePayload(confidence=0.8),
         )
-        thread = WorkThreadInsight(
+        thread = ThreadInsight(
             thread_id="conv-1",
             root_id="conv-1",
             dominant_repo="polylogue",
             provenance=_provenance(),
-            thread=WorkThreadPayload(
+            thread=ThreadPayload(
                 session_ids=("conv-1", "conv-2"),
                 session_count=2,
                 confidence=1.0,
                 support_level=ConfidenceBand.STRONG,
                 support_signals=("explicit_lineage",),
                 member_evidence=(
-                    WorkThreadMemberEvidencePayload(
+                    ThreadMemberEvidencePayload(
                         session_id="conv-1",
                         role="root",
                         depth=0,
@@ -969,7 +969,7 @@ class TestInsightTools:
             mock_poly.list_session_work_event_insights = AsyncMock(return_value=[work_event])
             mock_poly.list_session_phase_insights = AsyncMock(return_value=[phase])
             mock_poly.list_session_tag_rollup_insights = AsyncMock(return_value=[tag_rollup])
-            mock_poly.list_work_thread_insights = AsyncMock(return_value=[thread])
+            mock_poly.list_thread_insights = AsyncMock(return_value=[thread])
             mock_poly.list_archive_coverage_insights = AsyncMock(return_value=[coverage])
             mock_poly.list_session_cost_insights = AsyncMock(return_value=[session_cost])
             mock_poly.list_cost_rollup_insights = AsyncMock(return_value=[cost_rollup])
@@ -996,7 +996,7 @@ class TestInsightTools:
                 limit=5,
             )
             threads_raw = await invoke_surface_async(
-                mcp_server._tool_manager._tools["work_threads"].fn,
+                mcp_server._tool_manager._tools["threads"].fn,
                 query="polylogue",
                 limit=5,
             )
@@ -1046,7 +1046,7 @@ class TestInsightTools:
         assert events_payload["items"][0]["insight_kind"] == "session_work_event"
         assert phases_payload["items"][0]["insight_kind"] == "session_phase"
         assert tags_payload["items"][0]["insight_kind"] == "session_tag_rollup"
-        assert threads_payload["items"][0]["insight_kind"] == "work_thread"
+        assert threads_payload["items"][0]["insight_kind"] == "thread"
         assert threads_payload["items"][0]["thread"]["support_level"] == "strong"
         assert threads_payload["items"][0]["thread"]["member_evidence"][0]["role"] == "root"
         assert coverage_payload["items"][0]["insight_kind"] == "archive_coverage"

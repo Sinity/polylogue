@@ -22,8 +22,8 @@ from polylogue.insights.archive import (
     SessionTagRollupQuery,
     SessionWorkEventInsight,
     SessionWorkEventInsightQuery,
-    WorkThreadInsight,
-    WorkThreadInsightQuery,
+    ThreadInsight,
+    ThreadInsightQuery,
 )
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
@@ -79,14 +79,14 @@ class SyncInsightQueriesMixin:
     ) -> list[SessionPhaseInsight]:
         return run_coroutine_sync(self._facade.list_session_phase_insights(query))
 
-    def get_work_thread_insight(self, thread_id: str) -> WorkThreadInsight | None:
-        return run_coroutine_sync(self._facade.get_work_thread_insight(thread_id))
+    def get_thread_insight(self, thread_id: str) -> ThreadInsight | None:
+        return run_coroutine_sync(self._facade.get_thread_insight(thread_id))
 
-    def list_work_thread_insights(
+    def list_thread_insights(
         self,
-        query: WorkThreadInsightQuery | None = None,
-    ) -> list[WorkThreadInsight]:
-        return run_coroutine_sync(self._facade.list_work_thread_insights(query))
+        query: ThreadInsightQuery | None = None,
+    ) -> list[ThreadInsight]:
+        return run_coroutine_sync(self._facade.list_thread_insights(query))
 
     def list_archive_coverage_insights(
         self,

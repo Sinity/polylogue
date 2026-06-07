@@ -31,15 +31,12 @@ BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
     ),
     BenchmarkCampaignEntry(
         name="pipeline",
-        description="Index rebuild/update, action-event repair, plus hashing/semantic helper benchmark domain",
+        description="Index rebuild/update plus hashing and semantic helper benchmark domain",
         execution=pytest_execution("tests/benchmarks/test_pipeline.py"),
-        notes=("Covers indexing, repair, and hot helper throughput.",),
+        notes=("Covers indexing and hot helper throughput.",),
         origin="authored.benchmark-domain",
         artifact_targets=("index_state", "pipeline_helpers"),
-        operation_targets=(
-            "benchmark.pipeline.index-and-helpers",
-            "benchmark.repair.action-events",
-        ),
+        operation_targets=("benchmark.pipeline.index-and-helpers",),
         tags=("benchmark", "pipeline"),
     ),
     BenchmarkCampaignEntry(

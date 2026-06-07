@@ -131,10 +131,7 @@ async def _turns(env: AppEnv, session_id: str, limit: int) -> None:
             len(str(b.get("text", ""))) for b in blocks if isinstance(b, dict) and b.get("type") == "thinking"
         )
         tool_count = sum(1 for b in blocks if isinstance(b, dict) and b.get("type") in ("tool_use", "tool_result"))
-        duration_ms = 0
-        meta = getattr(msg, "provider_meta", None) or {}
-        if isinstance(meta, dict):
-            duration_ms = int(meta.get("durationMs", 0) or meta.get("duration_ms", 0) or 0)
+        duration_ms = int(getattr(msg, "duration_ms", 0) or 0)
 
         duration_str = f"{duration_ms / 1000:.1f}s" if duration_ms else ""
         thinking_str = str(thinking_chars) if thinking_chars else ""
@@ -160,7 +157,7 @@ def tools_command(ctx: click.Context, origin: str | None, limit: int) -> None:
 async def _tools(env: AppEnv, origin: str | None, limit: int) -> None:
     from collections import Counter
 
-    # Get recent sessions and aggregate their action events
+    # Get recent sessions and aggregate their actions
     spec = SessionQuerySpec(sort="date", limit=100)
     if origin:
         spec = SessionQuerySpec(sort="date", limit=100, origins=(origin,))
@@ -170,9 +167,9 @@ async def _tools(env: AppEnv, origin: str | None, limit: int) -> None:
     tool_counts: Counter[str] = Counter()
     for summary in convs:
         try:
-            events = await poly.get_action_events(str(summary.id))
-            for evt in events:
-                name = getattr(evt, "normalized_tool_name", None) or getattr(evt, "tool_name", None)
+            actions = await poly.get_actions(str(summary.id))
+            for action in actions:
+                name = getattr(action, "normalized_tool_name", None) or getattr(action, "tool_name", None)
                 if name:
                     tool_counts[str(name)] += 1
         except Exception:

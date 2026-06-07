@@ -43,7 +43,7 @@ def _db_row_counts(db_path: Path) -> dict[str, int]:
         return stats
     stats["db_size_bytes"] = db_path.stat().st_size
     with open_connection(db_path) as conn:
-        for table in ("sessions", "messages", "content_blocks", "raw_sessions", "action_events"):
+        for table in ("sessions", "messages", "blocks", "raw_sessions"):
             try:
                 row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
                 stats[f"{table}_count"] = _row_count(row[0]) if row else 0
@@ -54,11 +54,6 @@ def _db_row_counts(db_path: Path) -> dict[str, int]:
             stats["fts_rows"] = _row_count(row[0]) if row else 0
         except Exception:
             stats["fts_rows"] = 0
-        try:
-            row = conn.execute("SELECT COUNT(*) FROM action_events_fts").fetchone()
-            stats["action_fts_rows"] = _row_count(row[0]) if row else 0
-        except Exception:
-            stats["action_fts_rows"] = 0
     return stats
 
 
@@ -89,8 +84,8 @@ def _session_insight_table_counts(db_path: Path) -> dict[str, int]:
             "session_work_events",
             "session_work_events_fts",
             "session_phases",
-            "work_threads",
-            "work_threads_fts",
+            "threads",
+            "threads_fts",
             "session_tag_rollups",
         ):
             try:
@@ -270,41 +265,6 @@ async def run_startup_readiness_campaign(db_path: Path) -> CampaignResult:
         await backend.close()
 
 
-def run_action_event_materialization_campaign(db_path: Path) -> CampaignResult:
-    """Benchmark full action-event read-model rebuild."""
-    from polylogue.storage.action_events.rebuild_runtime import rebuild_action_event_read_model_sync
-    from polylogue.storage.sqlite.connection import open_connection
-
-    stats_before = _db_row_counts(db_path)
-
-    with open_connection(db_path) as conn:
-        try:
-            conn.execute("DELETE FROM action_events")
-            conn.commit()
-        except Exception:
-            pass
-
-        elapsed, rebuilt_rows = _measure(rebuild_action_event_read_model_sync, conn)
-        conn.commit()
-
-    stats_after = _db_row_counts(db_path)
-
-    return CampaignResult(
-        campaign_name="action-event-materialization",
-        scale_level="",
-        metrics={
-            "rebuild_wall_s": round(elapsed, 3),
-            "action_event_rows_rebuilt": int(rebuilt_rows),
-        },
-        db_stats={
-            "action_events_before": stats_before.get("action_events_count", 0),
-            "action_events_after": stats_after.get("action_events_count", 0),
-            "action_fts_rows_after": stats_after.get("action_fts_rows", 0),
-            "db_size_bytes": stats_after.get("db_size_bytes", 0),
-        },
-    )
-
-
 def run_session_insight_materialization_campaign(db_path: Path) -> CampaignResult:
     """Benchmark full durable session-insight rebuild."""
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
@@ -335,8 +295,8 @@ def run_session_insight_materialization_campaign(db_path: Path) -> CampaignResul
             "session_work_events_after": stats_after.get("session_work_events_count", 0),
             "session_work_events_fts_after": stats_after.get("session_work_events_fts_count", 0),
             "session_phases_after": stats_after.get("session_phases_count", 0),
-            "work_threads_after": stats_after.get("work_threads_count", 0),
-            "work_threads_fts_after": stats_after.get("work_threads_fts_count", 0),
+            "threads_after": stats_after.get("threads_count", 0),
+            "threads_fts_after": stats_after.get("threads_fts_count", 0),
             "session_tag_rollups_after": stats_after.get("session_tag_rollups_count", 0),
         },
     )
@@ -377,7 +337,6 @@ SYNTHETIC_BENCHMARK_RUNNERS: dict[str, SyntheticBenchmarkRunner] = {
     "incremental-index": run_incremental_index_campaign,
     "filter-scan": run_filter_scan_campaign,
     "startup-readiness": run_startup_readiness_campaign,
-    "action-event-materialization": run_action_event_materialization_campaign,
     "session-insight-materialization": run_session_insight_materialization_campaign,
     "daemon-live-convergence": run_daemon_live_convergence_campaign,
 }
@@ -393,7 +352,6 @@ def resolve_synthetic_benchmark_runner(name: str) -> SyntheticBenchmarkRunner:
 __all__ = [
     "CampaignResult",
     "resolve_synthetic_benchmark_runner",
-    "run_action_event_materialization_campaign",
     "run_daemon_live_convergence_campaign",
     "run_filter_scan_campaign",
     "run_fts_rebuild_campaign",

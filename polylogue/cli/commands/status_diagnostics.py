@@ -137,7 +137,6 @@ def _probe_schema(db: Path) -> StatusDiagnostic | None:
     try:
         from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
         from polylogue.storage.sqlite.schema_bootstrap import schema_version_mismatch_message
-        from polylogue.storage.sqlite.schema_ddl import SCHEMA_VERSION
     except Exception as exc:  # pragma: no cover - import-time misconfiguration
         return StatusDiagnostic(
             kind="unknown_db_error",
@@ -182,7 +181,7 @@ def _probe_schema(db: Path) -> StatusDiagnostic | None:
             with contextlib.suppress(Exception):
                 conn.close()
 
-    expected_version = INDEX_SCHEMA_VERSION if db.name == "index.db" else SCHEMA_VERSION
+    expected_version = INDEX_SCHEMA_VERSION
     if current_version != 0 and current_version != expected_version:
         detail = (
             f"Archive index database version {current_version} is not the expected "

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from polylogue.archive.session.session_profile import SessionProfile
-from polylogue.archive.session.threads import WorkThread, build_session_threads
+from polylogue.archive.session.threads import Thread, build_session_threads
 
 
 def _profile(
@@ -88,10 +88,10 @@ def test_build_session_threads_keeps_obvious_non_matches_separate() -> None:
     assert all(thread.confidence == 0.85 for thread in threads)
 
 
-def test_work_thread_payload_round_trips_membership_evidence() -> None:
+def test_thread_payload_round_trips_membership_evidence() -> None:
     [thread] = build_session_threads([_profile("root"), _profile("child", parent_id="root")])
 
-    rehydrated = WorkThread.from_dict(thread.to_dict())
+    rehydrated = Thread.from_dict(thread.to_dict())
 
     assert rehydrated == thread
     assert rehydrated.member_evidence[1].evidence == ("parent_id=root", "root_id=root")

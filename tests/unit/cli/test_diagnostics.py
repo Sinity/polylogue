@@ -37,14 +37,14 @@ def _message(
     text: str = "hello",
     *,
     content_blocks: list[dict[str, object]] | None = None,
-    provider_meta: dict[str, object] | None = None,
+    duration_ms: int = 0,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         role=role,
         timestamp=timestamp,
         text=text,
         content_blocks=content_blocks or [],
-        provider_meta=provider_meta or {},
+        duration_ms=duration_ms,
     )
 
 
@@ -98,7 +98,7 @@ async def test_turns_reports_duration_thinking_tools_and_characters(monkeypatch:
                 {"type": "tool_use", "name": "bash"},
                 {"type": "tool_result", "text": "ok"},
             ],
-            provider_meta={"durationMs": 1250},
+            duration_ms=1250,
         )
     )
 
@@ -118,7 +118,7 @@ async def test_turns_reports_duration_thinking_tools_and_characters(monkeypatch:
 
 
 @pytest.mark.asyncio
-async def test_tools_aggregates_action_events(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_tools_aggregates_actions(monkeypatch: pytest.MonkeyPatch) -> None:
     summary = SimpleNamespace(id="conv-tools")
 
     async def fake_list_summaries(self: object, repository: object) -> list[SimpleNamespace]:
@@ -127,7 +127,7 @@ async def test_tools_aggregates_action_events(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(SessionQuerySpec, "list_summaries", fake_list_summaries)
     env = _env()
     fake_poly = SimpleNamespace(
-        get_action_events=AsyncMock(
+        get_actions=AsyncMock(
             return_value=(
                 SimpleNamespace(normalized_tool_name="bash", tool_name=None),
                 SimpleNamespace(normalized_tool_name=None, tool_name="read"),

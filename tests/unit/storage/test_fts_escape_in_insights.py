@@ -16,8 +16,8 @@ import sqlite3
 import aiosqlite
 import pytest
 
-from polylogue.storage.query_models import SessionTimelineListQuery, WorkThreadListQuery
-from polylogue.storage.sqlite.queries.session_insight_thread_queries import list_work_threads
+from polylogue.storage.query_models import SessionTimelineListQuery, ThreadListQuery
+from polylogue.storage.sqlite.queries.session_insight_thread_queries import list_threads
 from polylogue.storage.sqlite.queries.session_insight_timeline_reads import list_work_events
 
 # Inputs that would crash a bare FTS5 MATCH if passed unescaped.
@@ -89,15 +89,14 @@ async def _make_work_events_db() -> aiosqlite.Connection:
     return conn
 
 
-async def _make_work_threads_db() -> aiosqlite.Connection:
+async def _make_threads_db() -> aiosqlite.Connection:
     """Create an in-memory db with the FTS5 table the thread read path joins."""
     conn = await aiosqlite.connect(":memory:")
     conn.row_factory = sqlite3.Row
     await conn.executescript(
         """
-        CREATE TABLE work_threads (
+        CREATE TABLE threads (
             thread_id TEXT PRIMARY KEY,
-            root_id TEXT NOT NULL,
             materializer_version INTEGER NOT NULL DEFAULT 1,
             materialized_at TEXT NOT NULL,
             start_time TEXT,
@@ -114,20 +113,20 @@ async def _make_work_threads_db() -> aiosqlite.Connection:
             payload_json TEXT NOT NULL DEFAULT '{}',
             search_text TEXT NOT NULL
         );
-        CREATE VIRTUAL TABLE work_threads_fts USING fts5(
+        CREATE VIRTUAL TABLE threads_fts USING fts5(
             thread_id UNINDEXED,
             root_id UNINDEXED,
             text,
             tokenize='unicode61'
         );
-        CREATE TRIGGER work_threads_fts_ai AFTER INSERT ON work_threads BEGIN SELECT 1; END;
-        CREATE TRIGGER work_threads_fts_ad AFTER DELETE ON work_threads BEGIN SELECT 1; END;
-        CREATE TRIGGER work_threads_fts_au AFTER UPDATE ON work_threads BEGIN SELECT 1; END;
-        INSERT INTO work_threads_fts (thread_id, root_id, text)
-        VALUES ('t1', 'r1', 'hello world');
-        INSERT INTO work_threads (
-            thread_id, root_id, materialized_at, search_text
-        ) VALUES ('t1', 'r1', '2026-01-01T00:00:00Z', 'hello world');
+        CREATE TRIGGER threads_fts_ai AFTER INSERT ON threads BEGIN SELECT 1; END;
+        CREATE TRIGGER threads_fts_ad AFTER DELETE ON threads BEGIN SELECT 1; END;
+        CREATE TRIGGER threads_fts_au AFTER UPDATE ON threads BEGIN SELECT 1; END;
+        INSERT INTO threads_fts (thread_id, root_id, text)
+        VALUES ('t1', 't1', 'hello world');
+        INSERT INTO threads (
+            thread_id, materialized_at, search_text
+        ) VALUES ('t1', '2026-01-01T00:00:00Z', 'hello world');
         """
     )
     await conn.commit()
@@ -150,10 +149,10 @@ async def test_list_work_events_escapes_fts5_query(malicious: str) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("malicious", MALICIOUS_QUERIES)
-async def test_list_work_threads_escapes_fts5_query(malicious: str) -> None:
-    conn = await _make_work_threads_db()
+async def test_list_threads_escapes_fts5_query(malicious: str) -> None:
+    conn = await _make_threads_db()
     try:
-        result = await list_work_threads(conn, WorkThreadListQuery(query=malicious, limit=5))
+        result = await list_threads(conn, ThreadListQuery(query=malicious, limit=5))
         assert isinstance(result, list)
     except sqlite3.OperationalError as exc:  # pragma: no cover - failure path
         pytest.fail(f"unescaped FTS5 query {malicious!r} raised: {exc}")

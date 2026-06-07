@@ -328,7 +328,7 @@ def _auto_restore_fts_triggers(dbf: object) -> tuple[list[str], bool, str]:
     and re-creates triggers from the canonical DDL in
     ``polylogue.storage.fts.fts_lifecycle``) and the subsequent rebuild
     reconstructs the FTS index from the persisted ``messages`` and
-    ``action_events`` rows. Both operations are read-only in the sense
+    ``actions`` rows. Both operations are read-only in the sense
     that they do not modify user-visible archive data.
 
     Returns:
@@ -480,7 +480,7 @@ def _check_fts_trigger_drift_fast() -> HealthAlert:
     the bulk-write trigger-suspension window
     (see ``docs/internals.md`` "FTS5 Model") leaves them dropped, which
     silently corrupts search results until the next bulk operation
-    restores them. The archive checks ``blocks_fts`` triggers.
+    restores them. The archive checks ``messages_fts`` triggers.
 
     Behavior:
 
@@ -630,66 +630,49 @@ def _check_fts_trigger_drift_fast() -> HealthAlert:
 
 
 def _check_schema_version_fast() -> HealthAlert:
-    """Compare the on-disk ``PRAGMA user_version`` to the runtime ``SCHEMA_VERSION``.
-
-    A mismatch means this binary cannot read or write the database safely —
-    every ingest attempt would raise :class:`SchemaVersionMismatchError`, and
-    retrying produces only IO load with no progress. The check therefore
-    raises CRITICAL so the daemon's preflight can refuse to start the watcher
-    and an operator/dashboard immediately sees the structural cause.
-
-    The check uses ``PRAGMA user_version`` directly rather than the schema
-    snapshot machinery so it is tolerant of structural drift and stays cheap
-    (a single read on a read-only connection).
-    """
-    from polylogue.storage.sqlite.schema_bootstrap import (
-        SCHEMA_VERSION,
-        capture_schema_snapshot,
-        decide_schema_bootstrap,
-    )
+    """Check that the active archive root has the expected tier layout."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 
     now = datetime.now(UTC).isoformat()
     dbf = _active_health_db_path()
     if not dbf.exists():
-        # Fresh install — fresh-init will create the DB at the current version.
         return HealthAlert(
             check_name="schema_version",
             tier=HealthTier.FAST,
             severity=HealthSeverity.OK,
-            message=f"no database yet (will create v{SCHEMA_VERSION})",
+            message="archive tiers not initialized yet",
             checked_at=now,
             consecutive_failures=_record_failure("schema_version", True),
         )
     try:
-        # Open read-only via URI to avoid creating/locking on a misconfigured DB.
-        conn = sqlite3.connect(f"file:{dbf}?mode=ro", uri=True, timeout=2.0)
-        try:
-            snapshot = capture_schema_snapshot(conn)
-        finally:
-            conn.close()
+        archive_dir = dbf.parent
+        mismatches: list[str] = []
+        missing: list[str] = []
+        for spec in ARCHIVE_TIER_SPECS.values():
+            path = archive_dir / spec.filename
+            if not path.exists():
+                missing.append(spec.filename)
+                continue
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2.0)
+            try:
+                row = conn.execute("PRAGMA user_version").fetchone()
+            finally:
+                conn.close()
+            current = int(row[0]) if row else 0
+            if current != spec.version:
+                mismatches.append(f"{spec.filename}:{current}!={spec.version}")
 
-        current = snapshot.current_version
-        # Polylogue has no in-place upgrade chain. Either the file is empty, it
-        # is the archive shape this runtime knows, or the watcher refuses to
-        # operate against it.
-        decision = decide_schema_bootstrap(snapshot)
-
-        if current == SCHEMA_VERSION:
+        if not missing and not mismatches:
             severity = HealthSeverity.OK
-            message = f"schema v{current} matches runtime"
-        elif current == 0:
-            # Empty DB file (created but never bootstrapped) — fresh-init will
-            # handle this, not a structural mismatch.
-            severity = HealthSeverity.OK
-            message = f"empty database (will bootstrap v{SCHEMA_VERSION})"
+            message = "archive tier layout matches runtime"
         else:
-            assert decision.action == "version_mismatch"
             severity = HealthSeverity.CRITICAL
-            if current > SCHEMA_VERSION:
-                hint = "rebuild or redeploy polylogue to a build that supports this schema"
-            else:
-                hint = "no in-place upgrade exists; rebuild the archive from source or move it aside"
-            message = f"schema v{current} is not runtime v{SCHEMA_VERSION} — {hint}"
+            parts: list[str] = []
+            if missing:
+                parts.append(f"missing tiers: {', '.join(missing)}")
+            if mismatches:
+                parts.append(f"tier user_version mismatch: {', '.join(mismatches)}")
+            message = "archive tier layout is not ready: " + "; ".join(parts)
 
         is_ok = severity == HealthSeverity.OK
         return HealthAlert(

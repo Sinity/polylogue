@@ -11,26 +11,16 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.archive.session.domain_models import Session
-from polylogue.archive.topology.edge import TopologyEdgeRecord
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.insights.feedback import LearningCorrection
 from polylogue.logging import get_logger
+from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.repository.archive.writes.metadata import metadata_read_modify_write
 from polylogue.storage.repository.archive.writes.sessions import (
     delete_session_via_backend,
-    provider_event_to_record,
-    save_via_backend,
-    session_to_record,
 )
 from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
-from polylogue.storage.runtime import (
-    AttachmentRecord,
-    ContentBlockRecord,
-    MessageRecord,
-    ProviderEventRecord,
-    SessionRecord,
-)
+from polylogue.storage.search.cache import invalidate_search_cache
 from polylogue.storage.sqlite.queries import sessions as sessions_q
 
 logger = get_logger(__name__)
@@ -95,60 +85,23 @@ class RepositoryWriteMixin:
     if TYPE_CHECKING:
         _backend: RepositoryBackendProtocol
 
-    async def save_session(
-        self,
-        session: Session | SessionRecord,
-        messages: builtins.list[MessageRecord],
-        attachments: builtins.list[AttachmentRecord],
-        content_blocks: builtins.list[ContentBlockRecord] | None = None,
-        provider_events: builtins.list[ProviderEventRecord] | None = None,
-        topology_edges: builtins.list[TopologyEdgeRecord] | None = None,
-    ) -> dict[str, int]:
-        if isinstance(session, Session):
-            if session.messages and not messages:
-                raise ValueError(
-                    "save_session() received a domain Session with messages but no "
-                    "MessageRecord rows; pass transformed records instead of risking runtime-state loss"
-                )
-            if provider_events is None:
-                provider_events = [provider_event_to_record(event) for event in session.provider_events]
-            conv_record = self._session_to_record(session)
-        else:
-            conv_record = session
+    async def save_parsed_session(self, session: ParsedSession, content_hash: str) -> dict[str, int]:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        return await self._save_via_backend(
-            conv_record,
-            messages,
-            attachments,
-            content_blocks or [],
-            provider_events,
-            topology_edges,
-        )
-
-    def _session_to_record(self, session: Session) -> SessionRecord:
-        return session_to_record(session)
-
-    async def _save_via_backend(
-        self,
-        session: SessionRecord,
-        messages: builtins.list[MessageRecord],
-        attachments: builtins.list[AttachmentRecord],
-        content_blocks: builtins.list[ContentBlockRecord] | None = None,
-        provider_events: builtins.list[ProviderEventRecord] | None = None,
-        topology_edges: builtins.list[TopologyEdgeRecord] | None = None,
-    ) -> dict[str, int]:
-        backend = self._backend
-        if backend is None:
-            raise RuntimeError("Backend is not initialized")
-        return await save_via_backend(
-            backend,
-            session,
-            messages,
-            attachments,
-            content_blocks,
-            provider_events,
-            topology_edges,
-        )
+        db_path = Path(self._backend.db_path)
+        with ArchiveStore(db_path.parent) as archive:
+            archive.write_parsed(session, content_hash=content_hash)
+        invalidate_search_cache()
+        return {
+            "sessions": 1,
+            "messages": len(session.messages),
+            "attachments": len(session.attachments),
+            "session_events": len(session.session_events),
+            "skipped_sessions": 0,
+            "skipped_messages": 0,
+            "skipped_attachments": 0,
+            "skipped_session_events": 0,
+        }
 
     async def get_metadata(self, session_id: str) -> JSONDocument:
         async with self._backend.connection() as conn:

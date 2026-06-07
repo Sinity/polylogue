@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import replace
 from typing import TypeAlias
 
 from polylogue.maintenance.models import DerivedModelStatus
-from polylogue.storage.action_events.artifacts import ActionEventArtifactState
-from polylogue.storage.runtime import ACTION_EVENT_MATERIALIZER_VERSION, SESSION_INSIGHT_MATERIALIZER_VERSION
+from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 
 MetricValue: TypeAlias = int | bool
 Metrics: TypeAlias = Mapping[str, MetricValue]
@@ -104,12 +102,8 @@ def _message_fts_status(metrics: Metrics) -> DerivedModelStatus:
 
 
 def build_action_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
-    state = ActionEventArtifactState.from_metrics(metrics)
-    action_rows_status = replace(state.row_status(), materializer_version=ACTION_EVENT_MATERIALIZER_VERSION)
     return {
         "messages_fts": _message_fts_status(metrics),
-        "action_events": action_rows_status,
-        "action_events_fts": state.fts_status(),
     }
 
 
@@ -206,12 +200,12 @@ def _session_timeline_status(
     )
 
 
-def _work_threads_status(metrics: Metrics) -> DerivedModelStatus:
+def _threads_status(metrics: Metrics) -> DerivedModelStatus:
     ready = _metric_bool(metrics, "threads_ready")
-    rows = _metric_int(metrics, "work_thread_rows")
+    rows = _metric_int(metrics, "thread_rows")
     roots = _metric_int(metrics, "total_thread_roots")
     return DerivedModelStatus(
-        name="work_threads",
+        name="threads",
         ready=ready,
         detail=_ready_detail(
             ready=ready,
@@ -259,15 +253,15 @@ def build_timeline_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
             stale_key="stale_phase_rows",
             orphan_key="orphan_phase_rows",
         ),
-        "work_threads": _work_threads_status(metrics),
-        "work_threads_fts": _fts_status(
+        "threads": _threads_status(metrics),
+        "threads_fts": _fts_status(
             metrics,
-            name="work_threads_fts",
-            label="Work-thread FTS",
+            name="threads_fts",
+            label="Thread FTS",
             ready_key="thread_fts_ready",
-            source_rows_key="work_thread_rows",
-            materialized_rows_key="work_thread_fts_rows",
-            duplicate_key="work_thread_fts_duplicates",
+            source_rows_key="thread_rows",
+            materialized_rows_key="thread_fts_rows",
+            duplicate_key="thread_fts_duplicates",
         ),
     }
 

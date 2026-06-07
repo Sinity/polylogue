@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from polylogue.archive.topology.edge import TopologyEdgeRecord
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import (
     materialize_attachment_path,
@@ -20,19 +19,11 @@ from polylogue.pipeline.prepare_models import (
     PersistedSessionResult,
     PrepareCache,
     PreparedBundle,
-    RecordBundle,
     SaveResult,
     TransformResult,
     _timestamp_sort_key,
 )
 from polylogue.pipeline.prepare_transform import transform_to_records
-from polylogue.storage.runtime import (
-    AttachmentRecord,
-    ContentBlockRecord,
-    MessageRecord,
-    ProviderEventRecord,
-    SessionRecord,
-)
 
 if TYPE_CHECKING:
     from polylogue.sources.parsers.base import ParsedSession
@@ -47,27 +38,11 @@ class PrepareRepository(Protocol):
     @property
     def backend(self) -> SQLiteBackend: ...
 
-    async def save_session(
+    async def save_parsed_session(
         self,
-        session: SessionRecord,
-        messages: list[MessageRecord],
-        attachments: list[AttachmentRecord],
-        content_blocks: list[ContentBlockRecord] | None = None,
-        provider_events: list[ProviderEventRecord] | None = None,
-        topology_edges: list[TopologyEdgeRecord] | None = None,
+        session: ParsedSession,
+        content_hash: str,
     ) -> dict[str, int]: ...
-
-
-async def save_bundle(bundle: RecordBundle, repository: PrepareRepository) -> SaveResult:
-    counts = await repository.save_session(
-        session=bundle.session,
-        messages=bundle.messages,
-        attachments=bundle.attachments,
-        content_blocks=bundle.content_blocks,
-        provider_events=bundle.provider_events,
-        topology_edges=bundle.topology_edges,
-    )
-    return SaveResult(**counts)
 
 
 async def prepare_bundle(
@@ -108,7 +83,8 @@ async def persist_prepared_bundle(
             materialize_attachment_path(source_path, target_path)
             applied_moves.append((source_path, target_path))
 
-        save_result = await save_bundle(prepared.bundle, repository=repository)
+        counts = await repository.save_parsed_session(prepared.session, str(prepared.content_hash))
+        save_result = SaveResult(**counts)
     except Exception:
         for source_path, target_path in reversed(applied_moves):
             if target_path.exists():
@@ -180,7 +156,6 @@ __all__ = [
     "PrepareCache",
     "PrepareRepository",
     "PreparedBundle",
-    "RecordBundle",
     "SaveResult",
     "TransformResult",
     "_timestamp_sort_key",
@@ -188,6 +163,5 @@ __all__ = [
     "prepare_bundle",
     "enrich_bundle_from_db",
     "prepare_records",
-    "save_bundle",
     "transform_to_records",
 ]

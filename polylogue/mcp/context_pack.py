@@ -19,7 +19,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import (
 )
 
 if TYPE_CHECKING:
-    from polylogue.archive.action_event.action_events import ActionEvent
+    from polylogue.archive.actions.actions import Action
     from polylogue.archive.query.spec import SessionQuerySpec
 
 
@@ -91,7 +91,7 @@ class ContextPackUnresolvedWork(BaseModel):
     last_activity: str | None = None
     tool_use_count: int | None = None
     reason: str | None = None
-    source: str = "action-event"
+    source: str = "action"
 
 
 class ContextPackProvenance(BaseModel):
@@ -111,7 +111,7 @@ class ContextPackIntent(BaseModel):
 
 
 class ContextPackDecisions(BaseModel):
-    """Key decisions and their context (from action events + message analysis)."""
+    """Key decisions and their context (from actions + message analysis)."""
 
     items: list[str] = Field(default_factory=list)
 
@@ -402,16 +402,16 @@ def redact_path(path: str) -> str:
 
 
 def _build_project_context(
-    action_events: Sequence[ActionEvent],
+    actions: Sequence[Action],
     *,
     redact: bool = True,
 ) -> ContextPackProject:
-    """Build project context from action events across matched sessions."""
+    """Build project context from actions across matched sessions."""
     cwd_set: list[str] = []
     branch_set: list[str] = []
     affected_set: list[str] = []
 
-    for event in action_events:
+    for event in actions:
         if event.cwd_path:
             cwd_display = redact_path(event.cwd_path) if redact else event.cwd_path
             if cwd_display not in cwd_set:
@@ -434,21 +434,21 @@ def _build_project_context(
     )
 
 
-def _summarize_action_events(
-    action_events: Sequence[ActionEvent],
+def _summarize_actions(
+    actions: Sequence[Action],
     *,
     redact: bool = True,
 ) -> list[ContextPackActionSummary]:
-    """Aggregate action events into tool-level summaries."""
+    """Aggregate actions into tool-level summaries."""
     counts: dict[str, int] = {}
     cwds: dict[str, set[str]] = {}
     paths: dict[str, set[str]] = {}
-    for event in action_events:
-        tool = event.normalized_tool_name
+    for action in actions:
+        tool = action.normalized_tool_name
         counts[tool] = counts.get(tool, 0) + 1
-        if event.cwd_path:
-            cwds.setdefault(tool, set()).add(redact_path(event.cwd_path) if redact else event.cwd_path)
-        for path in event.affected_paths:
+        if action.cwd_path:
+            cwds.setdefault(tool, set()).add(redact_path(action.cwd_path) if redact else action.cwd_path)
+        for path in action.affected_paths:
             paths.setdefault(tool, set()).add(redact_path(path) if redact else path)
     return [
         ContextPackActionSummary(

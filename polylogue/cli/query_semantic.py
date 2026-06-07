@@ -9,7 +9,7 @@ from polylogue.cli.query_feedback import emit_no_results
 from polylogue.cli.query_stats import emit_structured_stats
 
 if TYPE_CHECKING:
-    from polylogue.archive.action_event.action_events import ActionEvent
+    from polylogue.archive.actions.actions import Action
     from polylogue.archive.models import SessionSummary
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.archive.semantic.facts import SessionSemanticFacts
@@ -56,11 +56,11 @@ class SemanticStatsSlice:
         )
 
 
-def normalized_tool_name(action: ActionEvent) -> str:
+def normalized_tool_name(action: Action) -> str:
     return action.normalized_tool_name
 
 
-def referenced_path_matches_slice(action: ActionEvent, referenced_path: tuple[str, ...]) -> bool:
+def referenced_path_matches_slice(action: Action, referenced_path: tuple[str, ...]) -> bool:
     if not referenced_path:
         return True
     affected_paths = tuple(path.lower().replace("\\", "/") for path in action.affected_paths)
@@ -69,7 +69,7 @@ def referenced_path_matches_slice(action: ActionEvent, referenced_path: tuple[st
     return any(any(term.lower().replace("\\", "/") in path for path in affected_paths) for term in referenced_path)
 
 
-def action_matches_slice(action: ActionEvent, semantic_slice: SemanticStatsSlice) -> bool:
+def action_matches_slice(action: Action, semantic_slice: SemanticStatsSlice) -> bool:
     if not referenced_path_matches_slice(action, semantic_slice.referenced_path):
         return False
 
@@ -96,13 +96,13 @@ def action_matches_slice(action: ActionEvent, semantic_slice: SemanticStatsSlice
     return tool_name not in blocked_tool_terms
 
 
-def filtered_action_events(
+def filtered_actions(
     facts: SessionSemanticFacts,
     semantic_slice: SemanticStatsSlice,
-) -> tuple[ActionEvent, ...]:
+) -> tuple[Action, ...]:
     if not semantic_slice.has_filters():
-        return facts.action_events
-    return tuple(action for action in facts.action_events if action_matches_slice(action, semantic_slice))
+        return facts.actions
+    return tuple(action for action in facts.actions if action_matches_slice(action, semantic_slice))
 
 
 # ---------------------------------------------------------------------------
@@ -175,14 +175,12 @@ async def output_stats_by_semantic_ids(
     poly = env.polylogue
     for offset in range(0, len(session_ids), batch_size):
         batch_ids = session_ids[offset : offset + batch_size]
-        # Archives have no materialized action_events table; events are
-        # derived on read from each session's tool blocks (the same derivation
-        # the legacy materializer hashed into rows), so there is one code path.
-        action_events_by_session = await poly.get_action_events_batch(batch_ids)
+        # Actions are derived on read from each session's tool blocks.
+        actions_by_session = await poly.get_actions_batch(batch_ids)
         session_actions = {
             session_id: tuple(
                 action
-                for action in action_events_by_session.get(session_id, ())
+                for action in actions_by_session.get(session_id, ())
                 if action_matches_slice(action, semantic_slice)
             )
             for session_id in batch_ids
@@ -257,7 +255,7 @@ async def output_stats_by_semantic_ids(
 __all__ = [
     "SemanticStatsSlice",
     "action_matches_slice",
-    "filtered_action_events",
+    "filtered_actions",
     "normalized_tool_name",
     "output_stats_by_semantic_ids",
     "output_stats_by_semantic_query",

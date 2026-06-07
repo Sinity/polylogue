@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING
 
+import aiosqlite
+
+from polylogue.core.sources import origin_from_provider
 from polylogue.storage.raw.models import RawSessionState, RawSessionStateUpdate
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
+from polylogue.storage.sqlite.archive_tiers.write import _timestamp_ms
 from polylogue.storage.sqlite.queries import artifacts as artifacts_q
 from polylogue.storage.sqlite.queries import raw as raw_queries
 from polylogue.types import Provider, ValidationMode, ValidationStatus
 
 if TYPE_CHECKING:
-    import aiosqlite
+    from pathlib import Path
 
     from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
@@ -24,6 +29,7 @@ class SQLiteRawMixin:
     if TYPE_CHECKING:
         queries: SQLiteQueryStore
         _transaction_depth: int
+        _source_db_path: Path
 
         def _get_connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]: ...
 
@@ -89,8 +95,68 @@ class SQLiteRawMixin:
 
     async def save_raw_session(self, record: RawSessionRecord) -> bool:
         """Save a raw session record. Returns True if inserted."""
-        async with self._get_connection() as conn:
-            return await raw_queries.save_raw_session(conn, record, self._transaction_depth)
+        source_name = record.source_name or (
+            record.payload_provider.value if record.payload_provider is not None else None
+        )
+        origin = origin_from_provider(Provider.from_string(source_name or "unknown"))
+        try:
+            blob_hash = bytes.fromhex(record.raw_id)
+        except ValueError:
+            blob_hash = record.raw_id.encode("utf-8")
+        if len(blob_hash) != 32:
+            blob_hash = hashlib.sha256(blob_hash).digest()
+
+        acquired_at_ms = _timestamp_ms(record.acquired_at) or 0
+        async with aiosqlite.connect(self._source_db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA foreign_keys = ON")
+            cursor = await conn.execute("SELECT 1 FROM raw_sessions WHERE raw_id = ?", (record.raw_id,))
+            existed = await cursor.fetchone() is not None
+            await conn.execute(
+                """
+                INSERT OR REPLACE INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, source_index, blob_hash,
+                    blob_size, acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error,
+                    validated_at_ms, validation_status, validation_error, validation_drift_count,
+                    validation_mode, detection_warnings_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.raw_id,
+                    origin.value,
+                    None,
+                    record.source_path,
+                    int(record.source_index or 0),
+                    blob_hash,
+                    int(record.blob_size),
+                    acquired_at_ms,
+                    _timestamp_ms(record.file_mtime),
+                    _timestamp_ms(record.parsed_at),
+                    record.parse_error,
+                    _timestamp_ms(record.validated_at),
+                    record.validation_status.value if record.validation_status is not None else None,
+                    record.validation_error,
+                    int(record.validation_drift_count or 0),
+                    record.validation_mode.value if record.validation_mode is not None else None,
+                    record.detection_warnings or "[]",
+                ),
+            )
+            await conn.execute(
+                """
+                INSERT OR REPLACE INTO blob_refs (
+                    blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms
+                ) VALUES (?, ?, 'raw_payload', ?, ?, ?)
+                """,
+                (
+                    blob_hash,
+                    record.raw_id,
+                    record.source_path,
+                    int(record.blob_size),
+                    acquired_at_ms,
+                ),
+            )
+            await conn.commit()
+            return not existed
 
     async def save_artifact_observation(self, record: ArtifactObservationRecord) -> bool:
         """Persist or refresh one durable artifact observation."""

@@ -9,9 +9,8 @@ def test_authored_scenario_catalog_builds_runtime_lookup_indexes() -> None:
     assert catalog.validation_lane_index()["machine-contract"].name == "machine-contract"
     assert catalog.mutation_campaign_index()["filters"].name == "filters"
     assert catalog.benchmark_campaign_index()["search-filters"].name == "search-filters"
-    assert (
-        catalog.synthetic_benchmark_campaign_index()["action-event-materialization"].name
-        == "action-event-materialization"
+    assert catalog.synthetic_benchmark_campaign_index()["session-insight-materialization"].name == (
+        "session-insight-materialization"
     )
 
 

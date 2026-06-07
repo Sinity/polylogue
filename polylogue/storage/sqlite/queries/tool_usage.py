@@ -1,13 +1,11 @@
-"""Tool-usage aggregation queries over canonical action_events.
+"""Tool-usage aggregation queries over canonical action rows.
 
-These queries roll up tool calls per provider, per normalized tool name,
+These queries roll up tool calls per origin, per normalized tool name,
 without inferring anything the substrate has not already classified.
 
-The companion coverage query reports — for every provider observed in the
-``sessions`` table — whether the action_events substrate has any rows
-for that provider. This is the load-bearing distinction the issue calls
-out: zero observed action_events for a provider may mean the provider does
-not expose tool data at all, not that the user has not used tools.
+The companion coverage query reports — for every origin observed in the
+``sessions`` table — whether the canonical ``actions`` view has any rows
+for that origin.
 """
 
 from __future__ import annotations
@@ -24,7 +22,7 @@ __all__ = [
 
 
 class ToolUsageRow(TypedDict):
-    """One row per (provider, normalized_tool_name)."""
+    """One row per (origin, normalized_tool_name)."""
 
     source_name: str
     normalized_tool_name: str
@@ -38,11 +36,11 @@ class ToolUsageRow(TypedDict):
 
 
 class ToolUsageProviderCoverageRow(TypedDict):
-    """Per-provider coverage signal — does the substrate carry tool data?"""
+    """Per-origin coverage signal — does the substrate carry tool data?"""
 
     source_name: str
     session_count: int
-    action_event_count: int
+    action_count: int
     distinct_tool_count: int
     distinct_action_kind_count: int
     has_tool_id_signal: int
@@ -53,30 +51,29 @@ class ToolUsageProviderCoverageRow(TypedDict):
 async def get_tool_usage_rows(
     conn: aiosqlite.Connection,
 ) -> list[ToolUsageRow]:
-    """Aggregate tool usage from canonical ``action_events`` rows.
+    """Aggregate tool usage from canonical ``actions`` rows.
 
     The grouping key is ``(source_name, normalized_tool_name, action_kind)``
     because the same normalized tool name can fire under multiple action
-    kinds (for example ``tool_use`` vs ``tool_result`` reflections).
+    categories.
     """
 
     cursor = await conn.execute(
         """
         SELECT
-            COALESCE(NULLIF(source_name, ''), 'unknown')              AS source_name,
-            normalized_tool_name                                        AS normalized_tool_name,
-            action_kind                                                 AS action_kind,
-            COUNT(*)                                                    AS call_count,
-            COUNT(DISTINCT session_id)                             AS session_count,
-            COUNT(DISTINCT message_id)                                  AS message_count,
-            COUNT(DISTINCT tool_id)                                     AS distinct_tool_ids,
-            SUM(CASE WHEN affected_paths_json IS NOT NULL AND affected_paths_json != '[]' THEN 1 ELSE 0 END)
-                                                                        AS affected_path_calls,
-            SUM(CASE WHEN output_text IS NOT NULL AND output_text != '' THEN 1 ELSE 0 END)
-                                                                        AS output_text_calls
-        FROM action_events
+            COALESCE(NULLIF(s.origin, ''), 'unknown') AS source_name,
+            COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown') AS normalized_tool_name,
+            COALESCE(NULLIF(a.semantic_type, ''), 'tool_use') AS action_kind,
+            COUNT(*) AS call_count,
+            COUNT(DISTINCT a.session_id) AS session_count,
+            COUNT(DISTINCT a.message_id) AS message_count,
+            COUNT(DISTINCT a.tool_use_block_id) AS distinct_tool_ids,
+            SUM(CASE WHEN a.tool_path IS NOT NULL AND a.tool_path != '' THEN 1 ELSE 0 END) AS affected_path_calls,
+            SUM(CASE WHEN a.output_text IS NOT NULL AND a.output_text != '' THEN 1 ELSE 0 END) AS output_text_calls
+        FROM actions a
+        JOIN sessions s ON s.session_id = a.session_id
         GROUP BY
-            COALESCE(NULLIF(source_name, ''), 'unknown'),
+            COALESCE(NULLIF(s.origin, ''), 'unknown'),
             normalized_tool_name,
             action_kind
         ORDER BY call_count DESC, source_name ASC, normalized_tool_name ASC
@@ -102,33 +99,27 @@ async def get_tool_usage_rows(
 async def get_tool_usage_provider_coverage_rows(
     conn: aiosqlite.Connection,
 ) -> list[ToolUsageProviderCoverageRow]:
-    """Report tool-data coverage signals for every provider in the archive.
+    """Report tool-data coverage signals for every origin in the archive.
 
-    Returns one row per provider that has at least one session. The
-    ``action_event_count`` column is the load-bearing field — a provider
-    with sessions but zero action events is explicitly visible as a
-    coverage gap rather than collapsed into the rollup as a quiet zero.
+    Returns one row per origin that has at least one session. ``action_count``
+    counts rows exposed by the canonical ``actions`` view over tool blocks.
     """
 
     cursor = await conn.execute(
         """
         SELECT
-            c.source_name                                                AS source_name,
-            COUNT(DISTINCT c.session_id)                              AS session_count,
-            COALESCE(COUNT(ae.event_id), 0)                                AS action_event_count,
-            COUNT(DISTINCT ae.normalized_tool_name)                        AS distinct_tool_count,
-            COUNT(DISTINCT ae.action_kind)                                 AS distinct_action_kind_count,
-            SUM(CASE WHEN ae.tool_id IS NOT NULL AND ae.tool_id != '' THEN 1 ELSE 0 END)
-                                                                            AS has_tool_id_signal,
-            SUM(CASE
-                WHEN ae.affected_paths_json IS NOT NULL AND ae.affected_paths_json != '[]'
-                THEN 1 ELSE 0 END)                                          AS has_affected_paths_signal,
-            SUM(CASE WHEN ae.output_text IS NOT NULL AND ae.output_text != '' THEN 1 ELSE 0 END)
-                                                                            AS has_output_text_signal
-        FROM sessions c
-        LEFT JOIN action_events ae ON ae.session_id = c.session_id
-        GROUP BY c.source_name
-        ORDER BY action_event_count DESC, session_count DESC, c.source_name ASC
+            s.origin AS source_name,
+            COUNT(DISTINCT s.session_id) AS session_count,
+            COALESCE(COUNT(a.tool_use_block_id), 0) AS action_count,
+            COUNT(DISTINCT COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown')) AS distinct_tool_count,
+            COUNT(DISTINCT COALESCE(NULLIF(a.semantic_type, ''), 'tool_use')) AS distinct_action_kind_count,
+            COUNT(a.tool_use_block_id) AS has_tool_id_signal,
+            SUM(CASE WHEN a.tool_path IS NOT NULL AND a.tool_path != '' THEN 1 ELSE 0 END) AS has_affected_paths_signal,
+            SUM(CASE WHEN a.output_text IS NOT NULL AND a.output_text != '' THEN 1 ELSE 0 END) AS has_output_text_signal
+        FROM sessions s
+        LEFT JOIN actions a ON a.session_id = s.session_id
+        GROUP BY s.origin
+        ORDER BY action_count DESC, session_count DESC, s.origin ASC
         """
     )
     rows = await cursor.fetchall()
@@ -136,7 +127,7 @@ async def get_tool_usage_provider_coverage_rows(
         {
             "source_name": str(row["source_name"] or "unknown"),
             "session_count": int(row["session_count"] or 0),
-            "action_event_count": int(row["action_event_count"] or 0),
+            "action_count": int(row["action_count"] or 0),
             "distinct_tool_count": int(row["distinct_tool_count"] or 0),
             "distinct_action_kind_count": int(row["distinct_action_kind_count"] or 0),
             "has_tool_id_signal": int(row["has_tool_id_signal"] or 0),

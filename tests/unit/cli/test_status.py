@@ -468,8 +468,6 @@ class TestNoArchiveStatus:
         class FakeConn:
             def execute(self, sql: str, params: tuple[object, ...] | None = None) -> FakeCursor:
                 queries.append(sql)
-                if "sqlite_master" in sql and params == ("session_stats",):
-                    return FakeCursor(1)
                 if "PRAGMA table_info" in sql:
                     # sessions carries the message_count rollup column, so status
                     # uses SUM(message_count) and never scans the messages table.
@@ -520,8 +518,6 @@ class TestNoArchiveStatus:
 
         class FakeConn:
             def execute(self, sql: str, params: tuple[object, ...] | None = None) -> FakeCursor:
-                if "sqlite_master" in sql and params == ("session_stats",):
-                    return FakeCursor(1)
                 if "SUM(message_count)" in sql:
                     return FakeCursor(30)
                 if "sessions" in sql:
@@ -595,7 +591,6 @@ class TestNoArchiveStatus:
                 "daemon_liveness": True,
                 "fts_readiness": {
                     "messages_ready": False,
-                    "action_events_ready": True,
                     "coverage_pct": 87.5,
                 },
             },
@@ -603,7 +598,7 @@ class TestNoArchiveStatus:
 
         assert "87.5% indexed" in _combined_calls(env)
 
-    def test_daemon_status_archive_fts_does_not_require_materialized_action_events(self) -> None:
+    def test_daemon_status_archive_fts_reports_message_surface(self) -> None:
         env = _make_app_env()
 
         _show_daemon_status(
@@ -611,10 +606,8 @@ class TestNoArchiveStatus:
             {
                 "daemon_liveness": True,
                 "fts_readiness": {
-                    "indexed_surface": "blocks_fts",
-                    "action_events_required": False,
+                    "indexed_surface": "messages_fts",
                     "messages_ready": True,
-                    "action_events_ready": False,
                     "coverage_pct": 100.0,
                 },
             },

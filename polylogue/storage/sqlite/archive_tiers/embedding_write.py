@@ -22,13 +22,12 @@ class ArchiveEmbeddingStatus:
 
 @dataclass(frozen=True, slots=True)
 class ArchiveEmbeddingMeta:
-    target_id: str
-    target_type: str
+    message_id: str
     model: str
     dimension: int
-    embedded_at_ms: int
-    content_hash: bytes | None
-    origin: str | None
+    content_hash: bytes
+    embedded_at_ms: int | None
+    needs_reindex: bool
 
 
 def upsert_message_embedding(
@@ -45,6 +44,8 @@ def upsert_message_embedding(
     """Upsert one message vector plus its reproducibility metadata."""
     if len(embedding) != EMBEDDING_DIMENSION:
         raise ValueError(f"embedding must have {EMBEDDING_DIMENSION} dimensions")
+    if content_hash is None:
+        raise ValueError("content_hash is required for message embedding metadata")
     origin_value = _enum_value(origin)
     with conn:
         conn.execute("DELETE FROM message_embeddings WHERE message_id = ?", (message_id,))
@@ -57,35 +58,17 @@ def upsert_message_embedding(
         )
         conn.execute(
             """
-            INSERT INTO embeddings_meta (
-                target_id, target_type, model, dimension, embedded_at_ms, content_hash, origin
-            ) VALUES (?, 'message', ?, ?, ?, ?, ?)
-            ON CONFLICT(target_id) DO UPDATE SET
-                target_type = excluded.target_type,
+            INSERT INTO message_embeddings_meta (
+                message_id, model, dimension, content_hash, embedded_at_ms, needs_reindex
+            ) VALUES (?, ?, ?, ?, ?, 0)
+            ON CONFLICT(message_id) DO UPDATE SET
                 model = excluded.model,
                 dimension = excluded.dimension,
-                embedded_at_ms = excluded.embedded_at_ms,
                 content_hash = excluded.content_hash,
-                origin = excluded.origin
+                embedded_at_ms = excluded.embedded_at_ms,
+                needs_reindex = 0
             """,
-            (message_id, model, EMBEDDING_DIMENSION, embedded_at_ms, content_hash, origin_value),
-        )
-        conn.execute(
-            """
-            INSERT INTO embedding_status (
-                session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message
-            ) VALUES (?, ?, 1, ?, 0, NULL)
-            ON CONFLICT(session_id) DO UPDATE SET
-                origin = excluded.origin,
-                message_count_embedded = (
-                    SELECT COUNT(*) FROM message_embeddings
-                    WHERE session_id = excluded.session_id
-                ),
-                last_embedded_at_ms = excluded.last_embedded_at_ms,
-                needs_reindex = 0,
-                error_message = NULL
-            """,
-            (session_id, origin_value, embedded_at_ms),
+            (message_id, model, EMBEDDING_DIMENSION, content_hash, embedded_at_ms),
         )
     return read_embedding_meta(conn, message_id)
 
@@ -103,8 +86,8 @@ def mark_session_embedding_error(
         conn.execute(
             """
             INSERT INTO embedding_status (
-                session_id, origin, message_count_embedded, needs_reindex, error_message
-            ) VALUES (?, ?, 0, 1, ?)
+                session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message
+            ) VALUES (?, ?, 0, NULL, 1, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 origin = excluded.origin,
                 needs_reindex = 1,
@@ -119,22 +102,21 @@ def read_embedding_meta(conn: sqlite3.Connection, target_id: str) -> ArchiveEmbe
     conn.row_factory = sqlite3.Row
     row = conn.execute(
         """
-        SELECT target_id, target_type, model, dimension, embedded_at_ms, content_hash, origin
-        FROM embeddings_meta
-        WHERE target_id = ?
+        SELECT message_id, model, dimension, content_hash, embedded_at_ms, needs_reindex
+        FROM message_embeddings_meta
+        WHERE message_id = ?
         """,
         (target_id,),
     ).fetchone()
     if row is None:
         raise KeyError(target_id)
     return ArchiveEmbeddingMeta(
-        target_id=row["target_id"],
-        target_type=row["target_type"],
+        message_id=row["message_id"],
         model=row["model"],
         dimension=row["dimension"],
-        embedded_at_ms=row["embedded_at_ms"],
         content_hash=row["content_hash"],
-        origin=row["origin"],
+        embedded_at_ms=row["embedded_at_ms"],
+        needs_reindex=bool(row["needs_reindex"]),
     )
 
 

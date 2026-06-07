@@ -268,7 +268,7 @@ mutation_campaigns:
 benchmark_campaigns:
   - name: pipeline
     description: >
-      Index rebuild/update, action-event repair, plus hashing/semantic helper benchmark domain
+      Index rebuild/update, action repair, plus hashing/semantic helper benchmark domain
     tests:
       - tests/benchmarks/test_pipeline.py
     status: active

@@ -30,7 +30,7 @@ Recent activity (7 days):
   chatgpt       2 sessions    3,200 words  $0.00
 
   Today                                    This week
-  polylogue/docs/design/time-machine.md   polylogue/storage/sqlite/schema_ddl.py
+  polylogue/docs/design/time-machine.md   polylogue/storage/sqlite/archive_tiers/index.py
   ── 2h 15min, 4 tool calls             ── 8 sessions, $1.20
 
 Quick search: polylogue "error handling"
@@ -296,7 +296,7 @@ different presentations.
   does not plan work that should happen.
 - Not a code search engine. FTS5 indexes session text, not code
   repositories. Cross-reference between sessions and code is via
-  `action_events.affected_paths`, not via code indexing.
+  `actions.affected_paths`, not via code indexing.
 - Not a general note-taking tool. Polylogue is for AI sessions
   specifically. General notes, todos, and documentation belong in a
   knowledgebase, not in the archive.

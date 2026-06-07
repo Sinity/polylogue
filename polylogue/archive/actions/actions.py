@@ -1,9 +1,9 @@
-"""Canonical semantic action events derived from tool calls.
+"""Canonical semantic actions derived from tool calls.
 
-Action events sit above raw ToolCall viewports. They preserve the original
+Actions sit above raw ToolCall viewports. They preserve the original
 tool-call evidence while normalizing the fields that downstream consumers
 actually care about: action kind, paths, cwd, branch names, commands,
-search/web targets, and message-scoped event identity.
+search/web targets, and message-scoped action identity.
 """
 
 from __future__ import annotations
@@ -13,17 +13,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from polylogue.archive.action_event.fields import (
+from polylogue.archive.actions.fields import (
     build_search_text,
     extract_branch_names,
     extract_command,
     extract_cwd_path,
     extract_search_query,
     extract_url,
-    make_action_event_id,
+    make_action_id,
     normalize_output_text,
 )
-from polylogue.archive.action_event.parsing import build_tool_calls_from_content_blocks
+from polylogue.archive.actions.parsing import build_tool_calls_from_content_blocks
 from polylogue.archive.viewport.viewports import ToolCall, ToolCategory
 from polylogue.types import Provider
 
@@ -48,10 +48,10 @@ def canonical_tool_name(name: str) -> str:
 
 
 @dataclass(frozen=True, slots=True)
-class ActionEvent:
-    """Normalized semantic event derived from a message tool call."""
+class Action:
+    """Normalized semantic action derived from a message tool call."""
 
-    event_id: str
+    action_id: str
     message_id: str
     timestamp: datetime | None
     sequence_index: int
@@ -74,7 +74,7 @@ class ActionEvent:
         return canonical_tool_name(self.tool_name)
 
 
-class ActionEventMessageLike(Protocol):
+class ActionMessageLike(Protocol):
     @property
     def id(self) -> object: ...
 
@@ -82,12 +82,12 @@ class ActionEventMessageLike(Protocol):
     def timestamp(self) -> datetime | None: ...
 
 
-def build_action_event(
-    message: ActionEventMessageLike,
+def build_action(
+    message: ActionMessageLike,
     call: ToolCall,
     *,
     sequence_index: int,
-) -> ActionEvent:
+) -> Action:
     command = extract_command(call)
     affected_paths = tuple(call.affected_paths)
     cwd_path = extract_cwd_path(call)
@@ -95,8 +95,8 @@ def build_action_event(
     query = extract_search_query(call)
     url = extract_url(call)
     output_text = normalize_output_text(call)
-    return ActionEvent(
-        event_id=make_action_event_id(str(message.id), sequence_index, call.id, call.name),
+    return Action(
+        action_id=make_action_id(str(message.id), sequence_index, call.id, call.name),
         message_id=str(message.id),
         timestamp=message.timestamp,
         sequence_index=sequence_index,
@@ -126,17 +126,17 @@ def build_action_event(
     )
 
 
-def build_action_events(
-    message: ActionEventMessageLike,
+def build_actions(
+    message: ActionMessageLike,
     calls: tuple[ToolCall, ...],
-) -> tuple[ActionEvent, ...]:
-    return tuple(build_action_event(message, call, sequence_index=index) for index, call in enumerate(calls))
+) -> tuple[Action, ...]:
+    return tuple(build_action(message, call, sequence_index=index) for index, call in enumerate(calls))
 
 
 __all__ = [
-    "ActionEvent",
-    "build_action_event",
-    "build_action_events",
+    "Action",
+    "build_action",
+    "build_actions",
     "build_tool_calls_from_content_blocks",
     "canonical_tool_name",
 ]

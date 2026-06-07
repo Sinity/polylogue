@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.archive.action_event.action_events import ActionEvent
+from polylogue.archive.actions.actions import Action
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Message, Session
-from polylogue.archive.session.attribution import extract_attribution, extract_attribution_from_action_events
+from polylogue.archive.session.attribution import extract_attribution, extract_attribution_from_actions
 from polylogue.archive.session.repo_identity import (
     normalize_repo_name,
     normalize_repo_names,
@@ -76,8 +76,8 @@ def test_attribution_does_not_probe_archived_automount_paths(monkeypatch: pytest
         return original_resolve(self, strict=strict)
 
     monkeypatch.setattr(Path, "resolve", fail_on_automount)
-    action = ActionEvent(
-        event_id="evt-automount-path",
+    action = Action(
+        action_id="action-automount-path",
         message_id="msg-automount-path",
         timestamp=datetime(2026, 5, 16, 12, 0, tzinfo=timezone.utc),
         sequence_index=0,
@@ -96,7 +96,7 @@ def test_attribution_does_not_probe_archived_automount_paths(monkeypatch: pytest
         raw={},
     )
 
-    attribution = extract_attribution_from_action_events([action])
+    attribution = extract_attribution_from_actions([action])
 
     assert attribution.file_paths_touched == ("/mnt/pendrv/chatlog/claude_code/project/src/main.py",)
     assert attribution.cwd_paths == ("/mnt/pendrv/chatlog/claude_code/project",)
@@ -293,8 +293,8 @@ def test_extract_attribution_ignores_configured_claude_transcript_repo(tmp_path:
 def test_extract_attribution_filters_transcript_temp_and_snapshot_paths(tmp_path: Path) -> None:
     work_repo = _make_repo(tmp_path, "sinnix")
     system_file = Path("/etc/systemd/system/sinex-gateway.service")
-    action = ActionEvent(
-        event_id="evt-noise-filter",
+    action = Action(
+        action_id="action-noise-filter",
         message_id="msg-noise-filter",
         timestamp=datetime(2026, 4, 12, 15, 0, tzinfo=timezone.utc),
         sequence_index=0,
@@ -325,7 +325,7 @@ def test_extract_attribution_filters_transcript_temp_and_snapshot_paths(tmp_path
         raw={},
     )
 
-    attribution = extract_attribution_from_action_events([action])
+    attribution = extract_attribution_from_actions([action])
 
     assert sorted(attribution.file_paths_touched) == sorted(
         [

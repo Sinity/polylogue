@@ -677,7 +677,7 @@ def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: 
     )
 
     assert cdata.message_tuples[0][6]
-    assert len(cdata.action_event_tuples) == 1
+    assert len(cdata.action_tuples) == 1
 
 
 def test_transform_deduplicates_materialized_message_rows_by_primary_key(tmp_path: Path) -> None:

@@ -102,8 +102,6 @@ def _snapshot(db_path: Path) -> dict[str, int]:
         msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
         fts_docsize = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
         content_hashes = {row[0] for row in conn.execute("SELECT content_hash FROM sessions").fetchall()}
-        action_count = conn.execute("SELECT COUNT(*) FROM action_events").fetchone()[0]
-        action_fts_docsize = conn.execute("SELECT COUNT(*) FROM action_events_fts_docsize").fetchone()[0]
     finally:
         conn.close()
     return {
@@ -111,8 +109,6 @@ def _snapshot(db_path: Path) -> dict[str, int]:
         "messages": msg_count,
         "fts_docsize": fts_docsize,
         "distinct_content_hashes": len(content_hashes),
-        "action_events": action_count,
-        "action_fts_docsize": action_fts_docsize,
     }
 
 
@@ -163,12 +159,7 @@ def test_double_ingest_is_idempotent(
     )
     assert snap2["fts_docsize"] == snap1["fts_docsize"], "FTS docsize changed between passes"
 
-    # Action events integrity (if any).
-    if snap1["action_events"] > 0:
-        assert snap2["action_events"] == snap1["action_events"], (
-            f"Action event count changed: {snap1['action_events']} → {snap2['action_events']}"
-        )
-        assert snap2["action_fts_docsize"] == snap2["action_events"], "Action FTS docsize mismatch after second pass"
+    # Actions integrity (if any).
 
 
 def test_triple_ingest_is_idempotent(

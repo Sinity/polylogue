@@ -125,7 +125,7 @@ async def _refresh_thread_roots_async(
     transaction_depth: int,
 ) -> int:
     from polylogue.storage.sqlite.queries.session_insight_thread_queries import (
-        replace_work_thread,
+        replace_thread,
     )
 
     normalized_root_ids = tuple(dict.fromkeys(str(root_id) for root_id in root_ids if str(root_id)))
@@ -136,7 +136,7 @@ async def _refresh_thread_roots_async(
     refreshed = 0
     for root_id in normalized_root_ids:
         record = thread_records.get(root_id)
-        await replace_work_thread(conn, root_id, record, transaction_depth)
+        await replace_thread(conn, root_id, record, transaction_depth)
         if record is not None:
             refreshed += 1
     return refreshed
@@ -250,7 +250,7 @@ async def _apply_session_insight_session_update_async(
         await conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (session_id,))
         await conn.execute("DELETE FROM session_latency_profiles WHERE session_id = ?", (session_id,))
         await conn.execute(
-            "DELETE FROM session_repo_observations WHERE session_id = ?",
+            "DELETE FROM session_repos WHERE session_id = ?",
             (session_id,),
         )
         await replace_session_work_events(conn, session_id, [], transaction_depth)
@@ -284,13 +284,13 @@ async def _apply_session_insight_session_update_async(
         record_bundle.phase_records,
         transaction_depth,
     )
-    from polylogue.storage.insights.session.repo_identity import (
+    from polylogue.storage.insights.session.repo_observations import (
         RepoObservation,
-        refresh_session_repo_observations,
+        refresh_session_repos,
     )
 
     repo_observations = tuple(obs for obs in record_bundle.repo_observations if isinstance(obs, RepoObservation))
-    await refresh_session_repo_observations(conn, session_id, repo_observations)
+    await refresh_session_repos(conn, session_id, repo_observations)
 
     affected_groups = {
         group
@@ -338,7 +338,7 @@ async def _load_message_counts_async(
         await conn.execute(
             f"""
             SELECT session_id, message_count
-            FROM session_stats
+            FROM sessions
             WHERE session_id IN ({placeholders})
             """,
             tuple(session_ids),
@@ -546,9 +546,9 @@ async def _apply_session_insight_session_updates_async(
             phase_records_to_write,
             transaction_depth,
         )
-        from polylogue.storage.insights.session.repo_identity import (
+        from polylogue.storage.insights.session.repo_observations import (
             RepoObservation,
-            refresh_session_repo_observations,
+            refresh_session_repos,
         )
 
         hydrated_ids: set[str] = set()
@@ -556,13 +556,13 @@ async def _apply_session_insight_session_updates_async(
             bundle_conv_id = str(bundle.profile_record.session_id)
             hydrated_ids.add(bundle_conv_id)
             bundle_observations = tuple(obs for obs in bundle.repo_observations if isinstance(obs, RepoObservation))
-            await refresh_session_repo_observations(conn, bundle_conv_id, bundle_observations)
+            await refresh_session_repos(conn, bundle_conv_id, bundle_observations)
         # Sessions dropped from this chunk still need observation cleanup.
         for session_id in chunk.session_ids:
             if session_id in hydrated_ids:
                 continue
             await conn.execute(
-                "DELETE FROM session_repo_observations WHERE session_id = ?",
+                "DELETE FROM session_repos WHERE session_id = ?",
                 (session_id,),
             )
         write_elapsed_ms = round((time.perf_counter() - write_started) * 1000.0, 1)

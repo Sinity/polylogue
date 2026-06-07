@@ -193,9 +193,7 @@ def fetch_provenance_row(session_id: str) -> ProvenanceRow | None:
     dbp = active_index_db_path()
     archive_db = dbp if dbp.name == "index.db" else dbp.with_name("index.db")
     if archive_db.exists():
-        archive_row = _fetch_archive_provenance_row(archive_db, session_id)
-        if archive_row is not None:
-            return archive_row
+        return _fetch_archive_provenance_row(archive_db, session_id)
     if not dbp.exists():
         return _fetch_archive_provenance_row(archive_db, session_id)
     conn = sqlite3.connect(str(dbp))

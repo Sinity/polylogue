@@ -45,8 +45,6 @@ from polylogue.surfaces.payloads import (
     ReaderActionAvailabilityPayload,
     TargetRefPayload,
     _build_flags_from_session,
-    _extract_cwd,
-    _extract_repo,
     reader_anchor,
     reader_message_actions,
     reader_session_actions,
@@ -999,10 +997,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # Walk all session summaries and emit one entry per
         # paste-flagged message. The message-level ``has_paste`` flag
         # is the load-bearing signal — we deliberately do not pre-
-        # filter on the session-level flag because that flag is
-        # populated from ``session_stats`` which can lag behind
-        # direct message writes (visible to operators staging fixtures
-        # or replaying historical ingests).
+        # filter on the session-level flag; direct message writes in
+        # fixtures or replay paths may be visible before aggregate
+        # columns are refreshed.
         convs = await poly.filter().list_summaries()
         entries: list[PasteBrowserEntry] = []
         total_messages_seen = 0
@@ -1334,8 +1331,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 "updated_at": summary.updated_at.isoformat() if summary.updated_at else None,
                 "message_count": getattr(summary, "message_count", 0) or 0,
                 "word_count": getattr(summary, "word_count", None),
-                "repo": _extract_repo(summary.provider_meta),
-                "cwd_display": _extract_cwd(summary.provider_meta),
+                "repo": getattr(summary, "git_repository_url", None),
+                "cwd_display": next(iter(getattr(summary, "working_directories", ()) or ()), None),
                 "tags": summary.tags,
                 "flags": flags.model_dump(mode="json") if flags else None,
                 "summary": summary.summary,
@@ -1605,9 +1602,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "branch_type": str(conv.branch_type) if conv.branch_type else None,
             "parent_id": str(conv.parent_id) if conv.parent_id else None,
             "session_id": getattr(conv, "session_id", None),
-            "repo": _extract_repo(conv.provider_meta),
-            "cwd_display": _extract_cwd(conv.provider_meta),
-            "model": conv.provider_meta.get("model") if conv.provider_meta else None,
+            "repo": getattr(conv, "git_repository_url", None),
+            "cwd_display": next(iter(getattr(conv, "working_directories", ()) or ()), None),
+            "model": None,
             "flags": flags.model_dump(mode="json") if flags else None,
             "summary": conv.summary,
             "total": len(conv.messages),
@@ -1726,19 +1723,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if conv is None:
             return None
         raw_items = await poly.get_raw_artifacts_for_session(conv_id)
-        provider_meta_serializable: dict[str, object] = {}
-        if conv.provider_meta:
-            for k, v in conv.provider_meta.items():
-                try:
-                    json.dumps({k: v})
-                    provider_meta_serializable[k] = v
-                except (TypeError, ValueError):
-                    provider_meta_serializable[k] = str(v)
         return {
             "id": str(conv.id),
             "origin": conv.origin,
             "title": conv.display_title,
-            "provider_meta": provider_meta_serializable,
+            "working_directories": list(getattr(conv, "working_directories", ()) or ()),
+            "git_branch": getattr(conv, "git_branch", None),
+            "git_repository_url": getattr(conv, "git_repository_url", None),
             "branch_type": str(conv.branch_type) if conv.branch_type else None,
             "parent_id": str(conv.parent_id) if conv.parent_id else None,
             "session_id": getattr(conv, "session_id", None),
@@ -1814,7 +1805,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             ArchiveInsightUnavailableError,
             SessionPhaseInsightQuery,
             SessionWorkEventInsightQuery,
-            WorkThreadInsightQuery,
+            ThreadInsightQuery,
         )
 
         # Confirm the session exists first: distinguishes "unknown
@@ -1883,7 +1874,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             try:
                 # Work threads are not keyed per-session in the substrate;
                 # the reader filters the materialized rows by membership.
-                all_threads = await poly.list_work_thread_insights(WorkThreadInsightQuery(limit=None))
+                all_threads = await poly.list_thread_insights(ThreadInsightQuery(limit=None))
             except ArchiveInsightUnavailableError:
                 all_threads = []
             member_threads = [th for th in all_threads if conv_id in (th.thread.session_ids or ())]

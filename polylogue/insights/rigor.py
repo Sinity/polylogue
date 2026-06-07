@@ -170,7 +170,7 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         ),
     ),
     RigorContract(
-        insight_name="work_threads",
+        insight_name="threads",
         display_name="Work Threads",
         evidence_payload=("thread",),
         inference_payload=(),

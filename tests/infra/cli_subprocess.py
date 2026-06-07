@@ -193,6 +193,11 @@ def setup_isolated_workspace(tmp_path: Path) -> IsolatedWorkspace:
     for path in [polylogue_data, polylogue_config, polylogue_state, inbox, render_root]:
         path.mkdir(parents=True, exist_ok=True)
 
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with ArchiveStore(polylogue_data):
+        pass
+
     # Environment variables - HOME is the key to isolation
     env = {
         "HOME": str(fake_home),

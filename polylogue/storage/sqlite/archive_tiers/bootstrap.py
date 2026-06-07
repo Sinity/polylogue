@@ -133,6 +133,13 @@ def initialize_archive_database(path: Path, tier: ArchiveTier) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     try:
+        current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        expected_version = archive_tier_spec(tier).version
+        if current_version not in (0, expected_version):
+            raise RuntimeError(
+                f"{path.name} schema version {current_version} is not the current {tier.value} tier version "
+                f"{expected_version}; move it aside and rebuild the archive root"
+            )
         initialize_archive_tier(conn, tier)
     finally:
         conn.close()

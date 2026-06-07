@@ -6,14 +6,9 @@ import sqlite3
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable
 from typing import TYPE_CHECKING
 
-import aiosqlite
 from typing_extensions import TypedDict
 
 from polylogue.logging import get_logger
-from polylogue.storage.action_events.rebuild_runtime import (
-    action_event_repair_candidates_async,
-    rebuild_action_event_read_model_async,
-)
 from polylogue.storage.fts.fts_lifecycle import (
     ensure_fts_index_async,
     fts_index_status_async,
@@ -70,32 +65,19 @@ async def rebuild_index(
         session_ids if session_ids is not None else [session_id async for session_id in backend.iter_session_ids()]
     )
     async with backend.connection() as conn:
-        action_targets = await _action_event_repair_targets(conn, session_id_list)
-        action_target_count = len(action_targets)
         del phase_count
-        phase_total = len(session_id_list) + action_target_count
-        if action_targets:
-            if progress_callback is not None:
-                progress_callback(0, desc=f"Indexing: action events 0/{phase_total:,}")
-            await rebuild_action_event_read_model_async(
-                conn,
-                session_ids=action_targets,
-                progress_callback=progress_callback,
-                progress_desc=(_action_progress_desc_factory(phase_total) if progress_callback is not None else None),
-            )
+        phase_total = len(session_id_list)
         if progress_callback is not None and session_id_list:
             progress_callback(
                 0,
-                desc=f"Indexing: full-text search {action_target_count:,}/{phase_total:,}",
+                desc=f"Indexing: full-text search 0/{phase_total:,}",
             )
         await rebuild_fts_index_async(
             conn,
             session_ids=session_id_list,
             progress_callback=progress_callback,
             progress_desc=(
-                _fts_progress_desc_factory(offset=action_target_count, phase_total=phase_total)
-                if progress_callback is not None
-                else None
+                _fts_progress_desc_factory(phase_total=phase_total) if progress_callback is not None else None
             ),
         )
         await conn.commit()
@@ -113,32 +95,19 @@ async def update_index_for_sessions(
     session_id_list = [session_id async for session_id in _iter_ids(session_ids)]
     changed = bool(session_id_list)
     async with backend.connection() as conn:
-        action_targets = await _action_event_repair_targets(conn, session_id_list)
-        action_target_count = len(action_targets)
         del phase_count
-        phase_total = len(session_id_list) + action_target_count
-        if action_targets:
-            if progress_callback is not None:
-                progress_callback(0, desc=f"Indexing: action events 0/{phase_total:,}")
-            await rebuild_action_event_read_model_async(
-                conn,
-                session_ids=action_targets,
-                progress_callback=progress_callback,
-                progress_desc=(_action_progress_desc_factory(phase_total) if progress_callback is not None else None),
-            )
+        phase_total = len(session_id_list)
         if progress_callback is not None and session_id_list:
             progress_callback(
                 0,
-                desc=f"Indexing: full-text search {action_target_count:,}/{phase_total:,}",
+                desc=f"Indexing: full-text search 0/{phase_total:,}",
             )
         await repair_fts_index_async(
             conn,
             session_id_list,
             progress_callback=progress_callback,
             progress_desc=(
-                _fts_progress_desc_factory(offset=action_target_count, phase_total=phase_total)
-                if progress_callback is not None
-                else None
+                _fts_progress_desc_factory(phase_total=phase_total) if progress_callback is not None else None
             ),
         )
         await conn.commit()
@@ -156,33 +125,12 @@ async def _iter_ids(items: Iterable[str] | AsyncIterable[str]) -> AsyncIterator[
         yield item
 
 
-def _action_progress_desc_factory(phase_total: int) -> Callable[[int, int], str]:
+def _fts_progress_desc_factory(*, phase_total: int) -> Callable[[int, int], str]:
     def describe(processed: int, total: int) -> str:
         del total
-        return f"Indexing: action events {processed:,}/{phase_total:,}"
+        return f"Indexing: full-text search {processed:,}/{phase_total:,}"
 
     return describe
-
-
-def _fts_progress_desc_factory(*, offset: int, phase_total: int) -> Callable[[int, int], str]:
-    def describe(processed: int, total: int) -> str:
-        del total
-        return f"Indexing: full-text search {offset + processed:,}/{phase_total:,}"
-
-    return describe
-
-
-async def _action_event_repair_targets(
-    conn: aiosqlite.Connection,
-    session_id_list: list[str],
-) -> list[str]:
-    if not session_id_list:
-        return []
-    candidate_ids = await action_event_repair_candidates_async(conn)
-    if not candidate_ids:
-        return []
-    allowed = set(session_id_list)
-    return [session_id for session_id in candidate_ids if session_id in allowed]
 
 
 async def index_status(backend: SQLiteBackend) -> IndexStatus:

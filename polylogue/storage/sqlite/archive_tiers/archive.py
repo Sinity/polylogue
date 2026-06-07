@@ -17,6 +17,7 @@ from polylogue.archive.semantic.pricing import (
     CostEstimatePayload,
     CostEstimateStatus,
     CostUnavailableReason,
+    _normalize_model,
 )
 from polylogue.archive.stats import ArchiveStats
 from polylogue.core.enums import Provider
@@ -40,11 +41,11 @@ from polylogue.insights.archive import (
     SessionProfileInsight,
     SessionTagRollupInsight,
     SessionWorkEventInsight,
+    ThreadInsight,
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
-    WorkThreadInsight,
 )
-from polylogue.insights.archive_models import WorkThreadMemberEvidencePayload, WorkThreadPayload
+from polylogue.insights.archive_models import ThreadMemberEvidencePayload, ThreadPayload
 from polylogue.insights.archive_rollups import aggregate_cost_rollup_insights
 from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport, _audit_one
 from polylogue.insights.confidence import from_score as confidence_from_score
@@ -84,7 +85,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     read_insight_materialization,
     read_session_phases,
     read_session_work_events,
-    rebuild_archive_blocks_fts,
+    rebuild_archive_messages_fts,
     search_archive_blocks,
     upsert_session_tag,
     write_parsed_session_to_archive,
@@ -114,6 +115,9 @@ class ArchiveSessionSummary:
     message_count: int
     word_count: int
     tags: tuple[str, ...]
+    working_directories: tuple[str, ...] = ()
+    git_branch: str | None = None
+    git_repository_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,9 +173,9 @@ class ArchiveStore:
     def close(self) -> None:
         self._conn.close()
 
-    def write_parsed(self, session: ParsedSession) -> str:
+    def write_parsed(self, session: ParsedSession, *, content_hash: str | None = None) -> str:
         """Write a parsed session to index.db."""
-        return write_parsed_session_to_archive(self._conn, session)
+        return write_parsed_session_to_archive(self._conn, session, content_hash=content_hash)
 
     def write_raw_and_parsed(
         self,
@@ -473,17 +477,17 @@ class ArchiveStore:
                     )
         return [indexed[(str(row["session_id"]), int(row["position"]))] for row in rows]
 
-    def get_work_thread_insight(self, thread_id: str) -> WorkThreadInsight | None:
-        """Read one archive thread projection as a public work-thread insight."""
+    def get_thread_insight(self, thread_id: str) -> ThreadInsight | None:
+        """Read one archive thread projection as a public thread insight."""
         row = self._conn.execute(
-            "SELECT thread_id FROM threads WHERE thread_id = ? OR root_session_id = ?",
-            (thread_id, thread_id),
+            "SELECT thread_id FROM threads WHERE thread_id = ?",
+            (thread_id,),
         ).fetchone()
         if row is None:
             return None
-        return self._work_thread_insight_from_id(str(row["thread_id"]))
+        return self._thread_insight_from_id(str(row["thread_id"]))
 
-    def list_work_thread_insights(
+    def list_thread_insights(
         self,
         *,
         query: str | None = None,
@@ -491,8 +495,8 @@ class ArchiveStore:
         until_ms: int | None = None,
         limit: int | None = 50,
         offset: int = 0,
-    ) -> list[WorkThreadInsight]:
-        """List threads as public work-thread insights."""
+    ) -> list[ThreadInsight]:
+        """List threads as public thread insights."""
         where: list[str] = []
         params: list[object] = []
         if query:
@@ -501,7 +505,6 @@ class ArchiveStore:
                 """
                 (
                     lower(t.thread_id) LIKE ?
-                    OR lower(t.root_session_id) LIKE ?
                     OR EXISTS (
                         SELECT 1
                         FROM thread_sessions qts
@@ -517,12 +520,12 @@ class ArchiveStore:
                 )
                 """.strip()
             )
-            params.extend([like, like, like, like, like, like])
+            params.extend([like, like, like, like, like])
         if since_ms is not None:
-            where.append("COALESCE(t.updated_at_ms, t.created_at_ms) >= ?")
+            where.append("t.created_at_ms >= ?")
             params.append(since_ms)
         if until_ms is not None:
-            where.append("COALESCE(t.created_at_ms, t.updated_at_ms) <= ?")
+            where.append("t.created_at_ms <= ?")
             params.append(until_ms)
         clause = "WHERE " + " AND ".join(where) if where else ""
         pagination = "" if limit is None else " LIMIT ? OFFSET ?"
@@ -533,19 +536,17 @@ class ArchiveStore:
             SELECT t.thread_id
             FROM threads t
             {clause}
-            ORDER BY COALESCE(t.updated_at_ms, t.created_at_ms) DESC, t.thread_id
+            ORDER BY t.created_at_ms DESC, t.thread_id
             {pagination}
             """,
             tuple(params),
         ).fetchall()
-        return [
-            insight for row in rows if (insight := self._work_thread_insight_from_id(str(row["thread_id"]))) is not None
-        ]
+        return [insight for row in rows if (insight := self._thread_insight_from_id(str(row["thread_id"]))) is not None]
 
-    def _work_thread_insight_from_id(self, thread_id: str) -> WorkThreadInsight | None:
+    def _thread_insight_from_id(self, thread_id: str) -> ThreadInsight | None:
         row = self._conn.execute(
             """
-            SELECT thread_id, root_session_id, origin, created_at_ms, updated_at_ms, session_count
+            SELECT thread_id, created_at_ms, session_count
             FROM threads
             WHERE thread_id = ?
             """,
@@ -582,10 +583,10 @@ class ArchiveStore:
         )
         dominant_repo = _dominant_repo(session_rows)
         member_evidence = tuple(
-            WorkThreadMemberEvidencePayload(
+            ThreadMemberEvidencePayload(
                 session_id=str(session["session_id"]),
                 parent_id=str(session["parent_session_id"]) if session["parent_session_id"] else None,
-                role="root" if str(session["session_id"]) == str(row["root_session_id"]) else "child",
+                role="root" if str(session["session_id"]) == str(row["thread_id"]) else "child",
                 depth=_thread_member_depth(session_rows, str(session["session_id"])),
                 confidence=1.0,
                 support_signals=("archive_thread_sessions",),
@@ -593,7 +594,7 @@ class ArchiveStore:
             )
             for index, session in enumerate(session_rows)
         )
-        payload = WorkThreadPayload(
+        payload = ThreadPayload(
             start_time=_iso_from_ms(start_ms),
             end_time=_iso_from_ms(end_ms),
             dominant_repo=dominant_repo,
@@ -610,9 +611,9 @@ class ArchiveStore:
             member_evidence=member_evidence,
         )
         materialization = _read_archive_materialization(self._conn, "thread", thread_id)
-        return WorkThreadInsight(
+        return ThreadInsight(
             thread_id=str(row["thread_id"]),
-            root_id=str(row["root_session_id"]),
+            root_id=str(row["thread_id"]),
             dominant_repo=dominant_repo,
             provenance=_archive_provenance(materialization),
             thread=payload,
@@ -663,7 +664,14 @@ class ArchiveStore:
             f"""
             SELECT s.session_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
                    s.sort_key_ms, sp.cost_credits, sp.cost_usd, sp.cost_is_estimated,
-                   sp.cost_provenance
+                   sp.cost_provenance,
+                   (
+                       SELECT smu.model_name
+                       FROM session_model_usage smu
+                       WHERE smu.session_id = s.session_id
+                       ORDER BY smu.input_tokens + smu.output_tokens DESC, smu.model_name
+                       LIMIT 1
+                   ) AS model_name
             FROM sessions s
             LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
             {clause}
@@ -713,7 +721,7 @@ class ArchiveStore:
     ) -> list[ArchiveDebtInsight]:
         """Report consistency debt."""
         insights = [
-            _archive_blocks_fts_debt(self._conn),
+            _archive_messages_fts_debt(self._conn),
             _archive_profile_rows_debt(self._conn),
             _archive_profile_counts_debt(self._conn),
             _archive_materialization_debt(self._conn),
@@ -803,7 +811,7 @@ class ArchiveStore:
     ) -> list[SessionLatencyProfileInsight]:
         """Return archive latency profiles with stuck tools.
 
-        currently lacks provider event start/end pairs, so stuck
+        currently lacks session event start/end pairs, so stuck
         tool detection remains conservative and this returns only profiles
         whose projected stuck count is non-zero.
         """
@@ -943,7 +951,16 @@ class ArchiveStore:
         row = self._conn.execute(
             f"""
             SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
-                   s.message_count, s.word_count,
+                   s.message_count, s.word_count, s.git_branch, s.git_repository_url,
+                   COALESCE(
+                       (
+                           SELECT json_group_array(swd.path)
+                           FROM session_working_dirs swd
+                           WHERE swd.session_id = s.session_id
+                           ORDER BY swd.position, swd.path
+                       ),
+                       '[]'
+                   ) AS working_directories_json,
                    COALESCE(
                        json_group_array(st.tag) FILTER (WHERE st.tag IS NOT NULL),
                        '[]'
@@ -1000,20 +1017,20 @@ class ArchiveStore:
 
     def rebuild_index(self) -> int:
         """Rebuild the block FTS index from index.db blocks."""
-        rebuilt_rows = rebuild_archive_blocks_fts(self._conn)
+        rebuilt_rows = rebuild_archive_messages_fts(self._conn)
         self._conn.commit()
         return rebuilt_rows
 
     def index_status(self) -> IndexStatus:
         """Return ``{exists, count}`` for the archive block FTS index.
 
-        The block FTS index (``blocks_fts``) is trigger-maintained, so a
+        The block FTS index (``messages_fts`` over ``blocks``) is trigger-maintained, so a
         missing table means it was never built and the count is the
         indexed-block total.
         """
-        if not _table_exists(self._conn, "blocks_fts"):
+        if not _table_exists(self._conn, "messages_fts"):
             return IndexStatus(exists=False, count=0)
-        return IndexStatus(exists=True, count=_count_scalar(self._conn, "SELECT COUNT(*) FROM blocks_fts"))
+        return IndexStatus(exists=True, count=_count_scalar(self._conn, "SELECT COUNT(*) FROM messages_fts"))
 
     def add_user_tags(self, session_ids: tuple[str, ...], tags: tuple[str, ...]) -> int:
         """Add user tags to archive user.db and return changed row count."""
@@ -1224,7 +1241,7 @@ class ArchiveStore:
             SELECT
                 s.origin AS origin,
                 COUNT(DISTINCT s.session_id) AS session_count,
-                COUNT(a.tool_use_block_id) AS action_event_count,
+                COUNT(a.tool_use_block_id) AS action_count,
                 COUNT(DISTINCT COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown')) AS distinct_tool_count,
                 COUNT(DISTINCT COALESCE(NULLIF(a.semantic_type, ''), 'tool_use')) AS distinct_action_kind_count,
                 COUNT(a.tool_use_block_id) AS has_tool_id_signal,
@@ -1233,14 +1250,14 @@ class ArchiveStore:
             FROM sessions s
             LEFT JOIN actions a ON a.session_id = s.session_id
             GROUP BY s.origin
-            ORDER BY action_event_count DESC, session_count DESC, s.origin ASC
+            ORDER BY action_count DESC, session_count DESC, s.origin ASC
             """
         ).fetchall()
         return [
             {
                 "source_name": _provider_for_origin(str(row["origin"])).value,
                 "session_count": int(row["session_count"] or 0),
-                "action_event_count": int(row["action_event_count"] or 0),
+                "action_count": int(row["action_count"] or 0),
                 "distinct_tool_count": int(row["distinct_tool_count"] or 0),
                 "distinct_action_kind_count": int(row["distinct_action_kind_count"] or 0),
                 "has_tool_id_signal": int(row["has_tool_id_signal"] or 0),
@@ -2361,8 +2378,8 @@ class ArchiveStore:
             return list(self.list_session_work_event_insights(limit=limit))
         if insight_name == "session_phases":
             return list(self.list_session_phase_insights(limit=limit))
-        if insight_name == "work_threads":
-            return list(self.list_work_thread_insights(limit=limit))
+        if insight_name == "threads":
+            return list(self.list_thread_insights(limit=limit))
         if insight_name == "session_tag_rollups":
             return list(self.list_session_tag_rollup_insights(limit=limit))
         return []
@@ -2440,8 +2457,8 @@ class ArchiveStore:
                 {"phase_inference_rows_ready": status.phase_inference_rows_ready},
                 ("session_phases",),
             ),
-            "work_threads": (
-                "Work Threads",
+            "threads": (
+                "Threads",
                 "threads",
                 status.thread_count,
                 status.root_threads,
@@ -2602,7 +2619,16 @@ class ArchiveStore:
         rows = self._conn.execute(
             f"""
             SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
-                   s.message_count, s.word_count,
+                   s.message_count, s.word_count, s.git_branch, s.git_repository_url,
+                   COALESCE(
+                       (
+                           SELECT json_group_array(swd.path)
+                           FROM session_working_dirs swd
+                           WHERE swd.session_id = s.session_id
+                           ORDER BY swd.position, swd.path
+                       ),
+                       '[]'
+                   ) AS working_directories_json,
                    COALESCE(
                        json_group_array(st.tag) FILTER (WHERE st.tag IS NOT NULL),
                        '[]'
@@ -2667,7 +2693,7 @@ class ArchiveStore:
         # A real query needs the block FTS index. Surface a degraded index as a
         # sanitized DatabaseError (→ 503 "Search index") instead of a raw
         # ``no such table`` 500 or a misleading empty-result 200.
-        _ensure_blocks_fts_ready(self._conn)
+        _ensure_messages_fts_ready(self._conn)
         where, filter_params = _session_filter_clause(
             "s",
             origin=origin,
@@ -2716,12 +2742,13 @@ class ArchiveStore:
         rows = self._conn.execute(
             f"""
             SELECT b.block_id, b.message_id, b.session_id, s.origin, s.native_id, s.title,
-                   snippet(blocks_fts, 4, '[', ']', '...', 12) AS snippet,
+                   b.search_text AS fallback_text,
+                   snippet(messages_fts, 4, '[', ']', '...', 12) AS snippet,
                    rank
-            FROM blocks_fts
-            JOIN blocks b ON b.rowid = blocks_fts.rowid
+            FROM messages_fts
+            JOIN blocks b ON b.rowid = messages_fts.rowid
             JOIN sessions s ON s.session_id = b.session_id
-            WHERE blocks_fts MATCH ?
+            WHERE messages_fts MATCH ?
             {where}
             {order_by}
             LIMIT ? OFFSET ?
@@ -2737,7 +2764,11 @@ class ArchiveStore:
                 origin=str(row["origin"]),
                 provider=_provider_for_origin(str(row["origin"])),
                 title=str(row["title"]) if row["title"] is not None else None,
-                snippet=str(row["snippet"] or ""),
+                snippet=_highlight_search_snippet(
+                    str(row["snippet"] or ""),
+                    fallback=str(row["fallback_text"] or ""),
+                    query=match_query,
+                ),
             )
             for index, row in enumerate(rows, start=offset + 1)
         ]
@@ -2824,10 +2855,10 @@ class ArchiveStore:
         row = self._conn.execute(
             f"""
             SELECT COUNT(DISTINCT b.session_id)
-            FROM blocks_fts
-            JOIN blocks b ON b.rowid = blocks_fts.rowid
+            FROM messages_fts
+            JOIN blocks b ON b.rowid = messages_fts.rowid
             JOIN sessions s ON s.session_id = b.session_id
-            WHERE blocks_fts MATCH ?
+            WHERE messages_fts MATCH ?
             {where}
             """,
             [match_query, *filter_params],
@@ -3143,6 +3174,8 @@ def _summary_from_row(row: sqlite3.Row) -> ArchiveSessionSummary:
 
     raw_tags = json.loads(str(row["tags_json"] or "[]"))
     tags = tuple(str(tag) for tag in raw_tags if tag is not None)
+    raw_working_dirs = json.loads(str(row["working_directories_json"] or "[]"))
+    working_directories = tuple(str(path) for path in raw_working_dirs if path)
     origin = str(row["origin"])
     return ArchiveSessionSummary(
         session_id=str(row["session_id"]),
@@ -3155,7 +3188,25 @@ def _summary_from_row(row: sqlite3.Row) -> ArchiveSessionSummary:
         message_count=int(row["message_count"] or 0),
         word_count=int(row["word_count"] or 0),
         tags=tags,
+        working_directories=working_directories,
+        git_branch=str(row["git_branch"]) if row["git_branch"] is not None else None,
+        git_repository_url=str(row["git_repository_url"]) if row["git_repository_url"] is not None else None,
     )
+
+
+def _highlight_search_snippet(snippet: str, *, fallback: str, query: str) -> str:
+    """Return bracket-highlighted text when contentless FTS omits markers."""
+    import re
+
+    text = snippet or fallback
+    if "[" in text and "]" in text:
+        return text
+    terms = [term.strip('"') for term in re.findall(r'"[^"]+"|[\w.-]+', query) if term.strip('"')]
+    for term in sorted(terms, key=len, reverse=True):
+        pattern = re.compile(re.escape(term), re.IGNORECASE)
+        if pattern.search(text):
+            return str(pattern.sub(lambda match: f"[{match.group(0)}]", text, count=1))
+    return text
 
 
 def _summary_order_by(*, sample: bool, sort: str | None, reverse: bool) -> str:
@@ -3714,6 +3765,12 @@ def _session_cost_insight_from_archive_row(conn: sqlite3.Connection, row: sqlite
     source_name = _provider_for_origin(str(row["origin"])).value
     total_usd = float(row["cost_usd"] or 0.0)
     cost_provenance = str(row["cost_provenance"] or "")
+    try:
+        raw_model_name = row["model_name"]
+    except (IndexError, KeyError):
+        raw_model_name = None
+    model_name = str(raw_model_name) if raw_model_name is not None else None
+    normalized_model = _normalize_model(model_name) if model_name else None
     status: CostEstimateStatus
     unavailable_reason: CostUnavailableReason | None
     provenance: tuple[str, ...]
@@ -3745,6 +3802,8 @@ def _session_cost_insight_from_archive_row(conn: sqlite3.Connection, row: sqlite
         estimate=CostEstimatePayload(
             source_name=source_name,
             session_id=session_id,
+            model_name=model_name,
+            normalized_model=normalized_model,
             status=status,
             confidence=confidence,
             total_usd=total_usd,
@@ -3796,11 +3855,11 @@ def _stats_by_sql(group_by: str, where: str, *, tags_relation: str = "session_ta
         """
     if group_by == "repo":
         return f"""
-            SELECT COALESCE(NULLIF(r.repo_name, ''), NULLIF(r.root_path, ''), NULLIF(r.repository_url, '')) AS group_key,
+            SELECT COALESCE(NULLIF(r.repo_name, ''), NULLIF(r.root_path, ''), NULLIF(r.origin_url, '')) AS group_key,
                    COUNT(DISTINCT s.session_id) AS count
             FROM sessions s
             JOIN session_repos sr ON sr.session_id = s.session_id
-            JOIN repos r ON r.repository_url = sr.repository_url AND r.root_path = sr.root_path
+            JOIN repos r ON r.repo_id = sr.repo_id
             {where}
             GROUP BY group_key
             HAVING group_key IS NOT NULL
@@ -3920,8 +3979,7 @@ def _session_filter_clause(
                 SELECT 1
                 FROM session_repos filter_session_repos
                 JOIN repos filter_repos
-                  ON filter_repos.repository_url = filter_session_repos.repository_url
-                 AND filter_repos.root_path = filter_session_repos.root_path
+                  ON filter_repos.repo_id = filter_session_repos.repo_id
                 WHERE filter_session_repos.session_id = {table_alias}.session_id
                   AND filter_repos.repo_name IN ({placeholders})
             )
@@ -4190,11 +4248,11 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     return row is not None
 
 
-def _ensure_blocks_fts_ready(conn: sqlite3.Connection) -> None:
-    """Raise ``DatabaseError`` unless the block FTS index is built and complete.
+def _ensure_messages_fts_ready(conn: sqlite3.Connection) -> None:
+    """Raise ``DatabaseError`` unless message FTS is built and complete.
 
     Mirrors the archive FTS readiness contract for the split-
-    file archive: a missing ``blocks_fts`` virtual table means the search index
+    file archive: a missing ``messages_fts`` virtual table means the search index
     was never built, and an FTS row count below the text-bearing block count
     means a bulk write suspended the triggers and never restored them. Both are
     reported as a sanitized ``DatabaseError`` so the reader degrades to a 503
@@ -4204,10 +4262,10 @@ def _ensure_blocks_fts_ready(conn: sqlite3.Connection) -> None:
     from polylogue.errors import DatabaseError
 
     repair_hint = "Run `polylogue check --repair` to rebuild the search index."
-    if not _table_exists(conn, "blocks_fts"):
+    if not _table_exists(conn, "messages_fts"):
         raise DatabaseError(f"Search index not built. {repair_hint}")
-    text_blocks = _count_scalar(conn, "SELECT COUNT(*) FROM blocks WHERE text IS NOT NULL")
-    fts_rows = _count_scalar(conn, "SELECT COUNT(*) FROM blocks_fts")
+    text_blocks = _count_scalar(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''")
+    fts_rows = _count_scalar(conn, "SELECT COUNT(*) FROM messages_fts")
     if fts_rows < text_blocks:
         raise DatabaseError(f"Search index is incomplete. {repair_hint}")
 
@@ -4329,13 +4387,13 @@ def _archive_debt(
     )
 
 
-def _archive_blocks_fts_debt(conn: sqlite3.Connection) -> ArchiveDebtInsight:
-    text_blocks = _count_scalar(conn, "SELECT COUNT(*) FROM blocks WHERE text IS NOT NULL")
-    fts_rows = _count_scalar(conn, "SELECT COUNT(*) FROM blocks_fts")
+def _archive_messages_fts_debt(conn: sqlite3.Connection) -> ArchiveDebtInsight:
+    text_blocks = _count_scalar(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''")
+    fts_rows = _count_scalar(conn, "SELECT COUNT(*) FROM messages_fts")
     issue_count = abs(text_blocks - fts_rows)
-    detail = "archive block FTS synchronized" if issue_count == 0 else f"{issue_count:,} block FTS row mismatch"
+    detail = "archive message FTS synchronized" if issue_count == 0 else f"{issue_count:,} message FTS row mismatch"
     return _archive_debt(
-        name="archive_blocks_fts",
+        name="archive_messages_fts",
         category="derived_repair",
         issue_count=issue_count,
         detail=detail,
@@ -4658,10 +4716,10 @@ def _coverage_repos_active(
     )
     rows = conn.execute(
         f"""
-        SELECT DISTINCT COALESCE(NULLIF(r.repo_name, ''), NULLIF(r.root_path, ''), NULLIF(r.repository_url, '')) AS repo
+        SELECT DISTINCT COALESCE(NULLIF(r.repo_name, ''), NULLIF(r.root_path, ''), NULLIF(r.origin_url, '')) AS repo
         FROM sessions s
         JOIN session_repos sr ON sr.session_id = s.session_id
-        JOIN repos r ON r.repository_url = sr.repository_url AND r.root_path = sr.root_path
+        JOIN repos r ON r.repo_id = sr.repo_id
         {where}
         ORDER BY repo
         """,

@@ -350,16 +350,16 @@ def _seed_reader_user_state(workspace: ReaderWorkspace) -> None:
         user_conn.close()
 
 
-def _degrade_block_fts(workspace: ReaderWorkspace) -> None:
-    """Drop the native block FTS virtual table and its sync triggers so a real
+def _degrade_message_fts(workspace: ReaderWorkspace) -> None:
+    """Drop the native message FTS virtual table and its sync triggers so a real
     query degrades to a sanitized 503 "Search index" response, mirroring an
     interrupted bulk import that never rebuilt the search index."""
     db = index_db_path(workspace)
     conn = sqlite3.connect(str(db))
     try:
-        for trigger in ("blocks_fts_ai", "blocks_fts_ad", "blocks_fts_au"):
+        for trigger in ("messages_fts_ai", "messages_fts_ad", "messages_fts_au"):
             conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
-        conn.execute("DROP TABLE IF EXISTS blocks_fts")
+        conn.execute("DROP TABLE IF EXISTS messages_fts")
         conn.commit()
     finally:
         conn.close()
@@ -377,10 +377,10 @@ def seed_reader_archive(
         _rebuild_reader_insights(workspace)
         _seed_reader_user_state(workspace)
         if not message_fts:
-            _degrade_block_fts(workspace)
+            _degrade_message_fts(workspace)
     else:
         # An empty archive still needs the index.db to exist (with its
-        # full schema, including blocks_fts) so the daemon routes through the
+        # full schema, including messages_fts) so the daemon routes through the
         # archive reader.
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier

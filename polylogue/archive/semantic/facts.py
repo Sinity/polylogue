@@ -7,7 +7,7 @@ from collections.abc import Collection, Iterator, Sequence
 from datetime import datetime
 from typing import Protocol
 
-from polylogue.archive.action_event.action_events import ActionEvent, build_action_events
+from polylogue.archive.actions.actions import Action, build_actions
 from polylogue.archive.message.roles import MessageRoleFilter, Role, message_role_labels
 from polylogue.archive.semantic.models import (
     MCPDetailSemanticFacts,
@@ -207,8 +207,8 @@ def build_projection_semantic_facts(projection: ProjectionLike) -> ProjectionSem
 
 def build_message_semantic_facts(message: SemanticSessionMessageLike) -> MessageSemanticFacts:
     tool_calls = message_tool_calls(message)
-    action_events = build_action_events(message, tool_calls)
-    tool_category_counts = Counter(action.kind.value for action in action_events)
+    actions = build_actions(message, tool_calls)
+    tool_category_counts = Counter(action.kind.value for action in actions)
     return MessageSemanticFacts(
         message_id=str(message.id),
         role=normalized_role_label(message.role),
@@ -227,7 +227,7 @@ def build_message_semantic_facts(message: SemanticSessionMessageLike) -> Message
         is_tool_use=message.is_tool_use,
         is_substantive=message.is_substantive,
         tool_calls=tool_calls,
-        action_events=action_events,
+        actions=actions,
         tool_category_counts=sorted_counts(dict(tool_category_counts)),
         reasoning_traces=message_reasoning_traces(message),
     )
@@ -260,7 +260,7 @@ def build_session_semantic_facts(session: SemanticSessionLike) -> SessionSemanti
     substantive_messages = 0
     word_count = 0
     timestamps: list[datetime] = []
-    action_events: list[ActionEvent] = []
+    actions: list[Action] = []
     timestamped_messages = 0
 
     for message_fact in message_facts:
@@ -275,7 +275,7 @@ def build_session_semantic_facts(session: SemanticSessionLike) -> SessionSemanti
         if message_fact.is_substantive:
             substantive_messages += 1
         word_count += message_fact.word_count
-        action_events.extend(message_fact.action_events)
+        actions.extend(message_fact.actions)
         if message_fact.timestamp is not None:
             timestamps.append(message_fact.timestamp)
             timestamped_messages += 1
@@ -318,7 +318,7 @@ def build_session_semantic_facts(session: SemanticSessionLike) -> SessionSemanti
         branch_messages=branch_messages,
         word_count=word_count,
         tool_category_counts=sorted_counts(dict(tool_categories)),
-        action_events=tuple(action_events),
+        actions=tuple(actions),
         first_message_at=first_message_at,
         last_message_at=last_message_at,
         wall_duration_ms=wall_duration_ms,

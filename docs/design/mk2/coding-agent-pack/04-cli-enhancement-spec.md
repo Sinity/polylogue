@@ -183,7 +183,7 @@ next: polylogue messages <id> --limit 50 --offset 50
 
 ### `raw`
 
-Help text must say raw archive artifact payloads. Do not claim true provider-event paging unless implemented.
+Help text must say raw archive artifact payloads. Do not claim true session-event paging unless implemented.
 
 ## Colors
 

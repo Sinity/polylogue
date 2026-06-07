@@ -29,8 +29,8 @@ def _profile_timestamp_bounds(
     Order of preference:
       1. facts.{first,last}_message_at — provider-supplied per-message
          timestamps, the strongest signal.
-      2. provider_event timestamps — codex pre-Dec-2025 has empty
-         message-level timestamps but rich provider_events with timestamps.
+      2. session_event timestamps — codex pre-Dec-2025 has empty
+         message-level timestamps but rich session_events with timestamps.
          Mining those yields a real session window instead of forcing a
          single-instant fallback.
       3. session.{created,updated}_at — last resort when neither
@@ -42,18 +42,18 @@ def _profile_timestamp_bounds(
             facts.last_message_at or facts.first_message_at,
             "provider_supplied",
         )
-    # Codex pre-Dec-2025: messages carry no timestamps, but provider_events
+    # Codex pre-Dec-2025: messages carry no timestamps, but session_events
     # (function_call, response_item, session_meta) do. Use them to derive
     # a real session window rather than collapsing to a single session
     # timestamp.
     event_timestamps: list[datetime] = [
-        event.timestamp for event in session.provider_events if event.timestamp is not None
+        event.timestamp for event in session.session_events if event.timestamp is not None
     ]
     if event_timestamps:
         return (
             min(event_timestamps),
             max(event_timestamps),
-            "provider_events_fallback",
+            "session_events_fallback",
         )
     session_start = session.created_at or session.updated_at
     session_end = session.updated_at or session.created_at
@@ -180,10 +180,19 @@ _ERROR_MARKERS = ("error", "failed", "failure", "traceback", "exception", "panic
 def _terminal_state(
     session: Session, analysis: SessionAnalysis
 ) -> tuple[str, float, dict[str, int | float | str | None]]:
+    pending_actions = [action for action in analysis.facts.actions if action.output_text is None]
+    if pending_actions:
+        return "tool_left", 0.9, {"pending_tool_count": len(pending_actions)}
+    trailing_error_action_id: str | None = None
+    for action in analysis.facts.actions:
+        output_text = (action.output_text or "").lower()
+        if any(marker in output_text for marker in _ERROR_MARKERS):
+            trailing_error_action_id = action.action_id
+
     pending: set[str] = set()
     pending_without_id = 0
     trailing_error_event_id: str | None = None
-    for event in sorted(session.provider_events, key=lambda item: item.event_index):
+    for event in sorted(session.session_events, key=lambda item: item.event_index):
         event_type = str(event.event_type).strip().lower()
         call_id_value = event.payload.get("call_id")
         call_id = call_id_value.strip() if isinstance(call_id_value, str) and call_id_value.strip() else None
@@ -207,6 +216,8 @@ def _terminal_state(
         message for message in analysis.facts.message_facts if message.text.strip() and not message.is_protocol_artifact
     ]
     last = meaningful[-1] if meaningful else None
+    if trailing_error_action_id is not None:
+        return "error_left", 0.78, {"action_id": trailing_error_action_id}
     if trailing_error_event_id is not None:
         return "error_left", 0.78, {"event_id": trailing_error_event_id}
     if last is None:
@@ -268,12 +279,12 @@ def build_session_profile(
     resolved_compaction_count = (
         compaction_count
         if compaction_count is not None
-        else sum(1 for event in session.provider_events if event.event_type == "compaction")
+        else sum(1 for event in session.session_events if event.event_type == "compaction")
     )
     engaged_duration_ms = sum(int(phase.duration_ms or 0) for phase in session_analysis.phases)
     if engaged_duration_ms <= 0:
         engaged_duration_ms = max(int(session.total_duration_ms or 0), 0)
-    tool_active_duration_ms = compute_tool_active_duration_ms(session.provider_events)
+    tool_active_duration_ms = compute_tool_active_duration_ms(session.session_events)
     workflow_shape, workflow_shape_confidence, workflow_shape_features = _workflow_shape(
         session_analysis,
         compaction_count=resolved_compaction_count,

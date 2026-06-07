@@ -1,8 +1,9 @@
-"""Canonical schema bootstrap for sync and async SQLite backends.
+"""Canonical index-tier bootstrap for sync and async SQLite backends.
 
 Polylogue has no in-place schema upgrade chain. The runtime knows exactly one
-schema shape: the canonical DDL in :mod:`polylogue.storage.sqlite.schema_ddl`
-at version :data:`SCHEMA_VERSION`. Bootstrap accepts only:
+index-tier schema shape: the DDL in
+:mod:`polylogue.storage.sqlite.archive_tiers.index` at version
+:data:`SCHEMA_VERSION`. Bootstrap accepts only:
 
 * ``current_version == 0`` (a brand-new file) — create fresh.
 * ``current_version == SCHEMA_VERSION`` — open as-is.
@@ -23,14 +24,10 @@ from typing import Literal
 
 import aiosqlite
 
-from polylogue.logging import get_logger
-from polylogue.storage.sqlite.schema_ddl import (
-    _VEC0_DDL,
-    SCHEMA_DDL,
-    SCHEMA_VERSION,
-)
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL, INDEX_SCHEMA_VERSION
 
-logger = get_logger(__name__)
+SCHEMA_DDL = INDEX_DDL
+SCHEMA_VERSION = INDEX_SCHEMA_VERSION
 
 
 @dataclass(frozen=True)
@@ -83,36 +80,12 @@ async def capture_schema_snapshot_async(conn: aiosqlite.Connection) -> SchemaSna
 
 
 def ensure_vec0_table(conn: sqlite3.Connection) -> None:
-    # Probe gates whether vec0 is available; absence is the common case
-    # (extension not loaded) and is intentionally silent. DDL failure after
-    # the probe succeeds is corruption-shaped and must surface in logs.
-    try:
-        conn.execute("SELECT vec_version()")
-    except Exception:
-        return
-    try:
-        conn.execute(_VEC0_DDL)
-    except Exception:
-        logger.exception(
-            "vec_version() succeeded but _VEC0_DDL failed; vector table may be "
-            "partially initialized — semantic search will return empty results "
-            "until the database is reset",
-        )
+    """Index bootstrap does not own vector storage."""
+    del conn
 
 
 async def ensure_vec0_table_async(conn: aiosqlite.Connection) -> None:
-    try:
-        await conn.execute("SELECT vec_version()")
-    except Exception:
-        return
-    try:
-        await conn.execute(_VEC0_DDL)
-    except Exception:
-        logger.exception(
-            "vec_version() succeeded but _VEC0_DDL failed; vector table may be "
-            "partially initialized — semantic search will return empty results "
-            "until the database is reset",
-        )
+    del conn
 
 
 __all__ = [

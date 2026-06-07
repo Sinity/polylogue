@@ -8,8 +8,9 @@ from .base_models import (
     ParsedAttachment,
     ParsedContentBlock,
     ParsedMessage,
-    ParsedProviderEvent,
+    ParsedPasteEvidence,
     ParsedSession,
+    ParsedSessionEvent,
     RawSessionData,
 )
 from .base_support import (
@@ -22,8 +23,9 @@ __all__ = [
     "ParsedContentBlock",
     "ParsedMessage",
     "ParsedAttachment",
+    "ParsedPasteEvidence",
     "ParsedSession",
-    "ParsedProviderEvent",
+    "ParsedSessionEvent",
     "RawSessionData",
     "normalize_role",
     "content_blocks_from_segments",

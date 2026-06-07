@@ -17,7 +17,6 @@ from polylogue.archive.session.session_profile import SessionProfile, build_sess
 from polylogue.core.common import chunked
 from polylogue.core.memory import release_process_memory
 from polylogue.protocols import ProgressCallback
-from polylogue.storage.action_events.rows import attach_blocks_to_messages
 from polylogue.storage.hydrators import session_from_records
 from polylogue.storage.insights.session.aggregates import (
     list_async_provider_day_groups,
@@ -41,8 +40,8 @@ from polylogue.storage.insights.session.storage import (
     replace_session_phases_bulk_sync,
     replace_session_profiles_bulk_sync,
     replace_session_work_events_bulk_sync,
-    replace_work_thread_sync,
-    replace_work_threads_bulk_sync,
+    replace_thread_sync,
+    replace_threads_bulk_sync,
 )
 from polylogue.storage.insights.session.threads import (
     build_thread_records_for_roots_async,
@@ -60,7 +59,7 @@ from polylogue.storage.runtime import (
     AttachmentRecord,
     ContentBlockRecord,
     MessageRecord,
-    ProviderEventRecord,
+    SessionEventRecord,
     SessionLatencyProfileRecord,
     SessionPhaseRecord,
     SessionProfileRecord,
@@ -72,29 +71,27 @@ from polylogue.storage.sqlite.queries.mappers import (
     _json_object,
     _parse_json,
     _row_float,
-    _row_get,
     _row_text,
     _row_to_content_block,
     _row_to_message,
     _row_to_session_profile_record,
 )
-from polylogue.storage.sqlite.queries.provider_events import (
-    get_provider_event_compaction_counts,
-    get_provider_events_batch,
-    sync_provider_event_compaction_counts,
-    sync_provider_events_batch,
+from polylogue.storage.sqlite.queries.session_events import (
+    get_session_event_compaction_counts,
+    get_session_events_batch,
+    sync_session_event_compaction_counts,
+    sync_session_events_batch,
 )
 from polylogue.types import SessionId
 
-_ALL_SESSION_IDS_SQL = "SELECT session_id FROM sessions ORDER BY COALESCE(sort_key, 0) DESC, session_id"
+_ALL_SESSION_IDS_SQL = "SELECT session_id FROM sessions ORDER BY COALESCE(sort_key_ms, 0) DESC, session_id"
 _ALL_SESSION_PROFILE_ROWS_SQL = """
 SELECT *
 FROM session_profiles
 ORDER BY COALESCE(source_sort_key, 0) DESC, session_id
 """
-# Full rebuilds must tolerate pathological historical provider_meta blobs and
-# very large session payloads without letting a single chunk inflate RSS
-# into multi-GB territory. The message-budget chunker
+# Full rebuilds must tolerate very large session payloads without letting a
+# single chunk inflate RSS into multi-GB territory. The message-budget chunker
 # (_chunk_session_ids_by_message_budget_sync) caps total messages per
 # chunk, so the page size only controls per-session SQL round-trips.
 # A page size of 1 caused ~17K round-trips for ~4K sessions on the
@@ -108,64 +105,67 @@ _SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS = 4_096
 _SESSION_INSIGHT_SESSION_SQL_TEMPLATE = """
 SELECT
     session_id,
-    source_name,
-    provider_session_id,
+    origin,
+    native_id,
     title,
-    created_at,
-    updated_at,
-    sort_key,
-    content_hash,
-    metadata,
-    version,
+    CASE WHEN created_at_ms IS NULL THEN NULL ELSE datetime(created_at_ms / 1000, 'unixepoch') || '+00:00' END AS created_at,
+    CASE WHEN updated_at_ms IS NULL THEN NULL ELSE datetime(updated_at_ms / 1000, 'unixepoch') || '+00:00' END AS updated_at,
+    CAST(sort_key_ms AS REAL) / 1000.0 AS sort_key,
+    hex(content_hash) AS content_hash,
+    '{}' AS metadata,
+    1 AS version,
     parent_session_id,
     branch_type,
     raw_id,
-    json_extract(provider_meta, '$.cwd') AS provider_meta_cwd,
-    json_extract(provider_meta, '$.gitBranch') AS provider_meta_git_branch,
-    json_extract(provider_meta, '$.git') AS provider_meta_git,
-    json_extract(provider_meta, '$.total_cost_usd') AS provider_meta_total_cost_usd,
-    json_extract(provider_meta, '$.total_duration_ms') AS provider_meta_total_duration_ms,
-    json_extract(provider_meta, '$.models_used') AS provider_meta_models_used
+    (SELECT json_group_array(path) FROM session_working_dirs swd WHERE swd.session_id = sessions.session_id ORDER BY position) AS working_directories_json,
+    git_branch,
+    git_repository_url
 FROM sessions
 WHERE session_id IN ({placeholders})
 """
 _SESSION_INSIGHT_MESSAGE_SQL_TEMPLATE = """
 SELECT
-    message_id,
-    session_id,
-    provider_message_id,
-    role,
-    CASE
-        WHEN text IS NULL THEN NULL
-        ELSE substr(text, 1, ?)
-    END AS text,
-    sort_key,
-    content_hash,
-    version,
-    parent_message_id,
-    branch_index,
-    source_name,
-    word_count,
-    has_tool_use,
-    has_thinking,
-    has_paste,
-    input_tokens,
-    output_tokens,
-    cache_read_tokens,
-    cache_write_tokens,
-    model_name,
-    message_type
-FROM messages
-WHERE session_id IN ({placeholders})
-ORDER BY session_id, sort_key, message_id
+    m.message_id,
+    m.session_id,
+    m.native_id AS provider_message_id,
+    m.role,
+    (
+        SELECT substr(b.text, 1, ?)
+        FROM blocks b
+        WHERE b.message_id = m.message_id
+          AND b.block_type = 'text'
+          AND b.text IS NOT NULL
+        ORDER BY b.position
+        LIMIT 1
+    ) AS text,
+    CAST(m.occurred_at_ms AS REAL) / 1000.0 AS sort_key,
+    hex(m.content_hash) AS content_hash,
+    1 AS version,
+    m.parent_message_id,
+    m.variant_index AS branch_index,
+    s.origin AS source_name,
+    m.word_count,
+    m.has_tool_use,
+    m.has_thinking,
+    m.has_paste,
+    m.input_tokens,
+    m.output_tokens,
+    m.cache_read_tokens,
+    m.cache_write_tokens,
+    m.model_name,
+    m.message_type
+FROM messages m
+JOIN sessions s ON s.session_id = m.session_id
+WHERE m.session_id IN ({placeholders})
+ORDER BY m.session_id, m.position, m.message_id
 """
 _SESSION_INSIGHT_BLOCK_SQL_TEMPLATE = """
 SELECT
     block_id,
     message_id,
     session_id,
-    block_index,
-    type,
+    position AS block_index,
+    block_type AS type,
     CASE
         WHEN text IS NULL THEN NULL
         ELSE substr(text, 1, ?)
@@ -173,21 +173,12 @@ SELECT
     tool_name,
     tool_id,
     tool_input,
-    metadata,
+    NULL AS metadata,
     semantic_type
-FROM content_blocks
+FROM blocks
 WHERE session_id IN ({placeholders})
-  AND message_id IN (
-      SELECT message_id
-      FROM messages
-      WHERE session_id IN ({placeholders})
-        AND (
-            has_tool_use != 0
-            OR has_thinking != 0
-            OR message_type IN ('tool_use', 'tool_result', 'thinking')
-        )
-  )
-ORDER BY session_id, message_id, block_index
+  AND block_type != 'text'
+ORDER BY session_id, message_id, position
 """
 
 
@@ -196,7 +187,7 @@ class SessionInsightArchiveBatch:
     sessions: list[SessionRecord]
     messages: list[MessageRecord]
     attachments_by_session: dict[str, list[AttachmentRecord]]
-    provider_events_by_session: dict[str, list[ProviderEventRecord]]
+    session_events_by_session: dict[str, list[SessionEventRecord]]
     compaction_counts_by_session: dict[str, int]
     blocks: list[ContentBlockRecord]
 
@@ -208,10 +199,10 @@ class SessionInsightRecordBundle:
     work_event_records: list[SessionWorkEventRecord]
     phase_records: list[SessionPhaseRecord]
     repo_observations: tuple[object, ...] = ()
-    """Repo identity observations for ``session_repo_observations`` (#1253).
+    """Repo observations for ``session_repos`` (#1253).
 
     Typed as ``RepoObservation`` from
-    ``polylogue.storage.insights.session.repo_identity``; kept as
+    ``polylogue.storage.insights.session.repo_observations``; kept as
     ``object`` here to avoid a circular import at module load time.
     """
 
@@ -276,48 +267,40 @@ async def iter_session_id_pages_async(
 
 
 def _row_to_session_insight_session(row: sqlite3.Row) -> SessionRecord:
-    provider_meta: dict[str, object] = {}
-    cwd_value = _row_get(row, "provider_meta_cwd")
-    if isinstance(cwd_value, str) and cwd_value:
-        provider_meta["cwd"] = cwd_value
-    git_branch = _row_get(row, "provider_meta_git_branch")
-    if isinstance(git_branch, str) and git_branch:
-        provider_meta["gitBranch"] = git_branch
-    git_raw = _row_get(row, "provider_meta_git")
-    if isinstance(git_raw, str) and git_raw:
-        parsed_git = _parse_json(git_raw, field="provider_meta.git", record_id=row["session_id"])
-        if isinstance(parsed_git, dict) and parsed_git:
-            provider_meta["git"] = parsed_git
-    total_cost = _row_get(row, "provider_meta_total_cost_usd")
-    if isinstance(total_cost, int | float):
-        provider_meta["total_cost_usd"] = float(total_cost)
-    total_duration = _row_get(row, "provider_meta_total_duration_ms")
-    if isinstance(total_duration, int | float):
-        provider_meta["total_duration_ms"] = int(total_duration)
-    models_used = _row_get(row, "provider_meta_models_used")
-    if isinstance(models_used, str) and models_used:
-        parsed_models = _parse_json(models_used, field="provider_meta.models_used", record_id=row["session_id"])
-        if isinstance(parsed_models, list):
-            provider_meta["models_used"] = [item for item in parsed_models if isinstance(item, str)]
     parent_session_id = _row_text(row, "parent_session_id")
     branch_type = _row_text(row, "branch_type")
 
     return SessionRecord(
         session_id=row["session_id"],
-        source_name=row["source_name"],
-        provider_session_id=row["provider_session_id"],
+        origin=row["origin"],
+        native_id=row["native_id"],
         title=row["title"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         sort_key=_row_float(row, "sort_key"),
         content_hash=row["content_hash"],
-        provider_meta=provider_meta or None,
         metadata=_json_object(_parse_json(row["metadata"], field="metadata", record_id=row["session_id"])),
         version=row["version"],
         parent_session_id=SessionId(parent_session_id) if parent_session_id is not None else None,
         branch_type=BranchType(branch_type) if branch_type is not None else None,
         raw_id=_row_text(row, "raw_id"),
+        working_directories_json=_row_text(row, "working_directories_json"),
+        git_branch=_row_text(row, "git_branch"),
+        git_repository_url=_row_text(row, "git_repository_url"),
     )
+
+
+def attach_blocks_to_messages(
+    messages: Sequence[MessageRecord],
+    content_blocks: Sequence[ContentBlockRecord],
+) -> list[MessageRecord]:
+    grouped: dict[str, list[ContentBlockRecord]] = defaultdict(list)
+    for block in content_blocks:
+        grouped[str(block.message_id)].append(block)
+    return [
+        message.model_copy(update={"content_blocks": list(grouped.get(str(message.message_id), []))})
+        for message in messages
+    ]
 
 
 def _load_message_counts_sync(
@@ -330,7 +313,7 @@ def _load_message_counts_sync(
     rows = conn.execute(
         f"""
         SELECT session_id, message_count
-        FROM session_stats
+        FROM sessions
         WHERE session_id IN ({placeholders})
         """,
         tuple(session_ids),
@@ -389,7 +372,17 @@ def sync_attachment_batch(
     placeholders = ", ".join("?" for _ in session_ids)
     rows = conn.execute(
         f"""
-        SELECT a.*, r.message_id, r.session_id
+        SELECT
+            a.attachment_id,
+            a.display_name,
+            a.media_type AS mime_type,
+            a.byte_count AS size_bytes,
+            COALESCE(r.source_url, a.display_name) AS path,
+            r.source_url,
+            r.caption,
+            r.upload_origin,
+            r.message_id,
+            r.session_id
         FROM attachments a
         JOIN attachment_refs r ON a.attachment_id = r.attachment_id
         WHERE r.session_id IN ({placeholders})
@@ -407,7 +400,10 @@ def sync_attachment_batch(
                 mime_type=row["mime_type"],
                 size_bytes=row["size_bytes"],
                 path=row["path"],
-                provider_meta=None,
+                display_name=row["display_name"],
+                source_url=row["source_url"],
+                caption=row["caption"],
+                upload_origin=row["upload_origin"],
             )
         )
     return result
@@ -436,15 +432,15 @@ def load_sync_batch(
         _row_to_content_block(row)
         for row in conn.execute(
             _SESSION_INSIGHT_BLOCK_SQL_TEMPLATE.format(placeholders=placeholders),
-            (_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS, *session_ids, *session_ids),
+            (_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS, *session_ids),
         ).fetchall()
     ]
     return SessionInsightArchiveBatch(
         sessions=sessions,
         messages=messages,
         attachments_by_session=sync_attachment_batch(conn, session_ids),
-        provider_events_by_session=sync_provider_events_batch(conn, session_ids),
-        compaction_counts_by_session=sync_provider_event_compaction_counts(conn, session_ids),
+        session_events_by_session=sync_session_events_batch(conn, session_ids),
+        compaction_counts_by_session=sync_session_event_compaction_counts(conn, session_ids),
         blocks=blocks,
     )
 
@@ -477,18 +473,18 @@ async def load_async_batch(
         for row in await (
             await conn.execute(
                 _SESSION_INSIGHT_BLOCK_SQL_TEMPLATE.format(placeholders=placeholders),
-                (_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS, *session_ids, *session_ids),
+                (_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS, *session_ids),
             )
         ).fetchall()
     ]
     attachments = await get_attachments_batch(conn, list(session_ids))
-    provider_events = await get_provider_events_batch(conn, list(session_ids))
-    compaction_counts = await get_provider_event_compaction_counts(conn, list(session_ids))
+    session_events = await get_session_events_batch(conn, list(session_ids))
+    compaction_counts = await get_session_event_compaction_counts(conn, list(session_ids))
     return SessionInsightArchiveBatch(
         sessions=sessions,
         messages=messages,
         attachments_by_session=attachments,
-        provider_events_by_session=provider_events,
+        session_events_by_session=session_events,
         compaction_counts_by_session=compaction_counts,
         blocks=blocks,
     )
@@ -516,7 +512,7 @@ def hydrate_sessions(
                 session,
                 attached_messages,
                 batch.attachments_by_session.get(session_id, []),
-                batch.provider_events_by_session.get(session_id, []),
+                batch.session_events_by_session.get(session_id, []),
             )
         )
     return hydrated
@@ -528,21 +524,14 @@ def build_session_insight_records(
     compaction_count: int | None = None,
     logical_session_id: str | None = None,
 ) -> SessionInsightRecordBundle:
-    from polylogue.storage.insights.session.repo_identity import attribution_to_observations
+    from polylogue.storage.insights.session.repo_observations import attribution_to_observations
 
     analysis = build_session_analysis(session)
     profile = build_session_profile(session, analysis=analysis, compaction_count=compaction_count)
     materialized_at = now_iso()
-    provider_meta: dict[str, object] = session.provider_meta if isinstance(session.provider_meta, dict) else {}
-    git_meta = provider_meta.get("git")
-    git_repository_url: str | None = None
-    if isinstance(git_meta, dict):
-        repository_url = git_meta.get("repository_url")
-        if isinstance(repository_url, str) and repository_url.strip():
-            git_repository_url = repository_url.strip()
     repo_observations = attribution_to_observations(
         analysis.attribution,
-        git_repository_url=git_repository_url,
+        git_repository_url=session.git_repository_url,
     )
     latency_facts = build_latency_profile_facts(session, profile)
     return SessionInsightRecordBundle(
@@ -645,7 +634,7 @@ def _refresh_thread_roots_sync(
     if not normalized_root_ids:
         return 0
     records_by_root = build_thread_records_for_roots_sync(conn, normalized_root_ids)
-    replace_work_threads_bulk_sync(conn, {root_id: records_by_root.get(root_id) for root_id in normalized_root_ids})
+    replace_threads_bulk_sync(conn, {root_id: records_by_root.get(root_id) for root_id in normalized_root_ids})
     return len(normalized_root_ids)
 
 
@@ -699,8 +688,6 @@ def rebuild_session_insights_sync(
                 "session_latency_profiles",
                 "session_profiles",
                 "session_tag_rollups",
-                "session_repo_observations",
-                "repo_identities",
             ),
             progress_callback=progress_callback,
         )
@@ -754,19 +741,6 @@ def rebuild_session_insights_sync(
             conn,
             {bundle.session_id: bundle.phase_records for bundle in record_bundles},
         )
-        from polylogue.storage.insights.session.repo_identity import (
-            RepoObservation as _RepoObservationSync,
-        )
-        from polylogue.storage.insights.session.repo_identity import (
-            refresh_session_repo_observations_sync as _refresh_repo_obs_sync,
-        )
-
-        for bundle in record_bundles:
-            _refresh_repo_obs_sync(
-                conn,
-                str(bundle.session_id),
-                tuple(obs for obs in bundle.repo_observations if isinstance(obs, _RepoObservationSync)),
-            )
         for bundle in record_bundles:
             group = profile_provider_day(bundle.profile_record)
             if group is not None:
@@ -787,7 +761,7 @@ def rebuild_session_insights_sync(
             release_process_memory()
     if not saw_session_ids:
         if session_ids is None:
-            conn.execute("DELETE FROM work_threads")
+            conn.execute("DELETE FROM threads")
             conn.execute("DELETE FROM session_phases")
             conn.execute("DELETE FROM session_tag_rollups")
         conn.commit()
@@ -810,7 +784,7 @@ def rebuild_session_insights_sync(
             tag_rollups=int(tag_rollup_count),
         )
 
-    conn.execute("DELETE FROM work_threads")
+    conn.execute("DELETE FROM threads")
     thread_count = 0
     for root_chunk in iter_root_id_pages_sync(conn):
         records_by_root = build_thread_records_for_roots_sync(conn, root_chunk)
@@ -818,7 +792,7 @@ def rebuild_session_insights_sync(
             record = records_by_root.get(root_id)
             if record is None:
                 continue
-            replace_work_thread_sync(conn, record.thread_id, record)
+            replace_thread_sync(conn, record.thread_id, record)
             thread_count += 1
     conn.execute("DELETE FROM session_tag_rollups")
     provider_day_groups = set(list_sync_provider_day_groups(conn))
@@ -847,7 +821,7 @@ async def rebuild_session_insights_async(
         replace_session_latency_profile,
         replace_session_profile,
     )
-    from polylogue.storage.sqlite.queries.session_insight_thread_queries import replace_work_thread
+    from polylogue.storage.sqlite.queries.session_insight_thread_queries import replace_thread
     from polylogue.storage.sqlite.queries.session_insight_timeline_writes import (
         replace_session_phases,
         replace_session_work_events,
@@ -864,15 +838,13 @@ async def rebuild_session_insights_async(
             "session_latency_profiles",
             "session_profiles",
             "session_tag_rollups",
-            "session_repo_observations",
-            "repo_identities",
         ):
             cursor = await conn.execute(f"DELETE FROM {table}")
             if progress_callback is not None:
                 rowcount = getattr(cursor, "rowcount", 0) or 0
                 progress_callback(int(rowcount if rowcount > 0 else 0), desc=f"rebuild: cleared {table}")
     elif not session_ids:
-        await conn.execute("DELETE FROM work_threads")
+        await conn.execute("DELETE FROM threads")
         await conn.execute("DELETE FROM session_phases")
         await conn.execute("DELETE FROM session_latency_profiles")
         await conn.execute("DELETE FROM session_tag_rollups")
@@ -905,18 +877,6 @@ async def rebuild_session_insights_async(
                     bundle.session_id,
                     bundle.phase_records,
                     transaction_depth,
-                )
-                from polylogue.storage.insights.session.repo_identity import (
-                    RepoObservation as _RepoObservation,
-                )
-                from polylogue.storage.insights.session.repo_identity import (
-                    refresh_session_repo_observations as _refresh_repo_obs,
-                )
-
-                await _refresh_repo_obs(
-                    conn,
-                    str(bundle.session_id),
-                    tuple(obs for obs in bundle.repo_observations if isinstance(obs, _RepoObservation)),
                 )
             profile_count += chunk_profiles
             work_event_count += chunk_work_events
@@ -957,18 +917,6 @@ async def rebuild_session_insights_async(
                     bundle.phase_records,
                     transaction_depth,
                 )
-                from polylogue.storage.insights.session.repo_identity import (
-                    RepoObservation as _RepoObservation,
-                )
-                from polylogue.storage.insights.session.repo_identity import (
-                    refresh_session_repo_observations as _refresh_repo_obs,
-                )
-
-                await _refresh_repo_obs(
-                    conn,
-                    str(bundle.session_id),
-                    tuple(obs for obs in bundle.repo_observations if isinstance(obs, _RepoObservation)),
-                )
             profile_count += chunk_profiles
             work_event_count += chunk_work_events
             phase_count += chunk_phases
@@ -984,7 +932,7 @@ async def rebuild_session_insights_async(
                 del batch, record_bundles
                 release_process_memory()
 
-    await conn.execute("DELETE FROM work_threads")
+    await conn.execute("DELETE FROM threads")
     thread_count = 0
     async for root_chunk in iter_root_id_pages_async(conn):
         records_by_root = await build_thread_records_for_roots_async(conn, root_chunk)
@@ -992,7 +940,7 @@ async def rebuild_session_insights_async(
             record = records_by_root.get(root_id)
             if record is None:
                 continue
-            await replace_work_thread(conn, record.thread_id, record, transaction_depth)
+            await replace_thread(conn, record.thread_id, record, transaction_depth)
             thread_count += 1
     await conn.execute("DELETE FROM session_tag_rollups")
     provider_day_groups = set(await list_async_provider_day_groups(conn))

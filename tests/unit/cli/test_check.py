@@ -339,11 +339,11 @@ def test_check_warns_when_message_index_is_incomplete(cli_workspace: WorkspacePa
             {"id": "m-incomplete-index-2", "role": "assistant", "text": "still pending"},
         ],
     )
-    # Archive search index is the contentless ``blocks_fts``; clear it with the
+    # Archive search index is the contentless ``messages_fts``; clear it with the
     # FTS5 'delete-all' command (a plain DELETE is rejected on contentless
     # tables).
     with open_index_db(db_path) as conn:
-        conn.execute("INSERT INTO blocks_fts(blocks_fts) VALUES('delete-all')")
+        conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('delete-all')")
         conn.commit()
 
     result = cli_runner.invoke(cli, ["--plain", "doctor", "--format", "json"], catch_exceptions=False)
@@ -372,10 +372,9 @@ def test_check_ignores_null_text_messages_in_fts_readiness(
         ],
     )
     # Native message text lives in ``blocks`` (``messages`` has no ``text``
-    # column). Null out the text block belonging to the second message and
-    # resync the contentless FTS index with a full 'rebuild' so the message
-    # has no indexable content — FTS readiness must ignore it rather than
-    # report it as missing.
+    # column). Clear the indexed text for the second message so it has no
+    # indexable content — FTS readiness must ignore it rather than report it
+    # as missing.
     with open_index_db(db_path) as conn:
         conn.execute(
             """
@@ -385,7 +384,6 @@ def test_check_ignores_null_text_messages_in_fts_readiness(
             )
             """
         )
-        conn.execute("INSERT INTO blocks_fts(blocks_fts) VALUES('rebuild')")
         conn.commit()
 
     result = cli_runner.invoke(cli, ["--plain", "doctor", "--format", "json"])
@@ -634,11 +632,9 @@ class TestCheckCommand:
             messages=[{"id": "m1", "role": "user", "text": "test"}],
         )
 
-        # Manually drop the archive FTS table to simulate desync. The native
-        # search index is ``blocks_fts`` (contentless FTS5 over ``blocks``),
-        # not the legacy ``messages_fts``.
+        # Manually drop the archive FTS table to simulate desync.
         with open_index_db(db_path) as conn:
-            conn.execute("DROP TABLE IF EXISTS blocks_fts")
+            conn.execute("DROP TABLE IF EXISTS messages_fts")
             conn.commit()  # Explicit commit
 
         result = cli_runner.invoke(cli, ["--plain", "doctor", "--format", "json"])

@@ -136,15 +136,7 @@ def _site_archive_stats() -> dict[str, Any]:
                     """
                 ).fetchone()
             else:
-                row = conn.execute(
-                    """
-                    SELECT
-                        COUNT(*) AS total_sessions,
-                        COALESCE(SUM(message_count), 0) AS total_messages,
-                        COUNT(DISTINCT source_name) AS provider_count
-                    FROM session_stats
-                    """
-                ).fetchone()
+                return {}
             total_sessions = int(row[0] or 0)
             total_messages = int(row[1] or 0)
             provider_count = int(row[2] or 0)

@@ -7,10 +7,6 @@ from dataclasses import dataclass, replace
 
 import aiosqlite
 
-from polylogue.storage.action_events.status import (
-    action_event_read_model_status_async,
-    action_event_read_model_status_sync,
-)
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 from polylogue.storage.embeddings.sql import (
     DIMENSION_COUNTS_SQL,
@@ -280,7 +276,6 @@ def _retrieval_bands_sync(
 ) -> dict[str, dict[str, object]]:
     if not parts.sessions_exist or not include_retrieval_bands:
         return {}
-    action_status = action_event_read_model_status_sync(conn)
     session_status = session_insight_status_sync(conn)
     return build_retrieval_bands_from_status(
         total_sessions=parts.total_sessions,
@@ -289,7 +284,6 @@ def _retrieval_bands_sync(
         pending_sessions=parts.pending_sessions,
         stale_messages=parts.stale_messages,
         missing_provenance=parts.missing_provenance,
-        action_status=action_status,
         session_status=session_status,
     )
 
@@ -302,7 +296,6 @@ async def _retrieval_bands_async(
 ) -> dict[str, dict[str, object]]:
     if not parts.sessions_exist or not include_retrieval_bands:
         return {}
-    action_status = await action_event_read_model_status_async(conn)
     session_status = await session_insight_status_async(conn)
     return build_retrieval_bands_from_status(
         total_sessions=parts.total_sessions,
@@ -311,7 +304,6 @@ async def _retrieval_bands_async(
         pending_sessions=parts.pending_sessions,
         stale_messages=parts.stale_messages,
         missing_provenance=parts.missing_provenance,
-        action_status=action_status,
         session_status=session_status,
     )
 
@@ -357,8 +349,6 @@ async def read_embedding_stats_async(
 
 
 __all__ = [
-    "action_event_read_model_status_async",
-    "action_event_read_model_status_sync",
     "read_embedding_stats_async",
     "read_embedding_stats_sync",
     "session_insight_status_async",

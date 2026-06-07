@@ -104,7 +104,7 @@ class SessionProfileDocument(TypedDict):
     per_model_cost_json: str
 
 
-class WorkThreadMemberEvidenceDocument(TypedDict):
+class ThreadMemberEvidenceDocument(TypedDict):
     session_id: str
     parent_id: str | None
     role: str
@@ -114,7 +114,7 @@ class WorkThreadMemberEvidenceDocument(TypedDict):
     evidence: list[str]
 
 
-class WorkThreadDocument(TypedDict):
+class ThreadDocument(TypedDict):
     thread_id: str
     root_id: str
     session_ids: list[str]
@@ -132,13 +132,13 @@ class WorkThreadDocument(TypedDict):
     confidence: float
     support_level: str
     support_signals: list[str]
-    member_evidence: list[WorkThreadMemberEvidenceDocument]
+    member_evidence: list[ThreadMemberEvidenceDocument]
 
 
 __all__ = [
     "SessionPhaseDocument",
     "SessionProfileDocument",
     "WorkEventDocument",
-    "WorkThreadDocument",
-    "WorkThreadMemberEvidenceDocument",
+    "ThreadDocument",
+    "ThreadMemberEvidenceDocument",
 ]

@@ -85,12 +85,18 @@ def _index_db() -> Path:
     return active_index_db_path()
 
 
+def _session_parts(session_id: str, origin: str) -> tuple[str, str]:
+    prefix = f"{origin}:"
+    native_id = session_id[len(prefix) :] if session_id.startswith(prefix) else session_id
+    return native_id, f"{origin}:{native_id}"
+
+
 def _seed_archive_session(
     session_id: str,
     *,
-    origin: str = "claude-code",
+    origin: str = "claude-code-session",
     title: str = "stub",
-) -> None:
+) -> str:
     """Seed an archive `sessions` row in index.db.
 
     The similarity reader (``polylogue/daemon/similarity.py``) routes to
@@ -100,21 +106,18 @@ def _seed_archive_session(
     """
     archive_db = _index_db()
     archive_db.parent.mkdir(parents=True, exist_ok=True)
+    native_id, archive_session_id = _session_parts(session_id, origin)
     with sqlite3.connect(archive_db) as conn:
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS sessions (
-                session_id TEXT PRIMARY KEY,
-                title TEXT,
-                origin TEXT NOT NULL
-            );
-            """
-        )
-        conn.execute(
-            "INSERT OR IGNORE INTO sessions (session_id, title, origin) VALUES (?, ?, ?)",
-            (session_id, title, origin),
+            INSERT OR IGNORE INTO sessions (
+                native_id, origin, title, content_hash
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (native_id, origin, title, b"x" * 32),
         )
         conn.commit()
+    return archive_session_id
 
 
 def _init_archive() -> None:
@@ -245,13 +248,13 @@ class TestSimilarPayloadStates:
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _disable_embeddings(monkeypatch)
-        _seed_archive_session("c1")
-        result = build_similar_payload("c1")
+        session_id = _seed_archive_session("c1")
+        result = build_similar_payload(session_id)
         assert result is not None
         assert result["status"] == "disabled"
         assert result["reason"] == "embeddings_not_enabled"
         assert result["results"] == []
-        assert result["session_id"] == "c1"
+        assert result["session_id"] == session_id
 
     def test_disabled_envelope_distinguishes_missing_api_key(
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
@@ -263,29 +266,27 @@ class TestSimilarPayloadStates:
             voyage_api_key = None
 
         monkeypatch.setattr(similarity_mod, "load_polylogue_config", lambda: _Cfg())
-        _seed_archive_session("c1")
-        result = build_similar_payload("c1")
+        session_id = _seed_archive_session("c1")
+        result = build_similar_payload(session_id)
         assert result is not None
         assert result["status"] == "disabled"
         assert result["reason"] == "no_voyage_api_key"
 
-    def test_unavailable_envelope_when_vec_table_missing(
+    def test_not_embedded_envelope_when_session_has_no_vectors(
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _enable_embeddings(monkeypatch)
-        _seed_archive_session("c1")
-        # No ``message_embeddings`` table has been created — the
-        # embedding stage has never run on this archive.
-        result = build_similar_payload("c1")
+        session_id = _seed_archive_session("c1")
+        result = build_similar_payload(session_id)
         assert result is not None
-        assert result["status"] == "unavailable"
-        assert result["reason"] == "vec0_table_missing"
+        assert result["status"] == "not_embedded"
+        assert result["reason"] is None
         assert result["results"] == []
 
     def test_clamps_limit_in_envelope(self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
         _disable_embeddings(monkeypatch)
-        _seed_archive_session("c1")
-        result = build_similar_payload("c1", limit=10**6)
+        session_id = _seed_archive_session("c1")
+        result = build_similar_payload(session_id, limit=10**6)
         assert result is not None
         assert result["limit"] == SIMILAR_RESULTS_MAX
 
@@ -293,16 +294,16 @@ class TestSimilarPayloadStates:
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _disable_embeddings(monkeypatch)
-        _seed_archive_session("codex-session:v1", origin="codex-session", title="Archive")
+        session_id = _seed_archive_session("codex-session:v1", origin="codex-session", title="Archive")
 
-        result = build_similar_payload("codex-session:v1")
+        result = build_similar_payload(session_id)
 
         assert result is not None
         assert result["status"] == "disabled"
         assert result["reason"] == "embeddings_not_enabled"
-        assert result["session_id"] == "codex-session:v1"
+        assert result["session_id"] == session_id
 
-    def test_archive_tiers_unavailable_when_vec_table_missing(
+    def test_archive_tiers_not_embedded_when_session_has_no_vectors(
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import polylogue.daemon.similarity as similarity_mod
@@ -312,14 +313,14 @@ class TestSimilarPayloadStates:
             voyage_api_key = "test-key"
 
         monkeypatch.setattr(similarity_mod, "load_polylogue_config", lambda: _Cfg())
-        _seed_archive_session("codex-session:v1", origin="codex-session", title="Archive")
+        session_id = _seed_archive_session("codex-session:v1", origin="codex-session", title="Archive")
 
-        result = build_similar_payload("codex-session:v1")
+        result = build_similar_payload(session_id)
 
         assert result is not None
-        assert result["status"] == "unavailable"
-        assert result["reason"] == "vec0_table_missing"
-        assert result["session_id"] == "codex-session:v1"
+        assert result["status"] == "not_embedded"
+        assert result["reason"] is None
+        assert result["session_id"] == session_id
 
 
 # ---------------------------------------------------------------------------
@@ -355,9 +356,9 @@ class TestSimilarEndpoint:
         message and hide the actionable disabled state.
         """
         _disable_embeddings(monkeypatch)
-        _seed_archive_session("c1")
+        session_id = _seed_archive_session("c1")
 
-        handler = _make_handler("GET", "/api/sessions/c1/similar")
+        handler = _make_handler("GET", f"/api/sessions/{session_id}/similar")
         send_error, send_json = _capture_responses(handler)
         handler.do_GET()
 
@@ -374,9 +375,9 @@ class TestSimilarEndpoint:
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _disable_embeddings(monkeypatch)
-        _seed_archive_session("c1")
+        session_id = _seed_archive_session("c1")
 
-        handler = _make_handler("GET", "/api/sessions/c1/similar?limit=3")
+        handler = _make_handler("GET", f"/api/sessions/{session_id}/similar?limit=3")
         _, send_json = _capture_responses(handler)
         handler.do_GET()
 
@@ -387,25 +388,25 @@ class TestSimilarEndpoint:
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _disable_embeddings(monkeypatch)
-        _seed_archive_session("c1")
+        session_id = _seed_archive_session("c1")
 
-        handler = _make_handler("GET", "/api/sessions/c1/similar?limit=banana")
+        handler = _make_handler("GET", f"/api/sessions/{session_id}/similar?limit=banana")
         _, send_json = _capture_responses(handler)
         handler.do_GET()
 
         _, payload = send_json.call_args.args
         assert payload["limit"] == SIMILAR_RESULTS_DEFAULT
 
-    def test_unavailable_envelope_when_pipeline_dormant(
+    def test_not_embedded_envelope_when_pipeline_dormant(
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _enable_embeddings(monkeypatch)
-        _seed_archive_session("c1")
+        session_id = _seed_archive_session("c1")
 
-        handler = _make_handler("GET", "/api/sessions/c1/similar")
+        handler = _make_handler("GET", f"/api/sessions/{session_id}/similar")
         _, send_json = _capture_responses(handler)
         handler.do_GET()
 
         _, payload = send_json.call_args.args
-        assert payload["status"] == "unavailable"
-        assert payload["reason"] == "vec0_table_missing"
+        assert payload["status"] == "not_embedded"
+        assert payload["reason"] is None

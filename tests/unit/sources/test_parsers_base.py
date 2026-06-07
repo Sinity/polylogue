@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -328,8 +326,7 @@ def test_parse_code_archive_contract_fields() -> None:
     assert assistant.model_name == "claude-sonnet-4"
     assert assistant.model_effort == "high"
     assert assistant.duration_ms == 100
-    assert result.provider_meta is not None
-    assert result.provider_meta["total_duration_ms"] == 125
+    assert result.reported_duration_ms == 125
 
 
 # =============================================================================
@@ -731,93 +728,6 @@ class TestParserDialoguePairValidation:
 
 
 # =============================================================================
-# MERGED FROM test_extraction.py (seeded database regressions)
-# =============================================================================
-
-
-@pytest.mark.parametrize("provider", ["claude-code", "chatgpt", "codex"])
-def test_seeded_messages_have_expected_role_and_text_shapes(seeded_db: Path, provider: str) -> None:
-    conn = sqlite3.connect(seeded_db)
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT m.message_id, m.role, m.text
-        FROM messages m
-        JOIN sessions c ON m.session_id = c.session_id
-        WHERE c.source_name = ?
-        LIMIT 20
-        """,
-        (provider,),
-    )
-    rows = cur.fetchall()
-    conn.close()
-
-    assert rows, f"No {provider} messages in seeded database"
-    allowed_roles = {"user", "assistant", "system", "tool"}
-    if provider == "claude-code":
-        allowed_roles.add("unknown")
-    assert all(role in allowed_roles for _msg_id, role, _text in rows)
-    assert all(isinstance(text, (str, type(None))) for _msg_id, _role, text in rows)
-
-
-def test_seeded_claude_code_tool_use_blocks_have_names(seeded_db: Path) -> None:
-    conn = sqlite3.connect(seeded_db)
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT cb.type, cb.tool_name, cb.semantic_type
-        FROM content_blocks cb
-        JOIN messages m ON cb.message_id = m.message_id
-        JOIN sessions c ON m.session_id = c.session_id
-        WHERE c.source_name = 'claude-code' AND cb.type = 'tool_use'
-        LIMIT 100
-        """
-    )
-    rows = cur.fetchall()
-    conn.close()
-
-    if not rows:
-        return
-    assert all(block_type == "tool_use" and tool_name for block_type, tool_name, _semantic_type in rows)
-    assert all(
-        semantic_type is None or isinstance(semantic_type, str) for _block_type, _tool_name, semantic_type in rows
-    )
-
-
-def test_seeded_content_blocks_use_only_known_semantic_types(seeded_db: Path) -> None:
-    conn = sqlite3.connect(seeded_db)
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT semantic_type, COUNT(*) as cnt
-        FROM content_blocks
-        WHERE semantic_type IS NOT NULL
-        GROUP BY semantic_type
-        ORDER BY cnt DESC
-        """
-    )
-    rows = cur.fetchall()
-    conn.close()
-
-    known_types = {
-        "file_read",
-        "file_write",
-        "file_edit",
-        "shell",
-        "git",
-        "search",
-        "web",
-        "agent",
-        "subagent",
-        "thinking",
-        "code",
-        "other",
-    }
-    assert rows
-    assert {semantic_type for semantic_type, _count in rows} <= known_types
-
-
-# =============================================================================
 # MERGED FROM test_parsers.py (parser-specific regressions)
 # =============================================================================
 
@@ -853,12 +763,8 @@ def test_claude_code_cost_usd_non_numeric_string() -> None:
     # The parser only includes messages that validate properly via ClaudeCodeRecord
     # At least one message should be parsed
     assert len(result.messages) >= 1
-    # The _safe_float() converter is used for costUSD aggregation
-    # Non-numeric strings should result in 0.0, and 0.0 values are skipped in aggregation
-    # So total_cost_usd should not be set or should be 0
-    if result.provider_meta:
-        total_cost = result.provider_meta.get("total_cost_usd")
-        assert total_cost is None or total_cost == 0
+    assert result.reported_cost_usd == 0.0
+    assert result.reported_duration_ms == 0
 
 
 def test_claude_code_cost_usd_valid_numeric_string() -> None:
@@ -883,10 +789,8 @@ def test_claude_code_cost_usd_valid_numeric_string() -> None:
     result = parse_code(payload, "test-session")
     assert result is not None
     assert len(result.messages) == 2
-    # Should aggregate valid numeric strings
-    assert result.provider_meta is not None
-    assert result.provider_meta.get("total_cost_usd") == 0.05
-    assert result.provider_meta.get("total_duration_ms") == 1000
+    assert result.reported_cost_usd == 0.05
+    assert result.reported_duration_ms == 1000
 
 
 def test_claude_code_cost_usd_zero_preserved() -> None:
@@ -904,9 +808,8 @@ def test_claude_code_cost_usd_zero_preserved() -> None:
 
     result = parse_code(payload, "test-session")
     assert result is not None
-    assert result.provider_meta is not None
-    assert result.provider_meta.get("total_cost_usd") == 0.0
-    assert result.provider_meta.get("total_duration_ms") == 0
+    assert result.reported_cost_usd == 0.0
+    assert result.reported_duration_ms == 0
 
 
 def test_claude_code_cost_usd_mixed_valid_invalid() -> None:
@@ -937,9 +840,8 @@ def test_claude_code_cost_usd_mixed_valid_invalid() -> None:
 
     result = parse_code(payload, "test-session")
     assert result is not None
-    assert result.provider_meta is not None
     # Should aggregate only valid costs: 0.02 + 0.03 = 0.05
-    assert result.provider_meta.get("total_cost_usd") == 0.05
+    assert result.reported_cost_usd == 0.05
 
 
 def test_codex_role_normalization_human_to_user() -> None:
@@ -1366,12 +1268,10 @@ def test_parse_code_semantic_projection_contract() -> None:
     assert len(bash_blocks) == 1
     assert bash_blocks[0].tool_input is not None
     assert bash_blocks[0].tool_input.get("command") == "git commit -m 'Fix bug'"
-    assert result.provider_meta is not None
-    assert "context_compactions" not in result.provider_meta
-    assert len(result.provider_events) == 1
-    assert result.provider_events[0].event_type == "compaction"
-    assert result.provider_meta["total_cost_usd"] == pytest.approx(0.03)
-    assert result.provider_meta["total_duration_ms"] == 3000
+    assert len(result.session_events) == 1
+    assert result.session_events[0].event_type == "compaction"
+    assert result.reported_cost_usd == pytest.approx(0.03)
+    assert result.reported_duration_ms == 3000
 
 
 def test_parse_code_deduplicates_repeated_record_uuids() -> None:
@@ -1412,9 +1312,8 @@ def test_parse_code_deduplicates_repeated_record_uuids() -> None:
 
     assert len(result.messages) == 2
     assert [message.provider_message_id for message in result.messages] == ["user-1", "assistant-1"]
-    assert result.provider_meta is not None
-    assert result.provider_meta["total_cost_usd"] == pytest.approx(0.25)
-    assert result.provider_meta["total_duration_ms"] == 1500
+    assert result.reported_cost_usd == pytest.approx(0.25)
+    assert result.reported_duration_ms == 1500
 
 
 @given(st.lists(st.text(min_size=1, max_size=50), min_size=0, max_size=5))

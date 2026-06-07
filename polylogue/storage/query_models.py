@@ -32,7 +32,6 @@ class SessionListQueryKwargs(TypedDict):
     max_messages: int | None
     min_words: int | None
     message_type: str | None
-    include_provider_meta: bool
 
 
 class SessionCountQueryKwargs(TypedDict):
@@ -88,7 +87,6 @@ class SessionRecordQuery:
     min_words: int | None = None
     since_session_id: str | None = None
     message_type: str | None = None
-    include_provider_meta: bool = False
 
     def with_limit(self, limit: int | None) -> SessionRecordQuery:
         return replace(self, limit=limit)
@@ -140,7 +138,6 @@ class SessionRecordQuery:
             "max_messages": self.max_messages,
             "min_words": self.min_words,
             "message_type": self.message_type,
-            "include_provider_meta": self.include_provider_meta,
         }
 
     def to_count_kwargs(self) -> SessionCountQueryKwargs:
@@ -209,8 +206,8 @@ class SessionTimelineListQuery:
 
 
 @dataclass(frozen=True, slots=True)
-class WorkThreadListQuery:
-    """Canonical work-thread read selection for repository/search runtime."""
+class ThreadListQuery:
+    """Canonical thread read selection for repository/search runtime."""
 
     since: str | None = None
     until: str | None = None
@@ -248,5 +245,5 @@ __all__ = [
     "SessionProfileListQuery",
     "SessionTagRollupListQuery",
     "SessionTimelineListQuery",
-    "WorkThreadListQuery",
+    "ThreadListQuery",
 ]

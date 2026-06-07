@@ -1575,13 +1575,9 @@ def build_daemon_status(
         disk_free_bytes=_safe_int(db_info.get("disk_free_bytes", 0)),
         fts_readiness=FTSReadiness(
             indexed_surface=str(fts.get("indexed_surface", "messages_fts")),
-            action_events_required=bool(fts.get("action_events_required", True)),
             messages_ready=bool(fts.get("messages_ready", False)),
-            action_events_ready=bool(fts.get("action_events_ready", False)),
             message_indexed_count=_safe_int(fts.get("message_indexed_count", 0)),
             message_indexable_count=_safe_int(fts.get("message_indexable_count", 0)),
-            action_event_indexed_count=_safe_int(fts.get("action_event_indexed_count", 0)),
-            action_event_count=_safe_int(fts.get("action_event_count", 0)),
             coverage_pct=_safe_float(fts.get("coverage_pct")),
         ),
         insight_freshness=InsightFreshness(

@@ -64,13 +64,11 @@ from polylogue.maintenance.targets import (
 from polylogue.storage.repair import (
     RepairResult,
     offline_maintenance_blockers,
-    repair_action_event_read_model,
     repair_dangling_fts,
     repair_empty_sessions,
     repair_message_type_backfill,
     repair_orphaned_attachments,
     repair_orphaned_blobs,
-    repair_orphaned_content_blocks,
     repair_orphaned_messages,
     repair_session_insights,
     repair_wal_checkpoint,
@@ -102,8 +100,8 @@ _RepairFn = Callable[[Config, bool], RepairResult]
 
 
 #: Concrete repair dispatch table. Targets listed here are the ones the
-#: PR #1147 AC names explicitly: messages FTS, action-event read model,
-#: session insights. ``message_type_backfill`` and ``wal_checkpoint`` are
+#: PR #1147 AC names explicitly: messages FTS and session insights.
+#: ``message_type_backfill`` and ``wal_checkpoint`` are
 #: included because the underlying repair functions are already
 #: idempotent and the executor would otherwise refuse perfectly valid
 #: target names that the catalog advertises.
@@ -115,12 +113,10 @@ _RepairFn = Callable[[Config, bool], RepairResult]
 #: succeeding.
 _REPLAY_DISPATCH: Final[dict[str, _RepairFn]] = {
     "session_insights": repair_session_insights,
-    "action_event_read_model": repair_action_event_read_model,
     "dangling_fts": repair_dangling_fts,
     "message_type_backfill": repair_message_type_backfill,
     "wal_checkpoint": repair_wal_checkpoint,
     "orphaned_messages": repair_orphaned_messages,
-    "orphaned_content_blocks": repair_orphaned_content_blocks,
     "empty_sessions": repair_empty_sessions,
     "orphaned_attachments": repair_orphaned_attachments,
     "orphaned_blobs": repair_orphaned_blobs,

@@ -6,7 +6,7 @@ returns a single typed envelope joining four per-session insight kinds:
 - session profile (#1018)
 - work-event timeline (#1133/#1135)
 - session phases
-- work-thread membership
+- thread membership
 
 Each kind carries a readiness chip from the closed vocabulary
 (``q-ready`` / ``q-partial`` / ``q-missing``). Unknown sessions are a

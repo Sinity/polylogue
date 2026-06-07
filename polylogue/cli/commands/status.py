@@ -179,11 +179,11 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "facets": ("archive_routed", "index", "computes scoped/global facets from index.db"),
     "find_resume_candidates": ("archive_routed", "index", "uses archive-routed resume operations"),
     "find_stuck_session_latency_profile_insights": ("archive_routed", "index", "reads latency profiles from index.db"),
-    "get_action_events": ("archive_direct", "index", "derives action events from index.db content blocks"),
-    "get_action_events_batch": (
+    "get_actions": ("archive_direct", "index", "derives actions from index.db content blocks"),
+    "get_actions_batch": (
         "archive_direct",
         "index",
-        "batch-derives action events from index.db content blocks",
+        "batch-derives actions from index.db content blocks",
     ),
     "get_ancestors": ("archive_routed", "index", "reads session topology from index.db"),
     "get_annotation": ("archive_routed", "user", "reads annotations through user.db"),
@@ -211,7 +211,7 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "get_thread": ("archive_routed", "index", "reads session topology from index.db"),
     "get_view": ("archive_routed", "user", "reads saved views through user.db"),
     "get_view_by_name": ("archive_routed", "user", "reads saved views through user.db"),
-    "get_work_thread_insight": ("archive_routed", "index", "reads work threads from index.db"),
+    "get_thread_insight": ("archive_routed", "index", "reads work threads from index.db"),
     "get_workspace": ("archive_routed", "user", "reads workspaces through user.db"),
     "health_check": ("archive_routed", "index", "returns archive tier/index readiness"),
     "insight_readiness_report": ("archive_routed", "index", "reads insight readiness from index.db"),
@@ -235,13 +235,13 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "list_tags": ("archive_routed", "user", "reads user tag counts through user.db"),
     "list_tool_usage_insights": ("archive_routed", "index", "reads tool usage insights from index.db"),
     "list_views": ("archive_routed", "user", "reads saved views through user.db"),
-    "list_work_thread_insights": ("archive_routed", "index", "reads work threads from index.db"),
+    "list_thread_insights": ("archive_routed", "index", "reads work threads from index.db"),
     "list_workspaces": ("archive_routed", "user", "reads workspaces through user.db"),
     "neighbor_candidates": ("archive_routed", "index", "discovers neighbors from index.db"),
     "parse_file": ("archive_routed", "source", "writes source.db and index.db directly"),
     "parse_sources": ("archive_routed", "source", "writes source.db and index.db directly"),
     "query_sessions": ("archive_routed", "index", "queries summaries from index.db"),
-    "rebuild_index": ("archive_routed", "index", "rebuilds blocks_fts from index.db"),
+    "rebuild_index": ("archive_routed", "index", "rebuilds messages_fts from index.db"),
     "rebuild_insights": ("archive_routed", "index", "rebuilds insight tables"),
     "record_correction": ("archive_routed", "user", "writes corrections through user.db"),
     "remove_mark": ("archive_routed", "user", "writes user marks through user.db"),
@@ -483,11 +483,11 @@ def _archive_readiness_counts(
         "raw_link_count": raw_link_count,
         "missing_raw_session_count": missing_raw_session_count,
         "message_count": _fast_count(conn, "SELECT COUNT(*) FROM messages") if _table_exists(conn, "messages") else 0,
-        "text_block_count": _fast_count(conn, "SELECT COUNT(*) FROM blocks WHERE text IS NOT NULL")
+        "text_block_count": _fast_count(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''")
         if _table_exists(conn, "blocks")
         else 0,
-        "blocks_fts_count": _fast_count(conn, "SELECT COUNT(*) FROM blocks_fts")
-        if _table_exists(conn, "blocks_fts")
+        "messages_fts_count": _fast_count(conn, "SELECT COUNT(*) FROM messages_fts")
+        if _table_exists(conn, "messages_fts")
         else 0,
         "profile_row_count": _fast_count(conn, "SELECT COUNT(*) FROM session_profiles")
         if _table_exists(conn, "session_profiles")
@@ -557,7 +557,9 @@ def _archive_status_surfaces(counts: dict[str, int], *, source_check_available: 
     else:
         raw_ready = True
 
-    search_blockers = ["blocks_fts_row_mismatch"] if counts["text_block_count"] != counts["blocks_fts_count"] else []
+    search_blockers = (
+        ["messages_fts_row_mismatch"] if counts["text_block_count"] != counts["messages_fts_count"] else []
+    )
     profile_blockers: list[str] = []
     if counts["missing_profile_row_count"]:
         profile_blockers.append("missing_profile_rows")
@@ -592,7 +594,10 @@ def _archive_status_surfaces(counts: dict[str, int], *, source_check_available: 
         "search": surface(
             ready=not search_blockers,
             blockers=search_blockers,
-            evidence={"text_block_count": counts["text_block_count"], "blocks_fts_count": counts["blocks_fts_count"]},
+            evidence={
+                "text_block_count": counts["text_block_count"],
+                "messages_fts_count": counts["messages_fts_count"],
+            },
         ),
         "session_profiles": surface(
             ready=not profile_blockers,
@@ -619,7 +624,7 @@ def _archive_status_surfaces(counts: dict[str, int], *, source_check_available: 
                 "missing_materialization_count": counts["missing_phases_materialization"],
             },
         ),
-        "work_threads": surface(
+        "threads": surface(
             ready=thread_ready,
             blockers=thread_blockers,
             evidence={
@@ -803,9 +808,7 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
     fts = status.get("fts_readiness", {})
     if isinstance(fts, dict):
         pct = float(fts.get("coverage_pct", 100 if fts.get("messages_ready") else 0))
-        action_required = bool(fts.get("action_events_required", True))
-        action_ready = bool(fts.get("action_events_ready")) if action_required else True
-        fts_color = "green" if fts.get("messages_ready") and action_ready else "yellow"
+        fts_color = "green" if fts.get("messages_ready") else "yellow"
         env.ui.console.print(f"  FTS: [{fts_color}]{pct:.1f}% indexed[/{fts_color}]")
 
     # Sizes

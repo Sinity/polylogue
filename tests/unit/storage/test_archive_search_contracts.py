@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,7 +37,7 @@ def _session_record(session_id: str, *, title: str, source_name: str = "chatgpt"
         source_name=source_name,
         provider_session_id=f"provider-{session_id}",
         title=title,
-        content_hash=ContentHash(f"hash-{session_id}"),
+        content_hash=ContentHash(hashlib.sha256(f"hash-{session_id}".encode()).hexdigest()),
     )
 
 
@@ -204,7 +205,7 @@ async def test_repository_search_summaries_follow_session_hit_order() -> None:
 @pytest.mark.asyncio
 async def test_repository_search_summaries_hydrates_message_count_from_stats() -> None:
     """#1630: ``search_summaries`` must populate ``message_count`` from
-    ``session_stats`` so the daemon HTTP search path and any other
+    the sessions aggregate columns so the daemon HTTP search path and any other
     caller see a real total instead of None.
 
     Before the fix the message_count surfaced as 0 (None coerced) for every
@@ -298,9 +299,9 @@ async def test_repository_search_summary_hits_prioritize_attachment_identity_evi
 @pytest.mark.parametrize(
     ("query", "expected_snippet"),
     [
-        ("provider-attachment-218", "attachment.provider_attachment_id=provider-attachment-218"),
-        ("drive-file-218", "attachment.provider_file_id=drive-file-218"),
-        ("drive-root-218", "attachment.provider_drive_id=drive-root-218"),
+        ("provider-attachment-218", "native.attachment=provider-attachment-218"),
+        ("drive-file-218", "native.file=drive-file-218"),
+        ("drive-root-218", "native.drive=drive-root-218"),
     ],
     ids=["provider-attachment-id", "drive-file-id", "drive-id"],
 )
@@ -347,10 +348,10 @@ async def test_gemini_drive_attachment_id_is_searchable_after_parse_and_prepare(
 
     assert len(hits) == 1
     hit = hits[0]
-    assert hit.session_id == "gemini:gemini-attachment-identity"
+    assert hit.session_id == "aistudio-drive:gemini-attachment-identity"
     assert hit.match_surface == "attachment"
     assert hit.retrieval_lane == "attachment"
-    assert hit.message_id == "gemini:gemini-attachment-identity:msg-doc"
+    assert hit.message_id == "aistudio-drive:gemini-attachment-identity:msg-doc"
     assert hit.snippet is not None
     assert expected_snippet in hit.snippet
     assert 'name="Project Plan"' in hit.snippet

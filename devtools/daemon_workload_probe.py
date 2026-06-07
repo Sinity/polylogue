@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.paths import active_index_db_path
-from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES as _EXPECTED_FTS_TRIGGERS
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -30,6 +29,8 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
 REPORT_VERSION = 10  # v10 renames archive readiness payloads to archive terms.
+
+_EXPECTED_FTS_TRIGGERS: tuple[str, ...] = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
 
 _KNOWN_STORAGE_ROUTES: frozenset[str] = frozenset(
     {
@@ -47,23 +48,18 @@ _BOUNDARY_TABLES: tuple[str, ...] = (
     "raw_sessions",
     "sessions",
     "messages",
-    "content_blocks",
     "artifact_observations",
     "messages_fts_docsize",
-    "action_events",
-    "action_events_fts_docsize",
     "message_embeddings",
-    "session_profile",
-    "live_ingest_attempt",
-    "live_convergence_debt",
+    "session_profiles",
+    "ingest_attempt",
+    "convergence_debt",
     "pending_blob_refs",
-    "topology_edges",
-    "repo_identities",
-    "session_repo_observations",
-    "raw_sessions",
-    "sessions",
+    "repos",
+    "session_repos",
+    "session_commits",
     "blocks",
-    "blocks_fts_data",
+    "messages_fts_data",
     "session_events",
     "session_links",
 )
@@ -89,7 +85,7 @@ _ARCHIVE_OBSERVABILITY_TABLES: dict[ArchiveTier, tuple[str, ...]] = {
         "sessions",
         "messages",
         "blocks",
-        "blocks_fts_data",
+        "messages_fts_data",
         "session_events",
         "session_links",
         "threads",
@@ -804,13 +800,32 @@ def _ops_convergence_debt_rows(ops_db: Path | None) -> list[tuple[str, int]]:
     return [(str(row[0] or "unknown"), int(row[1] or 0)) for row in rows]
 
 
-def _boundary_table_counts(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> dict[str, int]:
+def _boundary_table_counts(
+    conn: sqlite3.Connection,
+    *,
+    ops_db: Path | None = None,
+    source_db: Path | None = None,
+) -> dict[str, int]:
     counts: dict[str, int] = {}
     for table in _BOUNDARY_TABLES:
         if _table_exists(conn, table):
             counts[table] = _scalar_int(conn, f"SELECT COUNT(*) FROM {table}")
         else:
             counts[table] = -1
+    if source_db is not None and source_db.exists():
+        try:
+            source_conn = open_readonly_connection(source_db)
+            try:
+                for table in ("raw_sessions",):
+                    counts[table] = (
+                        _scalar_int(source_conn, f"SELECT COUNT(*) FROM {table}")
+                        if _table_exists(source_conn, table)
+                        else -1
+                    )
+            finally:
+                source_conn.close()
+        except sqlite3.Error:
+            counts.setdefault("raw_sessions", -1)
     if ops_db is not None and ops_db.exists():
         try:
             ops_conn = open_readonly_connection(ops_db)
@@ -1021,7 +1036,7 @@ def _archive_derived_readiness(root: Path) -> dict[str, Any]:
         missing_materialization_counts = _archive_missing_materialization_counts(conn)
         ready = {
             "raw_links_ready": counts["missing_raw_session_count"] == 0 if source_check_available else None,
-            "blocks_fts_ready": counts["text_block_count"] == counts["blocks_fts_count"],
+            "messages_fts_ready": counts["text_block_count"] == counts["messages_fts_count"],
             "profile_rows_ready": counts["missing_profile_row_count"] == 0 and counts["orphan_profile_row_count"] == 0,
             "profile_counts_ready": (
                 counts["profile_work_event_count_mismatch"] == 0 and counts["profile_phase_count_mismatch"] == 0
@@ -1083,8 +1098,8 @@ def _archive_derived_counts(conn: sqlite3.Connection, *, source_check_available:
         "raw_link_count": _scalar_int(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL"),
         "missing_raw_session_count": missing_raw,
         "message_count": _scalar_int(conn, "SELECT COUNT(*) FROM messages"),
-        "text_block_count": _scalar_int(conn, "SELECT COUNT(*) FROM blocks WHERE text IS NOT NULL"),
-        "blocks_fts_count": _scalar_int(conn, "SELECT COUNT(*) FROM blocks_fts"),
+        "text_block_count": _scalar_int(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''"),
+        "messages_fts_count": _scalar_int(conn, "SELECT COUNT(*) FROM messages_fts"),
         "profile_row_count": _scalar_int(conn, "SELECT COUNT(*) FROM session_profiles"),
         "missing_profile_row_count": _scalar_int(
             conn,
@@ -1181,8 +1196,8 @@ def _archive_surface_readiness(
         raw_blockers.append("missing_source_raw_sessions")
 
     search_blockers: list[str] = []
-    if counts["text_block_count"] != counts["blocks_fts_count"]:
-        search_blockers.append("blocks_fts_row_mismatch")
+    if counts["text_block_count"] != counts["messages_fts_count"]:
+        search_blockers.append("messages_fts_row_mismatch")
 
     profile_ready = (
         counts["missing_profile_row_count"] == 0
@@ -1232,7 +1247,7 @@ def _archive_surface_readiness(
             blockers=search_blockers,
             evidence={
                 "text_block_count": counts["text_block_count"],
-                "blocks_fts_count": counts["blocks_fts_count"],
+                "messages_fts_count": counts["messages_fts_count"],
             },
         ),
         "session_profiles": surface(
@@ -1261,7 +1276,7 @@ def _archive_surface_readiness(
                 "missing_materialization_count": missing_materialization_counts["phases"],
             },
         ),
-        "work_threads": surface(
+        "threads": surface(
             ready=thread_ready,
             blockers=thread_blockers,
             evidence={
@@ -1400,16 +1415,16 @@ def _archive_user_overlay_orphans(root: Path) -> dict[str, Any]:
 
 
 def _topology_quarantine_state(conn: sqlite3.Connection) -> dict[str, Any]:
-    """Report the state of the topology-edge cycle quarantine (#1260).
+    """Report the state of the session-link cycle quarantine (#1260).
 
     Surfaces:
-    - ``table_present`` — is ``topology_edges`` materialized in the database
-    - ``unresolved_count`` — edges still awaiting their parent
-    - ``resolved_count`` — edges whose parent has been ingested
-    - ``quarantined_count`` — edges rejected because they would create a
+    - ``table_present`` — is ``session_links`` materialized in the database
+    - ``unresolved_count`` — links still awaiting their parent
+    - ``resolved_count`` — links whose parent has been ingested
+    - ``quarantined_count`` — links rejected because they would create a
       cycle in ``sessions.parent_session_id``
-    - ``oldest_quarantined_at`` — oldest ``resolved_at`` timestamp on a
-      quarantined edge (the field is repurposed as the
+    - ``oldest_quarantined_at`` — oldest ``resolved_at_ms`` timestamp on a
+      quarantined link (the field is repurposed as the
       "decision-recorded-at" timestamp for non-resolved terminal states)
 
     Operators monitor ``quarantined_count`` as a health indicator — a
@@ -1417,7 +1432,7 @@ def _topology_quarantine_state(conn: sqlite3.Connection) -> dict[str, Any]:
     fast-path graph was prevented from entering it.
     """
 
-    if not _table_exists(conn, "topology_edges"):
+    if not _table_exists(conn, "session_links"):
         return {
             "table_present": False,
             "unresolved_count": 0,
@@ -1425,9 +1440,20 @@ def _topology_quarantine_state(conn: sqlite3.Connection) -> dict[str, Any]:
             "quarantined_count": 0,
             "oldest_quarantined_at": None,
         }
-    rows = conn.execute("SELECT status, COUNT(*) AS n FROM topology_edges GROUP BY status").fetchall()
+    rows = conn.execute(
+        """
+        SELECT CASE
+                   WHEN status IS NOT NULL THEN status
+                   WHEN resolved_dst_session_id IS NOT NULL THEN 'resolved'
+                   ELSE 'unresolved'
+               END AS link_state,
+               COUNT(*) AS n
+          FROM session_links
+         GROUP BY link_state
+        """
+    ).fetchall()
     status_counts = {str(row[0]): int(row[1]) for row in rows}
-    oldest_row = conn.execute("SELECT MIN(resolved_at) FROM topology_edges WHERE status = 'quarantined'").fetchone()
+    oldest_row = conn.execute("SELECT MIN(resolved_at_ms) FROM session_links WHERE status = 'quarantined'").fetchone()
     return {
         "table_present": True,
         "unresolved_count": int(status_counts.get("unresolved", 0)),
@@ -1447,7 +1473,7 @@ def _blob_lease_state(conn: sqlite3.Connection) -> dict[str, Any]:
         }
     pending = _scalar_int(conn, "SELECT COUNT(*) FROM pending_blob_refs")
     operations = _scalar_int(conn, "SELECT COUNT(DISTINCT operation_id) FROM pending_blob_refs")
-    oldest_row = conn.execute("SELECT MIN(acquired_at) FROM pending_blob_refs").fetchone()
+    oldest_row = conn.execute("SELECT MIN(acquired_at_ms) FROM pending_blob_refs").fetchone()
     oldest = int(oldest_row[0]) if oldest_row is not None and oldest_row[0] is not None else None
     return {
         "table_present": True,
@@ -1468,7 +1494,7 @@ def _gc_state(conn: sqlite3.Connection) -> dict[str, Any]:
     row = conn.execute(
         """
         SELECT
-            COALESCE(MAX(generation), 0) AS high_water,
+            COALESCE(MAX(CAST(generation_id AS INTEGER)), 0) AS high_water,
             COUNT(*) AS generation_count
         FROM gc_generations
         """
@@ -1476,8 +1502,8 @@ def _gc_state(conn: sqlite3.Connection) -> dict[str, Any]:
     high_water = int(row[0] or 0) if row is not None else 0
     generation_count = int(row[1] or 0) if row is not None else 0
     completed_row = conn.execute(
-        "SELECT completed_at FROM gc_generations WHERE generation = ? LIMIT 1",
-        (high_water,),
+        "SELECT completed_at_ms FROM gc_generations WHERE generation_id = ? LIMIT 1",
+        (str(high_water),),
     ).fetchone()
     completed_at = int(completed_row[0]) if completed_row is not None and completed_row[0] is not None else None
     return {
@@ -1486,6 +1512,19 @@ def _gc_state(conn: sqlite3.Connection) -> dict[str, Any]:
         "last_completed_at": completed_at,
         "generation_count": generation_count,
     }
+
+
+def _tier_state_or_current(conn: sqlite3.Connection, tier_db: Path, reader: Any) -> dict[str, Any]:
+    if tier_db.exists():
+        try:
+            tier_conn = open_readonly_connection(tier_db)
+            try:
+                return dict(reader(tier_conn))
+            finally:
+                tier_conn.close()
+        except sqlite3.Error:
+            pass
+    return dict(reader(conn))
 
 
 def _fts_trigger_state(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -1743,24 +1782,6 @@ def _query_plans(conn: sqlite3.Connection, *, db: Path) -> dict[str, Any]:
                 "plan": plan,
                 "hazards": [item for item in plan if "messages_fts " in item],
             }
-    if _table_exists(conn, "action_events") and _table_exists(conn, "action_events_fts_docsize"):
-        conv_row = conn.execute("SELECT session_id FROM action_events LIMIT 1").fetchone()
-        if conv_row is not None:
-            plan = _explain(
-                conn,
-                """
-                SELECT COUNT(*)
-                FROM action_events AS ae
-                LEFT JOIN action_events_fts_docsize AS d ON d.id = ae.rowid
-                WHERE ae.session_id IN (?)
-                  AND d.id IS NULL
-                """,
-                (conv_row[0],),
-            )
-            plans["action_fts_gap_probe"] = {
-                "plan": plan,
-                "hazards": [item for item in plan if "action_events_fts " in item],
-            }
     return plans
 
 
@@ -1834,11 +1855,11 @@ def probe(db: Path, *, limit: int = 5) -> dict[str, Any]:
             "recent_attempts": recent_attempts,
             "storage_route_counts": _storage_route_counts(conn, ops_db=ops_db),
             "convergence_stage_timings": _convergence_stage_timings(recent_attempts, conn),
-            "boundary_table_counts": _boundary_table_counts(conn, ops_db=ops_db),
+            "boundary_table_counts": _boundary_table_counts(conn, ops_db=ops_db, source_db=db.with_name("source.db")),
             "archive_tiers": _archive_tier_state(db, observed_db=observed_db),
             "topology_quarantine_state": _topology_quarantine_state(conn),
-            "blob_lease_state": _blob_lease_state(conn),
-            "gc_state": _gc_state(conn),
+            "blob_lease_state": _tier_state_or_current(conn, db.with_name("source.db"), _blob_lease_state),
+            "gc_state": _tier_state_or_current(conn, db.with_name("source.db"), _gc_state),
             "fts_trigger_state": _fts_trigger_state(conn),
             "daemon_resource_signal": _daemon_resource_signal(recent_attempts, conn, ops_db=ops_db),
             "source_path_churn": _source_path_churn(conn, attempts=recent_attempts, limit=limit, db=db),
@@ -2436,7 +2457,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"sessions={counts.get('session_count', 0)} "
                 f"missing_profiles={counts.get('missing_profile_row_count', 0)} "
                 f"missing_raw={counts.get('missing_raw_session_count', 0)} "
-                f"blocks_fts_ready={ready.get('blocks_fts_ready')}"
+                f"messages_fts_ready={ready.get('messages_fts_ready')}"
             )
             blocked_surfaces = {
                 name: info

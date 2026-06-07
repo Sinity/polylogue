@@ -1,4 +1,4 @@
-"""Tool-call parsing helpers for action events."""
+"""Tool-call parsing helpers for semantic actions."""
 
 from __future__ import annotations
 

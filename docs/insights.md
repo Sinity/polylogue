@@ -72,7 +72,7 @@ presence. Each materialized phase records `phase_idle_threshold_ms`, currently
 300000, so readers do not need to know a hidden global constant to interpret a
 phase split.
 
-`tool_active_duration_ms` is provider-event tool activity: it sums paired
+`tool_active_duration_ms` is session-event tool activity: it sums paired
 tool-call start/output events that have explicit timestamps. It does not
 measure human attention and it does not invent duration for unpaired or
 untimestamped tool events. A 12-minute Bash call with a matching output counts
@@ -102,13 +102,13 @@ operator productivity. The input vector is stored as
 `terminal_state` is a read-only boundary signal. `clean_finish` means the last
 meaningful observed message was assistant-side with no trailing tool error or
 unpaired provider tool event. `question_left` means the final meaningful
-message was user-side. `error_left` means the trailing provider event or final
+message was user-side. `error_left` means the trailing session event or final
 assistant text carried an error marker. `tool_left` means a provider tool start
 was observed without a matching output. `agent_hanging` is reserved for future
 session-end evidence with an explicit inactivity boundary. These states do not
 judge whether abandoning a session was good or bad; they only expose the final
 observable archive shape. `evidence.terminal_state_evidence` cites the
-message/provider event or pending-tool count behind the decision.
+message/session event or pending-tool count behind the decision.
 
 MCP exposes two convenience readers over the same materialized rows:
 `workflow_shape_distribution(since, until, group_by)` and

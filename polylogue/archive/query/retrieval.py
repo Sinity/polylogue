@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from polylogue.archive.query.retrieval_candidates import (
-    action_event_rows_ready,
     action_search_ready,
-    can_use_action_event_stats_with,
+    actions_ready,
+    can_use_action_stats_with,
     candidate_batch_limit,
     candidate_record_query,
     candidate_record_query_for,
@@ -15,7 +15,7 @@ from polylogue.archive.query.retrieval_candidates import (
     fetch_search_results,
     search_limit,
     should_batch_post_filter_fetch,
-    uses_action_read_model,
+    uses_actions,
 )
 from polylogue.archive.query.retrieval_search import (
     fetch_batched_filtered_sessions,
@@ -27,9 +27,9 @@ from polylogue.archive.query.retrieval_search import (
 )
 
 __all__ = [
-    "action_event_rows_ready",
     "action_search_ready",
-    "can_use_action_event_stats_with",
+    "actions_ready",
+    "can_use_action_stats_with",
     "candidate_batch_limit",
     "candidate_record_query",
     "candidate_record_query_for",
@@ -45,5 +45,5 @@ __all__ = [
     "score_action_search_text",
     "search_limit",
     "should_batch_post_filter_fetch",
-    "uses_action_read_model",
+    "uses_actions",
 ]

@@ -17,7 +17,7 @@ from polylogue.insights.archive import (
     SessionPhaseInsightQuery,
     SessionProfileInsightQuery,
     SessionTagRollupQuery,
-    WorkThreadInsightQuery,
+    ThreadInsightQuery,
 )
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.storage_records import SessionBuilder
@@ -483,7 +483,7 @@ class TestPolylogueArchiveInsights:
             )
         )
         phases = await archive.list_session_phase_insights(SessionPhaseInsightQuery(provider="claude-code", limit=10))
-        threads = await archive.list_work_thread_insights(WorkThreadInsightQuery(limit=10))
+        threads = await archive.list_thread_insights(ThreadInsightQuery(limit=10))
 
         assert profile is not None
         assert profile.insight_kind == "session_profile"

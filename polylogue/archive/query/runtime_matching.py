@@ -5,23 +5,23 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from polylogue.archive.action_event.action_events import ActionEvent
+    from polylogue.archive.actions.actions import Action
     from polylogue.archive.models import Session
     from polylogue.archive.query.plan import SessionQueryPlan
 
 
-def _action_events_for(session: Session) -> tuple[ActionEvent, ...]:
+def _actions_for(session: Session) -> tuple[Action, ...]:
     from polylogue.archive.semantic.facts import build_session_semantic_facts
 
     facts = build_session_semantic_facts(session)
-    return facts.action_events
+    return facts.actions
 
 
 def matches_referenced_path(plan: SessionQueryPlan, session: Session) -> bool:
     if not plan.referenced_path:
         return True
     affected_paths = tuple(
-        path.lower().replace("\\", "/") for action in _action_events_for(session) for path in action.affected_paths
+        path.lower().replace("\\", "/") for action in _actions_for(session) for path in action.affected_paths
     )
     if not affected_paths:
         return False
@@ -31,7 +31,7 @@ def matches_referenced_path(plan: SessionQueryPlan, session: Session) -> bool:
 def matches_action_terms(plan: SessionQueryPlan, session: Session) -> bool:
     if not plan.action_terms and not plan.excluded_action_terms:
         return True
-    categories = {action.kind.value for action in _action_events_for(session)}
+    categories = {action.kind.value for action in _actions_for(session)}
     required_terms = {term for term in plan.action_terms if term != "none"}
     if "none" in plan.action_terms and categories:
         return False
@@ -45,7 +45,7 @@ def matches_action_terms(plan: SessionQueryPlan, session: Session) -> bool:
 def matches_tool_terms(plan: SessionQueryPlan, session: Session) -> bool:
     if not plan.tool_terms and not plan.excluded_tool_terms:
         return True
-    tool_names = {(action.tool_name or "unknown").strip().lower() for action in _action_events_for(session)}
+    tool_names = {(action.tool_name or "unknown").strip().lower() for action in _actions_for(session)}
     required_terms = {term for term in plan.tool_terms if term != "none"}
     if "none" in plan.tool_terms and tool_names:
         return False
@@ -59,13 +59,13 @@ def matches_tool_terms(plan: SessionQueryPlan, session: Session) -> bool:
 def matches_action_sequence(plan: SessionQueryPlan, session: Session) -> bool:
     if not plan.action_sequence:
         return True
-    action_events = _action_events_for(session)
-    if not action_events:
+    actions = _actions_for(session)
+    if not actions:
         return False
 
     index = 0
     target_count = len(plan.action_sequence)
-    for action in action_events:
+    for action in actions:
         if action.kind.value != plan.action_sequence[index]:
             continue
         index += 1
@@ -77,7 +77,7 @@ def matches_action_sequence(plan: SessionQueryPlan, session: Session) -> bool:
 def matches_action_text_terms(plan: SessionQueryPlan, session: Session) -> bool:
     if not plan.action_text_terms:
         return True
-    searchable_events = [action.search_text.lower() for action in _action_events_for(session) if action.search_text]
+    searchable_events = [action.search_text.lower() for action in _actions_for(session) if action.search_text]
     if not searchable_events:
         return False
     return all(any(term.lower() in event_text for event_text in searchable_events) for term in plan.action_text_terms)

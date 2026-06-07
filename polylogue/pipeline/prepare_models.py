@@ -1,4 +1,4 @@
-"""Typed models and caches for raw-to-record preparation."""
+"""Typed models and caches for parsed-session preparation."""
 
 from __future__ import annotations
 
@@ -6,42 +6,26 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from polylogue.archive.topology.edge import TopologyEdgeRecord
 from polylogue.pipeline.materialization_runtime import _timestamp_sort_key
 from polylogue.storage.archive_views import ExistingSession
-from polylogue.storage.runtime import (
-    AttachmentRecord,
-    ContentBlockRecord,
-    MessageRecord,
-    ProviderEventRecord,
-    SessionRecord,
-)
-from polylogue.types import ContentHash, MessageId, SessionId
+from polylogue.types import ContentHash, SessionId
 
 if TYPE_CHECKING:
+    from polylogue.sources.parsers.base import ParsedSession
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-
-
-class RecordBundle(BaseModel):
-    session: SessionRecord
-    messages: list[MessageRecord]
-    attachments: list[AttachmentRecord]
-    content_blocks: list[ContentBlockRecord] = Field(default_factory=list)
-    provider_events: list[ProviderEventRecord] = Field(default_factory=list)
-    topology_edges: list[TopologyEdgeRecord] = Field(default_factory=list)
 
 
 class SaveResult(BaseModel):
     sessions: int
     messages: int
     attachments: int
-    provider_events: int = 0
+    session_events: int = 0
     skipped_sessions: int
     skipped_messages: int
     skipped_attachments: int
-    skipped_provider_events: int = 0
+    skipped_session_events: int = 0
 
 
 @dataclass
@@ -50,7 +34,6 @@ class PrepareCache:
 
     existing: dict[str, ExistingSession] = field(default_factory=dict)
     known_ids: set[str] = field(default_factory=set)
-    message_ids: dict[str, dict[str, MessageId]] = field(default_factory=dict)
 
     @classmethod
     async def load(cls, backend: SQLiteBackend, candidate_cids: set[str]) -> PrepareCache:
@@ -70,30 +53,13 @@ class PrepareCache:
                 rows = await cursor.fetchall()
             for row in rows:
                 cid = row["session_id"]
+                raw_content_hash = row["content_hash"]
+                content_hash = raw_content_hash.hex() if isinstance(raw_content_hash, bytes) else str(raw_content_hash)
                 cache.existing[cid] = ExistingSession(
                     session_id=cid,
-                    content_hash=row["content_hash"],
+                    content_hash=content_hash,
                 )
                 cache.known_ids.add(cid)
-
-        existing_cids = list(cache.known_ids)
-        for chunk_start in range(0, len(existing_cids), 500):
-            chunk = existing_cids[chunk_start : chunk_start + 500]
-            placeholders = ", ".join("?" for _ in chunk)
-            async with backend.connection() as conn:
-                cursor = await conn.execute(
-                    f"SELECT session_id, provider_message_id, message_id "
-                    f"FROM messages WHERE session_id IN ({placeholders}) "
-                    f"AND provider_message_id IS NOT NULL",
-                    tuple(chunk),
-                )
-                rows = await cursor.fetchall()
-            for row in rows:
-                cid = row["session_id"]
-                if cid not in cache.message_ids:
-                    cache.message_ids[cid] = {}
-                if row["provider_message_id"]:
-                    cache.message_ids[cid][str(row["provider_message_id"])] = MessageId(row["message_id"])
 
         return cache
 
@@ -106,17 +72,17 @@ class AttachmentMaterializationPlan:
 
 @dataclass
 class TransformResult:
-    bundle: RecordBundle
+    session: ParsedSession
     materialization_plan: AttachmentMaterializationPlan
     content_hash: ContentHash
     candidate_cid: SessionId
-    message_id_map: dict[str, MessageId]
 
 
 @dataclass(frozen=True)
 class PreparedBundle:
-    bundle: RecordBundle
+    session: ParsedSession
     materialization_plan: AttachmentMaterializationPlan
+    content_hash: ContentHash
     cid: SessionId
     changed: bool
 
@@ -137,7 +103,6 @@ __all__ = [
     "PersistedSessionResult",
     "PreparedBundle",
     "PrepareCache",
-    "RecordBundle",
     "SaveResult",
     "TransformResult",
     "_timestamp_sort_key",

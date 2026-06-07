@@ -36,6 +36,7 @@ class Message(MessageRuntimeMixin, BaseModel):
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    duration_ms: int = 0
     model_name: str | None = None
 
     @field_validator("role", mode="before")

@@ -78,18 +78,16 @@ class TestHandleQueryMode:
             return mock_execute, mock_stats
 
     def test_no_args_routes_to_archive_executor(self) -> None:
-        # The query path routes every root invocation — including the
-        # no-args browse case — through the archive executor. Browse mode (no
-        # query terms) is what surfaces the archive summary; there is no
-        # separate ``_show_stats`` dispatch any more.
+        # Bare root invocation shows fast status / archive summary instead of
+        # constructing a query request.
         mock_execute, mock_stats = self._call(self._make_params())
-        mock_execute.assert_called_once()
-        mock_stats.assert_not_called()
+        mock_execute.assert_not_called()
+        mock_stats.assert_called_once()
 
     def test_verbose_no_args_routes_to_archive_executor(self) -> None:
         mock_execute, mock_stats = self._call(self._make_params(verbose=True))
-        mock_execute.assert_called_once()
-        mock_stats.assert_not_called()
+        mock_execute.assert_not_called()
+        mock_stats.assert_called_once()
 
     def test_query_terms_trigger_query(self) -> None:
         mock_ctx = MagicMock()
@@ -311,9 +309,13 @@ class TestQueryFirstGroupParseArgs:
     def test_no_args_routes_to_archive_executor(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
-        with patch("polylogue.cli.query.execute_query_request") as mock_execute:
+        with (
+            patch("polylogue.cli.query.execute_query_request") as mock_execute,
+            patch("polylogue.cli.click_app._show_stats") as mock_stats,
+        ):
             cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
-        mock_execute.assert_called_once()
+        mock_execute.assert_not_called()
+        mock_stats.assert_called_once()
 
     def test_help_flag(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
@@ -369,9 +371,13 @@ class TestQueryFirstGroupInvoke:
     def test_no_subcommand_routes_to_archive_executor(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
-        with patch("polylogue.cli.query.execute_query_request") as mock_execute:
+        with (
+            patch("polylogue.cli.query.execute_query_request") as mock_execute,
+            patch("polylogue.cli.click_app._show_stats") as mock_stats,
+        ):
             cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
-        mock_execute.assert_called_once()
+        mock_execute.assert_not_called()
+        mock_stats.assert_called_once()
 
     def test_stats_by_subcommand_preserves_grouped_stats_mode(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
@@ -483,10 +489,10 @@ class TestCliSetup:
 
         captured_env: dict[str, object] = {}
 
-        def capture_env(env: object, request: object) -> None:
+        def capture_env(env: object, **_: object) -> None:
             captured_env["env"] = env
 
-        with patch("polylogue.cli.query.execute_query_request", side_effect=capture_env):
+        with patch("polylogue.cli.click_app._show_stats", side_effect=capture_env):
             cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
         assert isinstance(captured_env.get("env"), AppEnv)
 

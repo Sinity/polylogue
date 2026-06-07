@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from pathlib import Path
 
@@ -9,8 +10,9 @@ from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
     ParsedMessage,
-    ParsedProviderEvent,
+    ParsedPasteEvidence,
     ParsedSession,
+    ParsedSessionEvent,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -525,7 +527,14 @@ def test_archive_tiers_writer_materializes_paste_span_from_parser_evidence(tmp_p
                 provider_message_id="m1",
                 role=Role.USER,
                 text="pasted body",
-                provider_meta={"claude_code_history_paste": True},
+                paste_spans=[
+                    ParsedPasteEvidence(
+                        position=0,
+                        start_offset=0,
+                        end_offset=11,
+                        boundary_state="whole_message_fallback",
+                    )
+                ],
                 content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="pasted body")],
             )
         ],
@@ -540,7 +549,7 @@ def test_archive_tiers_writer_materializes_paste_span_from_parser_evidence(tmp_p
     ).fetchone()
     span = conn.execute(
         """
-        SELECT paste_span_id, start_offset, end_offset, boundary
+        SELECT paste_id, position, start_offset, end_offset, boundary_state
         FROM paste_spans
         WHERE message_id = ?
         """,
@@ -549,10 +558,11 @@ def test_archive_tiers_writer_materializes_paste_span_from_parser_evidence(tmp_p
     assert session["paste_count"] == 1
     assert message["has_paste"] == 1
     assert dict(span) == {
-        "paste_span_id": f"{message['message_id']}:0:11",
+        "paste_id": f"{message['message_id']}:0",
+        "position": 0,
         "start_offset": 0,
         "end_offset": 11,
-        "boundary": "whole_message_fallback",
+        "boundary_state": "whole_message_fallback",
     }
 
 
@@ -568,15 +578,15 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
                 content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="summary anchor")],
             )
         ],
-        provider_events=[
-            ParsedProviderEvent(
+        session_events=[
+            ParsedSessionEvent(
                 event_type="compaction",
                 source_message_provider_id="m1",
                 timestamp="2026-01-01T00:00:01+00:00",
                 payload={"summary": "compressed context"},
             ),
-            ParsedProviderEvent(event_type="turn_context", payload={"cwd": "/tmp"}),
-            ParsedProviderEvent(
+            ParsedSessionEvent(event_type="turn_context", payload={"cwd": "/tmp"}),
+            ParsedSessionEvent(
                 event_type="agent_policy",
                 timestamp="2026-01-01T00:00:02+00:00",
                 payload={"approval": "on-request"},
@@ -588,7 +598,7 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
 
     rows = conn.execute(
         """
-        SELECT event_id, source_message_id, position, event_type, summary, payload, occurred_at_ms
+        SELECT event_id, source_message_id, position, event_type, summary, occurred_at_ms
         FROM session_events
         WHERE session_id = ?
         ORDER BY position
@@ -602,17 +612,27 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
             "position": 0,
             "event_type": "compaction",
             "summary": "compressed context",
-            "payload": '{"summary":"compressed context"}',
             "occurred_at_ms": 1_767_225_601_000,
         },
+    ]
+    policies = conn.execute(
+        """
+        SELECT policy_id, source_message_id, position, approval_policy, sandbox_policy, network_policy, observed_at_ms
+        FROM session_agent_policies
+        WHERE session_id = ?
+        ORDER BY position
+        """,
+        (session_id,),
+    ).fetchall()
+    assert [dict(row) for row in policies] == [
         {
-            "event_id": f"{session_id}:1",
+            "policy_id": f"{session_id}:1",
             "source_message_id": None,
             "position": 1,
-            "event_type": "agent_policy",
-            "summary": None,
-            "payload": '{"approval":"on-request"}',
-            "occurred_at_ms": 1_767_225_602_000,
+            "approval_policy": "on-request",
+            "sandbox_policy": None,
+            "network_policy": None,
+            "observed_at_ms": 1_767_225_602_000,
         },
     ]
 
@@ -638,7 +658,7 @@ def test_archive_tiers_writer_records_unresolved_parent_session_link(tmp_path: P
 
     row = conn.execute(
         """
-        SELECT src_session_id, dst_session_native_id, dst_session_id, link_type, status, method, confidence,
+        SELECT src_session_id, dst_origin, dst_native_id, resolved_dst_session_id, link_type, status, method, confidence,
             evidence_json, observed_at_ms
         FROM session_links
         WHERE src_session_id = ?
@@ -647,10 +667,11 @@ def test_archive_tiers_writer_records_unresolved_parent_session_link(tmp_path: P
     ).fetchone()
     assert dict(row) == {
         "src_session_id": "claude-code-session:child-session",
-        "dst_session_native_id": "parent-session",
-        "dst_session_id": None,
+        "dst_origin": "claude-code-session",
+        "dst_native_id": "parent-session",
+        "resolved_dst_session_id": None,
         "link_type": "sidechain",
-        "status": "unresolved",
+        "status": None,
         "method": "parser-parent",
         "confidence": 1.0,
         "evidence_json": '{"parent_session_provider_id":"parent-session"}',
@@ -695,7 +716,7 @@ def test_archive_tiers_writer_resolves_parent_link_when_parent_already_exists(tm
         (child_id,),
     ).fetchone()
     link_row = conn.execute(
-        "SELECT dst_session_id, status FROM session_links WHERE src_session_id = ?",
+        "SELECT resolved_dst_session_id, status FROM session_links WHERE src_session_id = ?",
         (child_id,),
     ).fetchone()
     thread_rows = conn.execute(
@@ -713,7 +734,7 @@ def test_archive_tiers_writer_resolves_parent_link_when_parent_already_exists(tm
         "root_session_id": parent_id,
         "branch_type": "sidechain",
     }
-    assert dict(link_row) == {"dst_session_id": parent_id, "status": "resolved"}
+    assert dict(link_row) == {"resolved_dst_session_id": parent_id, "status": None}
     assert [dict(row) for row in thread_rows] == [
         {"thread_id": parent_id, "session_id": parent_id, "position": 0},
         {"thread_id": parent_id, "session_id": child_id, "position": 1},
@@ -760,7 +781,7 @@ def test_archive_tiers_writer_resolves_existing_child_link_when_parent_arrives_l
         (child_id,),
     ).fetchone()
     link_row = conn.execute(
-        "SELECT dst_session_id, status FROM session_links WHERE src_session_id = ?",
+        "SELECT resolved_dst_session_id, status FROM session_links WHERE src_session_id = ?",
         (child_id,),
     ).fetchone()
     stale_child_thread = conn.execute("SELECT thread_id FROM threads WHERE thread_id = ?", (child_id,)).fetchone()
@@ -779,7 +800,7 @@ def test_archive_tiers_writer_resolves_existing_child_link_when_parent_arrives_l
         "root_session_id": parent_id,
         "branch_type": "continuation",
     }
-    assert dict(link_row) == {"dst_session_id": parent_id, "status": "resolved"}
+    assert dict(link_row) == {"resolved_dst_session_id": parent_id, "status": None}
     assert stale_child_thread is None
     assert [dict(row) for row in thread_rows] == [
         {"thread_id": parent_id, "session_id": parent_id, "position": 0},
@@ -810,51 +831,51 @@ def test_archive_tiers_writer_materializes_repo_and_commit_edges(tmp_path: Path)
 
     repo = conn.execute(
         """
-        SELECT repository_url, root_path, repo_name, first_seen_at_ms, last_seen_at_ms
+        SELECT origin_url, root_path, repo_id, repo_name, first_seen_at_ms, last_seen_at_ms
         FROM repos
         """
     ).fetchone()
     session_repo = conn.execute(
         """
-        SELECT session_id, repository_url, root_path, branch_name, observed_at_ms
+        SELECT session_id, repo_id, branch_name, observed_at_ms
         FROM session_repos
         """
     ).fetchone()
     commit = conn.execute(
         """
-        SELECT session_id, repository_url, root_path, commit_hash, detection_method, confidence,
-            evidence_json, observed_at_ms
+        SELECT session_id, commit_sha, repo_id, detection_type, method, confidence,
+            evidence_json, created_at_ms
         FROM session_commits
         """
     ).fetchone()
 
     assert dict(repo) == {
-        "repository_url": "https://github.com/Sinity/polylogue.git",
+        "origin_url": "https://github.com/Sinity/polylogue.git",
         "root_path": "/realm/project/polylogue",
+        "repo_id": "https://github.com/Sinity/polylogue.git\x1f/realm/project/polylogue",
         "repo_name": "polylogue",
         "first_seen_at_ms": 1_767_225_605_000,
         "last_seen_at_ms": 1_767_225_605_000,
     }
     assert dict(session_repo) == {
         "session_id": session_id,
-        "repository_url": "https://github.com/Sinity/polylogue.git",
-        "root_path": "/realm/project/polylogue",
+        "repo_id": "https://github.com/Sinity/polylogue.git\x1f/realm/project/polylogue",
         "branch_name": "feature/archive",
         "observed_at_ms": 1_767_225_605_000,
     }
     assert dict(commit) == {
         "session_id": session_id,
-        "repository_url": "https://github.com/Sinity/polylogue.git",
-        "root_path": "/realm/project/polylogue",
-        "commit_hash": "0123456789abcdef0123456789abcdef01234567",
-        "detection_method": "parser-git-meta",
+        "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+        "repo_id": "https://github.com/Sinity/polylogue.git\x1f/realm/project/polylogue",
+        "detection_type": "explicit_ref",
+        "method": "parser-git-meta",
         "confidence": 1.0,
         "evidence_json": (
             '{"git_branch":"feature/archive",'
             '"git_repository_url":"https://github.com/Sinity/polylogue.git",'
             '"root_path":"/realm/project/polylogue"}'
         ),
-        "observed_at_ms": 1_767_225_605_000,
+        "created_at_ms": 1_767_225_605_000,
     }
 
 
@@ -883,8 +904,8 @@ def test_archive_tiers_writer_replacement_clears_old_projection_rows(tmp_path: P
                 path="report.pdf",
             )
         ],
-        provider_events=[
-            ParsedProviderEvent(
+        session_events=[
+            ParsedSessionEvent(
                 event_type="compaction",
                 source_message_provider_id="m1",
                 payload={"summary": "old event"},
@@ -962,19 +983,32 @@ def test_archive_tiers_writer_materializes_attachments_and_refs(tmp_path: Path) 
                 provider_file_id="file-1",
                 provider_drive_id="drive-1",
                 upload_origin="drive",
-                provider_meta={"caption": "report"},
+                caption="report",
+                source_url="https://example.test/report.pdf",
             )
         ],
     )
 
     session_id = write_parsed_session_to_archive(conn, session)
-    attachment_id = f"{session_id}:attachment:att-1"
+    attachment_hash = hashlib.sha256()
+    for part in (
+        "attachment",
+        "att-1",
+        "file-1",
+        "drive-1",
+        "report.pdf",
+        "report.pdf",
+        "application/pdf",
+        "1234",
+    ):
+        attachment_hash.update(part.encode("utf-8", errors="surrogatepass"))
+        attachment_hash.update(b"\0")
+    attachment_id = attachment_hash.hexdigest()
     message_id = f"{session_id}:m1"
 
     attachment = conn.execute(
         """
-        SELECT attachment_id, mime_type, size_bytes, path, provider_meta, provider_attachment_id,
-            provider_file_id, provider_drive_id, upload_origin, ref_count
+        SELECT attachment_id, display_name, media_type, byte_count, ref_count
         FROM attachments
         WHERE attachment_id = ?
         """,
@@ -982,8 +1016,7 @@ def test_archive_tiers_writer_materializes_attachments_and_refs(tmp_path: Path) 
     ).fetchone()
     ref = conn.execute(
         """
-        SELECT ref_id, attachment_id, session_id, message_id, provider_meta, provider_attachment_id,
-            provider_file_id, provider_drive_id, upload_origin
+        SELECT ref_id, attachment_id, session_id, message_id, position, upload_origin, source_url, caption
         FROM attachment_refs
         WHERE attachment_id = ?
         """,
@@ -992,24 +1025,33 @@ def test_archive_tiers_writer_materializes_attachments_and_refs(tmp_path: Path) 
 
     assert dict(attachment) == {
         "attachment_id": attachment_id,
-        "mime_type": "application/pdf",
-        "size_bytes": 1234,
-        "path": "report.pdf",
-        "provider_meta": '{"caption":"report"}',
-        "provider_attachment_id": "att-1",
-        "provider_file_id": "file-1",
-        "provider_drive_id": "drive-1",
-        "upload_origin": "drive",
+        "display_name": "report.pdf",
+        "media_type": "application/pdf",
+        "byte_count": 1234,
         "ref_count": 1,
     }
-    assert dict(ref) == {
-        "ref_id": f"{session_id}:attachment-ref:m1:att-1",
+    ref_dict = dict(ref)
+    assert {
+        key: ref_dict[key]
+        for key in ("attachment_id", "session_id", "message_id", "upload_origin", "source_url", "caption")
+    } == {
         "attachment_id": attachment_id,
         "session_id": session_id,
         "message_id": message_id,
-        "provider_meta": '{"caption":"report"}',
-        "provider_attachment_id": "att-1",
-        "provider_file_id": "file-1",
-        "provider_drive_id": "drive-1",
         "upload_origin": "drive",
+        "source_url": "https://example.test/report.pdf",
+        "caption": "report",
+    }
+    native_ids = {
+        (row["id_kind"], row["native_id"])
+        for row in conn.execute(
+            "SELECT id_kind, native_id FROM attachment_native_ids WHERE ref_id = ?",
+            (ref_dict["ref_id"],),
+        ).fetchall()
+    }
+    assert native_ids == {
+        ("attachment", "att-1"),
+        ("file", "file-1"),
+        ("drive", "drive-1"),
+        ("url", "https://example.test/report.pdf"),
     }

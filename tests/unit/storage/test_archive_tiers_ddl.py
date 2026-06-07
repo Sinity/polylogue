@@ -158,7 +158,14 @@ def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> N
     action = conn.execute("SELECT tool_command, output_text FROM actions").fetchone()
     assert dict(action) == {"tool_command": "pytest -q", "output_text": "passed"}
 
-    fts_row = conn.execute("SELECT block_id FROM blocks_fts WHERE blocks_fts MATCH 'needle'").fetchone()
+    fts_row = conn.execute(
+        """
+        SELECT b.block_id
+        FROM messages_fts f
+        JOIN blocks b ON b.rowid = f.rowid
+        WHERE f.text MATCH 'needle'
+        """
+    ).fetchone()
     assert fts_row["block_id"] == "codex-session:native-session:native-message:0"
 
 
@@ -185,16 +192,19 @@ def test_archive_tiers_messages_store_prose_only_in_blocks(tmp_path: Path) -> No
     assert "text" in block_columns
 
 
-def test_archive_tiers_blocks_fts_uses_external_content_over_blocks(tmp_path: Path) -> None:
+def test_archive_tiers_messages_fts_indexes_block_search_text(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     _apply_tier(conn, ArchiveTier.INDEX)
 
-    fts_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'blocks_fts'").fetchone()[
+    fts_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts'").fetchone()[
         "sql"
     ]
 
-    assert "content='blocks'" in fts_sql
-    assert "content_rowid='rowid'" in fts_sql
+    assert "content=''" in fts_sql
+    assert "contentless_delete=1" in fts_sql
+
+    block_columns = {row["name"] for row in conn.execute("PRAGMA table_xinfo('blocks')").fetchall()}
+    assert "search_text" in block_columns
 
 
 def test_archive_tiers_sessions_raw_id_is_cross_tier_pointer_not_foreign_key(tmp_path: Path) -> None:
@@ -223,32 +233,37 @@ def test_archive_tiers_database_split_keeps_source_index_embeddings_user_and_ops
     user = tier_tables[ArchiveTier.USER]
     ops = tier_tables[ArchiveTier.OPS]
 
-    for expected in ("raw_sessions", "blob_refs", "raw_artifacts"):
+    for expected in ("raw_sessions", "blob_refs", "raw_artifacts", "otlp_spans"):
         assert expected in source
         assert expected not in index
-    for expected in ("sessions", "messages", "blocks"):
+    for expected in ("sessions", "messages", "blocks", "session_agent_policies", "attachment_native_ids"):
         assert expected in index
         assert expected not in source
-    for expected in ("message_embeddings", "embeddings_meta", "embedding_status"):
+    for expected in ("message_embeddings", "message_embeddings_meta"):
         assert expected in embeddings
         assert expected not in index
     for expected in ("marks", "suppressions"):
         assert expected in user
         assert expected not in index
-    for expected in ("ingest_cursor", "otlp_spans"):
+    for expected in ("ingest_cursor", "embedding_catchup_runs"):
         assert expected in ops
         assert expected not in index
     assert "sessions" not in user
     assert "sessions" not in ops
 
 
-def test_archive_tiers_session_profiles_record_cost_price_basis(tmp_path: Path) -> None:
+def test_archive_tiers_cost_price_basis_has_typed_tables(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     _apply_tier(conn, ArchiveTier.INDEX)
 
-    columns = {row["name"] for row in conn.execute("PRAGMA table_info('session_profiles')").fetchall()}
+    tables = {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+    }
 
-    assert {"cost_credits", "cost_usd", "cost_provenance", "priced_with", "priced_at_ms"} <= columns
+    assert {"price_catalogs", "model_prices", "session_reported_costs", "session_model_usage"} <= tables
 
 
 def test_archive_tier_specs_capture_file_and_backup_policy() -> None:

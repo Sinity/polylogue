@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from polylogue.archive.action_event.action_events import ActionEvent
+from polylogue.archive.actions.actions import Action
 from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
@@ -275,18 +275,18 @@ def _archive_aggregate_facet_families(
     result["repos"] = keyed(
         scoped_rows(
             """
-            SELECT COALESCE(NULLIF(r.repo_name, ''), NULLIF(r.root_path, ''), NULLIF(r.repository_url, '')) AS key,
+            SELECT COALESCE(NULLIF(r.repo_name, ''), NULLIF(r.root_path, ''), NULLIF(r.origin_url, '')) AS key,
                    COUNT(DISTINCT sr.session_id) AS n
             FROM session_repos sr
-            JOIN repos r ON r.repository_url = sr.repository_url AND r.root_path = sr.root_path
+            JOIN repos r ON r.repo_id = sr.repo_id
             WHERE sr.session_id IN ({})
             GROUP BY key
             """,
             """
-            SELECT COALESCE(NULLIF(r.repo_name, ''), NULLIF(r.root_path, ''), NULLIF(r.repository_url, '')) AS key,
+            SELECT COALESCE(NULLIF(r.repo_name, ''), NULLIF(r.root_path, ''), NULLIF(r.origin_url, '')) AS key,
                    COUNT(DISTINCT sr.session_id) AS n
             FROM session_repos sr
-            JOIN repos r ON r.repository_url = sr.repository_url AND r.root_path = sr.root_path
+            JOIN repos r ON r.repo_id = sr.repo_id
             GROUP BY key
             """,
         )
@@ -357,13 +357,13 @@ def _archive_health_report(config: Config) -> ReadinessReport:
                     summary=f"{stats.total_sessions:,} sessions / {stats.total_messages:,} messages",
                 )
             )
-            fts_count = _archive_count_table_rows(archive._conn, "blocks_fts")
+            fts_count = _archive_count_table_rows(archive._conn, "messages_fts")
             checks.append(
                 ReadinessCheck(
                     "archive_search",
                     VerifyStatus.OK if fts_count is not None else VerifyStatus.WARNING,
                     count=fts_count or 0,
-                    summary="blocks_fts present" if fts_count is not None else "blocks_fts missing",
+                    summary="messages_fts present" if fts_count is not None else "messages_fts missing",
                 )
             )
             insight_status = archive.session_insight_status()
@@ -440,10 +440,12 @@ def _maybe_parse_json_object(value: str | None) -> dict[str, object] | None:
 def _archive_attachment_to_domain(attachment: ArchiveAttachmentRow) -> Attachment:
     return Attachment(
         id=attachment.attachment_id,
-        mime_type=attachment.mime_type,
-        size_bytes=attachment.size_bytes,
-        path=attachment.path,
-        provider_meta=_maybe_parse_json_object(attachment.provider_meta),
+        name=attachment.display_name,
+        mime_type=attachment.media_type,
+        size_bytes=attachment.byte_count,
+        path=None,
+        source_url=attachment.source_url,
+        caption=attachment.caption,
     )
 
 
@@ -477,6 +479,7 @@ def _archive_message_to_domain(message: ArchiveMessageRow, *, provider: Provider
         has_tool_use=message.has_tool_use,
         has_thinking=message.has_thinking,
         has_paste=message.has_paste,
+        duration_ms=message.duration_ms,
         branch_index=message.variant_index,
         parent_id=message.parent_message_id,
         attachments=[_archive_attachment_to_domain(att) for att in message.attachments],
@@ -493,21 +496,6 @@ def _archive_session_to_session(session: ArchiveSessionEnvelope) -> Session:
     # the full-read and summary-read session timelines consistent.
     stored_created = _parse_archive_datetime(session.created_at)
     stored_updated = _parse_archive_datetime(session.updated_at)
-    # Restore the original session-level provider_meta persisted in the
-    # session's origin_meta so cost evidence (e.g. total_cost_usd) and other
-    # session-scoped metadata are available to insight materialization
-    # (session-cost estimation reads provider_meta.total_cost_usd).
-    provider_meta: dict[str, object] = {}
-    origin_meta = _maybe_parse_json_object(session.origin_meta)
-    if origin_meta:
-        provider_meta.update(origin_meta)
-    provider_meta.update(
-        {
-            "native_id": session.native_id,
-            "origin": session.origin,
-            "active_leaf_message_id": session.active_leaf_message_id,
-        }
-    )
     return Session(
         id=SessionId(session.session_id),
         origin=origin_from_provider(provider),
@@ -515,7 +503,9 @@ def _archive_session_to_session(session: ArchiveSessionEnvelope) -> Session:
         messages=MessageCollection(messages=messages),
         created_at=stored_created or (min(timestamps) if timestamps else None),
         updated_at=stored_updated or (max(timestamps) if timestamps else None),
-        provider_meta=provider_meta,
+        working_directories=tuple(session.working_directories),
+        git_branch=session.git_branch,
+        git_repository_url=session.git_repository_url,
         parent_id=SessionId(session.parent_session_id) if session.parent_session_id else None,
         branch_type=BranchType(session.branch_type) if session.branch_type else None,
         attachments=[_archive_attachment_to_domain(att) for att in session.orphan_attachments],
@@ -529,7 +519,9 @@ def _archive_summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary
         title=summary.title,
         created_at=_parse_archive_datetime(summary.created_at),
         updated_at=_parse_archive_datetime(summary.updated_at),
-        provider_meta={"native_id": summary.native_id, "origin": summary.origin},
+        working_directories=tuple(summary.working_directories),
+        git_branch=summary.git_branch,
+        git_repository_url=summary.git_repository_url,
         message_count=summary.message_count,
         tags_m2m=summary.tags,
     )
@@ -630,9 +622,9 @@ class _ArchiveInsightExportOperations:
             )
         )
 
-    async def list_work_thread_insights(self, query: object) -> list[ArchiveInsightModel]:
+    async def list_thread_insights(self, query: object) -> list[ArchiveInsightModel]:
         return list(
-            self._archive.list_work_thread_insights(
+            self._archive.list_thread_insights(
                 query=getattr(query, "query", None),
                 since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
                 until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
@@ -943,16 +935,6 @@ class _ArchiveNeighborRuntime:
         del text, limit, vector_provider
         return []
 
-    async def get_action_event_artifact_state(self) -> object:
-        from polylogue.storage.action_events.artifacts import ActionEventArtifactState
-
-        return ActionEventArtifactState(
-            source_sessions=0,
-            materialized_sessions=0,
-            materialized_rows=0,
-            fts_rows=0,
-        )
-
     def _query_kwargs(self, query: object, *, default_limit: int) -> dict[str, object]:
         origin, origins = self._provider_filters(
             provider=getattr(query, "provider", None),
@@ -996,23 +978,23 @@ class _ArchiveNeighborRuntime:
         return origin, tuple(origins)
 
 
-def _action_events_for_session(session: Session) -> tuple[ActionEvent, ...]:
-    """Derive ordered action events from an archive session's tool blocks.
+def _actions_for_session(session: Session) -> tuple[Action, ...]:
+    """Derive ordered actions from an archive session's tool blocks.
 
     Mirrors the ingest-time derivation (``pipeline/services/ingest_worker``):
     each message's content blocks are parsed into tool calls, then promoted
-    to ``ActionEvent`` records. No storage round-trip — the domain
-    session already carries the content blocks the events are built from.
+    to ``Action`` records. No storage round-trip — the domain
+    session already carries the content blocks the actions are built from.
     """
-    from polylogue.archive.action_event.action_events import build_action_events, build_tool_calls_from_content_blocks
+    from polylogue.archive.actions.actions import build_actions, build_tool_calls_from_content_blocks
 
-    events: builtins.list[ActionEvent] = []
+    events: builtins.list[Action] = []
     for message in session.messages:
         calls = build_tool_calls_from_content_blocks(
             provider=provider_from_origin(session.origin),
             content_blocks=message.content_blocks,
         )
-        events.extend(build_action_events(message, calls))
+        events.extend(build_actions(message, calls))
     return tuple(events)
 
 
@@ -1280,17 +1262,17 @@ def _archive_rebuild_threads(conn: Any, upsert_materialization: Any) -> int:
     conn.execute("DELETE FROM insight_materialization WHERE insight_type = 'thread'")
     for root_id, session_ids in by_root.items():
         root = conn.execute(
-            "SELECT origin, created_at_ms, updated_at_ms FROM sessions WHERE session_id = ?",
+            "SELECT created_at_ms, updated_at_ms FROM sessions WHERE session_id = ?",
             (root_id,),
         ).fetchone()
         if root is None:
             continue
         conn.execute(
             """
-            INSERT INTO threads (thread_id, root_session_id, origin, created_at_ms, updated_at_ms, session_count)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO threads (thread_id, created_at_ms, session_count)
+            VALUES (?, ?, ?)
             """,
-            (root_id, root_id, root["origin"], root["created_at_ms"], root["updated_at_ms"], len(session_ids)),
+            (root_id, root["created_at_ms"] or 0, len(session_ids)),
         )
         materialized_at_ms = int(datetime.now().timestamp() * 1000)
         for position, session_id in enumerate(session_ids):
@@ -1372,10 +1354,10 @@ class PolylogueArchiveMixin:
                 rows.append(row)
         return rows
 
-    async def get_action_events(self, session_id: str) -> tuple[ActionEvent, ...]:
-        """Derive a session's action events from its content blocks.
+    async def get_actions(self, session_id: str) -> tuple[Action, ...]:
+        """Derive a session's actions from its content blocks.
 
-        ``index.db`` has no materialized ``action_events`` table; events
+        ``index.db`` exposes an ``actions`` view; these actions
         are derived on read from the session's tool-use/tool-result blocks —
         the same source the archive materializer hashed into durable rows.
         Returns an empty tuple when the session is absent.
@@ -1383,19 +1365,19 @@ class PolylogueArchiveMixin:
         session = await self.get_session(session_id)
         if session is None:
             return ()
-        return _action_events_for_session(session)
+        return _actions_for_session(session)
 
-    async def get_action_events_batch(
+    async def get_actions_batch(
         self,
         session_ids: builtins.list[str],
-    ) -> dict[str, tuple[ActionEvent, ...]]:
-        """Batch counterpart of :meth:`get_action_events`.
+    ) -> dict[str, tuple[Action, ...]]:
+        """Batch counterpart of :meth:`get_actions`.
 
         Missing sessions are omitted from the result mapping, mirroring
         the archive repository batch reader.
         """
         sessions = await self.get_sessions(session_ids)
-        return {str(session.id): _action_events_for_session(session) for session in sessions}
+        return {str(session.id): _actions_for_session(session) for session in sessions}
 
     async def list_sessions(
         self,

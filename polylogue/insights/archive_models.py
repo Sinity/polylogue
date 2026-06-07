@@ -140,7 +140,7 @@ class SessionLatencyProfilePayload(ArchiveInsightModel):
     tool_call_count_by_category: dict[str, int] = Field(default_factory=dict)
     construct_boundary: str = (
         "agent-response time includes both model output delay and any intervening tool execution; "
-        "provider tool latency requires timestamped provider-event pairs"
+        "provider tool latency requires timestamped session-event pairs"
     )
 
 
@@ -245,7 +245,7 @@ def _date_provenance(canonical_session_date: str | None, start_time: str | None,
     return "date_only"
 
 
-class WorkThreadMemberEvidencePayload(ArchiveInsightModel):
+class ThreadMemberEvidencePayload(ArchiveInsightModel):
     session_id: str
     parent_id: str | None = None
     role: str
@@ -255,7 +255,7 @@ class WorkThreadMemberEvidencePayload(ArchiveInsightModel):
     evidence: tuple[str, ...] = ()
 
 
-class WorkThreadPayload(ArchiveInsightModel):
+class ThreadPayload(ArchiveInsightModel):
     start_time: str | None = None
     end_time: str | None = None
     dominant_repo: str | None = None
@@ -271,7 +271,7 @@ class WorkThreadPayload(ArchiveInsightModel):
     confidence: float = 0.0
     support_level: ConfidenceBand = ConfidenceBand.WEAK
     support_signals: tuple[str, ...] = ()
-    member_evidence: tuple[WorkThreadMemberEvidencePayload, ...] = ()
+    member_evidence: tuple[ThreadMemberEvidencePayload, ...] = ()
 
 
 class DaySessionSummaryPayload(ArchiveInsightModel):
@@ -316,6 +316,6 @@ __all__ = [
     "WeekSessionSummaryPayload",
     "WorkEventEvidencePayload",
     "WorkEventInferencePayload",
-    "WorkThreadPayload",
-    "WorkThreadMemberEvidencePayload",
+    "ThreadPayload",
+    "ThreadMemberEvidencePayload",
 ]

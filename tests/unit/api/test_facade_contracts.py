@@ -35,7 +35,7 @@ from polylogue import Polylogue
 from polylogue.api.archive import SessionNotFoundError
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Origin
-from polylogue.errors import PolylogueError
+from polylogue.errors import DatabaseError, PolylogueError
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.types import ContentBlockType, Provider
@@ -84,7 +84,7 @@ READ_BY_ID_EMPTY_METHODS: frozenset[str] = frozenset(
         "get_session_tree",
         "get_raw_artifacts_for_session",
         "bulk_get_messages",
-        "get_action_events",
+        "get_actions",
     }
 )
 
@@ -114,7 +114,7 @@ READ_NULLARY_METHODS: frozenset[str] = frozenset(
         "list_session_tag_rollup_insights",
         "list_session_work_event_insights",
         "list_session_phase_insights",
-        "list_work_thread_insights",
+        "list_thread_insights",
         "list_archive_coverage_insights",
         "list_tool_usage_insights",
         "list_session_cost_insights",
@@ -173,7 +173,7 @@ METADATA_MUTATION_METHODS: frozenset[str] = frozenset(
 BESPOKE_METHODS: frozenset[str] = frozenset(
     {
         "get_sessions",
-        "get_action_events_batch",
+        "get_actions_batch",
         "query_sessions",
         "list_sessions_for_spec",
         "search_session_hits",
@@ -181,7 +181,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "storage_stats",
         "bulk_tag_sessions",
         "list_session_profile_insights",
-        "get_work_thread_insight",
+        "get_thread_insight",
         "get_annotation",
         "save_view",
         "get_view",
@@ -424,7 +424,7 @@ EMPTY_ARCHIVE_LIST_METHODS: tuple[str, ...] = (
     "list_session_tag_rollup_insights",
     "list_session_work_event_insights",
     "list_session_phase_insights",
-    "list_work_thread_insights",
+    "list_thread_insights",
     "list_archive_coverage_insights",
     "list_tool_usage_insights",
     "list_session_cost_insights",
@@ -622,11 +622,11 @@ async def test_get_session_returns_typed_object(tmp_path: Path) -> None:
         await archive.close()
 
 
-async def test_get_action_events_derives_from_archive_blocks(tmp_path: Path) -> None:
-    """``get_action_events`` derives tool invocations from content blocks.
+async def test_get_actions_derives_from_archive_blocks(tmp_path: Path) -> None:
+    """``get_actions`` derives tool invocations from content blocks.
 
-    Archives have no materialized ``action_events`` table; the facade
-    rebuilds events on read from the session's tool-use blocks. This pins that
+    Archives have no materialized ``actions`` table; the facade
+    rebuilds actions on read from the session's tool-use blocks. This pins that
     derivation contract (single, batch, and the missing-id empty cases).
     """
     archive = _archive(tmp_path)
@@ -658,15 +658,15 @@ async def test_get_action_events_derives_from_archive_blocks(tmp_path: Path) -> 
         assert len(summaries) == 1
         native_id = str(summaries[0].id)
 
-        events = await archive.get_action_events(native_id)
-        assert [event.tool_name for event in events] == ["Bash"]
+        actions = await archive.get_actions(native_id)
+        assert [action.tool_name for action in actions] == ["Bash"]
 
-        batch = await archive.get_action_events_batch([native_id])
-        assert batch[native_id] == events
+        batch = await archive.get_actions_batch([native_id])
+        assert batch[native_id] == actions
 
         # Unknown IDs: empty tuple, and omitted from the batch mapping.
-        assert await archive.get_action_events("nonexistent") == ()
-        assert await archive.get_action_events_batch(["nonexistent"]) == {}
+        assert await archive.get_actions("nonexistent") == ()
+        assert await archive.get_actions_batch(["nonexistent"]) == {}
     finally:
         await archive.close()
 
@@ -1055,10 +1055,11 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
         assert [message.id for message in bulk_messages[session_id]] == [f"{session_id}:m1"]
 
         with ArchiveStore.open_existing(archive.config.archive_root, read_only=False) as archive_db:
-            archive_db._conn.execute("INSERT INTO blocks_fts(blocks_fts) VALUES('delete-all')")
+            archive_db._conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('delete-all')")
             archive_db._conn.commit()
 
-        assert not (await archive.search("needle")).hits
+        with pytest.raises(DatabaseError):
+            await archive.search("needle")
         assert await archive.rebuild_index() is True
         assert [hit.session_id for hit in (await archive.search("needle")).hits] == [session_id]
     finally:
@@ -1518,7 +1519,7 @@ async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) 
         assert entry.output_text_calls == 1
         coverage = {item.source_name: item for item in insight.provider_coverage}
         assert coverage[Provider.CODEX.value].data_available is True
-        assert coverage[Provider.CODEX.value].action_event_count == 1
+        assert coverage[Provider.CODEX.value].action_count == 1
         assert coverage[Provider.CHATGPT.value].data_available is False
         assert coverage[Provider.CHATGPT.value].session_count == 1
     finally:
@@ -1734,13 +1735,13 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
         await archive.close()
 
 
-async def test_archive_tiers_api_work_threads_read_index_tier(tmp_path: Path) -> None:
-    """Work-thread facade methods project thread rows."""
+async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None:
+    """Thread facade methods project thread rows."""
     import sqlite3
 
     from polylogue.archive.message.roles import Role
     from polylogue.archive.session.branch_type import BranchType
-    from polylogue.insights.archive import WorkThreadInsightQuery
+    from polylogue.insights.archive import ThreadInsightQuery
     from polylogue.insights.audit import InsightRigorAuditQuery
     from polylogue.insights.export_bundles import InsightExportBundleRequest
     from polylogue.insights.readiness import InsightReadinessQuery
@@ -1830,8 +1831,8 @@ async def test_archive_tiers_api_work_threads_read_index_tier(tmp_path: Path) ->
                 ),
             )
 
-        thread = await archive.get_work_thread_insight(parent_id)
-        listed = await archive.list_work_thread_insights(WorkThreadInsightQuery(query="polylogue", limit=10))
+        thread = await archive.get_thread_insight(parent_id)
+        listed = await archive.list_thread_insights(ThreadInsightQuery(query="polylogue", limit=10))
         tree = await archive.get_session_tree(child_id)
         brief = await archive.resume_brief(child_id, related_limit=5)
         candidates = await archive.find_resume_candidates(
@@ -1841,20 +1842,20 @@ async def test_archive_tiers_api_work_threads_read_index_tier(tmp_path: Path) ->
             limit=5,
         )
         readiness = await archive.insight_readiness_report(
-            InsightReadinessQuery(insights=("session_profiles", "work_threads"))
+            InsightReadinessQuery(insights=("session_profiles", "threads"))
         )
         rigor = await archive.insight_rigor_audit(
-            InsightRigorAuditQuery(insights=("session_profiles", "work_threads"), sample_limit=10)
+            InsightRigorAuditQuery(insights=("session_profiles", "threads"), sample_limit=10)
         )
         export_target = tmp_path / "exports" / "v1-insights"
         export_result = await archive.export_insight_bundle(
             InsightExportBundleRequest(
                 output_path=export_target,
-                insights=("session_profiles", "work_threads"),
+                insights=("session_profiles", "threads"),
                 include_readme=False,
             )
         )
-        missing = await archive.get_work_thread_insight(child_id)
+        missing = await archive.get_thread_insight(child_id)
 
         assert thread is not None
         assert listed == [thread]
@@ -1866,9 +1867,9 @@ async def test_archive_tiers_api_work_threads_read_index_tier(tmp_path: Path) ->
         assert brief is not None
         assert brief.session_id == child_id
         assert [related.session_id for related in brief.related_sessions] == [parent_id]
-        assert brief.inferences.work_thread is not None
-        assert brief.inferences.work_thread.thread_id == parent_id
-        assert brief.provenance.cited_work_thread_id == parent_id
+        assert brief.inferences.thread is not None
+        assert brief.inferences.thread.thread_id == parent_id
+        assert brief.provenance.cited_thread_id == parent_id
         assert candidates
         assert candidates[0].logical_session_id == parent_id
         assert candidates[0].terminal_state == "question_left"
@@ -1878,32 +1879,32 @@ async def test_archive_tiers_api_work_threads_read_index_tier(tmp_path: Path) ->
         assert readiness.total_sessions == 2
         assert readiness_by_name["session_profiles"].verdict == "partial"
         assert readiness_by_name["session_profiles"].missing_count == 1
-        assert readiness_by_name["work_threads"].verdict == "stale"
-        assert readiness_by_name["work_threads"].row_count == 1
-        assert readiness_by_name["work_threads"].expected_row_count == 1
-        assert readiness_by_name["work_threads"].stale_count == 1
-        assert readiness_by_name["work_threads"].ready_flags == {"threads_ready": False}
-        assert "threads_ready=False" in readiness_by_name["work_threads"].evidence
+        assert readiness_by_name["threads"].verdict == "stale"
+        assert readiness_by_name["threads"].row_count == 1
+        assert readiness_by_name["threads"].expected_row_count == 1
+        assert readiness_by_name["threads"].stale_count == 1
+        assert readiness_by_name["threads"].ready_flags == {"threads_ready": False}
+        assert "threads_ready=False" in readiness_by_name["threads"].evidence
         rigor_by_name = {entry.insight_name: entry for entry in rigor.entries}
         assert rigor.sample_limit == 10
         assert rigor_by_name["session_profiles"].sample_size == 1
         assert rigor_by_name["session_profiles"].evidence_count == 1
         assert rigor_by_name["session_profiles"].inference_count == 1
-        assert rigor_by_name["work_threads"].sample_size == 1
-        assert rigor_by_name["work_threads"].evidence_count == 1
-        assert rigor_by_name["work_threads"].has_evidence_payload is True
-        assert rigor_by_name["work_threads"].version_targets
+        assert rigor_by_name["threads"].sample_size == 1
+        assert rigor_by_name["threads"].evidence_count == 1
+        assert rigor_by_name["threads"].has_evidence_payload is True
+        assert rigor_by_name["threads"].version_targets
         manifest = json.loads(export_result.manifest_path.read_text(encoding="utf-8"))
         coverage = json.loads(export_result.coverage_path.read_text(encoding="utf-8"))
         exported_threads = [
             json.loads(line)
-            for line in (export_target / "insights" / "work_threads.jsonl").read_text(encoding="utf-8").splitlines()
+            for line in (export_target / "insights" / "threads.jsonl").read_text(encoding="utf-8").splitlines()
         ]
-        assert manifest["query"]["insights"] == ["session_profiles", "work_threads"]
-        assert {entry["insight_name"] for entry in manifest["insights"]} == {"session_profiles", "work_threads"}
+        assert manifest["query"]["insights"] == ["session_profiles", "threads"]
+        assert {entry["insight_name"] for entry in manifest["insights"]} == {"session_profiles", "threads"}
         assert coverage["total_sessions"] == 2
         assert exported_threads[0]["thread_id"] == parent_id
-        assert (export_target / "schemas" / "work_threads.schema.json").exists()
+        assert (export_target / "schemas" / "threads.schema.json").exists()
         assert not (export_target / "README.md").exists()
         assert missing is None
         assert thread.thread_id == parent_id

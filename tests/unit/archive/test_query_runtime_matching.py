@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from polylogue.archive.action_event.action_events import ActionEvent
+from polylogue.archive.actions.actions import Action
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.runtime_matching import (
@@ -35,9 +35,9 @@ def _event(
     affected_paths: tuple[str, ...] = (),
     search_text: str = "",
     index: int = 0,
-) -> ActionEvent:
-    return ActionEvent(
-        event_id=f"event-{index}",
+) -> Action:
+    return Action(
+        action_id=f"action-{index}",
         message_id="message-1",
         timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
         sequence_index=index,
@@ -59,9 +59,9 @@ def _event(
 
 def _patch_events(
     monkeypatch: pytest.MonkeyPatch,
-    events: tuple[ActionEvent, ...],
+    events: tuple[Action, ...],
 ) -> None:
-    monkeypatch.setattr("polylogue.archive.query.runtime_matching._action_events_for", lambda _session: events)
+    monkeypatch.setattr("polylogue.archive.query.runtime_matching._actions_for", lambda _session: events)
 
 
 def test_matches_referenced_path_requires_each_term_across_affected_paths(monkeypatch: pytest.MonkeyPatch) -> None:

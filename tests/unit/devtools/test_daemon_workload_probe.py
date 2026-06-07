@@ -22,37 +22,62 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
     record_ingest_attempt,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.schema import _ensure_schema
 
 
 def _seed_minimal_archive(db: Path, source: Path) -> str:
     """Seed an archive with one raw + session + completed live attempt."""
 
     source.write_text('{"a": 1}\n')
-    conn = sqlite3.connect(db)
+    root = db.parent
+    index_db = root / "index.db"
+    source_db = root / "source.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+
+    source_conn = sqlite3.connect(source_db)
     try:
-        _ensure_schema(conn)
-        conn.execute(
+        source_conn.execute(
             """
             INSERT INTO raw_sessions (
-                raw_id, source_name, source_path, blob_size, acquired_at
-            ) VALUES ('raw-1', 'codex', ?, 0, '2026-01-01T00:00:00Z')
+                raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms
+            ) VALUES ('raw-1', 'codex-session', 'provider-1', ?, ?, 0, 1770000000000)
             """,
-            (str(source),),
+            (str(source), b"r" * 32),
         )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    conn = sqlite3.connect(index_db)
+    try:
         conn.execute(
             """
             INSERT INTO sessions (
-                session_id, source_name, provider_session_id,
-                source_name, content_hash, version, raw_id
-            ) VALUES ('conv-1', 'codex', 'provider-1', 'codex', 'hash-1', 1, 'raw-1')
+                native_id, origin, raw_id, content_hash, created_at_ms, updated_at_ms
+            ) VALUES ('provider-1', 'codex-session', 'raw-1', ?, 1770000000000, 1770000000000)
+            """,
+            (b"s" * 32,),
+        )
+        conn.execute(
+            """
+            INSERT INTO messages (
+                session_id, native_id, position, role, content_hash
+            ) VALUES ('codex-session:provider-1', 'm1', 0, 'user', ?)
+            """,
+            (b"m" * 32,),
+        )
+        conn.execute(
+            """
+            INSERT INTO blocks (
+                message_id, session_id, position, block_type, text
+            ) VALUES ('codex-session:provider-1:m1', 'codex-session:provider-1', 0, 'text', 'hello')
             """
         )
         conn.commit()
     finally:
         conn.close()
 
-    cursor = CursorStore(db)
+    cursor = CursorStore(index_db)
     attempt_id = cursor.begin_ingest_attempt(paths=[source], input_bytes=10, queued_file_count=1)
     cursor.update_ingest_attempt(
         attempt_id,
@@ -96,7 +121,7 @@ def test_daemon_workload_probe_reports_attempts_and_plan_shape(tmp_path: Path) -
     assert payload["recent_attempts"][0]["read_amplification"] == 1.0
     source_plan = payload["query_plans"]["source_path_lookup"]
     assert source_plan["hazards"] == []
-    assert any("idx_raw_conv_source_path_raw_id" in item for item in source_plan["plan"])
+    assert any("idx_raw_sessions_source_path" in item for item in source_plan["plan"])
 
 
 def test_daemon_workload_probe_reports_missing_database(tmp_path: Path) -> None:
@@ -313,7 +338,7 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert readiness["counts"]["raw_link_count"] == 2
     assert readiness["counts"]["missing_raw_session_count"] == 1
     assert readiness["counts"]["text_block_count"] == 1
-    assert readiness["counts"]["blocks_fts_count"] == 1
+    assert readiness["counts"]["messages_fts_count"] == 1
     assert readiness["counts"]["profile_row_count"] == 1
     assert readiness["counts"]["missing_profile_row_count"] == 1
     assert readiness["counts"]["work_event_row_count"] == 1
@@ -323,7 +348,7 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert readiness["missing_materialization_counts"]["session_profile"] == 1
     assert readiness["missing_materialization_counts"]["work_events"] == 2
     assert readiness["ready"]["raw_links_ready"] is False
-    assert readiness["ready"]["blocks_fts_ready"] is True
+    assert readiness["ready"]["messages_fts_ready"] is True
     assert readiness["ready"]["profile_rows_ready"] is False
     surfaces = readiness["surface_readiness"]
     assert surfaces["archive_sessions"]["ready"] is True
@@ -594,7 +619,7 @@ def test_probe_reports_missing_fts_triggers(tmp_path: Path) -> None:
     _seed_minimal_archive(db, tmp_path / "session.jsonl")
 
     # Drop one expected FTS sync trigger and verify the probe flags it.
-    conn = sqlite3.connect(db)
+    conn = sqlite3.connect(db.with_name("index.db"))
     try:
         conn.execute("DROP TRIGGER IF EXISTS messages_fts_ai")
         conn.commit()
@@ -618,28 +643,34 @@ def test_compare_computes_structured_delta(tmp_path: Path) -> None:
     # ran a second live attempt.
     second_source = tmp_path / "session-2.jsonl"
     second_source.write_text('{"b": 2}\n')
-    conn = sqlite3.connect(db)
+    source_conn = sqlite3.connect(db.with_name("source.db"))
+    try:
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms
+            ) VALUES ('raw-2', 'codex-session', 'provider-2', ?, ?, 0, 1770086400000)
+            """,
+            (str(second_source), b"r" * 32),
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    conn = sqlite3.connect(db.with_name("index.db"))
     try:
         conn.execute(
             """
-            INSERT INTO raw_sessions (
-                raw_id, source_name, source_path, blob_size, acquired_at
-            ) VALUES ('raw-2', 'codex', ?, 0, '2026-01-02T00:00:00Z')
-            """,
-            (str(second_source),),
-        )
-        conn.execute(
-            """
             INSERT INTO sessions (
-                session_id, source_name, provider_session_id,
-                source_name, content_hash, version, raw_id
-            ) VALUES ('conv-2', 'codex', 'provider-2', 'codex', 'hash-2', 1, 'raw-2')
-            """
+                native_id, origin, content_hash, raw_id, created_at_ms, updated_at_ms
+            ) VALUES ('provider-2', 'codex-session', ?, 'raw-2', 1770086400000, 1770086400000)
+            """,
+            (b"t" * 32,),
         )
         conn.commit()
     finally:
         conn.close()
-    cursor = CursorStore(db)
+    cursor = CursorStore(db.with_name("index.db"))
     attempt_id = cursor.begin_ingest_attempt(paths=[second_source], input_bytes=20, queued_file_count=1)
     cursor.update_ingest_attempt(
         attempt_id,

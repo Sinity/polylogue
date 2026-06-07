@@ -35,6 +35,7 @@ from polylogue.archive.models import Message
 from polylogue.archive.semantic.pricing import (
     CostBasisPayload,
     CostEstimatePayload,
+    CostUsagePayload,
     estimate_session_cost,
 )
 from polylogue.cost.aggregation import session_costs_to_daily_usd
@@ -84,12 +85,15 @@ def _msg_with_tokens(
     output_tokens: int,
     role: str = "assistant",
 ) -> Message:
-    # Per #1256, hydrated ``Message`` no longer carries ``provider_meta``;
-    # per-message token usage flows through the typed cost projection
-    # (#803). For this helper's callers, the session-level
-    # provider_meta envelope supplies the cost facts.
-    del model, input_tokens, output_tokens  # accepted for backcompat
-    return make_msg(id=id, role=role, text="x", provider="claude-code")
+    return make_msg(
+        id=id,
+        role=role,
+        text="x",
+        provider="claude-code",
+        model_name=model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )
 
 
 def _basis_to_dict(basis: CostBasisPayload) -> dict[str, float]:
@@ -103,30 +107,38 @@ def _basis_to_dict(basis: CostBasisPayload) -> dict[str, float]:
 
 
 def _exact_estimate() -> CostEstimatePayload:
-    session = make_conv(
-        id="conv-exact",
-        provider="claude-code",
-        provider_meta={
-            "total_cost_usd": 1.25,
-            "model": "claude-sonnet-4-5",
-            "usage": {"input_tokens": 1000, "output_tokens": 500},
-        },
-        messages=MessageCollection(messages=[]),
+    return CostEstimatePayload(
+        source_name="claude-code",
+        session_id="conv-exact",
+        model_name="claude-sonnet-4-5",
+        normalized_model="claude-sonnet-4-5",
+        status="exact",
+        confidence=1.0,
+        total_usd=1.25,
+        usage=CostUsagePayload(input_tokens=1000, output_tokens=500),
+        basis=CostBasisPayload(
+            provider_reported_usd=1.25,
+            api_equivalent_usd=1.25,
+            catalog_priced_usd=0.002,
+        ),
+        provenance=("archive_session_reported_cost",),
     )
-    return estimate_session_cost(session)
 
 
 def _priced_estimate() -> CostEstimatePayload:
-    # Hydrated messages no longer surface cost facts (#1256); the priced
-    # estimate is sourced from the session-level provider_meta envelope.
     session = make_conv(
         id="conv-priced",
         provider="claude-code",
-        provider_meta={
-            "model": "claude-sonnet-4-5",
-            "usage": {"input_tokens": 3000, "output_tokens": 1500},
-        },
-        messages=MessageCollection(messages=[]),
+        messages=MessageCollection(
+            messages=[
+                _msg_with_tokens(
+                    id="m1",
+                    model="claude-sonnet-4-5",
+                    input_tokens=3000,
+                    output_tokens=1500,
+                )
+            ]
+        ),
     )
     return estimate_session_cost(session)
 
@@ -196,19 +208,12 @@ def test_estimated_status_signals_non_exact() -> None:
 def test_per_model_breakdown_reconciles_when_message_estimates_are_priced() -> None:
     """Per-model breakdown rows reconcile to the session aggregate.
 
-    Pre-#1256 message-level cost surfaced a model + usage pair per message
-    and the aggregate exposed a per-model breakdown. With hydrated messages
-    no longer carrying ``provider_meta``, the session-level estimate
-    path used by ``_priced_estimate`` does not emit a per-model breakdown:
-    the breakdown is reserved for the future typed cost projection (#803).
-    For now the contract is "breakdown sum reconciles to the priced rows it
-    enumerates"; empty breakdowns sum to zero, which is the correct
-    no-claim outcome.
+    Typed message model/usage fields seed per-message estimates and the
+    aggregate exposes their per-model breakdown.
     """
     estimate = _priced_estimate()
     breakdown_sum = sum(row.total_usd for row in estimate.per_model_breakdown)
-    expected = sum(row.total_usd for row in estimate.per_model_breakdown) or 0.0
-    assert breakdown_sum == pytest.approx(expected, rel=1e-9, abs=1e-9)
+    assert breakdown_sum == pytest.approx(estimate.total_usd, rel=1e-9, abs=1e-9)
     # Independent axis sums per basis field also reconcile within the
     # breakdown (vacuously true when the breakdown is empty).
     for field in (
@@ -219,21 +224,14 @@ def test_per_model_breakdown_reconciles_when_message_estimates_are_priced() -> N
         "tool_surcharge_usd",
     ):
         axis_sum = sum(getattr(row.basis, field) for row in estimate.per_model_breakdown)
-        expected_axis = (
-            sum(getattr(row.basis, field) for row in estimate.per_model_breakdown)
-            if estimate.per_model_breakdown
-            else 0.0
-        )
-        assert axis_sum == pytest.approx(expected_axis, rel=1e-9, abs=1e-9)
+        assert axis_sum == pytest.approx(getattr(estimate.basis, field), rel=1e-9, abs=1e-9)
 
 
 def test_unavailable_status_when_hydrated_messages_carry_no_typed_cost() -> None:
-    """Hydrated messages no longer surface per-message cost facts (#1256).
+    """Messages without typed usage stay unavailable.
 
-    Without session-level provider_meta cost facts and with no typed
-    per-message cost projection (#803) in the read path, the aggregate
-    declares ``status='unavailable'`` rather than silently fabricating a
-    partial coverage figure.
+    The aggregate declares ``status='unavailable'`` rather than silently
+    fabricating a partial coverage figure.
     """
     session = make_conv(
         id="conv-no-cost",

@@ -19,40 +19,30 @@ _FTS_SURFACES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
         ("messages_fts_ai", "messages_fts_ad", "messages_fts_au"),
     ),
     (
-        "action_events_fts",
-        "action_events",
-        "action_events_fts",
-        ("action_events_fts_ai", "action_events_fts_ad", "action_events_fts_au"),
-    ),
-    (
         "session_work_events_fts",
         "session_work_events",
         "session_work_events_fts",
         ("session_work_events_fts_ai", "session_work_events_fts_ad", "session_work_events_fts_au"),
     ),
     (
-        "work_threads_fts",
-        "work_threads",
-        "work_threads_fts",
-        ("work_threads_fts_ai", "work_threads_fts_ad", "work_threads_fts_au"),
+        "threads_fts",
+        "threads",
+        "threads_fts",
+        ("threads_fts_ai", "threads_fts_ad", "threads_fts_au"),
     ),
 )
 
-_ARCHIVE_BLOCKS_FTS_TRIGGERS = ("blocks_fts_ai", "blocks_fts_ad", "blocks_fts_au")
+_ARCHIVE_BLOCKS_FTS_TRIGGERS = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
 
 
 class FTSReadiness(BaseModel):
     indexed_surface: str = "messages_fts"
-    action_events_required: bool = True
     messages_ready: bool = False
-    action_events_ready: bool = False
     session_work_events_ready: bool = False
-    work_threads_ready: bool = False
+    threads_ready: bool = False
     invariant_ready: bool = False
     message_indexed_count: int = 0
     message_indexable_count: int = 0
-    action_event_indexed_count: int = 0
-    action_event_count: int = 0
     coverage_pct: float = 0.0
     surfaces: dict[str, dict[str, int | bool | str | None]] = Field(default_factory=dict)
 
@@ -170,7 +160,7 @@ def _archive_index_path_for(dbf: Path) -> Path | None:
 
 def _archive_exact_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | str | None]:
     source_exists = _table_exists(conn, "blocks")
-    exists = _table_exists(conn, "blocks_fts")
+    exists = _table_exists(conn, "messages_fts")
     triggers_present = exists and _triggers_present(conn, _ARCHIVE_BLOCKS_FTS_TRIGGERS)
     if not source_exists:
         ready = not exists
@@ -187,7 +177,7 @@ def _archive_exact_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | b
             "exact": True,
         }
     source_rows = int(conn.execute("SELECT COUNT(*) FROM blocks WHERE text IS NOT NULL").fetchone()[0] or 0)
-    docsize_exists = _table_exists(conn, "blocks_fts_docsize")
+    docsize_exists = _table_exists(conn, "messages_fts_docsize")
     if not exists or not docsize_exists:
         return {
             "source_exists": source_exists,
@@ -201,13 +191,13 @@ def _archive_exact_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | b
             "ready": False,
             "exact": True,
         }
-    indexed_rows = int(conn.execute("SELECT COUNT(*) FROM blocks_fts_docsize").fetchone()[0] or 0)
+    indexed_rows = int(conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] or 0)
     missing_rows = int(
         conn.execute(
             """
             SELECT COUNT(*)
             FROM blocks b
-            LEFT JOIN blocks_fts_docsize d ON d.id = b.rowid
+            LEFT JOIN messages_fts_docsize d ON d.id = b.rowid
             WHERE b.text IS NOT NULL
               AND d.id IS NULL
             """
@@ -218,7 +208,7 @@ def _archive_exact_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | b
         conn.execute(
             """
             SELECT COUNT(*)
-            FROM blocks_fts_docsize d
+            FROM messages_fts_docsize d
             LEFT JOIN blocks b ON b.rowid = d.id
             WHERE b.rowid IS NULL
                OR b.text IS NULL
@@ -250,9 +240,9 @@ def _archive_exact_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | b
 
 def _archive_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | str | None]:
     freshness_records = _freshness_rows(conn)
-    freshness = _freshness_record(freshness_records, "blocks_fts")
+    freshness = _freshness_record(freshness_records, "messages_fts")
     source_exists = _table_exists(conn, "blocks")
-    exists = _table_exists(conn, "blocks_fts")
+    exists = _table_exists(conn, "messages_fts")
     triggers_present = exists and _triggers_present(conn, _ARCHIVE_BLOCKS_FTS_TRIGGERS)
     source_rows = 0 if freshness is None else _int_or_zero(freshness.get("source_rows"))
     indexed_rows = 0 if freshness is None else _int_or_zero(freshness.get("indexed_rows"))
@@ -302,31 +292,27 @@ def _archive_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | 
 
 
 def _archive_readiness_payload(conn: sqlite3.Connection, *, exact: bool) -> dict[str, object] | None:
-    if not _table_exists(conn, "blocks") and not _table_exists(conn, "blocks_fts"):
+    if not _table_exists(conn, "blocks") and not _table_exists(conn, "messages_fts"):
         return None
     blocks = _archive_exact_blocks_surface(conn) if exact else _archive_blocks_surface(conn)
     block_source_rows = _payload_int(blocks, "source_rows")
     block_indexed_rows = _payload_int(blocks, "indexed_rows")
     invariant_ready = bool(blocks["ready"])
     return {
-        "indexed_surface": "blocks_fts",
-        "action_events_required": False,
+        "indexed_surface": "messages_fts",
         "messages_ready": invariant_ready,
-        "action_events_ready": True,
         "session_work_events_ready": True,
-        "work_threads_ready": True,
+        "threads_ready": True,
         "invariant_ready": invariant_ready,
         "message_indexed_count": block_indexed_rows,
         "message_indexable_count": block_source_rows,
-        "action_event_indexed_count": 0,
-        "action_event_count": 0,
         "coverage_pct": (
             round((block_indexed_rows / block_source_rows) * 100, 1)
             if block_source_rows > 0
             else (100.0 if invariant_ready else 0.0)
         ),
         "coverage_exact": exact,
-        "surfaces": {"blocks_fts": blocks},
+        "surfaces": {"messages_fts": blocks},
     }
 
 
@@ -341,12 +327,10 @@ def _archive_readiness_info(index_db: Path, *, exact: bool) -> dict[str, object]
             conn.close()
     except sqlite3.Error:
         return {
-            "indexed_surface": "blocks_fts",
-            "action_events_required": False,
+            "indexed_surface": "messages_fts",
             "messages_ready": False,
-            "action_events_ready": True,
             "session_work_events_ready": True,
-            "work_threads_ready": True,
+            "threads_ready": True,
             "invariant_ready": False,
             "coverage_pct": 0.0,
             "surfaces": {},
@@ -356,18 +340,14 @@ def _archive_readiness_info(index_db: Path, *, exact: bool) -> dict[str, object]
 def _exact_readiness_payload(snapshot: FtsInvariantSnapshot) -> dict[str, object]:
     surfaces = {surface.name: _surface_payload(surface) for surface in snapshot.surfaces}
     messages = snapshot.messages
-    action_events = snapshot.action_events
     coverage_pct = round((messages.indexed_rows / messages.source_rows) * 100, 1) if messages.source_rows > 0 else 100.0
     return {
         "messages_ready": messages.ready,
-        "action_events_ready": action_events.ready,
         "session_work_events_ready": snapshot.session_work_events.ready,
-        "work_threads_ready": snapshot.work_threads.ready,
+        "threads_ready": snapshot.threads.ready,
         "invariant_ready": snapshot.ready,
         "message_indexed_count": messages.indexed_rows,
         "message_indexable_count": messages.source_rows,
-        "action_event_indexed_count": action_events.indexed_rows,
-        "action_event_count": action_events.source_rows,
         "coverage_pct": coverage_pct,
         "coverage_exact": True,
         "surfaces": surfaces,
@@ -390,9 +370,7 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
             if archive_info is not None:
                 return archive_info
         return {
-            "action_events_required": True,
             "messages_ready": False,
-            "action_events_ready": False,
             "coverage_pct": 0.0,
         }
     try:
@@ -461,34 +439,27 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
             conn.close()
     except sqlite3.Error:
         return {
-            "action_events_required": True,
             "messages_ready": False,
-            "action_events_ready": False,
             "session_work_events_ready": False,
-            "work_threads_ready": False,
+            "threads_ready": False,
             "invariant_ready": False,
             "coverage_pct": 0.0,
             "surfaces": {},
         }
 
     messages = surfaces["messages_fts"]
-    action_events = surfaces["action_events_fts"]
     session_work_events = surfaces["session_work_events_fts"]
-    work_threads = surfaces["work_threads_fts"]
+    threads = surfaces["threads_fts"]
     invariant_ready = all(bool(surface["ready"]) for surface in surfaces.values())
     message_source_rows = _payload_int(messages, "source_rows")
     message_indexed_rows = _payload_int(messages, "indexed_rows")
     return {
-        "action_events_required": True,
         "messages_ready": messages["ready"],
-        "action_events_ready": action_events["ready"],
         "session_work_events_ready": session_work_events["ready"],
-        "work_threads_ready": work_threads["ready"],
+        "threads_ready": threads["ready"],
         "invariant_ready": invariant_ready,
         "message_indexed_count": message_indexed_rows,
         "message_indexable_count": message_source_rows,
-        "action_event_indexed_count": _payload_int(action_events, "indexed_rows"),
-        "action_event_count": _payload_int(action_events, "source_rows"),
         "coverage_pct": (
             round((message_indexed_rows / message_source_rows) * 100, 1)
             if message_source_rows > 0

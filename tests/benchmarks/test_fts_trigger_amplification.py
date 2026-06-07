@@ -6,7 +6,7 @@ on every single-block INSERT, giving O(N²) total trigger work for a message
 with N blocks inserted incrementally.
 
 The archive replaces ``content_blocks`` with the archive `blocks`
-table whose ``blocks_fts_ai`` trigger projects only the inserted row's columns
+table whose ``messages_fts_ai`` trigger projects only the inserted row's columns
 (O(1) per insert). This test measures the wall-time growth curve for
 incremental vs batch insertion against the archive `blocks` table and asserts
 the per-insert work stays flat.
@@ -56,7 +56,7 @@ def _timed_insert(conn: sqlite3.Connection, message_id: str, session_id: str, po
 
 
 @pytest.mark.slow
-def test_content_blocks_fts_trigger_growth_is_subquadratic(tmp_path: Path) -> None:
+def test_messages_fts_trigger_growth_is_subquadratic(tmp_path: Path) -> None:
     """Insert 200 blocks incrementally; per-block time must not grow linearly."""
     from tests.infra.storage_records import SessionBuilder
 

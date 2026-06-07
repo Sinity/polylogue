@@ -31,6 +31,7 @@ from polylogue.cli.query_output import deliver_query_output
 from polylogue.cli.query_output_contracts import QueryOutputDocument
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.helpers import load_effective_config
+from polylogue.cli.shared.machine_errors import error_no_results
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.core.enums import Provider
@@ -367,7 +368,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                         return
                     if params.get("open_result"):
                         if not page_hits:
-                            _fail("Open found no matching session.")
+                            _emit_open_no_results(output_format=output_format, origin=origin)
                         _open_session(
                             env,
                             session_id,
@@ -574,7 +575,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             return
         if params.get("open_result"):
             if not page_summaries:
-                _fail("Open found no matching session.")
+                _emit_open_no_results(output_format=output_format, origin=origin)
             _open_session(
                 env,
                 page_summaries[0].session_id,
@@ -944,7 +945,7 @@ def _optional_date_ms(field: str, value: object) -> int | None:
     try:
         parsed = parse_query_date(field, str(value))
     except QuerySpecError as exc:
-        raise click.UsageError(f"Cannot parse date: {exc.value!r}") from exc
+        raise click.ClickException(f"Cannot parse date: {exc.value!r}") from exc
     if parsed is None:
         return None
     return int(parsed.timestamp() * 1000)
@@ -1348,6 +1349,20 @@ def _emit_no_results(envelope: dict[str, object], *, output_format: str, typo_hi
         if typo_hint is not None:
             click.echo(typo_hint)
     raise SystemExit(2)
+
+
+def _emit_open_no_results(*, output_format: str, origin: str | None) -> NoReturn:
+    if output_format == "json":
+        error_no_results("No sessions matched.").emit(exit_code=2)
+    _emit_no_results(
+        {
+            "mode": "open",
+            "origin": origin,
+            "items": [],
+            "total": 0,
+        },
+        output_format=output_format,
+    )
 
 
 def _emit_rows(

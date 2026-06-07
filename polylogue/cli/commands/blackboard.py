@@ -123,6 +123,10 @@ def blackboard_list(
             ORDER BY created_at_ms DESC, note_id DESC
             """
         ).fetchall()
+        if not rows:
+            env.ui.console.print("[dim]No blackboard notes yet.[/dim]")
+            return
+
         filtered = []
         for row in rows:
             parsed = _parse_blackboard_body(str(row[3]))

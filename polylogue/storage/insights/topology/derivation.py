@@ -4,8 +4,7 @@ This module is the single source of truth for how the topology read model
 is built. The async derivation walks from the requested session up
 to the topology root (cycle-safe), then performs a BFS over resolved
 children to enumerate the rooted subtree, classifying every visited
-edge and recording unresolved native-parent pointers found in
-``provider_meta``.
+edge and recording unresolved native-parent pointers from ``session_links``.
 
 Cycle handling: a cycle is reported through
 ``SessionTopology.cycle_detected`` and the ancestry walk terminates at
@@ -15,7 +14,7 @@ the repeated node. Cycle quarantine is the caller's responsibility (see
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
 
 from polylogue.insights.topology import (
@@ -28,20 +27,6 @@ from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.runtime import SessionRecord
 from polylogue.types import SessionId
 
-# Field names inside ``sessions.provider_meta`` that have been
-# observed to carry a provider-native parent identifier. The topology
-# derivation treats a non-empty value at any of these keys as evidence
-# of an unresolved native edge when the session has no resolved
-# ``parent_session_id``.
-UNRESOLVED_NATIVE_PARENT_KEYS: tuple[str, ...] = (
-    "parent_session_id",
-    "parentSessionId",
-    "parent_session_id",
-    "parentSessionId",
-    "parent_id",
-    "parentId",
-)
-
 
 class _SessionQuerySource(Protocol):
     """Subset of the query-store surface needed by the derivation."""
@@ -50,15 +35,7 @@ class _SessionQuerySource(Protocol):
 
     async def list_sessions(self, request: SessionRecordQuery) -> list[SessionRecord]: ...
 
-
-def _extract_native_parent_id(provider_meta: dict[str, object] | None) -> str | None:
-    if not provider_meta:
-        return None
-    for key in UNRESOLVED_NATIVE_PARENT_KEYS:
-        value = provider_meta.get(key)
-        if isinstance(value, str) and value.strip():
-            return value
-    return None
+    async def list_session_links_for_session(self, session_id: str) -> list[dict[str, object]]: ...
 
 
 def _edge_kind(record: SessionRecord) -> TopologyEdgeKind:
@@ -68,7 +45,7 @@ def _edge_kind(record: SessionRecord) -> TopologyEdgeKind:
 def _node_from_record(record: SessionRecord, *, depth: int, is_root: bool) -> TopologyNode:
     return TopologyNode(
         session_id=SessionId(str(record.session_id)),
-        source_name=record.source_name,
+        source_name=record.origin.value,
         title=record.title,
         depth=depth,
         is_root=is_root,
@@ -86,34 +63,35 @@ def _resolved_edge(record: SessionRecord) -> TopologyEdge | None:
     )
 
 
-def _unresolved_edge(record: SessionRecord) -> TopologyEdge | None:
-    """Return an unresolved native-pointer edge for ``record`` if any.
+def _edge_kind_from_link(link_type: object) -> TopologyEdgeKind:
+    if isinstance(link_type, str) and link_type:
+        try:
+            return TopologyEdgeKind(link_type)
+        except ValueError:
+            return TopologyEdgeKind.UNKNOWN
+    return TopologyEdgeKind.UNKNOWN
 
-    We only flag an unresolved edge when the session has no resolved
-    parent: a resolved parent always supersedes a native pointer in the
-    canonical read model.
-    """
 
-    if record.parent_session_id is not None:
-        return None
-    native_id = _extract_native_parent_id(record.provider_meta)
-    if native_id is None:
-        return None
-    # Treat the branch_type, when present, as the edge kind; otherwise
-    # mark the edge as UNRESOLVED_NATIVE so consumers can distinguish
-    # a typed-but-unresolved edge from one that lacks all classification.
-    kind = (
-        TopologyEdgeKind.from_branch_type(record.branch_type)
-        if record.branch_type is not None
-        else TopologyEdgeKind.UNRESOLVED_NATIVE
-    )
-    return TopologyEdge(
-        child_id=SessionId(str(record.session_id)),
-        parent_id=None,
-        parent_native_id=native_id,
-        kind=kind,
-        resolved=False,
-    )
+def _unresolved_edges_from_links(record: SessionRecord, links: Sequence[Mapping[str, object]]) -> list[TopologyEdge]:
+    edges: list[TopologyEdge] = []
+    for link in links:
+        if link.get("resolved_dst_session_id") is not None:
+            continue
+        if link.get("status") == "quarantined":
+            continue
+        dst_native_id = link.get("dst_native_id")
+        if not isinstance(dst_native_id, str) or not dst_native_id.strip():
+            continue
+        edges.append(
+            TopologyEdge(
+                child_id=SessionId(str(record.session_id)),
+                parent_id=None,
+                parent_native_id=dst_native_id,
+                kind=_edge_kind_from_link(link.get("link_type")),
+                resolved=False,
+            )
+        )
+    return edges
 
 
 async def _walk_to_root(
@@ -182,9 +160,7 @@ async def derive_session_topology_async(
         resolved = _resolved_edge(record)
         if resolved is not None:
             edges.append(resolved)
-        unresolved = _unresolved_edge(record)
-        if unresolved is not None:
-            edges.append(unresolved)
+        edges.extend(_unresolved_edges_from_links(record, await source.list_session_links_for_session(record_id)))
 
         children = await source.list_sessions(SessionRecordQuery(parent_id=record_id))
         for child in children:
@@ -205,6 +181,7 @@ async def derive_session_topology_async(
 
 _SyncFetcher = Callable[[str], SessionRecord | None]
 _SyncChildrenFetcher = Callable[[str], list[SessionRecord]]
+_SyncLinksFetcher = Callable[[str], list[Mapping[str, object]]]
 
 
 def derive_session_topology_sync(
@@ -212,6 +189,7 @@ def derive_session_topology_sync(
     *,
     fetch: _SyncFetcher,
     fetch_children: _SyncChildrenFetcher,
+    fetch_links: _SyncLinksFetcher | None = None,
 ) -> SessionTopology | None:
     """Sync variant of :func:`derive_session_topology_async`."""
 
@@ -251,9 +229,7 @@ def derive_session_topology_sync(
         resolved = _resolved_edge(record)
         if resolved is not None:
             edges.append(resolved)
-        unresolved = _unresolved_edge(record)
-        if unresolved is not None:
-            edges.append(unresolved)
+        edges.extend(_unresolved_edges_from_links(record, [] if fetch_links is None else fetch_links(record_id)))
 
         for child in fetch_children(record_id):
             queue.append((child, depth + 1))
@@ -268,7 +244,6 @@ def derive_session_topology_sync(
 
 
 __all__ = [
-    "UNRESOLVED_NATIVE_PARENT_KEYS",
     "derive_session_topology_async",
     "derive_session_topology_sync",
 ]

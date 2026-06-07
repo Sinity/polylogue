@@ -18,7 +18,7 @@ from polylogue.pipeline.ids import (
     session_content_hashes,
 )
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.sources.parsers.base_models import ParsedProviderEvent
+from polylogue.sources.parsers.base_models import ParsedSessionEvent
 from polylogue.types import ContentBlockType, Provider
 
 
@@ -306,11 +306,11 @@ def test_provider_source_does_not_affect_content_hash() -> None:
     assert session_content_hash(conv_chatgpt) == session_content_hash(conv_claude)
 
 
-# ── Provider events affect hash ───────────────────────────────────────
+# ── Session events affect hash ───────────────────────────────────────
 
 
-def test_provider_events_affect_session_hash() -> None:
-    """Provider events should affect the session content hash."""
+def test_session_events_affect_session_hash() -> None:
+    """Session events should affect the session content hash."""
     msg = _msg("m1", "user", "hello")
     conv_no_events = _conv("c1", "Test", [msg])
     conv_with_events = ParsedSession(
@@ -321,8 +321,8 @@ def test_provider_events_affect_session_hash() -> None:
         updated_at=None,
         messages=[msg],
         attachments=[],
-        provider_events=[
-            ParsedProviderEvent(
+        session_events=[
+            ParsedSessionEvent(
                 event_type="citation",
                 timestamp="2024-01-01T00:00:01Z",
                 source_message_provider_id="m1",

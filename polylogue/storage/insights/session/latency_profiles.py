@@ -26,7 +26,7 @@ def build_latency_profile_facts(
 ) -> SessionLatencyProfileFacts:
     return compute_session_latency_profile(
         list(session.messages),
-        list(session.provider_events),
+        list(session.session_events),
         session_end=session.updated_at or profile.last_message_at,
         tool_call_count_by_category=dict(profile.tool_categories),
     )
@@ -47,7 +47,7 @@ def build_session_latency_profile_record(
         **facts.to_dict(),
         "construct_boundary": (
             "agent-response time includes both model output delay and any intervening tool execution; "
-            "provider tool latency requires timestamped provider-event pairs"
+            "provider tool latency requires timestamped session-event pairs"
         ),
     }
     search_text = " \n".join(

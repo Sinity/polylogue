@@ -5,33 +5,120 @@ from __future__ import annotations
 import aiosqlite
 
 from polylogue.storage.runtime import SessionRecord
-from polylogue.storage.sqlite.queries.filter_builder import (
-    _build_session_filters,
-    _needs_stats_join,
-)
+from polylogue.storage.sqlite.queries.filter_builder import _build_session_filters, _needs_stats_join
 from polylogue.storage.sqlite.queries.mappers import _row_to_session
+from polylogue.types import Provider
+
+_SESSION_RECORD_SELECT = """
+    session_id,
+    native_id,
+    origin,
+    title,
+    datetime(created_at_ms / 1000, 'unixepoch') AS created_at,
+    datetime(updated_at_ms / 1000, 'unixepoch') AS updated_at,
+    sort_key_ms / 1000.0 AS sort_key,
+    lower(hex(content_hash)) AS content_hash,
+    '{}' AS metadata,
+    1 AS version,
+    parent_session_id,
+    branch_type,
+    raw_id,
+    (SELECT json_group_array(path) FROM session_working_dirs swd WHERE swd.session_id = sessions.session_id ORDER BY position) AS working_directories_json,
+    git_branch,
+    git_repository_url
+"""
+
+
+def _session_record_select(alias: str | None = None) -> str:
+    prefix = f"{alias}." if alias else ""
+    session_id_expr = f"{prefix}session_id" if prefix else "sessions.session_id"
+    cwd_expr = (
+        "SELECT json_group_array(path) FROM session_working_dirs swd "
+        f"WHERE swd.session_id = {session_id_expr} ORDER BY position"
+    )
+    return f"""
+    {prefix}session_id AS session_id,
+    {prefix}native_id AS native_id,
+    {prefix}origin AS origin,
+    {prefix}title AS title,
+    datetime({prefix}created_at_ms / 1000, 'unixepoch') AS created_at,
+    datetime({prefix}updated_at_ms / 1000, 'unixepoch') AS updated_at,
+    {prefix}sort_key_ms / 1000.0 AS sort_key,
+    lower(hex({prefix}content_hash)) AS content_hash,
+    '{{}}' AS metadata,
+    1 AS version,
+    {prefix}parent_session_id AS parent_session_id,
+    {prefix}branch_type AS branch_type,
+    {prefix}raw_id AS raw_id,
+    ({cwd_expr}) AS working_directories_json,
+    {prefix}git_branch AS git_branch,
+    {prefix}git_repository_url AS git_repository_url
+    """
+
+
+def _native_id_candidates(session_id: str) -> tuple[str, ...]:
+    if ":" not in session_id:
+        return (session_id,)
+    prefix, native = session_id.split(":", 1)
+    if Provider.from_string(prefix).value == prefix and native:
+        return (session_id, native)
+    return (session_id,)
 
 
 async def get_session(conn: aiosqlite.Connection, session_id: str) -> SessionRecord | None:
     cursor = await conn.execute(
-        "SELECT * FROM sessions WHERE session_id = ?",
+        f"SELECT {_SESSION_RECORD_SELECT} FROM sessions WHERE session_id = ?",
         (session_id,),
     )
     row = await cursor.fetchone()
+    if row is None:
+        candidates = _native_id_candidates(session_id)
+        placeholders = ",".join("?" for _ in candidates)
+        cursor = await conn.execute(
+            f"""
+            SELECT {_SESSION_RECORD_SELECT}
+            FROM sessions
+            WHERE native_id IN ({placeholders})
+            ORDER BY sort_key_ms DESC, session_id DESC
+            LIMIT 1
+            """,
+            candidates,
+        )
+        row = await cursor.fetchone()
     return _row_to_session(row) if row is not None else None
 
 
 async def get_sessions_batch(conn: aiosqlite.Connection, ids: list[str]) -> list[SessionRecord]:
     if not ids:
         return []
+    native_candidates: list[str] = []
+    for session_id in ids:
+        native_candidates.extend(_native_id_candidates(session_id))
     placeholders = ",".join("?" for _ in ids)
+    native_placeholders = ",".join("?" for _ in native_candidates)
     cursor = await conn.execute(
-        f"SELECT * FROM sessions WHERE session_id IN ({placeholders})",
-        ids,
+        f"""
+        SELECT {_SESSION_RECORD_SELECT}
+        FROM sessions
+        WHERE session_id IN ({placeholders})
+           OR native_id IN ({native_placeholders})
+        """,
+        [*ids, *native_candidates],
     )
     rows = await cursor.fetchall()
     by_id = {row["session_id"]: _row_to_session(row) for row in rows}
-    return [by_id[cid] for cid in ids if cid in by_id]
+    by_id.update({row["native_id"]: _row_to_session(row) for row in rows})
+    result: list[SessionRecord] = []
+    for cid in ids:
+        record = by_id.get(cid)
+        if record is None:
+            for candidate in _native_id_candidates(cid):
+                record = by_id.get(candidate)
+                if record is not None:
+                    break
+        if record is not None:
+            result.append(record)
+    return result
 
 
 async def list_sessions(
@@ -61,9 +148,7 @@ async def list_sessions(
     max_messages: int | None = None,
     min_words: int | None = None,
     message_type: str | None = None,
-    include_provider_meta: bool = False,
 ) -> list[SessionRecord]:
-    del include_provider_meta  # list_sessions always loads via SELECT *
     use_stats_join = _needs_stats_join(
         has_tool_use=has_tool_use,
         has_thinking=has_thinking,
@@ -99,13 +184,13 @@ async def list_sessions(
     )
 
     if use_stats_join:
-        from_clause = "FROM sessions c LEFT JOIN session_stats cs ON cs.session_id = c.session_id"
-        select_clause = "SELECT c.*"
-        order_clause = "ORDER BY (c.sort_key IS NULL) ASC, c.sort_key DESC, c.session_id DESC"
+        from_clause = "FROM sessions c"
+        select_clause = f"SELECT {_session_record_select('c')}"
+        order_clause = "ORDER BY (c.sort_key_ms IS NULL) ASC, c.sort_key_ms DESC, c.session_id DESC"
     else:
         from_clause = "FROM sessions"
-        select_clause = "SELECT *"
-        order_clause = "ORDER BY (sort_key IS NULL) ASC, sort_key DESC, session_id DESC"
+        select_clause = f"SELECT {_session_record_select()}"
+        order_clause = "ORDER BY (sort_key_ms IS NULL) ASC, sort_key_ms DESC, session_id DESC"
 
     query = f"""
         {select_clause} {from_clause}
@@ -154,7 +239,6 @@ async def list_session_summaries(
     max_messages: int | None = None,
     min_words: int | None = None,
     message_type: str | None = None,
-    include_provider_meta: bool = False,
 ) -> list[SessionRecord]:
     use_stats_join = _needs_stats_join(
         has_tool_use=has_tool_use,
@@ -165,8 +249,6 @@ async def list_session_summaries(
         max_messages=max_messages,
         min_words=min_words,
     )
-    pm_qualified = "c.provider_meta" if include_provider_meta else "NULL AS provider_meta"
-    pm_bare = "provider_meta" if include_provider_meta else "NULL AS provider_meta"
     where_sql, params = _build_session_filters(
         source=source,
         provider=provider,
@@ -193,45 +275,13 @@ async def list_session_summaries(
     )
 
     if use_stats_join:
-        from_clause = "FROM sessions c LEFT JOIN session_stats cs ON cs.session_id = c.session_id"
-        select_clause = f"""
-        SELECT
-            c.session_id,
-            c.source_name,
-            c.provider_session_id,
-            c.title,
-            c.created_at,
-            c.updated_at,
-            c.sort_key,
-            c.content_hash,
-            {pm_qualified},
-            c.metadata,
-            c.version,
-            c.parent_session_id,
-            c.branch_type,
-            c.raw_id
-        """
-        order_clause = "ORDER BY (c.sort_key IS NULL) ASC, c.sort_key DESC, c.session_id DESC"
+        from_clause = "FROM sessions c"
+        select_clause = f"SELECT {_session_record_select('c')}"
+        order_clause = "ORDER BY (c.sort_key_ms IS NULL) ASC, c.sort_key_ms DESC, c.session_id DESC"
     else:
         from_clause = "FROM sessions"
-        select_clause = f"""
-        SELECT
-            session_id,
-            source_name,
-            provider_session_id,
-            title,
-            created_at,
-            updated_at,
-            sort_key,
-            content_hash,
-            {pm_bare},
-            metadata,
-            version,
-            parent_session_id,
-            branch_type,
-            raw_id
-        """
-        order_clause = "ORDER BY (sort_key IS NULL) ASC, sort_key DESC, session_id DESC"
+        select_clause = f"SELECT {_session_record_select()}"
+        order_clause = "ORDER BY (sort_key_ms IS NULL) ASC, sort_key_ms DESC, session_id DESC"
 
     query = f"""
         {select_clause} {from_clause}
@@ -311,7 +361,7 @@ async def count_sessions(
         message_type=message_type,
     )
     if use_stats_join:
-        sql = f"SELECT COUNT(*) as cnt FROM sessions c LEFT JOIN session_stats cs ON cs.session_id = c.session_id {where_sql}"
+        sql = f"SELECT COUNT(*) as cnt FROM sessions c {where_sql}"
     else:
         sql = f"SELECT COUNT(*) as cnt FROM sessions {where_sql}"
     cursor = await conn.execute(sql, tuple(params))

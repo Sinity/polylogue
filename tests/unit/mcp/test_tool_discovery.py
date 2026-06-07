@@ -58,7 +58,7 @@ _KNOWN_MINIMAL: dict[str, dict[str, object]] = {
     "session_work_events": {"limit": 1},
     "session_phases": {"limit": 1},
     "session_tag_rollups": {"limit": 1},
-    "work_threads": {"limit": 1},
+    "threads": {"limit": 1},
     "archive_coverage": {"limit": 1},
     "archive_debt": {"limit": 1},
     "cost_rollups": {"limit": 1},

@@ -256,7 +256,6 @@ def test_inventory_emits_zero_rows_for_clean_models(workspace_env: dict[str, Pat
     for model, items in grouped.items():
         if model in {
             "orphaned_messages",
-            "orphaned_content_blocks",
             "empty_sessions",
             "orphaned_attachments",
             "orphaned_blobs",

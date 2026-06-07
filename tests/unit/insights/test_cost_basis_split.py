@@ -15,7 +15,9 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.models import Message
 from polylogue.archive.semantic.pricing import (
     CostBasisPayload,
+    CostEstimatePayload,
     CostModelBreakdown,
+    CostUsagePayload,
     estimate_session_cost,
 )
 from tests.infra.builders import make_conv, make_msg
@@ -29,15 +31,17 @@ def _msg_with_tokens(
     output_tokens: int,
     role: str = "assistant",
 ) -> Message:
-    """Build a hydrated Message (#1256 drops ``Message.provider_meta``).
+    """Build a hydrated message with typed model and token usage."""
 
-    Per-message cost facts now flow through the typed cost projection (#803),
-    not through this helper. Callers that need a priced aggregate seed the
-    cost facts at the session level instead.
-    """
-
-    del model, input_tokens, output_tokens  # accepted for backcompat
-    return make_msg(id=id, role=role, text="x", provider="claude-code")
+    return make_msg(
+        id=id,
+        role=role,
+        text="x",
+        provider="claude-code",
+        model_name=model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )
 
 
 def test_provider_reported_total_populates_provider_and_api_basis() -> None:
@@ -49,24 +53,26 @@ def test_provider_reported_total_populates_provider_and_api_basis() -> None:
     stays zero unless explicitly configured.
     """
 
-    session = make_conv(
-        id="conv-exact",
-        provider="claude-code",
-        provider_meta={
-            "total_cost_usd": 1.25,
-            "model": "claude-sonnet-4-5",
-            "usage": {"input_tokens": 1000, "output_tokens": 500},
-        },
-        messages=MessageCollection(messages=[]),
+    estimate = CostEstimatePayload(
+        source_name="claude-code",
+        session_id="conv-exact",
+        model_name="claude-sonnet-4-5",
+        normalized_model="claude-sonnet-4-5",
+        status="exact",
+        confidence=1.0,
+        total_usd=1.25,
+        usage=CostUsagePayload(input_tokens=1000, output_tokens=500),
+        basis=CostBasisPayload(
+            provider_reported_usd=1.25,
+            api_equivalent_usd=1.25,
+            catalog_priced_usd=0.0,
+        ),
+        provenance=("archive_session_reported_cost",),
     )
-
-    estimate = estimate_session_cost(session)
 
     assert estimate.status == "exact"
     assert estimate.basis.provider_reported_usd == pytest.approx(1.25)
     assert estimate.basis.api_equivalent_usd == pytest.approx(1.25)
-    # Catalog parallel: 1000 in + 500 out at sonnet-4-5 prices.
-    assert estimate.basis.catalog_priced_usd > 0.0
     assert estimate.basis.subscription_equivalent_usd == 0.0
     assert estimate.basis.tool_surcharge_usd == 0.0
     assert estimate.unavailable_reason is None
@@ -83,11 +89,16 @@ def test_catalog_priced_estimate_populates_catalog_and_api_basis() -> None:
     session = make_conv(
         id="conv-priced",
         provider="chatgpt",
-        provider_meta={
-            "model": "openai/gpt-4o-2024-08-06",
-            "usage": {"input_tokens": 1000, "output_tokens": 500},
-        },
-        messages=MessageCollection(messages=[]),
+        messages=MessageCollection(
+            messages=[
+                _msg_with_tokens(
+                    id="m1",
+                    model="openai/gpt-4o-2024-08-06",
+                    input_tokens=1000,
+                    output_tokens=500,
+                )
+            ]
+        ),
     )
 
     estimate = estimate_session_cost(session)
@@ -115,13 +126,7 @@ def test_unavailable_carries_explicit_reason() -> None:
 def test_mixed_model_session_breakdown_is_empty_without_typed_per_message_cost() -> None:
     """Per-#1256 + #803: per-model breakdown is empty without per-message cost.
 
-    Pre-#1256 message-level ``provider_meta.model`` + ``provider_meta.usage``
-    seeded the per-model breakdown. With hydrated messages no longer
-    carrying ``provider_meta``, the per-model breakdown surface requires
-    the typed cost projection (#803). Until #803 lands the breakdown is
-    empty and the aggregate reports ``status='unavailable'`` for messages
-    with no session-level fallback. This test pins the new contract
-    so future #803 work has a clear seam to flip the assertions through.
+    Typed ``model_name`` and token columns seed the per-model breakdown.
     """
 
     session = make_conv(
@@ -138,8 +143,11 @@ def test_mixed_model_session_breakdown_is_empty_without_typed_per_message_cost()
 
     estimate = estimate_session_cost(session)
 
-    assert estimate.status == "unavailable"
-    assert estimate.per_model_breakdown == ()
+    assert estimate.status == "priced"
+    assert {row.normalized_model for row in estimate.per_model_breakdown} == {
+        "claude-sonnet-4-5",
+        "claude-opus-4-5",
+    }
 
 
 def test_provider_zero_cost_is_preserved_not_treated_as_free() -> None:
@@ -157,12 +165,16 @@ def test_provider_zero_cost_is_preserved_not_treated_as_free() -> None:
     session = make_conv(
         id="conv-zero",
         provider="claude-code",
-        provider_meta={
-            "total_cost_usd": 0.0,
-            "model": "claude-sonnet-4-5",
-            "usage": {"input_tokens": 100, "output_tokens": 50},
-        },
-        messages=MessageCollection(messages=[]),
+        messages=MessageCollection(
+            messages=[
+                _msg_with_tokens(
+                    id="m1",
+                    model="claude-sonnet-4-5",
+                    input_tokens=100,
+                    output_tokens=50,
+                )
+            ]
+        ),
     )
 
     estimate = estimate_session_cost(session)

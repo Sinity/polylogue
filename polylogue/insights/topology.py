@@ -11,8 +11,8 @@ The graph answers the classes of questions called out in issue #866:
 - parent and root membership for an arbitrary session;
 - ancestors / descendants / siblings;
 - edge classification (continuation, sidechain, fork, subagent);
-- unresolved native parent edges (provider-native parent IDs that did not
-  resolve to a stored session);
+- unresolved native parent edges from ``session_links`` rows that did not
+  resolve to a stored session;
 - cycle detection — a cycle is structurally invalid and is surfaced through
   ``SessionTopology.cycle_detected``.
 
@@ -37,10 +37,10 @@ class TopologyEdgeKind(str, Enum):
     Mirrors :class:`BranchType` for the resolved-parent case and adds two
     extra states that exist only at the topology layer:
 
-    - ``UNRESOLVED_NATIVE`` — a provider-native parent ID was observed on
-      the child (typically inside ``provider_meta``) but no session
-      with that ID is present in the archive. The edge is preserved so
-      late-arriving parents can be reconciled deterministically.
+    - ``UNRESOLVED_NATIVE`` — a native parent ID was observed on the child
+      through ``session_links`` but no session with that ID is present in the
+      archive. The edge is preserved so late-arriving parents can be reconciled
+      deterministically.
     - ``UNKNOWN`` — a parent ID resolves to a stored session but the
       child carries no ``branch_type``. Treated as a structural edge
       without semantic classification.

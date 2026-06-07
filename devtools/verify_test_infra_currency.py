@@ -2,7 +2,7 @@
 
 Background: ``tests/infra/storage_records.py`` and sibling helpers contain
 hand-written SQL fragments that mirror production write paths (stats upsert,
-identity-preserving repoint, etc.). When ``SCHEMA_VERSION`` bumps and new
+identity-preserving repoint, etc.). When archive tier DDL changes and new
 tables are introduced (see #1208: v15 -> v16 -> v17 added
 ``user_marks`` / ``user_annotations``), helpers that reference those tables
 silently break against any in-memory test connection that does not run the
@@ -11,8 +11,8 @@ unrelated change invalidates the affected test set.
 
 This lint closes that drift class:
 
-1. Collect the set of tables declared by ``polylogue/storage/sqlite/schema_ddl_*.py``
-   (the authoritative SCHEMA_VERSION-bound DDL surface).
+1. Collect the set of tables declared by ``polylogue/storage/sqlite/archive_tiers/*.py``
+   (the current archive DDL surface).
 2. Scan every ``tests/infra/*.py`` helper for SQL table references
    (``FROM <name>``, ``UPDATE <name>``, ``INSERT INTO <name>``,
    ``DELETE FROM <name>``).
@@ -104,12 +104,7 @@ _SQLITE_BUILTIN_TABLES = frozenset(
 
 def _collect_schema_tables() -> frozenset[str]:
     tables: set[str] = set()
-    ddl_files = list(SCHEMA_DDL_DIR.glob("schema_ddl*.py"))
-    # The archive DDL (source/index/embeddings/user/ops) is the active
-    # storage shape; tests/infra helpers read those archive tables
-    # (e.g. ``blocks``/``blocks_fts``), so the currency check must know them
-    # alongside the top-level ``schema_ddl*.py`` surface.
-    ddl_files.extend((SCHEMA_DDL_DIR / "archive_tiers").glob("*.py"))
+    ddl_files = list((SCHEMA_DDL_DIR / "archive_tiers").glob("*.py"))
     for ddl_file in ddl_files:
         text = ddl_file.read_text(encoding="utf-8")
         tables.update(name.lower() for name in _CREATE_TABLE_RE.findall(text))

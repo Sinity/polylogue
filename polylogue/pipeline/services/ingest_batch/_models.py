@@ -6,7 +6,7 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
-from polylogue.pipeline.services.ingest_worker import SessionData
+from polylogue.pipeline.services.ingest_worker import SessionWritePayload
 from polylogue.storage.raw.models import RawSessionStateUpdate
 
 if TYPE_CHECKING:
@@ -59,11 +59,11 @@ class _IngestBatchSummary:
             "sessions": 0,
             "messages": 0,
             "attachments": 0,
-            "provider_events": 0,
+            "session_events": 0,
             "skipped_sessions": 0,
             "skipped_messages": 0,
             "skipped_attachments": 0,
-            "skipped_provider_events": 0,
+            "skipped_session_events": 0,
         }
     )
     changed_counts: dict[str, int] = field(
@@ -71,7 +71,7 @@ class _IngestBatchSummary:
             "sessions": 0,
             "messages": 0,
             "attachments": 0,
-            "provider_events": 0,
+            "session_events": 0,
         }
     )
     parse_failures: int = 0
@@ -113,6 +113,6 @@ class _IngestWorkerRequest:
     measure_ingest_result_size: bool
 
 
-_SessionEntry = tuple[str, SessionData]
+_SessionEntry = tuple[str, SessionWritePayload]
 
 # Re-exported from canonical source polylogue/core/common.py

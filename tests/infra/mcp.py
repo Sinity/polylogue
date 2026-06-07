@@ -74,7 +74,7 @@ EXPECTED_TOOL_NAMES = {
     "session_work_events",
     "session_phases",
     "session_tag_rollups",
-    "work_threads",
+    "threads",
     "archive_coverage",
 }
 
@@ -203,7 +203,7 @@ def make_polylogue_mock(*, resolved_id: str | None = None) -> MagicMock:
     poly.list_session_work_event_insights = AsyncMock(return_value=[])
     poly.list_session_phase_insights = AsyncMock(return_value=[])
     poly.list_session_tag_rollup_insights = AsyncMock(return_value=[])
-    poly.list_work_thread_insights = AsyncMock(return_value=[])
+    poly.list_thread_insights = AsyncMock(return_value=[])
     poly.list_archive_coverage_insights = AsyncMock(return_value=[])
     poly.list_session_cost_insights = AsyncMock(return_value=[])
     poly.list_cost_rollup_insights = AsyncMock(return_value=[])

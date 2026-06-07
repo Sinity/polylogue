@@ -5,7 +5,7 @@ Covers the embedding_status table row lifecycle:
 
 Tests operate on a raw SQLite connection with the embedding_status schema
 from sqlite_vec_runtime.py. Retrieval band checks are excluded because
-the underlying SessionInsightStatusSnapshot/action-event infrastructure
+the underlying SessionInsightStatusSnapshot/action infrastructure
 requires full schema tables (pre-existing limitation, not a test bug).
 """
 
@@ -38,7 +38,7 @@ from polylogue.storage.embeddings.progress import (
     start_embedding_catchup_run,
 )
 from polylogue.storage.runtime import MessageRecord
-from polylogue.storage.sqlite.schema_ddl import SCHEMA_VERSION
+from polylogue.storage.sqlite.schema import SCHEMA_VERSION
 
 
 class _FakeV1VectorProvider:
@@ -82,11 +82,11 @@ _MESSAGE_EMBEDDINGS_DDL = """
 _SESSIONS_DDL = """
     CREATE TABLE IF NOT EXISTS sessions (
         session_id TEXT PRIMARY KEY,
-        source_name   TEXT NOT NULL DEFAULT '',
+        origin       TEXT NOT NULL DEFAULT 'unknown-export',
         title           TEXT,
-        created_at      TEXT,
-        updated_at      TEXT,
-        sort_key        TEXT,
+        created_at_ms   INTEGER,
+        updated_at_ms   INTEGER,
+        message_count   INTEGER NOT NULL DEFAULT 0,
         content_hash    TEXT,
         metadata        TEXT,
         provider_meta   TEXT
@@ -98,13 +98,6 @@ _MESSAGES_DDL = """
         message_id       TEXT PRIMARY KEY,
         session_id  TEXT NOT NULL,
         text             TEXT
-    );
-"""
-
-_SESSION_STATS_DDL = """
-    CREATE TABLE IF NOT EXISTS session_stats (
-        session_id TEXT PRIMARY KEY,
-        message_count   INTEGER NOT NULL DEFAULT 0
     );
 """
 
@@ -131,10 +124,10 @@ def _setup_minimal_embedding_file(path: Path) -> None:
 def _insert_session(conn: sqlite3.Connection, session_id: str, *, message_count: int) -> None:
     conn.execute(
         """
-        INSERT INTO sessions (session_id, source_name, title, updated_at, content_hash)
-        VALUES (?, 'test', ?, ?, ?)
+        INSERT INTO sessions (session_id, origin, title, updated_at_ms, message_count, content_hash)
+        VALUES (?, 'unknown-export', ?, ?, ?, ?)
         """,
-        (session_id, session_id, session_id, f"hash-{session_id}"),
+        (session_id, session_id, 1_700_000_000_000, message_count, f"hash-{session_id}"),
     )
     for index in range(message_count):
         conn.execute(
@@ -406,8 +399,8 @@ def test_embedding_status_lifecycle(
         # Seed sessions
         for conv_id, _last_embedded, _needs_reindex, _error_msg in seed_rows:
             conn.execute(
-                "INSERT INTO sessions (session_id, source_name, title) VALUES (?, ?, ?)",
-                (conv_id, "test", f"Test {conv_id}"),
+                "INSERT INTO sessions (session_id, origin, title, message_count) VALUES (?, ?, ?, ?)",
+                (conv_id, "unknown-export", f"Test {conv_id}", 1),
             )
             conn.execute(
                 "INSERT INTO messages (message_id, session_id, text) VALUES (?, ?, ?)",
@@ -450,8 +443,8 @@ def test_missing_embedding_status_rows_count_as_pending_messages() -> None:
     try:
         _setup_minimal_embedding_db(conn)
         conn.execute(
-            "INSERT INTO sessions (session_id, source_name, title) VALUES (?, ?, ?)",
-            ("conv-new", "test", "New"),
+            "INSERT INTO sessions (session_id, origin, title, message_count) VALUES (?, ?, ?, ?)",
+            ("conv-new", "unknown-export", "New", 1),
         )
         conn.execute(
             "INSERT INTO messages (message_id, session_id, text) VALUES (?, ?, ?)",
@@ -498,21 +491,12 @@ def test_pending_window_honors_max_messages() -> None:
         conn.close()
 
 
-def test_pending_window_uses_session_stats_when_available() -> None:
+def test_pending_window_uses_sessions_message_count() -> None:
     conn = sqlite3.connect(":memory:")
     try:
         _setup_minimal_embedding_db(conn)
-        conn.executescript(_SESSION_STATS_DDL)
-        _insert_session(conn, "conv-a", message_count=1)
+        _insert_session(conn, "conv-a", message_count=7)
         _insert_session(conn, "conv-b", message_count=1)
-        conn.execute(
-            "INSERT INTO session_stats (session_id, message_count) VALUES (?, ?)",
-            ("conv-a", 7),
-        )
-        conn.execute(
-            "INSERT INTO session_stats (session_id, message_count) VALUES (?, ?)",
-            ("conv-b", 1),
-        )
         conn.commit()
 
         pending = select_pending_session_window(conn, max_sessions=1)
@@ -527,17 +511,8 @@ def test_pending_window_uses_live_counts_for_message_bound() -> None:
     conn = sqlite3.connect(":memory:")
     try:
         _setup_minimal_embedding_db(conn)
-        conn.executescript(_SESSION_STATS_DDL)
         _insert_session(conn, "conv-a", message_count=3)
         _insert_session(conn, "conv-b", message_count=3)
-        conn.execute(
-            "INSERT INTO session_stats (session_id, message_count) VALUES (?, ?)",
-            ("conv-a", 1),
-        )
-        conn.execute(
-            "INSERT INTO session_stats (session_id, message_count) VALUES (?, ?)",
-            ("conv-b", 1),
-        )
         conn.commit()
 
         pending = select_pending_session_window(conn, max_messages=4)
@@ -698,7 +673,7 @@ def test_archive_pending_window_and_embedding_success(tmp_path: Path) -> None:
         ).fetchone()
         assert status == (1, 0, None)
         assert conn.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 1
-        assert conn.execute("SELECT COUNT(*) FROM embeddings_meta WHERE target_type = 'message'").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1
     finally:
         conn.close()
     conn = sqlite3.connect(index_db)

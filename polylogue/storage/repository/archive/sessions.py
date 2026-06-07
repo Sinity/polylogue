@@ -36,6 +36,13 @@ class RepositoryArchiveSessionMixin:
             return {}
         result: dict[str, list[str]] = {cid: [] for cid in session_ids}
         async with self._backend.connection() as conn:
+            for table in ("session_tags", "tags"):
+                table_cursor = await conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+                    (table,),
+                )
+                if await table_cursor.fetchone() is None:
+                    return dict.fromkeys(session_ids, ())
             placeholders = ",".join("?" for _ in session_ids)
             cursor = await conn.execute(
                 f"""
@@ -65,19 +72,20 @@ class RepositoryArchiveSessionMixin:
         conv_record = await self.queries.get_session(session_id)
         if not conv_record:
             return None
+        resolved_session_id = str(conv_record.session_id)
 
-        msg_records, att_records, provider_event_records = await asyncio.gather(
-            self.queries.get_messages(session_id),
-            self.queries.get_attachments(session_id),
-            self.queries.get_provider_events(session_id),
+        msg_records, att_records, session_event_records = await asyncio.gather(
+            self.queries.get_messages(resolved_session_id),
+            self.queries.get_attachments(resolved_session_id),
+            self.queries.get_session_events(resolved_session_id),
         )
-        tags_by_id = await self._fetch_tags_by_session([session_id])
+        tags_by_id = await self._fetch_tags_by_session([resolved_session_id])
         return session_from_records(
             conv_record,
             msg_records,
             att_records,
-            provider_event_records,
-            tags=tags_by_id.get(session_id, ()),
+            session_event_records,
+            tags=tags_by_id.get(resolved_session_id, ()),
         )
 
     async def get_render_projection(self, session_id: str) -> SessionRenderProjection | None:
@@ -115,7 +123,7 @@ class RepositoryArchiveSessionMixin:
         offset: int = 0,
     ) -> tuple[list[Message], int]:
         conv_record = await self.queries.get_session(session_id)
-        source_name = conv_record.source_name if conv_record else None
+        source_name = conv_record.origin.value if conv_record else None
         records, total = await self.queries.get_messages_paginated(
             session_id,
             message_role=message_role,
@@ -166,10 +174,10 @@ class RepositoryArchiveSessionMixin:
             return []
 
         async with self._backend.read_pool(size=2):
-            msgs_by_id, atts_by_id, provider_events_by_id = await asyncio.gather(
+            msgs_by_id, atts_by_id, session_events_by_id = await asyncio.gather(
                 self.queries.get_messages_batch(present_ids),
                 self.queries.get_attachments_batch(present_ids),
-                self.queries.get_provider_events_batch(present_ids),
+                self.queries.get_session_events_batch(present_ids),
             )
         tags_by_id = await self._fetch_tags_by_session(present_ids)
         return [
@@ -177,7 +185,7 @@ class RepositoryArchiveSessionMixin:
                 by_id[session_id],
                 msgs_by_id.get(session_id, []),
                 atts_by_id.get(session_id, []),
-                provider_events_by_id.get(session_id, []),
+                session_events_by_id.get(session_id, []),
                 tags=tags_by_id.get(session_id, ()),
             )
             for session_id in present_ids
@@ -188,10 +196,7 @@ class RepositoryArchiveSessionMixin:
         if not conv_record:
             return None
         tags_by_id = await self._fetch_tags_by_session([session_id])
-        # #1630: hydrate message_count from session_stats so the daemon
-        # HTTP /api/sessions/{id} endpoint and any other ``get_summary``
-        # caller see a real total instead of None. Same shape as
-        # list_summaries_by_query below.
+        # Hydrate message_count from the current sessions aggregate.
         counts_by_id = await self.queries.get_message_counts_batch([session_id])
         return session_summary_from_record(
             conv_record,
@@ -206,8 +211,7 @@ class RepositoryArchiveSessionMixin:
         conv_records = await self.queries.list_session_summaries(query)
         ids = [str(record.session_id) for record in conv_records]
         tags_by_id = await self._fetch_tags_by_session(ids)
-        # #1623: hydrate message_count from session_stats so callers
-        # like compute_facets see a real total instead of summing zeros.
+        # Hydrate message_count from the current sessions aggregate.
         counts_by_id = await self.queries.get_message_counts_batch(ids) if ids else {}
         return [
             session_summary_from_record(
@@ -240,7 +244,7 @@ class RepositoryArchiveSessionMixin:
         limit: int | None = None,
     ) -> AsyncIterator[Message]:
         conv_record = await self.queries.get_session(session_id)
-        source_name = conv_record.source_name if conv_record else None
+        source_name = conv_record.origin.value if conv_record else None
         async for record in self.queries.iter_messages(
             session_id,
             dialogue_only=dialogue_only,
@@ -336,13 +340,13 @@ class RepositoryArchiveSessionMixin:
             result["action_types"] = _keyed(
                 await _scoped_rows(
                     conn,
-                    """SELECT action_kind, count(*) AS n
-                    FROM action_events
+                    """SELECT COALESCE(NULLIF(semantic_type, ''), 'tool_use') AS action_kind, count(*) AS n
+                    FROM actions
                     WHERE session_id IN ({})
-                    GROUP BY action_kind""",
-                    """SELECT action_kind, count(*) AS n
-                    FROM action_events
-                    GROUP BY action_kind""",
+                    GROUP BY COALESCE(NULLIF(semantic_type, ''), 'tool_use')""",
+                    """SELECT COALESCE(NULLIF(semantic_type, ''), 'tool_use') AS action_kind, count(*) AS n
+                    FROM actions
+                    GROUP BY COALESCE(NULLIF(semantic_type, ''), 'tool_use')""",
                     ids,
                 )
             )

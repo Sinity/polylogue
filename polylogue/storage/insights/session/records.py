@@ -8,7 +8,7 @@ from polylogue.insights.archive_models import (
     SessionEnrichmentPayload,
     SessionEvidencePayload,
     SessionInferencePayload,
-    WorkThreadPayload,
+    ThreadPayload,
 )
 from polylogue.storage.runtime.store_constants import (
     SESSION_ENRICHMENT_FAMILY,
@@ -136,7 +136,7 @@ class SessionLatencyProfileRecord(BaseModel):
         return value
 
 
-class WorkThreadRecord(BaseModel):
+class ThreadRecord(BaseModel):
     thread_id: str
     root_id: SessionId
     materializer_version: int = SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -156,15 +156,15 @@ class WorkThreadRecord(BaseModel):
     total_cost_usd: float = 0.0
     wall_duration_ms: int = 0
     work_event_breakdown: dict[str, int] | None = None
-    payload: WorkThreadPayload
+    payload: ThreadPayload
     search_text: str
 
     @field_validator("thread_id", "root_id", "materialized_at", "search_text")
     @classmethod
-    def work_thread_non_empty_string(cls, value: str) -> str:
+    def thread_non_empty_string(cls, value: str) -> str:
         if not value or not value.strip():
             raise ValueError("Field cannot be empty")
         return value
 
 
-__all__ = ["SessionLatencyProfileRecord", "SessionProfileRecord", "WorkThreadRecord"]
+__all__ = ["SessionLatencyProfileRecord", "SessionProfileRecord", "ThreadRecord"]

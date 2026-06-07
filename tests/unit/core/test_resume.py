@@ -127,8 +127,8 @@ async def test_resume_brief_composes_insights_and_related_sessions(cli_workspace
     assert "shell" in brief.facts.tool_categories
     assert brief.inferences.intent_summary == "System crashed, continue the resume command and run focused tests."
     assert brief.inferences.work_events
-    assert brief.inferences.work_thread is not None
-    assert brief.inferences.work_thread.session_count == 2
+    assert brief.inferences.thread is not None
+    assert brief.inferences.thread.session_count == 2
     assert any(session.session_id == ROOT_ID for session in brief.related_sessions)
     assert brief.next_steps
     assert brief.uncertainties == ()
@@ -153,12 +153,12 @@ async def test_resume_brief_provenance_cites_substrate_rows(cli_workspace: dict[
     assert provenance.computed_at  # ISO timestamp populated
     # Target session is always first cited.
     assert provenance.cited_session_ids[0] == CHILD_ID
-    # Related sessions discovered via session-tree / work-thread must also be cited.
+    # Related sessions discovered via session-tree / thread must also be cited.
     assert ROOT_ID in provenance.cited_session_ids
     # Every message in the target session must be cited by ID.
     assert provenance.cited_message_ids
     # Work thread, when found, is cited by its substrate ID.
-    assert provenance.cited_work_thread_id is not None
+    assert provenance.cited_thread_id is not None
 
 
 @pytest.mark.asyncio
@@ -174,7 +174,7 @@ async def test_resume_brief_degrades_when_insights_are_unavailable(cli_workspace
     assert brief.facts.message_count == 2
     # Without a rebuild the session_profile (and thus inference) is not
     # materialized, so the brief must flag it as an uncertainty source.
-    # Work-thread topology is durable at write time in the archive
+    # Thread topology is durable at write time in the archive
     # store, so it does not degrade — only the profile-derived projections do.
     assert {uncertainty.source for uncertainty in brief.uncertainties} >= {"session_profile"}
     assert all("session_insights" in uncertainty.detail for uncertainty in brief.uncertainties)

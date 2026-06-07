@@ -1,4 +1,4 @@
-"""Tests for the repo-identity projection (#1253)."""
+"""Tests for the repo observation projection (#1253)."""
 
 from __future__ import annotations
 
@@ -10,29 +10,39 @@ import aiosqlite
 import pytest
 
 from polylogue.archive.session.attribution import SessionAttribution
-from polylogue.storage.insights.session.repo_identity import (
+from polylogue.storage.insights.session.repo_observations import (
     RepoObservation,
     attribution_to_observations,
-    list_repo_identities,
+    list_repos,
     list_sessions_for_repo,
-    refresh_session_repo_observations,
-    refresh_session_repo_observations_sync,
+    refresh_session_repos,
+    refresh_session_repos_sync,
 )
-from polylogue.storage.sqlite.schema_ddl import SCHEMA_DDL
+from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec, initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+
+def _session_id(origin: str, native_id: str) -> str:
+    return f"{origin}:{native_id}"
 
 
 def _make_db() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    conn.executescript(SCHEMA_DDL)
+    initialize_archive_tier(conn, ArchiveTier.INDEX)
     return conn
 
 
-def _seed_session(conn: sqlite3.Connection, session_id: str) -> None:
+def _seed_session(conn: sqlite3.Connection, native_id: str, *, origin: str = "claude-code-session") -> str:
     conn.execute(
-        "INSERT INTO sessions (session_id, source_name, provider_session_id, version) VALUES (?, ?, ?, ?)",
-        (session_id, "claude-code", f"pcid-{session_id}", 1),
+        """
+        INSERT INTO sessions (
+            native_id, origin, title, content_hash, created_at_ms, updated_at_ms
+        ) VALUES (?, ?, ?, zeroblob(32), 0, 0)
+        """,
+        (native_id, origin, native_id),
     )
+    return _session_id(origin, native_id)
 
 
 def _attr(
@@ -88,7 +98,7 @@ def test_attribution_to_observations_local_repo_without_origin() -> None:
 
 def test_refresh_sync_upserts_identity_and_observation() -> None:
     conn = _make_db()
-    _seed_session(conn, "conv-a")
+    session_id = _seed_session(conn, "conv-a")
     obs = (
         RepoObservation(
             origin_url="https://github.com/Sinity/polylogue.git",
@@ -98,18 +108,16 @@ def test_refresh_sync_upserts_identity_and_observation() -> None:
         ),
     )
 
-    written = refresh_session_repo_observations_sync(conn, "conv-a", obs)
+    written = refresh_session_repos_sync(conn, session_id, obs)
     assert written == 1
-    identities = conn.execute("SELECT id, origin_url, root_path FROM repo_identities").fetchall()
-    assert [(r["origin_url"], r["root_path"]) for r in identities] == [
+    repos = conn.execute("SELECT repo_id, origin_url, root_path FROM repos").fetchall()
+    assert [(r["origin_url"], r["root_path"]) for r in repos] == [
         ("https://github.com/Sinity/polylogue.git", "/realm/project/polylogue"),
     ]
-    observations = conn.execute(
-        "SELECT session_id, repo_identity_id, branch_name FROM session_repo_observations"
-    ).fetchall()
-    assert [(r["session_id"], r["branch_name"]) for r in observations] == [("conv-a", "master")]
+    observations = conn.execute("SELECT session_id, repo_id, branch_name FROM session_repos").fetchall()
+    assert [(r["session_id"], r["branch_name"]) for r in observations] == [(session_id, "master")]
 
-    # Re-running deduplicates the identity but updates last_seen_at and branch.
+    # Re-running deduplicates the repo but updates last_seen_at and branch.
     obs_v2 = (
         RepoObservation(
             origin_url="https://github.com/Sinity/polylogue.git",
@@ -118,22 +126,22 @@ def test_refresh_sync_upserts_identity_and_observation() -> None:
             branch_name="feature/foo",
         ),
     )
-    refresh_session_repo_observations_sync(conn, "conv-a", obs_v2)
-    identities_after = conn.execute("SELECT id FROM repo_identities").fetchall()
-    assert len(identities_after) == 1
+    refresh_session_repos_sync(conn, session_id, obs_v2)
+    repos_after = conn.execute("SELECT repo_id FROM repos").fetchall()
+    assert len(repos_after) == 1
     branch_after = conn.execute(
-        "SELECT branch_name FROM session_repo_observations WHERE session_id = ?",
-        ("conv-a",),
+        "SELECT branch_name FROM session_repos WHERE session_id = ?",
+        (session_id,),
     ).fetchone()
     assert branch_after["branch_name"] == "feature/foo"
 
 
 def test_refresh_sync_replaces_existing_observations() -> None:
     conn = _make_db()
-    _seed_session(conn, "conv-b")
-    refresh_session_repo_observations_sync(
+    session_id = _seed_session(conn, "conv-b")
+    refresh_session_repos_sync(
         conn,
-        "conv-b",
+        session_id,
         (
             RepoObservation(
                 origin_url="",
@@ -149,12 +157,12 @@ def test_refresh_sync_replaces_existing_observations() -> None:
             ),
         ),
     )
-    count_a = conn.execute("SELECT COUNT(*) FROM session_repo_observations").fetchone()[0]
+    count_a = conn.execute("SELECT COUNT(*) FROM session_repos").fetchone()[0]
     assert count_a == 2
 
-    refresh_session_repo_observations_sync(
+    refresh_session_repos_sync(
         conn,
-        "conv-b",
+        session_id,
         (
             RepoObservation(
                 origin_url="",
@@ -164,17 +172,17 @@ def test_refresh_sync_replaces_existing_observations() -> None:
             ),
         ),
     )
-    count_b = conn.execute("SELECT COUNT(*) FROM session_repo_observations").fetchone()[0]
+    count_b = conn.execute("SELECT COUNT(*) FROM session_repos").fetchone()[0]
     assert count_b == 1
 
 
 def test_session_cascade_drops_observations() -> None:
     conn = _make_db()
     conn.execute("PRAGMA foreign_keys = ON")
-    _seed_session(conn, "conv-c")
-    refresh_session_repo_observations_sync(
+    session_id = _seed_session(conn, "conv-c")
+    refresh_session_repos_sync(
         conn,
-        "conv-c",
+        session_id,
         (
             RepoObservation(
                 origin_url="",
@@ -184,19 +192,28 @@ def test_session_cascade_drops_observations() -> None:
             ),
         ),
     )
-    conn.execute("DELETE FROM sessions WHERE session_id = ?", ("conv-c",))
-    remaining = conn.execute("SELECT COUNT(*) FROM session_repo_observations").fetchone()[0]
+    conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+    remaining = conn.execute("SELECT COUNT(*) FROM session_repos").fetchone()[0]
     assert remaining == 0
-    # Identity row survives the cascade (it can still be observed by another session).
-    assert conn.execute("SELECT COUNT(*) FROM repo_identities").fetchone()[0] == 1
+    # Repo row survives the cascade (it can still be observed by another session).
+    assert conn.execute("SELECT COUNT(*) FROM repos").fetchone()[0] == 1
 
 
 @pytest.mark.parametrize(
     "lookup, expected",
     [
-        ({"origin_url": "https://github.com/Sinity/polylogue.git"}, ("conv-x", "conv-y")),
-        ({"repo_name": "polylogue"}, ("conv-x", "conv-y")),
-        ({"root_path": "/realm/project/polylogue"}, ("conv-x", "conv-y")),
+        (
+            {"origin_url": "https://github.com/Sinity/polylogue.git"},
+            (_session_id("claude-code-session", "conv-x"), _session_id("codex-session", "conv-y")),
+        ),
+        (
+            {"repo_name": "polylogue"},
+            (_session_id("claude-code-session", "conv-x"), _session_id("codex-session", "conv-y")),
+        ),
+        (
+            {"root_path": "/realm/project/polylogue"},
+            (_session_id("claude-code-session", "conv-x"), _session_id("codex-session", "conv-y")),
+        ),
         ({"origin_url": "https://github.com/other/repo.git"}, ()),
     ],
 )
@@ -204,18 +221,27 @@ def test_list_sessions_for_repo_async(lookup: dict[str, Any], expected: tuple[st
     async def _run() -> tuple[str, ...]:
         async with aiosqlite.connect(":memory:") as conn:
             conn.row_factory = aiosqlite.Row
-            await conn.executescript(SCHEMA_DDL)
+            await conn.executescript(archive_tier_spec(ArchiveTier.INDEX).ddl)
             await conn.execute(
-                "INSERT INTO sessions (session_id, source_name, provider_session_id, version) VALUES (?, ?, ?, ?)",
-                ("conv-x", "claude-code", "px", 1),
+                """
+                INSERT INTO sessions (native_id, origin, title, content_hash, created_at_ms, updated_at_ms)
+                VALUES (?, 'claude-code-session', ?, zeroblob(32), 0, 0)
+                """,
+                ("conv-x", "conv-x"),
             )
             await conn.execute(
-                "INSERT INTO sessions (session_id, source_name, provider_session_id, version) VALUES (?, ?, ?, ?)",
-                ("conv-y", "codex", "py", 1),
+                """
+                INSERT INTO sessions (native_id, origin, title, content_hash, created_at_ms, updated_at_ms)
+                VALUES (?, 'codex-session', ?, zeroblob(32), 0, 0)
+                """,
+                ("conv-y", "conv-y"),
             )
             await conn.execute(
-                "INSERT INTO sessions (session_id, source_name, provider_session_id, version) VALUES (?, ?, ?, ?)",
-                ("conv-z", "chatgpt", "pz", 1),
+                """
+                INSERT INTO sessions (native_id, origin, title, content_hash, created_at_ms, updated_at_ms)
+                VALUES (?, 'chatgpt-export', ?, zeroblob(32), 0, 0)
+                """,
+                ("conv-z", "conv-z"),
             )
             obs = (
                 RepoObservation(
@@ -225,11 +251,11 @@ def test_list_sessions_for_repo_async(lookup: dict[str, Any], expected: tuple[st
                     branch_name="master",
                 ),
             )
-            await refresh_session_repo_observations(conn, "conv-x", obs)
-            await refresh_session_repo_observations(conn, "conv-y", obs)
-            await refresh_session_repo_observations(
+            await refresh_session_repos(conn, _session_id("claude-code-session", "conv-x"), obs)
+            await refresh_session_repos(conn, _session_id("codex-session", "conv-y"), obs)
+            await refresh_session_repos(
                 conn,
-                "conv-z",
+                _session_id("chatgpt-export", "conv-z"),
                 (
                     RepoObservation(
                         origin_url="",
@@ -248,25 +274,28 @@ def test_list_sessions_for_repo_requires_filter() -> None:
     async def _run() -> None:
         async with aiosqlite.connect(":memory:") as conn:
             conn.row_factory = aiosqlite.Row
-            await conn.executescript(SCHEMA_DDL)
+            await conn.executescript(archive_tier_spec(ArchiveTier.INDEX).ddl)
             with pytest.raises(ValueError):
                 await list_sessions_for_repo(conn)
 
     asyncio.run(_run())
 
 
-def test_list_repo_identities_filter_by_name() -> None:
+def test_list_repos_filter_by_name() -> None:
     async def _run() -> tuple[tuple[dict[str, object], ...], tuple[dict[str, object], ...]]:
         async with aiosqlite.connect(":memory:") as conn:
             conn.row_factory = aiosqlite.Row
-            await conn.executescript(SCHEMA_DDL)
+            await conn.executescript(archive_tier_spec(ArchiveTier.INDEX).ddl)
             await conn.execute(
-                "INSERT INTO sessions (session_id, source_name, provider_session_id, version) VALUES (?, ?, ?, ?)",
-                ("conv-list", "claude-code", "pl", 1),
+                """
+                INSERT INTO sessions (native_id, origin, title, content_hash, created_at_ms, updated_at_ms)
+                VALUES (?, 'claude-code-session', ?, zeroblob(32), 0, 0)
+                """,
+                ("conv-list", "conv-list"),
             )
-            await refresh_session_repo_observations(
+            await refresh_session_repos(
                 conn,
-                "conv-list",
+                _session_id("claude-code-session", "conv-list"),
                 (
                     RepoObservation(
                         origin_url="",
@@ -283,10 +312,10 @@ def test_list_repo_identities_filter_by_name() -> None:
                 ),
             )
             return (
-                await list_repo_identities(conn),
-                await list_repo_identities(conn, repo_name="polylogue"),
+                await list_repos(conn),
+                await list_repos(conn, repo_name="polylogue"),
             )
 
-    all_identities, filtered = asyncio.run(_run())
-    assert {row["repo_name"] for row in all_identities} == {"polylogue", "sinex"}
+    all_repos, filtered = asyncio.run(_run())
+    assert {row["repo_name"] for row in all_repos} == {"polylogue", "sinex"}
     assert {row["repo_name"] for row in filtered} == {"polylogue"}

@@ -47,9 +47,9 @@ class TestSchemaDDLParity:
     def test_schema_ddl_has_all_required_tables(self) -> None:
         """SCHEMA_DDL must create all required tables."""
         required_tables = [
-            "raw_sessions",
             "sessions",
             "messages",
+            "blocks",
             "attachments",
         ]
         ddl_lower = SCHEMA_DDL.lower()
@@ -58,13 +58,9 @@ class TestSchemaDDLParity:
 
     def test_schema_ddl_has_all_required_indexes(self) -> None:
         """SCHEMA_DDL must create required indexes."""
-        # idx_sessions_provider was renamed to idx_sessions_source_name
-        # when ``provider_name`` graduated to ``source_name`` as the canonical
-        # storage column (#635 umbrella, provider/source vocabulary
-        # transition documented in docs/architecture.md).
         required_indexes = [
-            "idx_sessions_source_name",
-            "idx_messages_session",
+            "idx_sessions_origin_sort",
+            "idx_messages_session_position",
         ]
         ddl_lower = SCHEMA_DDL.lower()
         for idx in required_indexes:
@@ -174,23 +170,21 @@ class TestTransactionRollbackSafety:
         finally:
             conn.close()
 
-    def test_open_connection_schema_matches_raw_canonical_ddl(self, tmp_path: Path) -> None:
-        """The normal bootstrap path and raw canonical DDL must create the same schema.
+    def test_open_connection_schema_matches_index_tier_ddl(self, tmp_path: Path) -> None:
+        """The normal index bootstrap path and index-tier DDL create the same schema.
 
-        This catches drift between the fresh bootstrap path and the canonical
-        DDL used by direct schema tooling.
+        This catches drift between the current archive-root bootstrap path and
+        the index-tier DDL.
         """
         from polylogue.storage.sqlite.connection import open_connection
 
-        # Create via open_connection (fresh bootstrap)
-        bootstrapped_path = tmp_path / "bootstrapped.db"
+        bootstrapped_path = tmp_path / "archive" / "index.db"
         with open_connection(bootstrapped_path) as conn:
             cursor = conn.execute(
                 "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
             )
             bootstrapped_tables = {row[0]: row[1] for row in cursor.fetchall()}
 
-        # Create via raw DDL
         fresh_path = tmp_path / "fresh.db"
         fresh_conn = sqlite3.connect(str(fresh_path))
         try:
@@ -202,21 +196,9 @@ class TestTransactionRollbackSafety:
         finally:
             fresh_conn.close()
 
-        # Same set of tables (excluding FTS, vec0 virtual tables and their
-        # internal subtables which may or may not be created depending on
-        # available extensions). vec0 creates internal tables like
-        # message_embeddings_info, _chunks, _rowids, _vector_chunks00, _auxiliary.
-        skip_prefixes = ("messages_fts", "message_embeddings")
-        bootstrapped_names = {
-            t
-            for t in bootstrapped_tables
-            if not any(t.startswith(p) for p in skip_prefixes) and t not in {"embeddings_meta", "embedding_status"}
-        }
-        fresh_names = {
-            t
-            for t in fresh_tables
-            if not any(t.startswith(p) for p in skip_prefixes) and t not in {"embeddings_meta", "embedding_status"}
-        }
+        skip_prefixes = ("messages_fts",)
+        bootstrapped_names = {t for t in bootstrapped_tables if not any(t.startswith(p) for p in skip_prefixes)}
+        fresh_names = {t for t in fresh_tables if not any(t.startswith(p) for p in skip_prefixes)}
 
         assert bootstrapped_names == fresh_names, (
             f"Table mismatch. Only in bootstrapped: {bootstrapped_names - fresh_names}. "
@@ -335,17 +317,26 @@ class TestFTS5CountGuard:
         from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(test_db) as conn:
-            # Insert test data
             conn.execute("""
-                INSERT INTO sessions (session_id, source_name,
-                    provider_session_id, content_hash, version)
-                VALUES ('c1', 'test', 'pc1', 'hash1', 1)
+                INSERT INTO sessions (native_id, origin, content_hash)
+                VALUES ('pc1', 'unknown-export', zeroblob(32))
             """)
-            conn.execute("""
-                INSERT INTO messages (message_id, session_id, role, text,
-                    content_hash, version)
-                VALUES ('m1', 'c1', 'user', 'hello world', 'mhash1', 1)
-            """)
+            session_id = "unknown-export:pc1"
+            conn.execute(
+                """
+                INSERT INTO messages (session_id, native_id, position, role, content_hash)
+                VALUES (?, 'm1', 0, 'user', zeroblob(32))
+                """,
+                (session_id,),
+            )
+            message_id = f"{session_id}:m1"
+            conn.execute(
+                """
+                INSERT INTO blocks (message_id, session_id, position, block_type, text)
+                VALUES (?, ?, 0, 'text', 'hello world')
+                """,
+                (message_id, session_id),
+            )
             conn.commit()
 
             # COUNT on regular table (fast, O(1) with SQLite's page count optimization)
@@ -378,12 +369,11 @@ class TestSessionFilterSQL:
         """
         from polylogue.storage.sqlite.queries.filter_builder import _build_session_filters
 
-        # Provider name with quotes
-        where_clause, params = _build_session_filters(provider="test'provider")
+        where_clause, params = _build_session_filters(title_contains="test'provider")
         assert isinstance(where_clause, str)
         assert isinstance(params, list)
         # The quote should be in params (handled by parameterization), not in SQL
-        assert "test'provider" in params
+        assert "%test'provider%" in params
         # SQL clause must use ? placeholder, not string interpolation
         assert "?" in where_clause
 
@@ -539,11 +529,11 @@ class TestAnalyticsQueryPlan:
         try:
             conn.executescript(SCHEMA_DDL)
             # EXPLAIN QUERY PLAN shows the access method
-            cursor = conn.execute("EXPLAIN QUERY PLAN SELECT source_name, COUNT(*) FROM sessions GROUP BY source_name")
+            cursor = conn.execute("EXPLAIN QUERY PLAN SELECT origin, COUNT(*) FROM sessions GROUP BY origin")
             plan = " ".join(row[3] if len(row) > 3 else str(row) for row in cursor.fetchall())
             # Should scan the covering index, not the table
-            assert "idx_sessions_provider" in plan or "COVERING" in plan or "INDEX" in plan.upper(), (
-                f"Expected index usage for GROUP BY source_name, got: {plan}"
+            assert "idx_sessions_origin_sort" in plan or "COVERING" in plan or "INDEX" in plan.upper(), (
+                f"Expected index usage for GROUP BY origin, got: {plan}"
             )
         finally:
             conn.close()
@@ -559,7 +549,7 @@ class TestAnalyticsQueryPlan:
                 ("test-id",),
             )
             plan = " ".join(row[3] if len(row) > 3 else str(row) for row in cursor.fetchall())
-            assert "idx_messages_session" in plan or "INDEX" in plan.upper(), (
+            assert "idx_messages_session_position" in plan or "INDEX" in plan.upper(), (
                 f"Expected index usage for WHERE session_id, got: {plan}"
             )
         finally:

@@ -21,8 +21,8 @@ from polylogue.types import ContentBlockType, Provider
 from .base import (
     ParsedContentBlock,
     ParsedMessage,
-    ParsedProviderEvent,
     ParsedSession,
+    ParsedSessionEvent,
     content_blocks_from_segments,
 )
 
@@ -385,7 +385,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
     - format_type: Detected format generation
     """
     messages: list[ParsedMessage] = []
-    provider_events: list[ParsedProviderEvent] = []
+    session_events: list[ParsedSessionEvent] = []
     session_id = fallback_id
     session_timestamp: str | None = None
     session_timestamp_pair: _TimestampPair | None = None
@@ -413,8 +413,8 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                 "summary": str(payload.get("message", "") or ""),
                 "replacement_history_count": len(history) if isinstance(history, list) else 0,
             }
-            provider_events.append(
-                ParsedProviderEvent(
+            session_events.append(
+                ParsedSessionEvent(
                     event_type="compaction",
                     timestamp=timestamp,
                     payload=event_payload,
@@ -440,8 +440,8 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                 if model_effort := _string_field(normalized_turn_context, "effort", "model_effort"):
                     current_model_effort = model_effort
                     tc_payload["effort"] = model_effort
-            provider_events.append(
-                ParsedProviderEvent(
+            session_events.append(
+                ParsedSessionEvent(
                     event_type="turn_context",
                     timestamp=timestamp,
                     payload=tc_payload,
@@ -453,8 +453,8 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
             inner = _payload_record(record)
             if inner is not None and not _is_message(inner):
                 event_payload = _compact_response_payload(inner, index=idx)
-                provider_events.append(
-                    ParsedProviderEvent(
+                session_events.append(
+                    ParsedSessionEvent(
                         event_type=_record_type(inner) or "response_item",
                         timestamp=_iso_or_none(_record_timestamp(inner) or _record_timestamp(record)),
                         payload=event_payload,
@@ -590,7 +590,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
         messages=messages,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
         provider_meta=conv_meta,
-        provider_events=provider_events,
+        session_events=session_events,
         parent_session_provider_id=parent_id,
         branch_type=branch_type,
         working_directories=sorted(working_directories),

@@ -1011,16 +1011,14 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     }
                     messages.append(msg_dict)
 
-            # Determine repo path from metadata
-            meta: dict[str, object] = conv.provider_meta or {} if isinstance(conv.provider_meta, dict) else {}
             repo: str = repo_path or "."
             if not repo_path:
-                repo_url = meta.get("git_repository_url")
-                if repo_url and isinstance(repo_url, str):
+                repo_url = getattr(conv, "git_repository_url", None)
+                if isinstance(repo_url, str) and repo_url:
                     repo = repo_url
                 else:
-                    cwd = meta.get("cwd")
-                    repo = str(cwd) if cwd and isinstance(cwd, str) else "."
+                    directories = getattr(conv, "working_directories", ()) or ()
+                    repo = str(directories[0]) if directories else "."
 
             start = conv.created_at
             end = conv.updated_at

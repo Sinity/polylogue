@@ -147,7 +147,7 @@ class QueryFieldDescriptor:
     requires_post_filter: bool = False
     requires_content_loading: bool = False
     blocks_sql_count: bool = False
-    blocks_action_event_stats: bool = False
+    blocks_action_stats: bool = False
     blocks_simple_message_hit: bool = False
     completion_source: CompletionSource | None = None
     completion_label: str | None = None
@@ -201,7 +201,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         spec_description=_label("search", _join_space),
         plan_description=_label("contains", _join_comma),
         blocks_sql_count=True,
-        blocks_action_event_stats=True,
+        blocks_action_stats=True,
         mcp_names=("query",),
         api_names=("query",),
     ),
@@ -221,7 +221,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         requires_post_filter=True,
         requires_content_loading=True,
         blocks_sql_count=True,
-        blocks_action_event_stats=True,
+        blocks_action_stats=True,
         blocks_simple_message_hit=True,
         mcp_names=("exclude_text",),
     ),
@@ -313,7 +313,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         requires_post_filter=True,
         requires_content_loading=True,
         blocks_sql_count=True,
-        blocks_action_event_stats=True,
+        blocks_action_stats=True,
         blocks_simple_message_hit=True,
         completion_source="action_sequence",
         completion_label="action sequence",
@@ -330,7 +330,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         requires_post_filter=True,
         requires_content_loading=True,
         blocks_sql_count=True,
-        blocks_action_event_stats=True,
+        blocks_action_stats=True,
         blocks_simple_message_hit=True,
         mcp_names=("action_text",),
     ),
@@ -387,7 +387,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         plan_description=_label("exclude origin", _join_comma),
         requires_post_filter=True,
         blocks_sql_count=True,
-        blocks_action_event_stats=True,
+        blocks_action_stats=True,
         blocks_simple_message_hit=True,
         completion_source="origin",
         completion_label="origin",
@@ -414,7 +414,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         plan_description=_label("tag", _join_comma),
         requires_post_filter=True,
         blocks_sql_count=True,
-        blocks_action_event_stats=True,
+        blocks_action_stats=True,
         blocks_simple_message_hit=True,
         completion_source="tag",
         completion_label="tag",
@@ -428,7 +428,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         plan_description=_label("exclude tag", _join_comma),
         requires_post_filter=True,
         blocks_sql_count=True,
-        blocks_action_event_stats=True,
+        blocks_action_stats=True,
         blocks_simple_message_hit=True,
         completion_source="tag",
         completion_label="tag",
@@ -455,7 +455,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         plan_description=_label("has", _join_comma),
         requires_post_filter=True,
         blocks_sql_count=True,
-        blocks_action_event_stats=True,
+        blocks_action_stats=True,
         blocks_simple_message_hit=True,
         mcp_names=("has_type",),
     ),
@@ -567,7 +567,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         plan_description=_label("similar", _truncated_text),
         requires_content_loading=True,
         blocks_sql_count=True,
-        blocks_action_event_stats=True,
+        blocks_action_stats=True,
         blocks_simple_message_hit=True,
         mcp_names=("similar_text",),
     ),
@@ -671,7 +671,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         plan_description=lambda value: "continuation" if value is True else "not continuation",
         requires_post_filter=True,
         blocks_sql_count=True,
-        blocks_action_event_stats=True,
+        blocks_action_stats=True,
     ),
     QueryFieldDescriptor(
         name="sidechain",
@@ -680,7 +680,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         plan_description=lambda value: "sidechain" if value is True else "not sidechain",
         requires_post_filter=True,
         blocks_sql_count=True,
-        blocks_action_event_stats=True,
+        blocks_action_stats=True,
     ),
     QueryFieldDescriptor(
         name="root",
@@ -689,7 +689,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         plan_description=lambda value: "root" if value is True else "not root",
         requires_post_filter=True,
         blocks_sql_count=True,
-        blocks_action_event_stats=True,
+        blocks_action_stats=True,
     ),
     QueryFieldDescriptor(
         name="has_branches",
@@ -699,7 +699,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         requires_post_filter=True,
         requires_content_loading=True,
         blocks_sql_count=True,
-        blocks_action_event_stats=True,
+        blocks_action_stats=True,
     ),
     QueryFieldDescriptor(
         name="predicates",
@@ -708,7 +708,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         requires_post_filter=True,
         requires_content_loading=True,
         blocks_sql_count=True,
-        blocks_action_event_stats=True,
+        blocks_action_stats=True,
     ),
     QueryFieldDescriptor(
         name="sample",

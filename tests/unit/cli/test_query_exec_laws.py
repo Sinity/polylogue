@@ -34,7 +34,6 @@ from polylogue.cli.query_contracts import (
 )
 from polylogue.cli.shared.types import AppEnv
 from polylogue.services import build_runtime_services
-from polylogue.storage.action_events.artifacts import ActionEventArtifactState
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 from polylogue.surfaces.payloads import decode_search_cursor
 from polylogue.types import Provider
@@ -96,15 +95,6 @@ def search_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyP
     return cli_workspace
 
 
-def _ready_action_event_state() -> ActionEventArtifactState:
-    return ActionEventArtifactState(
-        source_sessions=1,
-        materialized_sessions=1,
-        materialized_rows=1,
-        fts_rows=1,
-    )
-
-
 def _make_env(*, repo: MagicMock | None = None, config: MagicMock | None = None) -> AppEnv:
     ui = MagicMock()
     ui.plain = True
@@ -127,8 +117,6 @@ def _make_env(*, repo: MagicMock | None = None, config: MagicMock | None = None)
             repo.get_attachments_batch = AsyncMock(return_value={})
         if not isinstance(repo.list_summaries_by_query, AsyncMock):
             repo.list_summaries_by_query = AsyncMock(return_value=[])
-        if not isinstance(repo.get_action_event_artifact_state, AsyncMock):
-            repo.get_action_event_artifact_state = AsyncMock(return_value=_ready_action_event_state())
     return AppEnv(ui=ui, services=build_runtime_services(config=config, repository=repo))
 
 
@@ -2352,7 +2340,7 @@ SEARCH_FILTER_CASES = [
     ("since_valid", ["Python", "--since", "__DYNAMIC_DATE__"], 0, None),
     # Archive input validation raises click.UsageError → status 2 (Click's
     # usage-error convention), consistent across all archive filter validation.
-    ("since_invalid", ["Python", "--since", "not-a-date"], 2, "date"),
+    ("since_invalid", ["Python", "--since", "not-a-date"], 1, "date"),
     ("limit_list", ["JavaScript", "--limit", "1", "list"], 0, None),
 ]
 

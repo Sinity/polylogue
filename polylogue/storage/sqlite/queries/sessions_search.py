@@ -9,10 +9,6 @@ from polylogue.storage.search.models import SessionSearchEvidenceRow, SessionSea
 
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 _MESSAGE_SEARCH_REPAIR_HINT = _MAINTENANCE_TARGET_CATALOG.repair_hint(("dangling_fts",), include_run_all=True)
-_ACTION_SEARCH_REPAIR_HINT = _MAINTENANCE_TARGET_CATALOG.repair_hint(
-    ("action_event_read_model",),
-    include_run_all=True,
-)
 
 
 async def search_session_hits(
@@ -81,7 +77,7 @@ async def search_session_evidence_hits(
             rank=rank,
             score=float(row["relevance"]) if row["relevance"] is not None else None,
             message_id=str(row["message_id"]) if row["message_id"] is not None else None,
-            snippet=str(row["snippet"]) if row["snippet"] is not None else None,
+            snippet=str(row["snippet"] or row["fallback_text"] or ""),
             match_surface="message",
             retrieval_lane="dialogue",
             matched_terms=matched_terms,
@@ -109,15 +105,11 @@ async def search_action_session_hits(
     limit: int = 100,
     providers: list[str] | None = None,
 ) -> SessionSearchResult:
-    from polylogue.errors import DatabaseError
-    from polylogue.storage.action_events.status import action_event_read_model_status_async
+    from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_async
     from polylogue.storage.search import build_ranked_action_search_query
 
-    status = await action_event_read_model_status_async(conn)
-    if not bool(status["action_fts_exists"]):
-        raise DatabaseError(f"Action search index not built. {_ACTION_SEARCH_REPAIR_HINT}")
-    if not bool(status["action_fts_ready"]):
-        raise DatabaseError(f"Action search index is incomplete. {_ACTION_SEARCH_REPAIR_HINT}")
+    readiness = await message_fts_search_readiness_async(conn)
+    check_fts_readiness(readiness, _MESSAGE_SEARCH_REPAIR_HINT)
 
     query_spec = build_ranked_action_search_query(
         query=query,

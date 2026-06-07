@@ -82,7 +82,7 @@ def classify_profile_hwm_source(updated_at: datetime | None) -> TemporalSource:
 
 
 def classify_thread_hwm_source(end_time: datetime | None) -> TemporalSource:
-    """Classify the temporal source of a work-thread insight HWM.
+    """Classify the temporal source of a thread insight HWM.
 
     Threads aggregate over their member sessions and record the latest
     member ``end_time`` as the HWM. ``end_time`` is itself sourced from

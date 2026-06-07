@@ -19,7 +19,7 @@ source data. It does **not** rewrite or delete imported sessions
 beyond targeted cleanup. It rebuilds, repairs, or prunes the things
 the archive depends on but does not own as primary data:
 
-- derived read models (session insights, action events, work threads,
+- derived read models (session insights, actions, work threads,
   day/week summaries, message-type classifications);
 - search indexes (the FTS5 projections over messages and action
   events);
@@ -47,7 +47,7 @@ Maintenance targets are grouped into four scopes:
 
 | Scope | Mode | Destructive | Targets |
 | --- | --- | --- | --- |
-| `derived` (derived_repair) | repair | no | `session_insights`, `action_event_read_model`, `dangling_fts`, `message_type_backfill`, `message_embeddings` |
+| `derived` (derived_repair) | repair | no | `session_insights`, `action_read_model`, `dangling_fts`, `message_type_backfill`, `message_embeddings` |
 | `retrieval` (database_maintenance) | repair | no | `wal_checkpoint` |
 | `archive_cleanup` | cleanup | **yes** | `orphaned_messages`, `orphaned_content_blocks`, `empty_sessions`, `orphaned_attachments`, `orphaned_blobs` |
 | `backfill` | repair | no | column/row backfills surfaced by the planner (currently subsumed by `derived`). Re-acquiring raw artifacts from source is not a maintenance target: re-ingest (`polylogue reset --database && polylogued run`) re-acquires from the source archives. |
@@ -169,7 +169,7 @@ terminates successfully. The cursor is an opaque string
 # Start an operation, capture its id.
 op=$(polylogue maintenance run --output-format json \
        --target session_insights \
-       --target action_event_read_model \
+       --target action_read_model \
        --target dangling_fts \
      | jq -r .operation_id)
 
@@ -178,13 +178,13 @@ op=$(polylogue maintenance run --output-format json \
 # Resume from the persisted cursor — same id, same target set, no flag needed.
 polylogue maintenance run --operation-id "$op" \
        --target session_insights \
-       --target action_event_read_model \
+       --target action_read_model \
        --target dangling_fts
 
 # Explicit cursor override (rare — for surgical replays).
 polylogue maintenance run --operation-id "$op" --resume target:2 \
        --target session_insights \
-       --target action_event_read_model \
+       --target action_read_model \
        --target dangling_fts
 ```
 
@@ -216,7 +216,7 @@ polylogue maintenance run --session-id abc123 --target session_insights
 polylogue maintenance run --provider claude        --target session_insights
 polylogue maintenance run --source-root ~/.claude/projects --target dangling_fts
 polylogue maintenance run --since 2026-04-01 --until 2026-05-01 \
-                          --target action_event_read_model
+                          --target action_read_model
 polylogue maintenance run --failure-kind parse_error --target message_type_backfill
 ```
 
@@ -303,8 +303,8 @@ The runbooks below assume:
 ### Recovering from a stale FTS index
 
 **Symptoms.** Search returns fewer hits than expected for known
-strings. `polylogue check` reports a `messages_fts` or
-`action_events_fts` discrepancy. `devtools daemon-workload-probe`
+strings. `polylogue check` reports a `messages_fts` discrepancy.
+`devtools daemon-workload-probe`
 shows non-empty `fts_trigger_state.missing` or `regressed` triggers.
 
 **Root cause.** FTS5 uses `content='messages'` content-rowid
@@ -342,7 +342,7 @@ backup, and open an issue with the probe output attached.
 
 **Symptoms.** `devtools daemon-workload-probe` reports a non-trivial
 `convergence_debt` section. `polylogue stats` shows derived
-materialization counts (`session_profile`, `action_events`,
+materialization counts (`session_profile`, `actions`,
 `work_threads`) lagging behind `sessions`.
 
 **Root cause.** The daemon's inline convergence loops process a
@@ -364,7 +364,7 @@ polylogue maintenance preview --scope derived
 op=$(uuidgen)
 polylogue maintenance run --operation-id "$op" \
   --target session_insights \
-  --target action_event_read_model \
+  --target action_read_model \
   --target dangling_fts \
   --target message_type_backfill
 

@@ -12,7 +12,8 @@ import pytest
 from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from tests.infra.storage_records import make_message, make_session
+from tests.infra.archive_scenarios import native_session_id_for
+from tests.infra.storage_records import make_message, make_session, save_current_archive_records
 
 
 class TestAsyncEnsureIndex:
@@ -23,7 +24,7 @@ class TestAsyncEnsureIndex:
         from polylogue.pipeline.services.indexing import ensure_index, index_status
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
+            backend = SQLiteBackend(db_path=Path(tmpdir) / "index.db")
             await backend.queries.list_sessions(SessionRecordQuery())
             await ensure_index(backend)
             status = await index_status(backend)
@@ -35,7 +36,7 @@ class TestAsyncEnsureIndex:
         from polylogue.pipeline.services.indexing import ensure_index
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
+            backend = SQLiteBackend(db_path=Path(tmpdir) / "index.db")
             await backend.queries.list_sessions(SessionRecordQuery())
             await ensure_index(backend)
             await ensure_index(backend)
@@ -50,7 +51,7 @@ class TestAsyncRebuildIndex:
         from polylogue.pipeline.services.indexing import index_status, rebuild_index
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
+            backend = SQLiteBackend(db_path=Path(tmpdir) / "index.db")
             repo = SessionRepository(backend=backend)
             now = datetime.now(timezone.utc).isoformat()
             session = make_session(
@@ -73,7 +74,7 @@ class TestAsyncRebuildIndex:
                 )
                 for i in range(5)
             ]
-            await repo.save_session(session, messages, [])
+            await save_current_archive_records(repo, session=session, messages=messages, attachments=[])
             await rebuild_index(backend)
             status = await index_status(backend)
             assert status["exists"] is True
@@ -85,7 +86,7 @@ class TestAsyncRebuildIndex:
         from polylogue.pipeline.services.indexing import index_status, rebuild_index
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
+            backend = SQLiteBackend(db_path=Path(tmpdir) / "index.db")
             repo = SessionRepository(backend=backend)
             now = datetime.now(timezone.utc).isoformat()
             session = make_session(
@@ -108,11 +109,11 @@ class TestAsyncRebuildIndex:
                 )
                 for i in range(3)
             ]
-            await repo.save_session(session, messages, [])
+            await save_current_archive_records(repo, session=session, messages=messages, attachments=[])
             await rebuild_index(backend)
             status_before = await index_status(backend)
             assert status_before["count"] == 3
-            await repo.delete_session("test:stale")
+            await repo.delete_session(native_session_id_for("test", "stale"))
             await rebuild_index(backend)
             status_after = await index_status(backend)
             assert status_after["count"] == 0
@@ -127,7 +128,7 @@ class TestAsyncUpdateIndex:
         from polylogue.pipeline.services.indexing import index_status, update_index_for_sessions
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
+            backend = SQLiteBackend(db_path=Path(tmpdir) / "index.db")
             repo = SessionRepository(backend=backend)
             now = datetime.now(timezone.utc).isoformat()
             for session_id in ["test:a", "test:b"]:
@@ -150,7 +151,7 @@ class TestAsyncUpdateIndex:
                         content_hash=uuid4().hex[:16],
                     )
                 ]
-                await repo.save_session(session, messages, [])
+                await save_current_archive_records(repo, session=session, messages=messages, attachments=[])
 
             status = await index_status(backend)
             assert status["count"] == 2

@@ -25,7 +25,7 @@ import pytest
 from polylogue.archive.filter.filters import SessionFilter
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from tests.infra.storage_records import SessionBuilder, make_message, make_session
+from tests.infra.storage_records import SessionBuilder, make_message, make_session, save_current_archive_records
 
 # =============================================================================
 # Filter state isolation (implicit in CLI routing bugs)
@@ -144,15 +144,13 @@ class TestConnectionManagement:
         async with backend.connection() as conn:
             for i in range(20):
                 await conn.execute(
-                    "INSERT INTO sessions (session_id, source_name, "
-                    "provider_session_id, content_hash, version) "
-                    "VALUES (?, 'test', ?, ?, 1)",
-                    (f"conv-{i}", f"pconv-{i}", f"hash-{i}"),
+                    "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, 'unknown-export', zeroblob(32))",
+                    (f"conv-{i}",),
                 )
             await conn.commit()
 
         # Batch get should work
-        ids = [f"conv-{i}" for i in range(20)]
+        ids = [f"unknown-export:conv-{i}" for i in range(20)]
         records = await backend.get_sessions_batch(ids)
         assert len(records) == 20
 
@@ -165,21 +163,18 @@ class TestConnectionManagement:
         async with backend.connection() as conn:
             for i in range(5):
                 await conn.execute(
-                    "INSERT INTO sessions (session_id, source_name, "
-                    "provider_session_id, content_hash, version) "
-                    "VALUES (?, 'test', ?, ?, 1)",
-                    (f"conv-{i}", f"pconv-{i}", f"hash-{i}"),
+                    "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, 'unknown-export', zeroblob(32))",
+                    (f"conv-{i}",),
                 )
                 for j in range(3):
                     await conn.execute(
-                        "INSERT INTO messages (message_id, session_id, role, "
-                        "text, content_hash, version) "
-                        "VALUES (?, ?, 'user', ?, ?, 1)",
-                        (f"msg-{i}-{j}", f"conv-{i}", f"text {i} {j}", f"mhash-{i}-{j}"),
+                        "INSERT INTO messages (session_id, native_id, role, position, content_hash) "
+                        "VALUES (?, ?, 'user', ?, zeroblob(32))",
+                        (f"unknown-export:conv-{i}", f"msg-{i}-{j}", j),
                     )
             await conn.commit()
 
-        ids = [f"conv-{i}" for i in range(5)]
+        ids = [f"unknown-export:conv-{i}" for i in range(5)]
         msgs_by_id = await backend.get_messages_batch(ids)
 
         assert len(msgs_by_id) == 5
@@ -201,15 +196,14 @@ class TestConnectionManagement:
 
         async with backend.connection() as conn:
             await conn.execute(
-                "INSERT INTO sessions (session_id, source_name, "
-                "provider_session_id, content_hash, version) "
-                "VALUES ('exists', 'test', 'pconv', 'hash', 1)",
+                "INSERT INTO sessions (native_id, origin, content_hash) "
+                "VALUES ('exists', 'unknown-export', zeroblob(32))",
             )
             await conn.commit()
 
-        records = await backend.get_sessions_batch(["exists", "ghost-1", "ghost-2"])
+        records = await backend.get_sessions_batch(["unknown-export:exists", "ghost-1", "ghost-2"])
         assert len(records) == 1
-        assert records[0].session_id == "exists"
+        assert records[0].session_id == "unknown-export:exists"
 
 
 # =============================================================================
@@ -243,7 +237,7 @@ class TestConcurrentSaveGuards:
                 content_hash=f"mhash-{idx}",
                 version=1,
             )
-            await repo.save_session(conv, [msg], [])
+            await save_current_archive_records(repo, session=conv, messages=[msg], attachments=[])
 
         # Run 10 concurrent saves
         await asyncio.gather(*[_save_one(i) for i in range(10)])
@@ -278,7 +272,7 @@ class TestConcurrentSaveGuards:
                 content_hash=f"mhash-v{version}",
                 version=version,
             )
-            await repo.save_session(conv, [msg], [])
+            await save_current_archive_records(repo, session=conv, messages=[msg], attachments=[])
 
         # Run 5 concurrent upserts to the same session
         await asyncio.gather(*[_upsert(i) for i in range(5)])
@@ -305,7 +299,7 @@ class TestConcurrentSaveGuards:
                 content_hash=f"hash-{idx}",
                 version=1,
             )
-            await repo.save_session(conv, [], [])
+            await save_current_archive_records(repo, session=conv, messages=[], attachments=[])
 
         async def _read() -> int:
             async with backend.read_connection() as conn:

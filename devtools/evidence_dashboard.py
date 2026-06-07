@@ -225,7 +225,6 @@ _STATIC_GATE_NAMES: tuple[str, ...] = (
     "render-all",
     "verify-topology",
     "verify-layering",
-    "verify-provider-meta-policy",
     "verify-schema-roundtrip",
     "verify-manifests",
     "verify-lane-assertions",

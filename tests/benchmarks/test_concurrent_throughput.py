@@ -6,9 +6,9 @@ during active reads.
 
 These benchmarks run against the ``index.db``: the corpus is
 seeded through ``SessionBuilder`` (native ``ArchiveStore`` writes), reads go
-through the archive `blocks_fts` full-text index, and the write load inserts
+through the archive `messages_fts` full-text index, and the write load inserts
 archive `blocks` rows (which generate WAL traffic and re-index via the
-``blocks_fts`` triggers).
+``messages_fts`` triggers).
 
 Run with:
     pytest tests/benchmarks/test_concurrent_throughput.py \\
@@ -54,7 +54,7 @@ def _populate_corpus(archive_root: Path, n_messages: int = 2000) -> tuple[Path, 
     """Seed an archive `index.db` corpus, returning (index_db_path, message_count).
 
     Sessions and messages are written through ``SessionBuilder`` so the
-    archive `blocks` / ``blocks_fts`` indexes are maintained by the archive
+    archive `blocks` / ``messages_fts`` indexes are maintained by the archive
     write path and triggers.
     """
     archive_root.mkdir(parents=True, exist_ok=True)
@@ -80,11 +80,11 @@ def _populate_corpus(archive_root: Path, n_messages: int = 2000) -> tuple[Path, 
 
 
 def _fts_search(db_path: Path, query: str, limit: int = 20) -> int:
-    """Run an archive `blocks_fts` query, returning the hit count."""
+    """Run an archive `messages_fts` query, returning the hit count."""
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30.0)
     try:
         rows = conn.execute(
-            "SELECT block_id FROM blocks_fts WHERE blocks_fts MATCH ? LIMIT ?",
+            "SELECT block_id FROM messages_fts WHERE messages_fts MATCH ? LIMIT ?",
             (query, limit),
         ).fetchall()
         return len(rows)

@@ -29,10 +29,10 @@ from polylogue.insights.archive_models import (
     SessionLatencyProfilePayload,
     SessionPhaseEvidencePayload,
     SessionPhaseInferencePayload,
+    ThreadPayload,
     WeekSessionSummaryPayload,
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
-    WorkThreadPayload,
 )
 from polylogue.storage.repair import ArchiveDebtStatus
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -42,7 +42,7 @@ if TYPE_CHECKING:
         SessionPhaseRecord,
         SessionProfileRecord,
         SessionWorkEventRecord,
-        WorkThreadRecord,
+        ThreadRecord,
     )
 
 
@@ -122,7 +122,7 @@ class SessionPhaseInsightQuery(SessionTimelineWindowInsightQuery):
     kind: str | None = None
 
 
-class WorkThreadInsightQuery(SearchableTimeWindowInsightQuery):
+class ThreadInsightQuery(SearchableTimeWindowInsightQuery):
     pass
 
 
@@ -333,17 +333,17 @@ class SessionPhaseInsight(ArchiveInsightModel):
         )
 
 
-class WorkThreadInsight(ArchiveInsightModel):
+class ThreadInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
-    insight_kind: str = "work_thread"
+    insight_kind: str = "thread"
     thread_id: str
     root_id: str
     dominant_repo: str | None = None
     provenance: ArchiveInsightProvenance
-    thread: WorkThreadPayload
+    thread: ThreadPayload
 
     @classmethod
-    def from_record(cls, record: WorkThreadRecord) -> WorkThreadInsight:
+    def from_record(cls, record: ThreadRecord) -> ThreadInsight:
         return cls(
             thread_id=record.thread_id,
             root_id=record.root_id,
@@ -595,8 +595,8 @@ __all__ = [
     "WeekSessionSummaryInsight",
     "WorkEventEvidencePayload",
     "WorkEventInferencePayload",
-    "WorkThreadInsight",
-    "WorkThreadInsightQuery",
+    "ThreadInsight",
+    "ThreadInsightQuery",
     "date_from_iso",
     "day_after",
     "profile_bucket_day",

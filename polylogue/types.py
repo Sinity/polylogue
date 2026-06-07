@@ -20,7 +20,7 @@ SessionId = NewType("SessionId", str)
 MessageId = NewType("MessageId", str)
 AttachmentId = NewType("AttachmentId", str)
 ContentHash = NewType("ContentHash", str)
-ProviderEventId = NewType("ProviderEventId", str)
+SessionEventId = NewType("SessionEventId", str)
 
 
 __all__ = [
@@ -33,7 +33,7 @@ __all__ = [
     "MessageId",
     "PlanStage",
     "Provider",
-    "ProviderEventId",
+    "SessionEventId",
     "SemanticBlockType",
     "ValidationMode",
     "ValidationStatus",

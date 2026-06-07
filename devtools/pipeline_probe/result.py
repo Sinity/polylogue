@@ -83,7 +83,7 @@ def _db_row_counts(db_path: Path) -> dict[str, int]:
                 conn.close()
         return stats
     with open_connection(db_path) as conn:
-        for table in ("raw_sessions", "sessions", "messages", "content_blocks"):
+        for table in ("raw_sessions", "sessions", "messages", "blocks"):
             stats[f"{table}_count"] = _count_table(conn, table)
     return stats
 

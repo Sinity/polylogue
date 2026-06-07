@@ -1,10 +1,4 @@
-"""Tests for schema-version preflight, degraded mode, and dedup limiter (#1003).
-
-These pin the structural condition that produced the IOPS storm: a runtime
-expecting ``SCHEMA_VERSION = N`` opening a database at ``N + 1`` should fail
-loudly and cheaply rather than retrying in a tight loop on every inotify
-event.
-"""
+"""Tests for archive preflight, degraded mode, and dedup limiter (#1003)."""
 
 from __future__ import annotations
 
@@ -33,6 +27,8 @@ from polylogue.sources.live.dedup import (
     handle_schema_version_mismatch,
     schema_warning_limiter,
 )
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.schema import _ensure_schema
 from polylogue.storage.sqlite.schema_bootstrap import SCHEMA_VERSION
 
@@ -90,12 +86,7 @@ def _seed_db_at_version(path: Path, version: int) -> None:
 def test_schema_version_health_ok_when_versions_match(
     workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The fast schema-version check reads the active index database
-    # (``resolve_active_index_db_path`` → ``index_db_path``), so seed there
-    # and pin ``index_db_path`` to that file.
     db = workspace_env["archive_root"] / "index.db"
-    db.parent.mkdir(parents=True, exist_ok=True)
-    _seed_db_at_version(db, SCHEMA_VERSION)
 
     monkeypatch.setattr("polylogue.daemon.health.index_db_path", lambda: db)
 
@@ -104,15 +95,14 @@ def test_schema_version_health_ok_when_versions_match(
     assert alert.check_name == "schema_version"
     assert alert.tier == HealthTier.FAST
     assert alert.severity == HealthSeverity.OK
-    assert f"v{SCHEMA_VERSION}" in alert.message
+    assert "archive tier layout matches runtime" in alert.message
 
 
 def test_schema_version_health_critical_when_db_ahead(
     workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db = workspace_env["archive_root"] / "index.db"
-    db.parent.mkdir(parents=True, exist_ok=True)
-    _seed_db_at_version(db, SCHEMA_VERSION + 1)
+    _seed_db_at_version(db, ARCHIVE_TIER_SPECS[ArchiveTier.INDEX].version + 1)
 
     monkeypatch.setattr("polylogue.daemon.health.index_db_path", lambda: db)
 
@@ -120,9 +110,8 @@ def test_schema_version_health_critical_when_db_ahead(
 
     assert alert.tier == HealthTier.FAST
     assert alert.severity == HealthSeverity.CRITICAL
-    assert str(SCHEMA_VERSION) in alert.message
-    assert str(SCHEMA_VERSION + 1) in alert.message
-    assert "rebuild" in alert.message.lower() or "redeploy" in alert.message.lower()
+    assert "tier user_version mismatch" in alert.message
+    assert "index.db" in alert.message
 
 
 def test_schema_version_health_ok_when_no_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

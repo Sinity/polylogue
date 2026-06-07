@@ -1,10 +1,10 @@
-"""Tests for first-class provider event support for compaction.
+"""Tests for first-class session event support for compaction.
 
 Covers:
 - Legacy and modern compaction detection in semantic_capture
-- Claude Code parser emitting provider_events
+- Claude Code parser emitting session_events
 - Codex provider model compaction/turn_context recognition
-- Codex parser emitting provider_events
+- Codex parser emitting session_events
 - Profile builder counting compaction events
 """
 
@@ -152,12 +152,12 @@ class TestClaudeCodeRecordCompaction:
 
 
 # =============================================================================
-# Claude Code parser — provider_events emission
+# Claude Code parser — session_events emission
 # =============================================================================
 
 
-class TestClaudeCodeParserProviderEvents:
-    def test_legacy_compaction_emits_provider_event(self) -> None:
+class TestClaudeCodeParserSessionEvents:
+    def test_legacy_compaction_emits_session_event(self) -> None:
         payload: list[object] = [
             {
                 "type": "user",
@@ -179,13 +179,13 @@ class TestClaudeCodeParserProviderEvents:
             },
         ]
         result = parse_code(payload, "test-session")
-        assert len(result.provider_events) == 1
-        event = result.provider_events[0]
+        assert len(result.session_events) == 1
+        event = result.session_events[0]
         assert event.event_type == "compaction"
         assert event.payload["summary"] == "Summary of session"
         assert event.payload["is_modern"] is False
 
-    def test_modern_compaction_emits_provider_event(self) -> None:
+    def test_modern_compaction_emits_session_event(self) -> None:
         payload: list[object] = [
             {
                 "type": "user",
@@ -203,24 +203,24 @@ class TestClaudeCodeParserProviderEvents:
             },
         ]
         result = parse_code(payload, "test-session")
-        assert len(result.provider_events) == 1
-        event = result.provider_events[0]
+        assert len(result.session_events) == 1
+        event = result.session_events[0]
         assert event.event_type == "compaction"
         assert event.payload["is_modern"] is True
         assert event.payload["trigger"] == "auto"
         assert event.payload["pre_tokens"] == 100000
 
     def test_compaction_not_duplicated_in_provider_meta(self) -> None:
-        """Compactions are provider events, not session metadata."""
+        """Compactions are session events, not session metadata."""
         payload: list[object] = [
             {"type": "summary", "uuid": "s1", "message": {"content": "sum"}},
         ]
         result = parse_code(payload, "test-session")
         assert result.provider_meta is None
-        assert len(result.provider_events) == 1
-        assert result.provider_events[0].payload["summary"] == "sum"
+        assert len(result.session_events) == 1
+        assert result.session_events[0].payload["summary"] == "sum"
 
-    def test_no_compaction_no_provider_events(self) -> None:
+    def test_no_compaction_no_session_events(self) -> None:
         payload: list[object] = [
             {
                 "type": "user",
@@ -230,10 +230,10 @@ class TestClaudeCodeParserProviderEvents:
             },
         ]
         result = parse_code(payload, "test-session")
-        assert result.provider_events == []
+        assert result.session_events == []
 
     def test_compaction_preserved_as_summary_message(self) -> None:
-        """Compaction records are provider events and queryable summary messages."""
+        """Compaction records are session events and queryable summary messages."""
         payload: list[object] = [
             {"type": "user", "uuid": "u1", "message": {"role": "user", "content": "hello"}},
             {"type": "summary", "uuid": "s1", "message": {"content": "summary"}},
@@ -284,12 +284,12 @@ class TestCodexRecordCompaction:
 
 
 # =============================================================================
-# Codex parser — provider_events emission
+# Codex parser — session_events emission
 # =============================================================================
 
 
-class TestCodexParserProviderEvents:
-    def test_compaction_emits_provider_event(self) -> None:
+class TestCodexParserSessionEvents:
+    def test_compaction_emits_session_event(self) -> None:
         payload: list[object] = [
             {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2024-01-01"}},
             {"type": "compacted", "payload": {"message": "Context was compacted", "replacement_history": []}},
@@ -303,12 +303,12 @@ class TestCodexParserProviderEvents:
             },
         ]
         result = parse_codex(payload, "fallback")
-        assert len(result.provider_events) == 1
-        event = result.provider_events[0]
+        assert len(result.session_events) == 1
+        event = result.session_events[0]
         assert event.event_type == "compaction"
         assert event.payload["summary"] == "Context was compacted"
 
-    def test_turn_context_emits_provider_event(self) -> None:
+    def test_turn_context_emits_session_event(self) -> None:
         payload: list[object] = [
             {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2024-01-01"}},
             {"type": "turn_context", "payload": {"context": "previous turn data"}},
@@ -322,8 +322,8 @@ class TestCodexParserProviderEvents:
             },
         ]
         result = parse_codex(payload, "fallback")
-        assert len(result.provider_events) == 1
-        event = result.provider_events[0]
+        assert len(result.session_events) == 1
+        event = result.session_events[0]
         assert event.event_type == "turn_context"
 
     def test_messages_still_extracted_alongside_compaction(self) -> None:
@@ -362,12 +362,12 @@ class TestCodexParserProviderEvents:
         assert result.messages[0].text == "first message"
         assert result.messages[1].text == "second message"
         assert result.messages[2].text == "third message"
-        assert len(result.provider_events) == 2
-        assert result.provider_events[0].event_type == "compaction"
-        assert result.provider_events[1].event_type == "turn_context"
+        assert len(result.session_events) == 2
+        assert result.session_events[0].event_type == "compaction"
+        assert result.session_events[1].event_type == "turn_context"
 
     def test_compaction_not_duplicated_in_provider_meta(self) -> None:
-        """Compactions are provider events, not session metadata."""
+        """Compactions are session events, not session metadata."""
         payload: list[object] = [
             {"type": "compacted", "payload": {"message": "compact text"}},
             {
@@ -381,10 +381,10 @@ class TestCodexParserProviderEvents:
         ]
         result = parse_codex(payload, "fallback")
         assert result.provider_meta is None
-        assert len(result.provider_events) == 1
-        assert result.provider_events[0].payload["summary"] == "compact text"
+        assert len(result.session_events) == 1
+        assert result.session_events[0].payload["summary"] == "compact text"
 
-    def test_no_compaction_no_provider_events(self) -> None:
+    def test_no_compaction_no_session_events(self) -> None:
         payload: list[object] = [
             {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2024-01-01"}},
             {
@@ -397,7 +397,7 @@ class TestCodexParserProviderEvents:
             },
         ]
         result = parse_codex(payload, "fallback")
-        assert result.provider_events == []
+        assert result.session_events == []
 
 
 # =============================================================================
@@ -461,31 +461,31 @@ class TestProfileCompactionCounting:
         assert evidence.compaction_count == 3
         assert evidence.has_compaction is True
 
-    def test_session_profile_counts_provider_event_compactions(self) -> None:
+    def test_session_profile_counts_session_event_compactions(self) -> None:
         from polylogue.archive.message.messages import MessageCollection
-        from polylogue.archive.provider.events import ProviderEvent
         from polylogue.archive.session.domain_models import Session
+        from polylogue.archive.session.events import SessionEvent
         from polylogue.archive.session.runtime import build_session_profile
-        from polylogue.types import Provider, ProviderEventId, SessionId
+        from polylogue.types import Provider, SessionEventId, SessionId
 
         session = Session(
             id=SessionId("claude-code:session-1"),
             origin=Origin.CLAUDE_CODE_SESSION,
             title="Session",
             messages=MessageCollection.empty(),
-            provider_events=(
-                ProviderEvent(
-                    id=ProviderEventId("claude-code:session-1:provider-event:000000"),
+            session_events=(
+                SessionEvent(
+                    id=SessionEventId("claude-code:session-1:session-event:000000"),
                     session_id=SessionId("claude-code:session-1"),
-                    provider=Provider.CLAUDE_CODE,
+                    origin=Provider.CLAUDE_CODE,
                     event_index=0,
                     event_type="compaction",
                     payload={"summary": "Earlier context"},
                 ),
-                ProviderEvent(
-                    id=ProviderEventId("claude-code:session-1:provider-event:000001"),
+                SessionEvent(
+                    id=SessionEventId("claude-code:session-1:session-event:000001"),
                     session_id=SessionId("claude-code:session-1"),
-                    provider=Provider.CLAUDE_CODE,
+                    origin=Provider.CLAUDE_CODE,
                     event_index=1,
                     event_type="turn_context",
                     payload={},

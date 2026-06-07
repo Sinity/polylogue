@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import aiosqlite
-
-from polylogue.core.common import SQL_MESSAGE_UPSERT as _MESSAGE_UPSERT_SQL
 from polylogue.storage.runtime import MessageRecord
 
 
@@ -38,45 +35,4 @@ def topo_sort_messages(records: list[MessageRecord]) -> list[MessageRecord]:
     return ordered
 
 
-async def save_messages(
-    conn: aiosqlite.Connection,
-    records: list[MessageRecord],
-    transaction_depth: int,
-) -> None:
-    if not records:
-        return
-    records = topo_sort_messages(records)
-    query = _MESSAGE_UPSERT_SQL
-    data = [
-        (
-            r.message_id,
-            r.session_id,
-            r.provider_message_id,
-            r.role,
-            r.text,
-            r.sort_key,
-            r.content_hash,
-            r.version,
-            r.parent_message_id,
-            r.branch_index,
-            r.source_name,
-            r.word_count,
-            r.has_tool_use,
-            r.has_thinking,
-            r.has_paste,
-            r.input_tokens,
-            r.output_tokens,
-            r.cache_read_tokens,
-            r.cache_write_tokens,
-            r.model_name,
-            r.message_type.value,
-            r.paste_boundary_state,
-        )
-        for r in records
-    ]
-    await conn.executemany(query, data)
-    if transaction_depth == 0:
-        await conn.commit()
-
-
-__all__ = ["save_messages", "topo_sort_messages"]
+__all__ = ["topo_sort_messages"]

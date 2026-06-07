@@ -198,7 +198,7 @@ class TestIndexService:
                     block_type="tool_use",
                     tool_name="exec_command",
                     tool_id="tool-1",
-                    tool_input='{"cmd":"rg -n action_events"}',
+                    tool_input='{"cmd":"rg -n actions"}',
                 )
             ]
         )
@@ -213,7 +213,7 @@ class TestIndexService:
 
         assert result is True
         descriptions = [desc for _, desc in progress_events if desc is not None]
-        assert descriptions[0] == "Indexing: action events 0/3"
+        assert descriptions[0] == "Indexing: actions 0/3"
         assert "Indexing: full-text search 1/3" in descriptions
         assert descriptions[-1] == "Indexing: full-text search 3/3"
 

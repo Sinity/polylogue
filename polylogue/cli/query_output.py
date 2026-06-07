@@ -22,7 +22,7 @@ from polylogue.cli.query_output_contracts import QueryOutputDocument, Structured
 from polylogue.cli.query_semantic import (
     SemanticStatsSlice,
     action_matches_slice,
-    filtered_action_events,
+    filtered_actions,
     normalized_tool_name,
     output_stats_by_semantic_ids,
     output_stats_by_semantic_query,
@@ -968,7 +968,7 @@ __all__ = [
     "copy_to_clipboard",
     "deliver_query_output",
     "emit_structured_stats",
-    "filtered_action_events",
+    "filtered_actions",
     "format_list",
     "format_search_hit_list",
     "format_summary_list",

@@ -17,7 +17,6 @@ from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 if TYPE_CHECKING:
     from pathlib import Path
 
-from polylogue.storage.repository.action.reads import RepositoryActionReadMixin
 from polylogue.storage.repository.archive.reads import RepositoryArchiveReadMixin
 from polylogue.storage.repository.archive.repository_writes import RepositoryWriteMixin
 from polylogue.storage.repository.insight.profile_reads import (
@@ -41,7 +40,6 @@ from polylogue.storage.repository.vectors.repository_vectors import RepositoryVe
 
 class SessionRepository(
     RepositoryArchiveReadMixin,
-    RepositoryActionReadMixin,
     RepositoryInsightProfileReadMixin,
     RepositoryInsightTimelineReadMixin,
     RepositoryInsightThreadReadMixin,
@@ -67,7 +65,7 @@ class SessionRepository(
         async with SessionRepository() as repo:
             conv = await repo.get("claude-ai:abc123")
             convs = await repo.list(limit=10)
-            await repo.save_session(conv_rec, msgs, atts)
+            await repo.save_parsed_session(parsed_session, content_hash)
     """
 
     def __init__(

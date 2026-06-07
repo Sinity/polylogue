@@ -19,6 +19,7 @@ from polylogue.insights.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION
 from polylogue.insights.registry import get_insight_type, insight_items_payload
 from polylogue.storage.insights.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.write import upsert_session_profile_costs
 from tests.infra.archive_scenarios import native_session_id_for, open_index_db
 from tests.infra.json_contracts import (
     extract_json_result,
@@ -198,6 +199,31 @@ def _seed_cost_products(cli_workspace: CliWorkspace) -> None:
         .save()
     )
     _rebuild_insights(db_path)
+    with open_index_db(db_path) as conn:
+        upsert_session_profile_costs(
+            conn,
+            NID_EXACT_COST,
+            cost_usd=1.25,
+            cost_is_estimated=False,
+            cost_provenance="exact",
+        )
+        upsert_session_profile_costs(
+            conn,
+            NID_PRICED_COST,
+            cost_usd=0.0075,
+            cost_is_estimated=True,
+            cost_provenance="priced",
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO session_model_usage (
+                session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+                cost_provenance
+            ) VALUES (?, 'openai/gpt-4o-2024-08-06', 1000, 500, 0, 0, 'origin_reported')
+            """,
+            (NID_PRICED_COST,),
+        )
+        conn.commit()
 
 
 def test_insights_profiles_json(cli_workspace: CliWorkspace) -> None:
@@ -354,7 +380,7 @@ def test_insights_status_json(cli_workspace: CliWorkspace) -> None:
         "session_profiles",
         "session_work_events",
         "session_phases",
-        "work_threads",
+        "threads",
         "session_tag_rollups",
         "archive_coverage",
     }
@@ -727,8 +753,7 @@ def test_session_insight_rebuild_materializes_profile_and_repo_for_git_session(
                 SELECT repos.repo_name
                 FROM session_repos
                 JOIN repos
-                  ON repos.repository_url = session_repos.repository_url
-                 AND repos.root_path = session_repos.root_path
+                  ON repos.repo_id = session_repos.repo_id
                 WHERE session_repos.session_id = ?
                 """,
                 (NID_HEAVY,),
@@ -748,8 +773,8 @@ def test_insights_threads_json(cli_workspace: CliWorkspace) -> None:
 
     threads_payload = extract_json_result(threads.output)
     assert json_int(threads_payload["total"]) == 1
-    thread = json_object_list(threads_payload["work_threads"])[0]
-    assert thread["insight_kind"] == "work_thread"
+    thread = json_object_list(threads_payload["threads"])[0]
+    assert thread["insight_kind"] == "thread"
     thread_payload = json_object(thread["thread"])
     # Archive thread payloads attribute support to the archive thread tables
     # rather than the legacy ``explicit_lineage`` lineage-scoring vocabulary.
@@ -897,7 +922,7 @@ def test_session_insight_status_marks_missing_profile_rows_not_ready(cli_workspa
 # Retired (#1743): the materializer_version staleness guard and the
 # session_work_events_fts "incomplete search index" rejection were retired single-file
 # mechanisms. has no materializer_version column, no
-# work_threads / session_tag_rollups tables, and no per-surface FTS staleness
+# threads / session_tag_rollups tables, and no per-surface FTS staleness
 # rejection — the readiness model is rebuild-from-source, so these surfaces are
 # always coherent or absent. Tests removed rather than asserting a removed
 # contract.

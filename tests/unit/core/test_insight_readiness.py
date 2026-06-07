@@ -85,7 +85,7 @@ async def test_insight_readiness_report_marks_rebuilt_insights_ready(cli_workspa
         "session_profiles",
         "session_work_events",
         "session_phases",
-        "work_threads",
+        "threads",
         "session_tag_rollups",
         "archive_coverage",
     }

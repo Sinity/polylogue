@@ -1,9 +1,9 @@
-"""Contract suite pinning the schema-version policy from docs/internals.md.
+"""Contract suite pinning the current index-tier schema policy.
 
 These tests pin the **fresh-first** schema policy:
 
-- ``SCHEMA_VERSION`` constant in ``storage/sqlite/schema_ddl.py`` is the
-  authority.
+- ``INDEX_SCHEMA_VERSION`` is the index-tier authority exposed through
+  ``storage.sqlite.schema`` for sync/async bootstrap.
 - On open, the on-disk ``PRAGMA user_version`` is compared against the
   constant.
 - Version match → normal operation.
@@ -14,12 +14,8 @@ These tests pin the **fresh-first** schema policy:
 The corresponding doc section is
 ``docs/internals.md`` § "Schema Versioning Model".
 
-We also pin the FTS-trigger canonical set that fresh init must
-produce — the six triggers ``messages_fts_a{i,d,u}`` and
-``action_events_fts_a{i,d,u}`` named in
-``docs/internals.md`` § "Daemon Convergence Evidence". Missing
-triggers mean FTS index drift, which is a documented daemon failure
-mode.
+We also pin the FTS-trigger canonical set that fresh index init must produce:
+``messages_fts_a{i,d,u}``. There is no separate actions FTS table.
 """
 
 from __future__ import annotations
@@ -53,9 +49,9 @@ _CANONICAL_FTS_TRIGGERS = frozenset(
         "messages_fts_ai",
         "messages_fts_ad",
         "messages_fts_au",
-        "action_events_fts_ai",
-        "action_events_fts_ad",
-        "action_events_fts_au",
+        "session_work_events_fts_ai",
+        "session_work_events_fts_ad",
+        "session_work_events_fts_au",
     }
 )
 
@@ -231,12 +227,7 @@ def test_async_path_rejects_unknown_version(tmp_path: Path) -> None:
 
 
 def test_fresh_init_creates_canonical_fts_trigger_set(tmp_path: Path) -> None:
-    """docs/internals.md § Daemon Convergence Evidence: the six FTS
-    sync triggers (``messages_fts_a{i,d,u}``,
-    ``action_events_fts_a{i,d,u}``) are the canonical set that fresh
-    initialisation must produce. A missing trigger is documented as an
-    "FTS index drift risk".
-    """
+    """Fresh index initialization creates the current message FTS triggers."""
     db_path = tmp_path / "fts.db"
     conn = sqlite3.connect(db_path)
     _ensure_schema(conn)
@@ -246,6 +237,5 @@ def test_fresh_init_creates_canonical_fts_trigger_set(tmp_path: Path) -> None:
 
     triggers = {row[0] for row in rows}
     missing = _CANONICAL_FTS_TRIGGERS - triggers
-    assert not missing, (
-        f"Fresh init is missing canonical FTS triggers: {sorted(missing)} — docs/internals.md pins the 6-trigger set"
-    )
+    assert not missing, f"Fresh init is missing canonical FTS triggers: {sorted(missing)}"
+    assert triggers == _CANONICAL_FTS_TRIGGERS

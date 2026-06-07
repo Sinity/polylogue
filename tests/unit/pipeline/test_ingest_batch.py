@@ -5,9 +5,10 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import Future
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
-from typing import NoReturn
+from typing import NoReturn, TypeAlias
 from unittest.mock import AsyncMock
 
 import aiosqlite
@@ -29,21 +30,19 @@ from polylogue.pipeline.services.ingest_batch import (
     _successful_raw_state_update,
     _topo_sort_session_entries,
     _unattributed_batch_elapsed_s,
-    _write_session,
     refresh_session_insights_bulk,
 )
 from polylogue.pipeline.services.ingest_batch._observations import _build_parse_batch_observation
 from polylogue.pipeline.services.ingest_worker import (
-    ActionEventTuple,
-    AttachmentRefTuple,
-    AttachmentTuple,
-    ContentBlockTuple,
     IngestRecordResult,
-    MessageTuple,
-    SessionData,
-    SessionTuple,
-    StatsTuple,
-    _make_ref_id,
+    SessionWritePayload,
+)
+from polylogue.sources.parsers.base import (
+    ParsedAttachment,
+    ParsedContentBlock,
+    ParsedMessage,
+    ParsedSession,
+    ParsedSessionEvent,
 )
 from polylogue.storage.insights.session.refresh import SessionInsightRefreshChunkObservation
 from polylogue.storage.raw.models import RawSessionStateUpdate
@@ -51,7 +50,11 @@ from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.search.cache import get_cache_stats
 from polylogue.storage.search.runtime import search_messages
 from polylogue.storage.sqlite.connection import open_connection
-from polylogue.types import AttachmentId, ContentBlockType, ContentHash, MessageId, SessionId
+from polylogue.types import ContentBlockType, Provider, SessionId
+
+BlockSpec: TypeAlias = tuple[str, ParsedContentBlock]
+AttachmentRefSpec: TypeAlias = tuple[str, str]
+_write_session = ingest_batch_core._write_session
 
 
 def _float_value(value: object) -> float:
@@ -129,46 +132,48 @@ def _session_data(
     content_hash: str,
     raw_id: str | None = None,
     parent_session_id: str | None = None,
-    message_tuples: list[MessageTuple] | None = None,
-    block_tuples: list[ContentBlockTuple] | None = None,
-    action_event_tuples: list[ActionEventTuple] | None = None,
-    stats_tuple: StatsTuple | None = None,
-    attachment_tuples: list[AttachmentTuple] | None = None,
-    attachment_ref_tuples: list[AttachmentRefTuple] | None = None,
+    message_tuples: list[ParsedMessage] | None = None,
+    block_tuples: list[BlockSpec] | None = None,
+    action_tuples: list[ParsedSessionEvent] | None = None,
+    stats_tuple: object | None = None,
+    attachment_tuples: list[ParsedAttachment] | None = None,
+    attachment_ref_tuples: list[AttachmentRefSpec] | None = None,
     append_only: bool = False,
-) -> SessionData:
-    typed_session_id = SessionId(session_id)
-    session_tuple: SessionTuple = (
-        typed_session_id,
-        "codex",
-        session_id.split(":", 1)[-1],
-        "Session",
-        "2026-04-02T00:00:00Z",
-        "2026-04-02T00:00:00Z",
-        0.0,
-        ContentHash(content_hash),
-        None,
-        "{}",
-        1,
-        SessionId(parent_session_id) if parent_session_id is not None else None,
-        None,
-        raw_id,
-        "",
-        None,  # working_directories_json
-        None,  # git_branch
-        None,  # git_repository_url
+) -> SessionWritePayload:
+    del stats_tuple
+    messages = list(message_tuples or [])
+    blocks_by_message: dict[str, list[ParsedContentBlock]] = {}
+    for message_id, block in block_tuples or []:
+        blocks_by_message.setdefault(message_id, []).append(block)
+    if blocks_by_message:
+        messages = [
+            message.model_copy(update={"content_blocks": blocks_by_message.get(message.provider_message_id, [])})
+            for message in messages
+        ]
+    attachment_message_ids = dict(attachment_ref_tuples or [])
+    attachments = [
+        attachment.model_copy(
+            update={"message_provider_id": attachment_message_ids.get(attachment.provider_attachment_id)}
+        )
+        for attachment in attachment_tuples or []
+    ]
+    parsed = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id=session_id.split(":", 1)[-1],
+        title="Session",
+        created_at="2026-04-02T00:00:00Z",
+        updated_at="2026-04-02T00:00:00Z",
+        parent_session_provider_id=parent_session_id.split(":", 1)[-1] if parent_session_id else None,
+        messages=messages,
+        attachments=attachments,
+        session_events=list(action_tuples or []),
     )
-    return SessionData(
+    return SessionWritePayload(
         session_id=session_id,
-        content_hash=content_hash,
-        source_name="codex",
-        session_tuple=session_tuple,
-        message_tuples=list(message_tuples or []),
-        block_tuples=list(block_tuples or []),
-        action_event_tuples=list(action_event_tuples or []),
-        stats_tuple=stats_tuple or (),
-        attachment_tuples=list(attachment_tuples or []),
-        attachment_ref_tuples=list(attachment_ref_tuples or []),
+        content_hash=sha256(content_hash.encode()).hexdigest(),
+        parsed_session=parsed,
+        message_count=len(messages),
+        attachment_count=len(attachments),
         raw_id=raw_id,
         append_only=append_only,
     )
@@ -182,30 +187,13 @@ def _message_tuple(
     text: str,
     content_hash: str,
     sort_key: float | None,
-) -> MessageTuple:
-    return (
-        MessageId(message_id),
-        SessionId(session_id),
-        message_id,
-        Role.normalize(role),
-        text,
-        sort_key,
-        ContentHash(content_hash),
-        1,
-        None,
-        0,
-        "codex",
-        len(text.split()),
-        0,
-        0,
-        0,
-        0,  # input_tokens
-        0,  # output_tokens
-        0,  # cache_read_tokens
-        0,  # cache_write_tokens
-        None,  # model_name
-        "message",
-        None,  # paste_boundary_state
+) -> ParsedMessage:
+    del session_id, content_hash
+    return ParsedMessage(
+        provider_message_id=message_id,
+        role=Role.normalize(role),
+        text=text,
+        occurred_at_ms=int(sort_key * 1000) if sort_key is not None else None,
     )
 
 
@@ -216,66 +204,35 @@ def _block_tuple(
     session_id: str,
     block_index: int,
     text: str,
-) -> ContentBlockTuple:
+) -> BlockSpec:
+    del block_id, session_id, block_index
     return (
-        block_id,
-        MessageId(message_id),
-        SessionId(session_id),
-        block_index,
-        ContentBlockType.TEXT,
-        text,
-        None,
-        None,
-        None,
-        None,
-        None,
+        message_id,
+        ParsedContentBlock(type=ContentBlockType.TEXT, text=text),
     )
 
 
-def _action_event_tuple(
+def _action_tuple(
     *,
     event_id: str,
     session_id: str,
     message_id: str,
     search_text: str,
-) -> ActionEventTuple:
-    return (
-        event_id,
-        session_id,
-        message_id,
-        1,
-        None,
-        "2026-04-02T00:00:00Z",
-        0.0,
-        0,
-        "codex",
-        "tool_call",
-        "Bash",
-        "bash",
-        "tool-sync",
-        None,
-        None,
-        None,
-        "pytest -q",
-        None,
-        None,
-        None,
-        search_text,
+) -> ParsedSessionEvent:
+    del event_id, session_id, search_text
+    return ParsedSessionEvent(
+        event_type="compaction",
+        source_message_provider_id=message_id,
+        timestamp="2026-04-02T00:00:00Z",
+        payload={"summary": "compaction"},
     )
 
 
-def _attachment_tuple(attachment_id: str, *, mime_type: str = "image/png") -> AttachmentTuple:
-    return (
-        AttachmentId(attachment_id),
-        mime_type,
-        1024,
-        None,
-        0,
-        None,
-        None,
-        None,
-        None,
-        None,  # #1252: upload_origin
+def _attachment_tuple(attachment_id: str, *, mime_type: str = "image/png") -> ParsedAttachment:
+    return ParsedAttachment(
+        provider_attachment_id=attachment_id,
+        mime_type=mime_type,
+        size_bytes=1024,
     )
 
 
@@ -283,29 +240,17 @@ def _attachment_ref_tuple(
     attachment_id: str,
     session_id: str,
     message_id: str,
-) -> AttachmentRefTuple:
-    typed_attachment_id = AttachmentId(attachment_id)
-    typed_session_id = SessionId(session_id)
-    typed_message_id = MessageId(message_id)
-    return (
-        _make_ref_id(typed_attachment_id, typed_session_id, typed_message_id),
-        typed_attachment_id,
-        typed_session_id,
-        typed_message_id,
-        None,
-        None,
-        None,
-        None,
-        None,  # #1252: upload_origin
-    )
+) -> AttachmentRefSpec:
+    del session_id
+    return (attachment_id, message_id)
 
 
 def test_topo_sort_session_entries_orders_parent_before_child() -> None:
-    parent = _session_data("codex:parent", content_hash="hash-parent")
+    parent = _session_data("codex-session:parent", content_hash="hash-parent")
     child = _session_data(
-        "codex:child",
+        "codex-session:child",
         content_hash="hash-child",
-        parent_session_id="codex:parent",
+        parent_session_id="codex-session:parent",
     )
 
     ordered = _topo_sort_session_entries(
@@ -316,25 +261,25 @@ def test_topo_sort_session_entries_orders_parent_before_child() -> None:
     )
 
     assert [entry[1].session_id for entry in ordered] == [
-        "codex:parent",
-        "codex:child",
+        "codex-session:parent",
+        "codex-session:child",
     ]
 
 
 def test_write_session_clears_missing_parent_fk(tmp_path: Path) -> None:
-    with open_connection(tmp_path / "ingest.db") as conn:
+    with open_connection(tmp_path / "index.db") as conn:
         c_msg = _message_tuple(
             "msg-c",
-            "codex:child",
+            "codex-session:child",
             role="user",
             text="hello",
             content_hash="hash-c",
             sort_key=1.0,
         )
         child = _session_data(
-            "codex:child",
+            "codex-session:child",
             content_hash="hash-child",
-            parent_session_id="codex:missing-parent",
+            parent_session_id="codex-session:missing-parent",
             message_tuples=[c_msg],
         )
 
@@ -343,17 +288,17 @@ def test_write_session_clears_missing_parent_fk(tmp_path: Path) -> None:
 
         row = conn.execute(
             "SELECT parent_session_id FROM sessions WHERE session_id = ?",
-            ("codex:child",),
+            ("codex-session:child",),
         ).fetchone()
         assert row is not None
         assert row["parent_session_id"] is None
 
 
 def test_write_session_preserves_existing_parent_fk(tmp_path: Path) -> None:
-    with open_connection(tmp_path / "ingest.db") as conn:
+    with open_connection(tmp_path / "index.db") as conn:
         p_msg = _message_tuple(
             "msg-p",
-            "codex:parent",
+            "codex-session:parent",
             role="user",
             text="parent msg",
             content_hash="hash-p",
@@ -361,21 +306,21 @@ def test_write_session_preserves_existing_parent_fk(tmp_path: Path) -> None:
         )
         c_msg = _message_tuple(
             "msg-c",
-            "codex:child",
+            "codex-session:child",
             role="user",
             text="child msg",
             content_hash="hash-c",
             sort_key=1.0,
         )
         parent = _session_data(
-            "codex:parent",
+            "codex-session:parent",
             content_hash="hash-parent",
             message_tuples=[p_msg],
         )
         child = _session_data(
-            "codex:child",
+            "codex-session:child",
             content_hash="hash-child",
-            parent_session_id="codex:parent",
+            parent_session_id="codex-session:parent",
             message_tuples=[c_msg],
         )
 
@@ -385,21 +330,21 @@ def test_write_session_preserves_existing_parent_fk(tmp_path: Path) -> None:
 
         row = conn.execute(
             "SELECT parent_session_id FROM sessions WHERE session_id = ?",
-            ("codex:child",),
+            ("codex-session:child",),
         ).fetchone()
         assert row is not None
-        assert row["parent_session_id"] == "codex:parent"
+        assert row["parent_session_id"] == "codex-session:parent"
 
 
 def test_write_session_replaces_runtime_rows_on_content_change(tmp_path: Path) -> None:
-    with open_connection(tmp_path / "ingest.db") as conn:
+    with open_connection(tmp_path / "index.db") as conn:
         archive = _session_data(
-            "codex:replace",
+            "codex-session:replace",
             content_hash="hash-v1",
             message_tuples=[
                 _message_tuple(
                     "msg-1",
-                    "codex:replace",
+                    "codex-session:replace",
                     role="user",
                     text="first",
                     content_hash="msg-v1-1",
@@ -407,7 +352,7 @@ def test_write_session_replaces_runtime_rows_on_content_change(tmp_path: Path) -
                 ),
                 _message_tuple(
                     "msg-2",
-                    "codex:replace",
+                    "codex-session:replace",
                     role="assistant",
                     text="second",
                     content_hash="msg-v1-2",
@@ -418,26 +363,26 @@ def test_write_session_replaces_runtime_rows_on_content_change(tmp_path: Path) -
                 _block_tuple(
                     block_id="blk-msg-1-0",
                     message_id="msg-1",
-                    session_id="codex:replace",
+                    session_id="codex-session:replace",
                     block_index=0,
                     text="alpha",
                 ),
                 _block_tuple(
                     block_id="blk-msg-1-1",
                     message_id="msg-1",
-                    session_id="codex:replace",
+                    session_id="codex-session:replace",
                     block_index=1,
                     text="beta",
                 ),
             ],
-            stats_tuple=(SessionId("codex:replace"), "codex", 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+            stats_tuple=(SessionId("codex-session:replace"), "codex", 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0),
             attachment_tuples=[
                 _attachment_tuple("att-1"),
                 _attachment_tuple("att-2", mime_type="image/jpeg"),
             ],
             attachment_ref_tuples=[
-                _attachment_ref_tuple("att-1", "codex:replace", "msg-1"),
-                _attachment_ref_tuple("att-2", "codex:replace", "msg-2"),
+                _attachment_ref_tuple("att-1", "codex-session:replace", "msg-1"),
+                _attachment_ref_tuple("att-2", "codex-session:replace", "msg-2"),
             ],
         )
         changed, counts = _write_session(conn, archive)
@@ -445,12 +390,12 @@ def test_write_session_replaces_runtime_rows_on_content_change(tmp_path: Path) -
         assert counts["messages"] == 2
 
         v2 = _session_data(
-            "codex:replace",
+            "codex-session:replace",
             content_hash="hash-v2",
             message_tuples=[
                 _message_tuple(
                     "msg-1",
-                    "codex:replace",
+                    "codex-session:replace",
                     role="user",
                     text="first updated",
                     content_hash="msg-v2-1",
@@ -461,14 +406,14 @@ def test_write_session_replaces_runtime_rows_on_content_change(tmp_path: Path) -
                 _block_tuple(
                     block_id="blk-msg-1-0-v2",
                     message_id="msg-1",
-                    session_id="codex:replace",
+                    session_id="codex-session:replace",
                     block_index=0,
                     text="alpha updated",
                 )
             ],
-            stats_tuple=(SessionId("codex:replace"), "codex", 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+            stats_tuple=(SessionId("codex-session:replace"), "codex", 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0),
             attachment_tuples=[_attachment_tuple("att-1")],
-            attachment_ref_tuples=[_attachment_ref_tuple("att-1", "codex:replace", "msg-1")],
+            attachment_ref_tuples=[_attachment_ref_tuple("att-1", "codex-session:replace", "msg-1")],
         )
         changed, counts = _write_session(conn, v2)
         assert changed is True
@@ -478,28 +423,33 @@ def test_write_session_replaces_runtime_rows_on_content_change(tmp_path: Path) -
         assert (
             conn.execute(
                 "SELECT COUNT(*) FROM messages WHERE session_id = ?",
-                ("codex:replace",),
+                ("codex-session:replace",),
             ).fetchone()[0]
             == 1
         )
         assert (
             conn.execute(
-                "SELECT COUNT(*) FROM content_blocks WHERE session_id = ?",
-                ("codex:replace",),
+                "SELECT COUNT(*) FROM blocks WHERE session_id = ?",
+                ("codex-session:replace",),
             ).fetchone()[0]
             == 1
         )
         assert (
             conn.execute(
                 "SELECT COUNT(*) FROM attachment_refs WHERE session_id = ?",
-                ("codex:replace",),
+                ("codex-session:replace",),
             ).fetchone()[0]
             == 1
         )
         assert (
             conn.execute(
-                "SELECT message_id FROM attachment_refs WHERE session_id = ? AND attachment_id = ?",
-                ("codex:replace", "att-1"),
+                """
+                SELECT m.native_id
+                FROM attachment_refs r
+                JOIN messages m ON m.message_id = r.message_id
+                WHERE r.session_id = ? AND r.attachment_id = ?
+                """,
+                ("codex-session:replace", "codex-session:replace:attachment:att-1"),
             ).fetchone()[0]
             == "msg-1"
         )
@@ -511,37 +461,37 @@ def test_write_session_replaces_runtime_rows_on_content_change(tmp_path: Path) -
             == 0
         )
         stats_row = conn.execute(
-            "SELECT message_count FROM session_stats WHERE session_id = ?",
-            ("codex:replace",),
+            "SELECT message_count FROM sessions WHERE session_id = ?",
+            ("codex-session:replace",),
         ).fetchone()
         assert stats_row is not None
         assert stats_row[0] == 1
 
 
 def test_write_session_append_mode_preserves_existing_messages(tmp_path: Path) -> None:
-    with open_connection(tmp_path / "ingest.db") as conn:
+    with open_connection(tmp_path / "index.db") as conn:
         initial = _session_data(
-            "codex:append",
+            "codex-session:append",
             content_hash="hash-v1",
             message_tuples=[
                 _message_tuple(
                     "msg-1",
-                    "codex:append",
+                    "codex-session:append",
                     role="user",
                     text="first",
                     content_hash="msg-v1-1",
                     sort_key=1.0,
                 )
             ],
-            stats_tuple=(SessionId("codex:append"), "codex", 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+            stats_tuple=(SessionId("codex-session:append"), "codex", 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0),
         )
         tail = _session_data(
-            "codex:append",
+            "codex-session:append",
             content_hash="hash-tail",
             message_tuples=[
                 _message_tuple(
                     "msg-2",
-                    "codex:append",
+                    "codex-session:append",
                     role="assistant",
                     text="second",
                     content_hash="msg-v2-2",
@@ -556,32 +506,32 @@ def test_write_session_append_mode_preserves_existing_messages(tmp_path: Path) -
         conn.commit()
 
         rows = conn.execute(
-            "SELECT message_id, text FROM messages WHERE session_id = ? ORDER BY sort_key",
-            ("codex:append",),
+            "SELECT native_id FROM messages WHERE session_id = ? ORDER BY position",
+            ("codex-session:append",),
         ).fetchall()
         stats = conn.execute(
-            "SELECT message_count, word_count FROM session_stats WHERE session_id = ?",
-            ("codex:append",),
+            "SELECT message_count, word_count FROM sessions WHERE session_id = ?",
+            ("codex-session:append",),
         ).fetchone()
 
         assert changed_initial is True
         assert changed_tail is True
         assert tail_counts["messages"] == 1
-        assert [(row["message_id"], row["text"]) for row in rows] == [("msg-1", "first"), ("msg-2", "second")]
+        assert [row["native_id"] for row in rows] == ["msg-1", "msg-2"]
         assert stats is not None
         assert (stats["message_count"], stats["word_count"]) == (2, 2)
 
 
-def test_write_session_force_write_updates_sort_key_only(tmp_path: Path) -> None:
-    """force_write with identical content updates sort_key without DELETE+INSERT cascade."""
-    with open_connection(tmp_path / "ingest.db") as conn:
+def test_write_session_force_write_updates_message_time(tmp_path: Path) -> None:
+    """force_write with identical content updates current message time columns."""
+    with open_connection(tmp_path / "index.db") as conn:
         archive = _session_data(
-            "codex:force",
+            "codex-session:force",
             content_hash="same-hash",
             message_tuples=[
                 _message_tuple(
                     "msg-1",
-                    "codex:force",
+                    "codex-session:force",
                     role="user",
                     text="hello",
                     content_hash="msg-hash",
@@ -593,12 +543,12 @@ def test_write_session_force_write_updates_sort_key_only(tmp_path: Path) -> None
         assert changed is True
 
         v2 = _session_data(
-            "codex:force",
+            "codex-session:force",
             content_hash="same-hash",
             message_tuples=[
                 _message_tuple(
                     "msg-1",
-                    "codex:force",
+                    "codex-session:force",
                     role="user",
                     text="hello",
                     content_hash="msg-hash",
@@ -616,38 +566,26 @@ def test_write_session_force_write_updates_sort_key_only(tmp_path: Path) -> None
         conn.commit()
 
         rows = conn.execute(
-            "SELECT message_id, role, text, sort_key FROM messages WHERE session_id = ?",
-            ("codex:force",),
+            "SELECT native_id, role, occurred_at_ms FROM messages WHERE session_id = ?",
+            ("codex-session:force",),
         ).fetchall()
         assert len(rows) == 1
-        assert rows[0]["message_id"] == "msg-1"
+        assert rows[0]["native_id"] == "msg-1"
         assert rows[0]["role"] == "user"
-        assert rows[0]["text"] == "hello"
-        assert rows[0]["sort_key"] == 1777636800.0
+        assert rows[0]["occurred_at_ms"] == 1777636800000
 
 
 def test_write_session_skips_shorter_duplicate_raw_source(tmp_path: Path) -> None:
     """Duplicate source files for the same session must not replace fuller rows."""
-    with open_connection(tmp_path / "ingest.db") as conn:
-        conn.executemany(
-            """
-            INSERT INTO raw_sessions (
-                raw_id, source_name, source_path, blob_size, acquired_at
-            ) VALUES (?, ?, ?, ?, ?)
-            """,
-            [
-                ("raw-full", "codex", "/tmp/full.jsonl", 1, "2026-04-02T00:00:00Z"),
-                ("raw-stale", "codex", "/tmp/stale.jsonl", 1, "2026-04-02T00:00:00Z"),
-            ],
-        )
+    with open_connection(tmp_path / "index.db") as conn:
         fuller = _session_data(
-            "codex:duplicate",
+            "codex-session:duplicate",
             content_hash="hash-full",
             raw_id="raw-full",
             message_tuples=[
                 _message_tuple(
                     "msg-1",
-                    "codex:duplicate",
+                    "codex-session:duplicate",
                     role="user",
                     text="first",
                     content_hash="msg-1",
@@ -655,7 +593,7 @@ def test_write_session_skips_shorter_duplicate_raw_source(tmp_path: Path) -> Non
                 ),
                 _message_tuple(
                     "msg-2",
-                    "codex:duplicate",
+                    "codex-session:duplicate",
                     role="assistant",
                     text="second",
                     content_hash="msg-2",
@@ -664,13 +602,13 @@ def test_write_session_skips_shorter_duplicate_raw_source(tmp_path: Path) -> Non
             ],
         )
         stale = _session_data(
-            "codex:duplicate",
+            "codex-session:duplicate",
             content_hash="hash-stale",
             raw_id="raw-stale",
             message_tuples=[
                 _message_tuple(
                     "msg-1",
-                    "codex:duplicate",
+                    "codex-session:duplicate",
                     role="user",
                     text="first stale",
                     content_hash="msg-1-stale",
@@ -684,12 +622,18 @@ def test_write_session_skips_shorter_duplicate_raw_source(tmp_path: Path) -> Non
         conn.commit()
 
         messages = conn.execute(
-            "SELECT message_id, text FROM messages WHERE session_id = ? ORDER BY sort_key",
-            ("codex:duplicate",),
+            """
+            SELECT b.text
+            FROM messages m
+            JOIN blocks b ON b.message_id = m.message_id
+            WHERE m.session_id = ? AND b.block_type = 'text'
+            ORDER BY m.position, b.position
+            """,
+            ("codex-session:duplicate",),
         ).fetchall()
         raw_id = conn.execute(
             "SELECT raw_id FROM sessions WHERE session_id = ?",
-            ("codex:duplicate",),
+            ("codex-session:duplicate",),
         ).fetchone()["raw_id"]
 
         assert changed_full is True
@@ -701,9 +645,9 @@ def test_write_session_skips_shorter_duplicate_raw_source(tmp_path: Path) -> Non
 
 def test_write_session_skips_new_with_zero_messages(tmp_path: Path) -> None:
     """A new session with zero messages is skipped, not left as a manifest-only row."""
-    with open_connection(tmp_path / "ingest.db") as conn:
+    with open_connection(tmp_path / "index.db") as conn:
         empty = _session_data(
-            "codex:empty-manifest",
+            "codex-session:empty-manifest",
             content_hash="hash-empty",
             message_tuples=[],
         )
@@ -717,7 +661,7 @@ def test_write_session_skips_new_with_zero_messages(tmp_path: Path) -> None:
         # Verify no row was created
         row = conn.execute(
             "SELECT session_id FROM sessions WHERE session_id = ?",
-            ("codex:empty-manifest",),
+            ("codex-session:empty-manifest",),
         ).fetchone()
         assert row is None
 
@@ -727,17 +671,17 @@ def test_write_session_allows_existing_upsert_even_without_messages(tmp_path: Pa
     The guard only blocks *new* sessions from being created without messages.
     Replacing existing content with empty content is a legitimate content update.
     """
-    with open_connection(tmp_path / "ingest.db") as conn:
+    with open_connection(tmp_path / "index.db") as conn:
         msg = _message_tuple(
             "msg-1",
-            "codex:keep",
+            "codex-session:keep",
             role="user",
             text="hello",
             content_hash="hash-msg",
             sort_key=1.0,
         )
         first = _session_data(
-            "codex:keep",
+            "codex-session:keep",
             content_hash="hash-1",
             message_tuples=[msg],
         )
@@ -746,7 +690,7 @@ def test_write_session_allows_existing_upsert_even_without_messages(tmp_path: Pa
 
         # Same session, different hash, zero messages — should be allowed
         update = _session_data(
-            "codex:keep",
+            "codex-session:keep",
             content_hash="hash-2",
             message_tuples=[],
         )
@@ -967,7 +911,7 @@ def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cac
     source_path = tmp_path / "raw.jsonl"
     source_path.write_text("{}", encoding="utf-8")
     raw_id = "raw-sync-side-effects"
-    session_id = "codex:sync-side-effects"
+    session_id = "codex-session:sync-side-effects"
     message_id = "msg-sync-side-effects"
     needle = "syncsideeffectneedle"
 
@@ -991,32 +935,9 @@ def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cac
                 sort_key=0.0,
             )
         ],
-        action_event_tuples=[
-            _action_event_tuple(
-                event_id="event-sync-side-effects",
-                session_id=session_id,
-                message_id=message_id,
-                search_text=f"action event should also be repaired {needle}",
-            )
-        ],
     )
 
     with open_connection(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO raw_sessions
-                (raw_id, payload_provider, source_name, source_path, blob_size, acquired_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                raw_record.raw_id,
-                raw_record.source_name,
-                raw_record.source_name,
-                raw_record.source_path,
-                raw_record.blob_size,
-                raw_record.acquired_at,
-            ),
-        )
         conn.commit()
 
     first_result = search_messages(needle, archive_root=archive_root, db_path=db_path, limit=10)
@@ -1062,22 +983,13 @@ def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cac
             ).fetchall()
         }
         assert {"messages_fts_ai", "messages_fts_ad", "messages_fts_au"}.issubset(trigger_names)
-        assert {"action_events_fts_ai", "action_events_fts_ad", "action_events_fts_au"}.issubset(trigger_names)
         assert (
             conn.execute(
                 """
                 SELECT COUNT(*)
                 FROM messages_fts
-                JOIN messages ON messages.rowid = messages_fts.rowid
-                WHERE messages.session_id = ?
+                WHERE session_id = ?
                 """,
-                (session_id,),
-            ).fetchone()[0]
-            == 1
-        )
-        assert (
-            conn.execute(
-                "SELECT COUNT(*) FROM action_events_fts WHERE session_id = ?",
                 (session_id,),
             ).fetchone()[0]
             == 1
@@ -1122,19 +1034,19 @@ def test_select_ingest_worker_count_respects_limit(monkeypatch: pytest.MonkeyPat
 
 
 def test_drain_ready_session_entries_writes_missing_parent_without_buffering(tmp_path: Path) -> None:
-    with open_connection(tmp_path / "ingest.db") as conn:
+    with open_connection(tmp_path / "index.db") as conn:
         c_msg = _message_tuple(
             "msg-c",
-            "codex:child",
+            "codex-session:child",
             role="user",
             text="child",
             content_hash="hash-c",
             sort_key=1.0,
         )
         child = _session_data(
-            "codex:child",
+            "codex-session:child",
             content_hash="hash-child",
-            parent_session_id="codex:parent",
+            parent_session_id="codex-session:parent",
             message_tuples=[c_msg],
         )
 
@@ -1151,18 +1063,18 @@ def test_drain_ready_session_entries_writes_missing_parent_without_buffering(tmp
 
         row = conn.execute(
             "SELECT parent_session_id FROM sessions WHERE session_id = ?",
-            ("codex:child",),
+            ("codex-session:child",),
         ).fetchone()
         assert row is not None
         assert row["parent_session_id"] is None
-        assert child.message_tuples == []
+        assert child.parsed_session.messages == []
 
 
 def test_drain_ready_session_entries_preserves_same_result_parent_fk(tmp_path: Path) -> None:
-    with open_connection(tmp_path / "ingest.db") as conn:
+    with open_connection(tmp_path / "index.db") as conn:
         p_msg = _message_tuple(
             "msg-p",
-            "codex:parent",
+            "codex-session:parent",
             role="user",
             text="parent",
             content_hash="hash-p",
@@ -1170,21 +1082,21 @@ def test_drain_ready_session_entries_preserves_same_result_parent_fk(tmp_path: P
         )
         c_msg = _message_tuple(
             "msg-c",
-            "codex:child",
+            "codex-session:child",
             role="user",
             text="child",
             content_hash="hash-c",
             sort_key=1.0,
         )
         parent = _session_data(
-            "codex:parent",
+            "codex-session:parent",
             content_hash="hash-parent",
             message_tuples=[p_msg],
         )
         child = _session_data(
-            "codex:child",
+            "codex-session:child",
             content_hash="hash-child",
-            parent_session_id="codex:parent",
+            parent_session_id="codex-session:parent",
             message_tuples=[c_msg],
         )
 
@@ -1198,10 +1110,10 @@ def test_drain_ready_session_entries_preserves_same_result_parent_fk(tmp_path: P
 
         row = conn.execute(
             "SELECT parent_session_id FROM sessions WHERE session_id = ?",
-            ("codex:child",),
+            ("codex-session:child",),
         ).fetchone()
         assert row is not None
-        assert row["parent_session_id"] == "codex:parent"
+        assert row["parent_session_id"] == "codex-session:parent"
 
 
 @pytest.mark.asyncio

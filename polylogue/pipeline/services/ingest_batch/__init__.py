@@ -14,7 +14,6 @@ from polylogue.pipeline.services.ingest_batch._core import (
     _select_ingest_worker_count,
     _successful_raw_state_update,
     _topo_sort_session_entries,
-    _write_session,
     process_ingest_batch,
     refresh_session_insights_bulk,
 )
@@ -47,7 +46,6 @@ __all__ = [
     "_successful_raw_state_update",
     "_topo_sort_session_entries",
     "_unattributed_batch_elapsed_s",
-    "_write_session",
     "ingest_record",
     "process_ingest_batch",
     "process_pool_executor",

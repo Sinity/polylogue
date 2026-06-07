@@ -98,16 +98,6 @@ def test_read_embedding_stats_sync_exposes_retrieval_bands_when_archive_tables_e
 
         monkeypatch.setattr(
             embedding_stats_mod,
-            "action_event_read_model_status_sync",
-            lambda _conn: {
-                "count": 2,
-                "action_fts_count": 2,
-                "action_fts_ready": True,
-                "stale_count": 0,
-            },
-        )
-        monkeypatch.setattr(
-            embedding_stats_mod,
             "session_insight_status_sync",
             lambda _conn: SessionInsightStatusSnapshot(
                 profile_row_count=2,
@@ -153,9 +143,6 @@ def test_read_embedding_stats_sync_exposes_retrieval_bands_when_archive_tables_e
 def test_read_embedding_stats_sync_can_skip_retrieval_band_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fail_action_status(_conn: object) -> None:
-        raise AssertionError("action-event status should not be read")
-
     def fail_session_status(_conn: object) -> None:
         raise AssertionError("session-insight status should not be read")
 
@@ -168,7 +155,6 @@ def test_read_embedding_stats_sync_can_skip_retrieval_band_status(
         )
         conn.commit()
 
-        monkeypatch.setattr(embedding_stats_mod, "action_event_read_model_status_sync", fail_action_status)
         monkeypatch.setattr(embedding_stats_mod, "session_insight_status_sync", fail_session_status)
 
         stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
@@ -217,14 +203,6 @@ async def test_read_embedding_stats_async_missing_tables_returns_zeroes() -> Non
 async def test_read_embedding_stats_async_derives_pending_from_total_sessions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def fake_action_status(_conn: object) -> dict[str, int | bool]:
-        return {
-            "count": 0,
-            "action_fts_count": 0,
-            "action_fts_ready": True,
-            "stale_count": 0,
-        }
-
     async def fake_session_status(_conn: object) -> SessionInsightStatusSnapshot:
         return SessionInsightStatusSnapshot(
             profile_row_count=0,
@@ -256,7 +234,6 @@ async def test_read_embedding_stats_async_derives_pending_from_total_sessions(
         )
         await conn.commit()
 
-        monkeypatch.setattr(embedding_stats_mod, "action_event_read_model_status_async", fake_action_status)
         monkeypatch.setattr(embedding_stats_mod, "session_insight_status_async", fake_session_status)
 
         stats = await read_embedding_stats_async(conn)
@@ -270,9 +247,6 @@ async def test_read_embedding_stats_async_derives_pending_from_total_sessions(
 async def test_read_embedding_stats_async_can_skip_retrieval_band_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def fail_action_status(_conn: object) -> None:
-        raise AssertionError("action-event status should not be read")
-
     async def fail_session_status(_conn: object) -> None:
         raise AssertionError("session-insight status should not be read")
 
@@ -284,7 +258,6 @@ async def test_read_embedding_stats_async_can_skip_retrieval_band_status(
         )
         await conn.commit()
 
-        monkeypatch.setattr(embedding_stats_mod, "action_event_read_model_status_async", fail_action_status)
         monkeypatch.setattr(embedding_stats_mod, "session_insight_status_async", fail_session_status)
 
         stats = await read_embedding_stats_async(conn, include_retrieval_bands=False)

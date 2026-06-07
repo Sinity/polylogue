@@ -165,12 +165,10 @@ def test_daemon_convergence_proof_full_archive_state(
         _write_claude_code_session(path, session_id, MESSAGES_PER_SESSION)
         files.append(path)
 
-    # ── Bootstrap the schema so the BEFORE probe sees a real DB ──────
-    # Open via the canonical connection helper so user_version + DDL are
-    # applied identically to a real polylogued startup.
-    from polylogue.storage.sqlite.connection import open_connection
+    # ── Bootstrap the archive tiers so the BEFORE probe sees a real DB ──────
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    with open_connection(db_path):
+    with ArchiveStore(tmp_path):
         pass
 
     # ── BEFORE snapshot ──────────────────────────────────────────────
@@ -250,10 +248,9 @@ def test_daemon_convergence_proof_full_archive_state(
         f"messages from {expected_messages} input records"
     )
 
-    # raw_sessions is the ingest landing table — one per source file.
-    assert after_counts["raw_sessions"] == SESSION_COUNT, (
-        f"expected {SESSION_COUNT} raw_sessions, got {after_counts['raw_sessions']}"
-    )
+    # raw_sessions is the ingest landing table in source.db — one per source file.
+    raw_count = after["archive_tiers"]["tiers"]["source"]["table_counts"]["raw_sessions"]
+    assert raw_count == SESSION_COUNT, f"expected {SESSION_COUNT} raw_sessions, got {raw_count}"
 
     # ── No stuck or failed live-ingest attempts ─────────────────────
     attempt_counts = after["attempt_counts"]
@@ -283,7 +280,7 @@ def test_daemon_convergence_proof_full_archive_state(
     # The strongest end-to-end signal that the write path stayed
     # consistent with the FTS triggers throughout convergence.
     with sqlite3.connect(db_path) as conn:
-        (fts_rows,) = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()
+        (fts_rows,) = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()
     assert fts_rows >= expected_messages, (
         f"FTS index under-populated: {fts_rows} rows vs {expected_messages} expected messages"
     )

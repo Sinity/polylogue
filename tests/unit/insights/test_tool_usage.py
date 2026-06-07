@@ -5,9 +5,9 @@ Covers four shapes:
 1. Pure aggregation: ``build_tool_usage_insight`` correctly counts,
    filters, derives MCP servers, and reports coverage gaps.
 2. End-to-end through the SQLite backend: per-(provider, tool) rollups
-   built from canonical action_events.
+   built from canonical actions.
 3. Coverage-gap honesty: providers with sessions but zero
-   action_events surface as ``data_available=False`` rather than silent
+   actions surface as ``data_available=False`` rather than silent
    zeros.
 4. MCP envelope shape: ``list_tool_usage_insights`` returns a single
    ``ToolUsageInsight`` whose ``provider_coverage`` is always exhaustive,
@@ -92,7 +92,7 @@ def _coverage(
     return {
         "source_name": provider,
         "session_count": sessions,
-        "action_event_count": events,
+        "action_count": events,
         "distinct_tool_count": tools,
         "distinct_action_kind_count": kinds,
         "has_tool_id_signal": tool_ids,
@@ -159,7 +159,7 @@ class TestBuildToolUsageInsight:
         assert insight.has_coverage_gaps is True
         chatgpt = next(entry for entry in insight.provider_coverage if entry.source_name == "chatgpt")
         assert chatgpt.data_available is False
-        assert chatgpt.action_event_count == 0
+        assert chatgpt.action_count == 0
 
     def test_mcp_server_extracted_for_each_entry(self) -> None:
         rows = [
@@ -195,7 +195,7 @@ class TestBuildToolUsageInsight:
         assert insight.entries[0].mcp_server == "github"
 
     def test_provider_without_sessions_not_counted_as_gap(self) -> None:
-        # A provider that has neither sessions nor action_events still
+        # A provider that has neither sessions nor actions still
         # appears in coverage with session_count=0, but it should not
         # contribute to ``providers_without_data`` because there is nothing
         # to be missing.
@@ -259,14 +259,12 @@ class TestListToolUsageInsightsEndToEnd:
                 "cc-1-msg",
                 role="assistant",
                 text="Working",
-                provider_meta={
-                    "content_blocks": [
-                        {"type": "tool_use", "name": "Read", "id": "toolu_1", "tool_input": {"file_path": "a.py"}},
-                        {"type": "tool_use", "name": "Read", "id": "toolu_2", "tool_input": {"file_path": "b.py"}},
-                        {"type": "tool_use", "name": "Bash", "id": "toolu_3"},
-                        {"type": "tool_result", "tool_id": "toolu_3", "text": "hello"},
-                    ]
-                },
+                content_blocks=[
+                    {"type": "tool_use", "name": "Read", "id": "toolu_1", "tool_input": {"file_path": "a.py"}},
+                    {"type": "tool_use", "name": "Read", "id": "toolu_2", "tool_input": {"file_path": "b.py"}},
+                    {"type": "tool_use", "name": "Bash", "id": "toolu_3"},
+                    {"type": "tool_result", "tool_id": "toolu_3", "text": "hello"},
+                ],
             )
             .save()
         )
@@ -278,7 +276,7 @@ class TestListToolUsageInsightsEndToEnd:
                 "cx-1-msg",
                 role="assistant",
                 text="Patching",
-                provider_meta={"content_blocks": [{"type": "tool_use", "name": "apply_patch", "id": "p1"}]},
+                content_blocks=[{"type": "tool_use", "name": "apply_patch", "id": "p1"}],
             )
             .save()
         )
@@ -308,7 +306,7 @@ class TestListToolUsageInsightsEndToEnd:
         providers = {entry.source_name for entry in insight.provider_coverage}
         assert providers == {"claude-code", "codex"}
 
-    async def test_coverage_reports_provider_without_action_events(self, tmp_path: Path) -> None:
+    async def test_coverage_reports_provider_without_actions(self, tmp_path: Path) -> None:
         archive = _archive(tmp_path)
         db_path = archive.archive_root / "index.db"
         # ChatGPT session exists but carries no tool_use blocks — the
@@ -328,7 +326,7 @@ class TestListToolUsageInsightsEndToEnd:
                 "cc-1-msg",
                 role="assistant",
                 text="Reading",
-                provider_meta={"content_blocks": [{"type": "tool_use", "name": "Read", "id": "toolu_only"}]},
+                content_blocks=[{"type": "tool_use", "name": "Read", "id": "toolu_only"}],
             )
             .save()
         )
@@ -337,7 +335,7 @@ class TestListToolUsageInsightsEndToEnd:
         insight = result[0]
         chatgpt = next(entry for entry in insight.provider_coverage if entry.source_name == "chatgpt")
         assert chatgpt.session_count == 1
-        assert chatgpt.action_event_count == 0
+        assert chatgpt.action_count == 0
         assert chatgpt.data_available is False
         cc = next(entry for entry in insight.provider_coverage if entry.source_name == "claude-code")
         assert cc.data_available is True

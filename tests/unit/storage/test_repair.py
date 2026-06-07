@@ -41,72 +41,6 @@ def _status(
     )
 
 
-def test_action_event_repair_detail_reports_pending_fts_rows_only() -> None:
-    statuses = {
-        "action_events": _status(source_documents=0, materialized_documents=0, materialized_rows=323048),
-        "action_events_fts": _status(materialized_rows=0, pending_rows=323048),
-    }
-
-    assert repair_mod.action_event_repair_count(statuses) == 323048
-    assert repair_mod._action_event_repair_detail(statuses) == (
-        "Action-event read model pending (323,048 pending action-event FTS rows)"
-    )
-
-
-def test_action_event_repair_detail_reports_missing_and_stale_rows() -> None:
-    statuses = {
-        "action_events": _status(
-            source_documents=12,
-            materialized_documents=0,
-            materialized_rows=9,
-            pending_documents=12,
-            stale_rows=5,
-        ),
-        "action_events_fts": _status(materialized_rows=0, pending_rows=9),
-    }
-
-    assert repair_mod.action_event_repair_count(statuses) == 26
-    assert repair_mod._action_event_repair_detail(statuses) == (
-        "Action-event read model pending (12 missing sessions, 5 stale action-event rows, 9 pending action-event FTS rows)"
-    )
-
-
-def test_action_event_repair_detail_reports_orphan_rows() -> None:
-    statuses = {
-        "action_events": _status(
-            source_documents=4,
-            materialized_documents=4,
-            materialized_rows=10,
-            orphan_rows=2,
-        ),
-        "action_events_fts": _status(materialized_rows=10),
-    }
-
-    assert repair_mod.action_event_repair_count(statuses) == 2
-    assert repair_mod._action_event_repair_detail(statuses) == (
-        "Action-event read model pending (2 orphan action-event rows)"
-    )
-
-
-def test_action_event_repair_detail_reports_stale_extra_fts_rows() -> None:
-    statuses = {
-        "action_events": _status(
-            source_documents=4,
-            materialized_documents=4,
-            materialized_rows=10,
-        ),
-        "action_events_fts": _status(
-            materialized_rows=13,
-            stale_rows=3,
-        ),
-    }
-
-    assert repair_mod.action_event_repair_count(statuses) == 3
-    assert repair_mod._action_event_repair_detail(statuses) == (
-        "Action-event read model pending (3 stale extra action-event FTS rows)"
-    )
-
-
 def test_preview_counts_from_archive_debt_include_healthy_preview_targets_only() -> None:
     statuses = {
         "session_insights": repair_mod.ArchiveDebtStatus(
@@ -157,8 +91,6 @@ def test_probe_only_archive_debt_skips_large_message_scans(monkeypatch: pytest.M
 
     statuses = {
         "messages_fts": _status(),
-        "action_events": _status(),
-        "action_events_fts": _status(),
     }
     monkeypatch.setattr(repair_mod, "_table_has_more_than", lambda *_args: True)
     monkeypatch.setattr(repair_mod, "count_orphaned_messages_sync", lambda _conn: (_ for _ in ()).throw(AssertionError))
@@ -311,64 +243,36 @@ def test_repair_dangling_fts_uses_targeted_missing_row_repair(monkeypatch: pytes
             return (self.value,)
 
     class FakeConn:
-        message_count = 8
-        action_count = 4
+        indexed_count = 8
 
         def execute(self, sql: str, params: object = ()) -> _Cursor:
             if sql.startswith("PRAGMA "):
                 return _Cursor(None)
-            if "sqlite_master" in sql and params == ("content_blocks",):
-                return _Cursor(1)
-            if "sqlite_master" in sql and params in {("action_events",), ("action_events_fts_docsize",)}:
-                return _Cursor(1)
-            if "sqlite_master" in sql and "messages_fts" in sql and "trigger" not in sql:
+            if "sqlite_master" in sql and "messages_fts" in sql:
                 return _Cursor("messages_fts")
-            if "sqlite_master" in sql and "action_events" in sql:
-                return _Cursor("action_events")
-            if "sqlite_master" in sql and "content_blocks" in sql:
-                return _Cursor("content_blocks")
-            if "COUNT(*) FROM messages_fts_docsize" in sql:
-                return _Cursor(self.message_count)
-            if "COUNT(*) FROM action_events_fts_docsize" in sql:
-                return _Cursor(self.action_count)
-            if "FROM messages AS m" in sql:
+            if "COUNT(*) FROM blocks WHERE text IS NOT NULL" in sql:
                 return _Cursor(10)
-            if "SELECT COUNT(*) FROM action_events" in sql:
-                return _Cursor(5)
+            if "COUNT(*) FROM messages_fts_docsize" in sql:
+                return _Cursor(self.indexed_count)
+            if "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')" in sql:
+                self.indexed_count = 10
+                return _Cursor(1)
             raise AssertionError(f"unexpected SQL: {sql}")
 
         def commit(self) -> None:
             calls.append(("commit", ()))
 
     @contextmanager
-    def fake_connection_context(_path: Path) -> Iterator[FakeConn]:
+    def fake_connection_context() -> Iterator[FakeConn]:
         yield FakeConn()
 
-    def repair_messages(conn: FakeConn) -> int:
-        conn.message_count = 10
-        calls.append(("message", ()))
-        return 2
-
-    def repair_actions(conn: FakeConn) -> int:
-        conn.action_count = 5
-        calls.append(("action", ()))
-        return 1
-
-    monkeypatch.setattr("polylogue.storage.sqlite.connection.connection_context", fake_connection_context)
-    monkeypatch.setattr(
-        "polylogue.storage.fts.dangling_repair.insert_missing_message_fts_rows_sync",
-        repair_messages,
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.fts.dangling_repair.insert_missing_action_fts_rows_sync",
-        repair_actions,
-    )
+    monkeypatch.setattr(repair_mod, "_open_archive_index_connection", fake_connection_context)
     monkeypatch.setattr(
         "polylogue.storage.fts.dangling_repair._repair_session_work_events_fts_rows_sync",
         lambda _conn: (0, 0, 0, 0),
     )
     monkeypatch.setattr(
-        "polylogue.storage.fts.dangling_repair._repair_work_threads_fts_rows_sync",
+        "polylogue.storage.fts.dangling_repair._repair_threads_fts_rows_sync",
         lambda _conn: (0, 0, 0, 0),
     )
     monkeypatch.setattr(
@@ -384,94 +288,5 @@ def test_repair_dangling_fts_uses_targeted_missing_row_repair(monkeypatch: pytes
     result = repair_mod.repair_dangling_fts(_config(tmp_path), dry_run=False)
 
     assert result.success is True
-    assert "repaired index" in result.detail
-    assert ("message", ()) in calls
-    assert ("action", ()) in calls
-    assert ("record", "messages_fts") in calls
-    assert ("record", "action_events_fts") in calls
+    assert "Rebuilt FTS index" in result.detail
     assert ("commit", ()) in calls
-
-
-def test_repair_action_event_read_model_rebuilds_fts_when_stale_extra_rows(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    calls: list[str] = []
-
-    class FakeConn:
-        def commit(self) -> None:
-            calls.append("commit")
-
-    @contextmanager
-    def fake_connection_context(_path: Path) -> Iterator[FakeConn]:
-        yield FakeConn()
-
-    def fake_status(_conn: FakeConn) -> dict[str, Any]:
-        if "rebuild_fts" in calls:
-            return {
-                "ready": True,
-                "valid_source_session_count": 1,
-                "materialized_session_count": 1,
-                "count": 1,
-                "action_fts_count": 1,
-                "stale_count": 0,
-                "orphan_tool_block_count": 0,
-                "matches_version": True,
-            }
-        return {
-            "ready": False,
-            "valid_source_session_count": 1,
-            "materialized_session_count": 1,
-            "count": 1,
-            "action_fts_count": 2,
-            "stale_count": 0,
-            "orphan_tool_block_count": 0,
-            "matches_version": True,
-        }
-
-    monkeypatch.setattr("polylogue.storage.sqlite.connection.connection_context", fake_connection_context)
-    monkeypatch.setattr("polylogue.storage.action_events.status.action_event_read_model_status_sync", fake_status)
-    monkeypatch.setattr(
-        "polylogue.storage.action_events.rebuild_runtime.action_event_repair_candidates_sync", lambda _conn: []
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.action_events.rebuild_runtime.rebuild_action_event_read_model_sync", lambda *a, **k: 0
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.action_events.rebuild_runtime.valid_action_event_source_ids_sync",
-        lambda _conn: (_ for _ in ()).throw(
-            AssertionError("full FTS rebuild should not enumerate per-session targets")
-        ),
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.fts.fts_lifecycle.repair_fts_index_sync",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("stale extra FTS rows require a full rebuild")),
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", lambda _conn: calls.append("rebuild_fts")
-    )
-
-    result = repair_mod.repair_action_event_read_model(_config(tmp_path), dry_run=False)
-
-    assert result.success is True
-    assert "rebuild_fts" in calls
-
-
-def test_repair_action_event_read_model_is_archive_noop(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
-    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
-    monkeypatch.setattr(
-        "polylogue.storage.sqlite.connection.connection_context",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy repair path must not open")),
-    )
-
-    result = repair_mod.repair_action_event_read_model(_config(tmp_path), dry_run=False)
-    preview = repair_mod.repair_action_event_read_model(_config(tmp_path), dry_run=True)
-
-    assert result.success is True
-    assert result.repaired_count == 0
-    assert "retired for archives" in result.detail
-    assert preview.success is True
-    assert preview.repaired_count == 0
-    assert preview.detail.startswith("Would: action-event materialized read model retired")

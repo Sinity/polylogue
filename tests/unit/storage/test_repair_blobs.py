@@ -25,15 +25,22 @@ def _config(workspace_env: dict[str, Path], db_path: Path) -> Config:
 def _reference_blob_in_source_db(source_db_path: Path, blob_hash: str, blob_size: int) -> None:
     with open_connection(source_db_path) as conn:
         conn.execute(
-            """CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                blob_hash BLOB NOT NULL,
-                blob_size INTEGER NOT NULL DEFAULT 0
-            ) STRICT"""
-        )
-        conn.execute(
-            "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size) VALUES (?, ?, ?)",
-            ("raw-v1", bytes.fromhex(blob_hash), blob_size),
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index,
+                blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "raw-v1",
+                "codex-session",
+                "raw-v1",
+                "/tmp/raw-v1.jsonl",
+                0,
+                bytes.fromhex(blob_hash),
+                blob_size,
+                1_770_000_000_000,
+            ),
         )
         conn.commit()
 

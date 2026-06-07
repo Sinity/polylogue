@@ -115,7 +115,6 @@ class TestLaneParsing:
 
         assert lane.path_targets == ("archive-debt-query-loop",)
         assert lane.artifact_targets == (
-            "action_event_readiness",
             "session_insight_readiness",
             "archive_readiness",
             "archive_debt_results",
@@ -130,7 +129,6 @@ class TestLaneParsing:
             "embedding_metadata_rows",
             "embedding_status_rows",
             "message_embedding_vectors",
-            "action_event_readiness",
             "session_insight_readiness",
             "retrieval_band_readiness",
             "embedding_status_results",

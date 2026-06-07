@@ -8,8 +8,8 @@ from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
     ParsedMessage,
-    ParsedProviderEvent,
     ParsedSession,
+    ParsedSessionEvent,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.self_verify import build_archive_session_self_verify_envelope
@@ -59,8 +59,8 @@ def test_archive_tiers_archive_self_verify_envelope_is_stable(tmp_path: Path) ->
                 upload_origin="paste",
             )
         ],
-        provider_events=[
-            ParsedProviderEvent(
+        session_events=[
+            ParsedSessionEvent(
                 event_type="compaction",
                 payload={"summary": "compressed context"},
                 source_message_provider_id="msg-assistant",

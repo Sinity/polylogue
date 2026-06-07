@@ -52,7 +52,7 @@ async def list_summaries_for_plan(
     plan: SessionQueryPlan,
     repository: SessionQueryRuntimeStore,
 ) -> list[SessionSummary]:
-    can_use_action_stats = await plan.can_use_action_event_stats_with(repository)
+    can_use_action_stats = await plan.can_use_action_stats_with(repository)
     uses_action_read_model = plan._uses_action_read_model()
     if not plan.can_use_summaries() and not uses_action_read_model:
         msg = (
@@ -84,7 +84,7 @@ async def count_for_plan(
     plan: SessionQueryPlan,
     repository: SessionQueryRuntimeStore,
 ) -> int:
-    if plan.can_count_in_sql() and await plan._action_event_rows_ready(repository):
+    if plan.can_count_in_sql() and await plan._actions_ready(repository):
         return int(await repository.count_by_query(plan.record_query.for_count()))
 
     unbounded = plan.with_limit(None)
