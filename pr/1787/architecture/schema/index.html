@@ -602,7 +602,7 @@ queries for provider analytics.</p>
 </tr>
 </tbody>
 </table>
-<h3>action_events</h3>
+<h3>actions</h3>
 <p>Normalized action records derived from content blocks.</p>
 <table>
 <thead>
@@ -745,12 +745,7 @@ queries for provider analytics.</p>
 <tbody>
 <tr>
 <td><code>messages_fts</code></td>
-<td>Message text</td>
-<td><code>unicode61</code></td>
-</tr>
-<tr>
-<td><code>action_events_fts</code></td>
-<td>Action event text</td>
+<td>Block text, including tool-use/tool-result action evidence</td>
 <td><code>unicode61</code></td>
 </tr>
 <tr>
@@ -765,10 +760,9 @@ queries for provider analytics.</p>
 </tr>
 </tbody>
 </table>
-<p>All FTS tables use <code>unicode61</code> tokenizer (no porter stemmer). The message and
-action-event indexes are external-content FTS5 tables backed by
-<code>messages</code>/<code>action_events</code>; FTS sync triggers maintain the indexes and startup
-repair verifies the trigger set.</p>
+<p>All FTS tables use <code>unicode61</code> tokenizer (no porter stemmer). <code>messages_fts</code>
+is contentless and populated from <code>blocks</code>; action search is a filtered read
+over tool-use/tool-result blocks in that same index.</p>
 <h2>Vector Table</h2>
 <p><code>message_embeddings</code> uses the <code>vec0</code> virtual table extension:</p>
 <pre><code>message_id TEXT PRIMARY KEY
@@ -847,12 +841,12 @@ a <code>search_text</code> column for FTS indexing.</p>
 <p>Polylogue uses fresh-first schema initialization:</p>
 <ul>
 <li><strong>Version match</strong>: open database normally</li>
-<li><strong>New database</strong>: create all tables at current <code>SCHEMA_VERSION</code></li>
+<li><strong>New database</strong>: create the current split archive tier files</li>
 <li><strong>Version mismatch</strong>: rejected with an error; rebuild the archive from source</li>
 </ul>
-<p>Schema version is declared in <code>polylogue/storage/sqlite/schema_ddl.py</code> as
-<code>SCHEMA_VERSION</code>. The bootstrap branching logic in <code>schema_bootstrap.py</code> handles
-both sync and async backends.</p>
+<p>Tier schema versions and DDL live under
+<code>polylogue/storage/sqlite/archive_tiers/</code>. The bootstrap branching logic in
+<code>schema_bootstrap.py</code> handles sync and async index-tier backends.</p>
 <h2>Schema Drift Detection</h2>
 <p>Run <code>polylogue check</code> to verify schema integrity:</p>
 <pre><code class="language-bash">polylogue check                     # Schema health + FK integrity

@@ -380,7 +380,7 @@ everything at session start.</p>
 <p>The last 3 sessions touching the current project, with:</p>
 <ul>
 <li>What was accomplished (from session profiles)</li>
-<li>Key files modified (from action_events.affected_paths)</li>
+<li>Key files modified (from actions.affected_paths)</li>
 <li>Outcome: completed / blocked / abandoned</li>
 <li>Session date and duration</li>
 </ul>
@@ -418,7 +418,7 @@ threshold are excluded (avoid noise from barely-relevant sessions).</p>
 </tr>
 <tr>
 <td>Files modified</td>
-<td><code>action_events.affected_paths</code></td>
+<td><code>actions.affected_paths</code></td>
 </tr>
 <tr>
 <td>Session outcome</td>
@@ -426,7 +426,7 @@ threshold are excluded (avoid noise from barely-relevant sessions).</p>
 </tr>
 <tr>
 <td>Error patterns</td>
-<td><code>action_events</code> filtered by tool failures + compaction_count</td>
+<td><code>actions</code> filtered by tool failures + compaction_count</td>
 </tr>
 <tr>
 <td>Project memory entries</td>
@@ -456,7 +456,7 @@ hook-format output.</p>
 <li>A <code>SessionStart</code> hook handler that calls <code>build_resume_brief()</code> with the
 current project path</li>
 <li>Integration with the project memory table for Decisions section</li>
-<li>Error pattern detection from <code>action_events</code> across recent sessions</li>
+<li>Error pattern detection from <code>actions</code> across recent sessions</li>
 <li>The brief rendered as <code>additionalContext</code> text</li>
 </ol>
 <p>The hook runs in-process during daemon operation. Since it's read-only (no

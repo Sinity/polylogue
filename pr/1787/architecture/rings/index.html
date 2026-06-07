@@ -793,8 +793,8 @@ is a historical alias for this row-group view of <code>artifact_observations</co
 <ul>
 <li>Archive SQLite file set, WAL mode.</li>
 <li>Schema is fresh-first: version mismatches are rejected and the affected tier
-is rebuilt from source/user evidence. <code>SCHEMA_VERSION</code> lives in
-<code>storage/sqlite/schema_ddl.py</code>.</li>
+is rebuilt from source/user evidence. Tier DDL and versions live under
+<code>storage/sqlite/archive_tiers/</code>.</li>
 <li>FTS5 with <code>unicode61</code> tokenizer (no porter stemmer in this SQLite build).</li>
 </ul>
 <h2>Placement Rules</h2>

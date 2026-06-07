@@ -392,10 +392,10 @@ done. Duration from genesis to completion.</li>
 2 weeks of completion.</li>
 </ol>
 <p>Discovery: the user provides a file path, branch name, or keyword. The story
-engine searches <code>action_events.affected_paths</code> and <code>session_profiles.repo_paths_json</code>
+engine searches <code>actions.affected_paths</code> and <code>session_profiles.repo_paths_json</code>
 for matches, traces the sessions forward in time, and assembles the narrative.</p>
 <p>CLI:</p>
-<pre><code>polylogue story feature-birth --path polylogue/storage/sqlite/schema_ddl.py
+<pre><code>polylogue story feature-birth --path polylogue/storage/sqlite/archive_tiers/index.py
 polylogue story feature-birth --branch feature/feat/time-machine
 polylogue story feature-birth --keyword &quot;content hash&quot;
 </code></pre>
@@ -423,7 +423,7 @@ ratio, providers used.</li>
 </ol>
 <p>Discovery: the user provides a date. The story engine queries <code>session_profiles</code>
 with <code>canonical_session_date = :date</code>, orders by <code>first_message_at</code>, enriches
-with <code>action_events.affected_paths</code> for each session, and renders the template.</p>
+with <code>actions.affected_paths</code> for each session, and renders the template.</p>
 <p>CLI:</p>
 <pre><code>polylogue story day-in-life --date 2026-03-17
 polylogue story day-in-life --date yesterday
@@ -451,7 +451,7 @@ in message text.</li>
 <li>Orders them by date.</li>
 <li>Detects phase boundaries (gaps &gt;2 days without a session touching the
 branch).</li>
-<li>For each phase, collects affected paths from <code>action_events</code>.</li>
+<li>For each phase, collects affected paths from <code>actions</code>.</li>
 <li>Computes cumulative word count, tool usage, and cost per phase.</li>
 <li>Renders the template.</li>
 </ol>
@@ -505,7 +505,7 @@ SELECT
     sp.session_id, sp.canonical_session_date, sp.title,
     ae.affected_paths
 FROM session_profiles sp
-JOIN action_events ae ON sp.session_id = ae.session_id
+JOIN actions ae ON sp.session_id = ae.session_id
 WHERE ae.affected_paths LIKE '%' || :file_path || '%'
 ORDER BY sp.canonical_session_date ASC;
 </code></pre>
@@ -519,7 +519,7 @@ SELECT
     sp.total_cost_usd, sp.repo_names_json, sp.tags_json,
     ae.affected_paths
 FROM session_profiles sp
-LEFT JOIN action_events ae ON sp.session_id = ae.session_id
+LEFT JOIN actions ae ON sp.session_id = ae.session_id
 WHERE sp.canonical_session_date = :date
 ORDER BY sp.first_message_at ASC;
 </code></pre>
@@ -530,7 +530,7 @@ SELECT
     sp.first_message_at, sp.word_count, sp.tool_use_count,
     ae.affected_paths
 FROM session_profiles sp
-JOIN action_events ae ON sp.session_id = ae.session_id
+JOIN actions ae ON sp.session_id = ae.session_id
 WHERE sp.session_id IN (
     SELECT DISTINCT session_id
     FROM session_profiles

@@ -726,7 +726,7 @@ elevate — see below).</p>
 </tr>
 <tr>
 <td><code>actions</code></td>
-<td>FTS5 over action event text (<code>action_events_fts</code>). Targets tool/file/shell evidence rather than prose. Public ranked-hit payloads currently carry action rank/evidence without a numeric action BM25 score.</td>
+<td>FTS5 over tool-use/tool-result block text in <code>messages_fts</code>. Targets tool/file/shell evidence rather than prose. Public ranked-hit payloads currently carry action rank/evidence without a numeric action BM25 score.</td>
 <td><code>null</code></td>
 </tr>
 <tr>
@@ -757,12 +757,12 @@ typically negative, and they are <strong>not comparable across queries</strong>.
 <li>Match evidence: <code>matched_terms</code>, <code>snippet</code>, <code>match_surface=&quot;message&quot;</code>,
 <code>message_id</code>, and <code>target_ref</code> point at the hit message.</li>
 </ul>
-<h4><code>actions</code> (FTS5 over action events)</h4>
+<h4><code>actions</code> (FTS5 over action blocks)</h4>
 <ul>
-<li>Same FTS5 mechanics as <code>dialogue</code>, but the indexed surface is
-<code>action_events_fts</code> — normalized records of file reads/writes/edits,
-shell commands, web fetches, agent invocations, and other tool
-evidence (see <code>--action</code> / <code>--tool</code> filters above).</li>
+<li>Same FTS5 mechanics as <code>dialogue</code>, but the query is restricted to
+<code>tool_use</code> and <code>tool_result</code> blocks inside <code>messages_fts</code>. The normalized
+<code>actions</code> view remains the structured action surface for filters and
+analytics.</li>
 <li>Current public action-lane hits preserve rank and action match surface
 but do not expose the underlying action FTS BM25 score in the shared
 <code>SearchEnvelope</code>; consumers should treat <code>score_kind=null</code> as the
@@ -786,7 +786,7 @@ are preserved end-to-end on each hit's <code>score_components</code>
 that contributed adds a <code>&lt;lane&gt;_rank</code> (1-based rank within that lane)
 and a matching <code>&lt;lane&gt;_rrf</code> (the <code>1 / (k + rank)</code> contribution that was
 summed into the fused score). Lane names are <code>text</code> (FTS5 dialogue),
-<code>action</code> (FTS5 action events), and <code>vector</code> (semantic). A hit that
+<code>action</code> (FTS5 action blocks), and <code>vector</code> (semantic). A hit that
 appeared only in the lexical lane carries <code>{text_rank, text_rrf}</code> and
 nothing else; a hit that survived both lanes carries the full
 <code>(text|action|vector)_(rank|rrf)</code> set, so consumers can show &quot;ranked
@@ -888,7 +888,7 @@ probe; no FTS leg, no boolean operators applied.</li>
 <ul>
 <li><code>dialogue</code> orders hits by FTS5 BM25 (lower is better; raw scores are
 usually negative).</li>
-<li><code>actions</code> orders through the action-event FTS read model, but the
+<li><code>actions</code> orders through the action FTS read model, but the
 public action-lane hit payload does not currently expose a numeric
 action score.</li>
 <li><code>hybrid</code> fuses dialogue + action + semantic lanes with RRF at <code>k=60</code>
@@ -1051,7 +1051,7 @@ the hit:</p>
 <td><code>{&quot;bm25_raw&quot;: &lt;relevance&gt;}</code></td>
 </tr>
 <tr>
-<td><code>actions</code> (FTS5 over action events)</td>
+<td><code>actions</code> (FTS5 over action blocks)</td>
 <td>tokenized query terms</td>
 <td><code>null</code> today</td>
 <td><code>{}</code> today; action rank is preserved, but action BM25 is not part of the public hit evidence contract yet</td>

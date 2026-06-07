@@ -388,7 +388,7 @@ Fields: <code>summary</code>, <code>rationale</code>, <code>alternatives_rejecte
 Fields: <code>summary</code>, <code>failure_mode</code>, <code>session_id</code>, <code>recorded_at</code>.</p>
 <h3>HotFile</h3>
 <p>A file that consistently causes issues or is central to the architecture.
-Example: &quot;schema_ddl.py — changing this requires schema version bump and
+Example: &quot;archive_tiers/index.py — changing this requires index-tier version bump and
 regenerating all test fixtures.&quot;
 Fields: <code>path</code>, <code>why_hot</code>, <code>last_modified_session_id</code>, <code>recorded_at</code>.</p>
 <h3>Pattern</h3>
@@ -457,7 +457,7 @@ Active patterns (3):
 - ...
 
 Hot files (3):
-- polylogue/storage/sqlite/schema_ddl.py — schema version authority
+- polylogue/storage/sqlite/archive_tiers/index.py — index-tier schema authority
 - ...
 
 Stale warnings (1):

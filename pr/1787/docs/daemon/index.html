@@ -565,8 +565,8 @@ through the normal pipeline.</p>
 <td>FTS index covers all messages</td>
 </tr>
 <tr>
-<td><code>fts_readiness.action_events_ready</code></td>
-<td>FTS index covers all action events</td>
+<td><code>fts_readiness.actions_ready</code></td>
+<td>FTS index covers tool-use/tool-result action blocks</td>
 </tr>
 <tr>
 <td><code>insight_freshness</code></td>
@@ -606,8 +606,8 @@ through the normal pipeline.</p>
 <li><code>disk_space</code> — free disk space (warns at 500 MB, critical at 100 MB)</li>
 <li><code>wal_size</code> — WAL file size (warns at 50 MB, errors at 200 MB)</li>
 <li><code>source_availability</code> — watch roots exist and are readable</li>
-<li><code>fts_trigger_drift</code> — checks the six canonical FTS sync triggers
-(<code>messages_fts_a{i,d,u}</code>, <code>action_events_fts_a{i,d,u}</code>); critical when
+<li><code>fts_trigger_drift</code> — checks the three canonical message/block FTS sync
+triggers (<code>messages_fts_a{i,d,u}</code>); critical when
 any are missing. With <code>[health] fts_auto_restore = true</code> (or
 <code>POLYLOGUE_HEALTH_FTS_AUTO_RESTORE=1</code>), the daemon restores triggers
 and rebuilds the FTS index in place, then emits a WARNING-level
@@ -745,7 +745,7 @@ these — operators are responsible for scheduling them:</p>
 <td>Durability-tier backup</td>
 <td><code>polylogue backup</code></td>
 <td>Daily</td>
-<td>archives copy <code>source.db</code>, <code>user.db</code>, <code>embeddings.db</code>, and referenced blobs while omitting rebuildable <code>index.db</code> and disposable <code>ops.db</code>. Legacy archives fall back to a clean single-database copy.</td>
+<td>archives copy <code>source.db</code>, <code>user.db</code>, <code>embeddings.db</code>, and referenced blobs while omitting rebuildable <code>index.db</code> and disposable <code>ops.db</code>.</td>
 </tr>
 <tr>
 <td>Blob store backup</td>

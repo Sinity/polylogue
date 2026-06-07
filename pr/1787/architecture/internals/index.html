@@ -394,7 +394,7 @@ debugging landmarks. For the conceptual system shape, see
 </tr>
 <tr>
 <td>FTS tokenizer is <code>unicode61</code> (no porter stemmer)</td>
-<td><code>storage/sqlite/schema_ddl_archive.py</code></td>
+<td><code>storage/sqlite/archive_tiers/index.py</code></td>
 </tr>
 <tr>
 <td>Schema bootstrap branching is shared across sync and async backends</td>
@@ -444,8 +444,8 @@ debugging landmarks. For the conceptual system shape, see
 </thead>
 <tbody>
 <tr>
-<td><code>storage/sqlite/schema_ddl.py</code></td>
-<td>Schema definition and <code>SCHEMA_VERSION</code></td>
+<td><code>storage/sqlite/archive_tiers/</code></td>
+<td>Current split archive DDL and tier versions</td>
 </tr>
 <tr>
 <td><code>storage/sqlite/schema.py</code></td>
@@ -530,12 +530,12 @@ Run <code>devtools render-all</code> to update the generated catalog in
 <p>Polylogue has no in-place schema upgrade chain. The runtime knows exactly one
 schema shape:</p>
 <ul>
-<li><code>SCHEMA_VERSION</code> constant in <code>storage/sqlite/schema_ddl.py</code> is the
-authority. The canonical schema is described directly by <code>SCHEMA_DDL</code>;
+<li>Tier version constants under <code>storage/sqlite/archive_tiers/</code> are the
+authority. The canonical schema is described directly by each tier DDL;
 there are no upgrade plans, no <code>build_vN_to_vM_*</code> helpers, and no
 chain-dispatch logic in <code>schema_bootstrap.py</code>.</li>
 <li>On startup the on-disk <code>PRAGMA user_version</code> is compared against the
-constant:
+tier constant:
 <ul>
 <li><strong>Empty file</strong> (<code>user_version == 0</code>): bootstrap fresh.</li>
 <li><strong>Version match</strong>: open as-is.</li>
@@ -548,9 +548,8 @@ database aside and runs <code>polylogue reset --database &amp;&amp; polylogued r
 which re-acquires from the source archives and rebuilds the canonical
 archive.</li>
 <li>Schema bumps are deletes-then-defines, never deltas. A schema change
-is a single PR that edits <code>schema_ddl*.py</code>, bumps <code>SCHEMA_VERSION</code>,
-and documents the re-ingest expectation. No upgrade helpers are
-added for the bump.</li>
+edits the owning tier DDL/version and documents the re-ingest expectation.
+No upgrade helpers are added for the bump.</li>
 <li>Provider schemas (the parsing/validation surface, distinct from the
 storage schema) are still regenerated fresh via
 <code>devtools schema-generate</code> and promoted via <code>devtools schema-promote</code>.</li>
@@ -674,8 +673,8 @@ record of which contract applies where.</p>
 </tr>
 <tr>
 <td>FTS5 indexing</td>
-<td><code>polylogue/storage/sqlite/schema_ddl_archive.py</code> (unicode61)</td>
-<td>Text is stored and indexed unchanged. RTL scripts (Arabic, Hebrew) and Latin-with-diacritics are word-tokenized; CJK runs index as a single token (substring queries against CJK are not supported). Zero-width and bidi characters pass through without crashing indexing.</td>
+<td><code>polylogue/storage/sqlite/archive_tiers/index.py</code> (<code>messages_fts</code>, unicode61)</td>
+<td>Block search text is stored and indexed unchanged. RTL scripts (Arabic, Hebrew) and Latin-with-diacritics are word-tokenized; CJK runs index as a single token (substring queries against CJK are not supported). Zero-width and bidi characters pass through without crashing indexing.</td>
 </tr>
 <tr>
 <td>FTS5 query escaping</td>
@@ -865,9 +864,9 @@ parse/convergence timings, and source-path bundles.</li>
 <li><code>convergence_stage_timings</code> — min/max/sum/mean parse/convergence/read-
 amplification stats over completed attempts.</li>
 <li><code>boundary_table_counts</code> — row counts for the daemon-relevant tables
-(<code>raw_sessions</code>, <code>sessions</code>, <code>messages</code>, <code>content_blocks</code>,
-<code>artifact_observations</code>, <code>messages_fts_docsize</code>, <code>action_events</code>,
-<code>action_events_fts_docsize</code>, <code>message_embeddings</code>, <code>session_profile</code>,
+(<code>raw_sessions</code>, <code>sessions</code>, <code>messages</code>, <code>blocks</code>,
+<code>artifact_observations</code>, <code>messages_fts_docsize</code>, <code>actions</code>,
+<code>message_embeddings</code>, <code>session_profile</code>,
 <code>live_ingest_attempt</code>, <code>live_convergence_debt</code>, <code>pending_blob_refs</code>).
 Missing tables surface as <code>-1</code> rather than crashing the probe.</li>
 <li><code>archive_tiers</code> — archive inventory for <code>source.db</code>,
@@ -878,8 +877,8 @@ missing backup-required tiers, and cheap table counts per tier.</li>
 oldest <code>acquired_at</code>. See the lease/GC concurrency model above.</li>
 <li><code>gc_state</code> — high-water <code>gc_generations</code> row, <code>last_completed_at</code>,
 total generation count.</li>
-<li><code>fts_trigger_state</code> — the six expected FTS sync triggers
-(<code>messages_fts_a{i,d,u}</code>, <code>action_events_fts_a{i,d,u}</code>) with
+<li><code>fts_trigger_state</code> — the three expected FTS sync triggers
+(<code>messages_fts_a{i,d,u}</code>) with
 <code>present</code>, <code>missing</code>, and <code>all_present</code> fields. A missing trigger means
 FTS index drift risk (suspended during bulk operations and not
 restored, for example).</li>
