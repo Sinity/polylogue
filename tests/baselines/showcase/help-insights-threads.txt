@@ -1,6 +1,6 @@
 Usage: polylogue insights threads [OPTIONS]
 
-  List durable work-thread insights.
+  List durable thread insights.
 
 Options:
   --query TEXT         FTS query against insight search text
