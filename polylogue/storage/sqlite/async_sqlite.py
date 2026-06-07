@@ -55,6 +55,49 @@ async def _apply_pragma_statements_async(conn: aiosqlite.Connection, statements:
         await conn.execute(statement)
 
 
+# Sibling archive tiers attached to an ``index.db`` connection so that
+# cross-tier reads (e.g. ``raw_sessions`` in ``source.db`` joined against
+# ``sessions`` in ``index.db``) resolve with unqualified table names. The
+# write path for each tier still uses its own dedicated connection; this
+# only makes the index connection able to *read* sibling tables. SQLite
+# resolves unqualified names to ``main`` first, so index-tier tables are
+# unaffected; only tables that live solely in a sibling tier resolve to it.
+_SIBLING_TIER_ATTACHMENTS: tuple[tuple[str, str], ...] = (
+    ("source_tier", "source.db"),
+    ("user_tier", "user.db"),
+    ("embeddings", "embeddings.db"),
+    ("ops_tier", "ops.db"),
+)
+
+
+async def _attach_sibling_tiers(conn: aiosqlite.Connection) -> None:
+    """Attach sibling archive tiers to an ``index.db`` connection (idempotent)."""
+    cursor = await conn.execute("PRAGMA database_list")
+    rows = list(await cursor.fetchall())
+    main_path: str | None = None
+    attached: set[str] = set()
+    for row in rows:
+        schema_name = str(row[1])
+        if schema_name == "main":
+            main_path = str(row[2]) if row[2] else None
+        else:
+            attached.add(schema_name)
+    if not main_path:
+        return
+    from pathlib import Path as _Path
+
+    main = _Path(main_path)
+    if main.name != "index.db":
+        return
+    root = main.parent
+    for schema_name, filename in _SIBLING_TIER_ATTACHMENTS:
+        if schema_name in attached:
+            continue
+        sibling = root / filename
+        if sibling.exists():
+            await conn.execute(f"ATTACH DATABASE ? AS {schema_name}", (str(sibling),))
+
+
 async def configure_connection(conn: aiosqlite.Connection) -> None:
     """Apply canonical connection settings.
 
@@ -65,12 +108,14 @@ async def configure_connection(conn: aiosqlite.Connection) -> None:
     """
     conn.row_factory = aiosqlite.Row
     await _apply_pragma_statements_async(conn, WRITE_CONNECTION_PRAGMA_STATEMENTS)
+    await _attach_sibling_tiers(conn)
 
 
 async def configure_read_connection(conn: aiosqlite.Connection) -> None:
     """Apply read-safe settings without mutating database-wide state."""
     conn.row_factory = aiosqlite.Row
     await _apply_pragma_statements_async(conn, READ_CONNECTION_PRAGMA_STATEMENTS)
+    await _attach_sibling_tiers(conn)
 
 
 async def _read_schema_ready(backend: SQLiteBackend) -> bool:
