@@ -68,8 +68,17 @@ def test_search_results_monotonic_under_concurrent_writes(workspace_env: dict[st
         with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as rconn:
             while not stop_flag.is_set():
                 try:
+                    # messages_fts is contentless (content=''), so the UNINDEXED
+                    # columns are not retrievable directly; resolve message_id via
+                    # the blocks rowid join, mirroring the production search path.
                     rows = rconn.execute(
-                        "SELECT message_id FROM messages_fts WHERE messages_fts MATCH ? ORDER BY rank",
+                        """
+                        SELECT b.message_id
+                        FROM messages_fts
+                        JOIN blocks AS b ON b.rowid = messages_fts.rowid
+                        WHERE messages_fts MATCH ?
+                        ORDER BY bm25(messages_fts), b.message_id
+                        """,
                         ("hello",),
                     ).fetchall()
                     msg_ids = [r[0] for r in rows]

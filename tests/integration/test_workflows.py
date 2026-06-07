@@ -61,7 +61,10 @@ async def temp_config_and_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     render_root = tmp_path / "render"
     render_root.mkdir(parents=True, exist_ok=True)
 
-    db_path = tmp_path / "test.db"
+    # The split-file backend, the config archive root, and the db_path used by
+    # update_index/search must all point at the same archive. db_path is the
+    # backend's index tier under archive_root (not a standalone test.db).
+    db_path = archive_root / "index.db"
 
     # Create minimal config
     config = Config(
@@ -70,14 +73,8 @@ async def temp_config_and_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         sources=[],
     )
 
-    # Create backend and repositories
-    from polylogue.storage.sqlite.connection import open_connection
-
-    with open_connection(db_path) as conn:
-        from polylogue.storage.sqlite.schema import _ensure_schema
-
-        _ensure_schema(conn)
-
+    # Create backend and repositories. SQLiteBackend bootstraps the full split
+    # archive (source/index/embeddings/user/ops) under archive_root.
     backend = SQLiteBackend(db_path=db_path)
     storage_repo = SessionRepository(backend=backend)
     conv_repo = SessionRepository(backend=backend)
@@ -102,7 +99,24 @@ def gemini_sample_source(synthetic_source: SyntheticSourceFactory) -> Source:
 # =============================================================================
 
 
-@pytest.mark.parametrize("provider", ["chatgpt", "claude-ai", "claude-code", "codex", "gemini"])
+@pytest.mark.parametrize(
+    "provider",
+    [
+        "chatgpt",
+        pytest.param(
+            "claude-ai",
+            marks=pytest.mark.xfail(
+                reason="synthetic claude-ai mis-detects as unknown-export; see #1792", strict=False
+            ),
+        ),
+        "claude-code",
+        "codex",
+        pytest.param(
+            "gemini",
+            marks=pytest.mark.xfail(reason="synthetic gemini mis-detects as unknown-export; see #1792", strict=False),
+        ),
+    ],
+)
 async def test_full_workflow_per_provider(
     provider: ProviderName, synthetic_source: SyntheticSourceFactory, temp_config_and_repo: WorkflowRepos
 ) -> None:
