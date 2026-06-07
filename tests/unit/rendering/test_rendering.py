@@ -433,10 +433,13 @@ class TestSessionSummaryDisplayDate:
         assert summary.display_title == "User Title"
 
     def test_display_title_from_provider_display_label(self) -> None:
+        # The provider-derived display label (e.g. a Gemini session with a weak
+        # identifier-like title) now overrides the raw title through the typed
+        # ``metadata["title"]`` channel rather than a ``provider_meta`` envelope.
         summary = SessionSummary(
             id=SessionId("test"),
             origin=Origin.AISTUDIO_DRIVE,
             title="gemini-20250422-1234",
-            provider_meta={"display_label": "Review the project plan"},
+            metadata={"title": "Review the project plan"},
         )
         assert summary.display_title == "Review the project plan"

@@ -50,13 +50,12 @@ def test_archive_tiers_embedding_writer_upserts_vector_meta_and_status(tmp_path:
     status = read_embedding_status(conn, session_id)
 
     assert meta == ArchiveEmbeddingMeta(
-        target_id=message_id,
-        target_type="message",
+        message_id=message_id,
         model="voyage-4",
         dimension=EMBEDDING_DIMENSION,
-        embedded_at_ms=1_767_225_700_000,
         content_hash=content_hash,
-        origin="codex-session",
+        embedded_at_ms=1_767_225_700_000,
+        needs_reindex=False,
     )
     assert status == ArchiveEmbeddingStatus(
         session_id=session_id,

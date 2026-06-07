@@ -279,7 +279,7 @@ async def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42
     for msg in all_msgs:
         msgs_by_conv[msg.session_id].append(msg)
 
-    provider_by_cid = {str(r.session_id): r.source_name for r in conv_records}
+    provider_by_cid = {str(r.session_id): r.origin.value for r in conv_records}
 
     async with backend.bulk_connection():
         for i, record in enumerate(conv_records, start=1):

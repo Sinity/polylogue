@@ -290,31 +290,35 @@ async def test_attachment_handling_comprehensive(
         assert isinstance(meta, list)
         for att in meta:
             attachment_id = att["id"]
-            provider_meta = att.get("meta")
+            att_meta = att.get("meta")
             assert isinstance(attachment_id, str)
-            assert provider_meta is None or isinstance(provider_meta, dict)
+            assert isinstance(att_meta, dict)
+            attachment_name = att_meta["name"]
+            assert isinstance(attachment_name, str)
             builder.add_attachment(
                 attachment_id=attachment_id,
                 message_id="m1",
-                provider_meta=provider_meta,
+                display_name=attachment_name,
             )
     elif label == "path":
         assert isinstance(expected, str)
         assert meta is None or isinstance(meta, dict)
+        meta_name = meta.get("name") if isinstance(meta, dict) else None
         builder.add_attachment(
             attachment_id="att1",
             message_id="m1",
             path=expected,
-            provider_meta=meta,
+            display_name=meta_name if isinstance(meta_name, str) else None,
         )
     else:
         assert isinstance(expected, str)
         assert meta is None or isinstance(meta, dict)
-        att_id = expected if meta is None or meta == {} else "att1"
+        is_empty_meta = meta is None or meta == {}
+        att_id = expected if is_empty_meta else "att1"
         builder.add_attachment(
             attachment_id=att_id,
             message_id="m1",
-            provider_meta=meta,
+            display_name=None if is_empty_meta else expected,
         )
     builder.save()
     _conv, markdown_text = await _format_native(workspace_env["archive_root"], db_path, conv_id)
@@ -338,7 +342,7 @@ async def test_orphaned_attachments_section(workspace_env: WorkspaceEnv) -> None
             message_id=None,
             mime_type="image/png",
             size_bytes=2048,
-            provider_meta={"name": "OrphanFile.png"},
+            display_name="OrphanFile.png",
         )
         .save()
     )

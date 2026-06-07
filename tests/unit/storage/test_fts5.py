@@ -364,7 +364,8 @@ async def test_rebuild_index_populates_action_search_rows(
 def test_actions_view_reflects_updated_tool_blocks(tmp_path: Path) -> None:
     """The current archive action projection is the blocks-backed actions view."""
     db_path = tmp_path / "index.db"
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import ArchiveTier, initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     initialize_archive_database(db_path, ArchiveTier.INDEX)
     with sqlite3.connect(db_path) as conn:
@@ -442,7 +443,8 @@ def test_actions_view_reflects_updated_tool_blocks(tmp_path: Path) -> None:
 def test_actions_view_drops_rows_when_tool_blocks_disappear(tmp_path: Path) -> None:
     """Removing the tool block removes the derived action projection."""
     db_path = tmp_path / "index.db"
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import ArchiveTier, initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     initialize_archive_database(db_path, ArchiveTier.INDEX)
     with sqlite3.connect(db_path) as conn:

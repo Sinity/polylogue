@@ -125,17 +125,18 @@ def _site_archive_stats() -> dict[str, Any]:
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1.0)
         try:
-            if _table_exists(conn, "sessions"):
-                row = conn.execute(
-                    """
-                    SELECT
-                        COUNT(*) AS total_sessions,
-                        COALESCE(SUM(message_count), 0) AS total_messages,
-                        COUNT(DISTINCT origin) AS provider_count
-                    FROM sessions
-                    """
-                ).fetchone()
-            else:
+            if not _table_exists(conn, "sessions"):
+                return {}
+            row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_sessions,
+                    COALESCE(SUM(message_count), 0) AS total_messages,
+                    COUNT(DISTINCT origin) AS provider_count
+                FROM sessions
+                """
+            ).fetchone()
+            if row is None:
                 return {}
             total_sessions = int(row[0] or 0)
             total_messages = int(row[1] or 0)

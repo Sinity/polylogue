@@ -12,6 +12,7 @@ from typing import cast
 import pytest
 
 import polylogue.daemon.convergence_stages as stages
+from polylogue.archive.message.roles import Role
 from polylogue.daemon.convergence_stages import (
     make_default_convergence_stages,
     make_embed_stage,
@@ -70,7 +71,7 @@ def _seed_raw_source_session(conn: sqlite3.Connection, *, session_id: str, sourc
             messages=[
                 ParsedMessage(
                     provider_message_id="msg-1",
-                    role="user",
+                    role=Role.normalize("user"),
                     text=f"Message for {session_id}",
                     position=0,
                     content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=f"Message for {session_id}")],
@@ -95,7 +96,7 @@ def _seed_index_session(conn: sqlite3.Connection, *, session_id: str, text: str)
             messages=[
                 ParsedMessage(
                     provider_message_id="msg-1",
-                    role="user",
+                    role=Role.normalize("user"),
                     text=text,
                     position=0,
                     content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text=text)],
@@ -116,7 +117,7 @@ def _seed_empty_text_index_session(conn: sqlite3.Connection, *, session_id: str)
             messages=[
                 ParsedMessage(
                     provider_message_id="msg-1",
-                    role="user",
+                    role=Role.normalize("user"),
                     text="",
                     position=0,
                     content_blocks=[ParsedContentBlock(type=ContentBlockType.TEXT, text="")],

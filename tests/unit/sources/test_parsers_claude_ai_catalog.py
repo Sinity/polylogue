@@ -408,7 +408,7 @@ def _assert_roundtrip(
     # produced blocks — we therefore assert on the bundle, which is the
     # canonical materialized representation the daemon write path
     # persists. See `_assert_roundtrip` docstring.
-    observed_kinds = {str(b.type) for b in roundtrip.transform.bundle.content_blocks}
+    observed_kinds = {str(b.type) for m in roundtrip.transform.session.messages for b in m.content_blocks}
 
     block_types_any_of = expectations.get("block_types_any_of")
     if block_types_any_of is not None:
@@ -434,7 +434,7 @@ def _assert_roundtrip(
         # The transform result exposes attachments at the bundle level;
         # use it directly to keep this assertion shape-independent of the
         # public Session surface.
-        attachments = list(roundtrip.transform.bundle.attachments)
+        attachments = list(roundtrip.transform.session.attachments)
         assert len(attachments) >= expected_min_attachments, (
             f"[{label}] expected at least {expected_min_attachments} attachments, got {len(attachments)}"
         )

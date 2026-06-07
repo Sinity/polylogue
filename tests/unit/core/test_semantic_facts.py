@@ -26,6 +26,7 @@ from polylogue.archive.session import runtime as session_profile_runtime
 from polylogue.archive.session.events import SessionEvent
 from polylogue.archive.session.session_profile import build_session_profile
 from polylogue.core.enums import Origin
+from polylogue.core.sources import origin_from_provider
 from polylogue.storage.archive_views import SessionRenderProjection
 from polylogue.types import Provider, SessionEventId, SessionId
 from tests.infra.builders import make_conv, make_msg
@@ -270,7 +271,7 @@ def test_build_session_profile_sums_paired_provider_tool_windows() -> None:
             SessionEvent(
                 id=SessionEventId("conv-tool-active:event-0"),
                 session_id=SessionId("conv-tool-active"),
-                origin=Provider.CODEX,
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=0,
                 event_type="function_call",
                 timestamp=start,
@@ -279,7 +280,7 @@ def test_build_session_profile_sums_paired_provider_tool_windows() -> None:
             SessionEvent(
                 id=SessionEventId("conv-tool-active:event-1"),
                 session_id=SessionId("conv-tool-active"),
-                origin=Provider.CODEX,
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=1,
                 event_type="function_call_output",
                 timestamp=end,
@@ -312,7 +313,7 @@ def test_compute_session_latency_profile_aggregates_tool_and_turn_latencies() ->
             SessionEvent(
                 id=SessionEventId("conv-latency-profile:event-0"),
                 session_id=SessionId("conv-latency-profile"),
-                origin=Provider.CODEX,
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=0,
                 event_type="function_call",
                 timestamp=start,
@@ -321,7 +322,7 @@ def test_compute_session_latency_profile_aggregates_tool_and_turn_latencies() ->
             SessionEvent(
                 id=SessionEventId("conv-latency-profile:event-1"),
                 session_id=SessionId("conv-latency-profile"),
-                origin=Provider.CODEX,
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=1,
                 event_type="function_call_output",
                 timestamp=datetime(2026, 5, 24, 10, 2, tzinfo=timezone.utc),
@@ -330,7 +331,7 @@ def test_compute_session_latency_profile_aggregates_tool_and_turn_latencies() ->
             SessionEvent(
                 id=SessionEventId("conv-latency-profile:event-2"),
                 session_id=SessionId("conv-latency-profile"),
-                origin=Provider.CODEX,
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=2,
                 event_type="function_call",
                 timestamp=datetime(2026, 5, 24, 10, 4, tzinfo=timezone.utc),
@@ -443,7 +444,7 @@ def test_build_session_profile_terminal_state_detects_pending_tool() -> None:
             SessionEvent(
                 id=SessionEventId("conv-tool-left:event-0"),
                 session_id=SessionId("conv-tool-left"),
-                origin=Provider.CODEX,
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=0,
                 event_type="function_call",
                 timestamp=started_at,
@@ -473,7 +474,7 @@ def test_build_session_profile_terminal_state_detects_provider_error() -> None:
             SessionEvent(
                 id=SessionEventId("conv-error-left:event-0"),
                 session_id=SessionId("conv-error-left"),
-                origin=Provider.CODEX,
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=0,
                 event_type="function_call",
                 timestamp=started_at,
@@ -482,7 +483,7 @@ def test_build_session_profile_terminal_state_detects_provider_error() -> None:
             SessionEvent(
                 id=SessionEventId("conv-error-left:event-1"),
                 session_id=SessionId("conv-error-left"),
-                origin=Provider.CODEX,
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=1,
                 event_type="function_call_output",
                 timestamp=ended_at,
@@ -508,7 +509,7 @@ def test_build_session_profile_ignores_unpaired_tool_windows() -> None:
             SessionEvent(
                 id=SessionEventId("conv-unpaired-tool:event-0"),
                 session_id=SessionId("conv-unpaired-tool"),
-                origin=Provider.CODEX,
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=0,
                 event_type="function_call",
                 timestamp=started_at,

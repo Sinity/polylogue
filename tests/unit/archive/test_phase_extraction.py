@@ -8,6 +8,7 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
 from polylogue.archive.phase.extraction import extract_phases
 from polylogue.archive.session.events import SessionEvent
+from polylogue.core.sources import origin_from_provider
 from polylogue.types import Provider, SessionEventId, SessionId
 from tests.infra.builders import make_conv, make_msg
 
@@ -34,7 +35,7 @@ def test_extract_phases_falls_back_to_session_events_when_messages_have_no_times
             SessionEvent(
                 id=SessionEventId("conv-codex-no-msg-ts:event-0"),
                 session_id=SessionId("conv-codex-no-msg-ts"),
-                origin=Provider.CODEX,
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=0,
                 event_type="function_call",
                 timestamp=started_at,
@@ -43,7 +44,7 @@ def test_extract_phases_falls_back_to_session_events_when_messages_have_no_times
             SessionEvent(
                 id=SessionEventId("conv-codex-no-msg-ts:event-1"),
                 session_id=SessionId("conv-codex-no-msg-ts"),
-                origin=Provider.CODEX,
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=1,
                 event_type="function_call_output",
                 timestamp=ended_at,
@@ -76,7 +77,7 @@ def test_extract_phases_splits_session_events_on_idle_gap() -> None:
             SessionEvent(
                 id=SessionEventId(f"conv-codex-bursts:event-{i}"),
                 session_id=SessionId("conv-codex-bursts"),
-                origin=Provider.CODEX,
+                origin=origin_from_provider(Provider.CODEX),
                 event_index=i,
                 event_type="function_call",
                 timestamp=ts,
@@ -127,7 +128,7 @@ def test_extract_phases_prefers_message_timestamps_when_present() -> None:
             SessionEvent(
                 id=SessionEventId("conv-claude-code:event-0"),
                 session_id=SessionId("conv-claude-code"),
-                origin=Provider.CLAUDE_CODE,
+                origin=origin_from_provider(Provider.CLAUDE_CODE),
                 event_index=0,
                 event_type="session_meta",
                 timestamp=started_at - timedelta(hours=10),

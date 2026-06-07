@@ -312,7 +312,7 @@ class TestParsingServiceCorruption:
         result = ingest_record(record, str(tmp_path / "archive"), "off")
         assert result.error is None
         if result.sessions:
-            assert result.sessions[0].source_name in ("codex", "codex-cli")
+            assert result.sessions[0].parsed_session.source_name in ("codex", "codex-cli")
 
     def test_truncated_jsonl_line_in_codex_raw(self, tmp_path: Path) -> None:
         """Codex JSONL with 1 truncated line: parsing succeeds."""
@@ -719,8 +719,8 @@ class TestRerunIdempotency:
         assert len(result_1.sessions) == len(result_2.sessions)
         for conv1, conv2 in zip(result_1.sessions, result_2.sessions, strict=True):
             assert conv1.session_id == conv2.session_id
-            assert conv1.source_name == conv2.source_name
-            assert len(conv1.message_tuples) == len(conv2.message_tuples)
+            assert conv1.parsed_session.source_name == conv2.parsed_session.source_name
+            assert conv1.message_count == conv2.message_count
 
     def test_reparse_with_corruption_then_clean(self, tmp_path: Path) -> None:
         """First parse with corruption, second with clean data — both succeed."""

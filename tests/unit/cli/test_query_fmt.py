@@ -647,7 +647,7 @@ class TestListFormatting:
             id=SessionId("gemini:gemini-20250422-1234"),
             origin=Origin.AISTUDIO_DRIVE,
             title="gemini-20250422-1234",
-            provider_meta={"display_label": "Project Plan: Please review the attached project plan."},
+            metadata={"title": "Project Plan: Please review the attached project plan."},
             created_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
             updated_at=datetime(2025, 6, 2, tzinfo=timezone.utc),
         )

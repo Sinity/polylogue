@@ -466,6 +466,7 @@ class TestProfileCompactionCounting:
         from polylogue.archive.session.domain_models import Session
         from polylogue.archive.session.events import SessionEvent
         from polylogue.archive.session.runtime import build_session_profile
+        from polylogue.core.sources import origin_from_provider
         from polylogue.types import Provider, SessionEventId, SessionId
 
         session = Session(
@@ -477,7 +478,7 @@ class TestProfileCompactionCounting:
                 SessionEvent(
                     id=SessionEventId("claude-code:session-1:session-event:000000"),
                     session_id=SessionId("claude-code:session-1"),
-                    origin=Provider.CLAUDE_CODE,
+                    origin=origin_from_provider(Provider.CLAUDE_CODE),
                     event_index=0,
                     event_type="compaction",
                     payload={"summary": "Earlier context"},
@@ -485,7 +486,7 @@ class TestProfileCompactionCounting:
                 SessionEvent(
                     id=SessionEventId("claude-code:session-1:session-event:000001"),
                     session_id=SessionId("claude-code:session-1"),
-                    origin=Provider.CLAUDE_CODE,
+                    origin=origin_from_provider(Provider.CLAUDE_CODE),
                     event_index=1,
                     event_type="turn_context",
                     payload={},

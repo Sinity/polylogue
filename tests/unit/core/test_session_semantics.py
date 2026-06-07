@@ -184,7 +184,6 @@ class TestMessageSemanticProjection:
             name="doc.pdf",
             mime_type="application/pdf",
             size_bytes=5000,
-            provider_meta={"uploaded_by": "user"},
         )
         thinking = make_msg(
             id="m-thinking",
@@ -200,9 +199,8 @@ class TestMessageSemanticProjection:
         )
         msg = make_msg(id="m-user", role="user", text="Review this", attachments=[attachment])
 
-        assert msg.attachments[0].provider_meta is not None
-        assert msg.attachments[0].provider_meta is not None
-        assert msg.attachments[0].provider_meta["uploaded_by"] == "user"
+        assert msg.attachments[0].name == "doc.pdf"
+        assert msg.attachments[0].mime_type == "application/pdf"
         assert thinking.is_thinking is True
         assert tool.is_tool_use is True
 

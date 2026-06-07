@@ -7,7 +7,9 @@ verifies the pipeline recovers, logs, or surfaces the error cleanly.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import sqlite3
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +34,9 @@ from polylogue.sources.parsers.base import (
     RawSessionData,
 )
 from polylogue.storage.runtime import RawSessionRecord
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.types import ContentBlockType, Provider, ValidationStatus
 from tests.infra.strategies import (
@@ -180,7 +185,7 @@ def test_parse_mixed_valid_invalid_jsonl_lines(tmp_path: Path) -> None:
     result = ingest_record(record, str(tmp_path / "archive"), "off")
     assert result.sessions is not None
     if result.sessions:
-        assert result.sessions[0].source_name == "claude-code"
+        assert result.sessions[0].parsed_session.source_name == "claude-code"
 
 
 # ---------------------------------------------------------------------------
@@ -641,9 +646,16 @@ def test_ingest_worker_reuses_schema_resolution_and_skips_drift_walk(
     assert observed["include_drift"] is False
 
 
-def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: Path) -> None:
-    from polylogue.pipeline.services.ingest_worker import _transform_to_tuples
+def _open_index_archive(tmp_path: Path) -> sqlite3.Connection:
+    index_path = tmp_path / "archive" / "index.db"
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(index_path)
+    conn.row_factory = sqlite3.Row
+    initialize_archive_tier(conn, ArchiveTier.INDEX)
+    return conn
 
+
+def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: Path) -> None:
     session = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="tool-conv-1",
@@ -669,20 +681,27 @@ def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: 
         attachments=[],
     )
 
-    cdata = _transform_to_tuples(
-        session,
-        source_name="test-source",
-        archive_root=tmp_path / "archive",
-        raw_id="raw-1",
-    )
+    conn = _open_index_archive(tmp_path)
+    try:
+        session_id = write_parsed_session_to_archive(
+            conn,
+            session,
+            content_hash=hashlib.sha256(b"tool-conv-1").hexdigest(),
+            raw_id="raw-1",
+        )
+        message_hashes = conn.execute(
+            "SELECT content_hash FROM messages WHERE session_id = ?", (session_id,)
+        ).fetchall()
+        action_count = conn.execute("SELECT COUNT(*) FROM actions WHERE session_id = ?", (session_id,)).fetchone()[0]
+    finally:
+        conn.close()
 
-    assert cdata.message_tuples[0][6]
-    assert len(cdata.action_tuples) == 1
+    assert len(message_hashes) == 1
+    assert message_hashes[0]["content_hash"]
+    assert action_count == 1
 
 
 def test_transform_deduplicates_materialized_message_rows_by_primary_key(tmp_path: Path) -> None:
-    from polylogue.pipeline.services.ingest_worker import _transform_to_tuples
-
     session = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="duplicate-message-conv",
@@ -708,19 +727,27 @@ def test_transform_deduplicates_materialized_message_rows_by_primary_key(tmp_pat
         attachments=[],
     )
 
-    cdata = _transform_to_tuples(
-        session,
-        source_name="test-source",
-        archive_root=tmp_path / "archive",
-        raw_id="raw-1",
-    )
+    conn = _open_index_archive(tmp_path)
+    try:
+        session_id = write_parsed_session_to_archive(
+            conn,
+            session,
+            content_hash=hashlib.sha256(b"duplicate-message-conv").hexdigest(),
+            raw_id="raw-1",
+        )
+        message_rows = conn.execute("SELECT native_id FROM messages WHERE session_id = ?", (session_id,)).fetchall()
+        block_rows = conn.execute("SELECT text FROM blocks WHERE session_id = ?", (session_id,)).fetchall()
+        session_message_count = conn.execute(
+            "SELECT message_count FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
 
-    assert len(cdata.message_tuples) == 1
-    assert cdata.message_tuples[0][4] is None
-    assert len(cdata.block_tuples) == 1
-    assert cdata.block_tuples[0][5] == "newer text"
-    assert cdata.stats_tuple
-    assert cdata.stats_tuple[2] == 1
+    assert len(message_rows) == 1
+    assert message_rows[0]["native_id"] == "msg-1"
+    assert len(block_rows) == 1
+    assert block_rows[0]["text"] == "newer text"
+    assert session_message_count == 1
 
 
 def test_ingest_record_streams_codex_jsonl_without_full_envelope_decode(tmp_path: Path) -> None:
@@ -749,7 +776,7 @@ def test_ingest_record_streams_codex_jsonl_without_full_envelope_decode(tmp_path
 
     assert result.error is None
     assert len(result.sessions) == 1
-    assert result.sessions[0].source_name == "codex"
+    assert result.sessions[0].parsed_session.source_name == "codex"
 
 
 def test_ingest_record_streams_detected_codex_jsonl_without_full_envelope_decode(tmp_path: Path) -> None:
@@ -770,7 +797,7 @@ def test_ingest_record_streams_detected_codex_jsonl_without_full_envelope_decode
 
     assert result.error is None
     assert len(result.sessions) == 1
-    assert result.sessions[0].source_name == "codex"
+    assert result.sessions[0].parsed_session.source_name == "codex"
 
 
 def test_ingest_record_stream_plan_trusts_known_provider(tmp_path: Path) -> None:
@@ -791,4 +818,4 @@ def test_ingest_record_stream_plan_trusts_known_provider(tmp_path: Path) -> None
 
     assert result.error is None
     assert len(result.sessions) == 1
-    assert result.sessions[0].source_name == "codex"
+    assert result.sessions[0].parsed_session.source_name == "codex"

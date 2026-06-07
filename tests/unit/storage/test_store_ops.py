@@ -168,7 +168,7 @@ def _session_record(
 ) -> SessionRecord:
     return SessionRecord(
         session_id=_session_id(session_id),
-        origin=origin,
+        origin=Origin.from_string(origin),
         native_id=native_id,
         title=title,
         created_at=created_at,

@@ -307,7 +307,7 @@ def _assert_roundtrip(
     # ``_assert_roundtrip`` docstring in ``test_parsers_claude_ai_catalog``
     # for the rationale (sync store_records does not yet propagate the
     # bundle's block rows into MessageRecord.content_blocks).
-    observed_kinds = {str(b.type) for b in roundtrip.transform.bundle.content_blocks}
+    observed_kinds = {str(b.type) for m in roundtrip.transform.session.messages for b in m.content_blocks}
 
     block_types_any_of = expectations.get("block_types_any_of")
     if block_types_any_of is not None:
@@ -328,7 +328,7 @@ def _assert_roundtrip(
     # Attachments.
     expected_min_attachments = expectations.get("min_attachments")
     if expected_min_attachments is not None:
-        attachments = list(roundtrip.transform.bundle.attachments)
+        attachments = list(roundtrip.transform.session.attachments)
         assert len(attachments) >= expected_min_attachments, (
             f"[{label}] expected ≥{expected_min_attachments} attachments, got {len(attachments)}"
         )

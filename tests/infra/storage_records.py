@@ -862,7 +862,8 @@ def _record_to_parsed_session(
 
     parsed_messages = [
         ParsedMessage(
-            provider_message_id=_provider_message_id(message.provider_message_id or message.message_id),
+            provider_message_id=_provider_message_id(message.provider_message_id or message.message_id)
+            or str(message.message_id),
             role=message.role if message.role is not None else Role.USER,
             text=message.text,
             content_blocks=_blocks(message),
@@ -895,11 +896,8 @@ def _record_to_parsed_session(
         for attachment in attachments
     ]
     working_directories_raw = session.working_directories_json
-    working_directories = (
-        [item for item in loads(working_directories_raw) if isinstance(item, str)]
-        if isinstance(working_directories_raw, str)
-        else []
-    )
+    parsed_wds = loads(working_directories_raw) if isinstance(working_directories_raw, str) else None
+    working_directories = [item for item in parsed_wds if isinstance(item, str)] if isinstance(parsed_wds, list) else []
 
     return ParsedSession(
         source_name=provider_from_origin(session.origin),
@@ -937,7 +935,8 @@ async def save_current_archive_records(
     """Seed current archive rows through the parsed-session writer."""
 
     parsed = _record_to_parsed_session(session, messages, attachments)
-    return await repository.save_parsed_session(parsed, _writer_hash(session.content_hash))
+    result: dict[str, int] = await repository.save_parsed_session(parsed, _writer_hash(session.content_hash))
+    return result
 
 
 # =============================================================================

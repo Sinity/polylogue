@@ -45,7 +45,7 @@ def _seed(
     if updated_at is not None:
         builder.updated_at(updated_at)
     if provider_meta is not None:
-        builder.provider_meta(provider_meta)
+        builder.metadata(provider_meta)
     for msg in messages or []:
         builder.add_message(**msg)  # type: ignore[arg-type]
     builder.save()
@@ -428,7 +428,7 @@ class TestPolylogueArchiveInsights:
             SessionBuilder(db_path, "conv-root")
             .provider("claude-code")
             .title("Root Thread")
-            .provider_meta({"total_cost_usd": 1.25, "model": "claude-sonnet-4-5"})
+            .metadata({"total_cost_usd": 1.25, "model": "claude-sonnet-4-5"})
             .updated_at("2026-03-01T10:10:00+00:00")
             .add_message(
                 "u1",

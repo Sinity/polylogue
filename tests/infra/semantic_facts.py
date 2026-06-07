@@ -138,7 +138,7 @@ class SessionFacts:
         has_thinking = any(m.has_thinking for m in msg_records)
         return cls(
             session_id=str(conv_record.session_id),
-            provider=_provider_token(str(conv_record.source_name)),
+            provider=_provider_token(conv_record.origin.value),
             title=conv_record.title,
             message_count=len(msg_records),
             role_multiset=dict(roles),

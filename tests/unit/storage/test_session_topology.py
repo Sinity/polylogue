@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.api import Polylogue
+from polylogue.core.enums import Origin
 from polylogue.insights.topology import (
     SessionTopology,
     TopologyEdgeKind,
@@ -164,14 +165,14 @@ def test_topology_sync_derivation_cycle_detected() -> None:
 
     a = SessionRecord(
         session_id=SessionId("A"),
-        origin="unknown-export",
+        origin=Origin.from_string("unknown-export"),
         native_id="ext-A",
         content_hash=ContentHash("hash-a"),
         parent_session_id=SessionId("B"),
     )
     b = SessionRecord(
         session_id=SessionId("B"),
-        origin="unknown-export",
+        origin=Origin.from_string("unknown-export"),
         native_id="ext-B",
         content_hash=ContentHash("hash-b"),
         parent_session_id=SessionId("A"),
@@ -194,13 +195,13 @@ def test_topology_sync_derivation_resolves_full_tree() -> None:
 
     root = SessionRecord(
         session_id=SessionId("root"),
-        origin="codex-session",
+        origin=Origin.from_string("codex-session"),
         native_id="ext-root",
         content_hash=ContentHash("h-root"),
     )
     cont = SessionRecord(
         session_id=SessionId("cont"),
-        origin="codex-session",
+        origin=Origin.from_string("codex-session"),
         native_id="ext-cont",
         content_hash=ContentHash("h-cont"),
         parent_session_id=SessionId("root"),

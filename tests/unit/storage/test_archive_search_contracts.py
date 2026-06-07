@@ -34,8 +34,8 @@ from polylogue.types import ContentHash, Provider, SessionId
 def _session_record(session_id: str, *, title: str, source_name: str = "chatgpt") -> SessionRecord:
     return SessionRecord(
         session_id=SessionId(session_id),
-        source_name=source_name,
-        provider_session_id=f"provider-{session_id}",
+        origin=origin_from_provider(Provider.from_string(source_name)),
+        native_id=f"provider-{session_id}",
         title=title,
         content_hash=ContentHash(hashlib.sha256(f"hash-{session_id}".encode()).hexdigest()),
     )
@@ -125,7 +125,7 @@ class _FakeRepo(RepositoryArchiveSearchMixin):
         return [
             Session(
                 id=SessionId(str(record.session_id)),
-                origin=origin_from_provider(Provider.from_string(record.source_name)),
+                origin=record.origin,
                 messages=MessageCollection.empty(),
                 title=record.title,
             )

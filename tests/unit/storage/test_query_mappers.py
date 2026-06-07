@@ -10,6 +10,7 @@ import sqlite3
 
 import pytest
 
+from polylogue.core.enums import Origin
 from polylogue.errors import DatabaseError
 from polylogue.storage.runtime import (
     MessageRecord,
@@ -131,14 +132,13 @@ class TestRowToSession:
         row = make_row(
             {
                 "session_id": "conv-1",
-                "source_name": "claude-ai",
-                "provider_session_id": "ext-conv-1",
+                "origin": "claude-ai-export",
+                "native_id": "ext-conv-1",
                 "title": "Test Chat",
                 "created_at": "2024-01-01T00:00:00Z",
                 "updated_at": "2024-01-02T00:00:00Z",
                 "sort_key": None,
                 "content_hash": "abcdef1234567890",
-                "provider_meta": None,
                 "metadata": None,
                 "version": 1,
                 "parent_session_id": None,
@@ -149,27 +149,26 @@ class TestRowToSession:
         result = _row_to_session(row)
         assert isinstance(result, SessionRecord)
         assert result.session_id == "conv-1"
-        assert result.source_name == "claude-ai"
+        assert result.origin == Origin.from_string("claude-ai-export")
         assert result.title == "Test Chat"
         assert result.content_hash == "abcdef1234567890"
 
-    def test_maps_json_provider_meta(self: object) -> None:
-        """JSON provider_meta is parsed from string."""
+    def test_maps_json_metadata(self: object) -> None:
+        """JSON metadata is parsed from string."""
         import json
 
         meta = {"model": "claude-3"}
         row = make_row(
             {
                 "session_id": "conv-2",
-                "source_name": "claude-ai",
-                "provider_session_id": "ext-2",
+                "origin": "claude-ai-export",
+                "native_id": "ext-2",
                 "title": "With Meta",
                 "created_at": None,
                 "updated_at": None,
                 "sort_key": None,
                 "content_hash": "hash123456789abc",
-                "provider_meta": json.dumps(meta),
-                "metadata": None,
+                "metadata": json.dumps(meta),
                 "version": 1,
                 "parent_session_id": None,
                 "branch_type": None,
@@ -177,7 +176,7 @@ class TestRowToSession:
             }
         )
         result = _row_to_session(row)
-        assert result.provider_meta == {"model": "claude-3"}
+        assert result.metadata == {"model": "claude-3"}
 
 
 # =============================================================================

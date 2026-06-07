@@ -183,7 +183,7 @@ def test_build_session_profile_normalizes_repo_roots_from_workdirs_and_tool_path
         title="Normalization",
         created_at=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
         updated_at=datetime(2026, 3, 24, 10, 5, tzinfo=timezone.utc),
-        provider_meta={"working_directories": [str(REPO_ROOT)]},
+        working_directories=(str(REPO_ROOT),),
         messages=MessageCollection(
             messages=[
                 Message(
@@ -224,7 +224,8 @@ def test_extract_attribution_preserves_repo_name_from_provider_git_remote() -> N
         title="Provider Git Remote",
         created_at=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
         updated_at=datetime(2026, 3, 24, 10, 5, tzinfo=timezone.utc),
-        provider_meta={"git": {"branch": "master", "repository_url": "git@github.com:Sinity/sinex.git"}},
+        git_branch="master",
+        git_repository_url="git@github.com:Sinity/sinex.git",
         messages=MessageCollection(
             messages=[
                 Message(
@@ -256,7 +257,7 @@ def test_extract_attribution_ignores_configured_claude_transcript_repo(tmp_path:
         title="Transcript repo noise",
         created_at=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
         updated_at=datetime(2026, 3, 24, 10, 5, tzinfo=timezone.utc),
-        provider_meta={"working_directories": [str(transcript_repo)]},
+        working_directories=(str(transcript_repo),),
         messages=MessageCollection(
             messages=[
                 Message(

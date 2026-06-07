@@ -155,7 +155,6 @@ def sparse_session(draw: st.DrawFn) -> Session:
         messages=MessageCollection(messages=messages),
         created_at=draw(_timestamp_or_none),
         updated_at=draw(_timestamp_or_none),
-        provider_meta=draw(st.one_of(st.none(), st.just({}))),
         metadata=draw(
             st.one_of(
                 st.just({}),

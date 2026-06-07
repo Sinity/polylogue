@@ -170,7 +170,6 @@ def _build_reader_c1(workspace: ReaderWorkspace, *, attachments: bool = False) -
         SessionBuilder(index_db_path(workspace), "reader-c1")
         .provider("claude-code")
         .title("MK3 reader target contract")
-        .provider_meta({"repo": "polylogue", "cwd_display": "project/polylogue", "model": "claude-sonnet"})
         .created_at("2026-05-15T00:00:00+00:00")
         .updated_at("2026-05-15T00:02:00+00:00")
         .add_message(
@@ -215,7 +214,7 @@ def _build_reader_c1(workspace: ReaderWorkspace, *, attachments: bool = False) -
                 mime_type=mime_type,
                 size_bytes=size_bytes,
                 path=path,
-                provider_meta=meta,
+                display_name=str(meta["name"]),
             )
     builder.save()
 
@@ -240,7 +239,6 @@ def seed_reader_diff_paste(workspace: ReaderWorkspace) -> None:
         SessionBuilder(index_db_path(workspace), "reader-c3")
         .provider("claude-ai")
         .title("Paste and privacy fixture")
-        .provider_meta({"repo": "polylogue", "cwd_display": "project/polylogue", "model": "claude"})
         .created_at("2026-05-15T00:04:00+00:00")
         .updated_at("2026-05-15T00:05:00+00:00")
         .add_message(
@@ -270,7 +268,6 @@ def _build_reader_sessions(workspace: ReaderWorkspace) -> None:
         SessionBuilder(db, "reader-c2")
         .provider("chatgpt")
         .title("No-results smoke seed")
-        .provider_meta({"repo": "polylogue", "cwd_display": "project/polylogue", "model": "gpt"})
         .created_at("2026-05-15T00:03:00+00:00")
         .updated_at("2026-05-15T00:03:00+00:00")
         .add_message(
@@ -285,7 +282,6 @@ def _build_reader_sessions(workspace: ReaderWorkspace) -> None:
         SessionBuilder(db, "reader-c3")
         .provider("claude-ai")
         .title("Paste and privacy fixture")
-        .provider_meta({"repo": "polylogue", "cwd_display": "project/polylogue", "model": "claude"})
         .created_at("2026-05-15T00:04:00+00:00")
         .updated_at("2026-05-15T00:04:00+00:00")
         .add_message(

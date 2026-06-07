@@ -67,9 +67,9 @@ class TestMessageCountPreservation:
         source_name, raw_bytes, unique_id = data
         roundtrip = parse_and_transform_payload(source_name, raw_bytes, workspace_env["archive_root"], unique_id)
 
-        assert len(roundtrip.transform.bundle.messages) == len(roundtrip.parsed.messages), (
+        assert len(roundtrip.transform.session.messages) == len(roundtrip.parsed.messages), (
             f"Transform changed message count: {len(roundtrip.parsed.messages)} → "
-            f"{len(roundtrip.transform.bundle.messages)}"
+            f"{len(roundtrip.transform.session.messages)}"
         )
 
     @given(data=synthetic_payload())
@@ -185,31 +185,28 @@ class TestIdempotentReimport:
         source_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
+        from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
         from polylogue.storage.sqlite.connection import open_connection
-        from tests.infra.storage_records import store_records
 
         with open_connection(db_path) as conn:
             result = parse_and_transform_payload(
                 source_name, raw_bytes, workspace_env["archive_root"], unique_id
             ).transform
-            bundle = result.bundle
 
-            store_records(
-                session=bundle.session,
-                messages=bundle.messages,
-                attachments=bundle.attachments,
-                conn=conn,
-            )
+            session_id = write_parsed_session_to_archive(conn, result.session, content_hash=result.content_hash)
+            first_sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+            first_messages = conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
+            ).fetchone()[0]
 
-            counts2 = store_records(
-                session=bundle.session,
-                messages=bundle.messages,
-                attachments=bundle.attachments,
-                conn=conn,
-            )
+            write_parsed_session_to_archive(conn, result.session, content_hash=result.content_hash)
+            second_sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+            second_messages = conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
+            ).fetchone()[0]
 
-            assert counts2["sessions"] == 0, "Re-import should not re-insert session"
-            assert counts2["messages"] == 0, "Re-import should not re-insert messages"
+            assert second_sessions == first_sessions, "Re-import should not re-insert session"
+            assert second_messages == first_messages, "Re-import should not re-insert messages"
 
 
 # ---------------------------------------------------------------------------

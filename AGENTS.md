@@ -894,8 +894,8 @@ attachments, exports):
 
 - Archive SQLite file set, WAL mode.
 - Schema is fresh-first: version mismatches are rejected and the affected tier
-  is rebuilt from source/user evidence. `SCHEMA_VERSION` lives in
-  `storage/sqlite/schema_ddl.py`.
+  is rebuilt from source/user evidence. Tier DDL and versions live under
+  `storage/sqlite/archive_tiers/`.
 - FTS5 with `unicode61` tokenizer (no porter stemmer in this SQLite build).
 
 ## Placement Rules
@@ -948,7 +948,7 @@ debugging landmarks. For the conceptual system shape, see
 | Content hash uses NFC normalization | `core/hashing.py:hash_text()` |
 | Async SQLite is the primary runtime; sync SQLite exists for CLI, schema tooling, and batch-ingest write paths | `storage/sqlite/async_sqlite.py`, `storage/sqlite/connection.py`, `pipeline/services/ingest_batch.py` |
 | SQLite read/write tuning is profile-driven, not backend-local | `storage/sqlite/connection_profile.py` |
-| FTS tokenizer is `unicode61` (no porter stemmer) | `storage/sqlite/schema_ddl_archive.py` |
+| FTS tokenizer is `unicode61` (no porter stemmer) | `storage/sqlite/archive_tiers/index.py` |
 | Schema bootstrap branching is shared across sync and async backends | `storage/sqlite/schema_bootstrap.py:decide_schema_bootstrap()` |
 
 ## Hot Files
@@ -967,7 +967,7 @@ debugging landmarks. For the conceptual system shape, see
 
 | File | Purpose |
 | --- | --- |
-| `storage/sqlite/schema_ddl.py` | Schema definition and `SCHEMA_VERSION` |
+| `storage/sqlite/archive_tiers/` | Current split archive DDL and tier versions |
 | `storage/sqlite/schema.py` | Shared sync/async fresh-init, version guard, and extension application |
 | `storage/sqlite/schema_bootstrap.py` | Shared schema snapshot, bootstrap branching, and extension planning |
 | `storage/sqlite/connection_profile.py` | Canonical read/write SQLite timeouts, cache, mmap, and PRAGMA profiles |
@@ -1018,12 +1018,12 @@ Run `devtools render-all` to update the generated catalog in
 Polylogue has no in-place schema upgrade chain. The runtime knows exactly one
 schema shape:
 
-- `SCHEMA_VERSION` constant in `storage/sqlite/schema_ddl.py` is the
-  authority. The canonical schema is described directly by `SCHEMA_DDL`;
+- Tier version constants under `storage/sqlite/archive_tiers/` are the
+  authority. The canonical schema is described directly by each tier DDL;
   there are no upgrade plans, no `build_vN_to_vM_*` helpers, and no
   chain-dispatch logic in `schema_bootstrap.py`.
 - On startup the on-disk `PRAGMA user_version` is compared against the
-  constant:
+  tier constant:
   - **Empty file** (`user_version == 0`): bootstrap fresh.
   - **Version match**: open as-is.
   - **Anything else** (older or newer): the database is rejected.
@@ -1033,9 +1033,8 @@ schema shape:
   which re-acquires from the source archives and rebuilds the canonical
   archive.
 - Schema bumps are deletes-then-defines, never deltas. A schema change
-  is a single PR that edits `schema_ddl*.py`, bumps `SCHEMA_VERSION`,
-  and documents the re-ingest expectation. No upgrade helpers are
-  added for the bump.
+  edits the owning tier DDL/version and documents the re-ingest expectation.
+  No upgrade helpers are added for the bump.
 - Provider schemas (the parsing/validation surface, distinct from the
   storage schema) are still regenerated fresh via
   `devtools schema-generate` and promoted via `devtools schema-promote`.
@@ -1152,7 +1151,7 @@ record of which contract applies where.
 | --- | --- | --- |
 | JSON byte decoding | `polylogue/sources/decoder_json.py:decode_json_bytes` | UTF-8 BOM and BOM-bearing UTF-16 are decoded and the BOM is stripped; raw UTF-16 without a BOM is unsupported by design. |
 | Content hash | `polylogue/core/hashing.py:hash_text`, `polylogue/pipeline/ids.py` | NFC normalization is applied to text fields (title, message text) before hashing, so NFC and NFD inputs produce identical `content_hash`. Lone surrogates raise `UnicodeEncodeError` (typed rejection — not silent corruption). |
-| FTS5 indexing | `polylogue/storage/sqlite/schema_ddl_archive.py` (unicode61) | Text is stored and indexed unchanged. RTL scripts (Arabic, Hebrew) and Latin-with-diacritics are word-tokenized; CJK runs index as a single token (substring queries against CJK are not supported). Zero-width and bidi characters pass through without crashing indexing. |
+| FTS5 indexing | `polylogue/storage/sqlite/archive_tiers/index.py` (`messages_fts`, unicode61) | Block search text is stored and indexed unchanged. RTL scripts (Arabic, Hebrew) and Latin-with-diacritics are word-tokenized; CJK runs index as a single token (substring queries against CJK are not supported). Zero-width and bidi characters pass through without crashing indexing. |
 | FTS5 query escaping | `polylogue/storage/search/query_support.py:escape_fts5_query` | Every edge-case input produces a `MATCH`-safe query — bidi, zero-width, RTL, CJK, surrogate-pair emoji never raise `OperationalError`. |
 | Terminal output | UTF-8 `TextIOWrapper` | All matrix strings pass through unchanged; lone surrogates raise `UnicodeEncodeError`. |
 
@@ -1353,9 +1352,9 @@ The report has a stable top-level shape carrying its `report_version`,
 - `convergence_stage_timings` — min/max/sum/mean parse/convergence/read-
   amplification stats over completed attempts.
 - `boundary_table_counts` — row counts for the daemon-relevant tables
-  (`raw_sessions`, `sessions`, `messages`, `content_blocks`,
-  `artifact_observations`, `messages_fts_docsize`, `action_events`,
-  `action_events_fts_docsize`, `message_embeddings`, `session_profile`,
+  (`raw_sessions`, `sessions`, `messages`, `blocks`,
+  `artifact_observations`, `messages_fts_docsize`, `actions`,
+  `message_embeddings`, `session_profile`,
   `live_ingest_attempt`, `live_convergence_debt`, `pending_blob_refs`).
   Missing tables surface as `-1` rather than crashing the probe.
 - `archive_tiers` — archive inventory for `source.db`,
@@ -1366,8 +1365,8 @@ The report has a stable top-level shape carrying its `report_version`,
   oldest `acquired_at`. See the lease/GC concurrency model above.
 - `gc_state` — high-water `gc_generations` row, `last_completed_at`,
   total generation count.
-- `fts_trigger_state` — the six expected FTS sync triggers
-  (`messages_fts_a{i,d,u}`, `action_events_fts_a{i,d,u}`) with
+- `fts_trigger_state` — the three expected FTS sync triggers
+  (`messages_fts_a{i,d,u}`) with
   `present`, `missing`, and `all_present` fields. A missing trigger means
   FTS index drift risk (suspended during bulk operations and not
   restored, for example).
@@ -1566,7 +1565,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify-lane-assertions` | Verify scenario lanes classified as SEMANTIC_OUTPUT carry semantic assertions. |
 | `devtools verify-layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
 | `devtools verify-manifests` | Verify internal consistency across all docs/plans/*.yaml manifest files. |
-| `devtools verify-provider-meta-policy` | Enforce the provider_meta classification policy declared in docs/plans/provider-meta-policy.yaml. |
 | `devtools verify-schema-roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
 | `devtools verify-schema-upgrade-lane` | Reject in-place storage schema upgrade helpers (#1302). |
 | `devtools verify-slos` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |

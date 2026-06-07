@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import TypeAlias
 
 from polylogue.api import Polylogue
-from polylogue.core.enums import ContentBlockType, Role
-from polylogue.core.json import JSONDocument, JSONValue, json_document, loads, require_json_document
+from polylogue.core.enums import ContentBlockType, Origin, Role
+from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 from polylogue.storage.hydrators import session_from_records
 from polylogue.storage.runtime import AttachmentRecord, ContentBlockRecord, MessageRecord, SessionRecord
 from polylogue.types import AttachmentId, ContentHash, MessageId, SessionId
@@ -196,7 +196,6 @@ class ArchiveScenario:
                     mime_type=attachment.mime_type,
                     size_bytes=attachment.size_bytes,
                     path=attachment.path,
-                    provider_meta=attachment.provider_meta,
                 )
         builder.save()
         # Native user tags live in ``user.db`` ``session_tags`` keyed by the
@@ -234,53 +233,66 @@ class ArchiveScenario:
         directly (keyed by the generated session id) and projects them into
         the storage-record shape consumed by ``SessionFacts.from_records``.
         """
-        session_id = self.native_session_id
-        session_row = conn.execute(
-            "SELECT session_id, origin, title FROM sessions WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        if session_row is None:
-            raise AssertionError(f"Scenario session {self.resolved_session_id!r} was not seeded")
-        conv_record = SessionRecord(
-            session_id=SessionId(session_id),
-            provider_session_id=f"ext-{self.resolved_session_id}",
-            source_name=self.provider,
-            title=session_row["title"],
-            content_hash=ContentHash(session_id),
-        )
-        msg_rows = conn.execute(
-            """
-            SELECT message_id, role, position, word_count, has_tool_use, has_thinking
-            FROM messages
-            WHERE session_id = ?
-            ORDER BY position, variant_index
-            """,
-            (session_id,),
-        ).fetchall()
-        content_blocks_by_message = _content_blocks_by_message(conn, session_id)
-        msg_records = [
-            MessageRecord(
-                message_id=MessageId(row["message_id"]),
-                session_id=SessionId(session_id),
-                source_name=self.provider,
-                role=Role(str(row["role"])),
-                text=_message_text(content_blocks_by_message.get(str(row["message_id"]), [])),
-                content_hash=ContentHash(str(row["message_id"])),
-                word_count=int(row["word_count"] or 0),
-                has_tool_use=int(row["has_tool_use"] or 0),
-                has_thinking=int(row["has_thinking"] or 0),
-                content_blocks=content_blocks_by_message.get(str(row["message_id"]), []),
-            )
-            for row in msg_rows
-        ]
-        attachment_records = _attachment_records_for_session(conn, session_id)
-        return conv_record, msg_records, attachment_records
+        return read_session_records(conn, self.native_session_id)
 
     async def facts_from_archive(self, archive: Polylogue) -> SessionFacts:
         session = await archive.get_session(self.native_session_id)
         if session is None:
             raise AssertionError(f"Scenario session {self.resolved_session_id!r} not found through facade")
         return SessionFacts.from_domain_session(session)
+
+
+def read_session_records(
+    conn: sqlite3.Connection,
+    session_id: str,
+) -> tuple[SessionRecord, list[MessageRecord], list[AttachmentRecord]]:
+    """Read storage records for one archive session id from an ``index.db`` connection.
+
+    Reads the archive ``sessions`` / ``messages`` / ``blocks`` / attachment
+    tables directly and projects them into the storage-record shape consumed
+    by ``SessionFacts.from_records`` and ``session_from_records``.
+    """
+    session_row = conn.execute(
+        "SELECT session_id, native_id, origin, title FROM sessions WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    if session_row is None:
+        raise AssertionError(f"Session {session_id!r} was not seeded")
+    origin = Origin.from_string(str(session_row["origin"]))
+    conv_record = SessionRecord(
+        session_id=SessionId(session_id),
+        native_id=str(session_row["native_id"]),
+        origin=origin,
+        title=session_row["title"],
+        content_hash=ContentHash(session_id),
+    )
+    msg_rows = conn.execute(
+        """
+        SELECT message_id, role, position, word_count, has_tool_use, has_thinking
+        FROM messages
+        WHERE session_id = ?
+        ORDER BY position, variant_index
+        """,
+        (session_id,),
+    ).fetchall()
+    content_blocks_by_message = _content_blocks_by_message(conn, session_id)
+    msg_records = [
+        MessageRecord(
+            message_id=MessageId(row["message_id"]),
+            session_id=SessionId(session_id),
+            source_name=origin.value,
+            role=Role(str(row["role"])),
+            text=_message_text(content_blocks_by_message.get(str(row["message_id"]), [])),
+            content_hash=ContentHash(str(row["message_id"])),
+            word_count=int(row["word_count"] or 0),
+            has_tool_use=int(row["has_tool_use"] or 0),
+            has_thinking=int(row["has_thinking"] or 0),
+            content_blocks=content_blocks_by_message.get(str(row["message_id"]), []),
+        )
+        for row in msg_rows
+    ]
+    attachment_records = _attachment_records_for_session(conn, session_id)
+    return conv_record, msg_records, attachment_records
 
 
 def _default_timestamp() -> str:
@@ -316,10 +328,10 @@ def _attachment_records_for_session(conn: sqlite3.Connection, session_id: str) -
             a.attachment_id,
             ar.session_id,
             ar.message_id,
-            a.mime_type,
-            a.size_bytes,
-            a.path,
-            a.provider_meta
+            a.media_type,
+            a.byte_count,
+            a.display_name,
+            ar.source_url
         FROM attachment_refs ar
         JOIN attachments a ON a.attachment_id = ar.attachment_id
         WHERE ar.session_id = ?
@@ -333,7 +345,7 @@ def _attachment_records_for_session(conn: sqlite3.Connection, session_id: str) -
 def _content_blocks_by_message(conn: sqlite3.Connection, session_id: str) -> dict[str, list[ContentBlockRecord]]:
     rows = conn.execute(
         """
-        SELECT message_id, position, block_type, text, tool_name, tool_id, tool_input, semantic_type, metadata
+        SELECT message_id, position, block_type, text, tool_name, tool_id, tool_input, semantic_type
         FROM blocks
         WHERE session_id = ?
         ORDER BY message_id, position
@@ -346,8 +358,6 @@ def _content_blocks_by_message(conn: sqlite3.Connection, session_id: str) -> dic
         # ``ContentBlockRecord.tool_input`` carries the serialized JSON string
         # exactly as the native ``blocks.tool_input`` column stores it.
         tool_input = row["tool_input"] if isinstance(row["tool_input"], str) else None
-        raw_metadata = row["metadata"]
-        metadata = raw_metadata if isinstance(raw_metadata, str) and raw_metadata not in ("", "{}") else None
         block = ContentBlockRecord(
             block_id=f"{message_id}:{row['position']}",
             message_id=MessageId(message_id),
@@ -359,27 +369,20 @@ def _content_blocks_by_message(conn: sqlite3.Connection, session_id: str) -> dic
             tool_id=row["tool_id"],
             tool_input=tool_input,
             semantic_type=row["semantic_type"],
-            metadata=metadata,
         )
         blocks_by_message.setdefault(message_id, []).append(block)
     return blocks_by_message
 
 
 def _attachment_record_from_row(row: sqlite3.Row, session_id: str) -> AttachmentRecord:
-    raw_provider_meta = row["provider_meta"]
-    provider_meta: JSONRecord | None = None
-    if isinstance(raw_provider_meta, str) and raw_provider_meta and raw_provider_meta != "{}":
-        provider_meta = {}
-        for key, value in json_document(loads(raw_provider_meta)).items():
-            provider_meta[key] = value
     return AttachmentRecord(
         attachment_id=AttachmentId(row["attachment_id"]),
         session_id=SessionId(session_id),
         message_id=MessageId(row["message_id"]) if row["message_id"] is not None else None,
-        mime_type=row["mime_type"],
-        size_bytes=row["size_bytes"],
-        path=row["path"],
-        provider_meta=provider_meta,
+        mime_type=row["media_type"],
+        size_bytes=row["byte_count"],
+        display_name=row["display_name"],
+        source_url=row["source_url"],
     )
 
 
@@ -427,6 +430,7 @@ __all__ = [
     "archive_for_scenario_db",
     "native_session_id_for",
     "open_index_db",
+    "read_session_records",
     "repository_for_scenario_db",
     "seed_archive_scenarios",
     "seed_workspace_scenarios",

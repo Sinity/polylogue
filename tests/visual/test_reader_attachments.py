@@ -56,29 +56,16 @@ from tests.visual.conftest import (
 def test_classify_state_pure_function() -> None:
     """``classify_state`` derives the MK3 state token without I/O."""
 
-    assert classify_state(path="blob/aa/x", size_bytes=10, mime_type="text/plain", provider_meta=None) == "available"
-    assert classify_state(path=None, size_bytes=10, mime_type="text/plain", provider_meta=None) == "missing-blob"
-    assert (
-        classify_state(path="blob/x", size_bytes=10, mime_type="application/zip", provider_meta=None)
-        == "unsupported-kind"
-    )
+    assert classify_state(path="blob/aa/x", size_bytes=10, mime_type="text/plain") == "available"
+    assert classify_state(path=None, size_bytes=10, mime_type="text/plain") == "missing-blob"
+    assert classify_state(path="blob/x", size_bytes=10, mime_type="application/zip") == "unsupported-kind"
     assert (
         classify_state(
             path="blob/x",
             size_bytes=PREVIEW_SIZE_BUDGET + 1,
             mime_type="video/mp4",
-            provider_meta=None,
         )
         == "too-large"
-    )
-    assert (
-        classify_state(path="blob/x", size_bytes=10, mime_type="text/html", provider_meta={"quarantined": True})
-        == "quarantined"
-    )
-    # Quarantine wins over missing-blob — safety boundary first.
-    assert (
-        classify_state(path=None, size_bytes=10, mime_type="text/html", provider_meta={"quarantined": True})
-        == "quarantined"
     )
 
 
@@ -301,4 +288,4 @@ def test_raw_html_attachment_renders_no_inline_script(
 def test_size_budget_boundary(size: int, expected: str) -> None:
     """The size-budget boundary is inclusive of ``PREVIEW_SIZE_BUDGET``."""
 
-    assert classify_state(path="blob/x", size_bytes=size, mime_type="text/plain", provider_meta=None) == expected
+    assert classify_state(path="blob/x", size_bytes=size, mime_type="text/plain") == expected

@@ -119,7 +119,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify-lane-assertions` | Verify scenario lanes classified as SEMANTIC_OUTPUT carry semantic assertions. |
 | `devtools verify-layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
 | `devtools verify-manifests` | Verify internal consistency across all docs/plans/*.yaml manifest files. |
-| `devtools verify-provider-meta-policy` | Enforce the provider_meta classification policy declared in docs/plans/provider-meta-policy.yaml. |
 | `devtools verify-schema-roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
 | `devtools verify-schema-upgrade-lane` | Reject in-place storage schema upgrade helpers (#1302). |
 | `devtools verify-slos` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |

@@ -13,10 +13,16 @@ from polylogue.pipeline.prepare import prepare_records
 from polylogue.pipeline.prepare_models import PersistedSessionResult
 from polylogue.pipeline.services.validation import ValidationService
 from polylogue.schemas import ValidationResult
-from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
+from polylogue.sources.parsers.base import (
+    ParsedAttachment,
+    ParsedContentBlock,
+    ParsedMessage,
+    ParsedSession,
+    ParsedSessionEvent,
+)
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.types import Provider
+from polylogue.types import ContentBlockType, Provider
 
 
 def _prepare_fields(result: PersistedSessionResult) -> tuple[str, dict[str, int], bool]:
@@ -453,9 +459,13 @@ async def test_prepare_records_persists_structured_blocks(
                 text=None,
                 timestamp="2024-01-01T00:00:00Z",
                 content_blocks=[
-                    {"type": "text", "text": "inline"},
-                    {"type": "code", "text": "print('ok')", "metadata": {"language": "python"}},
-                    {"type": "tool_result", "text": "ok"},
+                    ParsedContentBlock(type=ContentBlockType.TEXT, text="inline"),
+                    ParsedContentBlock(
+                        type=ContentBlockType.CODE,
+                        text="print('ok')",
+                        metadata={"language": "python"},
+                    ),
+                    ParsedContentBlock(type=ContentBlockType.TOOL_RESULT, text="ok"),
                 ],
             ),
             ParsedMessage(
@@ -463,7 +473,7 @@ async def test_prepare_records_persists_structured_blocks(
                 role=Role.ASSISTANT,
                 text=None,
                 timestamp="2024-01-01T00:00:01Z",
-                content_blocks=[{"type": "thinking", "text": "reasoning"}],
+                content_blocks=[ParsedContentBlock(type=ContentBlockType.THINKING, text="reasoning")],
             ),
         ],
         attachments=[],

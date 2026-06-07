@@ -14,6 +14,7 @@ from polylogue.rendering.renderers.html import render_session_html
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import SessionRecord
 from polylogue.storage.sqlite.connection import open_connection
+from polylogue.types import Provider
 from tests.infra.archive_scenarios import native_session_id_for
 from tests.infra.storage_records import (
     SessionBuilder,
@@ -25,7 +26,7 @@ from tests.infra.storage_records import (
 
 
 def _record_session_id(provider: str, native_id: str) -> str:
-    return archive_session_id(origin_from_provider(provider).value, native_id)
+    return archive_session_id(origin_from_provider(Provider.from_string(provider)).value, native_id)
 
 
 def _session_record() -> SessionRecord:
@@ -121,7 +122,7 @@ async def test_render_includes_message_attachments(workspace_env: dict[str, Path
             message_id="msg1",
             mime_type="text/plain",
             size_bytes=12,
-            provider_meta={"name": "notes.txt"},
+            display_name="notes.txt",
         )
         .save()
     )
