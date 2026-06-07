@@ -386,7 +386,13 @@ class TestRepairDanglingFts:
             _insert_content_block(conn, "blk-1", "msg-1", "conv-1", type="text", tool_name=None, text="Text1")
             conn.commit()
 
-            conn.execute("DELETE FROM messages_fts WHERE message_id = ?", (_message_id("msg-1", "conv-1"),))
+            # messages_fts is contentless (content=''); its rows are keyed by the
+            # blocks rowid, so delete the dangling entry by joining to blocks
+            # rather than the unretrievable UNINDEXED message_id column.
+            conn.execute(
+                "DELETE FROM messages_fts WHERE rowid IN (SELECT rowid FROM blocks WHERE message_id = ?)",
+                (_message_id("msg-1", "conv-1"),),
+            )
             conn.commit()
 
         # Act

@@ -101,6 +101,8 @@ def _snapshot(db_path: Path) -> dict[str, int]:
         conv_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
         fts_docsize = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
+        # FTS indexes blocks (one row per text-bearing block), not messages.
+        text_blocks = conn.execute("SELECT COUNT(*) FROM blocks WHERE search_text != ''").fetchone()[0]
         content_hashes = {row[0] for row in conn.execute("SELECT content_hash FROM sessions").fetchall()}
     finally:
         conn.close()
@@ -108,6 +110,7 @@ def _snapshot(db_path: Path) -> dict[str, int]:
         "sessions": conv_count,
         "messages": msg_count,
         "fts_docsize": fts_docsize,
+        "text_blocks": text_blocks,
         "distinct_content_hashes": len(content_hashes),
     }
 
@@ -151,11 +154,11 @@ def test_double_ingest_is_idempotent(
     )
 
     # FTS integrity: docsize must match message count (no duplicates).
-    assert snap1["fts_docsize"] == snap1["messages"], (
-        f"First pass: FTS docsize {snap1['fts_docsize']} != messages {snap1['messages']}"
+    assert snap1["fts_docsize"] == snap1["text_blocks"], (
+        f"First pass: FTS docsize {snap1['fts_docsize']} != text_blocks {snap1['text_blocks']}"
     )
-    assert snap2["fts_docsize"] == snap2["messages"], (
-        f"Second pass: FTS docsize {snap2['fts_docsize']} != messages {snap2['messages']}"
+    assert snap2["fts_docsize"] == snap2["text_blocks"], (
+        f"Second pass: FTS docsize {snap2['fts_docsize']} != text_blocks {snap2['text_blocks']}"
     )
     assert snap2["fts_docsize"] == snap1["fts_docsize"], "FTS docsize changed between passes"
 
@@ -189,7 +192,7 @@ def test_triple_ingest_is_idempotent(
     assert snap2["sessions"] == snap1["sessions"]
     assert snap3["sessions"] == snap1["sessions"]
     assert snap3["messages"] == snap1["messages"]
-    assert snap3["fts_docsize"] == snap3["messages"]
+    assert snap3["fts_docsize"] == snap3["text_blocks"]
 
 
 def test_content_hashes_are_deterministic(
