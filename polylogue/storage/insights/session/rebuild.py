@@ -112,7 +112,7 @@ SELECT
     CASE WHEN updated_at_ms IS NULL THEN NULL ELSE datetime(updated_at_ms / 1000, 'unixepoch') || '+00:00' END AS updated_at,
     CAST(sort_key_ms AS REAL) / 1000.0 AS sort_key,
     hex(content_hash) AS content_hash,
-    '{}' AS metadata,
+    '{{}}' AS metadata,
     1 AS version,
     parent_session_id,
     branch_type,
