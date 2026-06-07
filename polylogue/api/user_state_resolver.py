@@ -41,7 +41,7 @@ class ResolvedTarget(TypedDict, total=False):
 _INSIGHT_QUERIES: dict[str, str] = {
     "session": "SELECT 1 FROM session_profiles WHERE session_id = ?",
     "work_event": "SELECT 1 FROM session_work_events WHERE event_id = ? AND session_id = ?",
-    "thread": "SELECT 1 FROM threads WHERE thread_id = ? AND root_session_id = ?",
+    "thread": "SELECT 1 FROM threads WHERE thread_id = ?",
 }
 
 
@@ -195,8 +195,8 @@ async def resolve_insight_target(
     if target_type == "thread":
         if not target_id:
             raise ValueError("thread target requires target_id (thread_id)")
-        if not await _row_exists(archive_root, _INSIGHT_QUERIES["thread"], (target_id, session_id)):
-            raise ValueError(f"thread {target_id!r} is not rooted at session {session_id!r}")
+        if not await _row_exists(archive_root, _INSIGHT_QUERIES["thread"], (target_id,)):
+            raise ValueError(f"thread {target_id!r} is not a materialized thread root")
         return {
             "target_type": "thread",
             "target_id": target_id,

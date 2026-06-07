@@ -51,12 +51,6 @@ _KINDS: Final[tuple[TargetKind, ...]] = (
         identity_template="message:{session_id}:{target_id}",
     ),
     TargetKind(
-        name="phase",
-        unit="phase_id from session_phases",
-        requires_message_id=False,
-        identity_template="phase:{session_id}:{target_id}",
-    ),
-    TargetKind(
         name="work_event",
         unit="event_id from session_work_events",
         requires_message_id=False,

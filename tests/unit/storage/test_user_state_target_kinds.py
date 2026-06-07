@@ -54,7 +54,7 @@ def _native_thread_id(db_path: Path, session_id: str) -> str:
     """The builder materializes one thread rooted at the session; return its id."""
     with sqlite3.connect(db_path) as conn:
         row = conn.execute(
-            "SELECT thread_id FROM threads WHERE root_session_id = ?",
+            "SELECT thread_id FROM threads WHERE thread_id = ?",
             (session_id,),
         ).fetchone()
     assert row is not None, "expected a materialized thread for the seeded session"
