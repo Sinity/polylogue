@@ -59,10 +59,48 @@ def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
     return False
 
 
+_SIBLING_TIER_ATTACHMENTS: tuple[tuple[str, str], ...] = (
+    ("source_tier", "source.db"),
+    ("user_tier", "user.db"),
+    ("embeddings", "embeddings.db"),
+    ("ops_tier", "ops.db"),
+)
+
+
+def _attach_sibling_tiers(conn: sqlite3.Connection) -> None:
+    """Attach sibling archive tiers to an ``index.db`` connection (idempotent).
+
+    Mirrors the async backend so cross-tier reads (e.g. ``raw_sessions`` in
+    ``source.db``) resolve with unqualified table names. SQLite resolves
+    unqualified names to ``main`` first, so index-tier tables are unaffected.
+    """
+    main_path: str | None = None
+    attached: set[str] = set()
+    for row in conn.execute("PRAGMA database_list").fetchall():
+        schema_name = str(row[1])
+        if schema_name == "main":
+            main_path = str(row[2]) if row[2] else None
+        else:
+            attached.add(schema_name)
+    if not main_path:
+        return
+    main = Path(main_path)
+    if main.name != "index.db":
+        return
+    root = main.parent
+    for schema_name, filename in _SIBLING_TIER_ATTACHMENTS:
+        if schema_name in attached:
+            continue
+        sibling = root / filename
+        if sibling.exists():
+            conn.execute(f"ATTACH DATABASE ? AS {schema_name}", (str(sibling),))
+
+
 def _configure_read_connection(conn: sqlite3.Connection) -> None:
     """Apply read-safe settings without taking write-oriented locks."""
     conn.row_factory = sqlite3.Row
     _apply_pragma_statements(conn, READ_CONNECTION_PRAGMA_STATEMENTS)
+    _attach_sibling_tiers(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +156,7 @@ def _get_cached_connection(path: Path) -> sqlite3.Connection:
         conn.row_factory = sqlite3.Row
         _apply_pragma_statements(conn, WRITE_CONNECTION_PRAGMA_STATEMENTS)
         _load_sqlite_vec(conn)
+        _attach_sibling_tiers(conn)
         with _schema_lock_for_path(path):
             if path.name == "index.db" and not _is_initialized_archive_index(path):
                 raise RuntimeError(f"Archive root was not initialized for {path}")
