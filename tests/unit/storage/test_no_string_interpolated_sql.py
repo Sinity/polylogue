@@ -48,7 +48,7 @@ _AUDITED_SITES: Final[dict[tuple[str, int], str]] = {
     # literal with a ``{}`` for the placeholder list); ``placeholders`` is a
     # generated ``?,?`` string sized to the bound ``chunk``; values flow through
     # bound params, never the format string.
-    ("polylogue/storage/repository/archive/sessions.py", 296): (
+    ("polylogue/storage/repository/archive/sessions.py", 300): (
         "chunked IN-clause: literal scoped_sql template + '?,?' placeholders, values bound"
     ),
 }
@@ -100,6 +100,7 @@ _TRUSTED_IDENTIFIER_NAMES: frozenset[str] = frozenset(
         "backend",
         # `placeholders` / `aid_placeholders` / etc. — `", ".join("?" * n)`
         "placeholders",
+        "native_placeholders",
         "aid_placeholders",
         "values",
         "values_sql",
@@ -137,6 +138,14 @@ _TRUSTED_IDENTIFIER_NAMES: frozenset[str] = frozenset(
         "select_columns",
         "selected",
         "definition",
+        # compile-time SELECT column-list constants (record projections)
+        "_session_record_select",
+        "_message_record_select",
+        # cross-tier ATTACH schema name from a closed module-level tuple
+        "schema_name",
+        # archive correction filter clauses — all literal "col = ?" fragments,
+        # values bound; built in feedback storage helper from a closed set
+        "archive_clauses",
         # SQL fragments built by helper functions from closed-set inputs
         "set_clause",
         "set_clauses",
