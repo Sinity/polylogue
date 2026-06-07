@@ -403,7 +403,11 @@ async def test_acquisition_law_counts_unique_raws_and_normalizes_provider_hints(
                 raw_bytes = load_raw_content(raw_id)
                 payload_id = json.loads(raw_bytes)["id"]
                 assert stored.source_name == expected_first_provider[payload_id]
-                assert stored.payload_provider is None
+                # #1743: raw_sessions stores a single origin column; payload_provider
+                # projects from it on read (no separate nullable hint column), so the
+                # normalized hint surfaces through both source_name and payload_provider.
+                assert stored.payload_provider is not None
+                assert stored.payload_provider.value == expected_first_provider[payload_id]
         finally:
             await backend.close()
 
