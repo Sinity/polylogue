@@ -9,6 +9,7 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator, model_vali
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
+from polylogue.core.enums import TitleSource
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.types import ContentBlockType, Provider
@@ -187,7 +188,8 @@ class ParsedSession(BaseModel):
     session_events: list[ParsedSessionEvent] = Field(default_factory=list)
     parent_session_provider_id: str | None = None
     branch_type: BranchType | None = None
-    title_source: str | None = None
+    title_source: TitleSource | None = None
+    instructions_text: str | None = None
     reported_duration_ms: int | None = None
     reported_cost_usd: float | None = None
     models_used: list[str] = Field(default_factory=list)
