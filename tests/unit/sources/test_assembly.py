@@ -9,6 +9,7 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
+from polylogue.core.enums import TitleSource
 from polylogue.sources.assembly import SidecarData, get_assembly_spec
 from polylogue.sources.assembly_claude_code import ClaudeCodeAssemblySpec
 from polylogue.sources.assembly_codex import CodexAssemblySpec, _parse_codex_session_index
@@ -35,7 +36,6 @@ def _parsed_attachment(name: str | None = None) -> ParsedAttachment:
         provider_attachment_id="attachment-1",
         message_provider_id="m1",
         name=name,
-        provider_meta={"name": name} if name else None,
     )
 
 
@@ -46,7 +46,6 @@ def _parsed_session(
     messages: list[ParsedMessage],
     *,
     attachments: list[ParsedAttachment] | None = None,
-    provider_meta: dict[str, object] | None = None,
 ) -> ParsedSession:
     return ParsedSession(
         source_name=source_name,
@@ -56,13 +55,7 @@ def _parsed_session(
         updated_at=None,
         messages=messages,
         attachments=attachments or [],
-        provider_meta=provider_meta,
     )
-
-
-def _provider_meta(session: ParsedSession) -> dict[str, object]:
-    assert session.provider_meta is not None
-    return session.provider_meta
 
 
 def _thread_sidecars(thread_names: dict[str, str] | None = None) -> SidecarData:
@@ -118,13 +111,11 @@ class TestGeminiAssemblySpec:
             "gemini-id-1234",
             "Gemini Session",
             [_parsed_message("m1", "user", "Summarize the roadmap")],
-            provider_meta={"title_source": "imported:displayName"},
         )
 
         result = GeminiAssemblySpec().enrich_session(conv, {})
 
         assert result is conv
-        assert _provider_meta(result)["title_source"] == "imported:displayName"
 
     def test_id_like_title_uses_first_user_message_display_label(self) -> None:
         conv = _parsed_session(
@@ -135,16 +126,12 @@ class TestGeminiAssemblySpec:
                 _parsed_message("m1", "assistant", "Opening context"),
                 _parsed_message("m2", "user", "Summarize the retention plan for Q2."),
             ],
-            provider_meta={"title_source": "fallback:id"},
         )
 
         enriched = GeminiAssemblySpec().enrich_session(conv, {})
 
-        assert enriched.title == "gemini-20250422-1234"
-        metadata = _provider_meta(enriched)
-        assert metadata["title_source"] == "fallback:id"
-        assert metadata["display_label"] == "Summarize the retention plan for Q2."
-        assert metadata["display_label_source"] == "first-user-message"
+        assert enriched.title == "Summarize the retention plan for Q2."
+        assert enriched.title_source == TitleSource.HEURISTIC
 
     def test_attachment_name_informs_display_label(self) -> None:
         conv = _parsed_session(
@@ -153,14 +140,12 @@ class TestGeminiAssemblySpec:
             "gemini-attachment-221",
             [_parsed_message("m1", "user", "Please review the attached project plan.")],
             attachments=[_parsed_attachment("Project Plan")],
-            provider_meta={"title_source": "fallback:id"},
         )
 
         enriched = GeminiAssemblySpec().enrich_session(conv, {})
 
-        metadata = _provider_meta(enriched)
-        assert metadata["display_label"] == "Project Plan: Please review the attached project plan."
-        assert metadata["display_label_source"] == "attachment-name:first-user-message"
+        assert enriched.title == "Project Plan: Please review the attached project plan."
+        assert enriched.title_source == TitleSource.HEURISTIC
 
     def test_empty_title_uses_attachment_name_when_no_prompt_exists(self) -> None:
         conv = _parsed_session(
@@ -169,14 +154,12 @@ class TestGeminiAssemblySpec:
             "",
             [_parsed_message("m1", "assistant", "Ready")],
             attachments=[_parsed_attachment("Project Plan")],
-            provider_meta={"title_source": "fallback:id"},
         )
 
         enriched = GeminiAssemblySpec().enrich_session(conv, {})
 
-        metadata = _provider_meta(enriched)
-        assert metadata["display_label"] == "Attachment: Project Plan"
-        assert metadata["display_label_source"] == "attachment-name"
+        assert enriched.title == "Attachment: Project Plan"
+        assert enriched.title_source == TitleSource.HEURISTIC
 
     def test_minimal_payload_without_label_evidence_is_unchanged(self) -> None:
         conv = _parsed_session(
@@ -184,7 +167,6 @@ class TestGeminiAssemblySpec:
             "gemini-minimal-221",
             "gemini-minimal-221",
             [_parsed_message("m1", "assistant", "Ready")],
-            provider_meta={"title_source": "fallback:id"},
         )
 
         result = GeminiAssemblySpec().enrich_session(conv, {})
@@ -376,9 +358,7 @@ class TestCodexAssemblySpec:
         enriched = spec.enrich_session(conv, sidecar_data)
 
         assert enriched.title == "Build API client"
-        metadata = _provider_meta(enriched)
-        assert enriched.title_source == "origin"
-        assert metadata["thread_name"] == "Build API client"
+        assert enriched.title_source == TitleSource.ORIGIN
 
     def test_enrich_session_falls_back_to_first_user_message(self) -> None:
         """Falls back to first user message when no thread name available."""

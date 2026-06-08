@@ -66,12 +66,9 @@ def test_browser_capture_parses_session_metadata_and_deduplicates_turns() -> Non
     assert session.provider_session_id == "conv-123"
     assert session.title == "Work plan"
     assert [message.provider_message_id for message in session.messages] == ["u1", "a1"]
-    assert session.provider_meta is not None
-    assert session.provider_meta["browser_capture"] is True
-    assert session.provider_meta["model"] == "gpt-5.4"
     assert len(session.attachments) == 1
     assert session.attachments[0].message_provider_id == "a1"
-    assert session.attachments[0].provider_meta == {"url": "https://chatgpt.com/attachment/1"}
+    assert session.attachments[0].source_url == "https://chatgpt.com/attachment/1"
 
 
 def test_browser_capture_supports_claude_ai_provider() -> None:

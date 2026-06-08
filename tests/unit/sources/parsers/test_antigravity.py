@@ -53,11 +53,6 @@ The focused checks passed.
     assert [message.is_active_path for message in session.messages] == [True, True]
     assert [message.is_active_leaf for message in session.messages] == [False, True]
     assert session.active_leaf_message_provider_id == "cascade-1:1:planner_response"
-    assert session.provider_meta is not None
-    assert session.provider_meta["source_format"] == "language_server_markdown_export"
-    assert session.provider_meta["degraded_fragmentation"] is True
-    assert session.provider_meta["workspace_name"] == "polylogue"
-    assert session.provider_meta["snippet"] == "Run pytest."
 
 
 def test_parse_markdown_export_falls_back_to_single_export_message() -> None:
@@ -77,7 +72,6 @@ Unstructured transcript body.
     assert session.messages[0].position == 0
     assert session.messages[0].is_active_leaf is True
     assert session.active_leaf_message_provider_id == "cascade-2:0:export"
-    assert session.messages[0].provider_meta == {"antigravity_section": "Markdown Export"}
 
 
 def test_parse_brain_metadata_reads_adjacent_artifact(tmp_path: Path) -> None:
@@ -106,10 +100,6 @@ def test_parse_brain_metadata_reads_adjacent_artifact(tmp_path: Path) -> None:
     assert session.messages[0].is_active_leaf is True
     assert session.active_leaf_message_provider_id == "session-1:implementation_plan.md:artifact"
     assert session.messages[0].content_blocks[0].type == ContentBlockType.TEXT
-    assert session.provider_meta is not None
-    assert session.provider_meta["artifact_path"] == str(artifact_path)
-    assert session.provider_meta["artifact_type"] == "ARTIFACT_TYPE_OTHER"
-    assert "missing_markdown_body" not in session.provider_meta
 
 
 def test_parse_brain_metadata_marks_missing_artifact(tmp_path: Path) -> None:
@@ -125,5 +115,3 @@ def test_parse_brain_metadata_marks_missing_artifact(tmp_path: Path) -> None:
 
     assert session.provider_session_id == "session-2:missing.md"
     assert session.messages[0].text == "Missing body"
-    assert session.provider_meta is not None
-    assert session.provider_meta["missing_markdown_body"] is True

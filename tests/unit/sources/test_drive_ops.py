@@ -22,7 +22,7 @@ def _attachment(
     name: str | None = None,
     mime_type: str | None = None,
     size_bytes: int | None = None,
-    provider_meta: dict[str, object] | None = None,
+    attachment_kind: str | None = None,
 ) -> ParsedAttachment:
     return ParsedAttachment(
         provider_attachment_id=provider_attachment_id,
@@ -31,7 +31,7 @@ def _attachment(
         mime_type=mime_type,
         size_bytes=size_bytes,
         path=None,
-        provider_meta=provider_meta,
+        attachment_kind=attachment_kind,
     )
 
 
@@ -135,24 +135,13 @@ def test_apply_drive_attachments_contract(tmp_path: Path) -> None:
     assert keep.name == "keep.txt"
     assert keep.mime_type == "text/plain"
     assert keep.size_bytes == 12
-    assert keep.provider_meta == {
-        "drive_id": "keep-meta",
-        "name": "keep.txt",
-        "mime_type": "text/plain",
-    }
 
     assert filled.name == "filled.pdf"
     assert filled.mime_type == "application/pdf"
     assert filled.size_bytes == 2048
     assert filled.path is not None
-    assert filled.provider_meta == {
-        "drive_id": "fill-meta",
-        "name": "filled.pdf",
-        "mime_type": "application/pdf",
-    }
 
     assert missing.path is None
-    assert missing.provider_meta is None
     assert [call.args[0] for call in client.download_to_path.call_args_list] == ["keep-meta", "fill-meta"]
 
 
@@ -161,12 +150,12 @@ def test_apply_drive_attachments_skips_inline_and_external_media(tmp_path: Path)
         _attachment(
             "inline-file-1",
             mime_type="text/plain",
-            provider_meta={"attachment_kind": "inline_file"},
+            attachment_kind="inline_file",
         ),
         _attachment(
             "youtube-video-1",
             mime_type="video/youtube",
-            provider_meta={"attachment_kind": "youtube_video"},
+            attachment_kind="youtube_video",
         ),
     )
     client = MagicMock()

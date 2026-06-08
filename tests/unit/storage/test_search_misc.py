@@ -430,17 +430,14 @@ class TestEnrichSessionFromIndex:
         assert enriched.created_at == "2024-01-15T10:30:00.000Z"
         assert enriched.updated_at == "2024-01-15T11:45:00.000Z"
 
-    def test_enriches_provider_meta(self, sample_session: ParsedSession, sample_sessions_index: Path) -> None:
-        """Adds git branch and project path to provider_meta."""
+    def test_enriches_git_branch(self, sample_session: ParsedSession, sample_sessions_index: Path) -> None:
+        """Adds git branch to the typed git_branch field."""
         entries = parse_sessions_index(sample_sessions_index)
         entry = entries["abc123-def456"]
 
         enriched = enrich_session_from_index(sample_session, entry)
 
-        assert enriched.provider_meta is not None
-        assert enriched.provider_meta["gitBranch"] == "feature/auth-fix"
-        assert enriched.provider_meta["projectPath"] == "/home/user/myproject"
-        assert enriched.provider_meta["isSidechain"] is False
+        assert enriched.git_branch == "feature/auth-fix"
 
     def test_uses_first_prompt_when_no_summary(
         self, sample_session: ParsedSession, sample_sessions_index: Path

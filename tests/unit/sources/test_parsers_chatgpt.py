@@ -314,8 +314,10 @@ def test_chatgpt_metadata_extraction(metadata: object, expected_type: str | None
         # Should have attachment records
         assert len(attachments) > 0
     elif expected_type == "cost":
-        # Should preserve cost in provider_meta
-        assert messages[0].provider_meta is not None
+        # Cost metadata is not retained per-message (cost lives in
+        # session_model_usage / reported_cost_usd); the parser must still
+        # extract the message rather than drop or crash on the metadata.
+        assert len(messages) == 1
     elif expected_type == "thinking":
         # Should mark as thinking
         # (depends on content_blocks implementation)

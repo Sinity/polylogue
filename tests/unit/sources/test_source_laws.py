@@ -20,6 +20,7 @@ from typing_extensions import TypedDict
 
 from polylogue.archive.message.roles import Role, normalize_role
 from polylogue.config import Source
+from polylogue.core.enums import TitleSource
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value
 from polylogue.sources import decoders as decoders_module
 from polylogue.sources import dispatch as dispatch_module
@@ -143,7 +144,6 @@ def _parsed_session(
     created_at: str | None,
     updated_at: str | None,
     messages: list[ParsedMessage],
-    provider_meta: dict[str, object] | None = None,
 ) -> ParsedSession:
     return ParsedSession(
         source_name=Provider.from_string(source_name),
@@ -152,7 +152,6 @@ def _parsed_session(
         created_at=created_at,
         updated_at=updated_at,
         messages=messages,
-        provider_meta=provider_meta,
     )
 
 
@@ -1128,7 +1127,6 @@ def test_find_sessions_index_and_enrichment_contract(tmp_path: Path) -> None:
         created_at="2025-01-01T00:00:00Z",
         updated_at="2025-01-01T00:00:00Z",
         messages=[_parsed_message("m1", role="user", text="hello")],
-        provider_meta={"raw": True},
     )
     entry = SessionIndexEntry(
         session_id="session-1",
@@ -1148,14 +1146,7 @@ def test_find_sessions_index_and_enrichment_contract(tmp_path: Path) -> None:
     assert enriched.title == "Investigate parser contracts"
     assert enriched.created_at == "2025-01-02T00:00:00Z"
     assert enriched.updated_at == "2025-01-03T00:00:00Z"
-    assert enriched.provider_meta == {
-        "raw": True,
-        "gitBranch": "main",
-        "projectPath": "/tmp/project",
-        "isSidechain": True,
-        "summary": "Investigate parser contracts",
-        "firstPrompt": "Summarize this repo",
-    }
+    assert enriched.git_branch == "main"
     assert enriched.title_source == "origin"
 
 
@@ -1621,15 +1612,15 @@ def test_session_emitter_enriches_gemini_display_labels_contract() -> None:
         created_at=None,
         updated_at=None,
         messages=[_parsed_message("m1", role="user", text="Summarize the roadmap")],
-        provider_meta={"title_source": "fallback:id"},
     )
 
     enriched = emitter._maybe_enrich(session)
 
-    assert enriched.title == "gemini-20250422-1234"
-    assert enriched.provider_meta is not None
-    assert enriched.provider_meta["display_label"] == "Summarize the roadmap"
-    assert enriched.provider_meta["display_label_source"] == "first-user-message"
+    # ID-based title is weak, so Gemini assembly promotes the first user
+    # message text to title (typed replacement for the old provider_meta
+    # display_label enrichment).
+    assert enriched.title == "Summarize the roadmap"
+    assert enriched.title_source == TitleSource.HEURISTIC
 
 
 def _zip_entry(name: str, *, size: int = 100, compressed: int = 50) -> zipfile.ZipInfo:

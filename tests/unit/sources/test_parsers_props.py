@@ -143,7 +143,6 @@ class ParserCase:
 
 def _assert_claude_code_cleanup(_payload: ParserPayload, result: ParsedSession) -> None:
     for message in result.messages:
-        assert message.provider_meta is None
         assert isinstance(message.content_blocks, list)
         assert message.timestamp is None or isinstance(message.timestamp, str)
 
@@ -151,8 +150,6 @@ def _assert_claude_code_cleanup(_payload: ParserPayload, result: ParsedSession) 
 def _assert_codex_text_recovery(payload: ParserPayload, result: ParsedSession) -> None:
     if not result.messages:
         return
-    for message in result.messages:
-        assert message.provider_meta is None
     if not isinstance(payload, list):
         return
     response_items = [

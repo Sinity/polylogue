@@ -25,17 +25,6 @@ from polylogue.sources.parsers.drive import (
 from polylogue.sources.parsers.drive_support import extract_text_from_chunk
 
 
-def _provider_content_blocks(
-    message_index: int, result_provider_meta: dict[str, object] | None
-) -> list[dict[str, object]]:
-    assert isinstance(result_provider_meta, dict), f"message {message_index} is missing provider_meta"
-    blocks = result_provider_meta.get("content_blocks")
-    assert isinstance(blocks, list), f"message {message_index} has no structured content_blocks"
-    typed_blocks = [block for block in blocks if isinstance(block, dict)]
-    assert len(typed_blocks) == len(blocks), f"message {message_index} content_blocks should all be dict payloads"
-    return typed_blocks
-
-
 @pytest.fixture
 def synthetic_gemini_payload() -> JSONDocument:
     from polylogue.schemas.synthetic import SyntheticCorpus
@@ -120,10 +109,6 @@ def test_attachment_from_doc_contract(doc: object, expected_id: str | None, expe
         assert attachment.provider_attachment_id == expected_id
         assert attachment.message_provider_id == "msg-1"
         assert attachment.size_bytes == expected_size
-        if isinstance(doc, dict):
-            assert attachment.provider_meta is not None
-            for key, value in doc.items():
-                assert attachment.provider_meta[key] == value
 
 
 def test_parse_chunked_prompt_preserves_core_session_metadata() -> None:
@@ -151,7 +136,6 @@ def test_parse_chunked_prompt_preserves_core_session_metadata() -> None:
     assert result.source_name == "gemini"
     assert result.provider_session_id == "gemini-conv"
     assert result.title == "Gemini Session"
-    assert result.provider_meta is None
     assert result.title_source == "origin"
     assert result.created_at == "2024-01-15T10:30:00Z"
     assert result.updated_at == "2024-01-15T11:45:00Z"
@@ -176,7 +160,6 @@ def test_parse_chunked_prompt_records_fallback_title_source() -> None:
     result = parse_chunked_prompt("gemini", payload, "fallback-id")
 
     assert result.title == "fallback-id"
-    assert result.provider_meta is None
     assert result.title_source == "unknown"
 
 
@@ -225,28 +208,21 @@ def test_parse_chunked_prompt_preserves_reasoning_code_tool_results_and_attachme
     assert [block.type for block in result.messages[0].content_blocks] == ["text", "document"]
     assert [block.type for block in result.messages[1].content_blocks] == ["thinking"]
     assert [block.type for block in result.messages[2].content_blocks] == ["text", "code", "tool_result"]
-    user_blocks = _provider_content_blocks(0, result.messages[0].provider_meta)
-    assert user_blocks[0]["type"] == "text"
-    assert user_blocks[0]["text"] == "question"
-    assert user_blocks[1]["type"] == "document"
-    metadata = user_blocks[1].get("metadata")
-    assert isinstance(metadata, dict)
-    drive_document = metadata.get("driveDocument")
+
+    user_msg = result.messages[0]
+    assert user_msg.content_blocks[0].text == "question"
+    assert user_msg.content_blocks[1].metadata is not None
+    drive_document = user_msg.content_blocks[1].metadata.get("driveDocument")
     assert isinstance(drive_document, dict)
     assert drive_document["id"] == "doc-1"
 
-    thought_blocks = _provider_content_blocks(1, result.messages[1].provider_meta)
-    assert thought_blocks[0]["type"] == "thinking"
-    assert thought_blocks[0]["text"] == "reasoning"
-    thought_meta = result.messages[1].provider_meta
-    assert isinstance(thought_meta, dict)
-    reasoning_traces = thought_meta.get("reasoning_traces")
-    assert reasoning_traces == [{"text": "reasoning", "token_count": 32, "provider": "gemini"}]
-    code_blocks = _provider_content_blocks(2, result.messages[2].provider_meta)
-    assert [block["type"] for block in code_blocks] == ["text", "code", "tool_result"]
-    assert code_blocks[0]["text"] == "inline"
-    assert code_blocks[1]["text"] == "print('ok')"
-    assert code_blocks[2]["text"] == "ok"
+    thought_msg = result.messages[1]
+    assert thought_msg.content_blocks[0].text == "reasoning"
+
+    code_msg = result.messages[2]
+    assert code_msg.content_blocks[0].text == "inline"
+    assert code_msg.content_blocks[1].text == "print('ok')"
+    assert code_msg.content_blocks[2].text == "ok"
     assert len(result.attachments) == 1
     assert result.attachments[0].provider_attachment_id == "doc-1"
     assert result.attachments[0].mime_type == "application/pdf"
@@ -327,4 +303,4 @@ def test_parse_chunked_prompt_accepts_synthetic_exports(synthetic_gemini_payload
     assert result.source_name == "gemini"
     assert result.messages
     assert all(message.text for message in result.messages)
-    assert all(message.provider_meta is not None for message in result.messages)
+    assert all(len(message.content_blocks) > 0 for message in result.messages)

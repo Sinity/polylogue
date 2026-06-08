@@ -25,17 +25,6 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
     return _parse_impl(payload, fallback_id)
 
 
-def _provider_meta(session: ParsedSession) -> dict[str, object]:
-    assert session.provider_meta is not None
-    return session.provider_meta
-
-
-def _nested_meta(session: ParsedSession, key: str) -> dict[str, object]:
-    value = _provider_meta(session).get(key)
-    assert isinstance(value, dict)
-    return dict(value)
-
-
 # =============================================================================
 # Format Detection (looks_like)
 # =============================================================================
@@ -286,7 +275,8 @@ class TestMessageParsing:
         result = parse(payload, "fallback")
 
         assert len(result.messages) == 2
-        assert all(message.provider_meta is None for message in result.messages)
+        # provider_meta is gone from ParsedMessage — the typed contract enforces
+        # this at the model level; no escape-hatch dict can exist.
 
     def test_parse_stream_matches_list_parse(self) -> None:
         payload = [
@@ -422,7 +412,7 @@ class TestGitContextAndInstructions:
                 "payload": {
                     "id": "s1",
                     "timestamp": "2024-01-01",
-                    "git": {"branch": "main", "commit": "abc123"},
+                    "git": {"branch": "main", "commit_hash": "abc123"},
                 },
             },
             {
@@ -435,9 +425,8 @@ class TestGitContextAndInstructions:
             },
         ]
         result = parse(payload, "fallback")
-        git_meta = _nested_meta(result, "git")
-        assert git_meta["branch"] == "main"
-        assert git_meta["commit"] == "abc123"
+        assert result.git_branch == "main"
+        assert result.git_commit_hash == "abc123"
 
     def test_instructions_from_session_meta(self) -> None:
         payload = [
@@ -459,7 +448,7 @@ class TestGitContextAndInstructions:
             },
         ]
         result = parse(payload, "fallback")
-        assert _provider_meta(result)["instructions"] == "You are a helpful assistant."
+        assert result.instructions_text == "You are a helpful assistant."
 
     def test_git_context_from_intermediate_metadata(self) -> None:
         """Intermediate format: git context on first line."""
@@ -472,7 +461,7 @@ class TestGitContextAndInstructions:
             {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]},
         ]
         result = parse(payload, "fallback")
-        assert _nested_meta(result, "git")["branch"] == "develop"
+        assert result.git_branch == "develop"
 
     def test_git_and_instructions_combined(self) -> None:
         payload = [
@@ -487,8 +476,8 @@ class TestGitContextAndInstructions:
             },
         ]
         result = parse(payload, "fallback")
-        assert _nested_meta(result, "git")["branch"] == "feature"
-        assert _provider_meta(result)["instructions"] == "Be concise."
+        assert result.git_branch == "feature"
+        assert result.instructions_text == "Be concise."
 
     def test_turn_context_cwd_feeds_working_directories(self) -> None:
         payload = [
@@ -498,7 +487,7 @@ class TestGitContextAndInstructions:
 
         result = parse(payload, "fallback")
 
-        assert _provider_meta(result)["working_directories"] == ["/repo/other", "/repo/polylogue"]
+        assert result.working_directories == ["/repo/other", "/repo/polylogue"]
         assert result.session_events[0].payload["cwd"] == "/repo/polylogue"
 
     def test_session_events_keep_compact_provenance_not_raw_payloads(self) -> None:
@@ -671,7 +660,7 @@ class TestEdgeCases:
                 "payload": {
                     "id": "prod-session-001",
                     "timestamp": "2024-03-15T14:30:00Z",
-                    "git": {"branch": "main", "commit": "f1e2d3c"},
+                    "git": {"branch": "main", "commit_hash": "f1e2d3c"},
                     "instructions": "You are an expert Python developer.",
                 },
             },
@@ -704,8 +693,8 @@ class TestEdgeCases:
         result = parse(payload, "fallback")
         assert result.provider_session_id == "prod-session-001"
         assert len(result.messages) == 3
-        assert _nested_meta(result, "git")["commit"] == "f1e2d3c"
-        assert _provider_meta(result)["instructions"] == "You are an expert Python developer."
+        assert result.git_commit_hash == "f1e2d3c"
+        assert result.instructions_text == "You are an expert Python developer."
         assert result.messages[0].role == "user"
         assert result.messages[1].role == "assistant"
         assert result.messages[2].role == "user"

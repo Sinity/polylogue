@@ -44,10 +44,6 @@ def test_parse_code_promotes_working_directories_to_typed_field() -> None:
     result = parse_code(items, "fallback")
 
     assert result.working_directories == ["/home/user/projectA", "/home/user/projectB"]
-    # parse_code has graduated to the typed field as the sole carrier: it no
-    # longer dual-writes working_directories into the provider_meta escape
-    # hatch (#1743 provider_meta elimination), so provider_meta is left unset.
-    assert result.provider_meta is None
 
 
 def test_parse_code_typed_working_directories_empty_when_no_cwd() -> None:
@@ -97,13 +93,6 @@ def test_parse_codex_promotes_session_context_to_typed_fields() -> None:
     assert result.working_directories == ["/srv/codex/workspace"]
     assert result.git_branch == "main"
     assert result.git_repository_url == "https://github.com/example/repo"
-    # Transitional: legacy provider_meta keys still populated.
-    assert result.provider_meta is not None
-    assert result.provider_meta["working_directories"] == ["/srv/codex/workspace"]
-    assert result.provider_meta["git"] == {
-        "branch": "main",
-        "repository_url": "https://github.com/example/repo",
-    }
 
 
 def test_parse_codex_typed_git_fields_none_when_absent() -> None:
@@ -163,9 +152,6 @@ def test_session_index_enrichment_promotes_git_branch_when_typed_field_empty() -
     enriched = enrich_session_from_index(parsed, entry)
 
     assert enriched.git_branch == "feature/work"
-    # Transitional: legacy provider_meta key kept for current storage readers.
-    assert enriched.provider_meta is not None
-    assert enriched.provider_meta["gitBranch"] == "feature/work"
 
 
 def test_session_index_does_not_overwrite_existing_typed_git_branch() -> None:
@@ -195,8 +181,5 @@ def test_session_index_does_not_overwrite_existing_typed_git_branch() -> None:
 
     enriched = enrich_session_from_index(parsed, entry)
 
-    # Typed field is preserved; provider_meta still records index-derived branch
-    # for backwards compatibility with current consumers.
+    # Typed field is preserved; index-derived branch is not applied when already set.
     assert enriched.git_branch == "main"
-    assert enriched.provider_meta is not None
-    assert enriched.provider_meta["gitBranch"] == "feature/other"

@@ -867,7 +867,6 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
                 provider_message_id="m1",
                 role=Role.USER,
                 message_type=MessageType.TOOL_USE,
-                provider_meta={"has_paste": False},
                 content_blocks=[
                     ParsedContentBlock(type=ContentBlockType.TEXT, text="api archive needle"),
                     ParsedContentBlock(

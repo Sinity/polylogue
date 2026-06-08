@@ -19,6 +19,7 @@ from polylogue.sources.assembly import SidecarData
 from polylogue.sources.assembly_claude_code import ClaudeCodeAssemblySpec
 from polylogue.sources.parsers.base import (
     ParsedMessage,
+    ParsedPasteEvidence,
     ParsedSession,
 )
 from polylogue.sources.parsers.claude.history import HistoryEntry, HistoryPaste
@@ -152,8 +153,8 @@ def test_enrich_marks_matched_user_message_with_paste_evidence() -> None:
 
     enriched = ClaudeCodeAssemblySpec().enrich_session(conv, _sidecars(history))
 
-    annotated = enriched.messages[0].provider_meta or {}
-    assert annotated.get("claude_code_history_paste") is True
+    assert len(enriched.messages[0].paste_spans) >= 1
+    assert enriched.messages[0].paste_spans[0].boundary_state == "hash_only"
 
 
 def test_enrich_marks_hash_only_paste_as_evidence_too() -> None:
@@ -167,7 +168,8 @@ def test_enrich_marks_hash_only_paste_as_evidence_too() -> None:
 
     enriched = ClaudeCodeAssemblySpec().enrich_session(conv, _sidecars(history))
 
-    assert (enriched.messages[0].provider_meta or {}).get("claude_code_history_paste") is True
+    assert len(enriched.messages[0].paste_spans) >= 1
+    assert enriched.messages[0].paste_spans[0].boundary_state == "hash_only"
 
 
 def test_enrich_skips_message_outside_timestamp_tolerance() -> None:
@@ -181,7 +183,7 @@ def test_enrich_skips_message_outside_timestamp_tolerance() -> None:
 
     enriched = ClaudeCodeAssemblySpec().enrich_session(conv, _sidecars(history))
 
-    assert (enriched.messages[0].provider_meta or {}).get("claude_code_history_paste") is None
+    assert enriched.messages[0].paste_spans == []
 
 
 def test_enrich_does_not_silently_fan_evidence_across_ambiguous_matches() -> None:
@@ -204,7 +206,7 @@ def test_enrich_does_not_silently_fan_evidence_across_ambiguous_matches() -> Non
     enriched = ClaudeCodeAssemblySpec().enrich_session(conv, _sidecars(history))
 
     for msg in enriched.messages:
-        assert (msg.provider_meta or {}).get("claude_code_history_paste") is None
+        assert msg.paste_spans == []
 
 
 def test_enrich_does_not_cross_session_boundaries() -> None:
@@ -224,8 +226,8 @@ def test_enrich_does_not_cross_session_boundaries() -> None:
     enriched_a = ClaudeCodeAssemblySpec().enrich_session(conv_a, sidecars)
     enriched_b = ClaudeCodeAssemblySpec().enrich_session(conv_b, sidecars)
 
-    assert (enriched_a.messages[0].provider_meta or {}).get("claude_code_history_paste") is True
-    assert (enriched_b.messages[0].provider_meta or {}).get("claude_code_history_paste") is None
+    assert len(enriched_a.messages[0].paste_spans) >= 1
+    assert enriched_b.messages[0].paste_spans == []
 
 
 def test_enrich_leaves_assistant_messages_alone() -> None:
@@ -242,7 +244,7 @@ def test_enrich_leaves_assistant_messages_alone() -> None:
 
     enriched = ClaudeCodeAssemblySpec().enrich_session(conv, _sidecars(history))
 
-    assert (enriched.messages[0].provider_meta or {}).get("claude_code_history_paste") is None
+    assert enriched.messages[0].paste_spans == []
 
 
 def test_enrich_is_noop_when_history_index_empty() -> None:
@@ -277,14 +279,14 @@ def test_materialization_ors_heuristic_with_history_evidence(text: str, history_
     materialization boundary."""
     from polylogue.archive.message.paste_detection import detect_paste
 
-    provider_meta: dict[str, object] | None = {"claude_code_history_paste": True} if history_annotated else None
+    paste_spans = [ParsedPasteEvidence(boundary_state="hash_only", source_marker="1")] if history_annotated else []
     msg = ParsedMessage(
         provider_message_id="m1",
         role=Role.normalize("user"),
         text=text,
-        provider_meta=provider_meta,
+        paste_spans=paste_spans,
     )
-    meta_paste_evidence = bool((msg.provider_meta or {}).get("claude_code_history_paste"))
+    meta_paste_evidence = bool(msg.paste_spans)
     actual = 1 if (detect_paste(msg.text) or meta_paste_evidence) else 0
 
     assert actual == expected

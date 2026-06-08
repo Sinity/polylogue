@@ -426,8 +426,6 @@ def test_parse_code_tool_result_content_preserved() -> None:
     ]
     result = parse_code(items, "fallback")
     assert result.messages, "Expected at least one message"
-    # provider_meta is no longer set on ParsedMessage — content blocks are in content_blocks
-    assert result.messages[0].provider_meta is None
     blocks = result.messages[0].content_blocks
     tool_results = [b for b in blocks if b.type == "tool_result"]
     assert tool_results, "Expected tool_result content block"
@@ -461,7 +459,6 @@ def test_parse_code_tool_result_error_preserved() -> None:
         },
     ]
     result = parse_code(items, "fallback")
-    assert result.messages[0].provider_meta is None
     blocks = result.messages[0].content_blocks
     tool_results = [b for b in blocks if b.type == "tool_result"]
     assert tool_results, "Expected tool_result content block"
@@ -487,7 +484,6 @@ def test_parse_code_mixed_content_blocks_all_preserved() -> None:
         },
     ]
     result = parse_code(items, "fallback")
-    assert result.messages[0].provider_meta is None
     blocks = result.messages[0].content_blocks
     block_types = {b.type for b in blocks}
     assert "thinking" in block_types
@@ -523,7 +519,6 @@ class TestAttachmentFromMeta:
         assert result.provider_attachment_id == "att123"
         assert result.message_provider_id == "msg1"
         assert result.name == "file.txt"
-        assert result.provider_meta == meta
 
     def test_attachment_from_meta_with_all_fields(self) -> None:
         """Creates ParsedAttachment with all supported fields."""
@@ -1259,7 +1254,6 @@ def test_parse_code_semantic_projection_contract() -> None:
     result = parse_code(payload, "test-session")
 
     assert len(result.messages) == 3
-    assert result.messages[0].provider_meta is None
     first_types = [block.type for block in result.messages[0].content_blocks]
     assert "thinking" in first_types and "tool_use" in first_types
     assert result.messages[1].message_type.value == "summary"

@@ -216,7 +216,6 @@ class TestClaudeCodeParserSessionEvents:
             {"type": "summary", "uuid": "s1", "message": {"content": "sum"}},
         ]
         result = parse_code(payload, "test-session")
-        assert result.provider_meta is None
         assert len(result.session_events) == 1
         assert result.session_events[0].payload["summary"] == "sum"
 
@@ -380,7 +379,6 @@ class TestCodexParserSessionEvents:
             },
         ]
         result = parse_codex(payload, "fallback")
-        assert result.provider_meta is None
         assert len(result.session_events) == 1
         assert result.session_events[0].payload["summary"] == "compact text"
 

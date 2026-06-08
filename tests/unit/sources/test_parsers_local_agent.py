@@ -58,7 +58,6 @@ def test_gemini_cli_session_document_parses_through_dispatch() -> None:
     assert session.messages[1].duration_ms == 900
     assert session.messages[1].input_tokens == 0
     assert session.messages[1].output_tokens == 10
-    assert session.messages[1].provider_meta == {"model": "gemini-test", "tokens": {"total": 10}}
     assert {block.type for block in session.messages[1].content_blocks} >= {
         ContentBlockType.TEXT,
         ContentBlockType.THINKING,
@@ -105,13 +104,6 @@ def test_hermes_session_document_parses_through_dispatch() -> None:
     assert session.provider_session_id == "hermes-session-1"
     assert session.created_at == "2026-05-07T08:39:43.000000"
     assert session.updated_at == "2026-05-07T08:46:00.000000"
-    assert session.provider_meta == {
-        "source_family": "hermes",
-        "model": "local-model",
-        "base_url": "http://localhost",
-        "platform": "linux",
-        "tools": [{"name": "shell"}],
-    }
     assert session.messages[0].role == "system"
     assert [message.position for message in session.messages] == [0, 1, 2, 3]
     assert session.messages[0].model_name == "local-model"
@@ -194,8 +186,7 @@ def test_antigravity_brain_artifact_metadata_parses_sibling_markdown(tmp_path: P
     assert session.provider_session_id == "03c22aa3-8b7f-438d-baa8-d12567249cd9:implementation_plan.md"
     assert session.updated_at == "2026-01-07T19:08:15.216541610Z"
     assert session.messages[0].text == "# Implementation Plan\n\nDo the work.\n"
-    assert session.provider_meta is not None
-    assert session.provider_meta["source_family"] == "antigravity"
+    assert session.source_name is Provider.ANTIGRAVITY
 
 
 def test_antigravity_language_server_markdown_export_parses_turns() -> None:
@@ -230,9 +221,7 @@ Checks passed.
     assert [message.role for message in session.messages] == ["user", "assistant"]
     assert "pytest -q" in (session.messages[0].text or "")
     assert session.messages[1].text == "Checks passed."
-    assert session.provider_meta is not None
-    assert session.provider_meta["source_format"] == "language_server_markdown_export"
-    assert session.provider_meta["workspace_name"] == "Sinity/sinex"
+    assert session.provider_session_id == "e85783e3-f047-49b8-9035-4029f58dd04a"
 
 
 def test_antigravity_language_server_export_dispatches_as_session() -> None:

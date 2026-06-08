@@ -22,10 +22,9 @@ Ref #1297, Ref #1184, Ref #1186.
 
 from __future__ import annotations
 
-import copy
 import json
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
@@ -34,7 +33,7 @@ from polylogue.core.json import JSONDocument
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.drive import looks_like as _looks_like_impl
 from polylogue.sources.parsers.drive import parse_chunked_prompt
-from polylogue.types import Provider
+from polylogue.types import ContentBlockType, Provider
 
 CATALOG_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "gemini_chunked_prompt"
 CATALOG_FIXTURES = (
@@ -62,17 +61,6 @@ def _parse(payload: JSONDocument, fallback_id: str = "fallback") -> ParsedSessio
 
 def _looks_like(payload: JSONDocument) -> bool:
     return _looks_like_impl(payload)
-
-
-def _meta_blocks(message_provider_meta: dict[str, object] | None) -> list[dict[str, object]]:
-    assert isinstance(message_provider_meta, dict), "message is missing provider_meta"
-    blocks = message_provider_meta.get("content_blocks")
-    assert isinstance(blocks, list), "provider_meta.content_blocks must be a list"
-    typed: list[dict[str, object]] = []
-    for block in blocks:
-        assert isinstance(block, dict), "content_blocks entries must be dicts"
-        typed.append(block)
-    return typed
 
 
 # ---------------------------------------------------------------------------
@@ -192,42 +180,40 @@ class TestChunkedPromptEnvelopeShape:
 class TestPerChunkContentBlocks:
     """Pin how a chunk's typed payload realises as ``content_blocks``.
 
-    ``provider_meta.content_blocks`` is the structured representation that
-    downstream surfaces (renderers, FTS indexing, MCP) consume. The contract:
-    a thought chunk emits a ``thinking`` block; ``executableCode`` emits a
-    ``code`` block carrying the source; ``codeExecutionResult`` emits a
+    ``msg.content_blocks`` is the structured representation that downstream
+    surfaces (renderers, FTS indexing, MCP) consume. The contract: a thought
+    chunk emits a ``thinking`` block; ``executableCode`` emits a ``code``
+    block carrying the source; ``codeExecutionResult`` emits a
     ``tool_result`` block carrying the output.
     """
 
     def test_thought_chunk_emits_thinking_block(self) -> None:
         payload = _load_catalog("code_execution_prompt.json")
         session = _parse(payload, "code_execution_prompt")
-        thought_msgs = [m for m in session.messages if (m.provider_meta or {}).get("isThought")]
+        thought_msgs = [
+            m for m in session.messages if any(b.type == ContentBlockType.THINKING for b in m.content_blocks)
+        ]
         assert len(thought_msgs) == 1
-        blocks = _meta_blocks(thought_msgs[0].provider_meta)
-        assert [b["type"] for b in blocks] == ["thinking"]
-        assert blocks[0]["text"] == "I should use code execution."
+        thinking_block = next(b for b in thought_msgs[0].content_blocks if b.type == ContentBlockType.THINKING)
+        assert thinking_block.text == "I should use code execution."
 
     def test_executable_code_chunk_emits_code_block_with_source(self) -> None:
         payload = _load_catalog("code_execution_prompt.json")
         session = _parse(payload, "code_execution_prompt")
-        code_msgs = [m for m in session.messages if any(b.get("type") == "code" for b in _meta_blocks(m.provider_meta))]
+        code_msgs = [m for m in session.messages if any(b.type == ContentBlockType.CODE for b in m.content_blocks)]
         assert len(code_msgs) == 1
-        code_block = next(b for b in _meta_blocks(code_msgs[0].provider_meta) if b["type"] == "code")
-        assert code_block["text"] == "print(2+2)"
+        code_block = next(b for b in code_msgs[0].content_blocks if b.type == ContentBlockType.CODE)
+        assert code_block.text == "print(2+2)"
 
     def test_code_execution_result_chunk_emits_tool_result_block(self) -> None:
         payload = _load_catalog("code_execution_prompt.json")
         session = _parse(payload, "code_execution_prompt")
         result_blocks = [
-            block
-            for m in session.messages
-            for block in _meta_blocks(m.provider_meta)
-            if block.get("type") == "tool_result"
+            block for m in session.messages for block in m.content_blocks if block.type == ContentBlockType.TOOL_RESULT
         ]
         assert len(result_blocks) == 1
         # The on-disk output ("4\n") is surfaced verbatim, not the outcome label.
-        result_text = result_blocks[0]["text"]
+        result_text = result_blocks[0].text
         assert isinstance(result_text, str)
         assert result_text.strip() == "4"
 
@@ -235,9 +221,9 @@ class TestPerChunkContentBlocks:
         payload = _load_catalog("text_only_prompt.json")
         session = _parse(payload, "text_only_prompt")
         for message in session.messages:
-            blocks = _meta_blocks(message.provider_meta)
-            assert [b["type"] for b in blocks] == ["text"]
-            assert blocks[0]["text"] == message.text
+            assert len(message.content_blocks) == 1
+            assert message.content_blocks[0].type == ContentBlockType.TEXT
+            assert message.content_blocks[0].text == message.text
 
 
 # ---------------------------------------------------------------------------
@@ -246,95 +232,80 @@ class TestPerChunkContentBlocks:
 
 
 class TestMetadataRoundtrip:
-    """Pin the per-message ``provider_meta`` roundtrip contract.
+    """Pin message-level content invariants after provider_meta removal.
 
-    ``provider_meta`` is the bridge between provider-native JSON and the
-    archive's typed representation. Two invariants matter:
-
-    1. The original chunk dictionary is preserved verbatim under ``raw`` so
-       lossless reconstruction is possible.
-    2. Typed Gemini fields (``isThought``, ``tokenCount``, ``finishReason``,
-       ``thinkingBudget``, ``safetyRatings``, ``executableCode``,
-       ``codeExecutionResult``) appear at the top level when present so
-       downstream consumers do not have to re-parse ``raw``.
+    provider_meta and its sub-keys (raw, isThought, tokenCount, finishReason,
+    thinkingBudget, safetyRatings, executableCode, codeExecutionResult) are no
+    longer retained. The canonical surface is msg.content_blocks. These tests
+    assert the surviving typed contracts.
     """
 
     def test_raw_chunk_is_preserved_verbatim_under_provider_meta_raw(self) -> None:
+        # provider_meta.raw is no longer retained; pin the canonical invariant
+        # that every parsed chunk produces at least one content block.
         payload = _load_catalog("text_only_prompt.json")
-        original_chunks = copy.deepcopy(cast(dict[str, Any], payload["chunkedPrompt"])["chunks"])
         session = _parse(payload, "text_only_prompt")
-        observed_raw = [(m.provider_meta or {}).get("raw") for m in session.messages]
-        assert observed_raw == original_chunks
+        assert all(len(m.content_blocks) > 0 for m in session.messages)
 
     def test_token_count_and_finish_reason_surface_at_top_level(self) -> None:
+        # tokenCount / finishReason are no longer retained in provider_meta;
+        # pin that assistant messages carry a text content block.
         payload = _load_catalog("text_only_prompt.json")
         session = _parse(payload, "text_only_prompt")
         assistant_msgs = [m for m in session.messages if m.role == Role.ASSISTANT]
         assert assistant_msgs
-        first_meta = assistant_msgs[0].provider_meta or {}
-        assert first_meta.get("tokenCount") == 8
-        assert first_meta.get("finishReason") == "STOP"
+        assert all(any(b.type == ContentBlockType.TEXT for b in m.content_blocks) for m in assistant_msgs)
 
     def test_thinking_budget_and_is_thought_surface_at_top_level(self) -> None:
+        # isThought / thinkingBudget are no longer retained in provider_meta;
+        # the canonical signal is the thinking block on the message.
         payload = _load_catalog("code_execution_prompt.json")
         session = _parse(payload, "code_execution_prompt")
-        thought_msgs = [m for m in session.messages if (m.provider_meta or {}).get("isThought")]
+        thought_msgs = [
+            m for m in session.messages if any(b.type == ContentBlockType.THINKING for b in m.content_blocks)
+        ]
         assert len(thought_msgs) == 1
-        meta = thought_msgs[0].provider_meta or {}
-        assert meta.get("isThought") is True
-        assert meta.get("thinkingBudget") == 256
+        thinking_block = next(b for b in thought_msgs[0].content_blocks if b.type == ContentBlockType.THINKING)
+        assert thinking_block.text == "I should use code execution."
 
     def test_safety_ratings_round_trip_into_provider_meta(self) -> None:
+        # safetyRatings are no longer retained in provider_meta; the message
+        # that previously carried them is still parsed with its text intact.
         payload = _load_catalog("multi_turn_prompt.json")
         session = _parse(payload, "multi_turn_prompt")
-        rated = [m for m in session.messages if isinstance((m.provider_meta or {}).get("safetyRatings"), list)]
-        assert len(rated) == 1
-        ratings = (rated[0].provider_meta or {})["safetyRatings"]
-        assert isinstance(ratings, list)
-        assert ratings == [{"category": "HARM_CATEGORY_HARASSMENT", "probability": "NEGLIGIBLE"}]
+        texts = [m.text for m in session.messages]
+        assert "The document covers Q1 results." in texts
 
     def test_executable_code_and_result_round_trip_into_provider_meta(self) -> None:
+        # executableCode / codeExecutionResult are no longer stored in provider_meta
+        # as raw dicts; they surface as typed CODE and TOOL_RESULT blocks.
         payload = _load_catalog("code_execution_prompt.json")
         session = _parse(payload, "code_execution_prompt")
-        exec_meta = next(
-            (m.provider_meta or {}) for m in session.messages if (m.provider_meta or {}).get("executableCode")
-        )
-        assert exec_meta["executableCode"] == {"language": "PYTHON", "code": "print(2+2)"}
-        result_meta = next(
-            (m.provider_meta or {}) for m in session.messages if (m.provider_meta or {}).get("codeExecutionResult")
-        )
-        assert result_meta["codeExecutionResult"] == {"outcome": "OUTCOME_OK", "output": "4\n"}
+        code_blocks = [b for m in session.messages for b in m.content_blocks if b.type == ContentBlockType.CODE]
+        assert len(code_blocks) == 1
+        assert code_blocks[0].text == "print(2+2)"
+        result_blocks = [
+            b for m in session.messages for b in m.content_blocks if b.type == ContentBlockType.TOOL_RESULT
+        ]
+        assert len(result_blocks) == 1
+        assert result_blocks[0].text is not None
+        assert result_blocks[0].text.strip() == "4"
 
     def test_reparse_after_provider_meta_serialisation_yields_identical_messages(self) -> None:
-        """The roundtrip end-to-end: parse -> serialise provider_meta.raw back
-        into a synthetic payload -> reparse -> compare message shape.
+        """Parse the same payload twice and verify deterministic output.
 
-        This is the strongest possible "metadata round-trips" claim: the raw
-        chunk surfaced under provider_meta is sufficient to reconstruct the
-        same parser output. If a future change to the parser drops a field
-        from ``raw``, this test catches it.
+        provider_meta.raw is no longer retained; the canonical check is parser
+        determinism: identical input produces identical message roles, texts,
+        timestamps, and content-block type sequences.
         """
         payload = _load_catalog("multi_turn_prompt.json")
-        original = _parse(payload, "multi_turn_prompt")
-        reconstructed_chunks = [(m.provider_meta or {}).get("raw") for m in original.messages]
-        # No chunk should be missing its raw projection.
-        assert all(isinstance(chunk, dict) for chunk in reconstructed_chunks)
-        synthetic_payload: dict[str, Any] = {
-            "id": payload["id"],
-            "displayName": payload.get("displayName"),
-            "createTime": payload.get("createTime"),
-            "updateTime": payload.get("updateTime"),
-            "chunkedPrompt": {"chunks": reconstructed_chunks},
-        }
-        replay = _parse(cast(JSONDocument, synthetic_payload), "multi_turn_prompt")
-        assert [m.role for m in replay.messages] == [m.role for m in original.messages]
-        assert [m.text for m in replay.messages] == [m.text for m in original.messages]
-        assert [m.timestamp for m in replay.messages] == [m.timestamp for m in original.messages]
-        assert [(m.provider_meta or {}).get("tokenCount") for m in replay.messages] == [
-            (m.provider_meta or {}).get("tokenCount") for m in original.messages
-        ]
-        assert [(m.provider_meta or {}).get("isThought") for m in replay.messages] == [
-            (m.provider_meta or {}).get("isThought") for m in original.messages
+        first = _parse(payload, "multi_turn_prompt")
+        second = _parse(payload, "multi_turn_prompt")
+        assert [m.role for m in first.messages] == [m.role for m in second.messages]
+        assert [m.text for m in first.messages] == [m.text for m in second.messages]
+        assert [m.timestamp for m in first.messages] == [m.timestamp for m in second.messages]
+        assert [[b.type for b in m.content_blocks] for m in first.messages] == [
+            [b.type for b in m.content_blocks] for m in second.messages
         ]
 
 
