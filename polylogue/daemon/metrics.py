@@ -86,15 +86,15 @@ from typing import Protocol, TypedDict
 
 from polylogue.daemon.process_start import uptime_seconds
 from polylogue.logging import get_logger
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 
 logger = get_logger(__name__)
 
-_ARCHIVE_TIER_FILES: tuple[tuple[str, str, int, bool], ...] = (
-    ("source", "source.db", 1, True),
-    ("index", "index.db", 1, False),
-    ("embeddings", "embeddings.db", 1, True),
-    ("user", "user.db", 1, True),
-    ("ops", "ops.db", 1, False),
+# Derived from the canonical tier specs so the expected schema version per tier
+# can never drift from ARCHIVE_VERSION_BY_TIER. (tier, filename, expected_version,
+# backup_required), preserving the source→index→embeddings→user→ops order.
+_ARCHIVE_TIER_FILES: tuple[tuple[str, str, int, bool], ...] = tuple(
+    (spec.tier.value, spec.filename, spec.version, spec.backup_required) for spec in ARCHIVE_TIER_SPECS.values()
 )
 
 _ARCHIVE_LAYOUT_BLOCKERS: tuple[str, ...] = (

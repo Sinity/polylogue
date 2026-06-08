@@ -187,7 +187,7 @@ def test_full_ingest_writes_archive_with_route_observability(
         "archive_bootstrapped": False,
         "archive_present_tiers": "source,index,ops",
         "archive_missing_tiers": "embeddings,user",
-        "archive_tier_user_versions_json": ('{"embeddings": null, "index": 1, "ops": 1, "source": 1, "user": null}'),
+        "archive_tier_user_versions_json": ('{"embeddings": null, "index": 2, "ops": 1, "source": 1, "user": null}'),
     }
     write_event = next(payload for phase, payload in stage_events if phase == "full_archive_write")
     assert write_event == {
@@ -276,7 +276,7 @@ def test_streaming_full_ingest_writes_archive_from_blob(
         "archive_bootstrapped": False,
         "archive_present_tiers": "source,index,ops",
         "archive_missing_tiers": "embeddings,user",
-        "archive_tier_user_versions_json": ('{"embeddings": null, "index": 1, "ops": 1, "source": 1, "user": null}'),
+        "archive_tier_user_versions_json": ('{"embeddings": null, "index": 2, "ops": 1, "source": 1, "user": null}'),
     }
     write_event = next(payload for phase, payload in stage_events if phase == "full_archive_write")
     assert write_event == {
@@ -349,7 +349,7 @@ def test_full_ingest_bootstraps_archive_root(
         "archive_bootstrapped": True,
         "archive_present_tiers": "source,index,embeddings,user,ops",
         "archive_missing_tiers": "",
-        "archive_tier_user_versions_json": '{"embeddings": 1, "index": 1, "ops": 1, "source": 1, "user": 1}',
+        "archive_tier_user_versions_json": '{"embeddings": 1, "index": 2, "ops": 1, "source": 1, "user": 1}',
     }
 
 
