@@ -225,6 +225,21 @@ class SessionProfileInsight(ArchiveInsightModel):
         include_evidence = tier in {"merged", "evidence"}
         include_inference = tier in {"merged", "inference"}
         include_enrichment = tier == "merged"
+        inference = record.inference_payload if include_inference else None
+        if inference is not None:
+            # The denormalized native session_profiles columns are the
+            # authoritative ranking signals (terminal_state / workflow_shape);
+            # the inference payload JSON is the structured-evidence copy. The
+            # writer keeps them in sync, so reconcile the insight object onto the
+            # native columns so ranking/aggregation reads the queryable authority.
+            inference = inference.model_copy(
+                update={
+                    "terminal_state": record.terminal_state,
+                    "terminal_state_confidence": record.terminal_state_confidence,
+                    "workflow_shape": record.workflow_shape,
+                    "workflow_shape_confidence": record.workflow_shape_confidence,
+                }
+            )
         return cls(
             semantic_tier=tier,
             session_id=str(record.session_id),
@@ -234,7 +249,7 @@ class SessionProfileInsight(ArchiveInsightModel):
             provenance=_record_provenance(record),
             evidence=(record.evidence_payload if include_evidence else None),
             inference_provenance=(_record_inference_provenance(record) if include_inference else None),
-            inference=(record.inference_payload if include_inference else None),
+            inference=inference,
             enrichment_provenance=(_record_enrichment_provenance(record) if include_enrichment else None),
             enrichment=(record.enrichment_payload if include_enrichment else None),
         )

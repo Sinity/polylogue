@@ -3624,6 +3624,19 @@ def _session_profile_components_from_archive_row(
                 "support_level": confidence_from_score(max(workflow_confidence, terminal_confidence)),
             }
         )
+    else:
+        # The denormalized native session_profiles columns are the authoritative
+        # ranking signals; reconcile the JSON-derived payload onto them so resume
+        # ranking and aggregation read the queryable native columns rather than a
+        # divergent payload copy.
+        inference = inference.model_copy(
+            update={
+                "workflow_shape": workflow_shape,
+                "workflow_shape_confidence": workflow_confidence,
+                "terminal_state": terminal_state,
+                "terminal_state_confidence": terminal_confidence,
+            }
+        )
 
     enrichment = parse_payload_model(
         row, "enrichment_payload_json", record_id=session_id, model=SessionEnrichmentPayload
