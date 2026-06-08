@@ -693,6 +693,7 @@ def test_session_insight_rebuild_sync_reports_progress(cli_workspace: CliWorkspa
     assert [desc for _, desc in cleared_events] == [
         "rebuild: cleared session_work_events",
         "rebuild: cleared session_phases",
+        "rebuild: cleared session_latency_profiles",
         "rebuild: cleared session_profiles",
         "rebuild: cleared thread_sessions",
         "rebuild: cleared threads",

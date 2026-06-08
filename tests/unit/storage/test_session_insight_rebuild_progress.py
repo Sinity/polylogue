@@ -129,6 +129,7 @@ def test_full_rebuild_emits_progress_for_each_deleted_table(
     assert delete_events == [
         "rebuild: cleared session_work_events",
         "rebuild: cleared session_phases",
+        "rebuild: cleared session_latency_profiles",
         "rebuild: cleared session_profiles",
         "rebuild: cleared thread_sessions",
         "rebuild: cleared threads",
