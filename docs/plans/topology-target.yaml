@@ -3189,6 +3189,10 @@ files:
     loc: 151
     target: polylogue/storage/sqlite/archive_tiers/ops.py
     owner: stable
+  - path: polylogue/storage/sqlite/archive_tiers/pricing_seed.py
+    loc: 108
+    target: polylogue/storage/sqlite/archive_tiers/pricing_seed.py
+    owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/ops_write.py
     loc: 769
     target: polylogue/storage/sqlite/archive_tiers/ops_write.py
