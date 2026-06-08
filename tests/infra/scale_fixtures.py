@@ -26,7 +26,6 @@ portable.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -88,7 +87,7 @@ def _seed_tier_db(db_path: Path, tier: ScaleTier, *, seed: int = 1183) -> dict[s
     """
     from tests.benchmarks.conftest import _seed_realistic_db  # local import: heavy
 
-    return asyncio.run(_seed_realistic_db(db_path, target_messages=tier.target_messages, seed=seed))
+    return _seed_realistic_db(db_path, target_messages=tier.target_messages, seed=seed)
 
 
 # ---------------------------------------------------------------------------

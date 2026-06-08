@@ -49,19 +49,6 @@ async def get_content_blocks(
     return result
 
 
-async def save_content_blocks(
-    conn: aiosqlite.Connection,
-    records: list[ContentBlockRecord],
-    transaction_depth: int,
-) -> None:
-    """Reject old content-block writes; current writes go through parsed sessions."""
-    del conn, transaction_depth
-    if not records:
-        return
-    raise RuntimeError("content block record writes are not a supported archive write path")
-
-
 __all__ = [
     "get_content_blocks",
-    "save_content_blocks",
 ]
