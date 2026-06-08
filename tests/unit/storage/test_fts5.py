@@ -33,6 +33,7 @@ from tests.infra.storage_records import (
     make_message,
     make_session,
     save_current_archive_records,
+    save_session_to_archive,
 )
 from tests.infra.strategies import fts5_match_text_strategy, search_query_strategy
 
@@ -948,9 +949,8 @@ class TestFTS5Provider:
         )
         # First save the session so source_name lookup works
         backend = SQLiteBackend(db_path=db_path)
-        await backend.begin()
-        await backend.save_session_record(conv)
-        await backend.commit()
+        await save_session_to_archive(backend, session=conv)
+        await backend.close()
 
         msgs = [make_message("ens-msg", "ensure-conv", timestamp="1000")]
 

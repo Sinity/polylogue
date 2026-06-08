@@ -50,6 +50,7 @@ from tests.infra.storage_records import (
     make_attachment,
     make_message,
     make_session,
+    save_session_to_archive,
     store_records,
     upsert_attachment,
     upsert_message,
@@ -1268,9 +1269,7 @@ class TestCrudLaws:
                 )
                 messages.append(msg)
 
-            await backend.save_session_record(conv)
-            if messages:
-                await backend.save_messages(messages)
+            await save_session_to_archive(backend, session=conv, messages=messages)
 
             retrieved = await backend.get_session(conv_id)
             assert retrieved is not None
@@ -1304,8 +1303,8 @@ class TestCrudLaws:
             )
 
             # Save twice
-            await backend.save_session_record(conv)
-            await backend.save_session_record(conv)
+            await save_session_to_archive(backend, session=conv)
+            await save_session_to_archive(backend, session=conv)
 
             # Should still be exactly one session
             all_convs = await backend.queries.list_sessions(_record_query(limit=100))

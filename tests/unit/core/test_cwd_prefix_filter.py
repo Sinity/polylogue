@@ -11,7 +11,7 @@ from polylogue.core.json import dumps
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.queries.filter_builder import _build_session_filters
 from polylogue.storage.sqlite.queries.sessions_reads import list_sessions
-from tests.infra.storage_records import make_session
+from tests.infra.storage_records import make_session, save_session_to_archive
 
 
 def test_cwd_prefix_param_lands_in_spec() -> None:
@@ -99,20 +99,20 @@ def test_cwd_prefix_describe_includes_label() -> None:
 @pytest.mark.asyncio
 async def test_cwd_prefix_sql_filter_is_path_component_bounded(tmp_path: Path) -> None:
     backend = SQLiteBackend(db_path=tmp_path / "cwd.db")
-    async with backend.transaction():
-        for session_id, cwd in (
-            ("exact", "/realm/project/polylogue"),
-            ("child", "/realm/project/polylogue/src"),
-            ("sibling", "/realm/project/polylogue2"),
-            ("other", "/realm/project/other"),
-        ):
-            await backend.save_session_record(
-                make_session(
-                    session_id,
-                    working_directories_json=dumps([cwd]),
-                    content_hash=f"hash-{session_id}",
-                )
-            )
+    for session_id, cwd in (
+        ("exact", "/realm/project/polylogue"),
+        ("child", "/realm/project/polylogue/src"),
+        ("sibling", "/realm/project/polylogue2"),
+        ("other", "/realm/project/other"),
+    ):
+        await save_session_to_archive(
+            backend,
+            session=make_session(
+                session_id,
+                working_directories_json=dumps([cwd]),
+                content_hash=f"hash-{session_id}",
+            ),
+        )
 
     async with backend.connection() as conn:
         rows = await list_sessions(

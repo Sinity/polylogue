@@ -14,7 +14,7 @@ from polylogue.storage.sqlite.queries.message_query_reads import (
     get_messages_paginated,
     iter_messages,
 )
-from tests.infra.storage_records import make_message, make_session
+from tests.infra.storage_records import make_message, make_session, save_session_to_archive
 
 
 @pytest.mark.asyncio
@@ -76,9 +76,7 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
         ),
     ]
 
-    async with backend.transaction():
-        await backend.save_session_record(conv)
-        await backend.save_messages(messages)
+    await save_session_to_archive(backend, session=conv, messages=messages)
 
     async with backend.connection() as conn:
         assert await get_messages_batch(conn, []) == ({}, [])

@@ -20,7 +20,7 @@ from polylogue.storage.search_providers.hybrid import (
     reciprocal_rank_fusion,
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from tests.infra.storage_records import make_hash, make_message, make_session
+from tests.infra.storage_records import make_hash, make_message, make_session, save_session_to_archive
 
 
 def _as_mock(value: object) -> MagicMock:
@@ -63,8 +63,7 @@ class TestHybridSearchProvider:
                 text=f"Message {i}",
                 timestamp=f"2024-01-0{i + 1}T00:00:00Z",
             )
-            await backend.save_session_record(conv)
-            await backend.save_messages([msg])
+            await save_session_to_archive(backend, session=conv, messages=[msg])
 
         await backend.close()
 
@@ -135,8 +134,7 @@ class TestHybridSearchProvider:
                     text="test message",
                     timestamp=f"2024-01-0{i + 1}T00:00:00Z",
                 )
-                await backend.save_session_record(conv)
-                await backend.save_messages([msg])
+                await save_session_to_archive(backend, session=conv, messages=[msg])
 
         await backend.close()
 
@@ -597,8 +595,9 @@ class TestListSessionsByParent:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         parent_id = "unknown-export:parent-conv"
         child_id = "unknown-export:child-conv"
-        await backend.save_session_record(
-            make_session(
+        await save_session_to_archive(
+            backend,
+            session=make_session(
                 session_id=parent_id,
                 source_name="test",
                 provider_session_id="parent-conv",
@@ -606,10 +605,13 @@ class TestListSessionsByParent:
                 title="Parent",
                 created_at="2024-01-01T00:00:00Z",
                 updated_at="2024-01-01T00:00:00Z",
-            )
+            ),
         )
-        await backend.save_session_record(
-            make_session(
+        # parent_session_id uses the parent's native_id ("parent-conv") so the
+        # production writer resolves it to the archive session_id "unknown-export:parent-conv".
+        await save_session_to_archive(
+            backend,
+            session=make_session(
                 session_id=child_id,
                 source_name="test",
                 provider_session_id="child-conv",
@@ -617,9 +619,9 @@ class TestListSessionsByParent:
                 title="Child",
                 created_at="2024-01-02T00:00:00Z",
                 updated_at="2024-01-02T00:00:00Z",
-                parent_session_id=parent_id,
+                parent_session_id="parent-conv",
                 branch_type=BranchType.CONTINUATION,
-            )
+            ),
         )
         children = await backend.list_sessions_by_parent(parent_id)
         assert len(children) == 1
@@ -631,8 +633,9 @@ class TestListSessionsByParent:
         """Multiple children sorted by created_at."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         parent_id = "unknown-export:parent"
-        await backend.save_session_record(
-            make_session(
+        await save_session_to_archive(
+            backend,
+            session=make_session(
                 session_id=parent_id,
                 source_name="test",
                 provider_session_id="parent",
@@ -640,11 +643,14 @@ class TestListSessionsByParent:
                 title="Parent",
                 created_at="2024-01-01T00:00:00Z",
                 updated_at="2024-01-01T00:00:00Z",
-            )
+            ),
         )
+        # parent_session_id uses the parent's native_id ("parent") so the
+        # production writer resolves it to the archive session_id "unknown-export:parent".
         for i, ts in enumerate(["2024-01-03T00:00:00Z", "2024-01-02T00:00:00Z", "2024-01-04T00:00:00Z"]):
-            await backend.save_session_record(
-                make_session(
+            await save_session_to_archive(
+                backend,
+                session=make_session(
                     session_id=f"unknown-export:child-{i}",
                     source_name="test",
                     provider_session_id=f"child-{i}",
@@ -652,9 +658,9 @@ class TestListSessionsByParent:
                     title=f"Child {i}",
                     created_at=ts,
                     updated_at=ts,
-                    parent_session_id=parent_id,
+                    parent_session_id="parent",
                     branch_type=BranchType.FORK,
-                )
+                ),
             )
         children = await backend.list_sessions_by_parent(parent_id)
         assert len(children) == 3

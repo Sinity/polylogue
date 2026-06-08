@@ -12,7 +12,7 @@ from polylogue.storage.repository import SessionRepository
 from polylogue.storage.search import escape_fts5_query
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.adversarial_cases import FTS5_ESCAPE_SECURITY_CASES
-from tests.infra.storage_records import make_message, make_session
+from tests.infra.storage_records import make_message, make_session, save_session_to_archive
 from tests.infra.strategies.adversarial import (
     control_char_strategy,
     fts5_operator_strategy,
@@ -69,8 +69,7 @@ async def test_stored_xss_in_session_content(temp_repo: SessionRepository) -> No
     backend = temp_repo.backend
     conv_record = make_session("xss-test", title="XSS Test")
     msg_record = make_message("msg-xss", "xss-test", text=xss_payload)
-    await backend.save_session_record(conv_record)
-    await backend.save_messages([msg_record])
+    await save_session_to_archive(backend, session=conv_record, messages=[msg_record])
     retrieved = await temp_repo.view("xss-test")
     assert retrieved is not None
     assert xss_payload in [m.text for m in retrieved.messages]

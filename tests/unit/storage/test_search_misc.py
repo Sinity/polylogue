@@ -28,7 +28,7 @@ from polylogue.sources.parsers.claude import (
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.schema import _ensure_schema
-from tests.infra.storage_records import make_hash, make_raw_session, make_session
+from tests.infra.storage_records import make_hash, make_raw_session, make_session, save_session_to_archive
 
 
 class TestEnsureVec0Table:
@@ -201,7 +201,7 @@ class TestRawSessionEdgeCases:
             parent_session_id=None,
             branch_type=None,
         )
-        await backend.save_session_record(conv)
+        await save_session_to_archive(backend, session=conv)
 
         # Retrieve and verify. Session ids are generated as ``origin:native_id``
         # (#1743); source_name="claude-ai" → claude-ai-export.
@@ -224,11 +224,13 @@ class TestRawSessionEdgeCases:
             created_at="2024-01-01T00:00:00Z",
             updated_at="2024-01-01T00:00:00Z",
         )
-        await backend.save_session_record(parent)
+        await save_session_to_archive(backend, session=parent)
 
         # Create child with branch_type. Session ids are generated as
         # ``origin:native_id`` (#1743); source_name="test" → unknown-export, so
         # the parent's generated id is ``unknown-export:p``.
+        # parent_session_id uses the parent's native_id ("p") so the production
+        # writer can resolve it to the archive session_id "unknown-export:p".
         child = make_session(
             session_id="child",
             source_name="test",
@@ -237,10 +239,10 @@ class TestRawSessionEdgeCases:
             title="Child",
             created_at="2024-01-02T00:00:00Z",
             updated_at="2024-01-02T00:00:00Z",
-            parent_session_id="unknown-export:p",
+            parent_session_id="p",
             branch_type=BranchType.SIDECHAIN,
         )
-        await backend.save_session_record(child)
+        await save_session_to_archive(backend, session=child)
 
         # Query and verify branch_type is preserved
         children = await backend.list_sessions_by_parent("unknown-export:p")

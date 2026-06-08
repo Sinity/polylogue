@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from polylogue.config import Config
 from polylogue.pipeline.services.indexing import IndexService
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from tests.infra.storage_records import make_content_block, make_message, make_session
+from tests.infra.storage_records import make_content_block, make_message, make_session, save_session_to_archive
 
 
 def _config() -> Config:
@@ -49,8 +49,7 @@ class TestIndexService:
             content_hash="msghash1",
         )
         # Insert using backend API
-        await sqlite_backend.save_session_record(conv)
-        await sqlite_backend.save_messages([msg])
+        await save_session_to_archive(sqlite_backend, session=conv, messages=[msg])
 
         service = IndexService(_config(), backend=sqlite_backend)
 
@@ -60,16 +59,15 @@ class TestIndexService:
     async def test_update_index_accepts_async_iterable(self, sqlite_backend: SQLiteBackend) -> None:
         """Streaming session IDs can be indexed without prebuilding a list."""
 
-        await sqlite_backend.save_session_record(
-            make_session(
+        await save_session_to_archive(
+            sqlite_backend,
+            session=make_session(
                 session_id="conv-stream",
                 source_name="chatgpt",
                 title="Stream Test",
                 content_hash="hash-stream",
-            )
-        )
-        await sqlite_backend.save_messages(
-            [
+            ),
+            messages=[
                 make_message(
                     message_id="msg-stream",
                     session_id="conv-stream",
@@ -77,7 +75,7 @@ class TestIndexService:
                     text="hello world",
                     content_hash="msghash-stream",
                 )
-            ]
+            ],
         )
 
         service = IndexService(_config(), backend=sqlite_backend)
@@ -104,16 +102,15 @@ class TestIndexService:
 
         for index in range(3):
             session_id = f"conv-progress-{index}"
-            await sqlite_backend.save_session_record(
-                make_session(
+            await save_session_to_archive(
+                sqlite_backend,
+                session=make_session(
                     session_id=session_id,
                     source_name="chatgpt",
                     title=f"Session {index}",
                     content_hash=f"hash-{index}",
-                )
-            )
-            await sqlite_backend.save_messages(
-                [
+                ),
+                messages=[
                     make_message(
                         message_id=f"msg-progress-{index}",
                         session_id=session_id,
@@ -121,7 +118,7 @@ class TestIndexService:
                         text=f"Hello from session {index}",
                         content_hash=f"message-hash-{index}",
                     )
-                ]
+                ],
             )
 
         service = IndexService(_config(), backend=sqlite_backend)
@@ -144,16 +141,15 @@ class TestIndexService:
     ) -> None:
         """Full rebuild reports FTS progress only; the action-event phase was removed (#1743)."""
 
-        await sqlite_backend.save_session_record(
-            make_session(
+        await save_session_to_archive(
+            sqlite_backend,
+            session=make_session(
                 session_id="conv-plain",
                 source_name="chatgpt",
                 title="Plain Session",
                 content_hash="hash-plain",
-            )
-        )
-        await sqlite_backend.save_messages(
-            [
+            ),
+            messages=[
                 make_message(
                     message_id="msg-plain",
                     session_id="conv-plain",
@@ -162,18 +158,18 @@ class TestIndexService:
                     sort_key=0.5,
                     content_hash="message-hash-plain",
                 )
-            ]
+            ],
         )
-        await sqlite_backend.save_session_record(
-            make_session(
+        # Content block folded into message — no separate save_content_blocks step.
+        await save_session_to_archive(
+            sqlite_backend,
+            session=make_session(
                 session_id="conv-action",
                 source_name="chatgpt",
                 title="Action Session",
                 content_hash="hash-action",
-            )
-        )
-        await sqlite_backend.save_messages(
-            [
+            ),
+            messages=[
                 make_message(
                     message_id="msg-action",
                     session_id="conv-action",
@@ -181,21 +177,19 @@ class TestIndexService:
                     text="Ran rg",
                     sort_key=1.0,
                     content_hash="message-hash-action",
+                    content_blocks=[
+                        make_content_block(
+                            message_id="msg-action",
+                            session_id="conv-action",
+                            block_index=0,
+                            block_type="tool_use",
+                            tool_name="exec_command",
+                            tool_id="tool-1",
+                            tool_input='{"cmd":"rg -n actions"}',
+                        )
+                    ],
                 )
-            ]
-        )
-        await sqlite_backend.save_content_blocks(
-            [
-                make_content_block(
-                    message_id="msg-action",
-                    session_id="conv-action",
-                    block_index=0,
-                    block_type="tool_use",
-                    tool_name="exec_command",
-                    tool_id="tool-1",
-                    tool_input='{"cmd":"rg -n actions"}',
-                )
-            ]
+            ],
         )
 
         service = IndexService(_config(), backend=sqlite_backend)

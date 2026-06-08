@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import threading
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, TypeAlias, cast
@@ -936,6 +936,46 @@ async def save_current_archive_records(
 
     parsed = _record_to_parsed_session(session, messages, attachments)
     result: dict[str, int] = await repository.save_parsed_session(parsed, _writer_hash(session.content_hash))
+    return result
+
+
+async def save_session_to_archive(
+    backend: Any,
+    *,
+    session: SessionRecord,
+    messages: Sequence[MessageRecord] = (),
+    attachments: Sequence[AttachmentRecord] = (),
+) -> dict[str, int]:
+    """Seed a session into a SQLiteBackend through the live archive writer.
+
+    Backend-based twin of :func:`save_current_archive_records`. Wraps the
+    backend in a repository so population goes through the one production
+    writer (``write_parsed_session_to_archive``) rather than any record-level
+    backend write path. Content blocks must be attached to their
+    ``MessageRecord.content_blocks`` (no separate block-write step exists).
+
+    ``raw_id`` is not propagated by the parsed-session writer path
+    (``ArchiveStore.write_parsed`` never receives it), so a follow-up UPDATE
+    keyed on ``(origin, native_id)`` patches the column when the session
+    record carries one.
+    """
+    from polylogue.storage.repository import SessionRepository
+
+    result = await save_current_archive_records(
+        SessionRepository(backend=backend),
+        session=session,
+        messages=list(messages),
+        attachments=list(attachments),
+    )
+
+    if session.raw_id is not None:
+        async with backend.connection() as conn:
+            await conn.execute(
+                "UPDATE sessions SET raw_id = ? WHERE origin = ? AND native_id = ?",
+                (session.raw_id, session.origin.value, session.native_id),
+            )
+            await conn.commit()
+
     return result
 
 

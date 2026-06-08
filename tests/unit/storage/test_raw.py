@@ -16,7 +16,7 @@ import pytest
 
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from tests.infra.storage_records import make_raw_session, make_session
+from tests.infra.storage_records import make_raw_session, make_session, save_session_to_archive
 
 # test_db and test_conn fixtures are in conftest.py
 
@@ -257,7 +257,7 @@ class TestRawSessionStorage:
             content_hash="hash123",
             raw_id="raw-abc123",  # Link to raw source
         )
-        await backend.save_session_record(conv)
+        await save_session_to_archive(backend, session=conv)
 
         # Verify the link exists in database. Session ids are generated as
         # ``origin:native_id`` (#1743); source_name="test" → unknown-export.
@@ -280,7 +280,7 @@ class TestRawSessionStorage:
             content_hash="hash456",
             # raw_id is None (default)
         )
-        await backend.save_session_record(conv)
+        await save_session_to_archive(backend, session=conv)
 
         # Verify it saved correctly. Session ids are generated as
         # ``origin:native_id`` (#1743); source_name="test" → unknown-export.
