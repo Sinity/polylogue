@@ -937,11 +937,11 @@ def _write_messages(
             """
             INSERT OR REPLACE INTO messages (
                 session_id, native_id, parent_message_id, position, role, message_type,
-                model_name, model_effort, has_tool_use, has_thinking, has_paste,
+                model_name, model_effort, has_tool_use, has_thinking, has_paste, paste_boundary,
                 variant_index, is_active_path, is_active_leaf, word_count,
                 input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
                 duration_ms, content_hash, occurred_at_ms
-            ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -954,6 +954,7 @@ def _write_messages(
                 _has_block(message, ContentBlockType.TOOL_USE),
                 _has_block(message, ContentBlockType.THINKING),
                 _has_paste(message),
+                _paste_boundary(message),
                 variant_index,
                 1 if message.is_active_path is not False else 0,
                 1 if message.is_active_leaf else 0,
@@ -1757,6 +1758,13 @@ def _has_block(message: ParsedMessage, block_type: ContentBlockType) -> int:
 
 def _has_paste(message: ParsedMessage) -> int:
     return int(bool(message.paste_spans))
+
+
+def _paste_boundary(message: ParsedMessage) -> str | None:
+    """Message-level paste boundary state, taken from the first detected span."""
+    if not message.paste_spans:
+        return None
+    return PasteBoundary(message.paste_spans[0].boundary_state).value
 
 
 def _word_count(text: str | None) -> int:

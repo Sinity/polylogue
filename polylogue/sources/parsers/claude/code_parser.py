@@ -10,6 +10,7 @@ from polylogue.archive.message.artifacts import classify_text_message_type
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
+from polylogue.core.enums import PasteBoundary
 from polylogue.logging import get_logger
 from polylogue.pipeline.semantic_capture import detect_context_compaction
 from polylogue.types import ContentBlockType, Provider
@@ -17,6 +18,7 @@ from polylogue.types import ContentBlockType, Provider
 from ..base import (
     ParsedContentBlock,
     ParsedMessage,
+    ParsedPasteEvidence,
     ParsedSession,
     ParsedSessionEvent,
     content_blocks_from_segments,
@@ -32,6 +34,29 @@ from .common import (
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
+# Claude Code elides pasted content in the persisted JSONL, leaving a
+# ``[Pasted text #N]`` marker (optionally ``[Pasted text #N +M lines]``) in the
+# user prompt text. The live UserPromptSubmit hook captures the same paste with
+# a real content hash (boundary_state=hash_only); batch re-ingest can only
+# recover the marker's exact location, so it stamps the span as PROJECTED.
+_PASTE_MARKER_RE = re.compile(r"\[Pasted text #(\d+)[^\]]*\]")
+
+
+def _detect_paste_spans(text: str | None) -> list[ParsedPasteEvidence]:
+    """Detect ``[Pasted text #N]`` markers in a user prompt as paste evidence."""
+    if not text:
+        return []
+    return [
+        ParsedPasteEvidence(
+            position=int(match.group(1)),
+            start_offset=match.start(),
+            end_offset=match.end(),
+            boundary_state=PasteBoundary.PROJECTED.value,
+            source_marker=match.group(0),
+        )
+        for match in _PASTE_MARKER_RE.finditer(text)
+    ]
+
 
 ClaudeCodeContextCompaction: TypeAlias = dict[str, object]
 ClaudeCodeProviderMeta: TypeAlias = dict[str, object]
@@ -229,10 +254,14 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
         msg_model = _message_model_name(message_payload) or _message_model_name(item)
         msg_effort = _message_model_effort(message_payload) or _message_model_effort(item)
         msg_duration_ms = _message_duration_ms(item)
+        resolved_role = reclassify_tool_result_envelope(envelope_role, content_blocks)
+        # Paste markers only appear in user prompts; restricting detection to the
+        # user role avoids false positives from assistant text that quotes a marker.
+        paste_spans = _detect_paste_spans(text) if resolved_role == Role.USER else []
         messages.append(
             ParsedMessage(
                 provider_message_id=str(record_uuid or f"msg-{index}"),
-                role=reclassify_tool_result_envelope(envelope_role, content_blocks),
+                role=resolved_role,
                 text=text or "",
                 timestamp=timestamp,
                 content_blocks=content_blocks,
@@ -248,6 +277,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
                 model_name=msg_model,
                 model_effort=msg_effort,
                 duration_ms=msg_duration_ms,
+                paste_spans=paste_spans,
             )
         )
         message_position += 1
