@@ -55,14 +55,12 @@ component usable across multiple backend types."""
 
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.archive.message.roles import MessageRoleFilter
-from polylogue.core.sources import origin_from_provider
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.runtime import (
     AttachmentRecord,
@@ -71,10 +69,7 @@ from polylogue.storage.runtime import (
     SessionEventRecord,
     SessionRecord,
 )
-from polylogue.storage.search.cache import invalidate_search_cache
 from polylogue.storage.search.models import SessionSearchResult
-from polylogue.storage.sqlite.archive_tiers.write import _timestamp_ms
-from polylogue.storage.sqlite.queries import attachments as attachments_q
 from polylogue.storage.sqlite.queries import messages as messages_q
 from polylogue.storage.sqlite.queries import sessions as sessions_q
 from polylogue.storage.sqlite.queries.stats import (
@@ -86,7 +81,6 @@ from polylogue.storage.sqlite.queries.tool_usage import (
     ToolUsageProviderCoverageRow,
     ToolUsageRow,
 )
-from polylogue.types import Provider
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -104,80 +98,6 @@ class SQLiteArchiveMixin:
         _db_path: Path
 
         def _get_connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]: ...
-
-    @staticmethod
-    def _is_current_archive_index_path(path: Path) -> bool:
-        if path.name != "index.db":
-            return False
-        root = path.parent
-        return all((root / filename).exists() for filename in ("source.db", "index.db", "user.db", "ops.db"))
-
-    @staticmethod
-    def _content_hash_blob(value: str) -> bytes:
-        blob = bytes.fromhex(value)
-        if len(blob) != 32:
-            raise ValueError("content_hash must be a SHA-256 hex digest")
-        return blob
-
-    @staticmethod
-    def _native_id_from_current_id(current_id: str, origin: str) -> str:
-        prefix = f"{origin}:"
-        return current_id.removeprefix(prefix)
-
-    async def _resolve_current_session_id(
-        self,
-        conn: aiosqlite.Connection,
-        *,
-        session_id: str,
-        source_name: str,
-    ) -> str:
-        cursor = await conn.execute("SELECT session_id FROM sessions WHERE session_id = ?", (session_id,))
-        row = await cursor.fetchone()
-        if row is not None:
-            return str(row["session_id"])
-        cursor = await conn.execute(
-            "SELECT session_id FROM sessions WHERE native_id = ? ORDER BY session_id LIMIT 2",
-            (session_id,),
-        )
-        rows = list(await cursor.fetchall())
-        if len(rows) == 1:
-            return str(rows[0]["session_id"])
-        origin = origin_from_provider(Provider.from_string(source_name)).value
-        native_id = self._native_id_from_current_id(session_id, origin)
-        cursor = await conn.execute(
-            "SELECT session_id FROM sessions WHERE origin = ? AND native_id = ?",
-            (origin, native_id),
-        )
-        row = await cursor.fetchone()
-        if row is not None:
-            return str(row["session_id"])
-        raise ValueError(f"Cannot write child rows for unknown session {session_id!r}")
-
-    async def _replace_working_dirs(
-        self,
-        conn: aiosqlite.Connection,
-        *,
-        session_id: str,
-        working_directories_json: str | None,
-    ) -> None:
-        if working_directories_json is None:
-            return
-        try:
-            raw = json.loads(working_directories_json)
-        except json.JSONDecodeError as exc:
-            raise ValueError("working_directories_json must be a JSON list") from exc
-        if not isinstance(raw, list):
-            raise ValueError("working_directories_json must be a JSON list")
-        paths = [str(item) for item in raw if isinstance(item, str) and item]
-        await conn.execute("DELETE FROM session_working_dirs WHERE session_id = ?", (session_id,))
-        await conn.executemany(
-            """
-            INSERT INTO session_working_dirs (session_id, path, position)
-            VALUES (?, ?, ?)
-            ON CONFLICT(session_id, path) DO UPDATE SET position = excluded.position
-            """,
-            [(session_id, path, position) for position, path in enumerate(paths)],
-        )
 
     async def get_session(self, session_id: str) -> SessionRecord | None:
         """Retrieve a session by ID."""
@@ -200,55 +120,6 @@ class SQLiteArchiveMixin:
     async def session_exists_by_hash(self, content_hash: str) -> bool:
         """Check if session with given content hash exists."""
         return await self.queries.session_exists_by_hash(content_hash)
-
-    async def save_session_record(self, record: SessionRecord) -> None:
-        """Persist a session record with upsert semantics."""
-        async with self._get_connection() as conn:
-            if not self._is_current_archive_index_path(Path(self._db_path)):
-                raise RuntimeError("archive writes require the current split archive file set")
-            origin = record.origin
-            native_id = record.native_id
-            await conn.execute(
-                """
-                INSERT INTO sessions (
-                    native_id, origin, parent_session_id, raw_id, branch_type,
-                    title, git_branch, git_repository_url, content_hash,
-                    created_at_ms, updated_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(origin, native_id) DO UPDATE SET
-                    parent_session_id = excluded.parent_session_id,
-                    raw_id = COALESCE(excluded.raw_id, sessions.raw_id),
-                    branch_type = excluded.branch_type,
-                    title = COALESCE(excluded.title, sessions.title),
-                    git_branch = excluded.git_branch,
-                    git_repository_url = excluded.git_repository_url,
-                    content_hash = excluded.content_hash,
-                    created_at_ms = COALESCE(sessions.created_at_ms, excluded.created_at_ms),
-                    updated_at_ms = MAX(COALESCE(sessions.updated_at_ms, 0), COALESCE(excluded.updated_at_ms, 0))
-                """,
-                (
-                    native_id,
-                    origin.value,
-                    record.parent_session_id,
-                    record.raw_id,
-                    record.branch_type.value if record.branch_type is not None else None,
-                    record.title,
-                    record.git_branch,
-                    record.git_repository_url,
-                    self._content_hash_blob(record.content_hash),
-                    _timestamp_ms(record.created_at),
-                    _timestamp_ms(record.updated_at),
-                ),
-            )
-            current_session_id = f"{origin.value}:{native_id}"
-            await self._replace_working_dirs(
-                conn,
-                session_id=current_session_id,
-                working_directories_json=record.working_directories_json,
-            )
-            if self._transaction_depth == 0:
-                await conn.commit()
-            invalidate_search_cache()
 
     async def get_messages(self, session_id: str) -> list[MessageRecord]:
         """Get all messages for a session, with content_blocks attached."""
@@ -292,162 +163,6 @@ class SQLiteArchiveMixin:
             message_role=message_role,
         )
 
-    @staticmethod
-    def _topo_sort_messages(records: list[MessageRecord]) -> list[MessageRecord]:
-        """Sort messages so parents come before children (for FK constraint)."""
-        return messages_q.topo_sort_messages(records)
-
-    async def save_messages(self, records: list[MessageRecord]) -> None:
-        """Persist multiple message records using bulk insert."""
-        async with self._get_connection() as conn:
-            if not self._is_current_archive_index_path(Path(self._db_path)):
-                raise RuntimeError("archive writes require the current split archive file set")
-            records = messages_q.topo_sort_messages(records)
-            for position, record in enumerate(records):
-                session_id = await self._resolve_current_session_id(
-                    conn,
-                    session_id=str(record.session_id),
-                    source_name=record.source_name,
-                )
-                native_id = record.provider_message_id
-                if native_id is None:
-                    native_id = str(record.message_id).removeprefix(f"{session_id}:")
-                await conn.execute(
-                    """
-                    INSERT INTO messages (
-                        session_id, native_id, parent_message_id, position,
-                        role, message_type, model_name, has_tool_use,
-                        has_thinking, has_paste, paste_boundary, variant_index,
-                        word_count, input_tokens, output_tokens, cache_read_tokens,
-                        cache_write_tokens, content_hash, occurred_at_ms
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(session_id, position, variant_index) DO UPDATE SET
-                        native_id = excluded.native_id,
-                        parent_message_id = excluded.parent_message_id,
-                        role = excluded.role,
-                        message_type = excluded.message_type,
-                        model_name = excluded.model_name,
-                        has_tool_use = excluded.has_tool_use,
-                        has_thinking = excluded.has_thinking,
-                        has_paste = excluded.has_paste,
-                        paste_boundary = excluded.paste_boundary,
-                        word_count = excluded.word_count,
-                        input_tokens = excluded.input_tokens,
-                        output_tokens = excluded.output_tokens,
-                        cache_read_tokens = excluded.cache_read_tokens,
-                        cache_write_tokens = excluded.cache_write_tokens,
-                        content_hash = excluded.content_hash,
-                        occurred_at_ms = excluded.occurred_at_ms
-                    """,
-                    (
-                        session_id,
-                        native_id,
-                        record.parent_message_id,
-                        position,
-                        record.role.value if record.role is not None else "unknown",
-                        record.message_type.value,
-                        record.model_name,
-                        int(record.has_tool_use),
-                        int(record.has_thinking),
-                        int(record.has_paste),
-                        record.paste_boundary_state,
-                        record.branch_index,
-                        record.word_count,
-                        record.input_tokens,
-                        record.output_tokens,
-                        record.cache_read_tokens,
-                        record.cache_write_tokens,
-                        self._content_hash_blob(record.content_hash),
-                        int(record.sort_key * 1000) if record.sort_key is not None else None,
-                    ),
-                )
-                text = record.text
-                if text:
-                    await conn.execute(
-                        """
-                        INSERT INTO blocks (
-                            message_id, session_id, position, block_type, text
-                        ) VALUES (
-                            (SELECT message_id FROM messages WHERE session_id = ? AND position = ? AND variant_index = ?),
-                            ?, 0, 'text', ?
-                        )
-                        ON CONFLICT(message_id, position) DO UPDATE SET
-                            block_type = excluded.block_type,
-                            text = excluded.text
-                        """,
-                        (
-                            session_id,
-                            position,
-                            record.branch_index,
-                            session_id,
-                            text,
-                        ),
-                    )
-            if self._transaction_depth == 0:
-                await conn.commit()
-            invalidate_search_cache()
-
-    async def save_content_blocks(self, records: list[ContentBlockRecord]) -> None:
-        """Persist content block records using bulk insert."""
-        async with self._get_connection() as conn:
-            if not self._is_current_archive_index_path(Path(self._db_path)):
-                raise RuntimeError("archive writes require the current split archive file set")
-            for record in records:
-                message_id = str(record.message_id)
-                session_id = str(record.session_id)
-                resolved_session_id = await self._resolve_current_session_id(
-                    conn,
-                    session_id=session_id,
-                    source_name="",
-                )
-                cursor = await conn.execute(
-                    """
-                    SELECT message_id, session_id
-                    FROM messages
-                    WHERE message_id = ?
-                       OR (session_id = ? AND native_id = ?)
-                    ORDER BY CASE WHEN message_id = ? THEN 0 ELSE 1 END
-                    LIMIT 1
-                    """,
-                    (message_id, resolved_session_id, message_id, message_id),
-                )
-                row = await cursor.fetchone()
-                if row is None:
-                    raise ValueError(f"Cannot write block for unknown message {message_id!r}")
-                message_id = str(row["message_id"])
-                session_id = str(row["session_id"])
-                await conn.execute(
-                    """
-                    INSERT INTO blocks (
-                        message_id, session_id, position, block_type, text,
-                        tool_name, tool_id, tool_input, semantic_type, language
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(message_id, position) DO UPDATE SET
-                        block_type = excluded.block_type,
-                        text = excluded.text,
-                        tool_name = excluded.tool_name,
-                        tool_id = excluded.tool_id,
-                        tool_input = excluded.tool_input,
-                        semantic_type = excluded.semantic_type,
-                        language = excluded.language
-                    """,
-                    (
-                        message_id,
-                        session_id,
-                        record.block_index,
-                        record.type.value,
-                        record.text,
-                        record.tool_name,
-                        record.tool_id,
-                        record.tool_input,
-                        record.semantic_type.value if record.semantic_type is not None else None,
-                        _metadata_language(record.metadata),
-                    ),
-                )
-            if self._transaction_depth == 0:
-                await conn.commit()
-            invalidate_search_cache()
-
     async def get_content_blocks(self, message_ids: list[str]) -> dict[str, list[ContentBlockRecord]]:
         """Get content blocks for a list of message IDs."""
         return await self.queries.get_content_blocks(message_ids)
@@ -470,16 +185,6 @@ class SQLiteArchiveMixin:
     ) -> dict[str, list[SessionEventRecord]]:
         """Get timeline events for multiple sessions."""
         return await self.queries.get_session_events_batch(session_ids)
-
-    async def save_attachments(self, records: list[AttachmentRecord]) -> None:
-        """Persist attachment records with reference counting."""
-        async with self._get_connection() as conn:
-            await attachments_q.save_attachments(conn, records, self._transaction_depth)
-
-    async def prune_attachments(self, session_id: str, keep_attachment_ids: set[str]) -> None:
-        """Remove attachment refs not in keep set and clean up orphaned attachments."""
-        async with self._get_connection() as conn:
-            await attachments_q.prune_attachments(conn, session_id, keep_attachment_ids, self._transaction_depth)
 
     async def list_sessions_by_parent(self, parent_id: str) -> list[SessionRecord]:
         """List all sessions that have the given session as parent."""
@@ -596,21 +301,6 @@ class SQLiteArchiveMixin:
     ) -> list[ToolUsageProviderCoverageRow]:
         """Return per-provider tool-data coverage signals."""
         return await self.queries.get_tool_usage_provider_coverage_rows()
-
-
-def _metadata_language(metadata: str | None) -> str | None:
-    if not metadata:
-        return None
-    try:
-        import json
-
-        parsed = json.loads(metadata)
-    except ValueError:
-        return None
-    if not isinstance(parsed, dict):
-        return None
-    value = parsed.get("language")
-    return str(value) if value is not None else None
 
 
 __all__ = ["SQLiteArchiveMixin"]
