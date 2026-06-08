@@ -140,7 +140,6 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
         orphan_count_attr="orphan_profile_row_count",
         ready_flags=("profile_rows_ready",),
         artifacts=("session_profiles",),
-        fallback_payload_columns=("provenance_json",),
     ),
     InsightReadinessSpec(
         insight_name="session_work_events",

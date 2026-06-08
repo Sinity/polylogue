@@ -271,7 +271,7 @@ def test_archive_tiers_writer_preserves_session_profile_defaults_with_cost_upser
             terminal_state_method, terminal_state_confidence, duration_ms, substantive_count,
             attachment_count, work_event_count, phase_count, tool_calls_per_minute,
             cost_credits, cost_usd, cost_is_estimated, cost_provenance, priced_with, priced_at_ms,
-            search_text, provenance_json
+            search_text
         FROM session_profiles
         WHERE session_id = ?
         """,
@@ -299,7 +299,6 @@ def test_archive_tiers_writer_preserves_session_profile_defaults_with_cost_upser
         "priced_with": "gpt-5-mini",
         "priced_at_ms": 1_700_000_006_000,
         "search_text": "",
-        "provenance_json": "{}",
     }
 
 

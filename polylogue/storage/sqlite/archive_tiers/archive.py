@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -838,7 +837,9 @@ class ArchiveStore:
                    sp.terminal_state_confidence, sp.duration_ms, sp.substantive_count,
                    sp.attachment_count, sp.work_event_count, sp.phase_count,
                    sp.tool_calls_per_minute, sp.cost_usd, sp.cost_is_estimated,
-                   sp.cost_provenance, sp.provenance_json
+                   sp.cost_provenance,
+                   sp.total_cost_usd, sp.total_duration_ms,
+                   sp.evidence_payload_json, sp.inference_payload_json, sp.enrichment_payload_json
             FROM session_profiles sp
             JOIN sessions s ON s.session_id = sp.session_id
             WHERE sp.session_id = ?
@@ -935,7 +936,9 @@ class ArchiveStore:
                    sp.terminal_state_confidence, sp.duration_ms, sp.substantive_count,
                    sp.attachment_count, sp.work_event_count, sp.phase_count,
                    sp.tool_calls_per_minute, sp.cost_usd, sp.cost_is_estimated,
-                   sp.cost_provenance, sp.provenance_json
+                   sp.cost_provenance,
+                   sp.total_cost_usd, sp.total_duration_ms,
+                   sp.evidence_payload_json, sp.inference_payload_json, sp.enrichment_payload_json
             FROM session_profiles sp
             JOIN sessions s ON s.session_id = sp.session_id
             {clause}
@@ -3565,71 +3568,66 @@ def _session_profile_components_from_archive_row(
     and :meth:`ArchiveStore.get_session_profile_record` (full domain-record
     hydration). All three payloads are always materialized here; the insight
     builder applies tier gating on top.
+
+    Reads the typed *_payload_json columns written by the canonical
+    session-profile writer (replace_session_profiles_bulk_sync).  The legacy
+    provenance_json column has been dropped from the DDL.
     """
+    from polylogue.storage.sqlite.queries.mappers_insight_fallback import parse_payload_model
+
     session_id = str(row["session_id"])
     materialization = _read_archive_materialization(conn, "session_profile", session_id)
     workflow_shape = str(row["workflow_shape"] or "unknown")
     workflow_confidence = float(row["workflow_shape_confidence"] or 0.0)
     terminal_state = str(row["terminal_state"] or "unknown")
     terminal_confidence = float(row["terminal_state_confidence"] or 0.0)
-    provenance_payload = _json_object_from_text(row["provenance_json"])
-    # provenance_json appears in two shapes: the archive rebuild writes a
-    # wrapped payload ({"evidence": ..., "inference": ..., "enrichment": ...})
-    # carrying the full structured sub-payloads, while older/flat writers store
-    # the evidence fields at the top level. Merge top-level (flat) with the
-    # nested sub-dicts (wrapped takes precedence) so either shape resolves.
-    nested_evidence = provenance_payload.get("evidence")
-    nested_inference = provenance_payload.get("inference")
-    flat_payload = {
-        key: value for key, value in provenance_payload.items() if key not in {"evidence", "inference", "enrichment"}
-    }
-    evidence_payload = dict(flat_payload)
-    if isinstance(nested_evidence, Mapping):
-        evidence_payload.update(nested_evidence)
-    inference_payload = dict(flat_payload)
-    if isinstance(nested_inference, Mapping):
-        inference_payload.update(nested_inference)
-    evidence = SessionEvidencePayload.model_validate(
-        {
-            **evidence_payload,
-            "created_at": _iso_from_ms(row["created_at_ms"]),
-            "updated_at": _iso_from_ms(row["updated_at_ms"]),
-            "message_count": int(row["message_count"] or 0),
-            "substantive_count": int(row["substantive_count"] or 0),
-            "attachment_count": int(row["attachment_count"] or 0),
-            "tool_use_count": int(row["tool_use_count"] or 0),
-            "thinking_count": int(row["thinking_count"] or 0),
-            "word_count": int(row["word_count"] or 0),
-            "total_cost_usd": float(row["cost_usd"] or 0.0),
-            "total_duration_ms": int(row["duration_ms"] or 0),
-            "workflow_shape": workflow_shape,
-            "workflow_shape_confidence": workflow_confidence,
-            "terminal_state": terminal_state,
-            "terminal_state_confidence": terminal_confidence,
-            "cost_is_estimated": bool(row["cost_is_estimated"]),
-            "cost_provenance": str(row["cost_provenance"] or "unknown"),
-            "logical_session_id": str(row["root_session_id"] or session_id),
-            "tool_calls_per_minute": float(row["tool_calls_per_minute"] or 0.0),
-        }
+
+    evidence = parse_payload_model(row, "evidence_payload_json", record_id=session_id, model=SessionEvidencePayload)
+    if evidence is None:
+        # Fallback for rows written before the typed-column migration: build
+        # a minimal payload from the direct session/profile row columns.
+        evidence = SessionEvidencePayload.model_validate(
+            {
+                "created_at": _iso_from_ms(row["created_at_ms"]),
+                "updated_at": _iso_from_ms(row["updated_at_ms"]),
+                "message_count": int(row["message_count"] or 0),
+                "substantive_count": int(row["substantive_count"] or 0),
+                "attachment_count": int(row["attachment_count"] or 0),
+                "tool_use_count": int(row["tool_use_count"] or 0),
+                "thinking_count": int(row["thinking_count"] or 0),
+                "word_count": int(row["word_count"] or 0),
+                "total_cost_usd": float(row["total_cost_usd"] or row["cost_usd"] or 0.0),
+                "total_duration_ms": int(row["total_duration_ms"] or row["duration_ms"] or 0),
+                "workflow_shape": workflow_shape,
+                "workflow_shape_confidence": workflow_confidence,
+                "terminal_state": terminal_state,
+                "terminal_state_confidence": terminal_confidence,
+                "cost_is_estimated": bool(row["cost_is_estimated"]),
+                "cost_provenance": str(row["cost_provenance"] or "unknown"),
+                "logical_session_id": str(row["root_session_id"] or session_id),
+                "tool_calls_per_minute": float(row["tool_calls_per_minute"] or 0.0),
+            }
+        )
+
+    inference = parse_payload_model(row, "inference_payload_json", record_id=session_id, model=SessionInferencePayload)
+    if inference is None:
+        inference = SessionInferencePayload.model_validate(
+            {
+                "work_event_count": int(row["work_event_count"] or 0),
+                "phase_count": int(row["phase_count"] or 0),
+                "engaged_duration_ms": int(row["total_duration_ms"] or row["duration_ms"] or 0),
+                "engaged_minutes": float(row["total_duration_ms"] or row["duration_ms"] or 0) / 60000.0,
+                "workflow_shape": workflow_shape,
+                "workflow_shape_confidence": workflow_confidence,
+                "terminal_state": terminal_state,
+                "terminal_state_confidence": terminal_confidence,
+                "support_level": confidence_from_score(max(workflow_confidence, terminal_confidence)),
+            }
+        )
+
+    enrichment = parse_payload_model(
+        row, "enrichment_payload_json", record_id=session_id, model=SessionEnrichmentPayload
     )
-    inference = SessionInferencePayload.model_validate(
-        {
-            **inference_payload,
-            "work_event_count": int(row["work_event_count"] or 0),
-            "phase_count": int(row["phase_count"] or 0),
-            "engaged_duration_ms": int(row["duration_ms"] or 0),
-            "engaged_minutes": float(row["duration_ms"] or 0) / 60000.0,
-            "workflow_shape": workflow_shape,
-            "workflow_shape_confidence": workflow_confidence,
-            "terminal_state": terminal_state,
-            "terminal_state_confidence": terminal_confidence,
-            "support_level": confidence_from_score(max(workflow_confidence, terminal_confidence)),
-        }
-    )
-    enrichment = None
-    enrichment_data = provenance_payload.get("enrichment")
-    if isinstance(enrichment_data, Mapping):
-        enrichment = SessionEnrichmentPayload.model_validate(dict(enrichment_data))
     return _SessionProfileComponents(
         materialization=materialization,
         evidence=evidence,
@@ -3729,8 +3727,8 @@ def _session_profile_record_from_archive_row(
         word_count=int(row["word_count"] or 0),
         tool_use_count=int(row["tool_use_count"] or 0),
         thinking_count=int(row["thinking_count"] or 0),
-        total_cost_usd=float(row["cost_usd"] or 0.0),
-        total_duration_ms=int(row["duration_ms"] or 0),
+        total_cost_usd=evidence.total_cost_usd,
+        total_duration_ms=evidence.total_duration_ms,
         engaged_duration_ms=inference.engaged_duration_ms,
         tool_active_duration_ms=evidence.tool_active_duration_ms,
         wall_duration_ms=evidence.wall_duration_ms,

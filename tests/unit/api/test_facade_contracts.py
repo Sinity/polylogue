@@ -1810,7 +1810,7 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
                     session_id, workflow_shape, workflow_shape_confidence,
                     terminal_state, terminal_state_confidence, duration_ms,
                     substantive_count, work_event_count, phase_count,
-                    provenance_json
+                    evidence_payload_json
                 ) VALUES (?, 'agentic_loop', 0.91, 'question_left', 0.88, 180000,
                           2, 0, 0, ?)
                 """,
@@ -1821,11 +1821,11 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
                             "first_message_at": "2026-02-02T02:40:00Z",
                             "last_message_at": "2026-02-02T02:41:00Z",
                             "canonical_session_date": "2026-02-02",
-                            "repo_paths": ("https://example.test/polylogue.git",),
-                            "cwd_paths": ("/realm/project/polylogue",),
-                            "file_paths_touched": ("/realm/project/polylogue/polylogue/api/archive.py",),
-                            "branch_names": ("archive",),
-                            "tags": ("archive",),
+                            "repo_paths": ["https://example.test/polylogue.git"],
+                            "cwd_paths": ["/realm/project/polylogue"],
+                            "file_paths_touched": ["/realm/project/polylogue/polylogue/api/archive.py"],
+                            "branch_names": ["archive"],
+                            "tags": ["archive"],
                         }
                     ),
                 ),
@@ -2220,15 +2220,35 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
                 """
                 INSERT INTO session_profiles (
                     session_id, workflow_shape, workflow_shape_confidence,
-                    terminal_state, terminal_state_confidence, duration_ms,
+                    terminal_state, terminal_state_confidence, total_duration_ms,
                     substantive_count, attachment_count, work_event_count,
-                    phase_count, tool_calls_per_minute, cost_usd,
-                    cost_is_estimated, cost_provenance, provenance_json
+                    phase_count, tool_calls_per_minute, total_cost_usd,
+                    cost_is_estimated, cost_provenance, evidence_payload_json,
+                    inference_payload_json
                 ) VALUES (?, 'implementation', 0.82, 'completed', 0.91, 120000,
-                          1, 0, 2, 1, 3.5, 1.25, 0, 'priced',
-                          '{"canonical_session_date":"2026-02-02"}')
+                          1, 0, 2, 1, 3.5, 1.25, 0, 'priced', ?, ?)
                 """,
-                (session_id,),
+                (
+                    session_id,
+                    json.dumps(
+                        {
+                            "canonical_session_date": "2026-02-02",
+                            "total_duration_ms": 120000,
+                            "total_cost_usd": 1.25,
+                            "workflow_shape": "implementation",
+                            "workflow_shape_confidence": 0.82,
+                            "terminal_state": "completed",
+                            "terminal_state_confidence": 0.91,
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "work_event_count": 2,
+                            "phase_count": 1,
+                            "workflow_shape": "implementation",
+                        }
+                    ),
+                ),
             )
             upsert_insight_materialization(
                 conn,

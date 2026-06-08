@@ -1242,12 +1242,7 @@ def _archive_hot_insight_session_ids(
 
 def _archive_stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Sequence[str]) -> list[str]:
     unique_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
-    if (
-        not unique_ids
-        or not _table_exists(conn, "sessions")
-        or not _table_exists(conn, "session_profiles")
-        or not _table_exists(conn, "insight_materialization")
-    ):
+    if not unique_ids or not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
         return []
     placeholders = ", ".join("?" for _ in unique_ids)
     rows = conn.execute(
@@ -1255,15 +1250,19 @@ def _archive_stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Se
         SELECT s.session_id
         FROM sessions AS s
         LEFT JOIN session_profiles AS sp ON sp.session_id = s.session_id
-        LEFT JOIN insight_materialization AS im
-          ON im.session_id = s.session_id
-         AND im.insight_type = 'session_profile'
         WHERE s.session_id IN ({placeholders})
           AND (
               sp.session_id IS NULL
-              OR im.session_id IS NULL
-              OR im.materializer_version != ?
-              OR COALESCE(im.source_sort_key_ms, -1) != COALESCE(s.sort_key_ms, -1)
+              OR sp.materializer_version != ?
+              OR (
+                  s.sort_key_ms IS NOT NULL
+                  AND ABS(COALESCE(sp.source_sort_key, 0.0) - (CAST(s.sort_key_ms AS REAL) / 1000.0)) > 0.000001
+              )
+              OR (
+                  s.sort_key_ms IS NULL
+                  AND COALESCE(strftime('%s', sp.source_updated_at), sp.source_updated_at, '') !=
+                      COALESCE(CAST(s.updated_at_ms / 1000 AS TEXT), '')
+              )
           )
         ORDER BY s.session_id
         """,
@@ -1277,74 +1276,6 @@ def _schema_archive_session_ids_missing_profiles(conn: sqlite3.Connection) -> li
         return []
     rows = conn.execute("SELECT session_id FROM sessions ORDER BY session_id").fetchall()
     return _archive_stale_session_profile_ids(conn, [str(row[0]) for row in rows])
-
-
-def _refresh_archive_session_profiles(conn: sqlite3.Connection, session_ids: Sequence[str]) -> int:
-    ids = _archive_existing_session_ids(conn, session_ids)
-    if not ids:
-        return 0
-    now_ms = int(time.time() * 1000)
-    rows = conn.execute(
-        f"""
-        SELECT session_id, title, message_count, user_message_count, assistant_message_count,
-               tool_use_count, paste_count, sort_key_ms, updated_at_ms
-        FROM sessions
-        WHERE session_id IN ({", ".join("?" for _ in ids)})
-        ORDER BY session_id
-        """,
-        tuple(ids),
-    ).fetchall()
-    for row in rows:
-        session_id = str(row[0])
-        title = "" if row[1] is None else str(row[1])
-        substantive_count = int(row[3] or 0) + int(row[4] or 0)
-        search_text = " ".join(
-            token
-            for token in (
-                title,
-                f"messages:{int(row[2] or 0)}",
-                f"tools:{int(row[5] or 0)}",
-                f"pastes:{int(row[6] or 0)}",
-            )
-            if token
-        )
-        conn.execute(
-            """
-            INSERT INTO session_profiles (
-                session_id, substantive_count, search_text, provenance_json
-            ) VALUES (?, ?, ?, '{}')
-            ON CONFLICT(session_id) DO UPDATE SET
-                substantive_count = excluded.substantive_count,
-                search_text = excluded.search_text,
-                provenance_json = excluded.provenance_json
-            """,
-            (session_id, substantive_count, search_text),
-        )
-        conn.execute(
-            """
-            INSERT INTO insight_materialization (
-                insight_type, session_id, materializer_version, materialized_at_ms,
-                source_updated_at_ms, source_sort_key_ms, input_high_water_mark_ms, input_row_count
-            ) VALUES ('session_profile', ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(insight_type, session_id) DO UPDATE SET
-                materializer_version = excluded.materializer_version,
-                materialized_at_ms = excluded.materialized_at_ms,
-                source_updated_at_ms = excluded.source_updated_at_ms,
-                source_sort_key_ms = excluded.source_sort_key_ms,
-                input_high_water_mark_ms = excluded.input_high_water_mark_ms,
-                input_row_count = excluded.input_row_count
-            """,
-            (
-                session_id,
-                SESSION_INSIGHT_MATERIALIZER_VERSION,
-                now_ms,
-                row[8],
-                row[7],
-                row[7],
-                int(row[2] or 0),
-            ),
-        )
-    return len(rows)
 
 
 def _archive_insights_check(db_path: Path, path: Path) -> bool:
@@ -1439,6 +1370,8 @@ def _archive_insights_execute_sessions(db_path: Path, session_ids: Sequence[str]
 
 
 def _archive_insights_execute_ids(conn: sqlite3.Connection, session_ids: Sequence[str]) -> bool:
+    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+
     if not session_ids:
         return True
     hot_ids = _archive_hot_insight_session_ids(conn, session_ids)
@@ -1449,13 +1382,25 @@ def _archive_insights_execute_ids(conn: sqlite3.Connection, session_ids: Sequenc
             _HOT_INSIGHT_QUIET_SECONDS,
         )
         return False
-    refreshed = _refresh_archive_session_profiles(conn, session_ids)
-    conn.commit()
-    remaining = _archive_stale_session_profile_ids(conn, session_ids)
+    # The canonical rebuild function requires row-factory access on the
+    # connection (name-based column reads throughout). The archive callers
+    # use plain sqlite3.connect() without row_factory, so set it here.
+    conn.row_factory = sqlite3.Row
+    counts = rebuild_session_insights_sync(
+        conn,
+        session_ids=list(session_ids),
+        page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
+    )
+    # rebuild_session_insights_sync commits internally when session_ids is
+    # not None; no explicit conn.commit() needed here.
+    remaining = _archive_stale_session_profile_ids(conn, list(session_ids))
     logger.info(
-        "insights: archive refreshed sessions=%d profiles=%d remaining=%d",
+        "insights: archive refreshed sessions=%d profiles=%d work_events=%d phases=%d threads=%d remaining=%d",
         len(tuple(dict.fromkeys(session_ids))),
-        refreshed,
+        counts.profiles,
+        counts.work_events,
+        counts.phases,
+        counts.threads,
         len(remaining),
     )
     return not remaining

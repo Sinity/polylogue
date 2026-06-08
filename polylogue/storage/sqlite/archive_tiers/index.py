@@ -5,7 +5,7 @@ from __future__ import annotations
 from polylogue.core.enums import BlockType, BranchType, LinkType, MessageType, Origin, PasteBoundary, Role
 from polylogue.storage.sqlite.archive_tiers.common import CONTENT_HASH_CHECK, check, nullable_check
 
-INDEX_SCHEMA_VERSION = 1
+INDEX_SCHEMA_VERSION = 2
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -649,8 +649,7 @@ CREATE TABLE IF NOT EXISTS session_profiles (
     cost_credits                    REAL,
     cost_usd                        REAL,
     priced_with                     TEXT,
-    priced_at_ms                    INTEGER,
-    provenance_json                 TEXT NOT NULL DEFAULT '{{}}'
+    priced_at_ms                    INTEGER
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_session_profiles_provider

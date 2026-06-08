@@ -44,8 +44,8 @@ def _seed_session_profile(db_path: Path, session_id: str) -> None:
     """Materialize a minimal session_profiles row for the native session."""
     with sqlite3.connect(db_path) as conn:
         conn.execute(
-            "INSERT INTO session_profiles (session_id, search_text, provenance_json) VALUES (?, ?, ?)",
-            (session_id, "", "{}"),
+            "INSERT INTO session_profiles (session_id, search_text) VALUES (?, ?)",
+            (session_id, ""),
         )
         conn.commit()
 
