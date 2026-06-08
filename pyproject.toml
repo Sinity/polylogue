@@ -28,21 +28,21 @@ dependencies = [
   "google-auth-httplib2",
   "httpx[http2]>=0.28.1,<1.0",
   "rich>=15.0.0",
-  "textual>=8.2.6",
+  "textual>=8.2.7",
   "jinja2",
   "markdown-it-py",
   "pygments>=2.20",
   "ijson",
   "sqlite-vec>=0.1.9",  # Self-contained vector search
   "questionary>=2.0.0",
-  "click>=8.4.0,<9.0",
+  "click>=8.4.1,<9.0",
   "tenacity>=8.0.0",
   "dateparser>=1.1.0",
   "orjson>=3.11.9",
   "structlog>=24.1.0",
   "pydantic>=2.13.4,<3.0",
   "aiosqlite>=0.19.0",  # Async SQLite support
-  "mcp>=1.27.1",  # Model Context Protocol SDK
+  "mcp>=1.27.2",  # Model Context Protocol SDK
   "pyyaml>=6.0",  # YAML output format
   "typing-extensions>=4.7",  # TypedDict that pydantic accepts on Py<3.12
   "watchfiles>=1.2.0",  # Rust-backed filesystem watcher for live ingestion
@@ -50,7 +50,7 @@ dependencies = [
   "opentelemetry-proto>=1.20.0",  # OTLP protobuf stubs for /v1/traces|metrics|logs receiver (#1321)
   # Transitive constraints to avoid known CVEs surfaced by pip-audit:
   "cryptography>=48.0.0",  # CVE-2026-39892 (transitive via google-auth)
-  "python-multipart>=0.0.29",  # CVE-2026-40347 (transitive via mcp)
+  "python-multipart>=0.0.32",  # CVE-2026-40347 (transitive via mcp)
 ]
 
 [project.optional-dependencies]
@@ -74,7 +74,7 @@ dev = [
   "mypy>=1.17,<1.21",
   "types-dateparser>=1.2.0",  # dateparser library stubs for mypy
   "types-PyYAML>=6.0",  # yaml library stubs for mypy
-  "ruff>=0.15.13",
+  "ruff>=0.15.16",
   "pre-commit>=4.6.0",
   "pip-audit>=2.7",  # OSV-backed CVE scanning over the locked dev environment
 ]
