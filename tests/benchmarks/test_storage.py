@@ -16,7 +16,12 @@ import pytest
 
 from polylogue.storage.query_models import SessionRecordQuery
 from tests.benchmarks.helpers import BenchmarkFixture, benchmark_store_call, open_bench_store
-from tests.infra.storage_records import make_content_block, make_message, make_session
+from tests.infra.storage_records import (
+    make_content_block,
+    make_message,
+    make_session,
+    save_current_archive_records,
+)
 
 
 def _make_hash(s: str) -> str:
@@ -93,8 +98,8 @@ def test_bench_get_many_100(benchmark: BenchmarkFixture, bench_db_5k: Path) -> N
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("n", [100, 500, 1000])
-def test_bench_save_messages_batch(benchmark: BenchmarkFixture, tmp_path: Path, n: int) -> None:
-    """save_messages() batch insert — measures executemany throughput."""
+def test_bench_write_session_messages(benchmark: BenchmarkFixture, tmp_path: Path, n: int) -> None:
+    """Write a session of N messages through the production archive writer."""
     db_path = tmp_path / f"save_bench_{n}.db"
     with open_bench_store(db_path) as store:
         conv = make_session(
@@ -106,8 +111,6 @@ def test_bench_save_messages_batch(benchmark: BenchmarkFixture, tmp_path: Path, 
             updated_at="2025-01-01T00:00:00Z",
             content_hash=_make_hash("save-conv"),
         )
-        store.run(store.backend.save_session_record(conv))
-
         msgs = [
             make_message(
                 message_id=f"bench-save-conv-m{j}",
@@ -122,14 +125,19 @@ def test_bench_save_messages_batch(benchmark: BenchmarkFixture, tmp_path: Path, 
             for j in range(n)
         ]
 
-        benchmark(lambda: store.run(store.backend.save_messages(msgs)))
+        benchmark(
+            lambda: store.run(
+                save_current_archive_records(store.repository, session=conv, messages=msgs, attachments=[])
+            )
+        )
 
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("n_msgs", [100, 500])
-def test_bench_save_content_blocks(benchmark: BenchmarkFixture, tmp_path: Path, n_msgs: int) -> None:
-    """save_content_blocks() — 5 blocks per message (tool_use + thinking mix)."""
+def test_bench_write_session_with_blocks(benchmark: BenchmarkFixture, tmp_path: Path, n_msgs: int) -> None:
+    """Write a session of N messages (5 blocks each) through the production writer."""
     db_path = tmp_path / f"blocks_bench_{n_msgs}.db"
+    _BLOCK_TYPES = ["tool_use", "tool_use", "tool_use", "tool_result", "thinking"]
     with open_bench_store(db_path) as store:
         conv = make_session(
             session_id="bench-blocks-conv",
@@ -140,7 +148,6 @@ def test_bench_save_content_blocks(benchmark: BenchmarkFixture, tmp_path: Path, 
             updated_at="2025-01-01T00:00:00Z",
             content_hash=_make_hash("blocks-conv"),
         )
-        store.run(store.backend.save_session_record(conv))
         msgs = [
             make_message(
                 message_id=f"bench-blocks-conv-m{j}",
@@ -151,23 +158,21 @@ def test_bench_save_content_blocks(benchmark: BenchmarkFixture, tmp_path: Path, 
                 content_hash=_make_hash(f"blocks-msg-{j}"),
                 source_name="chatgpt",
                 word_count=4,
-                has_tool_use=1,
-                has_thinking=1,
+                content_blocks=[
+                    make_content_block(
+                        message_id=f"bench-blocks-conv-m{j}",
+                        session_id="bench-blocks-conv",
+                        block_index=k,
+                        block_type=_BLOCK_TYPES[k],
+                    )
+                    for k in range(5)
+                ],
             )
             for j in range(n_msgs)
         ]
-        store.run(store.backend.save_messages(msgs))
 
-        _BLOCK_TYPES = ["tool_use", "tool_use", "tool_use", "tool_result", "thinking"]
-        blocks = [
-            make_content_block(
-                message_id=f"bench-blocks-conv-m{j}",
-                session_id="bench-blocks-conv",
-                block_index=k,
-                block_type=_BLOCK_TYPES[k],
+        benchmark(
+            lambda: store.run(
+                save_current_archive_records(store.repository, session=conv, messages=msgs, attachments=[])
             )
-            for j in range(n_msgs)
-            for k in range(5)
-        ]
-
-        benchmark(lambda: store.run(store.backend.save_content_blocks(blocks)))
+        )
