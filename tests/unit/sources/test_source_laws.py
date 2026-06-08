@@ -1155,8 +1155,8 @@ def test_find_sessions_index_and_enrichment_contract(tmp_path: Path) -> None:
         "isSidechain": True,
         "summary": "Investigate parser contracts",
         "firstPrompt": "Summarize this repo",
-        "title_source": "session-index:summary",
     }
+    assert enriched.title_source == "origin"
 
 
 def test_parse_sessions_index_contract(tmp_path: Path) -> None:

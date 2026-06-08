@@ -272,7 +272,7 @@ class TestClaudeCodeAssemblySpec:
         enriched = spec.enrich_session(conv, sidecar_data)
 
         assert enriched.title == "Build the parser"
-        assert _provider_meta(enriched)["title_source"] == "session-index:summary"
+        assert enriched.title_source == "origin"
 
     def test_enrich_session_no_match_returns_original(self) -> None:
         """Returns original session when no session index match."""
@@ -377,7 +377,7 @@ class TestCodexAssemblySpec:
 
         assert enriched.title == "Build API client"
         metadata = _provider_meta(enriched)
-        assert metadata["title_source"] == "session-index:thread-name"
+        assert enriched.title_source == "origin"
         assert metadata["thread_name"] == "Build API client"
 
     def test_enrich_session_falls_back_to_first_user_message(self) -> None:
@@ -397,7 +397,7 @@ class TestCodexAssemblySpec:
         enriched = spec.enrich_session(conv, sidecar_data)
 
         assert enriched.title == "Implement the payment gateway"
-        assert _provider_meta(enriched)["title_source"] == "first-user-message"
+        assert enriched.title_source == "heuristic"
 
     def test_enrich_session_truncates_long_first_message(self) -> None:
         """Truncates first user message to 80 chars + ellipsis."""
@@ -595,7 +595,7 @@ class TestLooksLikeGitBranch:
 
         # Should fall back to first_prompt since summary looks like a git branch
         assert enriched.title == "Fix the bug"
-        assert _provider_meta(enriched)["title_source"] == "session-index:first-prompt"
+        assert enriched.title_source == "heuristic"
 
     def test_git_branch_exact_match_skipped(self) -> None:
         """Exact branch names like 'main' are rejected as summaries."""
@@ -621,4 +621,4 @@ class TestLooksLikeGitBranch:
         enriched = enrich_session_from_index(conv, entry)
 
         assert enriched.title == "Hello world"
-        assert _provider_meta(enriched)["title_source"] == "session-index:first-prompt"
+        assert enriched.title_source == "heuristic"

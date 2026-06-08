@@ -151,7 +151,8 @@ def test_parse_chunked_prompt_preserves_core_session_metadata() -> None:
     assert result.source_name == "gemini"
     assert result.provider_session_id == "gemini-conv"
     assert result.title == "Gemini Session"
-    assert result.provider_meta == {"title_source": "imported:displayName"}
+    assert result.provider_meta is None
+    assert result.title_source == "origin"
     assert result.created_at == "2024-01-15T10:30:00Z"
     assert result.updated_at == "2024-01-15T11:45:00Z"
     assert [message.provider_message_id for message in result.messages] == ["msg-user", "msg-model"]
@@ -175,7 +176,8 @@ def test_parse_chunked_prompt_records_fallback_title_source() -> None:
     result = parse_chunked_prompt("gemini", payload, "fallback-id")
 
     assert result.title == "fallback-id"
-    assert result.provider_meta == {"title_source": "fallback:id"}
+    assert result.provider_meta is None
+    assert result.title_source == "unknown"
 
 
 def test_parse_chunked_prompt_preserves_reasoning_code_tool_results_and_attachments() -> None:

@@ -346,17 +346,17 @@ class TestMetadataRoundtrip:
 class TestSessionLevelMetadata:
     """Pin the session envelope contract built around ``chunkedPrompt``."""
 
-    def test_title_prefers_title_field_with_imported_source_marker(self) -> None:
+    def test_title_prefers_title_field_with_origin_source(self) -> None:
         payload = _load_catalog("text_only_prompt.json")
         session = _parse(payload, "text_only_prompt")
         assert session.title == "Capital trivia"
-        assert (session.provider_meta or {}).get("title_source") == "imported:title"
+        assert session.title_source == "origin"
 
     def test_title_falls_back_to_display_name_when_title_absent(self) -> None:
         payload = _load_catalog("multi_turn_prompt.json")
         session = _parse(payload, "multi_turn_prompt")
         assert session.title == "Drive doc summary"
-        assert (session.provider_meta or {}).get("title_source") == "imported:displayName"
+        assert session.title_source == "origin"
 
     def test_title_falls_back_to_id_when_no_title_or_display_name(self) -> None:
         payload: JSONDocument = {
@@ -365,7 +365,7 @@ class TestSessionLevelMetadata:
         }
         session = _parse(payload, "no-title")
         assert session.title == "no-title"
-        assert (session.provider_meta or {}).get("title_source") == "fallback:id"
+        assert session.title_source == "unknown"
 
     def test_provider_session_id_uses_id_field_then_fallback(self) -> None:
         payload: JSONDocument = {
